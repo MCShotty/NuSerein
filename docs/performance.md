@@ -88,7 +88,27 @@ timestamp cadence. Four HEVC/AV1 PQ/HLG transport fixtures and HDR attachment
 audio/seek/cancellation fixtures pass. These establish picture/color/lifecycle
 behavior, not sustained 60 fps throughput or live Discord compatibility.
 
-Clean and cached package measurements and current native CI results are reported
+Fresh measurements compare `c4bc650` with `53cd786` on Linux x86-64, Intel Xeon
+Platinum 8573C, with a four-CPU quota and 16 GiB memory limit. Each uses its own
+release target directory. The baseline normal `cargo xtask package --format dir`
+completed from empty output without a staging repair: executable 87,744,200 bytes,
+installed tree 125,169,707 bytes, and canonical sorted `gzip -n -6` distribution
+82,836,259 bytes. Both include voice and corresponding-source/license material.
+
+| Synthetic release replay | Baseline | Shared media | Method |
+| --- | ---: | ---: | --- |
+| 100,000-event median | 97.741 ms | 96.144 ms | One warmup, five alternating pairs after builds settled |
+| Observed elapsed range | 80.842–113.114 ms | 88.715–106.501 ms | Overlapping samples; no improvement claimed |
+| Retained timeline | 331,992–332,477 bytes / 500 records | Same | Reducer accounting, not RSS |
+
+The replay executables have identical `.text` hashes; earlier samples taken
+during compilation were noisy and are excluded from this comparison. The new
+120-second lifecycle soak completes 2,145 passes / 68,640 channel visits and
+41,184,000 inserts within the shipping row/byte limits, with nine logout cycles.
+It uses no network, storage, renderer or audio devices and does not measure media
+throughput or process memory.
+
+Clean and cached current-package measurements and native CI results are reported
 in [#567's Performance and Verification sections](https://github.com/ViceVerse-cz/Serein/pull/567).
 CPU, frame-delivery rate and peak/settled memory during physical HDR playback remain
 unmeasured here. Native window capture and a suitable HDR display are unavailable
