@@ -69,9 +69,17 @@ from the repository root:
 ```sh
 python3 scripts/build-ffmpeg.py --jobs 8
 export FFMPEG_DIR="$PWD/target/ffmpeg/prefix"
+if [ "$(uname -s)" = Darwin ]; then
+  export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+else
+  export LD_LIBRARY_PATH="$FFMPEG_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 cargo xtask check
 cargo xtask package
 ```
+
+The loader path is for development and unit-test binaries. Release packages use
+their own bundled library paths and must also be checked without this environment.
 
 Windows uses MSYS2 bash with make, pkgconf and nasm, Meson/Ninja installed for
 Windows Python, native CMake/NMake, and an initialized MSVC

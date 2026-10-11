@@ -122,7 +122,17 @@ jobs:
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Check production build without development fixtures
         run: cargo check --locked -p serein --bin serein --no-default-features
-      - run: cargo xtask check
+      - name: Run cargo xtask check
+        shell: bash
+        run: |
+          # Unit-test binaries outside the desktop crate need the shared native libraries.
+          # Set dyld here because macOS system shells strip inherited DYLD variables.
+          if [[ "$RUNNER_OS" == 'Linux' ]]; then
+            export LD_LIBRARY_PATH="$FFMPEG_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          elif [[ "$RUNNER_OS" == 'macOS' ]]; then
+            export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          fi
+          cargo xtask check
       - name: HDR and SDR media shader (offline software Vulkan)
         if: runner.os == 'Linux'
         run: cargo test --locked -p serein --bin serein video::render_tests::media_shader_preserves_sdr_rotation_and_pq_hlg_highlights -- --exact --ignored
@@ -133,6 +143,8 @@ jobs:
           - name: Flatpak encoding after GTK initialization (synthetic)
             if: runner.os == 'Linux'
             run: xvfb-run -a cargo test --locked -p platform --features winit/x11,winit/wayland --lib flatpak_locale_tests::post_gtk_flatpak_encoding_preflight -- --exact --ignored
+            env:
+              LD_LIBRARY_PATH: ${{ env.FFMPEG_DIR }}/lib
           - run: bun tests/login-handoff.cjs
           - run: bun tests/xtask-workspace.cjs
           - name: FFmpeg native libraries and packaging regression (offline)
