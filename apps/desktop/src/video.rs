@@ -607,11 +607,11 @@ enum DisplayFrame {
 }
 enum AttachmentDecoder {
 	Ffmpeg(platform::video::ffmpeg::File),
-	Native(platform::video::Decoder),
+	Native(Box<platform::video::Decoder>),
 }
 impl From<platform::video::Decoder> for AttachmentDecoder {
 	fn from(value: platform::video::Decoder) -> Self {
-		Self::Native(value)
+		Self::Native(Box::new(value))
 	}
 }
 impl AttachmentDecoder {
@@ -631,7 +631,7 @@ impl AttachmentDecoder {
 				source
 					.seek(std::io::SeekFrom::Start(0))
 					.map_err(|_| platform::video::INVALID)?;
-				platform::video::Decoder::open(source).map(Self::Native)
+				platform::video::Decoder::open(source).map(Self::from)
 			}
 			Err((_, error)) => Err(error),
 		}
