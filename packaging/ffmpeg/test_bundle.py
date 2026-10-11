@@ -479,6 +479,11 @@ class BundleTest(unittest.TestCase):
                 windows_shell = root / "Windows/System32/bash.exe"
                 windows_shell.parent.mkdir(parents=True)
                 windows_shell.write_bytes(b"synthetic WSL executable")
+                compiler = root / "MSVC with spaces" / architecture / "cl.exe"
+                compiler.parent.mkdir(parents=True)
+                compiler.write_bytes(b"synthetic MSVC compiler")
+                compiler.with_name("link.exe").write_bytes(b"synthetic MSVC linker")
+                (msys_shell.parent / "link.exe").write_bytes(b"synthetic GNU link")
                 args = SimpleNamespace(prefix=root / "prefix", cache_dir=root / "cache",
                                        work_dir=root / "work", jobs=1, offline=True)
 
@@ -509,6 +514,7 @@ class BundleTest(unittest.TestCase):
                         patch.object(builder, "amf_headers", return_value=root / "amf.tar"), \
                         patch.object(builder, "unpack", side_effect=unpack), \
                         patch.object(builder, "patch_ffmpeg", return_value=""), \
+                        patch.object(builder.shutil, "which", return_value=str(compiler)), \
                         patch.object(builder.subprocess, "check_output", return_value=str(msys_shell) + "\n") as resolve, \
                         patch.object(builder, "run", side_effect=run) as command:
                     with self.assertRaises(ConfigureReached):
@@ -517,6 +523,13 @@ class BundleTest(unittest.TestCase):
                 resolve.assert_called_once_with(["cygpath", "-w", "/usr/bin/bash.exe"], text=True,
                                                 env=resolve.call_args.kwargs["env"])
                 self.assertEqual(resolve.call_args.kwargs["env"]["PATH"], environment["PATH"])
+                meson = [call for call in command.call_args_list if call.args[0] == "meson"]
+                self.assertEqual(len(meson), 3)
+                for call in meson:
+                    chosen = call.kwargs["env"]
+                    self.assertEqual(chosen["PATH"].split(os.pathsep)[0], str(compiler.parent))
+                    self.assertEqual(chosen["CC"], "cl")
+                    self.assertEqual(chosen["CXX"], "cl")
                 # The dispatcher archive and FFmpeg must both use the static
                 # MSVC runtime, including on the first CMake configuration.
                 if architecture == "x64":

@@ -174,6 +174,21 @@ def configure_shell(system, env):
     return shell
 
 
+def meson_environment(system, env):
+    result = dict(env)
+    if system == "Windows":
+        compiler = shutil.which("cl.exe", path=env.get("PATH"))
+        if not compiler or not Path(compiler).with_name("link.exe").is_file():
+            raise ValueError("dav1d requires the MSVC compiler and matching linker; "
+                             "run from the target architecture's Developer shell")
+        # MSYS prepends its GNU link.exe. Meson invokes the linker directly,
+        # unlike cl's own driver, so put the selected MSVC tools first for all
+        # three Meson phases without changing make/configure's MSYS lookup.
+        result["PATH"] = str(Path(compiler).parent) + os.pathsep + env.get("PATH", "")
+        result["CC"] = result["CXX"] = "cl"
+    return result
+
+
 def fetch(source, cache, offline):
     destination = cache / source["file"]
     if not destination.exists():
@@ -753,12 +768,13 @@ def build(args):
             content = content.replace("Libs: ", "Libs: -ladvapi32 -lole32 -luuid ", 1)
             pc.write_text(content)
     dav1d_build = work / "dav1d-meson"
+    meson_env = meson_environment(system, env)
     run("meson", "setup", dav1d_build, trees["dav1d"], f"--prefix={prefix.as_posix()}",
         "--libdir=lib", "--buildtype=release", "--default-library=static",
         "-Db_staticpic=true", "-Db_vscrt=mt", "-Denable_tools=false", "-Denable_tests=false",
-        *(["-Denable_asm=false"] if system == "Windows" and arm64 else []), env=env)
-    run("meson", "compile", "-C", dav1d_build, "-j", str(args.jobs), env=env)
-    run("meson", "install", "-C", dav1d_build, env=env)
+        *(["-Denable_asm=false"] if system == "Windows" and arm64 else []), env=meson_env)
+    run("meson", "compile", "-C", dav1d_build, "-j", str(args.jobs), env=meson_env)
+    run("meson", "install", "-C", dav1d_build, env=meson_env)
     configure = [
         f"--prefix={posix(prefix)}", "--build-suffix=-serein", "--disable-autodetect", "--disable-everything",
         "--disable-programs", "--disable-doc", "--disable-network", "--disable-static", "--enable-shared",
