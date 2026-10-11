@@ -123,6 +123,10 @@ jobs:
       - name: Check production build without development fixtures
         run: cargo check --locked -p serein --bin serein --no-default-features
       - name: Run cargo xtask check
+        if: runner.os == 'Windows'
+        run: cargo xtask check
+      - name: Run cargo xtask check with native library paths
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           # Unit-test binaries outside the desktop crate need the shared native libraries.

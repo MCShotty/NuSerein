@@ -2278,7 +2278,7 @@ mod tests {
 			let start = std::time::Instant::now();
 			let mut pictures = 0;
 			for frame in &frames[1..] {
-				if let Ok(Some(_)) = decoder.decode(frame, &mut scratch) {
+				if let Ok(Some(_)) = decoder.decode(frame, 0, &mut scratch) {
 					pictures += 1;
 				}
 			}
