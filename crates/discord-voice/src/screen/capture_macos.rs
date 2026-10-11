@@ -506,7 +506,7 @@ impl Capture {
 			});
 		let hdr = luminance.is_some();
 		let base = if hdr {
-			screencapturekit::stream::configuration::SCStreamConfiguration::from_preset(screencapturekit::stream::configuration::SCStreamConfigurationPreset::CaptureHDRStreamLocalDisplay)
+			screencapturekit::stream::configuration::SCStreamConfiguration::from_preset(screencapturekit::stream::configuration::SCStreamConfigurationPreset::CaptureHDRStreamCanonicalDisplay)
             .with_color_space_name("kCGColorSpaceExtendedLinearSRGB")
 		} else {
 			SCStreamConfiguration::new()

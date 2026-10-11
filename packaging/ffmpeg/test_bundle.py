@@ -501,6 +501,10 @@ class BundleTest(unittest.TestCase):
                         pc = args.prefix / "lib/pkgconfig/vpl.pc"
                         pc.parent.mkdir(parents=True)
                         pc.write_text("Libs: -lvpl\n")
+                    elif arguments[:2] == ("meson", "install"):
+                        archive = args.prefix / "lib/libdav1d.a"
+                        archive.parent.mkdir(parents=True, exist_ok=True)
+                        archive.write_bytes(b"synthetic dav1d static archive")
                     elif len(arguments) > 1 and arguments[1] == "configure":
                         raise ConfigureReached()
 
@@ -520,6 +524,9 @@ class BundleTest(unittest.TestCase):
                     with self.assertRaises(ConfigureReached):
                         builder.build(args)
                 self.assertEqual(command.call_args_list[-1].args[:2], (str(msys_shell), "configure"))
+                self.assertEqual((args.prefix / "lib/dav1d.lib").read_bytes(),
+                                 b"synthetic dav1d static archive")
+                self.assertFalse((args.prefix / "lib/libdav1d.a").exists())
                 resolve.assert_called_once_with(["cygpath", "-w", "/usr/bin/bash.exe"], text=True,
                                                 env=resolve.call_args.kwargs["env"])
                 self.assertEqual(resolve.call_args.kwargs["env"]["PATH"], environment["PATH"])

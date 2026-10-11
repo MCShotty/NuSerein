@@ -775,6 +775,14 @@ def build(args):
         *(["-Denable_asm=false"] if system == "Windows" and arm64 else []), env=meson_env)
     run("meson", "compile", "-C", dav1d_build, "-j", str(args.jobs), env=meson_env)
     run("meson", "install", "-C", dav1d_build, env=meson_env)
+    if system == "Windows":
+        # dav1d overrides Meson's static archive name to libdav1d.a even with
+        # MSVC. FFmpeg translates pkg-config's -ldav1d to dav1d.lib.
+        archive = prefix / "lib/libdav1d.a"
+        if archive.is_file():
+            archive.replace(prefix / "lib/dav1d.lib")
+        if not (prefix / "lib/dav1d.lib").is_file():
+            raise ValueError("dav1d's MSVC static archive was not installed")
     configure = [
         f"--prefix={posix(prefix)}", "--build-suffix=-serein", "--disable-autodetect", "--disable-everything",
         "--disable-programs", "--disable-doc", "--disable-network", "--disable-static", "--enable-shared",
