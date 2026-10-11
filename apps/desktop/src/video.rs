@@ -978,7 +978,7 @@ impl MediaGpu {
 			p.transfer,
 			p.primaries,
 			p.matrix,
-			p.full_range,
+			p.full_range | (p.chroma_location << 8),
 			output.ui_white_scale.to_bits(),
 			p.height,
 			p.rotation,
@@ -1241,36 +1241,47 @@ mod render_tests {
 					.flat_map(|value| (value << 6).to_le_bytes()),
 			)
 			.collect();
-		let frame = Arc::new(
-			Frame::new(
-				Picture {
-					format: 1,
-					transfer: 16,
-					primaries: 1,
-					matrix: 1,
-					depth: 10,
-					peak_nits: 1000.0,
-					bytes: bytes.len(),
-					..Picture::sdr(3, 3)
-				},
-				bytes,
-			)
-			.unwrap(),
-		);
 		let hdr = MediaOutput {
 			format: w::TextureFormat::Rgba16Float,
 			headroom: 64.0,
 			..sdr
 		};
-		let pixels = render(&device, &queue, frame, hdr, 3, 3);
-		let blue = platform::video::ffmpeg::half([pixels[68], pixels[69]]);
-		let expected =
-			pq_nits((512.0 - 64.0) / 876.0 + 2.0 * (1.0 - 0.0722) * (416.0 - 512.0) / 896.0)
-				/ 203.0;
-		assert!(
-			(blue - expected).abs() < 0.005,
-			"odd crop chroma: {blue} vs {expected}"
-		);
+		for (chroma_location, u) in [
+			(0, 320.0),
+			(1, 320.0),
+			(2, 416.0),
+			(3, 128.0),
+			(4, 320.0),
+			(5, 512.0),
+			(6, 512.0),
+		] {
+			let frame = Arc::new(
+				Frame::new(
+					Picture {
+						format: 1,
+						transfer: 16,
+						primaries: 1,
+						matrix: 1,
+						depth: 10,
+						peak_nits: 1000.0,
+						bytes: bytes.len(),
+						chroma_location,
+						..Picture::sdr(3, 3)
+					},
+					bytes.clone(),
+				)
+				.unwrap(),
+			);
+			let pixels = render(&device, &queue, frame, hdr, 3, 3);
+			let blue = platform::video::ffmpeg::half([pixels[68], pixels[69]]);
+			let expected =
+				pq_nits((512.0 - 64.0) / 876.0 + 2.0 * (1.0 - 0.0722) * (u - 512.0) / 896.0)
+					/ 203.0;
+			assert!(
+				(blue - expected).abs() < 0.005,
+				"odd crop chroma {chroma_location}: {blue} vs {expected}"
+			);
+		}
 		// Recreating the render device recreates media resources without retaining frames.
 		let (next_device, next_queue) = adapter
 			.request_device(&w::DeviceDescriptor::default())

@@ -342,6 +342,7 @@ int serein_decode_receive(void *pointer, SereinPicture *picture, uint8_t *output
     picture->transfer = (uint32_t)frame->color_trc;
     picture->matrix = (uint32_t)(hdr && frame->colorspace == AVCOL_SPC_UNSPECIFIED ? AVCOL_SPC_BT2020_NCL : frame->colorspace);
     picture->full_range = frame->color_range == AVCOL_RANGE_JPEG;
+    picture->chroma_location = (uint32_t)frame->chroma_location;
     picture->depth = (uint32_t)description->comp[0].depth;
     picture->peak_nits = peak_nits(frame);
     picture->pts = frame->best_effort_timestamp;

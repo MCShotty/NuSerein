@@ -42,7 +42,14 @@ fn bilinear_uv(uv: vec2<f32>) -> vec2<f32> {
     let size = textureDimensions(uv_plane);
     // Odd visible crops retain a partial final chroma sample. Map from luma
     // geometry, rather than stretching the rounded-up chroma texture.
-    let pos = clamp(uv * vec2<f32>(textureDimensions(y_plane)) * 0.5 - vec2(0.5), vec2(0.0), vec2<f32>(size)-vec2(1.0));
+    // FFmpeg's unspecified 4:2:0 location defaults to MPEG left siting.
+    // Respect explicit center, top and bottom positions from the sequence header.
+    let location = p.color.w >> 8u;
+    var offset = vec2(0.25, 0.5);
+    if location==2u || location==4u || location==6u { offset.x=0.5; }
+    if location==3u || location==4u { offset.y=0.25; }
+    if location==5u || location==6u { offset.y=0.75; }
+    let pos = clamp(uv * vec2<f32>(textureDimensions(y_plane)) * 0.5 - offset, vec2(0.0), vec2<f32>(size)-vec2(1.0));
     let a = vec2<i32>(pos); let b = min(a+vec2(1),vec2<i32>(size)-vec2(1));
     let f = fract(pos);
     return mix(mix(vec2<f32>(textureLoad(uv_plane,a,0).rg>>vec2(6u)),vec2<f32>(textureLoad(uv_plane,vec2(b.x,a.y),0).rg>>vec2(6u)),f.x),
@@ -60,7 +67,7 @@ fn sample_yuv(uv:vec2<f32>)->vec3<f32>{
     let y = bilinear_y(uv); let c = bilinear_uv(uv);
     var yy=(y-64.0)/876.0;
     var cc=(c-vec2(512.0))/896.0;
-    if p.color.w!=0u{yy=y/1023.0;cc=(c-vec2(512.0))/1023.0;}
+    if (p.color.w&1u)!=0u{yy=y/1023.0;cc=(c-vec2(512.0))/1023.0;}
     var kr=0.2627;var kb=0.0593;
     if p.color.z==1u{kr=0.2126;kb=0.0722;}
     if p.color.z==5u || p.color.z==6u{kr=0.299;kb=0.114;}

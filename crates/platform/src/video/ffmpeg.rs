@@ -105,6 +105,8 @@ pub struct Picture {
 	pub peak_nits: f32,
 	pub pts: i64,
 	pub bytes: usize,
+	/// FFmpeg chroma location: unspecified/left, center, top-left/top, bottom-left/bottom.
+	pub chroma_location: u32,
 }
 impl Picture {
 	pub fn sdr(width: u32, height: u32) -> Self {
@@ -152,6 +154,7 @@ impl Picture {
 			|| !(8..=10).contains(&self.depth)
 			|| !matches!(self.rotation, 0 | 90 | 180 | 270)
 			|| self.full_range > 1
+			|| self.chroma_location > 6
 			|| self.hdr()
 				&& (!matches!(self.primaries, 1 | 9 | 12)
 					|| !matches!(self.matrix, 1 | 5 | 6 | 9)

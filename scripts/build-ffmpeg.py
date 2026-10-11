@@ -850,6 +850,10 @@ def build(args):
                 name = line.strip().split(" (", 1)[0]
                 if name.startswith(str(prefix / "lib") + "/"):
                     run("install_name_tool", "-change", name, f"@rpath/{Path(name).name}", library)
+            # Direct native consumers also load these dylibs outside the app.
+            # Resolve private dependencies beside each library in both the
+            # development prefix and the packaged Frameworks directory.
+            run("install_name_tool", "-add_rpath", "@loader_path", library)
         # Apple Silicon rejects modified Mach-O files whose linker signatures
         # were invalidated above. Sign the source-run/Nix libraries after every
         # install-name edit; packaging signs its staged copies again afterward.

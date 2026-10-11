@@ -118,6 +118,7 @@ typedef struct SereinPicture {
     float peak_nits;
     int64_t pts;
     size_t bytes;
+    uint32_t chroma_location;
 } SereinPicture;
 
 /* Codec 0=H264, 1=HEVC, 2=AV1. hardware requires an exact adapter identity;

@@ -253,6 +253,7 @@ int main(void) {
     f->color_primaries = AVCOL_PRI_BT2020;
     f->colorspace = AVCOL_SPC_BT2020_NCL;
     f->color_range = full ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+    f->chroma_location = (enum AVChromaLocation)(variant + 1);
     assert(av_frame_get_buffer(f, 32) == 0);
     const AVPixFmtDescriptor *description = av_pix_fmt_desc_get(f->format);
     for (int component = 0; component < description->nb_components; ++component) {
@@ -273,6 +274,7 @@ int main(void) {
     assert(serein_decode_receive(d, &picture, NULL, 0) == 1);
     assert(picture.width == 33 && picture.height == 17 && picture.format == 1);
     assert(picture.bytes == 2 * 33 * 17 + 4 * 17 * 9);
+    assert(picture.chroma_location == variant + 1);
     uint8_t *guard = malloc(picture.bytes + 2);
     assert(guard); memset(guard, 0x5a, picture.bytes + 2);
     assert(serein_decode_receive(d, &picture, guard + 1, picture.bytes) == 1);
