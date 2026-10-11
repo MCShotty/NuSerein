@@ -206,10 +206,10 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 		let separate_planes = chroma == 3 && bits.flag()?;
 		let luma = bits.ue()?;
 		let chroma_depth = bits.ue()?;
-		depth = 8 + luma.max(chroma_depth);
 		if luma > 6 || chroma_depth > 6 {
 			return Err(INVALID);
 		}
+		depth = 8 + luma.max(chroma_depth);
 		bits.read(1)?;
 		if bits.flag()? {
 			for index in 0..if chroma == 3 { 12 } else { 8 } {
@@ -409,6 +409,7 @@ mod tests {
 		coded: (u32, u32),
 		crop: [u32; 4],
 		chroma: u32,
+		depths: [u32; 2],
 		separate_planes: bool,
 		frame_only: bool,
 	) -> Vec<u8> {
@@ -421,8 +422,8 @@ mod tests {
 		if chroma == 3 {
 			bits.push(separate_planes);
 		}
-		ue(&mut bits, 0); // bit_depth_luma_minus8
-		ue(&mut bits, 0); // bit_depth_chroma_minus8
+		ue(&mut bits, depths[0]); // bit_depth_luma_minus8
+		ue(&mut bits, depths[1]); // bit_depth_chroma_minus8
 		bits.extend([false, false]); // transform bypass, scaling matrices
 		ue(&mut bits, 0); // log2_max_frame_num_minus4
 		ue(&mut bits, 2); // pic_order_cnt_type
@@ -469,7 +470,14 @@ mod tests {
 			(3, true, true, (15, 31)),
 			(1, false, false, (14, 28)),
 		] {
-			let frame = sequence((16, 32), [0, 1, 0, 1], chroma, separate_planes, frame_only);
+			let frame = sequence(
+				(16, 32),
+				[0, 1, 0, 1],
+				chroma,
+				[0; 2],
+				separate_planes,
+				frame_only,
+			);
 			validate_dimensions(&frame, |dimensions| {
 				assert_eq!(dimensions.coded, (16, 32));
 				assert_eq!(dimensions.visible, visible);
@@ -482,7 +490,7 @@ mod tests {
 	#[test]
 	fn dimension_gate_does_not_admit_large_surfaces_hidden_by_crop_or_subset_sps() {
 		for nal_type in [7, 15] {
-			let mut frame = sequence((4096, 2304), [0, 2032, 0, 1136], 1, false, true);
+			let mut frame = sequence((4096, 2304), [0, 2032, 0, 1136], 1, [0; 2], false, true);
 			frame[4] = 0x60 | nal_type;
 			assert!(
 				validate_dimensions(&frame, |dimensions| {
@@ -497,7 +505,7 @@ mod tests {
 			((1920, 1088), [0, 0, 0, 4], (1920, 1080)),
 			((1088, 1920), [0, 4, 0, 0], (1080, 1920)),
 		] {
-			let frame = sequence(coded, crop, 1, false, true);
+			let frame = sequence(coded, crop, 1, [0; 2], false, true);
 			validate_dimensions(&frame, |dimensions| {
 				assert_eq!(dimensions.visible, visible);
 				assert_eq!(dimensions.coded, (coded.0 as usize, coded.1 as usize));
@@ -509,17 +517,35 @@ mod tests {
 
 	#[test]
 	fn dimension_gate_rejects_truncation_invalid_crop_and_oversized_sps() {
-		let frame = sequence((32, 32), [0; 4], 1, false, true);
+		let frame = sequence((32, 32), [0; 4], 1, [0; 2], false, true);
 		for length in 0..frame.len() {
 			assert!(validate_dimensions(&frame[..length], |_| true).is_err());
 		}
 		for crop in [[0, 17, 0, 0], [0, 0, 0, 17], [0, 16, 0, 0]] {
 			assert!(
-				validate_dimensions(&sequence((32, 32), crop, 1, false, true), |_| true).is_err()
+				validate_dimensions(&sequence((32, 32), crop, 1, [0; 2], false, true), |_| true)
+					.is_err()
 			);
 		}
 		let mut large = vec![0, 0, 1, 0x67];
 		large.extend(std::iter::repeat_n(0xff, MAX_SPS + 1));
 		assert!(validate_dimensions(&large, |_| true).is_err());
+	}
+
+	#[test]
+	fn dimension_gate_rejects_invalid_bit_depths_without_overflow() {
+		for depths in [[7, 0], [0, 7], [u32::MAX - 1, 0], [0, u32::MAX - 1]] {
+			let frame = sequence((32, 32), [0; 4], 1, depths, false, true);
+			assert_eq!(validate_dimensions(&frame, |_| true), Err(INVALID));
+			assert_eq!(normalize(&frame), Err(INVALID));
+		}
+		for depths in [[0, 0], [2, 0], [0, 2], [6, 6]] {
+			let frame = sequence((32, 32), [0; 4], 1, depths, false, true);
+			validate_dimensions(&frame, |dimensions| {
+				assert_eq!(dimensions.depth, 8 + depths[0].max(depths[1]));
+				true
+			})
+			.unwrap();
+		}
 	}
 }
