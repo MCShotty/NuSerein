@@ -93,7 +93,7 @@ export FFMPEG_DIR="$PWD/target/ffmpeg/prefix"
 cargo xtask package
 ```
 
-The source builder needs Python 3.12+, Make, CMake, a C/C++ compiler, pkg-config
+The source builder needs Python 3.12+, Make, CMake, Meson, Ninja, a C/C++ compiler, pkg-config
 and NASM (x86_64); Linux also needs `patchelf`, libva and libdrm development
 packages for Quick Sync's device interface. Windows uses an MSVC developer shell with
 MSYS2 Bash/Make/pkgconf/NASM and places `FFMPEG_DIR/bin` on PATH for source runs.

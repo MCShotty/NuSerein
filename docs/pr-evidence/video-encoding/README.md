@@ -189,3 +189,10 @@ The macOS minimized-window scenario requires a native owner-controlled check;
 the geometry retry does not enumerate new sources or replace the approved filter.
 Comparable native-helper measurements are recorded in
 [performance](../../performance.md); they exclude GUI, decode and device playback.
+
+[The follow-up review of `5b8ae38`](https://github.com/ViceVerse-cz/Serein/pull/567#pullrequestreview-5489559654)
+found an additional Linux release-build dependency omission. The native dependency
+installer now includes Meson and Ninja on Ubuntu, Fedora, openSUSE and Arch, as
+required by the pinned dav1d recipe. Shell syntax and mocked package-manager runs
+cover every supported distribution/version and reject unsupported hosts without
+installing anything. Application code is unchanged from the checked `5b8ae38`.
