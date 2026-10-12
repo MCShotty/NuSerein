@@ -343,8 +343,10 @@ the PipeWire source plugin. GStreamer supplies bounded raw capture, CPU scaling
 and preview. Stable uses GStreamer VA/NV encoders with direct OpenH264 fallback;
 the optional Bad/VA/NVCodec plugins enable those hardware paths. Experimental uses
 the shared FFmpeg NVENC, AMD AMF or Intel Quick Sync encoders. H.264 has software
-fallback; H.265/AV1 require compatible hardware. Incoming playback remains H.264-only
-and may use its existing VA-API decoder. NVENC requires the NVIDIA runtime; AMF
+fallback; H.265/AV1 require compatible hardware. Incoming playback uses the shared,
+bounded FFmpeg H.264/HEVC/AV1 decoder, with hardware decoding on the selected GPU
+and software fallback. HDR playback falls back to SDR on unsupported displays.
+NVENC requires the NVIDIA runtime; AMF
 requires AMD's AMF runtime (Vulkan on Linux); Quick Sync requires an Intel GPU
 runtime and iHD VA driver. Experimental excludes VA-API encoders while permitting
 Quick Sync's Linux VA device interface. Device permissions and matching runtimes

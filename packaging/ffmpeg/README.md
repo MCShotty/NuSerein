@@ -44,7 +44,7 @@ under that codec's transport metadata. FFmpeg Media Foundation and all three
 GPL/nonfree components, command-line programs, networking and avfilter are
 disabled. Decoder allowlists include H.264/HEVC, AV1/dav1d and supported
 hardware paths, plus AAC, Opus, Vorbis, MP3 and required PCM audio. MOV/MP4,
-Matroska/WebM, Ogg and WAV demuxers, scaling and audio resampling serve attachment
+Matroska/WebM demuxers, scaling and audio resampling serve attachment
 playback. `build.json` records exact encoder and decoder names; native registry
 checks reject additions outside those allowlists. Decoders receive an anonymous
 reader bounded to 100 MiB, never a service URL or credentials.

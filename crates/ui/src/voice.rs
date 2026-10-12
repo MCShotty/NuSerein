@@ -1516,16 +1516,19 @@ impl MessagingUi {
 		} else {
 			None
 		};
+		let hdr = (!own && entry.participant.video)
+			.then(|| {
+				self.voice_remote_hdr
+					.iter()
+					.find(|(user, _)| *user == entry.participant.user)
+			})
+			.flatten()
+			.map(|(_, media)| media);
+		let has_video = video.is_some() || hdr.is_some();
 		if !frameless {
 			ui.painter().rect_filled(rect, 8, TILE_FILL);
 		}
-		if !own
-			&& entry.participant.video
-			&& let Some((_, media)) = self
-				.voice_remote_hdr
-				.iter()
-				.find(|(user, _)| *user == entry.participant.user)
-		{
+		if let Some(media) = hdr {
 			let scale = (rect.width() / media.size.x).min(rect.height() / media.size.y);
 			media.paint(
 				ui,
@@ -1553,13 +1556,13 @@ impl MessagingUi {
 			egui::Vec2::splat(avatar_size),
 		);
 		let mut avatar_ui = ui.new_child(egui::UiBuilder::new().max_rect(avatar_rect));
-		if video.is_some() {
+		if has_video {
 			avatar_ui.set_opacity(0.0);
 		} else if ringing {
 			// Only a ringing recipient keeps a faded seat before joining.
 			avatar_ui.set_opacity(0.45);
 		}
-		if ringing && video.is_none() {
+		if ringing && !has_video {
 			ringing_pulse(ui, avatar_rect);
 		}
 		let avatar = if let Some(user) = user {
@@ -1583,7 +1586,7 @@ impl MessagingUi {
 			None
 		};
 		if let Some(icon) = silenced
-			&& video.is_none()
+			&& !has_video
 		{
 			ui.painter().circle_stroke(
 				avatar.rect.center(),
@@ -1604,7 +1607,7 @@ impl MessagingUi {
 			);
 		}
 		if silenced.is_none() && speaking {
-			if video.is_none() && frameless {
+			if !has_video && frameless {
 				speaking_avatar(ui, &avatar, name);
 			}
 			if !frameless {
@@ -1686,7 +1689,7 @@ impl MessagingUi {
 				ui,
 				rect,
 				name,
-				silenced.filter(|_| video.is_some()),
+				silenced.filter(|_| has_video),
 				self.badge_opacity(),
 			);
 		}
@@ -5985,6 +5988,117 @@ mod tests {
 		view.apply_ring_request(&mut state, &mut commands);
 		assert!(commands.is_empty());
 		assert!(view.ring_request.is_none());
+	}
+	#[test]
+	fn hdr_camera_tiles_keep_the_same_overlays_as_sdr_and_ignore_stale_frames() {
+		use std::sync::{Arc, Mutex};
+		for dark in [false, true] {
+			for frameless in [false, true] {
+				for muted in [false, true] {
+					let mut state = test_support::voice_demo_state();
+					let mut entry = state.voice.roster[1].clone();
+					entry.participant.video = true;
+					entry.participant.muted = muted;
+					entry.participant.deafened = false;
+					state.voice.active.as_mut().unwrap().participants[1] = entry.participant;
+					let ctx = egui::Context::default();
+					ctx.set_visuals(if dark {
+						egui::Visuals::dark()
+					} else {
+						egui::Visuals::light()
+					});
+					let texture = ctx.load_texture(
+						"synthetic-camera",
+						egui::ColorImage::filled([16, 9], egui::Color32::BLUE),
+						Default::default(),
+					);
+					let media = crate::video::MediaView {
+						size: egui::vec2(16.0, 9.0),
+						resource: Arc::new(()),
+						failure: Arc::new(Mutex::new(None)),
+						callback: Arc::new(|rect| egui::PaintCallback {
+							rect,
+							callback: Arc::new(()),
+						}),
+					};
+					let mut messaging = MessagingUi::default();
+					let render = |messaging: &mut MessagingUi, entry: &RosterEntry| {
+						let mut output = ctx.run_ui(
+							egui::RawInput {
+								screen_rect: Some(egui::Rect::from_min_size(
+									egui::Pos2::ZERO,
+									egui::vec2(640.0, 480.0),
+								)),
+								..Default::default()
+							},
+							|ui| {
+								messaging.participant_tile(
+									ui,
+									&state,
+									entry,
+									egui::Rect::from_min_size(
+										egui::pos2(20.0, 20.0),
+										egui::vec2(320.0, 180.0),
+									),
+									frameless,
+									false,
+								);
+							},
+						);
+						let callbacks = output
+							.shapes
+							.iter()
+							.filter(|shape| matches!(shape.shape, egui::Shape::Callback(_)))
+							.count();
+						let overlays: Vec<_> = output
+							.shapes
+							.iter()
+							.filter(|shape| match &shape.shape {
+								egui::Shape::Callback(_) | egui::Shape::Noop => false,
+								egui::Shape::Mesh(mesh) => mesh.texture_id != texture.id(),
+								egui::Shape::Rect(rect) => rect
+									.brush
+									.as_ref()
+									.is_none_or(|brush| brush.fill_texture_id != texture.id()),
+								_ => true,
+							})
+							.map(|shape| shape.shape.clone())
+							.collect();
+						output.textures_delta.clear();
+						(overlays, callbacks)
+					};
+					messaging
+						.voice_remote_video
+						.push((entry.participant.user, texture.clone()));
+					let (sdr, _) = render(&mut messaging, &entry);
+					messaging.voice_remote_video.clear();
+					messaging
+						.voice_remote_hdr
+						.push((entry.participant.user, media.clone()));
+					let (hdr, callbacks) = render(&mut messaging, &entry);
+					assert_eq!(callbacks, 1);
+					assert_eq!(
+						hdr, sdr,
+						"dark={dark}, frameless={frameless}, muted={muted}"
+					);
+					entry.participant.video = false;
+					let (stale, callbacks) = render(&mut messaging, &entry);
+					assert_eq!(callbacks, 0);
+					messaging.voice_remote_hdr.clear();
+					let (without_video, _) = render(&mut messaging, &entry);
+					assert_eq!(stale, without_video);
+					entry.participant.video = true;
+					messaging.voice_remote_hdr.push((Id(999), media));
+					let (other_user, callbacks) = render(&mut messaging, &entry);
+					assert_eq!(callbacks, 0);
+					assert_eq!(other_user, without_video);
+					assert_ne!(
+						hdr, without_video,
+						"A missing camera must retain its avatar"
+					);
+				}
+			}
+		}
 	}
 	#[test]
 	fn solo_call_stages_show_both_local_previews_without_a_roster() {

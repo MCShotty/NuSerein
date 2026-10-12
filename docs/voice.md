@@ -765,8 +765,11 @@ Capture is converted to the selected output dimensions, capped at the selected
 targets are 600 kbit/s at 480p, 2/4/8 Mbit/s at 720p/1080p/1440p, 16 Mbit/s at 4K
 and 40 Mbit/s at 8K. Targets scale with the selected frame rate, capped at 50 Mbit/s;
 these are targets, not measured bandwidth guarantees. The worker uses the backend/codec snapshot described above. H.264 requests
-Baseline; H.265/AV1 use their Main profile with an independently decodable picture
-every frame. Invalid output advances through compatible backends; only H.264 has
+Baseline; Stable emits independently decodable pictures. Experimental H.265/AV1
+use their Main profile with a two-second GOP and supported frame reordering;
+periodic and requested keyframes recover from dropped frames. See
+[backend presets](#video-backend-and-codec-settings).
+Invalid output advances through compatible backends; only H.264 has
 software fallback. macOS retains one pending
 BGRA frame; Windows requests one source buffer and queues at most one RGB frame.
 Native camera buffers are capped at 7680×4320 plus at most 4096 stride-padding
@@ -778,8 +781,9 @@ One RGB preview, one encoded frame (2 MiB), and up to 2048 RTP
 packets from one bounded frame are retained. A one-picture async camera channel wakes
 the transport independently of the 20 ms audio tick, allowing delivery above 50 fps.
 Packet pacing uses elapsed time at
-2.5× the selected bitrate target, with a bounded catch-up window. Frames are independently decodable to tolerate
-drops. Codec-specific DAVE frame encryption precedes RTP fragmentation and the existing authenticated
+2.5× the selected bitrate target, with a bounded catch-up window. Stable frames are
+independently decodable to tolerate drops; Experimental uses the GOP and keyframe
+recovery described above. Codec-specific DAVE frame encryption precedes RTP fragmentation and the existing authenticated
 UDP transport. No camera recording or cache is created; the codec is included on supported platforms.
 
 Video SSRC assignment, codec selection and opcode 12 announcements follow the

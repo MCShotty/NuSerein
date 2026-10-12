@@ -37,19 +37,20 @@ const notesFixture = mkdtempSync(join(tmpdir(), 'serein-release-notes-'));
 // Nightly filtering needs a commit graph and tags, not the owner's release history.
 const fixtureEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
 function fixtureGit(...args) {
-  return execFileSync('git', ['-c', 'user.name=Synthetic Fixture', '-c', 'user.email=fixture@example.invalid', ...args],
+  return execFileSync('git', ['-c', 'user.name=Synthetic Fixture', '-c', 'user.email=fixture@example.invalid',
+    '-c', 'commit.gpgsign=false', '-c', 'tag.gpgSign=false', ...args],
     { cwd: notesFixture, env: fixtureEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
-fixtureGit('init', '--quiet');
 function fixtureCommit(message) {
   fixtureGit('commit', '--quiet', '--allow-empty', '-m', message);
   return fixtureGit('rev-parse', 'HEAD');
 }
-const audioHash = fixtureCommit('feat(audio): bundle notification sounds');
-fixtureGit('tag', 'v1.0.0');
-const permissionsHash = fixtureCommit('feat(ui): add category and channel permission settings');
-fixtureGit('tag', 'v1.0.0-nightly.10.1');
 try {
+  fixtureGit('init', '--quiet');
+  const audioHash = fixtureCommit('feat(audio): bundle notification sounds');
+  fixtureGit('tag', 'v1.0.0');
+  const permissionsHash = fixtureCommit('feat(ui): add category and channel permission settings');
+  fixtureGit('tag', 'v1.0.0-nightly.10.1');
   process.chdir(notesFixture);
   const releaseNotesContext = {
     cwd: process.cwd(), logger, options: { repositoryUrl: 'https://github.com/ViceVerse-cz/Serein' },
@@ -64,7 +65,8 @@ try {
   assert(prodNotes.includes('category and channel permission settings'));
   assert(prodNotes.includes('notification sounds'));
   assert(prodNotes.includes('need one manual upgrade'));
-  assert(prodNotes.includes('-media-v2.zip'));
+  assert(prodNotes.includes('\n## Windows upgrades\n'));
+  assert(prodNotes.includes('-media-v3.zip'));
   assert(prodNotes.includes('by Release Note Author'));
   assert(prodNotes.includes('[#149](https://github.com/ViceVerse-cz/Serein/pull/149)'));
   assert(prodNotes.includes('## New Contributors'));
@@ -75,6 +77,8 @@ try {
   assert(nightlyNotes.includes('category and channel permission settings'));
   assert(!nightlyNotes.includes('notification sounds'));
   assert(nightlyNotes.includes('need one manual upgrade'));
+  assert(nightlyNotes.includes('\n## Windows upgrades\n'));
+  assert(nightlyNotes.includes('-media-v3.zip'));
 } finally {
   process.chdir(sourceRoot);
   rmSync(notesFixture, { recursive: true, force: true });

@@ -1,5 +1,3 @@
-import tarfile
-import hashlib
 #!/usr/bin/env python3
 """Offline driver-query regression fixtures. Never load real GPU drivers.
 
@@ -7,12 +5,14 @@ Usage: python3 crates/discord-voice/tests/native/test_video_queries.py --prefix 
 Linux loader fixtures complement the native Windows/macOS compilation checks.
 """
 import argparse
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
 import shlex
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 

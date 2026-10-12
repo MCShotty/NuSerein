@@ -225,13 +225,47 @@ impl VideoCapabilities {
 	}
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct VideoSettings {
 	pub backend: VideoBackend,
 	pub codec: VideoCodec,
 	pub camera_resolution: VideoResolution,
 	pub camera_frame_rate: VideoFrameRate,
+}
+impl<'de> Deserialize<'de> for VideoSettings {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		// Only unknown enum strings are forward-compatible; malformed types still fail.
+		fn known<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+			deserializer: D,
+		) -> Result<Option<T>, D::Error> {
+			let value = String::deserialize(deserializer)?;
+			Ok(T::deserialize(serde::de::value::StringDeserializer::<D::Error>::new(value)).ok())
+		}
+		#[derive(Default, Deserialize)]
+		#[serde(default)]
+		struct Saved {
+			#[serde(deserialize_with = "known")]
+			backend: Option<VideoBackend>,
+			#[serde(deserialize_with = "known")]
+			codec: Option<VideoCodec>,
+			#[serde(deserialize_with = "known")]
+			camera_resolution: Option<VideoResolution>,
+			#[serde(deserialize_with = "known")]
+			camera_frame_rate: Option<VideoFrameRate>,
+		}
+		let saved = Saved::deserialize(deserializer)?;
+		Ok(Self {
+			backend: saved.backend.unwrap_or_default(),
+			// Stable cannot use a future backend's HEVC/AV1 selection.
+			codec: if saved.backend.is_none() {
+				VideoCodec::H264
+			} else {
+				saved.codec.unwrap_or_default()
+			},
+			camera_resolution: saved.camera_resolution.unwrap_or_default(),
+			camera_frame_rate: saved.camera_frame_rate.unwrap_or_default(),
+		})
+	}
 }
 impl VideoSettings {
 	pub fn is_valid(self) -> bool {

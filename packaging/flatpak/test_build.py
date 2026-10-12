@@ -155,7 +155,9 @@ class PreparationTest(unittest.TestCase):
             archives = {item["dest-filename"]: item for item in encoders["sources"] if "dest-filename" in item}
             self.assertEqual(set(archives), {"ffmpeg-7.1.5.tar.xz", "openh264-2.6.0.tar.gz",
                                             "nv-codec-headers-12.2.72.0.tar.gz", "AMF-1.4.36.tar.gz", "libvpl-2.14.0.tar.gz",
-                                            "Vulkan-Headers-1.3.290.tar.gz"})
+                                            "Vulkan-Headers-1.3.290.tar.gz", "dav1d-1.5.1.tar.xz"})
+            self.assertEqual(archives["dav1d-1.5.1.tar.xz"]["sha256"],
+                             "401813f1f89fa8fd4295805aa5284d9aed9bc7fc1fdbe554af4292f64cbabe21")
             self.assertEqual(archives["Vulkan-Headers-1.3.290.tar.gz"]["sha256"],
                              "f38a653bf93cab7a2a229a53d2d53b1cba9a2819e4c0a7de13c54085bde9bcf5")
             # Preparation passes arch restrictions through to flatpak-builder,
