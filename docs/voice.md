@@ -371,8 +371,10 @@ Instrumentation alone does not establish the cause of a reported CPU spike or a 
 When enabled by the input profile, Sonora 0.2.0 (a Rust port of WebRTC AEC3) runs on
 the audio worker, before denoising, microphone gain and Opus encoding. It uses mixed
 speaker output after software volume and resampling, including silence on
-underrun/deafen, as the echo reference. Devices and encryption changes recreate
-the processor; resuming the microphone and dropped callback frames reset its history.
+underrun/deafen, as the echo reference. The audio worker resets processing history
+after opening audio streams, on microphone failure or recovery, when microphone
+availability changes or the microphone is unmuted, when audio readiness is
+revoked, and after capture or echo-reference queue overruns.
 Capture and playback have separate privacy generations, so muting the microphone
 preserves speaker playback. Echo-reference frames carry the capture generation;
 partial references reset whenever that generation changes.

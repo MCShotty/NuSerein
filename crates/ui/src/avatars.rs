@@ -384,6 +384,9 @@ impl Avatars {
 		}
 	}
 	fn reserve_attempt(&mut self, now: Instant) -> bool {
+		if self.attempts.len() < ATTEMPTS {
+			return true;
+		}
 		self.attempts
 			.retain(|_, (at, failed)| !*failed || now.duration_since(*at) < RETRY);
 		if self.attempts.len() >= ATTEMPTS
