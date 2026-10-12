@@ -147,6 +147,16 @@ enum Notice {
 	DeviceReady,
 	RemoteAudio,
 }
+
+fn queue_notice(status: &mpsc::SyncSender<Notice>, notice: Notice) -> Result<(), ()> {
+	let advisory = matches!(notice, Notice::RemoteVideoFailed(..));
+	match status.try_send(notice) {
+		Ok(()) => Ok(()),
+		Err(mpsc::TrySendError::Full(_)) if advisory => Ok(()),
+		Err(_) => Err(()),
+	}
+}
+
 struct Live {
 	generation: u64,
 	channel: Id,
@@ -1640,7 +1650,7 @@ impl Voice {
 							return Ok(());
 						}
 					};
-					status.try_send(notice).map_err(|_| ())?;
+					queue_notice(&status, notice)?;
 					status_wake.request_repaint();
 					Ok(())
 				},
@@ -1860,6 +1870,27 @@ pub fn takeover_notice(state: &State, event: &Event) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn video_failure_notices_do_not_end_calls_when_the_ui_queue_is_full() {
+		let (send, receive) = mpsc::sync_channel(8);
+		for user in 1..=16 {
+			assert!(queue_notice(&send, Notice::RemoteVideoFailed(user, "Unavailable")).is_ok());
+		}
+		// Readiness and other transport transitions still require delivery.
+		assert!(queue_notice(&send, Notice::TransportReady(7)).is_err());
+		for user in 1..=8 {
+			assert!(
+				matches!(receive.try_recv(), Ok(Notice::RemoteVideoFailed(id, _)) if id == user)
+			);
+		}
+		assert!(receive.try_recv().is_err());
+		assert!(queue_notice(&send, Notice::TransportReady(7)).is_ok());
+		assert!(matches!(receive.try_recv(), Ok(Notice::TransportReady(7))));
+		drop(receive);
+		assert!(queue_notice(&send, Notice::RemoteVideoFailed(17, "Unavailable")).is_err());
+		assert!(queue_notice(&send, Notice::RemoteAudio).is_err());
+	}
 
 	#[test]
 	fn camera_queue_keeps_encoder_timestamps_and_requests_idr_after_a_drop() {

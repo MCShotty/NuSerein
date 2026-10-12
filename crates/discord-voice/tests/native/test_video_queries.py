@@ -238,7 +238,72 @@ def run_encoding(prefix):
         source.write_text(r'''
 #include <assert.h>
 #include "video_decode_ffmpeg.c"
+static void audio_resampler_transitions(void) {
+    SereinMedia *media = calloc(1, sizeof(*media));
+    assert(media);
+    media->audio = avcodec_alloc_context3(NULL);
+    media->audio_frame = av_frame_alloc();
+    media->format = avformat_alloc_context();
+    assert(media->audio && media->audio_frame && media->format);
+    AVStream *stream = avformat_new_stream(media->format, NULL);
+    assert(stream);
+    stream->time_base = (AVRational){1, 48000};
+    media->audio_stream = stream->index;
+    float *guard = calloc(2 * 65536 + 2, sizeof(*guard));
+    assert(guard);
+    guard[0] = guard[2 * 65536 + 1] = 17.0f;
+    const struct { enum AVSampleFormat format; uint64_t layout; int rate; } cases[] = {
+        {AV_SAMPLE_FMT_FLTP, AV_CH_LAYOUT_STEREO, 48000},
+        {AV_SAMPLE_FMT_FLTP, AV_CH_LAYOUT_MONO, 48000},
+        {AV_SAMPLE_FMT_FLT, AV_CH_LAYOUT_MONO, 48000},
+        {AV_SAMPLE_FMT_S16, AV_CH_LAYOUT_STEREO, 48000},
+        {AV_SAMPLE_FMT_FLTP, AV_CH_LAYOUT_2POINT1, 48000},
+        {AV_SAMPLE_FMT_FLTP, AV_CH_LAYOUT_SURROUND, 48000},
+        {AV_SAMPLE_FMT_FLTP, AV_CH_LAYOUT_7POINT1, 44100},
+        {AV_SAMPLE_FMT_FLTP, AV_CH_LAYOUT_7POINT1, 48000},
+    };
+    for (size_t step = 0; step < sizeof(cases) / sizeof(cases[0]); ++step) {
+        AVFrame *frame = media->audio_frame;
+        frame->format = cases[step].format;
+        frame->sample_rate = media->audio->sample_rate = cases[step].rate;
+        frame->nb_samples = 1024;
+        frame->best_effort_timestamp = (int64_t)step * 48000;
+        assert(av_channel_layout_from_mask(&frame->ch_layout, cases[step].layout) == 0);
+        assert(av_frame_get_buffer(frame, 0) == 0);
+        assert(av_samples_set_silence(frame->extended_data, 0, frame->nb_samples,
+            frame->ch_layout.nb_channels, frame->format) == 0);
+        media->audio_pending = 1;
+        size_t written = 0;
+        double pts = 0;
+        assert(serein_media_audio(media, guard + 1, 65536, &written, &pts) == 1);
+        assert(written > 0 && written <= 65536 && isfinite(pts));
+        assert(media->resample && media->resample_layout.u.mask == cases[step].layout);
+        assert(media->resample_format == cases[step].format && media->resample_rate == cases[step].rate);
+        assert(guard[0] == 17.0f && guard[2 * 65536 + 1] == 17.0f);
+        for (size_t sample = 0; sample < written * 2; ++sample) assert(guard[sample + 1] == 0.0f);
+        assert(media->audio_pending == 0 && frame->ch_layout.nb_channels == 0);
+    }
+    // Seeking/fallback/close use this same reset; owned layout state is retired too.
+    media_reset_resampler(media);
+    assert(!media->resample && media->resample_layout.nb_channels == 0);
+    assert(media->resample_format == AV_SAMPLE_FMT_NONE && media->resample_rate == 0);
+    media_reset_resampler(media);
+    // Invalid audio metadata must fail before any resampler conversion/allocation.
+    media->audio_frame->nb_samples = 1024;
+    media->audio_frame->sample_rate = media->audio->sample_rate = 48000;
+    media->audio_frame->format = AV_SAMPLE_FMT_NONE;
+    av_channel_layout_default(&media->audio_frame->ch_layout, 2);
+    media->audio_pending = 1;
+    size_t written = 0;
+    double pts = 0;
+    assert(serein_media_audio(media, guard + 1, 65536, &written, &pts) == -2);
+    assert(!media->resample && media->resample_layout.nb_channels == 0);
+    free(guard);
+    serein_media_close(media);
+    puts("Attachment audio safely rebuilds for channel layout, sample format and rate changes");
+}
 int main(void) {
+    audio_resampler_transitions();
     SereinDecoder *d = serein_decode_open(0, NULL, 0);
     assert(d);
     const enum AVPixelFormat formats[] = {AV_PIX_FMT_YUV420P10LE, AV_PIX_FMT_P010LE,

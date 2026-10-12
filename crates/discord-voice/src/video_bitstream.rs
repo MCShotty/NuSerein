@@ -121,7 +121,7 @@ pub(super) fn obus(frame: &[u8], explicit_sizes: bool) -> Result<Vec<Obu<'_>>, &
 	Ok(units)
 }
 
-fn read_size(bytes: &[u8]) -> Result<(usize, usize), &'static str> {
+pub(crate) fn read_size(bytes: &[u8]) -> Result<(usize, usize), &'static str> {
 	let mut size = 0u64;
 	for (index, &byte) in bytes.iter().take(8).enumerate() {
 		size |= u64::from(byte & 127) << (index * 7);

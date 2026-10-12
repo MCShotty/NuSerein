@@ -629,3 +629,26 @@ pixels before shared scaling, so default-preset capture CPU and memory need nati
 comparison; bounded worst-case allocation is unchanged. Current application and
 clean/cached package size checks belong to the CI run for the delivered head.
 Earlier package measurements above retain their historical revision labels.
+
+## CodeRabbit audio review follow-up — October 12, 2026
+
+Baseline `a65238d` and the review fixes use separately compiled native helpers
+with `cc -O2`, the same private FFmpeg prefix and Linux host. Each helper feeds
+5,000 stereo planar-float frames, 1,024 samples at 48 kHz, through the actual
+attachment resampling boundary. One warmup precedes five alternating pairs.
+These wall-clock samples include process startup and concurrent Rust build load;
+their overlapping ranges do not establish a throughput regression or improvement.
+
+| Metric / method | Baseline | Review fixes | Interpretation |
+| --- | ---: | ---: | --- |
+| Native helper median, five pairs | 11.364 ms | 12.396 ms | +1.031 ms; overlapping ranges |
+| Native helper range | 9.067–19.189 ms | 11.642–13.683 ms | Startup/scheduler noise included |
+| Native helper executable | 34,432 B | 34,816 B | +384 B; not an application/package measurement |
+
+The workload checks stable-format PCM timing. Separate native regressions cover
+stereo-to-mono, planar-to-packed, same-count channel-layout changes, rate changes,
+invalid metadata, output guards and reset cleanup. Resampler configuration is
+recreated only when input layout, sample format or rate changes. These helpers exclude demuxing,
+decoding, audio devices, GUI and live Discord. Current native display sampling
+is unavailable here; application and clean/cached package checks run in CI for
+the delivered revision. Previous package measurements retain their original heads.

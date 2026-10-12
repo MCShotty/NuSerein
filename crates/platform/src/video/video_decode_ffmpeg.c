@@ -397,18 +397,29 @@ typedef struct SereinMedia {
     AVPacket *packet;
     AVFrame *audio_frame;
     SwrContext *resample;
+    AVChannelLayout resample_layout;
+    enum AVSampleFormat resample_format;
+    int resample_rate;
     int video_stream, audio_stream, eof, video_drained, audio_drained, audio_pending;
     uint32_t rotation;
     double duration, audio_next_pts;
     int video_started, resample_drained;
 } SereinMedia;
 
+static void media_reset_resampler(SereinMedia *media)
+{
+    swr_free(&media->resample);
+    av_channel_layout_uninit(&media->resample_layout);
+    media->resample_format = AV_SAMPLE_FMT_NONE;
+    media->resample_rate = 0;
+}
+
 void serein_media_close(void *pointer)
 {
     SereinMedia *media = pointer;
     if (!media) return;
     serein_decode_close(media->video);
-    swr_free(&media->resample);
+    media_reset_resampler(media);
     avcodec_free_context(&media->audio);
     av_frame_free(&media->audio_frame);
     av_packet_free(&media->packet);
@@ -537,7 +548,7 @@ static int media_software_fallback(SereinMedia *media)
         stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time, AVSEEK_FLAG_BACKWARD) < 0) return -1;
     av_packet_unref(media->packet);
     if (media->audio) avcodec_flush_buffers(media->audio);
-    swr_free(&media->resample);
+    media_reset_resampler(media);
     if (media->audio_frame) av_frame_unref(media->audio_frame);
     media->eof = media->video_drained = media->audio_drained = media->audio_pending = 0;
     media->audio_next_pts = 0;
@@ -631,12 +642,30 @@ int serein_media_audio(void *pointer, float *output, size_t capacity, size_t *wr
     }
     AVFrame *frame = media->audio_frame;
     if (frame->nb_samples < 0 || frame->nb_samples > 65536 || frame->ch_layout.nb_channels < 1 ||
-        frame->ch_layout.nb_channels > 8 || frame->sample_rate != media->audio->sample_rate) return -3;
+        frame->ch_layout.nb_channels > 8 || frame->sample_rate < 8000 || frame->sample_rate > 192000 ||
+        frame->sample_rate != media->audio->sample_rate) return -3;
+    if (!av_channel_layout_check(&frame->ch_layout) ||
+        av_get_bytes_per_sample((enum AVSampleFormat)frame->format) <= 0) return -2;
+    /* A decoder may change channel layout or sample representation mid-stream.
+     * Never pass its new plane array to a resampler configured for older input. */
+    if (media->resample &&
+        (av_channel_layout_compare(&frame->ch_layout, &media->resample_layout) != 0 ||
+         frame->format != media->resample_format || frame->sample_rate != media->resample_rate))
+        media_reset_resampler(media);
     if (!media->resample) {
         AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+        if (av_channel_layout_copy(&media->resample_layout, &frame->ch_layout) < 0) {
+            media_reset_resampler(media);
+            return -1;
+        }
+        media->resample_format = (enum AVSampleFormat)frame->format;
+        media->resample_rate = frame->sample_rate;
         if (swr_alloc_set_opts2(&media->resample, &stereo, AV_SAMPLE_FMT_FLT, 48000,
                                &frame->ch_layout, frame->format, frame->sample_rate, 0, NULL) < 0 ||
-            swr_init(media->resample) < 0) return -1;
+            swr_init(media->resample) < 0) {
+            media_reset_resampler(media);
+            return -1;
+        }
     }
     int64_t delay = swr_get_delay(media->resample, 48000);
     int samples = swr_convert(media->resample, planes, 65536, (const uint8_t **)frame->extended_data, frame->nb_samples);
@@ -661,7 +690,7 @@ int serein_media_seek(void *pointer, double seconds)
     av_frame_unref(media->video->frame);
     av_frame_unref(media->video->downloaded);
     if (media->audio) avcodec_flush_buffers(media->audio);
-    swr_free(&media->resample);
+    media_reset_resampler(media);
     if (media->audio_frame) av_frame_unref(media->audio_frame);
     media->eof = media->video_drained = media->audio_drained = media->audio_pending = 0;
     media->audio_next_pts = seconds;

@@ -166,3 +166,26 @@ need owner-controlled checks. This cloud session has no native display/window
 capture capability; no current native screenshot or GUI throughput/CPU/memory
 measurement is claimed. Native application and clean/cached packaging checks run
 in CI on the pushed revision.
+
+## CodeRabbit review follow-up — October 12, 2026
+
+[The full review of `a65238d`](https://github.com/ViceVerse-cz/Serein/pull/567#pullrequestreview-5489255857)
+reported five findings, all verified against that source. The follow-up keeps
+video-failure notices advisory when the UI queue is full, retries temporarily
+unavailable macOS geometry, accepts and validates existing AV1 OBU size fields,
+rebuilds attachment audio resampling when input layout/format/rate changes, and
+corrects the packaged-library count. No finding was skipped.
+
+Existing test files cover saturated/disconnected notice queues, AV1 aggregation
+and fragmented lengths, malformed length recovery, and real native audio frames
+changing channels, layout, sample format and rate. Output guards and resampler
+cleanup are checked alongside the existing HDR packing and vendor preset fixtures.
+Pinned Rust 1.98.1 `cargo xtask check` passes with 1,388 workspace tests, strict
+Clippy, formatting, the minimal application build and policy checks. Native media
+fixtures, FFmpeg packaging regressions, login handoff, cached xtask selection and
+the offline reducer replay pass. The production HDR shader and 120-second soak
+remain separately labeled checks from `a65238d`; neither path changed in these fixes.
+The macOS minimized-window scenario requires a native owner-controlled check;
+the geometry retry does not enumerate new sources or replace the approved filter.
+Comparable native-helper measurements are recorded in
+[performance](../../performance.md); they exclude GUI, decode and device playback.

@@ -97,8 +97,8 @@ The source builder needs Python 3.12+, Make, CMake, a C/C++ compiler, pkg-config
 and NASM (x86_64); Linux also needs `patchelf`, libva and libdrm development
 packages for Quick Sync's device interface. Windows uses an MSVC developer shell with
 MSYS2 Bash/Make/pkgconf/NASM and places `FFMPEG_DIR/bin` on PATH for source runs.
-macOS uses Xcode tools and `install_name_tool`. Official packages bundle the three
-replaceable shared libraries, LGPL corresponding source and the AMD/Intel
+macOS uses Xcode tools and `install_name_tool`. Official packages bundle the five
+replaceable FFmpeg shared libraries and OpenH264, LGPL corresponding source and the AMD/Intel
 interface/dispatcher source and notices. GPU runtimes remain system provided. Native builds can also
 find the private `libavcodec-serein`/`libavutil-serein` pkg-config files. System
 FFmpeg executables used for attachment playback are independent.
@@ -125,7 +125,7 @@ The webview lives only during login: WKWebView on macOS, WebView2 on Windows, GT
 
 The first Windows upgrade from a build whose updater predates the FFmpeg library
 allowlist requires the installer or manual extraction: that old updater rejects
-new root DLL names. Once upgraded, the updater stages/replaces all three codec
+new root DLL names. Once upgraded, the updater stages/replaces all six codec
 DLLs and the source/license directory together with the executable. Restart Serein
 after installing or replacing its shared libraries.
 

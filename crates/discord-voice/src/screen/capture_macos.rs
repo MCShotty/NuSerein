@@ -465,7 +465,11 @@ impl Capture {
 		self.next_geometry = std::time::Instant::now() + std::time::Duration::from_secs(1);
 		// Refresh information for the approved filter, without enumerating other
 		// sources or requiring a separate screen-recording permission grant.
-		let (width, height) = physical_dimensions(&self.filter)?;
+		// Selected content can be temporarily unavailable; retain the approved
+		// configuration and retry at the next interval rather than ending the share.
+		let Ok((width, height)) = physical_dimensions(&self.filter) else {
+			return Ok(());
+		};
 		if self.config.width() != width || self.config.height() != height {
 			self.config.set_width(width).set_height(height);
 			self.stream

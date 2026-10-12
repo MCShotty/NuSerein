@@ -7,6 +7,7 @@ use tokio::time::Instant;
 
 #[path = "video_bitstream.rs"]
 mod bitstream;
+pub(crate) use bitstream::read_size as read_av1_size;
 
 const MTU: usize = 1200;
 const RTP_HEADER: usize = 12;

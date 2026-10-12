@@ -477,8 +477,16 @@ impl Assembler {
 				let unit = std::mem::take(&mut self.obu_fragment);
 				let header = *unit.first().ok_or(())?;
 				let prefix = 1 + usize::from(header & 4 != 0);
-				if header & 0x83 != 0 || unit.len() < prefix || self.obu_count >= 2048 {
+				if header & 0x81 != 0 || unit.len() < prefix || self.obu_count >= 2048 {
 					return Err(());
+				}
+				let mut body = &unit[prefix..];
+				if header & 2 != 0 {
+					let (declared, consumed) = crate::video::read_av1_size(body).map_err(|_| ())?;
+					body = &body[consumed..];
+					if declared != body.len() {
+						return Err(());
+					}
 				}
 				self.obu_count += 1;
 				if marker && final_element {
@@ -488,13 +496,13 @@ impl Assembler {
 					if prefix == 2 {
 						head.push(unit[1]);
 					}
-					let mut size = unit.len() - prefix;
+					let mut size = body.len();
 					while size >= 128 {
 						head.push((size as u8 & 127) | 128);
 						size >>= 7;
 					}
 					head.push(size as u8);
-					self.extend(&[&head, &unit[prefix..]])?;
+					self.extend(&[&head, body])?;
 				}
 				self.fragmenting = false;
 			}
@@ -1395,6 +1403,93 @@ fn bounded(width: usize, height: usize) -> Result<(u32, u32), ()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn av1_rtp_preserves_sized_payloads_without_duplicating_leb128_lengths() {
+		use model::voice_settings::VideoCodec;
+		// W=2: a sized sequence header followed by DAVE's size-less final OBU.
+		// A nonminimal length makes accidental reuse of the old field visible.
+		for unit in [
+			vec![0x0a, 0x81, 0x00, 0x7e],
+			vec![0x0e, 0x20, 0x81, 0x00, 0x7e],
+		] {
+			let prefix = 1 + usize::from(unit[0] & 4 != 0);
+			let mut payload = vec![0x20, unit.len() as u8];
+			payload.extend_from_slice(&unit);
+			payload.extend_from_slice(&[0x30, 0x55]);
+			let mut receiver = Assembler {
+				codec: VideoCodec::Av1,
+				..Default::default()
+			};
+			let frame = receiver.push(1, 9000, true, &payload).unwrap();
+			let mut expected = unit[..prefix].to_vec();
+			expected.extend_from_slice(&[1, 0x7e, 0x30, 0x55]);
+			assert_eq!(frame, expected);
+			assert!(!receiver.lost);
+		}
+		// A multi-byte OBU size can itself straddle RTP fragments.
+		let mut receiver = Assembler {
+			codec: VideoCodec::Av1,
+			..Default::default()
+		};
+		assert!(receiver.push(1, 9000, false, &[0x50, 0x0a, 0xac]).is_none());
+		let mut rest = vec![0xa0, 0xad, 0x02, 0x02]; // 301-byte continuation.
+		rest.extend_from_slice(&[0x7e; 300]);
+		rest.extend_from_slice(&[0x30, 0x55]);
+		let frame = receiver.push(2, 9000, true, &rest).unwrap();
+		let mut expected = vec![0x0a, 0xac, 0x02];
+		expected.extend_from_slice(&[0x7e; 300]);
+		expected.extend_from_slice(&[0x30, 0x55]);
+		assert_eq!(frame, expected);
+		// A sender may also retain the size on its final OBU.
+		let mut receiver = Assembler {
+			codec: VideoCodec::Av1,
+			..Default::default()
+		};
+		assert_eq!(
+			receiver.push(1, 9000, true, &[0x10, 0x32, 1, 0x55]),
+			Some(vec![0x32, 1, 0x55])
+		);
+	}
+
+	#[test]
+	fn av1_rtp_rejects_truncated_overlong_and_mismatched_obu_lengths() {
+		use model::voice_settings::VideoCodec;
+		for unit in [
+			vec![0x0a],
+			vec![0x0a, 0x80],
+			vec![0x0a, 2, 0x7e],
+			vec![0x0a, 0, 0x7e],
+			vec![0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f],
+			vec![0x0a, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0],
+		] {
+			for final_element in [false, true] {
+				let mut payload = if final_element {
+					vec![0x10]
+				} else {
+					vec![0x20, unit.len() as u8]
+				};
+				payload.extend_from_slice(&unit);
+				if !final_element {
+					payload.extend_from_slice(&[0x30, 0x55]);
+				}
+				let mut receiver = Assembler {
+					codec: VideoCodec::Av1,
+					..Default::default()
+				};
+				assert!(
+					receiver.push(1, 9000, true, &payload).is_none(),
+					"{payload:?}"
+				);
+				assert!(receiver.lost);
+				// A malformed frame cannot poison the next intact timestamp.
+				assert_eq!(
+					receiver.push(2, 12000, true, &[0x10, 0x30, 0x55]),
+					Some(vec![0x30, 0x55])
+				);
+			}
+		}
+	}
 
 	#[test]
 	fn removed_source_ignores_late_decoder_losses() {
