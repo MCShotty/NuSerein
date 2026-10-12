@@ -402,6 +402,7 @@ mod tests {
 	fn state() -> State {
 		let user = User {
 			primary_guild: None,
+			cosmetics: None,
 			id: Id(2),
 			name: "Synthetic".into(),
 			avatar: None,
@@ -609,6 +610,7 @@ mod tests {
 				permissions: model::permissions::Snapshot::default(),
 				user: User {
 					primary_guild: None,
+					cosmetics: None,
 					id: Id(999),
 					name: "Different account".into(),
 					avatar: None,

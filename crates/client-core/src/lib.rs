@@ -219,6 +219,8 @@ pub enum Command {
 		guild: Option<Id>,
 		request: u64,
 		with_mutuals: bool,
+		/// Hidden effects and frames skip their optional catalog read.
+		cosmetics: model::CosmeticPreferences,
 	},
 	CancelProfile,
 	StreamPreview {
@@ -726,6 +728,8 @@ pub struct State {
 	pub profile: Option<profile::ProfileView>,
 	pub profile_request: u64,
 	pub profile_cache: profile::ProfileCache,
+	/// Device preference for which profile cosmetics are shown and loaded.
+	pub profile_cosmetics: model::CosmeticPreferences,
 	pub own_profile: profile::OwnProfile,
 	pub invites: invites::Cache,
 	pub invite_join: invites::Join,
@@ -939,6 +943,7 @@ impl Default for State {
 			profile: None,
 			profile_request: 0,
 			profile_cache: Default::default(),
+			profile_cosmetics: Default::default(),
 			own_profile: Default::default(),
 			invites: Default::default(),
 			invite_join: Default::default(),
@@ -5271,6 +5276,7 @@ mod tests {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
 						primary_guild: None,
+						cosmetics: None,
 						id: Id(1),
 						name: "Synthetic".into(),
 						avatar: None,
@@ -5687,6 +5693,7 @@ mod tests {
 			channel: Id(1),
 			author: User {
 				primary_guild: None,
+				cosmetics: None,
 				id: Id(2),
 				name: "Synthetic".into(),
 				avatar: None,
@@ -5764,6 +5771,7 @@ mod tests {
 				channel: Id(1),
 				user: User {
 					primary_guild: None,
+					cosmetics: None,
 					id: Id(3),
 					name: "Other".into(),
 					avatar: None,
@@ -5976,6 +5984,7 @@ mod tests {
 			};
 			let user = || User {
 				primary_guild: None,
+				cosmetics: None,
 				id: Id(2),
 				name: "Synthetic".into(),
 				avatar: None,
@@ -6106,6 +6115,7 @@ mod tests {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
 						primary_guild: None,
+						cosmetics: None,
 						id: Id(2),
 						name: "Synthetic".into(),
 						avatar: None,

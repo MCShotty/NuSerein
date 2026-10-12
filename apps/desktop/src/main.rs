@@ -28,6 +28,7 @@ mod extensions;
 mod font_import;
 mod game_activity;
 mod gpu;
+mod gpu_video;
 mod group_icon;
 mod interaction_uploads;
 mod notification_runtime;
@@ -77,6 +78,7 @@ const SIGN_IN_HEADER_HEIGHT: f32 = if cfg!(target_os = "windows") {
 
 /// Run explicit offline checks before native startup, or launch the configured desktop client.
 fn main() -> eframe::Result {
+	platform::memory::tune_allocator();
 	#[cfg(all(debug_assertions, feature = "demo"))]
 	if std::env::args().any(|arg| arg == "--demo")
 		&& std::env::args().any(|arg| arg == "--demo-check-pr565")
@@ -954,6 +956,8 @@ struct Desktop {
 	downloads: downloads::Downloads,
 	audio: audio::Audio,
 	video: video::Video,
+	/// Synthetic stream/camera textures the demo view borrows by id.
+	_demo_textures: Vec<egui::TextureHandle>,
 	/// Offline fixture flags start (and optionally pause) the demo attachment without input.
 	demo_video_autoplay: Option<bool>,
 	notifications: platform::notifications::Notifications,
@@ -1669,6 +1673,9 @@ impl Desktop {
 			.last()
 			.map_or(10_000, |m| m.id.0.max(10_000));
 		let mut messaging = ui::MessagingUi::default();
+		// Fixture video textures the view borrows by id; the desktop keeps them alive.
+		#[cfg_attr(not(feature = "demo"), allow(unused_mut))]
+		let mut demo_textures: Vec<egui::TextureHandle> = Vec::new();
 		if !demo {
 			messaging.custom_font.busy = cache.as_ref().is_some_and(|cache| {
 				cache.queue(
@@ -1708,6 +1715,7 @@ impl Desktop {
 		// detail in a graphics bug report.
 		if let Some(render_state) = cc.wgpu_render_state.as_ref() {
 			messaging.gpu_adapter = gpu::describe(&render_state.adapter.get_info());
+			gpu_video::install(render_state);
 		}
 		let startup = startup::Startup::new(&cc.egui_ctx, &runtime, &mut messaging, demo);
 		// `--demo-update`: a pending release without any network check. The system title bar
@@ -1772,11 +1780,11 @@ impl Desktop {
 				source_size: egui::vec2(width as f32, height as f32),
 				pixels,
 			};
-			messaging.voice_stream_view = Some(cc.egui_ctx.load_texture(
-				"synthetic-stream",
-				image,
-				egui::TextureOptions::LINEAR,
-			));
+			let texture =
+				cc.egui_ctx
+					.load_texture("synthetic-stream", image, egui::TextureOptions::LINEAR);
+			messaging.voice_stream_view = Some(egui::load::SizedTexture::from_handle(&texture));
+			demo_textures.push(texture);
 			messaging.voice_stream_status = "Watching the stream";
 			// `--demo-focus` additionally opens the enlarged stage layout.
 			if std::env::args().any(|arg| arg == "--demo-focus") {
@@ -1815,14 +1823,15 @@ impl Desktop {
 				source_size: egui::vec2(width as f32, height as f32),
 				pixels,
 			};
-			messaging.voice_remote_video.push((
-				robin,
-				cc.egui_ctx.load_texture(
-					"synthetic-remote-camera",
-					image,
-					egui::TextureOptions::LINEAR,
-				),
-			));
+			let texture = cc.egui_ctx.load_texture(
+				"synthetic-remote-camera",
+				image,
+				egui::TextureOptions::LINEAR,
+			);
+			messaging
+				.voice_remote_video
+				.push((robin, egui::load::SizedTexture::from_handle(&texture)));
+			demo_textures.push(texture);
 			messaging.voice_focus = Some(ui::StageFocus::Participant(robin));
 		}
 		messaging.build = ui::design::Build {
@@ -2211,6 +2220,7 @@ impl Desktop {
 			downloads: downloads::Downloads::default(),
 			audio: audio::Audio::default(),
 			video: video::Video::default(),
+			_demo_textures: demo_textures,
 			demo_video_autoplay: if std::env::args().any(|arg| arg == "--demo-video-paused") {
 				Some(true)
 			} else if std::env::args().any(|arg| arg == "--demo-video-playing") {
@@ -2422,6 +2432,7 @@ impl Desktop {
 		self.downloads.cancel();
 		self.audio.stop();
 		self.video.stop();
+		self.video.cancel_posters();
 		self.voice.stop();
 		self.messaging.camera_test_requested = false;
 		self.messaging.camera_test_texture = None;
@@ -5215,7 +5226,12 @@ impl Desktop {
 			&& !self.state.demo
 			&& let Some(user) = &self.state.user
 		{
-			match avatars::AvatarWorker::start(&self.runtime, user.id, ctx.clone()) {
+			match avatars::AvatarWorker::start(
+				&self.runtime,
+				user.id,
+				ctx.clone(),
+				self.messaging.image_cache,
+			) {
 				Ok(worker) => self.avatars = Some(worker),
 				Err(error) => {
 					self.cache_error = true;
@@ -5250,7 +5266,12 @@ impl Desktop {
 		if self.avatar_cleanup.is_none()
 			&& let Some(account) = self.avatar_clear_account.take()
 		{
-			match avatars::AvatarWorker::start(&self.runtime, account, ctx.clone()) {
+			match avatars::AvatarWorker::start(
+				&self.runtime,
+				account,
+				ctx.clone(),
+				self.messaging.image_cache,
+			) {
 				Ok(worker) => self.avatar_cleanup = Some(worker.shutdown_and_clear()),
 				Err(error) => {
 					self.cache_error = true;
@@ -5272,7 +5293,12 @@ impl Desktop {
 			match if self.fixture_only || self.state.demo {
 				avatars::AvatarWorker::start_bundled(&self.runtime, ctx.clone())
 			} else {
-				avatars::AvatarWorker::start(&self.runtime, user.id, ctx.clone())
+				avatars::AvatarWorker::start(
+					&self.runtime,
+					user.id,
+					ctx.clone(),
+					self.messaging.image_cache,
+				)
 			} {
 				Ok(worker) => {
 					self.messaging.clear_avatars();
@@ -5286,6 +5312,15 @@ impl Desktop {
 			}
 		}
 		if let Some(worker) = &mut self.avatars {
+			worker.set_limits(self.messaging.image_cache);
+			if let Some(partition) = self.messaging.clear_image_cache.take()
+				&& !worker.clear_partition(partition)
+			{
+				// The worker's queue is full; keep the request for the next frame.
+				self.messaging.clear_image_cache = Some(partition);
+				ctx.request_repaint();
+			}
+			self.messaging.image_cache_usage = worker.usage();
 			for _ in 0..32 {
 				let Some(result) = worker.poll() else {
 					break;
@@ -6136,6 +6171,8 @@ impl eframe::App for Desktop {
 	}
 	/// One UI frame: pumps workers, expires challenges, renders and drains commands.
 	fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+		// Last frame's shapes are painted; video textures retired since then can go.
+		gpu_video::collect();
 		let search_focused = {
 			#[cfg(feature = "demo")]
 			{
@@ -6817,6 +6854,19 @@ impl eframe::App for Desktop {
 			if let Some(command) = player.command.take() {
 				self.video.command(
 					command,
+					player,
+					self.runtime.handle(),
+					&ctx,
+					self.fixture_only || self.state.demo,
+				);
+			}
+			// Posters download attachments too, so they follow the playback session gate.
+			if !self.state.demo && self.state.auth != AuthState::Authenticated {
+				player.poster_queue.clear();
+			} else if !player.poster_queue.is_empty() {
+				let queue = std::mem::take(&mut player.poster_queue);
+				self.video.posters(
+					queue,
 					player,
 					self.runtime.handle(),
 					&ctx,

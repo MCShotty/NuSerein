@@ -4,6 +4,59 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
+## Profile cosmetics — October 11, 2026
+
+Release builds of baseline `178bde35` and the cosmetics branch on Linux 7.2.9 (CachyOS),
+AMD Ryzen 7 7800X3D, 30 GiB RAM, under headless gamescope at 1440 x 900 and scale 1.0.
+Default features were used for the package; `--features demo` for the processes. Each run
+had a 5 s warmup followed by 20 s sampled from `/proc/<pid>/status` at 1 s intervals; the
+table shows the median of three runs. Both binaries were freshly copied first, so their
+pages were equally cached. An earlier run against the just-linked branch binary showed
+18 MiB more resident file pages from page-cache warmth. Heap and anonymous mappings were
+identical in that run, so it is a measurement artifact.
+
+| Metric | Baseline | Cosmetics | Delta |
+| --- | ---: | ---: | ---: |
+| Package executable | 87,314,600 B | 87,555,752 B | +241,152 B (+0.28%) |
+| Installed tree (`xtask package --format dir`) | 91,848,634 B | 92,089,786 B | +241,152 B (+0.26%) |
+| Installed tree, `tar` + `zstd -19` | 46,156,864 B | 46,280,238 B | +123,374 B (+0.27%) |
+| `serein --demo` settled / peak RSS | 134 / 149 MiB | 134 / 149 MiB | 0 |
+| `serein --demo` idle CPU (one core) | 0.25% | 0.25% | noise |
+| `profile_preview --page=collectibles` settled / peak RSS | 94 / 110 MiB | 95 / 111 MiB | about +1 MiB |
+| `profile_preview --page=collectibles` CPU | 0.25% | 0.25% | noise |
+
+CPU did not change on the fixture page, which suggests the headless window was not playing
+the effect (playback pauses while unfocused). Playback CPU was therefore not measured. Decoding two real Discord effect layers (450 x 880
+APNG) through the worker's effect budget took 96–138 ms and produced 25–31 frames at
+261 x 512. That is 13–16 MiB of frames per layer, against a 24 MiB layer budget and the
+existing 128 MiB animation pool.
+
+## GPU colour conversion for decoded video — October 11, 2026
+
+Decoders now hand over native 4:2:0 planes (VideoToolbox NV12, GStreamer NV12/I420,
+openh264 I420, Windows live NV12) and one render pass converts them on the GPU. Baseline
+`178bde35` (main) and the changed tree were compared with Rust 1.98.1 on the same machines.
+Native samples used the synthetic `--demo-video-playing` fixture replaced by a generated
+clip for the run only, release builds with LTO off, 5–6 s warm-up, then 10 s of process CPU
+time and peak RSS, alternating builds three times.
+
+| Workload | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| macOS M1 Pro, 1080p30 H.264 High + AAC, inline playback CPU | 38.9% | 32.5% | −16% |
+| macOS same run, peak RSS | 203.9 MiB | 177.0 MiB | −26.9 MiB |
+| Asahi Linux (M1, Vulkan, labwc), 720p30 H.264 Baseline via openh264dec, CPU | 97.0% | 60.4% | −38% |
+| Asahi same run, peak RSS | 294.9 MiB | 269.7 MiB | −25.2 MiB |
+| openh264 decode + handoff, 120 alternating 1080p/720p frames (release, median) | 473.2 ms | 208.1 ms | −56% |
+| openh264 shared scratch capacity | 8,294,400 B | 3,110,400 B | −62% |
+| macOS standard executable (`cargo xtask package`) | 68,706,864 B | 68,723,648 B | +16,784 B |
+| macOS dist directory / zipped app | 74,814,816 / 48,280,440 B | 74,831,600 / 48,288,340 B | +16,784 / +7,900 B |
+
+Rendered colour bars matched VideoToolbox's own BGRA conversion byte for byte on macOS and
+were identical on Linux. The macOS inline gain is smaller because VideoToolbox already
+converted in hardware; Windows live NV12 previously converted per pixel on the CPU, but
+Windows CPU, GPU memory and frame latency were not measured. Software numbers come from the
+ignored `compare_alternating_software_decode` workload. Live calls and streams were not used.
+
 ## Long-session live memory inspection — October 9, 2026
 
 Read-only `vmmap -summary`, `footprint` and `heap -s` inspected the owner's already-running
@@ -295,6 +348,22 @@ These workloads can be repeated with the pinned toolchain using `cargo replay` f
 the existing ignored client-core, desktop-frame and replay-soak workloads for detailed memory work.
 The delivery skill documents how to compare a task baseline with the changed build. Do not compare
 results from different machines or claim live-client behavior from synthetic fixtures.
+
+## Voice participant controls (#592): Windows integration evidence - October 8, 2026
+
+Fresh standard Windows x64 voice-enabled packages compare main `1b3e4a7b` with `d14edbb4` (measured 2026-10-08). Baseline/current file counts: 216/216.
+
+| Metric | Main `1b3e4a7b` | Current integration | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable | 86,008,832 B | 86,089,216 B | +80,384 B (+0.0935%) |
+| Installed directory | 90,199,948 B | 90,280,332 B | +80,384 B (+0.0891%) |
+| Distribution ZIP | 50,001,798 B | 50,025,305 B | +23,507 B (+0.0470%) |
+
+Method: `cargo xtask package`, Rust 1.98.1, standard release flags without demo; Windows 11 build 26200, Ryzen 7 7800X3D, 32 GiB RAM. Runtime workspace artifacts were invalidated before each feature build. Installed bytes sum every file in `dist`; ZIP uses whole-directory .NET Optimal compression. NSIS was unavailable, so no installer executable was built.
+
+Alternating synthetic reducer replay (100,000 events): baseline median 76.5049 ms, range 74.0754-79.5180 ms; this change median 79.6071 ms, range 66.3717-83.4725 ms; median delta +3.1022 ms (+4.05%). One warmup each, then five baseline/controls/inbox rounds. All measured runs retained 500 records and 331,992-332,477 estimated timeline bytes (limit 4 MiB). The binaries were retained separately and workspace reducer artifacts rebuilt between variants. Concurrent compilation remained uncontrolled noise; overlapping ranges establish neither a performance improvement nor a regression.
+
+Current native CPU, memory, frame/startup latency and affected-device behavior remain unmeasured because the native automation bridge is unavailable. Package size and synthetic reducer timing do not establish live Discord performance.
 
 ## Window geometry minimum — October 7, 2026
 
