@@ -2252,6 +2252,7 @@ screen-body-frame-rate = Frame rate
 # Context: body
 screen-body-include-the-pointer-in-the-shared-video = Include the pointer in the shared video.
 # Context: body
+screen-body-source-resolution = Source
 screen-body-quality = Quality
 # Context: body
 screen-body-quality-selection-does-not-require-nitro = Quality selection does not require Nitro.
@@ -4586,7 +4587,7 @@ voice-video-camera-resolution = Camera resolution
 voice-video-camera-resolution-description = Your camera must support the selected resolution. Higher resolutions need a compatible encoder and more bandwidth.
 voice-video-camera-frame-rate = Camera frame rate
 voice-video-camera-frame-rate-description = Higher frame rates need a compatible camera and encoder. Actual frame rate depends on the camera mode and available bandwidth.
-screen-body-resolution-description = Higher resolutions need a compatible encoder and more bandwidth. Smaller sources do not gain detail.
+screen-body-resolution-description = Source uses native pixels. Presets preserve the selected source’s aspect ratio and cannot exceed its size.
 voice-video-hardware-title = Driver-reported hardware support
 voice-video-hardware-recheck = Recheck
 voice-video-hardware-checking = Checking…

@@ -61,11 +61,10 @@ pub(crate) fn bgra_to_i420(
 	if !matches!(frame.format, super::RawFormat::Bgra8) {
 		return hdr_to_i420(frame, width, height, output);
 	}
-	if width == 0
-		|| height == 0
-		|| width > model::voice_settings::VideoResolution::MAX_WIDTH as usize
-		|| height > model::voice_settings::VideoResolution::MAX_HEIGHT as usize
-		|| !width.is_multiple_of(2)
+	if !super::valid_dimensions(
+		u32::try_from(width).unwrap_or(0),
+		u32::try_from(height).unwrap_or(0),
+	) || !width.is_multiple_of(2)
 		|| !height.is_multiple_of(2)
 		|| output.len() != width * height * 3 / 2
 	{
@@ -211,11 +210,10 @@ fn hdr_to_i420(
 	height: usize,
 	output: &mut [u8],
 ) -> Result<(), &'static str> {
-	if width == 0
-		|| height == 0
-		|| width > 7680
-		|| height > 4320
-		|| !width.is_multiple_of(2)
+	if !super::valid_dimensions(
+		u32::try_from(width).unwrap_or(0),
+		u32::try_from(height).unwrap_or(0),
+	) || !width.is_multiple_of(2)
 		|| !height.is_multiple_of(2)
 		|| output.len() != width * height * 3 / 2
 	{

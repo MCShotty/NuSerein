@@ -672,7 +672,7 @@ the original platform encoders. Experimental excludes Media Foundation and VA-AP
 encoders. Quick Sync on Linux uses the iHD
 VA driver interface for its device. These hardware paths and actual runtime
 availability remain unverified locally. The pipeline has one source
-queue (at most 7680×4320, with a 265,420,800-byte raw ceiling including HDR;
+queue (within the 7680-long-edge/4320-short-edge 8K envelope in either orientation, with a 265,420,800-byte raw ceiling including HDR;
 PipeWire negotiates 2–4 buffers), one raw frame per encode/preview
 branch, one raw appsink frame per branch
 (preview ≤925,696 bytes including padding), and the existing
@@ -727,9 +727,13 @@ permission, virtual device, output rerouting or recording file is added.
 Gateway opcodes 18/19 and STREAM_CREATE/STREAM_SERVER_UPDATE/STREAM_DELETE are unofficial normal-user behavior, checked against [discord.py-self](https://github.com/dolfies/discord.py-self/blob/master/discord/gateway.py). A separate RTC connection uses the stream RTC server/channel IDs and the parent call session, sharing one ephemeral DAVE signing identity. The `rtc_server_id - 1` MLS group mapping comes from [discord-native-voice](https://github.com/dolfies/discord-native-voice/blob/master/discord/ext/native_voice/stream_client.py); it is not an official protocol guarantee. Explicit selected-codec negotiation and UDP transport are required; mismatches fail visibly. Video is DAVE-encrypted before matching H.264 RFC 6184, H.265 RFC 7798 or AV1 RTP packetization and per-packet transport AEAD. There is no plaintext fallback. [DAVE protocol](https://github.com/discord/dave-protocol/blob/main/protocol.md) supplies the encryption requirement.
 
 Screen source discovery and capture occur off the UI/audio threads. Application-owned
-source lists are capped at 64 labels of 256 bytes. Raw capture is capped at 7680×4320
-and 265,420,800 bytes, including HDR half floats; BGRA uses at most 132,710,400 bytes.
-macOS requests the selected output dimensions. Windows prechecks source size and stops
+source lists are capped at 64 labels of 256 bytes. Raw capture is capped at a
+7680-pixel long edge, 4320-pixel short edge and 265,420,800 bytes, including HDR
+half floats; BGRA uses at most 132,710,400 bytes. Source quality retains physical
+pixels; presets derive landscape, portrait and custom aspect ratios from the approved
+source and disable upscaling. Concrete even output dimensions are resolved before
+stream announcements. macOS captures native pixels using the approved filter and
+refreshes its geometry without reopening the picker. Windows prechecks source size and stops
 on oversized callback frames, but its upstream driver adapter can resize its native GPU
 pool before that callback. One raw frame and three encoded frames can be queued;
 encoded frames are capped at 2 MiB, encrypted packetization at 2,048 fragments of at

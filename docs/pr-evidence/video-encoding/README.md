@@ -149,3 +149,20 @@ captures currently tone-map to SDR because codec selection alone does not
 establish receiver 10-bit compatibility. No live account, microphone or capture
 test is performed by this automation. The retained screenshots are historical,
 with their original revision labels; native window capture is unavailable here.
+
+## Source resolution and aspect-ratio regression scope
+
+The source-resolution implementation starts at `574a8d2`. Earlier screenshots,
+packages and measurements in this document retain their original revision labels.
+The current work uses tests in the existing core, UI, screen capture and synthetic
+transport modules: common/custom landscape and portrait ratios, physical-pixel
+geometry, even alignment, capped bitrate interpolation, source refresh/removal,
+disabled pointer/keyboard choices, approved crop isolation, output generations,
+delayed picker heartbeats/cancellation and source-size announcements.
+
+The exact 6144×2560 synthetic RTP/DAVE receive case remains included. Native
+monitor selection, Retina/DPI changes, HDR monitor movement and hardware encoding
+need owner-controlled checks. This cloud session has no native display/window
+capture capability; no current native screenshot or GUI throughput/CPU/memory
+measurement is claimed. Native application and clean/cached packaging checks run
+in CI on the pushed revision.

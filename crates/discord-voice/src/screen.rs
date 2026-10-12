@@ -1,5 +1,5 @@
 //! Explicitly selected, memory-only screen capture and video encoding.
-pub use client_core::screen::{Settings, Source, SourceId};
+pub use client_core::screen::{RequestSettings, Settings, Source, SourceId, valid_dimensions};
 use model::voice_settings::{VideoCodec, VideoSettings};
 #[cfg(target_os = "linux")]
 #[path = "screen/audio_linux.rs"]
@@ -79,6 +79,58 @@ pub struct EncodedFrame {
 	pub epoch: u64,
 	/// Capture reset acknowledged before this encoder session accepted its input.
 	pub reset_generation: u64,
+	/// Output-size generation, independent of encryption and prediction resets.
+	pub geometry_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Output {
+	pub settings: Settings,
+	pub source_dimensions: (u32, u32),
+	pub generation: u64,
+}
+
+/// Publish only validated capture geometry. A resize pauses sending until its
+/// metadata is announced; old queued packets carry the previous generation.
+pub(super) fn publish_output(
+	slot: &Mutex<Option<Output>>,
+	settings: Settings,
+	source_dimensions: (u32, u32),
+	ready: &AtomicBool,
+	keyframe: &AtomicBool,
+	bitrate: &AtomicU32,
+) -> Result<Output, &'static str> {
+	if !settings.valid()
+		|| !valid_dimensions(source_dimensions.0, source_dimensions.1)
+		|| settings.width > source_dimensions.0
+		|| settings.height > source_dimensions.1
+	{
+		return Err("Invalid resolved screen dimensions");
+	}
+	let mut output = slot.lock().map_err(|_| "Screen dimensions unavailable")?;
+	if let Some(current) = *output
+		&& current.settings == settings
+		&& current.source_dimensions == source_dimensions
+	{
+		return Ok(current);
+	}
+	let generation = match *output {
+		Some(current) => current
+			.generation
+			.checked_add(1)
+			.ok_or("Screen size generation exhausted")?,
+		None => 0,
+	};
+	ready.store(false, Ordering::Release);
+	keyframe.store(true, Ordering::Release);
+	bitrate.store(settings.bit_rate(), Ordering::Release);
+	let current = Output {
+		settings,
+		source_dimensions,
+		generation,
+	};
+	*output = Some(current);
+	Ok(current)
 }
 
 /// Longest system-audio chunk accepted from the OS: 100 ms of 48 kHz stereo.
@@ -93,7 +145,7 @@ pub struct AudioChunk {
 
 pub struct Video {
 	pub video_settings: VideoSettings,
-	pub settings: Settings,
+	pub output: Arc<Mutex<Option<Output>>>,
 	pub frames: tokio::sync::mpsc::Receiver<EncodedFrame>,
 	pub ready: Arc<AtomicBool>,
 	pub keyframe: Arc<AtomicBool>,
@@ -102,6 +154,32 @@ pub struct Video {
 	/// Interleaved 48 kHz stereo system audio, present only when the share requested it.
 	pub audio: Option<tokio::sync::mpsc::Receiver<AudioChunk>>,
 	pub audio_epoch: Arc<AtomicU64>,
+}
+
+impl Video {
+	pub(crate) fn output(&self) -> Option<Output> {
+		self.output
+			.lock()
+			.ok()
+			.and_then(|output| *output)
+			.filter(|output| {
+				output.settings.valid()
+					&& valid_dimensions(output.source_dimensions.0, output.source_dimensions.1)
+					&& output.settings.width <= output.source_dimensions.0
+					&& output.settings.height <= output.source_dimensions.1
+			})
+	}
+	pub(crate) fn enable_output(&self, announced: Output) -> bool {
+		let Ok(output) = self.output.lock() else {
+			return false;
+		};
+		if *output != Some(announced) {
+			return false;
+		}
+		self.keyframe.store(true, Ordering::Release);
+		self.ready.store(true, Ordering::Release);
+		true
+	}
 }
 
 /// Whether this platform can capture system audio with the screen.
@@ -123,11 +201,13 @@ pub fn sources() -> Result<Vec<Source>, &'static str> {
 		let mut sources = vec![Source {
 			id: SourceId::Portal,
 			name: "Choose in the system picker".into(),
+			dimensions: None,
 		}];
 		if linux::x11_session() {
 			sources.push(Source {
 				id: SourceId::X11Desktop,
 				name: "Entire X11 desktop · all monitors · no portal".into(),
+				dimensions: None,
 			});
 		}
 		Ok(sources)
@@ -149,7 +229,7 @@ pub struct Worker {
 
 impl Worker {
 	pub fn start(
-		settings: Settings,
+		settings: impl Into<RequestSettings>,
 		video_settings: VideoSettings,
 		wake: impl Fn() + Send + 'static,
 	) -> Result<(Self, Video), &'static str> {
@@ -157,11 +237,12 @@ impl Worker {
 	}
 
 	pub fn start_on_adapter(
-		settings: Settings,
+		settings: impl Into<RequestSettings>,
 		video_settings: VideoSettings,
 		adapter: Option<model::VideoAdapter>,
 		wake: impl Fn() + Send + 'static,
 	) -> Result<(Self, Video), &'static str> {
+		let settings = settings.into();
 		if !settings.valid() || !video_settings.is_valid() || !supported() {
 			return Err("Screen sharing is unavailable for these settings or this platform");
 		}
@@ -170,7 +251,9 @@ impl Worker {
 		let audio_epoch = Arc::new(AtomicU64::new(0));
 		let worker_audio_epoch = audio_epoch.clone();
 		let keyframe = Arc::new(AtomicBool::new(true));
-		let bitrate = Arc::new(AtomicU32::new(settings.bit_rate()));
+		let bitrate = Arc::new(AtomicU32::new(250_000));
+		let output = Arc::new(Mutex::new(None));
+		let worker_output = output.clone();
 		let worker_bitrate = bitrate.clone();
 		let preview = Arc::new(Mutex::new(None));
 		let worker_preview = preview.clone();
@@ -202,6 +285,7 @@ impl Worker {
 				#[cfg(target_os = "linux")]
 				let result = linux::run(
 					settings,
+					worker_output,
 					video_settings,
 					adapter,
 					worker_stop,
@@ -219,6 +303,7 @@ impl Worker {
 				#[cfg(not(target_os = "linux"))]
 				let result = encode_loop(
 					settings,
+					worker_output,
 					video_settings,
 					adapter,
 					worker_stop,
@@ -257,7 +342,7 @@ impl Worker {
 			},
 			Video {
 				video_settings,
-				settings,
+				output,
 				frames,
 				ready,
 				keyframe,
@@ -304,7 +389,8 @@ impl Drop for Worker {
 #[cfg(not(target_os = "linux"))]
 #[allow(clippy::too_many_arguments)] // Media outputs of one explicitly started capture.
 fn encode_loop(
-	settings: Settings,
+	settings: RequestSettings,
+	output: Arc<Mutex<Option<Output>>>,
 	video_settings: VideoSettings,
 	adapter: Option<model::VideoAdapter>,
 	stop: Arc<AtomicBool>,
@@ -353,6 +439,7 @@ fn encode_loop(
 	let mut next_preview = Instant::now();
 	let mut latest_frame = None;
 	let mut next_epoch = 0;
+	let mut current_output: Option<Output> = None;
 
 	while !stop.load(Ordering::Acquire) && !send.is_closed() {
 		#[cfg(target_os = "windows")]
@@ -364,6 +451,8 @@ fn encode_loop(
 		if capture_stop.load(Ordering::Acquire) {
 			return Err("The selected screen or window stopped sharing");
 		}
+		#[cfg(target_os = "macos")]
+		_native.refresh_dimensions()?;
 		let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
 		let frame = match raw.recv_timeout(interval.min(Duration::from_millis(100))) {
 			Ok(frame) => {
@@ -406,6 +495,30 @@ fn encode_loop(
 		}
 		let now = Instant::now();
 		if let Some(frame) = &frame {
+			validate_frame(frame)?;
+			let resolved = settings
+				.resolve((frame.width, frame.height))
+				.ok_or("Unsupported screen source dimensions")?;
+			let current = publish_output(
+				&output,
+				resolved,
+				(frame.width, frame.height),
+				&ready,
+				&keyframe,
+				&bitrate,
+			)?;
+			if current_output != Some(current) {
+				if let Some(encoder) = &encoding {
+					next_epoch = encoder
+						.epoch()
+						.checked_add(1)
+						.ok_or("Screen encoder epoch exhausted")?;
+				}
+				encoding = None;
+				latest_frame = None;
+				current_output = Some(current);
+				next_frame = now;
+			}
 			first_frame_deadline = None;
 			if now >= next_preview {
 				let image = preview_frame(frame)?;
@@ -449,12 +562,14 @@ fn encode_loop(
 		if send.capacity() == 0 {
 			continue;
 		}
+		let current = current_output.ok_or("Screen dimensions are unresolved")?;
+		let resolved = current.settings;
 		let target = bitrate
 			.load(Ordering::Acquire)
-			.clamp(250_000, settings.bit_rate());
+			.clamp(250_000, resolved.bit_rate());
 		if encoding.is_none() {
 			encoding = Some(ScreenEncoder::new_on_adapter(
-				settings,
+				resolved,
 				target,
 				video_settings,
 				adapter,
@@ -492,6 +607,7 @@ fn encode_loop(
 			continue;
 		}
 		let frame = EncodedFrame {
+			geometry_generation: current.generation,
 			codec: video_settings.codec,
 			data: packet.data,
 			timestamp: packet.timestamp,
@@ -716,10 +832,7 @@ fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
 		.stride
 		.checked_mul(frame.height as usize)
 		.ok_or("Screen capture returned an unsupported frame size")?;
-	if frame.width == 0
-		|| frame.height == 0
-		|| frame.width > model::voice_settings::VideoResolution::MAX_WIDTH
-		|| frame.height > model::voice_settings::VideoResolution::MAX_HEIGHT
+	if !valid_dimensions(frame.width, frame.height)
 		|| frame.data.len() > MAX_RAW_BYTES
 		|| frame.stride < row_bytes
 		|| required > frame.data.len()
@@ -877,6 +990,176 @@ impl RawFrame {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn source_aspect_ratios_encode_the_resolved_dimensions_and_fresh_keyframes() {
+		use openh264::formats::YUVSource;
+		for (source, expected) in [
+			((1280, 720), (854, 480)),
+			((1280, 800), (768, 480)),
+			((1280, 960), (640, 480)),
+			((1280, 1024), (600, 480)),
+			((1500, 1000), (720, 480)),
+			((1720, 720), (1146, 480)),
+			((2560, 720), (1706, 480)),
+			((6144, 2560), (1152, 480)),
+			((720, 1280), (480, 854)),
+			((720, 720), (480, 480)),
+		] {
+			let request = RequestSettings {
+				source: SourceId::Display(1),
+				resolution: client_core::screen::Resolution::Preset(
+					model::voice_settings::VideoResolution::P480,
+				),
+				fps: 30,
+				cursor: true,
+				audio: false,
+			};
+			let settings = request.resolve(source).unwrap();
+			assert_eq!((settings.width, settings.height), expected);
+			let mut encoder = ScreenEncoder::new_on_adapter(
+				settings,
+				settings.bit_rate(),
+				VideoSettings::default(),
+				None,
+				0,
+				0,
+			)
+			.unwrap();
+			let frame = RawFrame {
+				format: RawFormat::Bgra8,
+				width: source.0,
+				height: source.1,
+				stride: source.0 as usize * 4,
+				data: vec![128; source.0 as usize * source.1 as usize * 4],
+			};
+			let (encoded, keyframe) = encoder.encode(&frame, true).unwrap();
+			assert!(keyframe && crate::video_receive::has_parameter_sets(&encoded));
+			let mut decoder = openh264::decoder::Decoder::new().unwrap();
+			assert_eq!(
+				decoder.decode(&encoded).unwrap().unwrap().dimensions(),
+				(expected.0 as usize, expected.1 as usize)
+			);
+			assert!(encoder.reset_for_security(1).unwrap());
+			let (encoded, keyframe) = encoder.encode(&frame, false).unwrap();
+			assert!(keyframe && crate::video_receive::has_parameter_sets(&encoded));
+		}
+	}
+	#[test]
+	fn output_generation_retires_older_geometry_and_bounds_invalid_publication() {
+		let output = Arc::new(Mutex::new(None));
+		let ready = Arc::new(AtomicBool::new(true));
+		let keyframe = Arc::new(AtomicBool::new(false));
+		let bitrate = Arc::new(AtomicU32::new(0));
+		let settings = Settings {
+			source: SourceId::Display(1),
+			width: 6144,
+			height: 2560,
+			fps: 60,
+			cursor: true,
+			audio: false,
+		};
+		let first = publish_output(
+			&output,
+			settings,
+			(settings.width, settings.height),
+			&ready,
+			&keyframe,
+			&bitrate,
+		)
+		.unwrap();
+		assert_eq!(first.generation, 0);
+		assert!(!ready.load(Ordering::Acquire));
+		assert!(keyframe.load(Ordering::Acquire));
+		assert_eq!(bitrate.load(Ordering::Acquire), 50_000_000);
+		let (_, frames) = tokio::sync::mpsc::channel(1);
+		let video = Video {
+			video_settings: VideoSettings::default(),
+			output: output.clone(),
+			frames,
+			ready: ready.clone(),
+			keyframe: keyframe.clone(),
+			bitrate: bitrate.clone(),
+			audio: None,
+			audio_epoch: Arc::new(AtomicU64::new(0)),
+		};
+		assert!(video.enable_output(first));
+		assert_eq!(
+			publish_output(
+				&output,
+				settings,
+				(settings.width, settings.height),
+				&ready,
+				&keyframe,
+				&bitrate
+			)
+			.unwrap(),
+			first
+		);
+		assert!(ready.load(Ordering::Acquire));
+		let resized = publish_output(
+			&output,
+			Settings {
+				width: 2592,
+				height: 1080,
+				..settings
+			},
+			(6144, 2560),
+			&ready,
+			&keyframe,
+			&bitrate,
+		)
+		.unwrap();
+		assert_eq!(resized.generation, 1);
+		assert!(!video.enable_output(first));
+		assert!(!ready.load(Ordering::Acquire));
+		assert!(video.enable_output(resized));
+		assert!(
+			publish_output(
+				&output,
+				Settings {
+					width: 0,
+					..settings
+				},
+				(6144, 2560),
+				&ready,
+				&keyframe,
+				&bitrate
+			)
+			.is_err()
+		);
+		assert_eq!(video.output(), Some(resized));
+		let same_output = publish_output(
+			&output,
+			resized.settings,
+			(3072, 1280),
+			&ready,
+			&keyframe,
+			&bitrate,
+		)
+		.unwrap();
+		assert_eq!(same_output.settings, resized.settings);
+		assert_eq!(same_output.generation, 2);
+		assert!(!ready.load(Ordering::Acquire));
+		assert!(!video.enable_output(resized));
+		assert!(video.enable_output(same_output));
+
+		*output.lock().unwrap() = Some(Output {
+			generation: u64::MAX,
+			..resized
+		});
+		assert!(
+			publish_output(
+				&output,
+				settings,
+				(settings.width, settings.height),
+				&ready,
+				&keyframe,
+				&bitrate
+			)
+			.is_err()
+		);
+	}
 
 	#[test]
 	fn screen_recovery_coalesces_feedback_and_always_honors_security_resets() {

@@ -5,7 +5,7 @@ use super::{
 	MAX_FRAME_HEIGHT, MAX_FRAME_WIDTH, MAX_RAW_BYTES, MAX_SOURCE_HEIGHT, MAX_SOURCE_WIDTH,
 	MAX_SOURCES, bounded_name,
 };
-use crate::screen::{RawFrame, Settings, Source, SourceId};
+use crate::screen::{RawFrame, RequestSettings, Source, SourceId};
 use screencapturekit::{
 	cm::{CMSampleBufferExt, CMSampleBufferSCExt},
 	content_sharing_picker::{
@@ -35,6 +35,7 @@ pub(crate) fn sources() -> Result<Vec<Source>, &'static str> {
 		return Ok(vec![Source {
 			id: SourceId::SystemPicker,
 			name: "Choose with the macOS system picker".into(),
+			dimensions: None,
 		}]);
 	}
 	initialize();
@@ -49,12 +50,28 @@ pub(crate) fn sources() -> Result<Vec<Source>, &'static str> {
 		else {
 			continue;
 		};
-		if width == 0 || height == 0 || width > MAX_SOURCE_WIDTH || height > MAX_SOURCE_HEIGHT {
+		if !crate::screen::valid_dimensions(width, height)
+			|| width > MAX_SOURCE_WIDTH
+			|| height > MAX_SOURCE_HEIGHT
+		{
 			continue;
 		}
 		sources.push(Source {
 			id: SourceId::Display(u64::from(display.display_id)),
 			name: format!("Display {}", display.display_id),
+			dimensions: content
+				.displays()
+				.into_iter()
+				.find(|native| native.display_id() == display.display_id)
+				.and_then(|native| {
+					physical_dimensions(
+						&SCContentFilter::create()
+							.with_display(&native)
+							.with_excluding_windows(&[])
+							.build(),
+					)
+					.ok()
+				}),
 		});
 		if sources.len() == MAX_SOURCES {
 			return Ok(sources);
@@ -85,6 +102,7 @@ pub(crate) fn sources() -> Result<Vec<Source>, &'static str> {
 		sources.push(Source {
 			id: SourceId::Window(u64::from(window.window_id)),
 			name: bounded_name(name),
+			dimensions: None,
 		});
 		if sources.len() == MAX_SOURCES {
 			break;
@@ -155,7 +173,7 @@ fn choose_with_system_picker(
 	let picked = result?;
 	let (width, height) = picked.pixel_size();
 	let (points_width, points_height) = picked.size();
-	if width == 0
+	if !crate::screen::valid_dimensions(width, height)
 		|| height == 0
 		|| width > MAX_SOURCE_WIDTH
 		|| height > MAX_SOURCE_HEIGHT
@@ -301,8 +319,8 @@ impl SCStreamOutputTrait for Handler {
 			self.stop.store(true, Ordering::Release);
 			return;
 		};
-		if width == 0
-			|| height == 0
+		if !crate::screen::valid_dimensions(width as u32, height as u32)
+			|| !crate::screen::valid_dimensions(buffer_width as u32, buffer_height as u32)
 			|| buffer_width > MAX_FRAME_WIDTH as usize
 			|| buffer_height > MAX_FRAME_HEIGHT as usize
 			|| stride < buffer_width * self.format.bytes()
@@ -363,7 +381,7 @@ fn content_pixels(
 		rect.size.width,
 		rect.size.height,
 	);
-	if width == 0
+	if !crate::screen::valid_dimensions(width as u32, height as u32)
 		|| height == 0
 		|| ![x, y, w, h].iter().all(|value| value.is_finite())
 		|| x < 0.0
@@ -407,7 +425,30 @@ impl Drop for PickerSession {
 	}
 }
 
+fn physical_dimensions(filter: &SCContentFilter) -> Result<(u32, u32), &'static str> {
+	let info = screencapturekit::shareable_content::SCShareableContentInfo::for_filter(filter)
+		.ok_or("Selected screen geometry is unavailable")?;
+	let size = info.content_rect().size;
+	let scale = f64::from(info.point_pixel_scale());
+	let (width, height) = (size.width * scale, size.height * scale);
+	if !width.is_finite()
+		|| !height.is_finite()
+		|| width < 1.0
+		|| height < 1.0
+		|| width > f64::from(MAX_SOURCE_WIDTH)
+		|| height > f64::from(MAX_SOURCE_HEIGHT)
+	{
+		return Err("Selected screen or window is unavailable or too large");
+	}
+	let dimensions = (width.round() as u32, height.round() as u32);
+	if !crate::screen::valid_dimensions(dimensions.0, dimensions.1) {
+		return Err("Selected screen or window exceeds the 8K limit");
+	}
+	Ok(dimensions)
+}
+
 pub(crate) struct Capture {
+	next_geometry: std::time::Instant,
 	stream: SCStream,
 	filter: SCContentFilter,
 	config: SCStreamConfiguration,
@@ -417,6 +458,23 @@ pub(crate) struct Capture {
 }
 
 impl Capture {
+	pub(crate) fn refresh_dimensions(&mut self) -> Result<(), &'static str> {
+		if std::time::Instant::now() < self.next_geometry {
+			return Ok(());
+		}
+		self.next_geometry = std::time::Instant::now() + std::time::Duration::from_secs(1);
+		// Refresh information for the approved filter, without enumerating other
+		// sources or requiring a separate screen-recording permission grant.
+		let (width, height) = physical_dimensions(&self.filter)?;
+		if self.config.width() != width || self.config.height() != height {
+			self.config.set_width(width).set_height(height);
+			self.stream
+				.update_configuration(&self.config)
+				.map_err(|_| "Could not resize screen capture")?;
+		}
+		Ok(())
+	}
+
 	pub(crate) fn request_frame(
 		&mut self,
 		frames: &std::sync::mpsc::Receiver<RawFrame>,
@@ -436,7 +494,7 @@ impl Capture {
 	}
 
 	pub(crate) fn start(
-		settings: Settings,
+		settings: RequestSettings,
 		frames: SyncSender<RawFrame>,
 		audio: Option<tokio::sync::mpsc::Sender<crate::screen::AudioChunk>>,
 		stop: Arc<AtomicBool>,
@@ -493,6 +551,7 @@ impl Capture {
 			#[allow(unreachable_patterns)] // Portal may be absent from platform-scoped models.
 			_ => return Err("The desktop screen picker is available only on Linux"),
 		};
+		let (native_width, native_height) = physical_dimensions(&filter)?;
 		let luminance = filter
 			.included_displays()
 			.first()
@@ -512,8 +571,8 @@ impl Capture {
 			SCStreamConfiguration::new()
 		};
 		let mut config = base
-			.with_width(settings.width)
-			.with_height(settings.height)
+			.with_width(native_width)
+			.with_height(native_height)
 			.with_pixel_format(if hdr {
 				PixelFormat::RGhA
 			} else {
@@ -573,6 +632,7 @@ impl Capture {
 			Err(error) => return Err(error),
 		};
 		Ok(Self {
+			next_geometry: std::time::Instant::now(),
 			stream,
 			filter,
 			config,

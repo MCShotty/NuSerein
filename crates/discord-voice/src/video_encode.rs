@@ -2,7 +2,9 @@
 //! Hardware backends preserve the selected codec; OpenH264 is the H.264 fallback.
 #![allow(unsafe_code)] // Small, checked ABI to the owned libavcodec context in the C shim.
 
-use model::voice_settings::{HardwareBackend, VideoCodec, VideoResolution};
+#[cfg(test)]
+use model::voice_settings::VideoResolution;
+use model::voice_settings::{HardwareBackend, VideoCodec};
 use std::{collections::VecDeque, ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
 
 pub(crate) const MAX_PENDING_PICTURES: usize = 48;
@@ -43,11 +45,8 @@ pub(crate) enum Profile {
 
 impl Config {
 	pub(crate) fn picture_bytes(self) -> Result<usize, &'static str> {
-		if self.width == 0
-			|| self.height == 0
+		if !crate::screen::valid_dimensions(self.width, self.height)
 			|| self.hdr.is_some() && self.codec == VideoCodec::H264
-			|| self.width > VideoResolution::MAX_WIDTH
-			|| self.height > VideoResolution::MAX_HEIGHT
 			|| !self.width.is_multiple_of(2)
 			|| !self.height.is_multiple_of(2)
 			|| !(1..=60).contains(&self.fps)
@@ -891,6 +890,18 @@ mod tests {
 				}
 			}
 		}
+		for (width, height) in [(4320, 7680), (6144, 2560), (1080, 1920)] {
+			let config = Config {
+				width,
+				height,
+				..CAMERA
+			};
+			assert_eq!(
+				config.picture_bytes().unwrap(),
+				width as usize * height as usize * 3 / 2
+			);
+		}
+
 		for config in [
 			Config {
 				width: 7682,

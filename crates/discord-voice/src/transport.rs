@@ -1090,7 +1090,24 @@ fn invalidate_stream(video: &mut Option<crate::screen::Video>, audio: &mut Optio
 
 fn screen_frame_current(video: &crate::screen::Video, frame: &crate::screen::EncodedFrame) -> bool {
 	let reset = video.audio_epoch.load(Ordering::Acquire);
-	reset != u64::MAX && frame.reset_generation == reset
+	reset != u64::MAX
+		&& frame.reset_generation == reset
+		&& video
+			.output()
+			.is_some_and(|output| frame.geometry_generation == output.generation)
+}
+
+fn screen_announcement(
+	output: crate::screen::Output,
+	audio_ssrc: u32,
+	video_ssrc: u32,
+	rtx_ssrc: u32,
+) -> serde_json::Value {
+	let settings = output.settings;
+	json!({"op":12,"d":{"audio_ssrc":audio_ssrc,"video_ssrc":video_ssrc,"rtx_ssrc":rtx_ssrc,
+		"streams":[{"type":"video","rid":"100","ssrc":video_ssrc,"active":true,"quality":100,
+		"rtx_ssrc":rtx_ssrc,"max_bitrate":settings.bit_rate(),"max_framerate":settings.fps,
+		"max_resolution":{"type":"fixed","width":settings.width,"height":settings.height}}]}})
 }
 
 /// Send one unofficial Discord Go Live stream on its own voice gateway.
@@ -1278,7 +1295,8 @@ async fn run_stream_inner(
 	let mut rate = crate::video::Rate::new(
 		video
 			.as_ref()
-			.map_or(250_000, |video| video.settings.bit_rate()),
+			.and_then(|video| video.output())
+			.map_or(250_000, |output| output.settings.bit_rate()),
 		Instant::now(),
 	);
 	let mut heartbeat_ms = None;
@@ -1288,6 +1306,7 @@ async fn run_stream_inner(
 	let mut seq_ack = -1i64;
 	let mut deadline = Some(Instant::now() + Duration::from_secs(90));
 	let mut announced = false;
+	let mut announced_output = None;
 	let mut waiting_announced = false;
 	let mut awaiting_keyframe = true;
 	let mut outgoing = crate::video::Pacer::new();
@@ -1383,18 +1402,28 @@ async fn run_stream_inner(
 					waiting_announced=waiting;
 				}
 				let secure=dave.ready&&dave.session.is_ready()&&!dave.transitioning()&&encryption.is_some()&&!discovering;
+				let resolved=video.as_ref().and_then(|video|video.output());
+				if announced && video.is_some() && resolved!=announced_output {
+					announced=false; awaiting_keyframe=true; outgoing.clear(); history.clear(); outgoing_keyframe=false;
+					invalidate_stream(&mut video, &mut share_audio);
+				}
+				// Capture owns bounded picker/first-frame deadlines; signaling and heartbeat
+				// processing must continue while approved source geometry is still unknown.
+				if secure && video.is_some() && resolved.is_none() {deadline=None;}
 				// A rekey can begin after initial readiness cleared the allocation deadline.
 				if !secure && !waiting {deadline.get_or_insert(now+Duration::from_secs(30));}
 				if secure && let Some(video)=&video && let Some(target)=rate.tick(now) {
 					video.bitrate.store(target,Ordering::Release);
 				}
-				if secure && !announced {
+				if secure && !announced && (video.is_none() || resolved.is_some()) {
 					invalidate_stream(&mut video, &mut share_audio);
 					if let Some(video)=&video {
 						if let Some(event)=soundshare_announcement(&mut share_audio,audio_ssrc) {json_send(&mut ws,event).await?;}
-						let streams=json!([{"type":"video","rid":"100","ssrc":video_ssrc,"active":true,"quality":100,"rtx_ssrc":rtx_ssrc,"max_bitrate":video.settings.bit_rate(),"max_framerate":video.settings.fps,"max_resolution":{"type":"fixed","width":video.settings.width,"height":video.settings.height}}]);
-						json_send(&mut ws,json!({"op":12,"d":{"audio_ssrc":audio_ssrc,"video_ssrc":video_ssrc,"rtx_ssrc":rtx_ssrc,"streams":streams}})).await?;
-						awaiting_keyframe=true;video.keyframe.store(true, Ordering::Release); video.ready.store(true, Ordering::Release);
+						let output=resolved.ok_or("Screen dimensions are unresolved")?;
+						json_send(&mut ws,screen_announcement(output,audio_ssrc,video_ssrc,rtx_ssrc)).await?;
+						if announced_output!=Some(output) {rate=crate::video::Rate::new(output.settings.bit_rate(),now);video.bitrate.store(output.settings.bit_rate(),Ordering::Release);}
+						if !video.enable_output(output) {continue;}
+						announced_output=Some(output);awaiting_keyframe=true;
 					} else {
 						json_send(&mut ws,json!({"op":12,"d":{"audio_ssrc":audio_ssrc,"video_ssrc":0,"rtx_ssrc":0,"streams":[]}})).await?;
 						metrics.signal(Signal::SubscribeSent,1);
@@ -2050,14 +2079,18 @@ mod tests {
 		let (frames_send, frames) = tokio::sync::mpsc::channel(3);
 		let mut video = Some(crate::screen::Video {
 			video_settings: VideoSettings::default(),
-			settings: crate::screen::Settings {
-				source: crate::screen::SourceId::Display(1),
-				width: 1280,
-				height: 720,
-				fps: 30,
-				cursor: true,
-				audio: true,
-			},
+			output: Arc::new(std::sync::Mutex::new(Some(crate::screen::Output {
+				source_dimensions: (1280, 720),
+				settings: crate::screen::Settings {
+					source: crate::screen::SourceId::Display(1),
+					width: 1280,
+					height: 720,
+					fps: 30,
+					cursor: true,
+					audio: true,
+				},
+				generation: 0,
+			}))),
 			frames,
 			ready: Arc::new(AtomicBool::new(true)),
 			keyframe: Arc::new(AtomicBool::new(false)),
@@ -2088,6 +2121,7 @@ mod tests {
 				codec: VideoCodec::H264,
 				epoch: 1,
 				reset_generation: 0,
+				geometry_generation: 0,
 			})
 			.unwrap();
 		let mut delayed = video.frames.try_recv().unwrap();
@@ -2095,6 +2129,14 @@ mod tests {
 		delayed.reset_generation = epoch;
 		delayed.epoch = 2;
 		assert!(screen_frame_current(video, &delayed));
+		let old = video.output().unwrap();
+		video.output.lock().unwrap().as_mut().unwrap().generation = old.generation + 1;
+		assert!(!screen_frame_current(video, &delayed));
+		delayed.geometry_generation = old.generation + 1;
+		assert!(screen_frame_current(video, &delayed));
+		video.output.lock().unwrap().as_mut().unwrap().generation = old.generation + 2;
+		assert!(!screen_frame_current(video, &delayed)); // Returning to the same dimensions is still a new generation.
+
 		enqueue(vec![0.75; STREAM_AUDIO_FRAME]);
 		assert!(
 			shared

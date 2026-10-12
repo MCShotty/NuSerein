@@ -2,7 +2,7 @@ use super::{
 	MAX_FRAME_HEIGHT, MAX_FRAME_WIDTH, MAX_RAW_BYTES, MAX_SOURCE_HEIGHT, MAX_SOURCE_WIDTH,
 	MAX_SOURCES, bounded_name,
 };
-use crate::screen::{AudioChunk, RawFrame, Settings as CaptureSettings, Source, SourceId};
+use crate::screen::{AudioChunk, RawFrame, RequestSettings as CaptureSettings, Source, SourceId};
 use std::sync::{
 	Arc,
 	atomic::{AtomicBool, AtomicU64, Ordering},
@@ -35,10 +35,14 @@ fn window_id(window: &Window) -> u64 {
 pub(crate) fn sources() -> Result<Vec<Source>, &'static str> {
 	let mut sources = Vec::with_capacity(MAX_SOURCES);
 	for monitor in Monitor::enumerate().map_err(|_| "Displays could not be enumerated")? {
+		// EnumDisplaySettings reports physical mode pixels, independent of DPI scaling.
 		let (Ok(width), Ok(height)) = (monitor.width(), monitor.height()) else {
 			continue;
 		};
-		if width == 0 || height == 0 || width > MAX_SOURCE_WIDTH || height > MAX_SOURCE_HEIGHT {
+		if !crate::screen::valid_dimensions(width, height)
+			|| width > MAX_SOURCE_WIDTH
+			|| height > MAX_SOURCE_HEIGHT
+		{
 			continue;
 		}
 		let name = monitor
@@ -48,6 +52,7 @@ pub(crate) fn sources() -> Result<Vec<Source>, &'static str> {
 		sources.push(Source {
 			id: SourceId::Display(monitor_id(&monitor)),
 			name: bounded_name(name),
+			dimensions: Some((width, height)),
 		});
 		if sources.len() == MAX_SOURCES {
 			return Ok(sources);
@@ -75,6 +80,7 @@ pub(crate) fn sources() -> Result<Vec<Source>, &'static str> {
 		sources.push(Source {
 			id: SourceId::Window(window_id(&window)),
 			name: bounded_name(title),
+			dimensions: None,
 		});
 		if sources.len() == MAX_SOURCES {
 			break;
@@ -165,7 +171,7 @@ impl GraphicsCaptureApiHandler for Handler {
 			control.stop();
 			return Err("Captured frame dimensions are invalid");
 		};
-		if width == 0
+		if !crate::screen::valid_dimensions(width, height)
 			|| height == 0
 			|| width > MAX_FRAME_WIDTH
 			|| height > MAX_FRAME_HEIGHT

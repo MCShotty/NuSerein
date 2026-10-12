@@ -1,7 +1,7 @@
 //! Desktop ownership for one explicitly requested screen share.
 use client_core::{
 	Command, Event, State,
-	screen::{self, Settings},
+	screen::{self, RequestSettings},
 	voice,
 };
 use discord_voice::{Identity, Status, screen::Worker};
@@ -46,7 +46,7 @@ struct Pending {
 	video_adapter: Option<model::VideoAdapter>,
 	video_settings: model::voice_settings::VideoSettings,
 	context: Context,
-	settings: Settings,
+	settings: RequestSettings,
 	user: Id,
 	peer: Option<Id>,
 	session: Zeroizing<String>,
@@ -274,17 +274,7 @@ impl Screen {
 					}
 				}
 				Ok(Ok(sources)) => {
-					ui.screen.sources = sources;
-					ui.screen.selected = ui
-						.screen
-						.selected
-						.filter(|selected| {
-							ui.screen
-								.sources
-								.iter()
-								.any(|source| source.id == *selected)
-						})
-						.or_else(|| ui.screen.sources.first().map(|source| source.id));
+					ui.screen.replace_sources(sources);
 					self.status = if ui.screen.sources.is_empty() {
 						"No shareable screens or windows were found"
 					} else if cfg!(target_os = "linux") {
@@ -576,14 +566,17 @@ mod tests {
 			let request = active.request;
 			let mut ui = ui::MessagingUi::default();
 			ui.screen.context = Some((state.generation, channel, request));
-			ui.screen.request = Some(ui::screen::Request::Start(Settings {
-				source: screen::SourceId::Display(1),
-				width: 1280,
-				height: 720,
-				fps: 30,
-				cursor: true,
-				audio: false,
-			}));
+			ui.screen.request = Some(ui::screen::Request::Start(
+				screen::Settings {
+					source: screen::SourceId::Display(1),
+					width: 1280,
+					height: 720,
+					fps: 30,
+					cursor: true,
+					audio: false,
+				}
+				.into(),
+			));
 			let call = Call {
 				video_adapter: Some(model::VideoAdapter {
 					vendor_id: 0x8086,
@@ -616,12 +609,12 @@ mod tests {
 		}
 	}
 
-	fn pending(context: Context, settings: Settings) -> Pending {
+	fn pending(context: Context, settings: screen::Settings) -> Pending {
 		Pending {
 			video_adapter: None,
 			video_settings: Default::default(),
 			context,
-			settings,
+			settings: settings.into(),
 			user: Id(1),
 			peer: None,
 			session: Zeroizing::new("synthetic-session".into()),
@@ -647,7 +640,7 @@ mod tests {
 		let mut share = Screen {
 			pending: Some(pending(
 				context,
-				Settings {
+				screen::Settings {
 					source: screen::SourceId::Display(1),
 					width: 1280,
 					height: 720,
@@ -697,7 +690,7 @@ mod tests {
 		let mut screen = Screen {
 			pending: Some(pending(
 				context,
-				Settings {
+				screen::Settings {
 					source: screen::SourceId::Display(1),
 					width: 1,
 					height: 1,
@@ -741,7 +734,7 @@ mod tests {
 				server: None,
 				..pending(
 					context,
-					Settings {
+					screen::Settings {
 						source: screen::SourceId::Display(1),
 						width: 1280,
 						height: 720,

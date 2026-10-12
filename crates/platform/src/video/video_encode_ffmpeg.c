@@ -254,7 +254,8 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     AVCodecContext *codec;
     int b_frames = features & 1 ? 2 : 0;
 
-    if (width <= 0 || height <= 0 || width > 7680 || height > 4320 ||
+    if (width <= 0 || height <= 0 || width > 7680 || height > 7680 ||
+        (width > 4320 && height > 4320) ||
         (width & 1) || (height & 1) || fps <= 0 || fps > 60 ||
         bitrate <= 0 || bitrate > 100000000 ||
         (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 || kind < 0 || kind > 2 ||

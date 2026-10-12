@@ -1,6 +1,6 @@
 //! Linux ownership: one portal session and one bounded media pipeline, no recorder.
 use super::{
-	AudioChunk, EncodedFrame, ScreenEncoder, Settings, SourceId, audio_linux,
+	AudioChunk, EncodedFrame, Output, RequestSettings, ScreenEncoder, SourceId, audio_linux,
 	gstreamer::{self as capture, Capture},
 	portal_linux::Portal,
 	preview_frame,
@@ -76,7 +76,8 @@ pub(super) fn x11_source(cursor: bool) -> Result<gst::Element, &'static str> {
 
 #[allow(clippy::too_many_arguments)] // The existing worker's bounded media outputs.
 pub(super) fn run(
-	settings: Settings,
+	settings: RequestSettings,
+	output: Arc<Mutex<Option<Output>>>,
 	video_settings: model::voice_settings::VideoSettings,
 	adapter: Option<model::VideoAdapter>,
 	stop: Arc<AtomicBool>,
@@ -176,6 +177,7 @@ pub(super) fn run(
 			}
 			wake();
 			let mut encoding: Option<ScreenEncoder> = None;
+			let mut current_output: Option<Output> = None;
 			let mut next_epoch = 0;
 			// One bounded raw snapshot lets an idle desktop satisfy a new viewer's IDR
 			// without waiting for another compositor damage event.
@@ -192,6 +194,7 @@ pub(super) fn run(
 			let mut first_frame = None;
 			let mut visible = true;
 			let mut first_preview = Some(Instant::now());
+			let geometry_started = Instant::now();
 			loop {
 				if stop.load(Ordering::Acquire) || send.is_closed() {
 					return Ok(());
@@ -233,9 +236,44 @@ pub(super) fn run(
 					capture_reset = true;
 					let _ = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO);
 				}
-				let target = bitrate
-					.load(Ordering::Acquire)
-					.clamp(250_000, settings.bit_rate());
+				let resolved = *pipeline
+					.resolved
+					.lock()
+					.map_err(|_| "Screen dimensions unavailable")?;
+				if let Some(resolved) = resolved {
+					let current = super::publish_output(
+						&output,
+						resolved.settings,
+						resolved.source_dimensions,
+						&ready,
+						&keyframe,
+						&bitrate,
+					)?;
+					if current_output != Some(current) {
+						if let Some(encoder) = &encoding {
+							next_epoch = encoder
+								.epoch()
+								.checked_add(1)
+								.ok_or("Screen encoder epoch exhausted")?;
+						}
+						encoding = None;
+						latest_frame = None;
+						current_output = Some(current);
+						waiting_keyframe = true;
+						first_frame = None;
+						last_encoded = None;
+						next_frame = Instant::now();
+						capture_reset = true;
+					}
+				}
+				if current_output.is_none() && geometry_started.elapsed() > Duration::from_secs(15)
+				{
+					return Err("Screen capture did not report source dimensions");
+				}
+				let target = bitrate.load(Ordering::Acquire).clamp(
+					250_000,
+					current_output.map_or(250_000, |output| output.settings.bit_rate()),
+				);
 				// A rate change updates only the encoder, preserving the approved
 				// source, preview and audio. Do not restart while waiting for its first IDR.
 				if !waiting_keyframe
@@ -313,16 +351,23 @@ pub(super) fn run(
 					wait_for_frame = room && !paced;
 					if room && paced {
 						let pull = metrics.start();
-						let raw = pipeline
+						let mut raw = pipeline
 							.frames
 							.try_pull_sample(gst::ClockTime::ZERO)
 							.map(|sample| capture::raw(&sample))
 							.transpose()?;
-						if let Some(raw) = &raw {
+						if raw.as_ref().is_some_and(|raw| {
+							current_output.is_none_or(|current| {
+								raw.width != current.settings.width
+									|| raw.height != current.settings.height
+							})
+						}) {
+							// Retire the old negotiated sample without skipping the loop's await.
+							latest_frame = None;
+							raw = None;
+						}
+						if raw.is_some() {
 							pulled = true;
-							if raw.width != settings.width || raw.height != settings.height {
-								return Err("Screen frame dimensions changed unexpectedly");
-							}
 							metrics.finish(crate::diagnostics::Stage::Receive, pull);
 						}
 						let requested_keyframe =
@@ -340,7 +385,9 @@ pub(super) fn run(
 						)? {
 							if encoding.is_none() {
 								encoding = Some(ScreenEncoder::new_on_adapter(
-									settings,
+									current_output
+										.ok_or("Screen dimensions are unresolved")?
+										.settings,
 									target,
 									video_settings,
 									adapter,
@@ -368,6 +415,9 @@ pub(super) fn run(
 							metrics.finish(crate::diagnostics::Stage::Encode, start);
 							if !packet.data.is_empty() && (!waiting_keyframe || packet.keyframe) {
 								let frame = EncodedFrame {
+									geometry_generation: current_output
+										.ok_or("Screen dimensions are unresolved")?
+										.generation,
 									codec: video_settings.codec,
 									data: packet.data,
 									keyframe: packet.keyframe,

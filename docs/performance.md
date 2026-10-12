@@ -598,3 +598,34 @@ the new measurements and executable hash. NSIS remains unavailable; this is an
 unsigned directory and ZIP. Final serial workspace checking reached 1,158
 passes, eight recorded baseline UI failures and 23 ignored tests. Formatting,
 strict workspace Clippy and the independent policy check passed.
+
+## Source-resolution regression checks — October 12, 2026
+
+Baseline `574a8d2` and the source/aspect-ratio implementation use pinned Rust
+1.98.1, the committed lockfile and separate release target directories. One warmup
+per binary precedes five alternating measured runs of the 100,000-event synthetic
+reducer. The release replay executables are byte-for-byte identical (SHA-256
+`0d6060167876cc35dba30a368e3c36504420c869f42d8f3a4faa6d66c6491035`): screen
+settings are outside this reducer workload.
+
+| Metric / method | Baseline | Source implementation | Interpretation |
+| --- | ---: | ---: | --- |
+| Release replay median, five alternating pairs | 161.129 ms | 158.551 ms | Overlapping ranges; no performance claim |
+| Retained timeline estimate / records | 331,992–332,477 B / 500 | 331,992–332,477 B / 500 | Unchanged reducer limits |
+
+The 120-second offline lifecycle soak completes 1,326 passes, 42,432 channel
+visits, 25,459,200 live inserts and six logout cycles in 120.072 seconds. It does
+not measure media throughput, process/GPU memory or live Discord compatibility.
+
+Source dimensions retain the existing 33,177,600-pixel and raw-byte envelope in
+either orientation. Encoder bitrates interpolate between the existing preset
+pixel-count/rate points and retain the 50 Mbit/s cap. Preset tests cover common
+landscape, ultrawide, square, portrait and custom ratios; pending selection and
+resize tests exercise synthetic RTP/DAVE transport.
+
+Current native UI/display sampling is unavailable in this cloud session: no
+native display session or window-capture tool. macOS now captures physical native
+pixels before shared scaling, so default-preset capture CPU and memory need native
+comparison; bounded worst-case allocation is unchanged. Current application and
+clean/cached package size checks belong to the CI run for the delivered head.
+Earlier package measurements above retain their historical revision labels.

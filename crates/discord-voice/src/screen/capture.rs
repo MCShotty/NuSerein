@@ -1,5 +1,5 @@
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-use super::{RawFrame, Settings, Source};
+use super::{RawFrame, RequestSettings, Source};
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 use std::sync::{Arc, atomic::AtomicBool, mpsc::SyncSender};
 
@@ -10,7 +10,7 @@ pub(super) const MAX_NAME_BYTES: usize = 256;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) const MAX_SOURCE_WIDTH: u32 = model::voice_settings::VideoResolution::MAX_WIDTH;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub(super) const MAX_SOURCE_HEIGHT: u32 = model::voice_settings::VideoResolution::MAX_HEIGHT;
+pub(super) const MAX_SOURCE_HEIGHT: u32 = model::voice_settings::VideoResolution::MAX_WIDTH;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) const MAX_FRAME_WIDTH: u32 = MAX_SOURCE_WIDTH;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -59,7 +59,7 @@ impl Capture {
 	}
 
 	pub(crate) fn start(
-		_settings: Settings,
+		_settings: RequestSettings,
 		_frames: SyncSender<RawFrame>,
 		_audio: Option<tokio::sync::mpsc::Sender<crate::screen::AudioChunk>>,
 		_stop: Arc<AtomicBool>,

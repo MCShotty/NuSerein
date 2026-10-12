@@ -1,5 +1,5 @@
 //! Bounded raw capture/scale pipeline; also exercised with an offline video source.
-use super::{MAX_RAW_BYTES, RawFrame, Settings};
+use super::{MAX_RAW_BYTES, Output, RawFrame, RequestSettings, valid_dimensions};
 use ::gstreamer as gst;
 use gst::glib::translate::IntoGlib;
 use gst::prelude::*;
@@ -7,7 +7,7 @@ use gstreamer_app as app;
 use gstreamer_video::{self as video, VideoFrameExt};
 use model::voice_settings::VideoResolution;
 use std::sync::{
-	Arc,
+	Arc, Mutex,
 	atomic::{AtomicBool, Ordering},
 };
 
@@ -16,6 +16,7 @@ const UNAVAILABLE: &str = "Screen capture is unavailable";
 const MAX_SOURCE_BYTES: usize = MAX_RAW_BYTES;
 
 pub(super) struct Capture {
+	pub resolved: Arc<Mutex<Option<Output>>>,
 	pipeline: gst::Pipeline,
 	pub frames: app::AppSink,
 	pub preview: app::AppSink,
@@ -31,29 +32,27 @@ impl Drop for Capture {
 impl Capture {
 	/// `source` is either the approved PipeWire node or the offline example's test source.
 	pub(super) fn new(
-		settings: Settings,
+		settings: impl Into<RequestSettings>,
 		source: gst::Element,
 		stop: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,
 		keyframe: Arc<AtomicBool>,
 		has_capacity: impl Fn() -> bool + Send + Sync + 'static,
 	) -> Result<Self, &'static str> {
+		let settings = settings.into();
 		if !settings.valid() {
 			return Err(INVALID);
 		}
-		let size = format!(
-			"width={},height={},pixel-aspect-ratio=1/1",
-			settings.width, settings.height
-		);
+		let resolved = Arc::new(Mutex::new(None));
 		// FFmpeg owns encoding after capture. Queues discard stale raw pictures, and the
 		// frame sink blocks upstream when the worker waits for transport capacity.
 		let (max_width, max_height) = (VideoResolution::MAX_WIDTH, VideoResolution::MAX_HEIGHT);
 		let description = format!(
-			"capsfilter caps=\"video/x-raw(ANY),width=[1,{max_width}],height=[1,{max_height}]\" ! \
+			"capsfilter caps=\"video/x-raw(ANY),width=[1,{max_width}],height=[1,{max_height}];video/x-raw(ANY),width=[1,{max_height}],height=[1,{max_width}]\" ! \
 			queue max-size-buffers=1 max-size-bytes={MAX_SOURCE_BYTES} max-size-time=0 leaky=downstream ! \
 			videorate drop-only=true ! video/x-raw(ANY),framerate={}/1 ! \
 			videoconvert name=crop-input ! capsfilter name=capture-color caps=video/x-raw,format=BGRA ! videocrop name=crop ! \
-			videoconvertscale add-borders=true ! capsfilter name=frame-color caps=video/x-raw,format=BGRA,{size} ! tee name=split \
+			videoconvertscale add-borders=true ! capsfilter name=frame-color caps=video/x-raw,format=BGRA,pixel-aspect-ratio=1/1 ! tee name=split \
 			split. ! queue max-size-buffers=1 max-size-bytes={MAX_RAW_BYTES} max-size-time=0 leaky=downstream ! \
 			identity name=gate ! appsink name=frames sync=false async=false max-buffers=1 enable-last-sample=false wait-on-eos=false \
 			split. ! queue max-size-buffers=1 max-size-bytes={MAX_RAW_BYTES} max-size-time=0 leaky=downstream ! \
@@ -131,6 +130,9 @@ impl Capture {
 			&bin.by_name("crop-input").ok_or(UNAVAILABLE)?,
 			&cropper,
 			failed.clone(),
+			settings,
+			resolved.clone(),
+			&bin.by_name("frame-color").ok_or(UNAVAILABLE)?,
 		)?;
 		bound(
 			&cropper.static_pad("sink").ok_or(UNAVAILABLE)?,
@@ -180,6 +182,7 @@ impl Capture {
 				gst::PadProbeReturn::Ok
 			});
 		let capture = Self {
+			resolved,
 			pipeline,
 			frames,
 			preview,
@@ -229,8 +232,12 @@ fn apply_crop(
 	input: &gst::Element,
 	cropper: &gst::Element,
 	failed: Arc<AtomicBool>,
+	settings: RequestSettings,
+	resolved: Arc<Mutex<Option<Output>>>,
+	output_filter: &gst::Element,
 ) -> Result<(), &'static str> {
 	let weak = cropper.downgrade();
+	let output_filter = output_filter.downgrade();
 	// Strip crop metadata before conversion too: newer converters may consume it,
 	// while older ones retain it. Both must reach the same explicit pixel crop.
 	input.static_pad("sink").ok_or(UNAVAILABLE)?.add_probe(
@@ -255,6 +262,26 @@ fn apply_crop(
 					.meta::<video::VideoCropMeta>()
 					.map(|crop| crop.rect());
 				let [left, right, top, bottom] = crop_edges(rect, size)?;
+				let geometry = (
+					size.0 - (left + right) as u32,
+					size.1 - (top + bottom) as u32,
+				);
+				let output = Output {
+					settings: settings.resolve(geometry).ok_or(INVALID)?,
+					source_dimensions: geometry,
+					generation: 0,
+				};
+				let mut current = resolved.lock().map_err(|_| UNAVAILABLE)?;
+				if *current != Some(output) {
+					let filter = output_filter.upgrade().ok_or(UNAVAILABLE)?;
+					let mut caps = filter.property::<gst::Caps>("caps");
+					let caps_mut = caps.make_mut();
+					let structure = caps_mut.structure_mut(0).ok_or(INVALID)?;
+					structure.set("width", output.settings.width as i32);
+					structure.set("height", output.settings.height as i32);
+					filter.set_property("caps", caps);
+					*current = Some(output);
+				}
 				if rect.is_some() {
 					buffer
 						.make_mut()
@@ -293,11 +320,7 @@ fn crop_edges(
 	rect: Option<(u32, u32, u32, u32)>,
 	(width, height): (u32, u32),
 ) -> Result<[i32; 4], &'static str> {
-	if width == 0
-		|| height == 0
-		|| width > VideoResolution::MAX_WIDTH
-		|| height > VideoResolution::MAX_HEIGHT
-	{
+	if !valid_dimensions(width, height) {
 		return Err(INVALID);
 	}
 	let Some((x, y, crop_width, crop_height)) = rect else {
@@ -333,10 +356,7 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 	if !matches!(
 		info.format(),
 		video::VideoFormat::Bgra | video::VideoFormat::P01010le
-	) || info.width() == 0
-		|| info.height() == 0
-		|| info.width() > VideoResolution::MAX_WIDTH
-		|| info.height() > VideoResolution::MAX_HEIGHT
+	) || !valid_dimensions(info.width(), info.height())
 	{
 		return Err(INVALID);
 	}
@@ -417,7 +437,82 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 
 #[cfg(test)]
 mod tests {
+	use super::super::Settings;
 	use super::*;
+
+	#[test]
+	fn source_geometry_resolves_and_renegotiates_without_reopening_capture() {
+		gst::init().unwrap();
+		let source = gst::ElementFactory::make("appsrc")
+			.property("is-live", true)
+			.property("format", gst::Format::Time)
+			.property("block", false)
+			.build()
+			.unwrap()
+			.downcast::<app::AppSrc>()
+			.unwrap();
+		source.set_max_bytes(MAX_RAW_BYTES as u64);
+		let request = RequestSettings {
+			source: super::super::SourceId::Portal,
+			resolution: client_core::screen::Resolution::Source,
+			fps: 30,
+			cursor: false,
+			audio: false,
+		};
+		let capture = Capture::new(
+			request,
+			source.clone().upcast(),
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicBool::new(true)),
+			Arc::new(AtomicBool::new(true)),
+			|| true,
+		)
+		.unwrap();
+		assert!(capture.resolved.lock().unwrap().is_none());
+		let mut timestamp = 0;
+		for (width, height) in [(640, 480), (1280, 800), (480, 640), (321, 241)] {
+			let info = video::VideoInfo::builder(video::VideoFormat::Bgra, width, height)
+				.fps(gst::Fraction::new(30, 1))
+				.build()
+				.unwrap();
+			source.set_caps(Some(&info.to_caps().unwrap()));
+			for _ in 0..2 {
+				let mut buffer = gst::Buffer::from_mut_slice(vec![128; info.size()]);
+				buffer
+					.get_mut()
+					.unwrap()
+					.set_pts(gst::ClockTime::from_mseconds(timestamp));
+				buffer
+					.get_mut()
+					.unwrap()
+					.set_duration(gst::ClockTime::from_mseconds(33));
+				timestamp += 34;
+				source.push_buffer(buffer).unwrap();
+			}
+			let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+			loop {
+				assert!(
+					std::time::Instant::now() < deadline,
+					"resized capture did not renegotiate"
+				);
+				let sample = capture
+					.frames
+					.try_pull_sample(gst::ClockTime::from_mseconds(100));
+				if let Some(sample) = sample {
+					let frame = raw(&sample).unwrap();
+					if (frame.width, frame.height) == (width / 2 * 2, height / 2 * 2) {
+						let settings = capture.resolved.lock().unwrap().unwrap().settings;
+						assert_eq!(
+							(settings.width, settings.height),
+							(frame.width, frame.height)
+						);
+						assert!(!capture.failed());
+						break;
+					}
+				}
+			}
+		}
+	}
 
 	#[test]
 	fn refresh_recaptures_an_idle_source_for_the_pending_keyframe() {
@@ -529,7 +624,7 @@ mod tests {
 		gst::init().unwrap();
 		// Exercise the mapping/copy path at each maximum axis without retaining a
 		// full 126.6 MiB picture in the default test harness.
-		for (width, height) in [(7680, 2), (2, 4320)] {
+		for (width, height) in [(7680, 2), (2, 4320), (2, 7680)] {
 			let info = video::VideoInfo::builder(video::VideoFormat::Bgra, width, height)
 				.build()
 				.unwrap();
@@ -542,12 +637,12 @@ mod tests {
 			assert_eq!(frame.data.len(), width as usize * height as usize * 4);
 			assert!(frame.data.iter().all(|byte| *byte == 19));
 		}
-		for (width, height) in [(7681, 2), (2, 4321)] {
+		for (width, height) in [(7681, 2), (2, 7681), (4321, 4321)] {
 			let info = video::VideoInfo::builder(video::VideoFormat::Bgra, width, height)
 				.build()
 				.unwrap();
 			let caps = info.to_caps().unwrap();
-			let buffer = gst::Buffer::from_mut_slice(vec![19u8; info.size()]);
+			let buffer = gst::Buffer::from_mut_slice(Vec::<u8>::new());
 			let sample = gst::Sample::builder().caps(&caps).buffer(&buffer).build();
 			assert!(raw(&sample).is_err());
 		}
@@ -634,7 +729,7 @@ mod tests {
 			.expect("cropped raw frame");
 		assert!(!capture.failed());
 		let frame = raw(&frame).unwrap();
-		assert_eq!((frame.width, frame.height), (1280, 720));
+		assert_eq!((frame.width, frame.height), (320, 180));
 		assert!(
 			frame
 				.data
