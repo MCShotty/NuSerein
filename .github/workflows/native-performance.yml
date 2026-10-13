@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightly-native-performance-${{ github.ref }}
+  group: nightly-native-performance-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
