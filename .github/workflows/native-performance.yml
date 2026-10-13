@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
@@ -82,6 +82,7 @@ jobs:
         shell: msys2 {0}
         run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
       - name: Build matching release packages and measure paired replay
+        shell: pwsh
         run: python measurement/scripts/measure-native-nightly.py
       - name: Preserve the exact comparison results
         if: always()

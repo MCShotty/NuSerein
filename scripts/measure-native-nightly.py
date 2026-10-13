@@ -149,6 +149,7 @@ def main():
         "scope": "package sizes and 100000-event core reducer; excludes media FPS, hardware encoding/decoding, UI latency, process/GPU memory and Discord interoperability",
         "packages": {},
     }
+    (evidence / "partial.json").write_text(json.dumps(result, indent=2) + "\n")
     for label, source in sources.items():
         print(f"Building the exact {label} source {revisions[label]}", flush=True)
         result["packages"][label] = package(source, targets[label], scratch / "archives" / label)
