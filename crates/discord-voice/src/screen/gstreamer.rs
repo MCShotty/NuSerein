@@ -65,9 +65,19 @@ impl Capture {
 		// Preserve HDR only when the compositor supplies both high-bit-depth
 		// pixels and usable transfer/primary metadata. Ordinary capture stays BGRA.
 		let filters = [
-			bin.by_name("capture-color").ok_or(UNAVAILABLE)?.downgrade(),
-			bin.by_name("frame-color").ok_or(UNAVAILABLE)?.downgrade(),
-			bin.by_name("preview-color").ok_or(UNAVAILABLE)?.downgrade(),
+			// videocrop supports planar 10-bit input, but cannot crop P010.
+			(
+				bin.by_name("capture-color").ok_or(UNAVAILABLE)?.downgrade(),
+				"I420_10LE",
+			),
+			(
+				bin.by_name("frame-color").ok_or(UNAVAILABLE)?.downgrade(),
+				"P010_10LE",
+			),
+			(
+				bin.by_name("preview-color").ok_or(UNAVAILABLE)?.downgrade(),
+				"P010_10LE",
+			),
 		];
 		let was_hdr = AtomicBool::new(false);
 		bin.by_name("crop-input")
@@ -86,15 +96,13 @@ impl Capture {
 							) && info.colorimetry().primaries() == video::VideoColorPrimaries::Bt2020
 					});
 					if was_hdr.swap(hdr, Ordering::AcqRel) != hdr {
-						for weak in &filters {
+						for (weak, hdr_format) in &filters {
 							let Some(filter) = weak.upgrade() else {
 								continue;
 							};
 							let mut caps = filter.property::<gst::Caps>("caps");
-							if let Some(caps) = caps.get_mut()
-								&& let Some(structure) = caps.structure_mut(0)
-							{
-								structure.set("format", if hdr { "P010_10LE" } else { "BGRA" });
+							if let Some(structure) = caps.make_mut().structure_mut(0) {
+								structure.set("format", if hdr { *hdr_format } else { "BGRA" });
 							}
 							filter.set_property("caps", caps);
 						}
@@ -439,6 +447,154 @@ pub(super) fn raw(sample: &gst::Sample) -> Result<RawFrame, &'static str> {
 mod tests {
 	use super::super::Settings;
 	use super::*;
+
+	#[test]
+	fn hdr_capture_preserves_p010_pq_and_returns_to_sdr() {
+		gst::init().unwrap();
+		let source = app::AppSrc::builder()
+			.is_live(true)
+			.format(gst::Format::Time)
+			.block(false)
+			.build();
+		source.set_max_bytes(MAX_RAW_BYTES as u64);
+		let request = RequestSettings {
+			source: super::super::SourceId::Portal,
+			resolution: client_core::screen::Resolution::Source,
+			fps: 30,
+			cursor: false,
+			audio: false,
+		};
+		let capture = Capture::new(
+			request,
+			source.clone().upcast(),
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicBool::new(true)),
+			Arc::new(AtomicBool::new(true)),
+			|| true,
+		)
+		.unwrap();
+		let mut timestamp = 0;
+		for (hdr, crop) in [
+			(true, None),
+			(true, Some((160, 90, 320, 180))),
+			(false, None),
+			(true, None),
+		] {
+			let format = if hdr {
+				video::VideoFormat::P01010le
+			} else {
+				video::VideoFormat::Bgra
+			};
+			let info = video::VideoInfo::builder(format, 640, 360)
+				.fps(gst::Fraction::new(30, 1))
+				.build()
+				.unwrap();
+			let mut caps = info.to_caps().unwrap();
+			if hdr {
+				caps.make_mut()
+					.structure_mut(0)
+					.unwrap()
+					.set("colorimetry", "bt2100-pq");
+			}
+			source.set_caps(Some(&caps));
+			for _ in 0..3 {
+				let mut pixels = vec![128; info.size()];
+				if hdr {
+					for pixel in pixels.as_chunks_mut::<2>().0 {
+						pixel.copy_from_slice(&(512_u16 << 6).to_le_bytes());
+					}
+					for (y, row) in pixels
+						.chunks_mut(info.stride()[0] as usize)
+						.take(360)
+						.enumerate()
+					{
+						for (x, pixel) in
+							row[..640 * 2].as_chunks_mut::<2>().0.iter_mut().enumerate()
+						{
+							let inside = crop.is_none()
+								|| ((160..480).contains(&x) && (90..270).contains(&y));
+							let luma = if inside { 515_u16 } else { 64_u16 };
+							pixel.copy_from_slice(&(luma << 6).to_le_bytes());
+						}
+					}
+				}
+				let mut buffer = gst::Buffer::from_mut_slice(pixels);
+				let buffer_mut = buffer.get_mut().unwrap();
+				buffer_mut.set_pts(gst::ClockTime::from_mseconds(timestamp));
+				buffer_mut.set_duration(gst::ClockTime::from_mseconds(33));
+				if let Some(crop) = crop {
+					video::VideoCropMeta::add(buffer_mut, crop);
+				}
+				timestamp += 34;
+				source.push_buffer(buffer).unwrap();
+			}
+			let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+			loop {
+				assert!(
+					!capture.failed(),
+					"capture failed during HDR/SDR negotiation"
+				);
+				assert!(
+					std::time::Instant::now() < deadline,
+					"capture format did not change"
+				);
+				let Some(sample) = capture
+					.frames
+					.try_pull_sample(gst::ClockTime::from_mseconds(100))
+				else {
+					continue;
+				};
+				let output = video::VideoInfo::from_caps(sample.caps().unwrap()).unwrap();
+				let dimensions = crop.map_or((640, 360), |(_, _, width, height)| (width, height));
+				if output.format() != format || (output.width(), output.height()) != dimensions {
+					continue;
+				}
+				let frame = raw(&sample).unwrap();
+				assert_eq!((frame.width, frame.height), dimensions);
+				if hdr {
+					assert_eq!(
+						output.colorimetry().primaries(),
+						video::VideoColorPrimaries::Bt2020
+					);
+					assert_eq!(
+						output.colorimetry().matrix(),
+						video::VideoColorMatrix::Bt2020
+					);
+					assert_eq!(
+						output.colorimetry().transfer().into_glib(),
+						video::ffi::GST_VIDEO_TRANSFER_SMPTE2084
+					);
+					assert!(matches!(
+						frame.format,
+						crate::screen::RawFormat::P010 {
+							transfer: 16,
+							primaries: 9,
+							matrix: 9,
+							full_range: false,
+							..
+						}
+					));
+					let mut luma = frame.data[..(frame.width * frame.height * 2) as usize]
+						.as_chunks::<2>()
+						.0
+						.iter()
+						.map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]) >> 6);
+					// The two format conversions can each add one code of Bayer dithering.
+					assert!(
+						luma.clone().all(|value| value.abs_diff(515) <= 2),
+						"HDR crop must exclude surrounding pixels: crop={crop:?}"
+					);
+					assert!(
+						luma.any(|value| value % 4 != 0),
+						"HDR capture must retain precision beyond eight bits"
+					);
+				} else {
+					assert!(matches!(frame.format, crate::screen::RawFormat::Bgra8));
+				}
+				break;
+			}
+		}
+	}
 
 	#[test]
 	fn source_geometry_resolves_and_renegotiates_without_reopening_capture() {

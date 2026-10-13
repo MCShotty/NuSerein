@@ -194,6 +194,7 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 		return Err(INVALID);
 	}
 	let mut chroma = 1;
+	let mut crop_chroma = 1;
 	let mut depth = 8;
 	if matches!(
 		profile,
@@ -204,6 +205,8 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 			return Err(INVALID);
 		}
 		let separate_planes = chroma == 3 && bits.flag()?;
+		// Crop units follow ChromaArrayType; separate planes still encode 4:4:4.
+		crop_chroma = if separate_planes { 0 } else { chroma };
 		let luma = bits.ue()?;
 		let chroma_depth = bits.ue()?;
 		if luma > 6 || chroma_depth > 6 {
@@ -226,9 +229,6 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 					}
 				}
 			}
-		}
-		if separate_planes {
-			chroma = 0;
 		}
 	} else if !matches!(profile, 66 | 77 | 88) {
 		return Err(INVALID);
@@ -273,8 +273,12 @@ fn prefix(escaped: &[u8]) -> Result<(Bits, u32, Dimensions), &'static str> {
 	bits.read(1)?;
 	let (mut cropped_width, mut cropped_height) = (width, height);
 	if bits.flag()? {
-		let horizontal = if matches!(chroma, 1 | 2) { 2 } else { 1 };
-		let crop_vertical = if chroma == 1 { 2 * vertical } else { vertical };
+		let horizontal = if matches!(crop_chroma, 1 | 2) { 2 } else { 1 };
+		let crop_vertical = if crop_chroma == 1 {
+			2 * vertical
+		} else {
+			vertical
+		};
 		let left = u64::from(bits.ue()?);
 		let right = u64::from(bits.ue()?);
 		let top = u64::from(bits.ue()?);
@@ -402,10 +406,33 @@ fn restrictions(bits: &mut Vec<bool>, refs: u32) {
 }
 
 #[cfg(test)]
+pub(crate) use tests::sequence as test_sequence;
+
+#[cfg(test)]
 mod tests {
 	use super::*;
 
-	fn sequence(
+	pub(crate) fn sequence(
+		coded: (u32, u32),
+		crop: [u32; 4],
+		chroma: u32,
+		depths: [u32; 2],
+		separate_planes: bool,
+		frame_only: bool,
+	) -> Vec<u8> {
+		sequence_profile(
+			100,
+			coded,
+			crop,
+			chroma,
+			depths,
+			separate_planes,
+			frame_only,
+		)
+	}
+
+	fn sequence_profile(
+		profile: u8,
 		coded: (u32, u32),
 		crop: [u32; 4],
 		chroma: u32,
@@ -414,17 +441,19 @@ mod tests {
 		frame_only: bool,
 	) -> Vec<u8> {
 		let mut bits = Vec::new();
-		for byte in [100_u8, 0, 52] {
+		for byte in [profile, 0, 52] {
 			bits.extend((0..8).rev().map(|shift| byte & (1 << shift) != 0));
 		}
 		ue(&mut bits, 0); // seq_parameter_set_id
-		ue(&mut bits, chroma);
-		if chroma == 3 {
-			bits.push(separate_planes);
+		if profile == 100 {
+			ue(&mut bits, chroma);
+			if chroma == 3 {
+				bits.push(separate_planes);
+			}
+			ue(&mut bits, depths[0]); // bit_depth_luma_minus8
+			ue(&mut bits, depths[1]); // bit_depth_chroma_minus8
+			bits.extend([false, false]); // transform bypass, scaling matrices
 		}
-		ue(&mut bits, depths[0]); // bit_depth_luma_minus8
-		ue(&mut bits, depths[1]); // bit_depth_chroma_minus8
-		bits.extend([false, false]); // transform bypass, scaling matrices
 		ue(&mut bits, 0); // log2_max_frame_num_minus4
 		ue(&mut bits, 2); // pic_order_cnt_type
 		ue(&mut bits, 1); // max_num_ref_frames
@@ -469,6 +498,8 @@ mod tests {
 			(3, false, true, (15, 31)),
 			(3, true, true, (15, 31)),
 			(1, false, false, (14, 28)),
+			(2, false, false, (14, 30)),
+			(3, true, false, (15, 30)),
 		] {
 			let frame = sequence(
 				(16, 32),
@@ -479,8 +510,23 @@ mod tests {
 				frame_only,
 			);
 			validate_dimensions(&frame, |dimensions| {
+				assert_eq!(dimensions.chroma, chroma);
 				assert_eq!(dimensions.coded, (16, 32));
 				assert_eq!(dimensions.visible, visible);
+				true
+			})
+			.unwrap();
+		}
+	}
+
+	#[test]
+	fn ordinary_profiles_infer_420_chroma_and_crop_units() {
+		for profile in [66, 77, 88] {
+			let frame = sequence_profile(profile, (16, 32), [0, 1, 0, 1], 1, [0; 2], false, true);
+			validate_dimensions(&frame, |dimensions| {
+				assert_eq!(dimensions.chroma, 1);
+				assert_eq!(dimensions.depth, 8);
+				assert_eq!(dimensions.visible, (14, 30));
 				true
 			})
 			.unwrap();

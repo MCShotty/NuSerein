@@ -7,9 +7,10 @@ no moving Rust SDK extension or compiler is shipped in the application.
 The build first compiles checksum-pinned patchelf 0.18.0 inside the sandbox so
 FFmpeg can set sibling-library RPATHs. This build tool is removed during cleanup;
 it is not shipped in the application. The following FFmpeg module builds
-checksum-pinned LGPL-only avcodec/avutil and
-OpenH264 sources without network access; shared libraries, the build recipe and
-complete FFmpeg corresponding source ship with the application. The module also
+checksum-pinned LGPL-only avcodec, avutil, avformat, swscale and swresample,
+plus OpenH264 and statically linked dav1d, without network access. The shared
+libraries, build recipe and complete corresponding sources for FFmpeg,
+OpenH264 and dav1d ship with the application. The module also
 uses pinned AMF public headers and a static oneVPL dispatcher for x64 Quick Sync.
 GNOME SDK 49 must provide CMake and the libva/libva-drm/libdrm development files;
 the module checks the latter before its offline build. Target-specific oneVPL

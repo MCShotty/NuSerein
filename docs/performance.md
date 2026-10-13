@@ -773,3 +773,53 @@ prefix. There is no matching `aa8a09a` package baseline, so no package delta is
 claimed. Native distro package/runtime closure, Windows/macOS packages, display
 transitions, playback throughput and settled process/GPU memory require CI or
 native hardware; directory staging alone does not establish them.
+
+## HDR capture/SPS review fixes — October 13, 2026
+
+The `c47036c` baseline package was verified by executable hash before source
+edits and preserved separately. The changed package measures the reviewed source
+committed with this entry; the PR records its exact revision. Both use Rust
+1.98.1, the committed lockfile and the same Linux 6.18.44/x86_64 cloud host
+(Xeon Platinum 8573C, 16 GiB host limit), with a Debian trixie build container
+limited to four CPUs and 14 GiB. Standard release includes voice and excludes
+demo/developer features: fat LTO, one codegen unit, line-table debug information
+and symbol stripping.
+
+`cargo xtask package --format dir` starts with an empty output directory after
+rebuilding xtask. Compiled, staged and installed executable hashes match; all
+six private libraries, corresponding-source files and notices match their
+staging inputs. ELF runtime paths are relative and omit the development FFmpeg
+prefix. There is no manual staging repair. One package per source revision is
+measured by file lengths; warmup is not applicable. Both compressed directories
+use Python tarfile with gzip level 9.
+
+| Linux package metric / method | Baseline `c47036c` | Review fixes | Delta |
+| --- | ---: | ---: | ---: |
+| Release executable | 87,856,520 B | 87,856,648 B | +128 B |
+| Installed payload | 132,622,544 B | 132,622,672 B | +128 B |
+| Compressed directory | 86,126,968 B | 86,126,955 B | -13 B |
+| Installed regular files | 266 | 266 | +0 |
+
+Changed executable SHA-256: `83e7f472230cab8fd369e83d42e9d69cc12fd6afaf453638428ecde381c9cac5`.
+
+Workspace checking passes formatting, strict Clippy, 1,420 tests (31 ignored),
+the minimal application build and policy. Login-handoff, cached-xtask workspace,
+application/fuzz license checks and packaging fixtures pass. The actual Linux
+capture pipeline retains P010/BT.2020/PQ through cropping and HDR→SDR→HDR
+transitions. Its crop element requires planar 10-bit input, adding format
+conversion work; no throughput or CPU improvement is claimed.
+
+The fresh 120-second offline soak completes 1,488 passes, 47,616 channel visits,
+28,569,600 inserts and six logout cycles in 120.043 seconds. This core workload
+excludes capture, decoding, GUI and process/GPU memory. The historical +13.9%
+reducer slowdown above retains its original revisions and unisolated cause;
+it is not a fresh measurement of these media fixes.
+
+Native display/window capture and suitable devices are unavailable here, so
+media throughput, CPU and peak/settled process/GPU memory remain unmeasured.
+Directory staging does not establish native application launch, full distro
+runtime closure, physical HDR behavior or Discord interoperability. Current-head
+Windows/macOS/Linux application/package CI and owner-controlled hardware checks
+are reported separately in the PR. The retained settings screenshot pair is
+historical evidence from `b1e3474`, predating the current control placement and
+Source/8K additions.

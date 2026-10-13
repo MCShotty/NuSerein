@@ -118,8 +118,8 @@ requires the compiler/tool versions recorded by the distributor's build logs.
 Serein's MIT/Apache application sources remain available in the repository.
 The FFmpeg build uses the `-serein` library suffix and `SEREIN_LIBAVCODEC_61` /
 `SEREIN_LIBAVUTIL_59` ELF symbol versions so it can coexist with the host
-FFmpeg used by GStreamer's incoming-video plugins. The version-script changes,
-The other three libraries use their corresponding private symbol versions.
+FFmpeg used by GStreamer's incoming-video plugins. The other three FFmpeg libraries
+use their corresponding private symbol versions. The version-script changes,
 QSV allocation/dependency fixes, dav1d allocation limits, checked QSV quality negotiation, explicit
 VideoToolbox GPU registry selection and AMF external Vulkan-device support are retained as
 `serein-ffmpeg.patch` with the original source archive. QSV requests packet allocation through the app's capped buffer

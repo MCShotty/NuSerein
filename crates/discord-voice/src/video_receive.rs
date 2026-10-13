@@ -1750,6 +1750,51 @@ mod tests {
 	}
 
 	#[test]
+	fn receiver_admission_rejects_separate_colour_planes_before_queueing() {
+		for (chroma, separate_planes, supported) in [
+			(0, false, true),
+			(1, false, true),
+			(2, false, false),
+			(3, false, false),
+			(3, true, false),
+		] {
+			let (queue, receive) = decoder_cleanup_queue(1);
+			let data = crate::video_sps::test_sequence(
+				(32, 32),
+				[0; 4],
+				chroma,
+				[0; 2],
+				separate_planes,
+				true,
+			);
+			let outcome = admit(
+				&queue,
+				Encoded {
+					timestamp: 0,
+					codec: model::voice_settings::VideoCodec::H264,
+					user: 7,
+					data,
+					keyframe: true,
+				},
+			)
+			.unwrap();
+			if supported {
+				assert_eq!(outcome, Admission::Queued);
+				assert!(matches!(receive.try_recv(), Ok(Decode::Frame(..))));
+				assert_eq!(queue.active.lock().unwrap().len(), 1);
+			} else {
+				assert!(matches!(outcome, Admission::Unsupported(_)));
+				assert!(matches!(
+					receive.try_recv(),
+					Err(std::sync::mpsc::TryRecvError::Empty)
+				));
+				assert!(queue.active.lock().unwrap().is_empty());
+			}
+			assert_eq!(queue.bytes.available_permits(), QUEUE_BYTES);
+		}
+	}
+
+	#[test]
 	fn receiver_admission_accepts_the_former_1080p_limit() {
 		let data = decoder_cleanup_keyframe(2048, 1152);
 		assert!(data.len() < MAX_FRAME_BYTES);
