@@ -505,7 +505,7 @@ fn clan_chip(
 /// Discord's official support request form. No supported in-app reporting API is used.
 const REPORT_URL: &str = "https://support.discord.com/hc/en-us/requests/new";
 
-/// Best known account username: the loaded profile, then the relationship lists.
+/// Best known account username: a loaded or recently cached profile, then the relationship lists.
 pub(crate) fn known_username(state: &State, user: Id) -> Option<String> {
 	state
 		.profile
@@ -518,6 +518,11 @@ pub(crate) fn known_username(state: &State, user: Id) -> Option<String> {
 				.data
 				.as_ref()
 				.filter(|data| data.user.id == user && !data.username.is_empty())
+		})
+		.or_else(|| {
+			state
+				.known_profile(user)
+				.filter(|data| !data.username.is_empty())
 		})
 		.map(|data| data.username.clone())
 		.or_else(|| state.friend_username(user).map(str::to_owned))
@@ -592,13 +597,13 @@ pub(crate) fn report_button(ui: &mut egui::Ui, user: &User) {
 	}
 }
 
-fn friend_target(state: &State, user: &User) -> bool {
+pub(crate) fn friend_target(state: &State, user: &User) -> bool {
 	!user.webhook
 		&& user.kind == model::AccountKind::Human
 		&& state.user.as_ref().is_some_and(|own| own.id != user.id)
 }
 /// Whether the account may send relationship and moderation requests right now.
-fn actions_enabled(state: &State) -> bool {
+pub(crate) fn actions_enabled(state: &State) -> bool {
 	!state.user_action_pending()
 		&& (state.demo
 			|| (state.gateway_connected
@@ -3763,7 +3768,17 @@ fn paint_collectibles(
 	if let Some(effect) = data.effect.as_deref().filter(|_| avatars.cosmetics.effects) {
 		let ready = avatars.effect_ready(ui, effect, demo);
 		let elapsed = effect_clock(ui.ctx(), data.user.id, effect.sku, full, ready);
-		avatars.paint_effect(ui, effect, card, elapsed, demo);
+		// The effect steps back while the pointer is over the card, so its text stays readable.
+		let hovered = ui
+			.ctx()
+			.pointer_hover_pos()
+			.is_some_and(|pointer| card.contains(pointer) && ui.clip_rect().contains(pointer));
+		let fade = ui.ctx().animate_bool_with_time(
+			egui::Id::unique(("profile-effect-hover", full)),
+			hovered,
+			0.2,
+		);
+		avatars.paint_effect(ui, effect, card, elapsed, 1.0 - 0.75 * fade, demo);
 	}
 	let Some(frame) = data.frame.as_deref().filter(|_| avatars.cosmetics.frames) else {
 		return;
@@ -3775,7 +3790,9 @@ fn paint_collectibles(
 	} else {
 		ui.ctx().content_rect()
 	};
-	let painter = ui.painter().with_clip_rect(clip);
+	// The card's own clip stops at its constrained bounds; the frame overflows them on purpose.
+	let mut painter = ui.painter().clone();
+	painter.set_clip_rect(clip.intersect(ui.ctx().content_rect()));
 	let back = avatars.frame_shapes(ui.ctx(), frame, card, clip, false, demo);
 	painter.set(frame_back, egui::Shape::Vec(back));
 	for shape in avatars.frame_shapes(ui.ctx(), frame, card, clip, true, demo) {
