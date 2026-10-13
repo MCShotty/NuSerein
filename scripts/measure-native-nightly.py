@@ -86,6 +86,7 @@ def package(source, target, out):
     env = dict(os.environ, CARGO_TARGET_DIR=str(target), SEREIN_SIGNING_IDENTITY="")
     assert not target.exists(), "Each source needs a fresh, separate Cargo target"
     assert not (source / "dist").exists() and not (source / "dist-installer").exists()
+    assert not run(["git", "status", "--porcelain"], cwd=source, capture=True, timeout=30).stdout.strip()
     run(["cargo", "+1.98.1", "build", "--release", "--locked", "-p", "replay-bench"], cwd=source, env=env)
     run(["cargo", "+1.98.1", "build", "--locked", "-p", "xtask"], cwd=source, env=env)
     run(["cargo", "+1.98.1", "xtask", "package"], cwd=source, env=env)
@@ -121,7 +122,9 @@ def package(source, target, out):
         assert len(installers) == 1, "Normal packaging must create exactly one installer"
         result["installer_bytes"] = installers[0].stat().st_size
         result["installer_sha256"] = digest(installers[0])
-    assert not run(["git", "status", "--porcelain"], cwd=source, capture=True, timeout=30).stdout.strip()
+    # The normal Windows packager creates an untracked dist-installer directory.
+    # Check source integrity without mistaking this task-owned output for an edit.
+    assert not run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=source, capture=True, timeout=30).stdout.strip()
     return result
 
 
