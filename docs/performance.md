@@ -823,3 +823,54 @@ Windows/macOS/Linux application/package CI and owner-controlled hardware checks
 are reported separately in the PR. The retained settings screenshot pair is
 historical evidence from `b1e3474`, predating the current control placement and
 Source/8K additions.
+
+## Current nightly comparison — October 13, 2026
+
+This comparison supersedes the older baselines in the PR description. Its
+baseline is the latest published upstream nightly,
+[`v1.0.0-nightly.20261010.57`](https://github.com/ViceVerse-cz/Serein/releases/tag/v1.0.0-nightly.20261010.57),
+source `cc0987e2d4505bdfb780045327bb14c3b0c0928e`; the changed source is
+`4ad106c2348d5280a4cdf2ba840c2872aca14675`. These are matching local Linux
+source rebuilds, using each revision's committed lockfile, Rust 1.98.1 and
+standard voice-inclusive release without demo/developer features. Both profiles
+use fat LTO, one codegen unit, line-table debug information and symbol stripping.
+The Linux 6.18.44/x86_64 host is a Xeon Platinum 8573C with a 16 GiB limit;
+the Debian trixie build/measurement container has four CPUs and a 14 GiB limit.
+Separate worktrees and Cargo targets prevent reuse of workspace artifacts. The
+existing PR package was hash-verified before reuse. These measurements compare
+source rebuilds, not the published release's distribution archives.
+
+| Metric / method | Nightly `cc0987e` | PR `4ad106c` | Delta |
+| --- | ---: | ---: | ---: |
+| Release executable | 87,185,832 B | 87,856,648 B | +670,816 B / +0.8% |
+| Installed payload | 91,717,776 B | 132,622,672 B | +40,904,896 B / +44.6% |
+| Compressed directory, gzip 9 | 53,094,741 B | 86,126,955 B | +33,032,214 B / +62.2% |
+| Installed regular files | 228 | 266 | +38 |
+| 100,000-event replay median, five pairs | 111.294 ms | 117.525 ms | +6.231 ms / +5.6% |
+| Retained estimate, 500 messages | 331,992–332,477 B | 393,492–393,977 B | +61,500 B; not RSS |
+
+Both packages use normal `cargo xtask package --format dir` from an empty
+output directory. Compiled, staged and installed executable hashes match. File
+lengths measure executable and installed payload sizes; Python tarfile with gzip
+level 9 and the same archive basename measures both compressed directories.
+There is one package per source revision and no warmup for file-size counters.
+Most of the payload increase comes from bundled media libraries and their
+corresponding-source archives. Nightly executable SHA-256:
+`888ce8ddb9180be739f307b09c059aabd21923b0f39a5476ffb520de3e63d2c2`;
+PR executable SHA-256:
+`83e7f472230cab8fd369e83d42e9d69cc12fd6afaf453638428ecde381c9cac5`.
+
+The release replay program is identical at both revisions. One warmup per
+binary precedes five alternating pairs on the same host after compilation has
+finished. Each sample processes 100,000 synthetic events and retains 500
+messages. The nightly runs span 107.809–196.299 ms; PR runs span
+111.828–147.282 ms. The PR is slower in four of five pairs, but the ranges
+overlap and include scheduling noise. The measured median slowdown is not
+attributed to a particular feature.
+
+The comparison includes upstream changes made after the nightly, as well as
+the retained video work; it does not isolate individual features. Replay
+measures the core reducer, not media throughput, UI latency or process RSS.
+Native media CPU/throughput, peak/settled process/GPU memory and physical HDR/
+Discord interoperability remain unmeasured here. Older comparison sections
+retain their original revisions and are historical evidence.
