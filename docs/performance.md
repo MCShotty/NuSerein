@@ -874,3 +874,78 @@ measures the core reducer, not media throughput, UI latency or process RSS.
 Native media CPU/throughput, peak/settled process/GPU memory and physical HDR/
 Discord interoperability remain unmeasured here. Older comparison sections
 retain their original revisions and are historical evidence.
+
+## Native Windows/macOS nightly comparison — October 13, 2026
+
+Native CI source rebuilds compare the same published nightly
+[`v1.0.0-nightly.20261010.57`](https://github.com/ViceVerse-cz/Serein/releases/tag/v1.0.0-nightly.20261010.57),
+`cc0987e2d4505bdfb780045327bb14c3b0c0928e`, against PR source
+`8a1ab4a2014c6660c86f8009407f396c36571480`. The latter differs from the
+Linux measurement's `4ad106c` only in this performance document. These are
+matching source rebuilds, not byte-identical copies of the published signed
+release archives. Each OS uses its own hosted runner for both sides, with
+separate clean checkouts and fresh Cargo targets, Rust 1.98.1 and each source's
+committed lockfile. Standard release includes voice and excludes demo/developer
+features; both profiles use fat LTO, one codegen unit, line-table debug
+information and symbol stripping. No desktop, owner account, microphone or
+live capture session is launched.
+
+### Windows X64
+
+Environment: Microsoft Windows Server 2025 Datacenter build 26100; AMD EPYC 7763 64-Core Processor; 16.0 GiB RAM, 4 logical CPUs. Runner image `win25-vs2026` / `20260925.250.1`.
+
+| Metric / method | Nightly `cc0987e` | PR `8a1ab4a` | Delta |
+| --- | ---: | ---: | ---: |
+| Release executable | 86,203,392 B | 87,188,992 B | +985,600 B / +1.1% |
+| Installed payload | 90,394,509 B | 137,153,849 B | +46,759,340 B / +51.7% |
+| Compressed distribution ZIP | 50,912,221 B | 83,622,631 B | +32,710,410 B / +64.2% |
+| Unsigned NSIS installer | 42,992,192 B | 73,600,334 B | +30,608,142 B / +71.2% |
+| Installed regular files | 216 | 248 | +32 |
+| 100,000-event replay median, five pairs | 105.887 ms | 117.777 ms | +11.890 ms / +11.2% |
+| Retained estimate, 500 messages | 331,992–332,477 B | 393,492–393,977 B | +61,500 B; not RSS |
+
+Replay ranges: nightly 104.890–107.109 ms; PR 116.095–119.153 ms. Ranges do not overlap in this sample; the cause of the measured difference is not isolated.
+
+[Native comparison job](https://github.com/MCShotty/Serein/actions/runs/38408007242/job/115332603702) preserves the exact JSON results. Packaged executable SHA-256: nightly `feb9c6a7c4e2267d868dad376e30beb0f6628d4545775927c74d28cf1196f097`; PR `c99607af30ba96b2f2eb26fa28d66fe9818ff0d3bdca0a6aa47ba2eeefc7e3f8`.
+
+Measured replay samples in pair order (ms): nightly `104.890, 105.887, 106.635, 105.681, 107.109`; PR `118.033, 117.411, 119.153, 116.095, 117.777`.
+
+### macOS ARM64
+
+Environment: macOS 26.6.2 build 25G83; Apple M1 (Virtual); 7.0 GiB RAM, 3 logical CPUs. Runner image `macos26` / `20260907.0351.1`.
+
+| Metric / method | Nightly `cc0987e` | PR `8a1ab4a` | Delta |
+| --- | ---: | ---: | ---: |
+| Release executable | 68,638,560 B | 69,091,776 B | +453,216 B / +0.7% |
+| Installed payload | 74,603,532 B | 95,585,421 B | +20,981,889 B / +28.1% |
+| Compressed distribution ZIP | 48,052,367 B | 64,506,402 B | +16,454,035 B / +34.2% |
+| Installed regular files | 223 | 248 | +25 |
+| 100,000-event replay median, five pairs | 63.177 ms | 70.793 ms | +7.616 ms / +12.1% |
+| Retained estimate, 500 messages | 331,992–332,477 B | 393,492–393,977 B | +61,500 B; not RSS |
+
+Replay ranges: nightly 62.051–66.883 ms; PR 66.162–83.932 ms. Ranges overlap; scheduling noise prevents attributing the median difference to a feature.
+
+[Native comparison job](https://github.com/MCShotty/Serein/actions/runs/38406359420/job/115327118696) preserves the exact JSON results. Packaged executable SHA-256: nightly `667a0fb5493ebdd349aa62cc74675658fcb29828dda639ce2d4df84e55268fb5`; PR `715c06bb6aff0df6307caf97fd565809dd4a7a73563f484753c5c501b4e858bd`.
+
+Measured replay samples in pair order (ms): nightly `63.067, 64.794, 62.051, 66.883, 63.177`; PR `66.162, 67.295, 83.932, 82.592, 70.793`.
+
+The [measurement helper](https://github.com/MCShotty/Serein/blob/6bad96ebcf66faf8c010a25b15368d98c6d181a9/scripts/measure-native-nightly.py) records the source revisions, build profile, environment, hashes and every replay sample.
+
+Both sides run normal `cargo xtask package` after rebuilding xtask and start
+with empty package output. Windows compiled/staged executable hashes match;
+normal macOS packaging ad-hoc signs the staged copy, so its hash is recorded
+separately and the bundle passes `codesign --verify --strict`. Windows ZIPs
+use PowerShell/.NET Optimal compression; macOS ZIPs use
+`ditto -c -k --sequesterRsrc`, matching each platform's release archive method.
+Every archive passes a CRC check. One package per source is measured by file
+lengths; size counters have no warmup. Windows installers are unsigned, and
+macOS bundles are not Developer ID signed or notarized.
+
+The identical release replay program receives one warmup per binary and five
+alternating pairs after all compilation and compression finish. It measures
+100,000 synthetic reducer events, not media throughput, UI latency or process
+RSS. These comparisons include post-nightly upstream changes alongside the
+video work and do not isolate individual features. Native encoding/playback
+FPS, media CPU use, peak/settled process/GPU memory and physical HDR/Discord
+interoperability remain unmeasured. Earlier Windows measurements above retain
+their historical revision labels and are not reused as current results.
