@@ -115,6 +115,62 @@ unmeasured here. Native window capture and a suitable HDR display are unavailabl
 in this environment. The owner has agreed to test the current CI Windows installer
 with the 6144×2560 stream and HDR/SDR display transitions. Outgoing HDR captures
 currently tone-map to SDR until receiver 10-bit compatibility is established.
+## Profile cosmetics — October 11, 2026
+
+Release builds of baseline `178bde35` and the cosmetics branch on Linux 7.2.9 (CachyOS),
+AMD Ryzen 7 7800X3D, 30 GiB RAM, under headless gamescope at 1440 x 900 and scale 1.0.
+Default features were used for the package; `--features demo` for the processes. Each run
+had a 5 s warmup followed by 20 s sampled from `/proc/<pid>/status` at 1 s intervals; the
+table shows the median of three runs. Both binaries were freshly copied first, so their
+pages were equally cached. An earlier run against the just-linked branch binary showed
+18 MiB more resident file pages from page-cache warmth. Heap and anonymous mappings were
+identical in that run, so it is a measurement artifact.
+
+| Metric | Baseline | Cosmetics | Delta |
+| --- | ---: | ---: | ---: |
+| Package executable | 87,314,600 B | 87,555,752 B | +241,152 B (+0.28%) |
+| Installed tree (`xtask package --format dir`) | 91,848,634 B | 92,089,786 B | +241,152 B (+0.26%) |
+| Installed tree, `tar` + `zstd -19` | 46,156,864 B | 46,280,238 B | +123,374 B (+0.27%) |
+| `serein --demo` settled / peak RSS | 134 / 149 MiB | 134 / 149 MiB | 0 |
+| `serein --demo` idle CPU (one core) | 0.25% | 0.25% | noise |
+| `profile_preview --page=collectibles` settled / peak RSS | 94 / 110 MiB | 95 / 111 MiB | about +1 MiB |
+| `profile_preview --page=collectibles` CPU | 0.25% | 0.25% | noise |
+
+CPU did not change on the fixture page, which suggests the headless window was not playing
+the effect (playback pauses while unfocused). Playback CPU was therefore not measured. Decoding two real Discord effect layers (450 x 880
+APNG) through the worker's effect budget took 96–138 ms and produced 25–31 frames at
+261 x 512. That is 13–16 MiB of frames per layer, against a 24 MiB layer budget and the
+existing 128 MiB animation pool.
+
+## GPU colour conversion for decoded video — October 11, 2026
+
+Decoders now hand over native 4:2:0 planes (VideoToolbox NV12, GStreamer NV12/I420,
+openh264 I420, Windows live NV12) and one render pass converts them on the GPU. Baseline
+`178bde35` (main) and the changed tree were compared with Rust 1.98.1 on the same machines.
+Native samples used the synthetic `--demo-video-playing` fixture replaced by a generated
+clip for the run only, release builds with LTO off, 5–6 s warm-up, then 10 s of process CPU
+time and peak RSS, alternating builds three times.
+
+These measurements cover the parent project's native decoder path. Shared FFmpeg
+decoding retains SDR RGBA or HDR P010 with explicit color metadata; that path is
+outside these measurements.
+
+| Workload | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| macOS M1 Pro, 1080p30 H.264 High + AAC, inline playback CPU | 38.9% | 32.5% | −16% |
+| macOS same run, peak RSS | 203.9 MiB | 177.0 MiB | −26.9 MiB |
+| Asahi Linux (M1, Vulkan, labwc), 720p30 H.264 Baseline via openh264dec, CPU | 97.0% | 60.4% | −38% |
+| Asahi same run, peak RSS | 294.9 MiB | 269.7 MiB | −25.2 MiB |
+| openh264 decode + handoff, 120 alternating 1080p/720p frames (release, median) | 473.2 ms | 208.1 ms | −56% |
+| openh264 shared scratch capacity | 8,294,400 B | 3,110,400 B | −62% |
+| macOS standard executable (`cargo xtask package`) | 68,706,864 B | 68,723,648 B | +16,784 B |
+| macOS dist directory / zipped app | 74,814,816 / 48,280,440 B | 74,831,600 / 48,288,340 B | +16,784 / +7,900 B |
+
+Rendered colour bars matched VideoToolbox's own BGRA conversion byte for byte on macOS and
+were identical on Linux. The macOS inline gain is smaller because VideoToolbox already
+converted in hardware; Windows live NV12 previously converted per pixel on the CPU, but
+Windows CPU, GPU memory and frame latency were not measured. Software numbers come from the
+ignored `compare_alternating_software_decode` workload. Live calls and streams were not used.
 
 ## Long-session live memory inspection — October 9, 2026
 
@@ -408,6 +464,22 @@ the existing ignored client-core, desktop-frame and replay-soak workloads for de
 The delivery skill documents how to compare a task baseline with the changed build. Do not compare
 results from different machines or claim live-client behavior from synthetic fixtures.
 
+## Voice participant controls (#592): Windows integration evidence - October 8, 2026
+
+Fresh standard Windows x64 voice-enabled packages compare main `1b3e4a7b` with `d14edbb4` (measured 2026-10-08). Baseline/current file counts: 216/216.
+
+| Metric | Main `1b3e4a7b` | Current integration | Delta |
+| --- | ---: | ---: | ---: |
+| Standard executable | 86,008,832 B | 86,089,216 B | +80,384 B (+0.0935%) |
+| Installed directory | 90,199,948 B | 90,280,332 B | +80,384 B (+0.0891%) |
+| Distribution ZIP | 50,001,798 B | 50,025,305 B | +23,507 B (+0.0470%) |
+
+Method: `cargo xtask package`, Rust 1.98.1, standard release flags without demo; Windows 11 build 26200, Ryzen 7 7800X3D, 32 GiB RAM. Runtime workspace artifacts were invalidated before each feature build. Installed bytes sum every file in `dist`; ZIP uses whole-directory .NET Optimal compression. NSIS was unavailable, so no installer executable was built.
+
+Alternating synthetic reducer replay (100,000 events): baseline median 76.5049 ms, range 74.0754-79.5180 ms; this change median 79.6071 ms, range 66.3717-83.4725 ms; median delta +3.1022 ms (+4.05%). One warmup each, then five baseline/controls/inbox rounds. All measured runs retained 500 records and 331,992-332,477 estimated timeline bytes (limit 4 MiB). The binaries were retained separately and workspace reducer artifacts rebuilt between variants. Concurrent compilation remained uncontrolled noise; overlapping ranges establish neither a performance improvement nor a regression.
+
+Current native CPU, memory, frame/startup latency and affected-device behavior remain unmeasured because the native automation bridge is unavailable. Package size and synthetic reducer timing do not establish live Discord performance.
+
 ## Window geometry minimum — October 7, 2026
 
 Baseline `c5e50e77` and fixed `c5ace4dd` were built on Windows 11 Home build
@@ -652,3 +724,52 @@ recreated only when input layout, sample format or rate changes. These helpers e
 decoding, audio devices, GUI and live Discord. Current native display sampling
 is unavailable here; application and clean/cached package checks run in CI for
 the delivered revision. Previous package measurements retain their original heads.
+
+## Upstream media integration checks — October 13, 2026
+
+The merge candidate combines video head `aa8a09a` with parent `61337f3` using
+Rust 1.98.1 and the committed lockfile. Workspace formatting, strict Clippy,
+tests, the minimal application build and policy pass. Exact 6144×2560 and PQ/HLG
+RTP/DAVE regressions, native/HDR resource switching, the offscreen production
+media shader and workspace/fuzz license checks pass. Native GPU/display and
+Discord interoperability checks remain separate owner-controlled work.
+
+The preserved `5b8ae38` release replay has unchanged reducer source through
+`aa8a09a`; its compiler, profile and rustflags fingerprints match the merge
+build. One warmup precedes five alternating pairs on the same Linux cloud host.
+Scheduling noise remains; this synthetic reducer excludes media, UI and RSS.
+The host is Linux 6.18.44/x86_64, Xeon Platinum 8573C, with a 16 GiB memory
+limit. Offline delivery uses a Debian trixie container limited to four CPUs and
+14 GiB; release settings retain fat LTO, one codegen unit and line-table debug
+information. No native display session was available.
+
+| Metric / method | Pre-sync replay | Merge candidate | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000-event median, five pairs | 104.499 ms | 119.017 ms | +14.517 ms / +13.9% |
+| Run range | 99.541–109.792 ms | 111.264–131.862 ms | Slower in all five pairs |
+| Retained estimate, 500 messages | 331,992–332,477 B | 393,492–393,977 B | +61,500 B; not RSS |
+
+The cause is not isolated by these measurements. The 120-second lifecycle soak
+passes 1,923 cycles, 61,536 channel visits, 36,921,600 inserts and eight logout
+cycles in 120.029 seconds, retaining bounded active/dormant histories. Navigation
+and the 20,001-channel workload also pass.
+
+Normal `cargo xtask package --format dir` builds the standard release without
+demo/developer features and stages into an empty destination. Verification found
+an omitted notification-sound provenance file; the allowlist was corrected and
+the complete command rerun from an empty destination with caches. No payload was
+manually repaired. The executable remained byte-identical across these runs.
+
+| Linux package metric | Verified candidate | Method |
+| --- | ---: | --- |
+| Release executable | 87,856,520 B | Compiled, staged and installed hashes match |
+| Installed payload | 132,622,544 B / 266 files | Sum of installed regular-file lengths |
+| Compressed directory | 86,126,968 B | Python tarfile, gzip level 9 |
+
+Executable SHA-256 is `eb703b348cdc54a9db0d616e340aa88eabe7309a80d81520c266faa17b712fd3`.
+All six private libraries, corresponding-source files and notices match their
+staging inputs; ELF runtime paths are relative and exclude the development FFmpeg
+prefix. There is no matching `aa8a09a` package baseline, so no package delta is
+claimed. Native distro package/runtime closure, Windows/macOS packages, display
+transitions, playback throughput and settled process/GPU memory require CI or
+native hardware; directory staging alone does not establish them.

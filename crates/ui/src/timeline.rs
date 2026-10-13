@@ -615,9 +615,11 @@ fn starter_row(
 						},
 					);
 					ui.add(
-						egui::Label::new(RichText::new(message.display_text()).color(colors.text))
-							.wrap()
-							.selectable(false),
+						egui::Label::new(
+							RichText::new(crate::i18n::message_text(message)).color(colors.text),
+						)
+						.wrap()
+						.selectable(false),
 					);
 				});
 			});
@@ -1085,7 +1087,8 @@ fn message_actions(
 			.button(crate::i18n::translate("message-menu-copy"))
 			.clicked()
 		{
-			ui.ctx().copy_text(message.display_text().into_owned());
+			ui.ctx()
+				.copy_text(crate::i18n::message_text(message).into_owned());
 			ui.close();
 		}
 		if let Some(link) = link
@@ -1465,7 +1468,7 @@ fn show_system(
 		let colors = crate::design::palette(ui);
 		ui.horizontal_wrapped(|ui| {
 			ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
-			for segment in &system.segments {
+			for segment in &crate::i18n::system_segments(system) {
 				if !segment.strong {
 					let (pos, galley, response) =
 						egui::Label::new(RichText::new(&segment.text).color(colors.muted))
@@ -3744,7 +3747,7 @@ impl TimelineView {
 									"message-menu-copy",
 									egui::Id::unique(("copy-message", state.generation, id)),
 									&mut self.copy_feedback,
-									|| message.display_text().into_owned(),
+									|| crate::i18n::message_text(message).into_owned(),
 								);
 								copy_action_button(
 									&mut toolbar,
@@ -5777,6 +5780,7 @@ mod tests {
 				kind: Default::default(),
 				discriminator: 0,
 				primary_guild: None,
+				cosmetics: None,
 			},
 			content: "Synthetic text with enough words to wrap in a narrow viewport.".into(),
 			edited: false,
@@ -6416,7 +6420,7 @@ mod tests {
 			// System rows paint the sentence as styled runs with the member name strong.
 			assert!(painted.iter().any(|s| s == "Welcome, "));
 			assert!(painted.iter().any(|s| s == "! Joined the server."));
-			assert!(painted.iter().any(|s| s == " changed the channel name"));
+			assert!(painted.iter().any(|s| s == " changed the channel name: "));
 			assert!(painted.iter().any(|s| s == "new channel name"));
 			for description in [
 				" accepted your friend request.",
@@ -7565,6 +7569,7 @@ mod tests {
 				kind: Default::default(),
 				discriminator: 0,
 				primary_guild: None,
+				cosmetics: None,
 			}),
 			guilds: [1, 2]
 				.into_iter()
@@ -9330,6 +9335,7 @@ mod tests {
 				kind: Default::default(),
 				discriminator: 0,
 				primary_guild: None,
+				cosmetics: None,
 			},
 			content: "<#4> ".repeat(12),
 			author_nick: None,
@@ -9391,6 +9397,7 @@ mod tests {
 			kind: Default::default(),
 			discriminator: 0,
 			primary_guild: None,
+			cosmetics: None,
 		});
 		state.guilds.push(model::Guild {
 			id: Id(5),
@@ -9504,6 +9511,7 @@ mod tests {
 				kind: Default::default(),
 				discriminator: 0,
 				primary_guild: None,
+				cosmetics: None,
 			},
 			content: "||old revealed content||".into(),
 			edited: false,
@@ -9605,6 +9613,7 @@ mod tests {
 				kind: Default::default(),
 				discriminator: 0,
 				primary_guild: None,
+				cosmetics: None,
 			},
 			content: "Ordinary text".into(),
 			edited: false,

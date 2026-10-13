@@ -48,7 +48,10 @@ pub struct VideoUi {
 	pub command: Option<VideoCommand>,
 	pub seen: bool,
 	pub volume: f32,
-	texture: Option<egui::TextureHandle>,
+	/// Latest frame; usually the desktop's GPU-converted texture, else [`Self::managed`].
+	texture: Option<egui::load::SizedTexture>,
+	/// CPU fallback texture behind [`VideoUi::accept_frame`].
+	managed: Option<egui::TextureHandle>,
 	pub media: Option<MediaView>,
 	/// Staging pixels for the current frame. The renderer drops its reference after the
 	/// upload, so the same allocation is refilled each frame instead of reallocating up to
@@ -88,6 +91,7 @@ impl Default for VideoUi {
 			volume: 1.0,
 			texture: None,
 			media: None,
+			managed: None,
 			frame: None,
 			shade: None,
 			posters: HashMap::new(),
@@ -107,6 +111,7 @@ impl VideoUi {
 		self.active = None;
 		self.texture = None;
 		self.media = None;
+		self.managed = None;
 		self.frame = None;
 		self.state = VideoState::Idle;
 		self.position = 0.0;
@@ -196,12 +201,40 @@ impl VideoUi {
 		image.pixels.clear();
 		image.pixels.extend_from_slice(video_pixels(rgba));
 		let image = std::sync::Arc::clone(frame);
-		if let Some(texture) = &mut self.texture {
-			texture.set(image, egui::TextureOptions::LINEAR);
-		} else {
-			self.texture =
-				Some(ctx.load_texture("inline-video", image, egui::TextureOptions::LINEAR));
+		let texture = match &mut self.managed {
+			Some(texture) => {
+				texture.set(image, egui::TextureOptions::LINEAR);
+				texture
+			}
+			None => self.managed.insert(ctx.load_texture(
+				"inline-video",
+				image,
+				egui::TextureOptions::LINEAR,
+			)),
+		};
+		self.texture = Some(egui::load::SizedTexture::from_handle(texture));
+		true
+	}
+	/// Shows a frame the desktop already uploaded (and converted) on the GPU.
+	pub fn show_frame(&mut self, texture: egui::load::SizedTexture) -> bool {
+		if self.active.is_none() {
+			return false;
 		}
+		self.media = None;
+		self.managed = None;
+		self.frame = None;
+		self.texture = Some(texture);
+		true
+	}
+	/// Switch to the HDR-capable media renderer without retaining an obsolete SDR frame.
+	pub fn show_media(&mut self, media: MediaView) -> bool {
+		if self.active.is_none() {
+			return false;
+		}
+		self.texture = None;
+		self.managed = None;
+		self.frame = None;
+		self.media = Some(media);
 		true
 	}
 	fn toggle(&mut self, message: &Message, attachment: &Attachment, state: VideoState) {
@@ -216,6 +249,7 @@ impl VideoUi {
 				self.active = Some((message.channel, message.id, attachment.clone()));
 				self.texture = None;
 				self.media = None;
+				self.managed = None;
 				self.frame = None;
 				self.state = VideoState::Loading;
 				self.position = 0.0;
@@ -391,16 +425,13 @@ impl VideoUi {
 				ui,
 				egui::Rect::from_center_size(stage.center(), media.size * scale),
 			);
-		} else if let Some(texture) = self.texture.as_ref().filter(|_| active) {
-			let size = texture.size_vec2();
+		} else if let Some(texture) = self.texture.filter(|_| active) {
+			let size = texture.size;
 			let scale = (stage.width() / size.x).min(stage.height() / size.y);
 			let image_rect = egui::Rect::from_center_size(stage.center(), size * scale);
-			egui::Image::new(egui::load::SizedTexture::new(
-				texture.id(),
-				image_rect.size(),
-			))
-			.corner_radius(CORNER)
-			.paint_at(ui, image_rect);
+			egui::Image::new(egui::load::SizedTexture::new(texture.id, image_rect.size()))
+				.corner_radius(CORNER)
+				.paint_at(ui, image_rect);
 		}
 		let hovered = response.hovered() || ui.rect_contains_pointer(stage);
 		let show_controls = active
@@ -867,6 +898,46 @@ fn timestamp(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn switching_native_and_hdr_frames_releases_the_previous_display_resources() {
+		let ctx = egui::Context::default();
+		let mut video = VideoUi::default();
+		let message = test_support::message(1, Id(2));
+		let attachment = Attachment {
+			id: Id(3),
+			filename: "clip.mp4".into(),
+			description: None,
+			content_type: Some("video/mp4".into()),
+			size: 128,
+			media: Default::default(),
+			spoiler: false,
+			duration_ms: None,
+			waveform: Vec::new(),
+		};
+		video.active = Some((message.channel, message.id, attachment));
+		assert!(video.accept_frame(&ctx, 1, 1, &[0, 0, 0, 255]));
+		assert!(video.managed.is_some() && video.frame.is_some());
+		let resource: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
+		let retired = std::sync::Arc::downgrade(&resource);
+		assert!(video.show_media(MediaView {
+			size: egui::vec2(1.0, 1.0),
+			resource,
+			failure: Default::default(),
+			callback: std::sync::Arc::new(|rect| egui::PaintCallback {
+				rect,
+				callback: std::sync::Arc::new(())
+			}),
+		}));
+		assert!(video.texture.is_none() && video.managed.is_none() && video.frame.is_none());
+		assert!(retired.upgrade().is_some());
+		let native = egui::load::SizedTexture::new(egui::TextureId::User(1), egui::vec2(1.0, 1.0));
+		assert!(video.show_frame(native));
+		assert!(video.media.is_none());
+		assert!(retired.upgrade().is_none());
+		video.stop();
+		assert!(!video.show_frame(native));
+		assert!(video.texture.is_none());
+	}
 	#[test]
 	fn video_controls_are_explicit_bounded_and_keyboard_operable() {
 		let mut message = test_support::message(1, Id(2));

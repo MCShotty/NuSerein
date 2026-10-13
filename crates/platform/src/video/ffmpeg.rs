@@ -728,35 +728,14 @@ impl Frame {
 /// existing native decoders keep their interface and the FFmpeg path retains
 /// its owned frame reservation through presentation.
 pub enum Sample {
-	Picture {
-		pts: f64,
-		frame: Frame,
-	},
-	Video {
-		pts: f64,
-		width: u32,
-		height: u32,
-		rgba: Vec<u8>,
-	},
-	Audio {
-		pts: f64,
-		frames: Vec<[f32; 2]>,
-	},
+	Picture { pts: f64, frame: Frame },
+	Video { pts: f64, picture: super::Picture },
+	Audio { pts: f64, frames: Vec<[f32; 2]> },
 }
 impl From<super::Sample> for Sample {
 	fn from(sample: super::Sample) -> Self {
 		match sample {
-			super::Sample::Video {
-				pts,
-				width,
-				height,
-				rgba,
-			} => Self::Video {
-				pts,
-				width,
-				height,
-				rgba,
-			},
+			super::Sample::Video { pts, picture } => Self::Video { pts, picture },
 			super::Sample::Audio { pts, frames } => Self::Audio { pts, frames },
 		}
 	}

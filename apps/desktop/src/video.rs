@@ -70,6 +70,8 @@ pub struct Video {
 	poster_pending: std::collections::HashSet<model::Id>,
 	/// Shared by every job of the current session; replaced by [`Video::cancel_posters`].
 	poster_cancelled: Arc<AtomicBool>,
+	/// GPU texture of the playing attachment.
+	texture: crate::gpu_video::VideoTexture,
 }
 
 /// In-flight poster ceiling; excess requests retry while still visible.
@@ -84,12 +86,14 @@ impl Video {
 			poster_results: Default::default(),
 			poster_pending: Default::default(),
 			poster_cancelled: Default::default(),
+			texture: Default::default(),
 		}
 	}
 	pub fn stop(&mut self) {
 		if let Some(session) = self.session.take() {
 			session.cancelled.store(true, Ordering::Release);
 		}
+		self.texture = Default::default();
 		if let Some(requests) = &self.requests {
 			requests.send_replace(None);
 		}
@@ -129,13 +133,21 @@ impl Video {
 			player.duration = update.duration;
 			let frame = update.frame.take();
 			drop(update);
-			if let Some(frame) = frame {
+			if let Some(frame) = frame
+				&& player.active.is_some()
+			{
 				match frame {
-					DisplayFrame::Rgba(width, height, rgba) => {
-						player.accept_frame(ctx, width as usize, height as usize, &rgba);
+					DisplayFrame::Native(picture) => {
+						if let Some(texture) =
+							self.texture.upload(ctx, "inline-video", picture.borrow())
+						{
+							player.show_frame(texture);
+						}
 					}
 					DisplayFrame::Picture(frame) => {
-						player.media = Some(media_view(frame, player.media.as_ref()))
+						let view = media_view(frame, player.media.as_ref());
+						self.texture = Default::default();
+						player.show_media(view);
 					}
 				}
 			}
@@ -210,7 +222,9 @@ impl Video {
 						let Some(request) = receiver.borrow_and_update().clone() else {
 							continue;
 						};
-						if let Err(error) = play(&request, &runtime, &ctx)
+						let result = play(&request, &runtime, &ctx);
+						platform::memory::release_freed_memory();
+						if let Err(error) = result
 							&& !request.session.cancelled.load(Ordering::Acquire)
 						{
 							if let Ok(mut update) = request.session.update.lock() {
@@ -295,7 +309,11 @@ impl Video {
 					let mut stack = Vec::new();
 					loop {
 						if stack.is_empty() {
-							let Ok(job) = receiver.recv() else {
+							let Ok(job) = receiver.try_recv().or_else(|_| {
+								// The batch is done: return its decoders' memory once.
+								platform::memory::release_freed_memory();
+								receiver.recv()
+							}) else {
 								break;
 							};
 							stack.push(job);
@@ -365,12 +383,11 @@ fn decode_poster(job: &PosterJob, runtime: &tokio::runtime::Handle) -> Option<(u
 			return None;
 		}
 		match decoder.poll_video().ok()? {
-			Ready(Some(Sample::Video {
-				width,
-				height,
-				rgba,
-				..
-			})) => return Some(downscale_poster(width, height, rgba)),
+			// Posters are converted once on the CPU, then cached as ordinary textures.
+			Ready(Some(Sample::Video { picture, .. })) => {
+				let (width, height, rgba) = picture.to_rgba()?;
+				return Some(downscale_poster(width, height, rgba));
+			}
 			Ready(None) => return None,
 			Ready(Some(_)) => {}
 			std::task::Poll::Pending => {
@@ -593,8 +610,8 @@ fn play_decoded(
 				.front()
 				.is_some_and(|(pts, _)| *pts <= current + 0.01 || preview_needed)
 			{
-				let (_, displayed) = frames.pop_front().expect("front exists");
-				frame = Some(displayed);
+				let (_, picture) = frames.pop_front().expect("front exists");
+				frame = Some(picture);
 				preview_needed = false;
 			}
 			let finished = video_ended && audio_drained && frames.is_empty();
@@ -684,17 +701,12 @@ fn play_decoded(
 				let sample = decoder.poll_video()?;
 				decoded |= sample.is_ready();
 				match sample {
-					Ready(Some(Sample::Video {
-						pts,
-						width,
-						height,
-						rgba,
-					})) => {
+					Ready(Some(Sample::Video { pts, picture })) => {
 						if pts >= target - 0.01 {
 							seek_preview = None;
-							frames.push_back((pts, DisplayFrame::Rgba(width, height, rgba)));
+							frames.push_back((pts, DisplayFrame::Native(picture)));
 						} else {
-							seek_preview = Some((target, DisplayFrame::Rgba(width, height, rgba)));
+							seek_preview = Some((target, DisplayFrame::Native(picture)));
 						}
 					}
 					Ready(Some(Sample::Picture { pts, frame })) => {
@@ -845,7 +857,7 @@ mod tests {
 }
 
 enum DisplayFrame {
-	Rgba(u32, u32, Vec<u8>),
+	Native(platform::video::Picture),
 	Picture(Arc<platform::video::ffmpeg::Frame>),
 }
 enum AttachmentDecoder {

@@ -28,13 +28,47 @@ const MAX_CODED_PIXELS: u64 = 7680 * 4352;
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
 const MAX_DECODE_AGE: Duration = Duration::from_millis(150);
 
-/// One decoded remote picture, packed RGBA.
+/// One decoded remote picture. Native SDR planes retain their GPU conversion path;
+/// shared FFmpeg pictures retain their explicit HDR metadata and high-bit-depth pixels.
 pub struct RemoteFrame<'a> {
-	pub picture: platform::video::ffmpeg::Picture,
 	pub user: u64,
-	pub width: u32,
-	pub height: u32,
-	pub rgba: &'a [u8],
+	pub picture: RemotePicture<'a>,
+}
+
+pub enum RemotePicture<'a> {
+	Native(platform::video::Picture<&'a [u8]>),
+	Ffmpeg {
+		picture: platform::video::ffmpeg::Picture,
+		data: &'a [u8],
+	},
+}
+impl<'a> RemotePicture<'a> {
+	/// Borrow an SDR picture without converting or copying its planes.
+	pub fn native(&self) -> Option<platform::video::Picture<&'a [u8]>> {
+		match self {
+			Self::Native(picture) => Some(picture.with_data(picture.data)),
+			Self::Ffmpeg { picture, data }
+				if !picture.hdr() && picture.validate().is_ok() && data.len() == picture.bytes =>
+			{
+				Some(platform::video::Picture {
+					width: picture.width,
+					height: picture.height,
+					layout: platform::video::Layout::Rgba,
+					color: platform::video::Color::WEBRTC,
+					rotation: picture.rotation as u16,
+					data,
+				})
+			}
+			_ => None,
+		}
+	}
+
+	pub fn hdr(&self) -> Option<(platform::video::ffmpeg::Picture, &'a [u8])> {
+		match self {
+			Self::Ffmpeg { picture, data } if picture.hdr() => Some((*picture, data)),
+			_ => None,
+		}
+	}
 }
 pub type VideoSink = Arc<dyn Fn(RemoteFrame<'_>) + Send + Sync>;
 
@@ -980,11 +1014,21 @@ impl Backend {
 			Self::Ffmpeg(decoder, _) => decoder.hardware(),
 		}
 	}
-	fn picture(&self, _width: u32, _height: u32) -> platform::video::ffmpeg::Picture {
+	fn picture<'a>(&self, _width: u32, _height: u32, data: &'a [u8]) -> RemotePicture<'a> {
 		match self {
-			Self::Ffmpeg(_, picture) => *picture,
+			Self::Ffmpeg(_, picture) => RemotePicture::Ffmpeg {
+				picture: *picture,
+				data: &data[..picture.bytes],
+			},
 			#[cfg(test)]
-			_ => platform::video::ffmpeg::Picture::sdr(_width, _height),
+			_ => RemotePicture::Native(platform::video::Picture {
+				width: _width,
+				height: _height,
+				layout: platform::video::Layout::I420,
+				color: platform::video::Color::WEBRTC,
+				rotation: 0,
+				data,
+			}),
 		}
 	}
 
@@ -1008,10 +1052,7 @@ impl Backend {
 					counters.pictures.fetch_add(1, Ordering::Relaxed);
 					sink(RemoteFrame {
 						user,
-						width: frame.width,
-						height: frame.height,
-						rgba: &frame.rgba,
-						picture: platform::video::ffmpeg::Picture::sdr(frame.width, frame.height),
+						picture: RemotePicture::Native(frame.borrow()),
 					});
 				}
 			});
@@ -1127,16 +1168,40 @@ impl Backend {
 					Ok(None) => return Ok(None),
 					Err(_) => return Err(DecodeError::Failed),
 				};
-				let (width, height) = openh264::formats::YUVSource::dimensions(&decoded);
-				let (width, height) = bounded(width, height).map_err(|()| DecodeError::Failed)?;
-				let bytes = width as usize * height as usize * 4;
-				// Shared across participants: retain initialized bytes when resolutions alternate.
-				if scratch.len() < bytes {
-					scratch.reserve_exact(bytes - scratch.len());
-					scratch.resize(bytes, 0);
-				}
-				decoded.write_rgba8(&mut scratch[..bytes]);
-				Ok(Some((width, height)))
+				use openh264::formats::YUVSource;
+				let (width, height) = decoded.dimensions();
+				let (w, h) = bounded(width, height).map_err(|()| DecodeError::Failed)?;
+				let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+				let (luma_stride, cb_stride, cr_stride) = decoded.strides();
+				// Shared across participants: clearing keeps the capacity when resolutions
+				// alternate, and the planes are copied as-is (I420) for GPU colour conversion.
+				scratch.clear();
+				let bytes = platform::video::Layout::I420
+					.len(w, h)
+					.ok_or(DecodeError::Failed)?;
+				// After `clear`, the exact reservation covers the whole picture.
+				scratch.reserve_exact(bytes);
+				platform::video::pack_plane(scratch, decoded.y(), luma_stride, width, height)
+					.and_then(|()| {
+						platform::video::pack_plane(
+							scratch,
+							decoded.u(),
+							cb_stride,
+							chroma_width,
+							chroma_height,
+						)
+					})
+					.and_then(|()| {
+						platform::video::pack_plane(
+							scratch,
+							decoded.v(),
+							cr_stride,
+							chroma_width,
+							chroma_height,
+						)
+					})
+					.ok_or(DecodeError::Failed)?;
+				Ok(Some((w, h)))
 			}
 		}
 	}
@@ -1335,7 +1400,7 @@ fn decode_loop_on_adapter(
 		let picture = decoders
 			.get(&frame.user)
 			.expect("decoded backend")
-			.picture(width, height);
+			.picture(width, height, &scratch);
 		if !lifetime.active.load(Ordering::Acquire) {
 			continue;
 		}
@@ -1343,9 +1408,6 @@ fn decode_loop_on_adapter(
 		counters.pictures.fetch_add(1, Ordering::Relaxed);
 		sink(RemoteFrame {
 			user: frame.user,
-			width,
-			height,
-			rgba: &scratch[..picture.bytes],
 			picture,
 		});
 	}
@@ -1403,6 +1465,79 @@ fn bounded(width: usize, height: usize) -> Result<(u32, u32), ()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn remote_pictures_preserve_native_planes_and_shared_hdr_metadata() {
+		use platform::video::{Color, Layout, Matrix, Picture};
+		for layout in [Layout::I420, Layout::Nv12, Layout::Rgba] {
+			let bytes = vec![128; layout.len(4, 2).unwrap()];
+			let expected = Picture {
+				width: 4,
+				height: 2,
+				layout,
+				color: Color {
+					matrix: Matrix::Bt709,
+					full_range: true,
+				},
+				rotation: 90,
+				data: bytes.as_slice(),
+			};
+			let frame = RemotePicture::Native(expected.clone());
+			let borrowed = frame.native().unwrap();
+			assert_eq!(borrowed, expected);
+			assert_eq!(borrowed.data.as_ptr(), bytes.as_ptr());
+			assert!(frame.hdr().is_none());
+		}
+		let rgba = [0; 8];
+		let sdr = RemotePicture::Ffmpeg {
+			picture: platform::video::ffmpeg::Picture {
+				rotation: 90,
+				..platform::video::ffmpeg::Picture::sdr(2, 1)
+			},
+			data: &rgba,
+		};
+		assert_eq!(sdr.native().unwrap().data.as_ptr(), rgba.as_ptr());
+		assert_eq!(sdr.native().unwrap().layout, Layout::Rgba);
+		assert_eq!(sdr.native().unwrap().display_size(), (1, 2));
+		assert!(
+			RemotePicture::Ffmpeg {
+				picture: platform::video::ffmpeg::Picture::sdr(2, 1),
+				data: &rgba[..7],
+			}
+			.native()
+			.is_none()
+		);
+		for transfer in [16, 18] {
+			let data = [0; 12];
+			let picture = platform::video::ffmpeg::Picture {
+				width: 2,
+				height: 2,
+				format: 1,
+				depth: 10,
+				primaries: 9,
+				matrix: 9,
+				transfer,
+				peak_nits: 1000.0,
+				bytes: data.len(),
+				..Default::default()
+			};
+			assert!(picture.validate().is_ok());
+			let frame = RemotePicture::Ffmpeg {
+				picture,
+				data: &data,
+			};
+			assert!(
+				frame.native().is_none(),
+				"HDR must retain its high-precision renderer"
+			);
+			let (metadata, planes) = frame.hdr().unwrap();
+			assert_eq!(
+				(metadata.depth, metadata.transfer, metadata.matrix),
+				(10, transfer, 9)
+			);
+			assert_eq!(planes.as_ptr(), data.as_ptr());
+		}
+	}
 
 	#[test]
 	fn av1_rtp_preserves_sized_payloads_without_duplicating_leb128_lengths() {
@@ -2198,20 +2333,25 @@ mod tests {
 				(decoder, data, (width as u32, height as u32))
 			})
 			.collect();
+		// Growing from the smaller picture still holds the whole larger one. `reserve_exact`
+		// only promises a lower bound, so the exact capacity is left to the allocator.
+		let mut grown = Vec::new();
+		for index in [1, 0] {
+			let (decoder, data, _) = &mut streams[index];
+			assert!(decoder.decode(data, 0, &mut grown).is_ok());
+		}
+		let bytes = platform::video::Layout::I420.len(64, 64).unwrap();
+		assert!(grown.capacity() >= bytes);
 		let mut scratch = Vec::new();
 		let mut allocation = None;
 		for _ in 0..4 {
 			for (decoder, data, dimensions) in &mut streams {
 				assert_eq!(decoder.decode(data, 0, &mut scratch), Ok(Some(*dimensions)));
-				let bytes = dimensions.0 as usize * dimensions.1 as usize * 4;
-				assert!(
-					scratch[..bytes]
-						.as_chunks::<4>()
-						.0
-						.iter()
-						.all(|px| px[3] == 255)
-				);
-				assert_eq!(scratch.len(), 64 * 64 * 4);
+				// Exactly one packed I420 picture; the larger allocation is kept.
+				let bytes = platform::video::Layout::I420
+					.len(dimensions.0, dimensions.1)
+					.unwrap();
+				assert_eq!(scratch.len(), bytes);
 				let current = (scratch.as_ptr(), scratch.capacity());
 				assert_eq!(*allocation.get_or_insert(current), current);
 			}
@@ -2254,7 +2394,7 @@ mod tests {
 				for (decoder, data) in decoders.iter_mut().zip(&streams) {
 					let previous = scratch.len();
 					let (width, height) = decoder.decode(data, 0, &mut scratch).unwrap().unwrap();
-					std::hint::black_box(&scratch[..width as usize * height as usize * 4]);
+					std::hint::black_box((width, height, &scratch[..]));
 					length_changes += usize::from(previous != scratch.len());
 					peak_capacity = peak_capacity.max(scratch.capacity());
 				}
@@ -2280,9 +2420,13 @@ mod tests {
 		let pictures = Arc::new(std::sync::Mutex::new(Vec::new()));
 		let seen = pictures.clone();
 		let sink: VideoSink = Arc::new(move |frame: RemoteFrame| {
-			seen.lock()
-				.unwrap()
-				.push((frame.user, frame.width, frame.height, frame.rgba.to_vec()));
+			let picture = frame.picture.native().expect("native VideoToolbox picture");
+			seen.lock().unwrap().push((
+				frame.user,
+				picture.width,
+				picture.height,
+				picture.to_rgba().unwrap().2,
+			));
 		});
 		let counters = Arc::new(DecoderCounters::default());
 		let lifetime = Arc::new(SourceLifetime::new());

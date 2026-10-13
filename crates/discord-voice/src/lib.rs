@@ -20,7 +20,7 @@ mod video_receive;
 mod video_sps;
 pub use crypto::Identity;
 pub use transport::{run, run_stream, run_with_identity, watch_stream, watch_stream_on_adapter};
-pub use video_receive::{RemoteFrame, VideoSink};
+pub use video_receive::{RemoteFrame, RemotePicture, VideoSink};
 pub mod camera_video;
 
 pub type Frame = [f32; 960];

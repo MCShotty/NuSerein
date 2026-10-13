@@ -61,7 +61,7 @@ class NativePackageTest(unittest.TestCase):
             for source in Path("docs").glob("*.md"):
                 (staged / "docs" / source.name).write_text("synthetic documentation\n")
             (staged / "licenses").mkdir()
-            for name in ["NotoSansCJK-LICENSE.txt", "NotoSansArabic-OFL.txt", "NotoSansMath-OFL.txt", "NotoSansSymbols2-OFL.txt", "Inter-OFL.txt",
+            for name in ["notification-sounds.md", "NotoSansCJK-LICENSE.txt", "NotoSansArabic-OFL.txt", "NotoSansMath-OFL.txt", "NotoSansSymbols2-OFL.txt", "Inter-OFL.txt",
                          "Twemoji-CC-BY-4.0.txt", "Unicode-LICENSE.txt", "Phosphor-Icons-MIT.txt", "Simple-Icons-CC0.txt"]:
                 (staged / "licenses" / name).write_text("synthetic license\n")
             for name in ["licenses/files", "licenses/notifications", "licenses/login",
@@ -99,6 +99,9 @@ class NativePackageTest(unittest.TestCase):
                         shutil.copyfile(artifact, ARTIFACTS / artifact.name)
                 if FORMAT == "dir":
                     listing = "\n".join(packaging.payload_files(staged / "linux-root"))
+                    self.assertEqual(
+                        (staged / "linux-root/usr/share/doc/serein/licenses/notification-sounds.md").read_bytes(),
+                        (staged / "licenses/notification-sounds.md").read_bytes())
                     for name in vulkan_files:
                         self.assertIn("ffmpeg-source/" + name, listing)
                     for excluded in ["debug.log", "stale.log", "stale.deb", "previous.deb", "stale-nested.log"]:
@@ -127,6 +130,7 @@ class NativePackageTest(unittest.TestCase):
             self.assertNotIn("usr/share/doc/serein/docs/", listing)
             self.assertNotIn("source/hpke-rs/", listing)
             self.assertIn("licenses/dependencies/PROVENANCE.md", listing)
+            self.assertIn("licenses/notification-sounds.md", listing)
             self.assertIn("licenses/voice/", listing)
             self.assertIn("usr/lib/serein/libavcodec-serein.so.61", listing)
             self.assertIn("ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", listing)

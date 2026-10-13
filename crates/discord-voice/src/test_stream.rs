@@ -346,14 +346,19 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 	let (playback_tx, playback_rx) = std::sync::mpsc::sync_channel(8);
 	let (picture_tx, picture_rx) = std::sync::mpsc::sync_channel(1);
 	let sink: VideoSink = Arc::new(move |frame| {
-		let _ = picture_tx.try_send((
-			frame.user,
-			frame.width,
-			frame.height,
-			frame.rgba.len(),
-			frame.picture.format,
-			frame.picture.transfer,
-		));
+		let (width, height, bytes, format, transfer) = match frame.picture {
+			crate::RemotePicture::Ffmpeg { picture, data } => (
+				picture.width,
+				picture.height,
+				data.len(),
+				picture.format,
+				picture.transfer,
+			),
+			crate::RemotePicture::Native(picture) => {
+				(picture.width, picture.height, picture.data.len(), 0, 2)
+			}
+		};
+		let _ = picture_tx.try_send((frame.user, width, height, bytes, format, transfer));
 	});
 	let mut viewer = tokio::spawn(async move {
 		run_stream_inner(

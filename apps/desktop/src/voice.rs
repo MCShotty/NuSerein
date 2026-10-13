@@ -241,9 +241,11 @@ impl CallCues {
 }
 /// Remote cameras kept as textures at once; matches the transport's source limit.
 const MAX_REMOTE_VIDEO: usize = 16;
-type RemotePictures = Vec<(u64, Arc<egui::ColorImage>, bool)>;
-type RemoteHdrPictures = Vec<(u64, Arc<platform::video::ffmpeg::Frame>)>;
+/// Latest native picture per remote user plus a dirty flag; the UI uploads dirty ones.
+type RemotePictures = Vec<(u64, platform::video::Picture, bool)>;
 type CameraPicture = Option<(Arc<egui::ColorImage>, bool)>;
+
+type RemoteHdrPictures = Vec<(u64, Arc<platform::video::ffmpeg::Frame>)>;
 
 fn queue_camera_frame(
 	send: &tokio::sync::mpsc::Sender<discord_voice::camera_video::Frame>,
@@ -264,33 +266,30 @@ fn queue_camera_frame(
 	}
 }
 
-#[allow(clippy::chunks_exact_to_as_chunks)] // Matches egui's faster profiled conversion loop.
+/// Replace one user's latest picture in place: a plain copy of the decoder's planes, reusing
+/// the previous allocation. Colour conversion happens on the GPU at upload.
 fn store_remote_frame(
 	pictures: &mut RemotePictures,
 	frame: discord_voice::RemoteFrame<'_>,
 ) -> bool {
-	if frame.rgba.len() != frame.width as usize * frame.height as usize * 4 {
+	let Some(picture) = frame.picture.native() else {
+		return false;
+	};
+	if !picture.is_valid() {
 		return false;
 	}
 	let entry = if let Some(index) = pictures.iter().position(|(user, _, _)| *user == frame.user) {
 		&mut pictures[index]
 	} else if pictures.len() < MAX_REMOTE_VIDEO {
-		pictures.push((frame.user, Arc::new(egui::ColorImage::default()), false));
+		pictures.push((frame.user, picture.with_data(Vec::new()), false));
 		pictures.last_mut().expect("remote frame inserted")
 	} else {
 		return false;
 	};
-	let size = [frame.width as usize, frame.height as usize];
-	if let Some(image) = Arc::get_mut(&mut entry.1) {
-		image.size = size;
-		image.source_size = egui::vec2(frame.width as f32, frame.height as f32);
-		image.pixels.clear();
-		image.pixels.extend(frame.rgba.chunks_exact(4).map(|pixel| {
-			egui::Color32::from_rgba_unmultiplied(pixel[0], pixel[1], pixel[2], pixel[3])
-		}));
-	} else {
-		entry.1 = Arc::new(egui::ColorImage::from_rgba_unmultiplied(size, frame.rgba));
-	}
+	let mut data = std::mem::take(&mut entry.1.data);
+	data.clear();
+	data.extend_from_slice(picture.data);
+	entry.1 = picture.with_data(data);
 	entry.2 = true;
 	true
 }
@@ -355,6 +354,8 @@ pub struct Voice {
 	retiring: Option<mpsc::Receiver<()>>,
 	device_scan: Option<mpsc::Receiver<Result<discord_voice::audio::DeviceList, &'static str>>>,
 	camera_scan: Option<mpsc::Receiver<Result<discord_voice::camera::DeviceList, &'static str>>>,
+	/// Remote camera textures behind `ui.voice_remote_video`, by user.
+	remote_textures: Vec<(Id, crate::gpu_video::VideoTexture)>,
 }
 impl Voice {
 	#[allow(clippy::field_reassign_with_default)] // Voice owns Drop-managed workers.
@@ -368,6 +369,9 @@ impl Voice {
 		self.video_capabilities.cancel();
 		self.camera_test = None;
 		self.mic_preview = None;
+		// Logout stops polling; the next poll (or `MessagingUi::clear`) drops the borrowed
+		// ids before a frame paints, and disposal waits for the current frame.
+		self.remote_textures.clear();
 		self.screen.stop();
 		self.watch.stop();
 		self.pending = None;
@@ -729,8 +733,13 @@ impl Voice {
 			ui.voice_camera_preview = None;
 			ui.voice_camera_status = "";
 			ui.voice_privacy_code = None;
+		}
+		// Remote camera textures exist only for live media and are always dropped together
+		// with the ids the view borrows, so no tile can draw a freed texture.
+		if expected.is_none() || self.live.is_none() {
 			ui.voice_remote_video.clear();
 			ui.voice_remote_hdr.clear();
+			self.remote_textures.clear();
 		}
 		let current = self
 			.live
@@ -754,6 +763,9 @@ impl Voice {
 			}
 			let command = current.map(|(_, channel, request)| self.end_control(channel, request));
 			self.stop();
+			ui.voice_remote_video.clear();
+			ui.voice_remote_hdr.clear();
+			self.remote_textures.clear();
 			// Permission/removal failures must leave the service too; never target a new account.
 			return current
 				.filter(|(generation, _, _)| *generation == state.generation)
@@ -993,23 +1005,13 @@ impl Voice {
 					ctx.request_repaint();
 				}
 			}
-			let pictures = live
-				.remote_video
-				.try_lock()
-				.map(|mut slot| {
-					slot.iter_mut()
-						.filter_map(|(user, image, dirty)| {
-							std::mem::take(dirty).then(|| (*user, image.clone()))
-						})
-						.collect::<Vec<_>>()
-				})
-				.unwrap_or_default();
 			let hdr = live
 				.remote_hdr
 				.try_lock()
 				.map(|mut slot| std::mem::take(&mut *slot))
 				.unwrap_or_default();
 			for (user, frame) in hdr {
+				self.remote_textures.retain(|(owner, _)| owner.0 != user);
 				let view = crate::video::media_view(
 					frame,
 					ui.voice_remote_hdr
@@ -1028,23 +1030,35 @@ impl Voice {
 					ui.voice_remote_hdr.push((Id(user), view));
 				}
 			}
-			for (user, image) in pictures {
-				ui.voice_remote_hdr.retain(|(owner, _)| owner.0 != user);
-				if let Some((_, texture)) = ui
-					.voice_remote_video
-					.iter_mut()
-					.find(|(id, _)| id.0 == user)
-				{
-					texture.set(image, egui::TextureOptions::LINEAR);
-				} else if ui.voice_remote_video.len() < MAX_REMOTE_VIDEO {
-					ui.voice_remote_video.push((
-						Id(user),
-						ctx.load_texture(
-							format!("remote-camera-{user}"),
-							image,
-							egui::TextureOptions::LINEAR,
-						),
-					));
+			// Uploading is a plane copy into GPU staging, so it runs under the slot lock
+			// instead of cloning each picture out first.
+			if let Ok(mut slot) = live.remote_video.try_lock() {
+				for (user, picture, dirty) in slot.iter_mut() {
+					if !std::mem::take(dirty) {
+						continue;
+					}
+					let user = Id(*user);
+					ui.voice_remote_hdr.retain(|(owner, _)| *owner != user);
+					let index = match self.remote_textures.iter().position(|(id, _)| *id == user) {
+						Some(index) => index,
+						None if self.remote_textures.len() < MAX_REMOTE_VIDEO => {
+							self.remote_textures.push((user, Default::default()));
+							self.remote_textures.len() - 1
+						}
+						None => continue,
+					};
+					let name = format!("remote-camera-{}", user.0);
+					let Some(texture) =
+						self.remote_textures[index]
+							.1
+							.upload(ctx, &name, picture.borrow())
+					else {
+						continue;
+					};
+					match ui.voice_remote_video.iter_mut().find(|(id, _)| *id == user) {
+						Some((_, shown)) => *shown = texture,
+						None => ui.voice_remote_video.push((user, texture)),
+					}
 				}
 			}
 			// Cameras announced off, or participants who left, release their textures.
@@ -1065,6 +1079,7 @@ impl Voice {
 			if let Ok(mut frames) = live.remote_hdr.lock() {
 				frames.retain(|(id, _)| visible.contains(&Id(*id)));
 			}
+			self.remote_textures.retain(|(id, _)| visible.contains(id));
 			if let Ok(mut pictures) = live.remote_video.try_lock() {
 				pictures.retain(|(id, _, _)| visible.contains(&Id(*id)));
 			}
@@ -1550,8 +1565,8 @@ impl Voice {
 		let pictures = remote_video.clone();
 		let picture_wake = ctx.clone();
 		let sink: discord_voice::VideoSink = Arc::new(move |frame: discord_voice::RemoteFrame| {
-			if frame.picture.hdr() {
-				if let Ok(owned) = platform::video::ffmpeg::Frame::copy(frame.picture, frame.rgba)
+			if let Some((picture, data)) = frame.picture.hdr() {
+				if let Ok(owned) = platform::video::ffmpeg::Frame::copy(picture, data)
 					&& let Ok(mut hdr) = hdr.lock()
 				{
 					if let Some((_, picture)) = hdr.iter_mut().find(|(user, _)| *user == frame.user)
@@ -1980,44 +1995,32 @@ mod tests {
 	#[test]
 	fn optimization_remote_video_reuses_the_latest_frame_buffer() {
 		let mut pictures = Vec::new();
-		let rgba = [1, 2, 3, 255, 4, 5, 6, 255];
-		assert!(store_remote_frame(
-			&mut pictures,
-			discord_voice::RemoteFrame {
-				picture: Default::default(),
-				user: 7,
-				width: 2,
-				height: 1,
-				rgba: &rgba,
-			},
-		));
-		let pixels = pictures[0].1.pixels.as_ptr();
+		let frame = |data: &'static [u8], width| discord_voice::RemoteFrame {
+			user: 7,
+			picture: discord_voice::RemotePicture::Native(platform::video::Picture {
+				width,
+				height: 2,
+				layout: platform::video::Layout::I420,
+				color: platform::video::Color::WEBRTC,
+				rotation: 0,
+				data,
+			}),
+		};
+		const TWO: [u8; 6] = [16, 16, 16, 16, 128, 128];
+		assert!(store_remote_frame(&mut pictures, frame(&TWO, 2)));
+		let planes = pictures[0].1.data.as_ptr();
 		pictures[0].2 = false;
-		assert!(store_remote_frame(
-			&mut pictures,
-			discord_voice::RemoteFrame {
-				picture: Default::default(),
-				user: 7,
-				width: 2,
-				height: 1,
-				rgba: &rgba,
-			},
-		));
-		assert_eq!(pictures[0].1.pixels.as_ptr(), pixels);
+		assert!(store_remote_frame(&mut pictures, frame(&TWO, 2)));
+		assert_eq!(pictures[0].1.data.as_ptr(), planes);
 		assert!(pictures[0].2);
-		let upload = pictures[0].1.clone();
+		// A smaller picture keeps the allocation; invalid planes are rejected.
 		assert!(store_remote_frame(
 			&mut pictures,
-			discord_voice::RemoteFrame {
-				picture: Default::default(),
-				user: 7,
-				width: 1,
-				height: 1,
-				rgba: &rgba[..4],
-			},
+			frame(&[16, 16, 128, 128], 1)
 		));
-		assert!(!Arc::ptr_eq(&pictures[0].1, &upload));
-		assert_eq!(upload.size, [2, 1]);
+		assert_eq!(pictures[0].1.data.as_ptr(), planes);
+		assert_eq!((pictures[0].1.width, pictures[0].1.data.len()), (1, 4));
+		assert!(!store_remote_frame(&mut pictures, frame(&[16], 1)));
 	}
 
 	#[test]
