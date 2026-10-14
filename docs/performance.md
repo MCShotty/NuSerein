@@ -991,4 +991,3 @@ unmeasured here. Native window capture and a suitable HDR display are unavailabl
 in this environment. The owner has agreed to test the current CI Windows installer
 with the 6144×2560 stream and HDR/SDR display transitions. Outgoing HDR captures
 currently tone-map to SDR until receiver 10-bit compatibility is established.
-
