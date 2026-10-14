@@ -26,7 +26,7 @@ impl serde::Serialize for TimeFormat {
 }
 impl<'de> serde::Deserialize<'de> for TimeFormat {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-		let value = String::deserialize(deserializer)?;
+		let value = <String as serde::Deserialize>::deserialize(deserializer)?;
 		Ok(Self::ALL
 			.into_iter()
 			.find(|candidate| candidate.key() == value)

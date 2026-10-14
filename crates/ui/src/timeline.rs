@@ -3409,6 +3409,7 @@ impl TimelineView {
 													profile,
 													state,
 													crate::design::MessageCardSurface::Conversation,
+													self.hide_media_links,
 												) {
 													self.gif_favorite = Some(gif);
 												}
@@ -10090,6 +10091,7 @@ mod tests {
 						..Default::default()
 					},
 					crate::design::MessageCardSurface::Conversation,
+					false,
 				);
 				assert!(
 					ui.min_rect().height() > 120.0,

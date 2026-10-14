@@ -3333,6 +3333,11 @@ impl Desktop {
 		#[cfg(feature = "demo")]
 		if self.state.demo {
 			let event = match command {
+				// Offline previews confirm locally; nothing reaches the service.
+				Command::BadgeSettings { request, settings } => Event::BadgeSettings {
+					request,
+					result: Ok(settings),
+				},
 				Command::ApplicationCommands {
 					channel,
 					guild,

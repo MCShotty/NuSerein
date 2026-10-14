@@ -4729,6 +4729,65 @@ timeline-dm-intro = Ceci est le début de votre historique de messages privés a
 timeline-channel-intro-title = Bienvenue dans #{ $channel } !
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Ceci est le début du salon #{ $channel }.
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Commun
+# Context: badges
+badges-rarity-rare = Rare
+# Context: badges
+badges-rarity-epic = Épique
+# Context: badges
+badges-rarity-mythic = Mythique
+# Context: badges
+badges-always-visible = Toujours affiché sur votre profil
+# Context: badges
+badges-click-show = Cliquez pour afficher
+# Context: badges
+badges-click-hide = Cliquez pour masquer
+# Context: badges
+badges-customize-title = Personnaliser vos badges
+# Context: badges
+badges-customize-hint = Faites glisser pour réorganiser et masquez ceux que les autres ne doivent pas voir.
+# Context: badges
+badges-none = Aucun badge à afficher.
+# Context: badges
+badges-reset = Réinitialiser
+# Context: badges
+badges-saving = Enregistrement…
+# Context: badges
+badges-save = Enregistrer
+# Context: badges
+badges-view = Voir les badges
+# Context: badges
+badges-your = Vos badges
+# Context: badges
+badges-user = Badges de { $name }
+# Context: badges
+badges-browse = Parcourez vos badges et découvrez ceux que vous pouvez débloquer.
+# Context: badges
+badges-available = À débloquer
+# Context: badges
+badges-customize-button = Personnaliser vos badges
+# Context: badges
+badges-close = Fermer
+# Context: badges
+badges-locked = Pas encore débloqué
+# Context: badges
+badges-date-unlocked = Date de déblocage
+# Context: badges
+badges-rarity = Rareté
+# Context: badges
+badges-max-level = Vous avez atteint le niveau le plus élevé de ce badge.
+# Context: badges
+badges-next-level = Niveau suivant : { $tier }
+# Context: badges
+badges-all-levels = Voir tous les niveaux
+# Context: badges
+badges-hide-levels = Masquer les niveaux
+# Context: badges
+badges-manage = Gérer vos badges
 page-language-time = Langue et heure
 description-language-time = Langue d'affichage et format de l'heure.
 time-format-group = Format de l'heure

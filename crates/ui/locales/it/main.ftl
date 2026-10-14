@@ -4729,6 +4729,65 @@ timeline-dm-intro = Questo è l'inizio della cronologia dei messaggi diretti con
 timeline-channel-intro-title = Benvenuto in #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Questo è l'inizio del canale #{ $channel }.
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Comune
+# Context: badges
+badges-rarity-rare = Raro
+# Context: badges
+badges-rarity-epic = Epico
+# Context: badges
+badges-rarity-mythic = Mitico
+# Context: badges
+badges-always-visible = Sempre visibile nel profilo
+# Context: badges
+badges-click-show = Clicca per mostrare
+# Context: badges
+badges-click-hide = Clicca per nascondere
+# Context: badges
+badges-customize-title = Personalizza i tuoi badge
+# Context: badges
+badges-customize-hint = Trascina per riordinare e nascondi quelli che non vuoi far vedere agli altri.
+# Context: badges
+badges-none = Nessun badge da mostrare.
+# Context: badges
+badges-reset = Ripristina
+# Context: badges
+badges-saving = Salvataggio…
+# Context: badges
+badges-save = Salva
+# Context: badges
+badges-view = Vedi badge
+# Context: badges
+badges-your = I tuoi badge
+# Context: badges
+badges-user = Badge di { $name }
+# Context: badges
+badges-browse = Sfoglia i tuoi badge e scopri quelli nuovi che puoi sbloccare.
+# Context: badges
+badges-available = Da sbloccare
+# Context: badges
+badges-customize-button = Personalizza i tuoi badge
+# Context: badges
+badges-close = Chiudi
+# Context: badges
+badges-locked = Non ancora sbloccato
+# Context: badges
+badges-date-unlocked = Data di sblocco
+# Context: badges
+badges-rarity = Rarità
+# Context: badges
+badges-max-level = Hai raggiunto il livello più alto di questo badge.
+# Context: badges
+badges-next-level = Livello successivo: { $tier }
+# Context: badges
+badges-all-levels = Vedi tutti i livelli
+# Context: badges
+badges-hide-levels = Nascondi livelli
+# Context: badges
+badges-manage = Gestisci i badge
 page-language-time = Lingua e ora
 description-language-time = Lingua dell'interfaccia e formato dell'ora.
 time-format-group = Formato ora

@@ -4828,6 +4828,65 @@ timeline-dm-intro = 这是你与 { $name } 的私信记录的开头。
 timeline-channel-intro-title = 欢迎来到 #{ $channel }！
 # Context: timeline_channel_intro
 timeline-channel-intro-start = 这是 #{ $channel } 频道的开头。
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = 普通
+# Context: badges
+badges-rarity-rare = 稀有
+# Context: badges
+badges-rarity-epic = 史诗
+# Context: badges
+badges-rarity-mythic = 神话
+# Context: badges
+badges-always-visible = 始终显示在你的个人资料中
+# Context: badges
+badges-click-show = 点击显示
+# Context: badges
+badges-click-hide = 点击隐藏
+# Context: badges
+badges-customize-title = 自定义你的徽章
+# Context: badges
+badges-customize-hint = 拖动以重新排序，并隐藏不想让他人看到的徽章。
+# Context: badges
+badges-none = 暂无可显示的徽章。
+# Context: badges
+badges-reset = 重置
+# Context: badges
+badges-saving = 正在保存…
+# Context: badges
+badges-save = 保存
+# Context: badges
+badges-view = 查看徽章
+# Context: badges
+badges-your = 你的徽章
+# Context: badges
+badges-user = { $name } 的徽章
+# Context: badges
+badges-browse = 浏览你的徽章，发现可以解锁的新徽章。
+# Context: badges
+badges-available = 可解锁
+# Context: badges
+badges-customize-button = 自定义你的徽章
+# Context: badges
+badges-close = 关闭
+# Context: badges
+badges-locked = 尚未解锁
+# Context: badges
+badges-date-unlocked = 解锁日期
+# Context: badges
+badges-rarity = 稀有度
+# Context: badges
+badges-max-level = 你已达到此徽章的最高等级。
+# Context: badges
+badges-next-level = 下一级：{ $tier }
+# Context: badges
+badges-all-levels = 查看所有等级
+# Context: badges
+badges-hide-levels = 隐藏等级
+# Context: badges
+badges-manage = 管理徽章
 page-language-time = 语言与时间
 description-language-time = 显示语言和时间格式。
 time-format-group = 时间格式

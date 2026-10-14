@@ -4735,6 +4735,65 @@ timeline-dm-intro = Это начало истории ваших личных �
 timeline-channel-intro-title = Добро пожаловать в #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Это начало канала #{ $channel }.
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Обычный
+# Context: badges
+badges-rarity-rare = Редкий
+# Context: badges
+badges-rarity-epic = Эпический
+# Context: badges
+badges-rarity-mythic = Мифический
+# Context: badges
+badges-always-visible = Всегда отображается в профиле
+# Context: badges
+badges-click-show = Нажмите, чтобы показать
+# Context: badges
+badges-click-hide = Нажмите, чтобы скрыть
+# Context: badges
+badges-customize-title = Настройка значков
+# Context: badges
+badges-customize-hint = Перетаскивайте, чтобы изменить порядок, и скрывайте то, что не должны видеть другие.
+# Context: badges
+badges-none = Пока нет значков.
+# Context: badges
+badges-reset = Сбросить
+# Context: badges
+badges-saving = Сохранение…
+# Context: badges
+badges-save = Сохранить
+# Context: badges
+badges-view = Все значки
+# Context: badges
+badges-your = Ваши значки
+# Context: badges
+badges-user = Значки пользователя { $name }
+# Context: badges
+badges-browse = Просматривайте свои значки и открывайте новые.
+# Context: badges
+badges-available = Можно получить
+# Context: badges
+badges-customize-button = Настроить значки
+# Context: badges
+badges-close = Закрыть
+# Context: badges
+badges-locked = Ещё не получен
+# Context: badges
+badges-date-unlocked = Дата получения
+# Context: badges
+badges-rarity = Редкость
+# Context: badges
+badges-max-level = Вы достигли наивысшего уровня этого значка.
+# Context: badges
+badges-next-level = Следующий уровень: { $tier }
+# Context: badges
+badges-all-levels = Показать все уровни
+# Context: badges
+badges-hide-levels = Скрыть уровни
+# Context: badges
+badges-manage = Управление значками
 page-language-time = Язык и время
 description-language-time = Язык интерфейса и формат времени.
 time-format-group = Формат времени

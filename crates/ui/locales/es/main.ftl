@@ -4732,6 +4732,65 @@ timeline-dm-intro = Este es el comienzo de tu historial de mensajes directos con
 timeline-channel-intro-title = ¡Te damos la bienvenida a #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Este es el comienzo del canal #{ $channel }.
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Común
+# Context: badges
+badges-rarity-rare = Raro
+# Context: badges
+badges-rarity-epic = Épico
+# Context: badges
+badges-rarity-mythic = Mítico
+# Context: badges
+badges-always-visible = Siempre visible en tu perfil
+# Context: badges
+badges-click-show = Haz clic para mostrar
+# Context: badges
+badges-click-hide = Haz clic para ocultar
+# Context: badges
+badges-customize-title = Personaliza tus insignias
+# Context: badges
+badges-customize-hint = Arrastra para reordenar y oculta las que no quieras que otros vean.
+# Context: badges
+badges-none = Aún no hay insignias.
+# Context: badges
+badges-reset = Restablecer
+# Context: badges
+badges-saving = Guardando…
+# Context: badges
+badges-save = Guardar
+# Context: badges
+badges-view = Ver insignias
+# Context: badges
+badges-your = Tus insignias
+# Context: badges
+badges-user = Insignias de { $name }
+# Context: badges
+badges-browse = Explora tus insignias y descubre otras nuevas que puedes desbloquear.
+# Context: badges
+badges-available = Disponibles para desbloquear
+# Context: badges
+badges-customize-button = Personalizar tus insignias
+# Context: badges
+badges-close = Cerrar
+# Context: badges
+badges-locked = Aún no desbloqueada
+# Context: badges
+badges-date-unlocked = Fecha de desbloqueo
+# Context: badges
+badges-rarity = Rareza
+# Context: badges
+badges-max-level = Has alcanzado el nivel más alto de esta insignia.
+# Context: badges
+badges-next-level = Siguiente nivel: { $tier }
+# Context: badges
+badges-all-levels = Ver todos los niveles
+# Context: badges
+badges-hide-levels = Ocultar niveles
+# Context: badges
+badges-manage = Gestionar insignias
 page-language-time = Idioma y hora
 description-language-time = Idioma de la interfaz y formato de la hora.
 time-format-group = Formato de hora

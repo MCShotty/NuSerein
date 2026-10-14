@@ -4816,6 +4816,65 @@ timeline-dm-intro = Toto je začátek vaší historie přímých zpráv s uživa
 timeline-channel-intro-title = Vítejte v #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Toto je začátek kanálu #{ $channel }.
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Běžný
+# Context: badges
+badges-rarity-rare = Vzácný
+# Context: badges
+badges-rarity-epic = Epický
+# Context: badges
+badges-rarity-mythic = Mýtický
+# Context: badges
+badges-always-visible = Na profilu se zobrazuje vždy
+# Context: badges
+badges-click-show = Kliknutím zobrazíte
+# Context: badges
+badges-click-hide = Kliknutím skryjete
+# Context: badges
+badges-customize-title = Přizpůsobit odznaky
+# Context: badges
+badges-customize-hint = Přetažením změníte pořadí a skryjete ty, které ostatní nemají vidět.
+# Context: badges
+badges-none = Zatím žádné odznaky k zobrazení.
+# Context: badges
+badges-reset = Obnovit
+# Context: badges
+badges-saving = Ukládání…
+# Context: badges
+badges-save = Uložit
+# Context: badges
+badges-view = Zobrazit odznaky
+# Context: badges
+badges-your = Vaše odznaky
+# Context: badges
+badges-user = Odznaky uživatele { $name }
+# Context: badges
+badges-browse = Procházejte své odznaky a objevte nové, které můžete získat.
+# Context: badges
+badges-available = K odemčení
+# Context: badges
+badges-customize-button = Přizpůsobit odznaky
+# Context: badges
+badges-close = Zavřít
+# Context: badges
+badges-locked = Zatím neodemčeno
+# Context: badges
+badges-date-unlocked = Datum odemčení
+# Context: badges
+badges-rarity = Vzácnost
+# Context: badges
+badges-max-level = Dosáhli jste nejvyšší úrovně tohoto odznaku.
+# Context: badges
+badges-next-level = Další úroveň: { $tier }
+# Context: badges
+badges-all-levels = Zobrazit všechny úrovně
+# Context: badges
+badges-hide-levels = Skrýt úrovně
+# Context: badges
+badges-manage = Spravovat odznaky
 page-language-time = Jazyk a čas
 description-language-time = Jazyk rozhraní a zobrazení času.
 time-format-group = Formát času
