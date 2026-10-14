@@ -1,0 +1,127 @@
+name: PR 567 Flatpak
+
+on:
+  push:
+    branches: [ci/pr567-flatpak-20261014]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr567-flatpak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: 39724057c88ad45c014d67c2b8dcfba550049dbb
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: 39724057c88ad45c014d67c2b8dcfba550049dbb
+          persist-credentials: false
+      - name: Verify the exact PR source
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Install Flatpak build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive --no-related flathub org.gnome.Sdk//49 org.gnome.Platform//49
+      - name: Build locked offline Flatpak
+        run: |
+          python3 -m unittest discover -s packaging/flatpak -p 'test_*.py'
+          python3 packaging/flatpak/build.py "$RUNNER_TEMP/pr567-flatpak"
+      - name: Validate the exported application payload
+        run: |
+          python3 - <<'PY'
+          import configparser, json, os, subprocess
+          from pathlib import Path
+          files = Path(os.environ['RUNNER_TEMP']) / 'pr567-flatpak/build/files'
+          metadata = configparser.ConfigParser()
+          metadata.read(files.parent / 'metadata')
+          if metadata.get('Application', 'name') != 'cz.viceverse.serein' or metadata.get('Application', 'runtime') != 'org.gnome.Platform/x86_64/49':
+              raise SystemExit('Unexpected Flatpak application ID or runtime')
+          libraries = ['libavcodec-serein.so.61', 'libavutil-serein.so.59',
+                       'libavformat-serein.so.61', 'libswscale-serein.so.8',
+                       'libswresample-serein.so.5', 'libopenh264-serein.so.8']
+          library_paths = [files / 'lib/serein' / name for name in libraries]
+          binary = files / 'bin/serein'
+          source = files / 'share/doc/serein/ffmpeg-source'
+          required = [binary, *library_paths,
+                      files / 'share/doc/serein/LICENSE-MIT',
+                      files / 'share/doc/serein/LICENSE-APACHE',
+                      files / 'share/doc/serein/THIRD_PARTY_NOTICES.md',
+                      files / 'share/metainfo/cz.viceverse.serein.metainfo.xml']
+          required += [source / name for name in [
+              'build.json', 'configure.json', 'build-ffmpeg.py', 'serein-ffmpeg.patch',
+              'serein-openh264.patch', 'COPYING.LGPLv2.1', 'OpenH264-LICENSE',
+              'dav1d-COPYING', 'AMF-LICENSE', 'oneVPL-LICENSE',
+              'nv-codec-headers-README', 'Vulkan-Headers-LICENSE.md',
+              'source/ffmpeg-7.1.5.tar.xz', 'source/openh264-2.6.0-source.tar.bz2',
+              'source/dav1d-1.5.1.tar.xz', 'source/AMF-1.4.36-headers.tar',
+              'source/libvpl-2.14.0.tar.gz', 'source/nv-codec-headers-12.2.72.0.tar.gz',
+              'source/Vulkan-Headers-1.3.290.tar.gz']]
+          for path in required:
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'Missing or empty package file: {path.relative_to(files)}')
+          recipe = json.loads((source / 'build.json').read_text())
+          if not all(recipe.get(key) for key in ['nvenc', 'amf', 'qsv']):
+              raise SystemExit('The Flatpak lacks an expected hardware encoder backend')
+          for path in [binary, *library_paths]:
+              dynamic = subprocess.check_output(['readelf', '-d', str(path)], text=True)
+              search = [line for line in dynamic.splitlines() if 'RPATH' in line or 'RUNPATH' in line]
+              if any('/app/serein-ffmpeg' in line or '/run/build/' in line or os.environ['RUNNER_TEMP'] in line for line in search):
+                  raise SystemExit(f'Build-directory dependency in {path.relative_to(files)}')
+          if (files / 'serein-ffmpeg').exists() or (files / 'bin/patchelf').exists():
+              raise SystemExit('Build-only tools or the FFmpeg staging prefix leaked into the package')
+          print('Verified executable, private media libraries, notices, corresponding sources and release RPATHs')
+          PY
+      - name: Install the bundle and check runtime linkage
+        run: |
+          flatpak install --user --noninteractive "$RUNNER_TEMP/pr567-flatpak/Serein-linux.flatpak"
+          flatpak info --user cz.viceverse.serein
+          dbus-run-session -- flatpak run --command=sh cz.viceverse.serein -c 'set -eu; ldd /app/bin/serein; for library in /app/lib/serein/*.so.*; do ldd "$library"; done' > "$RUNNER_TEMP/pr567-flatpak/runtime-linkage.txt"
+          python3 - <<'PY'
+          import os, posixpath, re
+          from pathlib import Path
+          text = (Path(os.environ['RUNNER_TEMP']) / 'pr567-flatpak/runtime-linkage.txt').read_text()
+          if 'not found' in text:
+              raise SystemExit(text)
+          paths = re.findall(r'libavcodec-serein\.so\.61\s+=>\s+(\S+)', text)
+          if not any(posixpath.normpath(path) == '/app/lib/serein/libavcodec-serein.so.61' for path in paths):
+              raise SystemExit('The installed application did not resolve its private FFmpeg library')
+          print('Installed bundle resolves its media libraries inside the Flatpak runtime')
+          PY
+      - name: Collect the standalone installer
+        run: |
+          mkdir release-assets
+          cp "$RUNNER_TEMP/pr567-flatpak/Serein-linux.flatpak" release-assets/Serein-PR567-3972405-linux-x86_64.flatpak
+          cp "$RUNNER_TEMP/pr567-flatpak/runtime-linkage.txt" release-assets/runtime-linkage.txt
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          bundle = Path('release-assets/Serein-PR567-3972405-linux-x86_64.flatpak')
+          checksum = hashlib.file_digest(bundle.open('rb'), 'sha256').hexdigest()
+          (bundle.parent / 'SHA256SUMS').write_text(f'{checksum}  {bundle.name}\n')
+          evidence = {'source_repository': 'MCShotty/Serein', 'source_sha': os.environ['SOURCE_SHA'],
+                      'build_run': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+                      'architecture': 'x86_64', 'runtime': 'org.gnome.Platform//49',
+                      'rust_toolchain': '1.98.1', 'bundle_size_bytes': bundle.stat().st_size,
+                      'bundle_sha256': checksum, 'bundle_install': 'passed',
+                      'runtime_linkage': 'passed', 'payload_and_source_validation': 'passed'}
+          (bundle.parent / 'build-evidence.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          print(json.dumps(evidence, indent=2))
+          PY
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: serein-pr567-linux-x86_64-flatpak
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 30
