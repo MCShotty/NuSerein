@@ -4729,3 +4729,83 @@ timeline-dm-intro = Das ist der Anfang deines Direktnachrichtenverlaufs mit { $n
 timeline-channel-intro-title = Willkommen in #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Das ist der Anfang des Kanals #{ $channel }.
+# Context: text_menu
+text-menu-cut = Ausschneiden
+text-menu-copy = Kopieren
+text-menu-paste = Einfügen
+text-menu-select-all = Alles auswählen
+# Context: media_box
+forum-composer-attached-files = { $count ->
+    [one] { $count } angehängte Datei
+   *[other] { $count } angehängte Dateien
+    }
+forum-composer-remove-file = { $file } entfernen
+post-menu-post-action-failed = Beitragsaktion fehlgeschlagen
+post-menu-thread-action-failed = Thread-Aktion fehlgeschlagen
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Gewöhnlich
+# Context: badges
+badges-rarity-rare = Selten
+# Context: badges
+badges-rarity-epic = Episch
+# Context: badges
+badges-rarity-mythic = Mythisch
+# Context: badges
+badges-always-visible = Wird immer im Profil angezeigt
+# Context: badges
+badges-click-show = Zum Anzeigen klicken
+# Context: badges
+badges-click-hide = Zum Ausblenden klicken
+# Context: badges
+badges-customize-title = Abzeichen anpassen
+# Context: badges
+badges-customize-hint = Ziehen zum Umsortieren; blende aus, was andere nicht sehen sollen.
+# Context: badges
+badges-none = Noch keine Abzeichen.
+# Context: badges
+badges-reset = Zurücksetzen
+# Context: badges
+badges-saving = Wird gespeichert …
+# Context: badges
+badges-save = Speichern
+# Context: badges
+badges-view = Abzeichen ansehen
+# Context: badges
+badges-your = Deine Abzeichen
+# Context: badges
+badges-user = Abzeichen von { $name }
+# Context: badges
+badges-browse = Sieh dir deine Abzeichen an und entdecke neue, die du freischalten kannst.
+# Context: badges
+badges-available = Freischaltbar
+# Context: badges
+badges-customize-button = Abzeichen anpassen
+# Context: badges
+badges-close = Schließen
+# Context: badges
+badges-locked = Noch nicht freigeschaltet
+# Context: badges
+badges-date-unlocked = Freigeschaltet am
+# Context: badges
+badges-rarity = Seltenheit
+# Context: badges
+badges-max-level = Du hast die höchste Stufe dieses Abzeichens erreicht.
+# Context: badges
+badges-next-level = Nächste Stufe: { $tier }
+# Context: badges
+badges-all-levels = Alle Stufen anzeigen
+# Context: badges
+badges-hide-levels = Stufen ausblenden
+# Context: badges
+badges-manage = Abzeichen verwalten
+page-language-time = Sprache & Zeit
+description-language-time = Anzeigesprache und Darstellung der Uhrzeit.
+time-format-group = Zeitformat
+time-format-auto = Automatisch
+time-format-12-hour = 12-Stunden
+time-format-24-hour = 24-Stunden
+profiles-status-edit = Status bearbeiten
+profiles-status-clear = Status löschen

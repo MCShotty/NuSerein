@@ -6,6 +6,7 @@ pub mod captcha;
 pub mod channel_actions;
 pub mod fingerprint;
 pub mod forum;
+pub mod game_mentions;
 pub mod gifs;
 pub mod guild_creation;
 pub mod guild_folders;
@@ -23,6 +24,7 @@ pub mod message_actions;
 pub mod messaging_permissions;
 pub mod notifications;
 pub mod polls;
+pub mod preload;
 pub mod presence;
 pub mod profile;
 pub mod reactions;
@@ -223,6 +225,11 @@ pub enum Command {
 		cosmetics: model::CosmeticPreferences,
 	},
 	CancelProfile,
+	/// The account's own badge order and hidden set; one explicit write.
+	BadgeSettings {
+		request: u64,
+		settings: model::badges::BadgeSettings,
+	},
 	StreamPreview {
 		guild: Id,
 		channel: Id,
@@ -250,6 +257,9 @@ pub enum Command {
 		after: Option<Id>,
 		request: u64,
 	},
+	/// The command a click would send, sent early on intent and answered by that command's own
+	/// event: a conversation's recent `History` page or a `Profile`.
+	Prefetch(Box<Command>),
 	Forward {
 		source: Id,
 		message: Id,
@@ -540,6 +550,10 @@ pub enum Event {
 		request: u64,
 		result: Result<String, auth::Failure>,
 	},
+	BadgeSettings {
+		request: u64,
+		result: Result<model::badges::BadgeSettings, auth::Failure>,
+	},
 	ProfileEdited {
 		user: Id,
 		request: u64,
@@ -682,6 +696,7 @@ pub struct State {
 	pub stickers: stickers::Stickers,
 	pub interactions: interactions::Interactions,
 	pub application_commands: application_commands::Catalog,
+	pub game_mentions: game_mentions::Catalog,
 	pub messaging_permissions: messaging_permissions::Settings,
 	pub guild_folders: Option<model::guild_folders::Settings>,
 	pub folders_pending: bool,
@@ -731,6 +746,7 @@ pub struct State {
 	/// Device preference for which profile cosmetics are shown and loaded.
 	pub profile_cosmetics: model::CosmeticPreferences,
 	pub own_profile: profile::OwnProfile,
+	pub badge_editor: profile::BadgeEditor,
 	pub invites: invites::Cache,
 	pub invite_join: invites::Join,
 	pub guild_creation: guild_creation::Creation,
@@ -766,6 +782,7 @@ pub struct State {
 	pub timeline: Timeline,
 	pub preserve_deleted_messages: bool,
 	pub resident: resident::Windows,
+	pub preload: preload::Preload,
 	pub freshness: Freshness,
 	pub status: &'static str,
 	/// User-copyable cause of the last session failure, cleared by the next READY.
@@ -945,6 +962,7 @@ impl Default for State {
 			profile_cache: Default::default(),
 			profile_cosmetics: Default::default(),
 			own_profile: Default::default(),
+			badge_editor: Default::default(),
 			invites: Default::default(),
 			invite_join: Default::default(),
 			guild_creation: Default::default(),
@@ -956,6 +974,7 @@ impl Default for State {
 			member_chunks: MemberChunks::default(),
 			member_search: Default::default(),
 			member_search_nonce: 0,
+			game_mentions: Default::default(),
 			direct_presences: vec![],
 			local_game_activity: Default::default(),
 			direct_presence_bytes: None,
@@ -971,6 +990,7 @@ impl Default for State {
 			timeline: Timeline::default(),
 			preserve_deleted_messages: false,
 			resident: resident::Windows::default(),
+			preload: Default::default(),
 			freshness: Freshness::Stale,
 			status: "Disconnected",
 			failure_detail: None,
@@ -1164,14 +1184,18 @@ impl State {
 		self.last_viewed_channels.splice(0..0, fresh);
 	}
 	pub fn select_guild(&mut self, guild: Id) -> Option<Command> {
+		let channel = self.guild_target(guild)?;
+		self.select(channel)
+	}
+	/// The channel a server icon opens: the current one, the last viewed, or the first text one.
+	pub fn guild_target(&self, guild: Id) -> Option<Id> {
 		self.guild(guild)?;
 		let available = |id| {
 			self.channel(id).is_some_and(|channel| {
 				channel.guild == Some(guild) && navigable(channel) && self.can_view(id)
 			})
 		};
-		let channel = self
-			.selected
+		self.selected
 			.filter(|id| available(*id))
 			.or_else(|| {
 				self.last_viewed_channels
@@ -1186,8 +1210,7 @@ impl State {
 					// Prefer ordinary text/forum channels over threads or voice on first visit.
 					.min_by_key(|c| (matches!(c.kind, 2 | 10..=12), c.position, c.id))
 					.map(|c| c.id)
-			})?;
-		self.select(channel)
+			})
 	}
 	pub fn select(&mut self, channel: Id) -> Option<Command> {
 		self.cancel_invite_navigation(channel);
@@ -1266,7 +1289,7 @@ impl State {
 		}
 		self.retire_archived_thread(Some(channel));
 		self.typing.clear();
-		self.select_resident(channel);
+		let trusted = self.select_resident(channel);
 		self.history_targeted = false;
 		self.history_navigation.clear();
 		if self.shared_member_list_id(channel).is_none() {
@@ -1327,7 +1350,30 @@ impl State {
 				return Apply::Opened(Some(command));
 			}
 		}
-		Apply::Opened(Some(self.history(None)))
+		if let Some(trusted) = trusted {
+			self.cancel_history();
+			self.history_before = None;
+			self.older_exhausted = trusted.older_exhausted;
+			self.freshness = Freshness::Fresh;
+			return Apply::Opened(self.call_sync(channel));
+		}
+		let command = self.history(None);
+		if let Command::History { request, .. } = command
+			&& self
+				.preload
+				.conversations
+				.adopt(channel, request, std::time::Instant::now())
+		{
+			// The page this click needs is already on its way.
+			return Apply::Opened(self.call_sync(channel));
+		}
+		Apply::Opened(Some(command))
+	}
+	/// Opening without a page request still synchronizes a direct call's state, as the host
+	/// does alongside a recent-page request.
+	fn call_sync(&self, channel: Id) -> Option<Command> {
+		(self.channel(channel).is_some_and(|c| c.guild.is_none()) && self.can_call(channel))
+			.then_some(Command::Voice(voice::Command::Sync { channel }))
 	}
 
 	/// Return to the last available direct message, or Friends when none remains.
@@ -1979,6 +2025,15 @@ impl State {
 			self.reject_own_profile(user, request);
 			return;
 		}
+		if let Command::BadgeSettings { request, .. } = command {
+			self.apply_badge_settings(
+				request,
+				Err(auth::Failure::ProtocolAt(
+					"Badge settings were not queued; try again",
+				)),
+			);
+			return;
+		}
 		if matches!(command, Command::GuildFolders(_)) {
 			self.apply_guild_folders(Err(auth::Failure::ProtocolAt(
 				"Server organization was not queued; try again",
@@ -2293,6 +2348,33 @@ impl State {
 			self.invalidate_members();
 			return;
 		}
+		if let Command::Prefetch(command) = command {
+			// The click that adopted a rejected preload fails as its own request would.
+			match *command {
+				Command::History {
+					channel, request, ..
+				} => {
+					if let preload::Arrival::Adopted(own, _) =
+						self.preload.conversations.arrived(request, false)
+					{
+						self.command_rejected(Command::History {
+							channel,
+							before: None,
+							after: None,
+							request: own,
+						});
+					}
+				}
+				Command::Profile {
+					user,
+					guild,
+					request,
+					..
+				} => self.apply_profile(user, guild, request, Err(auth::Failure::Capacity)),
+				_ => {}
+			}
+			return;
+		}
 		if let Command::History {
 			channel, request, ..
 		} = &command
@@ -2405,6 +2487,7 @@ impl State {
 			if matches!(envelope.event, Event::Ready { .. } | Event::Resync) {
 				self.set_premium_type(0);
 			}
+			self.interrupt_preloads();
 			self.interrupt_stickers();
 			self.posts.clear_summaries();
 			self.interactions.reset();
@@ -2839,6 +2922,10 @@ impl State {
 				result,
 			} => {
 				self.apply_stream_preview(guild, channel, user, request, result);
+				Ok(())
+			}
+			Event::BadgeSettings { request, result } => {
+				self.apply_badge_settings(request, result);
 				Ok(())
 			}
 
@@ -3313,10 +3400,17 @@ impl State {
 			}
 			Event::History {
 				channel,
-				request,
+				mut request,
 				older,
 				mut messages,
 			} => {
+				if preload::is_preload(request) {
+					match self.preload.conversations.arrived(request, true) {
+						preload::Arrival::Adopted(own, _) => request = own,
+						preload::Arrival::Keep => return self.park_preloaded(channel, messages),
+						preload::Arrival::Drop => return,
+					}
+				}
 				if self.selected != Some(channel)
 					|| request != self.request
 					|| !self.history_pending
@@ -3375,6 +3469,9 @@ impl State {
 					self.newer_may_have_more = messages.len() == 50;
 				}
 				let jump = self.history_after.is_some() && self.timeline.is_empty();
+				if self.older_exhausted {
+					self.timeline.mark_start_loaded();
+				}
 				let r = self.timeline.finish_page(messages, older);
 				if r.is_ok() && jump {
 					self.search_target = self.timeline.iter().next().map(|m| m.id);
@@ -3394,13 +3491,30 @@ impl State {
 			}
 			Event::HistoryFailed {
 				channel,
-				request,
+				mut request,
 				failure,
 			} => {
+				if preload::is_preload(request) {
+					let preload::Arrival::Adopted(own, _) =
+						self.preload.conversations.arrived(request, false)
+					else {
+						return;
+					};
+					request = own;
+				}
 				if self.selected != Some(channel)
 					|| request != self.request
 					|| !self.history_pending
 				{
+					return;
+				}
+				if failure == auth::Failure::Capacity {
+					self.command_rejected(Command::History {
+						channel,
+						request,
+						before: None,
+						after: None,
+					});
 					return;
 				}
 				self.cancel_history();
@@ -3917,6 +4031,7 @@ impl State {
 			self.interrupt_gif_favorites();
 			self.invalidate_messaging_permissions(Some(failure));
 			self.interrupt_own_profile();
+			self.interrupt_badge_settings();
 			self.local_game_activity = Default::default();
 			self.cancel_message_actions();
 			if self.folders_pending {
@@ -4203,6 +4318,9 @@ impl Event {
 					result.as_ref().map_or(0, |p| p.bytes())
 				}
 				Self::StreamPreview { result, .. } => result.as_ref().map_or(0, String::capacity),
+				Self::BadgeSettings { result, .. } => result
+					.as_ref()
+					.map_or(0, |s| (s.order.capacity() + s.hidden.capacity()) * 4),
 				Self::Voice(event) => event.bytes(),
 				Self::Permissions(event) => event.bytes(),
 				Self::GuildEmojis { emojis, .. } => custom_emoji_bytes(emojis),

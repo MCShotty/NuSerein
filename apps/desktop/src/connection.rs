@@ -92,6 +92,8 @@ impl Drop for Connection {
 		self.task.abort();
 	}
 }
+/// Preload tasks kept at once: one per preload kind, plus room for one whose result was lost.
+const PREFETCHES: usize = 4;
 struct AbortTask(JoinHandle<()>);
 impl Drop for AbortTask {
 	fn drop(&mut self) {
@@ -156,6 +158,35 @@ async fn wait_for_voice_interruption(
 			return;
 		}
 	}
+}
+
+fn reject_prefetch_at_capacity(tasks: &mut Vec<AbortTask>, command: &Command) -> Option<Event> {
+	tasks.retain(|task| !task.0.is_finished());
+	if tasks.len() < PREFETCHES {
+		return None;
+	}
+	// Accepted reads may already belong to a click; reject the newcomer with its own id.
+	Some(match command {
+		Command::History {
+			channel, request, ..
+		} => Event::HistoryFailed {
+			channel: *channel,
+			request: *request,
+			failure: Failure::Capacity,
+		},
+		Command::Profile {
+			user,
+			guild,
+			request,
+			..
+		} => Event::Profile {
+			user: *user,
+			guild: *guild,
+			request: *request,
+			result: Err(Failure::Capacity),
+		},
+		_ => Event::Failure(Failure::Capacity),
+	})
 }
 impl Connection {
 	/// Coalesce explicit recovery requests without restarting REST writes or authentication.
@@ -325,6 +356,9 @@ impl Connection {
                     }
                 }));
                 let mut history:Option<AbortTask>=None;
+                // Preloads never cancel the open conversation's reads or each other; each kind
+                // keeps at most one in flight, so this list stays tiny.
+                let mut prefetches:Vec<AbortTask>=Vec::new();
                 let mut profile:Option<AbortTask>=None;
                 let mut profile_note:Option<AbortTask>=None;
 				let mut stream_preview:Option<AbortTask>=None;
@@ -700,6 +734,23 @@ impl Connection {
                                     _=>None
                                 };
                                 member_send.send(subscription).map_err(|_|Failure::Network)?;
+                                continue;
+                            }
+                            if let Command::Prefetch(preload) = command {
+                                if let Some(event) = reject_prefetch_at_capacity(&mut prefetches, &preload) {
+                                    emit(event)?;
+                                    wake.request_repaint();
+                                    continue;
+                                }
+                                let history = match &*preload { Command::History{channel,request,..} => Some((*channel,*request)), _ => None };
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                prefetches.push(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(*preload).await;
+                                    let event=match history {Some((channel,request))=>scope_history_failure(event,channel,request),None=>event};
+                                    let failure=match &event {Event::Failure(f)|Event::Profile{result:Err(f),..} if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
                                 continue;
                             }
                             if let Command::History { channel, request, .. } = &command {
@@ -1764,6 +1815,50 @@ fn scope_history_failure(event: Event, channel: model::Id, request: u64) -> Even
 
 #[cfg(test)]
 mod tests {
+	#[tokio::test]
+	async fn full_prefetch_pool_rejects_new_reads_without_aborting_accepted_work() {
+		let mut tasks: Vec<_> = (0..PREFETCHES)
+			.map(|_| AbortTask(tokio::spawn(std::future::pending())))
+			.collect();
+		let history = Command::History {
+			channel: model::Id(1),
+			before: None,
+			after: None,
+			request: 99,
+		};
+		assert!(matches!(
+			reject_prefetch_at_capacity(&mut tasks, &history),
+			Some(Event::HistoryFailed {
+				channel: model::Id(1),
+				request: 99,
+				failure: Failure::Capacity
+			})
+		));
+		let profile = Command::Profile {
+			user: model::Id(2),
+			guild: None,
+			request: 100,
+			with_mutuals: true,
+			cosmetics: Default::default(),
+		};
+		assert!(matches!(
+			reject_prefetch_at_capacity(&mut tasks, &profile),
+			Some(Event::Profile {
+				user: model::Id(2),
+				request: 100,
+				result: Err(Failure::Capacity),
+				..
+			})
+		));
+		assert_eq!(tasks.len(), PREFETCHES);
+		tokio::task::yield_now().await;
+		assert!(tasks.iter().all(|task| !task.0.is_finished()));
+		tasks[0].0.abort();
+		let _ = (&mut tasks[0].0).await;
+		assert!(reject_prefetch_at_capacity(&mut tasks, &history).is_none());
+		assert_eq!(tasks.len(), PREFETCHES - 1);
+	}
+
 	#[test]
 	fn confirmed_dm_ownership_survives_resume_without_repeating_initial_ring() {
 		use client_core::voice::Command as V;

@@ -53,6 +53,7 @@ impl Settings {
 			show_hidden_channels: ui.show_hidden_channels,
 			hide_nitro_emojis: ui.hide_nitro_emojis,
 			convert_emoticons: ui.convert_emoticons,
+			preload_on_hover: ui.preload_on_hover,
 			hide_title_bar: ui.hide_title_bar,
 			hide_window_decorations: ui.hide_window_decorations,
 			gpu_preference: ui.gpu_preference,
@@ -76,6 +77,7 @@ impl Settings {
 			muted_users: ui.voice_user_mutes().to_vec(),
 			cosmetics: ui.cosmetics,
 			image_cache: ui.image_cache,
+			time_format: ui.time_format,
 		};
 		if value != self.current {
 			self.state.touched = true;
@@ -98,6 +100,7 @@ impl Settings {
 		ui.show_hidden_channels = value.show_hidden_channels;
 		ui.hide_nitro_emojis = value.hide_nitro_emojis;
 		ui.convert_emoticons = value.convert_emoticons;
+		ui.preload_on_hover = value.preload_on_hover;
 		ui.hide_title_bar = value.hide_title_bar;
 		ui.hide_window_decorations = value.hide_window_decorations;
 		ui.gpu_preference = value.gpu_preference;
@@ -121,6 +124,8 @@ impl Settings {
 		ui.set_voice_user_mutes(&value.muted_users);
 		ui.cosmetics = value.cosmetics;
 		ui.image_cache = value.image_cache;
+		ui.time_format = value.time_format;
+		ui::local_time::set_format(ui.time_format, ui.language);
 	}
 }
 
@@ -381,6 +386,7 @@ mod tests {
 		ui.notifications_enabled = defaults.notifications_enabled;
 		ui.transparency = defaults.transparency;
 		ui.blur = defaults.blur;
+		ui.preload_on_hover = defaults.preload_on_hover;
 		settings.observe(&ui);
 		assert!(
 			!settings.state.touched,

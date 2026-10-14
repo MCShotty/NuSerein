@@ -4636,6 +4636,8 @@ member-in-voice = V hlasovém chatu
 settings-chat-box = Psaní zpráv
 settings-convert-emoticons = Automaticky převádět emotikony ve zprávách na emoji
 settings-convert-emoticons-description = Při odesílání nebo úpravě zpráv převést samostatné emotikony jako :) na 🙂. Kód a odkazy zůstanou beze změny.
+settings-preload-on-hover = Předem načítat po najetí myší
+settings-preload-on-hover-description = Načíst konverzaci, profil nebo výběr GIFů, když na nich spočine ukazatel, aby se otevřely okamžitě. Používá stejné požadavky jako otevření, nejvýše 12 za minutu pro každý druh.
 
 profiles-board = Board
 profiles-board-unavailable = This profile’s board is unavailable.
@@ -4816,3 +4818,80 @@ timeline-dm-intro = Toto je začátek vaší historie přímých zpráv s uživa
 timeline-channel-intro-title = Vítejte v #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Toto je začátek kanálu #{ $channel }.
+# Context: text_menu
+text-menu-cut = Vyjmout
+text-menu-copy = Kopírovat
+text-menu-paste = Vložit
+text-menu-select-all = Vybrat vše
+# Context: media_box
+forum-composer-attached-files = Přiložené soubory: { $count }
+forum-composer-remove-file = Odebrat { $file }
+post-menu-post-action-failed = Akce s příspěvkem selhala
+post-menu-thread-action-failed = Akce s vláknem selhala
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Běžný
+# Context: badges
+badges-rarity-rare = Vzácný
+# Context: badges
+badges-rarity-epic = Epický
+# Context: badges
+badges-rarity-mythic = Mýtický
+# Context: badges
+badges-always-visible = Na profilu se zobrazuje vždy
+# Context: badges
+badges-click-show = Kliknutím zobrazíte
+# Context: badges
+badges-click-hide = Kliknutím skryjete
+# Context: badges
+badges-customize-title = Přizpůsobit odznaky
+# Context: badges
+badges-customize-hint = Přetažením změníte pořadí a skryjete ty, které ostatní nemají vidět.
+# Context: badges
+badges-none = Zatím žádné odznaky k zobrazení.
+# Context: badges
+badges-reset = Obnovit
+# Context: badges
+badges-saving = Ukládání…
+# Context: badges
+badges-save = Uložit
+# Context: badges
+badges-view = Zobrazit odznaky
+# Context: badges
+badges-your = Vaše odznaky
+# Context: badges
+badges-user = Odznaky uživatele { $name }
+# Context: badges
+badges-browse = Procházejte své odznaky a objevte nové, které můžete získat.
+# Context: badges
+badges-available = K odemčení
+# Context: badges
+badges-customize-button = Přizpůsobit odznaky
+# Context: badges
+badges-close = Zavřít
+# Context: badges
+badges-locked = Zatím neodemčeno
+# Context: badges
+badges-date-unlocked = Datum odemčení
+# Context: badges
+badges-rarity = Vzácnost
+# Context: badges
+badges-max-level = Dosáhli jste nejvyšší úrovně tohoto odznaku.
+# Context: badges
+badges-next-level = Další úroveň: { $tier }
+# Context: badges
+badges-all-levels = Zobrazit všechny úrovně
+# Context: badges
+badges-hide-levels = Skrýt úrovně
+# Context: badges
+badges-manage = Spravovat odznaky
+page-language-time = Jazyk a čas
+description-language-time = Jazyk rozhraní a zobrazení času.
+time-format-group = Formát času
+time-format-auto = Automaticky
+time-format-12-hour = 12hodinový
+time-format-24-hour = 24hodinový
+profiles-status-edit = Upravit stav
+profiles-status-clear = Vymazat stav

@@ -2,6 +2,7 @@
 use crate::{
 	Command, State,
 	auth::{AuthState, Failure},
+	preload,
 };
 use model::{Id, UserProfile};
 use std::{
@@ -51,6 +52,14 @@ impl ProfileCache {
 			.map(|entry| size_of::<CachedProfile>() + entry.data.bytes())
 			.sum()
 	}
+	/// Whether an unexpired profile for `(user, guild)` is cached, without evicting anything.
+	fn contains(&self, user: Id, guild: Option<Id>, now: Instant) -> bool {
+		self.entries.iter().any(|entry| {
+			entry.user == user
+				&& entry.guild == guild
+				&& now.saturating_duration_since(entry.fetched) < CACHE_TTL
+		})
+	}
 	/// A cached, unexpired global profile, without refreshing or evicting anything.
 	fn peek(&self, user: Id, now: Instant) -> Option<&UserProfile> {
 		self.entries
@@ -62,6 +71,12 @@ impl ProfileCache {
 			})
 			.map(|entry| &entry.data)
 	}
+	/// Updates every cached view of `user` in place.
+	pub(crate) fn update(&mut self, user: Id, change: impl Fn(&mut UserProfile)) {
+		for entry in self.entries.iter_mut().filter(|entry| entry.user == user) {
+			change(&mut entry.data);
+		}
+	}
 	pub fn len(&self) -> usize {
 		self.entries.len()
 	}
@@ -72,6 +87,13 @@ impl ProfileCache {
 		self.entries.clear();
 		self.entries.shrink_to_fit();
 	}
+}
+
+/// A profile response for the requested person and server that fits its bounds.
+fn accepts(user: Id, guild: Option<Id>, data: &UserProfile) -> bool {
+	data.user.id == user
+		&& data.guild.as_ref().is_none_or(|g| Some(g.guild) == guild)
+		&& data.valid()
 }
 
 pub struct ProfileView {
@@ -96,6 +118,32 @@ pub struct OwnProfile {
 	generation: u64,
 }
 
+/// The account's pending badge settings write.
+#[derive(Default)]
+pub struct BadgeEditor {
+	pub saving: bool,
+	error: Option<&'static str>,
+	/// Increments with every new error, so a menu can skip ones raised before it opened.
+	errors: u64,
+	/// Increments when a write is confirmed, so open editors can drop their draft.
+	pub saved: u64,
+	request: u64,
+}
+impl BadgeEditor {
+	/// Error count to pass to [`Self::error_since`]; errors up to now count as seen.
+	pub fn errors(&self) -> u64 {
+		self.errors
+	}
+	/// The latest error, unless it was already raised when `seen` was taken.
+	pub fn error_since(&self, seen: u64) -> Option<&'static str> {
+		self.error.filter(|_| self.errors != seen)
+	}
+	fn fail(&mut self, error: &'static str) {
+		self.error = Some(error);
+		self.errors = self.errors.wrapping_add(1);
+	}
+}
+
 impl State {
 	/// An already loaded global profile for `user`: the open view or the recent cache.
 	pub fn known_profile(&self, user: Id) -> Option<&UserProfile> {
@@ -105,6 +153,95 @@ impl State {
 			.and_then(|view| view.data.as_ref())
 			.or_else(|| self.profile_cache.peek(user, Instant::now()))
 	}
+	/// Saves the account's badge order and hidden set. Demo sessions confirm locally.
+	pub fn save_badge_settings(
+		&mut self,
+		settings: model::badges::BadgeSettings,
+	) -> Option<Command> {
+		if self.badge_editor.saving || !settings.valid() || self.user.is_none() {
+			if !settings.valid() {
+				self.badge_editor.fail("Badge settings are invalid");
+			}
+			return None;
+		}
+		if !self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected) {
+			self.badge_editor
+				.fail("Badge settings need a connected session");
+			return None;
+		}
+		let own = self.user.as_ref().map(|user| user.id)?;
+		let profile = self
+			.profile
+			.as_ref()
+			.filter(|view| view.user == own)
+			.and_then(|view| view.data.as_ref())
+			.or_else(|| {
+				self.own_profile
+					.data
+					.as_ref()
+					.filter(|profile| profile.user.id == own)
+			})
+			.or_else(|| self.known_profile(own));
+		if profile
+			.and_then(|profile| profile.badge_catalog.as_deref())
+			.is_some_and(|catalog| catalog.limited)
+		{
+			self.badge_editor
+				.fail("Reload your profile before editing an incomplete badge catalog");
+			return None;
+		}
+		self.badge_editor.request = self.badge_editor.request.wrapping_add(1);
+		self.badge_editor.saving = true;
+		self.badge_editor.error = None;
+		Some(Command::BadgeSettings {
+			request: self.badge_editor.request,
+			settings,
+		})
+	}
+	pub(crate) fn apply_badge_settings(
+		&mut self,
+		request: u64,
+		result: Result<model::badges::BadgeSettings, Failure>,
+	) {
+		if let Err(failure) = &result
+			&& failure.ends_session()
+			&& *failure != Failure::Capacity
+		{
+			self.fail(*failure);
+			return;
+		}
+		if request != self.badge_editor.request || !self.badge_editor.saving {
+			return;
+		}
+		self.badge_editor.saving = false;
+		let settings = match result {
+			Ok(settings) => settings,
+			Err(failure) => {
+				self.badge_editor.fail(failure.label());
+				return;
+			}
+		};
+		self.badge_editor.error = None;
+		self.badge_editor.saved = self.badge_editor.saved.wrapping_add(1);
+		let Some(own) = self.user.as_ref().map(|user| user.id) else {
+			return;
+		};
+		let apply = |profile: &mut UserProfile| {
+			if profile.user.id == own
+				&& let Some(catalog) = profile.badge_catalog.as_deref_mut()
+			{
+				catalog.apply(&settings);
+			}
+		};
+		if let Some(data) = self.profile.as_mut().and_then(|view| view.data.as_mut()) {
+			apply(data);
+		}
+		if let Some(data) = self.own_profile.data.as_mut() {
+			apply(data);
+		}
+		self.profile_cache.update(own, apply);
+	}
+
 	pub fn can_save_own_profile(&self) -> bool {
 		(self.demo || (self.auth == AuthState::Authenticated && self.gateway_connected))
 			&& !self.own_profile.loading
@@ -183,6 +320,15 @@ impl State {
 			..Default::default()
 		};
 	}
+	/// A lost session drops the pending badge write; it may still have applied.
+	pub(crate) fn interrupt_badge_settings(&mut self) {
+		if self.badge_editor.saving {
+			self.badge_editor.saving = false;
+			self.badge_editor.request = self.badge_editor.request.wrapping_add(1);
+			self.badge_editor
+				.fail("Save interrupted; changes may have applied. Reopen the profile to check");
+		}
+	}
 	pub(crate) fn interrupt_own_profile(&mut self) {
 		if self.own_profile.loading || self.own_profile.saving || self.own_profile.data.is_some() {
 			self.own_profile.error = Some(if self.own_profile.saving {
@@ -235,6 +381,7 @@ impl State {
 				self.profile_cache
 					.entries
 					.retain(|entry| entry.user != user);
+				self.preload.profiles.touch(None);
 				if self.profile.as_ref().is_some_and(|view| view.user == user) {
 					self.clear_profile();
 				}
@@ -390,13 +537,26 @@ impl State {
 				.then_some("Profile unavailable while disconnected or outside this session"),
 			data: None,
 		});
-		allowed.then_some(Command::Profile {
+		// A card whose profile is already being preloaded waits for that response instead.
+		(allowed
+			&& !self
+				.preload
+				.profiles
+				.adopt((user, guild), self.profile_request, now))
+		.then(|| self.profile_command(user, guild, self.profile_request))
+	}
+	/// The request a card sends for `(user, guild)`; preloads send the same one early.
+	pub(crate) fn profile_command(&self, user: Id, guild: Option<Id>, request: u64) -> Command {
+		Command::Profile {
 			user,
 			guild,
-			request: self.profile_request,
+			request,
 			with_mutuals: self.user.as_ref().is_none_or(|own| own.id != user),
 			cosmetics: self.profile_cosmetics,
-		})
+		}
+	}
+	pub(crate) fn profile_cached(&self, user: Id, guild: Option<Id>, now: Instant) -> bool {
+		self.profile_cache.contains(user, guild, now)
 	}
 	/// Applies the device's cosmetic preference. Profiles loaded while effects or frames were
 	/// hidden lack their catalog details, so showing them drops the cache and requests the open
@@ -408,6 +568,8 @@ impl State {
 			return None;
 		}
 		self.profile_cache.clear();
+		// A profile preloaded without these details must not refill the cache.
+		self.preload.profiles.touch(None);
 		// Offline views keep what they show rather than turning into an error.
 		if self.demo || self.auth != AuthState::Authenticated || !self.gateway_connected {
 			return None;
@@ -425,7 +587,7 @@ impl State {
 		&mut self,
 		user: Id,
 		guild: Option<Id>,
-		request: u64,
+		mut request: u64,
 		result: Result<Box<UserProfile>, Failure>,
 	) {
 		if let Err(failure) = &result
@@ -434,6 +596,31 @@ impl State {
 		{
 			self.fail(*failure);
 			return;
+		}
+		let mut cacheable = true;
+		if preload::is_preload(request) {
+			match self.preload.profiles.arrived(request, result.is_ok()) {
+				preload::Arrival::Adopted(own, fresh)
+					if self
+						.profile
+						.as_ref()
+						.is_some_and(|view| view.request == own) =>
+				{
+					request = own;
+					cacheable = fresh;
+				}
+				// Not opened (yet): keep it for the click, like a card that was closed.
+				preload::Arrival::Adopted(_, true) | preload::Arrival::Keep => {
+					if let Ok(data) = result
+						&& accepts(user, guild, &data)
+					{
+						self.profile_cache
+							.insert(user, guild, *data, Instant::now());
+					}
+					return;
+				}
+				preload::Arrival::Adopted(_, false) | preload::Arrival::Drop => return,
+			}
 		}
 		let Some(view) = self
 			.profile
@@ -444,15 +631,13 @@ impl State {
 		};
 		view.loading = false;
 		match result {
-			Ok(data)
-				if data.user.id == user
-					&& data.guild.as_ref().is_none_or(|g| Some(g.guild) == guild)
-					&& data.valid() =>
-			{
+			Ok(data) if accepts(user, guild, &data) => {
 				view.error = None;
 				view.data = Some(*data);
 				let data = view.data.clone().expect("stored profile");
-				self.profile_cache.insert(user, guild, data, Instant::now());
+				if cacheable {
+					self.profile_cache.insert(user, guild, data, Instant::now());
+				}
 			}
 			Ok(_) => {
 				view.error = Some("Profile response was invalid or too large");
@@ -503,8 +688,176 @@ mod tests {
 			frame_sku: None,
 			effect: None,
 			frame: None,
+			badge_catalog: None,
 			limited: false,
 		})
+	}
+
+	#[test]
+	fn expired_and_interrupted_profile_preloads_cannot_be_adopted() {
+		let now = Instant::now();
+		for interrupted in [false, true] {
+			let mut state = own_state();
+			let target = (Id(2), None);
+			assert!(state.preload_profile(None, Some(target), now).is_some());
+			let click = if interrupted {
+				state.interrupt_preloads();
+				now
+			} else {
+				now + Duration::from_secs(30)
+			};
+			assert!(matches!(
+				state.request_profile_at(Id(2), None, click),
+				Some(Command::Profile { user: Id(2), .. })
+			));
+		}
+		// Reconnecting the same account clears flights even without an account-id change.
+		let mut state = own_state();
+		assert!(
+			state
+				.preload_profile(None, Some((Id(2), None)), now)
+				.is_some()
+		);
+		let user = state.user.clone().unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Ready {
+				user,
+				guilds: vec![],
+				channels: vec![],
+				permissions: Default::default(),
+			},
+		});
+		assert!(state.request_profile_at(Id(2), None, now).is_some());
+	}
+
+	#[test]
+	fn a_closed_adopted_profile_cannot_restore_invalidated_cosmetics() {
+		for invalidated in [false, true] {
+			let now = Instant::now();
+			let mut state = own_state();
+			state.profile_cosmetics = model::CosmeticPreferences {
+				frames: false,
+				effects: false,
+				..Default::default()
+			};
+			let Some(Command::Prefetch(command)) =
+				state.preload_profile(None, Some((Id(2), None)), now)
+			else {
+				panic!()
+			};
+			let Command::Profile { request, .. } = *command else {
+				panic!()
+			};
+			assert!(state.request_profile_at(Id(2), None, now).is_none());
+			state.clear_profile();
+			if invalidated {
+				assert!(
+					state
+						.set_profile_cosmetics(model::CosmeticPreferences {
+							frames: true,
+							effects: true,
+							..Default::default()
+						})
+						.is_none()
+				);
+			}
+			let mut data = own_data("Synthetic friend");
+			data.user.id = Id(2);
+			state.apply_profile(Id(2), None, request, Ok(data));
+			assert_eq!(
+				state.request_profile_at(Id(2), None, now).is_some(),
+				invalidated
+			);
+		}
+	}
+
+	#[test]
+	fn resting_on_a_person_preloads_their_card_once_and_a_click_uses_it() {
+		use crate::preload::PROFILE_DWELL;
+		let now = Instant::now();
+		let friend = |name| {
+			let mut data = own_data(name);
+			data.user.id = Id(2);
+			data
+		};
+		for adopt in [false, true] {
+			let mut state = own_state();
+			let target = Some((Id(2), None));
+			assert!(state.preload_profile(target, None, now).is_none());
+			let Some(Command::Prefetch(command)) =
+				state.preload_profile(target, None, now + PROFILE_DWELL)
+			else {
+				panic!("rested preload");
+			};
+			let Command::Profile {
+				user: Id(2),
+				guild: None,
+				request,
+				with_mutuals: true,
+				..
+			} = *command
+			else {
+				panic!("the card's own request");
+			};
+			if adopt {
+				assert!(
+					state.request_profile_at(Id(2), None, now).is_none(),
+					"the opened card waits for the preload"
+				);
+				assert!(state.profile.as_ref().unwrap().loading);
+			}
+			state.apply(Envelope {
+				generation: state.generation,
+				event: Event::Profile {
+					user: Id(2),
+					guild: None,
+					request,
+					result: Ok(friend("Friend")),
+				},
+			});
+			if adopt {
+				let view = state.profile.as_ref().unwrap();
+				assert!(!view.loading && view.data.is_some());
+			} else {
+				assert!(state.profile.is_none(), "a preload never opens a card");
+				assert!(
+					state.request_profile_at(Id(2), None, now).is_none(),
+					"the cached card opens at once"
+				);
+				assert!(state.profile.as_ref().unwrap().data.is_some());
+			}
+			let _ = state.clear_profile();
+			assert!(
+				state
+					.preload_profile(target, None, now + PROFILE_DWELL * 3)
+					.is_none(),
+				"a cached card is not requested again"
+			);
+		}
+		let mut state = own_state();
+		let Some(Command::Prefetch(command)) =
+			state.preload_profile(None, Some((Id(3), None)), now)
+		else {
+			panic!("pressing skips the dwell");
+		};
+		let Command::Profile { request, .. } = *command else {
+			panic!("profile request");
+		};
+		state.apply_profile(Id(3), None, request, Err(Failure::Network));
+		assert!(state.profile.is_none() && state.profile_cache.is_empty());
+		assert!(
+			state
+				.preload_profile(None, Some((Id(3), None)), now)
+				.is_some(),
+			"a failure may be tried again"
+		);
+		state.demo = true;
+		assert!(
+			state
+				.preload_profile(None, Some((Id(4), None)), now)
+				.is_none()
+		);
 	}
 	fn own_state() -> State {
 		State {
@@ -529,6 +882,61 @@ mod tests {
 			global_name: Some(Some("After".into())),
 			..Default::default()
 		}
+	}
+	#[test]
+	fn incomplete_badge_catalog_cannot_replace_account_settings() {
+		let mut state = own_state();
+		let mut profile = own_data("Before");
+		profile.badge_catalog = Some(Box::new(model::badges::BadgeCatalog {
+			badges: vec![],
+			limited: true,
+		}));
+		state.own_profile.data = Some(*profile);
+		let settings = model::badges::BadgeSettings {
+			order: vec![model::badges::id::ACCOUNT_AGE],
+			hidden: vec![],
+		};
+		let seen = state.badge_editor.errors();
+		assert!(state.save_badge_settings(settings.clone()).is_none());
+		assert!(!state.badge_editor.saving);
+		assert!(state.badge_editor.error_since(seen).is_some());
+		state
+			.own_profile
+			.data
+			.as_mut()
+			.unwrap()
+			.badge_catalog
+			.as_mut()
+			.unwrap()
+			.limited = false;
+		assert!(state.save_badge_settings(settings).is_some());
+	}
+	#[test]
+	fn lost_sessions_release_a_pending_badge_save_with_a_fresh_error() {
+		let mut state = own_state();
+		let settings = model::badges::BadgeSettings {
+			order: vec![model::badges::id::ACCOUNT_AGE],
+			hidden: vec![],
+		};
+		let Some(Command::BadgeSettings { request, .. }) =
+			state.save_badge_settings(settings.clone())
+		else {
+			panic!("badge save expected");
+		};
+		let seen = state.badge_editor.errors();
+		state.apply_badge_settings(request, Err(Failure::Expired));
+		assert!(!state.badge_editor.saving);
+		assert!(state.badge_editor.error_since(seen).is_some());
+		// A menu opened afterwards does not show the old error.
+		assert!(
+			state
+				.badge_editor
+				.error_since(state.badge_editor.errors())
+				.is_none()
+		);
+		// The late answer to the interrupted write is ignored.
+		state.apply_badge_settings(request, Ok(settings));
+		assert_eq!(state.badge_editor.saved, 0);
 	}
 	#[test]
 	fn own_profile_requires_loaded_account_and_confirms_only_current_bounded_responses() {
@@ -831,6 +1239,7 @@ mod tests {
 					frame_sku: None,
 					effect: None,
 					frame: None,
+					badge_catalog: None,
 					limited: false,
 				})
 			}
@@ -1018,6 +1427,7 @@ mod tests {
 					frame_sku: None,
 					effect: None,
 					frame: None,
+					badge_catalog: None,
 					limited: false,
 				})
 			};

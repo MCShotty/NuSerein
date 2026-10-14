@@ -6,6 +6,7 @@ mod account_menu;
 mod appearance_transparency_tests;
 mod archives;
 mod audio;
+mod badges;
 mod forwarding;
 mod role_names;
 pub use audio::{AudioCommand, AudioState, AudioUi};
@@ -68,7 +69,7 @@ mod guild_folders;
 mod highlight;
 pub mod icons;
 mod invites;
-mod local_time;
+pub mod local_time;
 mod markdown;
 mod member_search;
 mod mentions;
@@ -77,6 +78,7 @@ mod notification_settings;
 mod notifications;
 mod pending;
 mod post_menu;
+mod preload;
 mod profiles;
 mod slash_builtin;
 mod slash_commands;
@@ -117,6 +119,7 @@ mod server_stickers;
 mod settings;
 mod shortcuts;
 mod switcher;
+mod text_menu;
 mod thumbhash;
 #[cfg(feature = "demo")]
 pub use polls::debug_poll_check;
@@ -225,6 +228,9 @@ pub struct MessagingUi {
 	pub language: i18n::Language,
 	forwarding: forwarding::ForwardDialog,
 	pub convert_emoticons: bool,
+	/// Device preference: request a conversation's page while the pointer rests on it.
+	pub preload_on_hover: bool,
+	preload: preload::Preload,
 	pub image_share_requested: Option<(u64, Id, Vec<model::ImageShare>, String)>,
 	pub interaction_file_request: Option<String>,
 	interaction_components: components::Components,
@@ -300,6 +306,8 @@ pub struct MessagingUi {
 	pub cosmetics: model::CosmeticPreferences,
 	/// Disk budgets and retention for downloaded images.
 	pub image_cache: model::CachePreferences,
+	/// Clock style for message times.
+	pub time_format: model::TimeFormat,
 	/// Latest disk use of the media and shared-artwork caches, once measured.
 	pub image_cache_usage: Option<[model::CacheUsage; 2]>,
 	/// An image cache partition the owner asked to empty; the desktop consumes it.
@@ -374,6 +382,8 @@ pub struct MessagingUi {
 	pub attachment_paste_requested: Option<AttachmentPaste>,
 	pub pasted_text: Option<(Id, egui::Id, String)>,
 	paste_key_handled: bool,
+	/// A text field whose context menu asked to paste.
+	menu_paste: Option<egui::Id>,
 	pasted_text_frame: Option<u64>,
 	pub remove_attachment_requested: bool,
 	pub cancel_upload_requested: bool,
@@ -813,6 +823,14 @@ impl MessagingUi {
 	pub fn preview_profile_popout(&mut self, user: model::User) {
 		self.profile.command_open(user);
 	}
+	/// Fixture-only entry point: a profile card with its badge directory (focused on
+	/// `selected`) or, without one, the account's customize menu at `anchor`.
+	#[cfg(any(test, feature = "demo"))]
+	pub fn preview_badges(&mut self, user: model::User, selected: Option<u32>, anchor: egui::Pos2) {
+		let id = user.id;
+		self.profile.command_open(user);
+		self.profile.preview_badges(id, selected, anchor);
+	}
 	#[cfg(any(test, feature = "demo"))]
 	pub fn preview_full_profile(&mut self, user: model::User) {
 		self.profile.open_full(user);
@@ -1029,6 +1047,103 @@ impl MessagingUi {
 	pub fn preview_search(&mut self, query: &str) {
 		self.search.preview(query);
 	}
+	/// Ctrl+V or a context-menu Paste in the focused field `target`: starts one bounded read of
+	/// the system clipboard (files, images and text from any app), or delivers its text.
+	fn clipboard_paste(
+		&mut self,
+		ctx: &egui::Context,
+		state: &mut State,
+		channel: Id,
+		target: egui::Id,
+		allowed: bool,
+	) {
+		let pasted_text = self.pasted_text.take();
+		let paste_key_released = ctx.input(|input| {
+			input.events.iter().any(|event| {
+				matches!(
+					event,
+					egui::Event::Key {
+						key: egui::Key::V,
+						pressed: false,
+						..
+					}
+				)
+			})
+		});
+		// A context-menu Paste reads the clipboard as Ctrl+V does, with the field refocused.
+		let menu = self.menu_paste.take_if(|id| *id == target).is_some();
+		let paste_enabled = allowed && (menu || ctx.memory(|m| m.has_focus(target)));
+		if let Some((paste_channel, pasted_target, text)) = pasted_text {
+			if paste_enabled && paste_channel == channel && pasted_target == target {
+				ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
+				self.pasted_text_frame = Some(ctx.cumulative_frame_nr());
+			} else {
+				state.status = "Paste cancelled; focus the message and paste again";
+			}
+		} else if paste_enabled && self.pasted_text_frame != Some(ctx.cumulative_frame_nr()) {
+			let mut request = AttachmentPaste {
+				target,
+				text: None,
+				image: None,
+			};
+			let mut requested = false;
+			ctx.input_mut(|input| {
+				// eframe consumes native paste key-down. File-only clipboards can emit
+				// no Paste event, so the matching key-up is also a paste trigger.
+				let shortcut = input.events.iter().any(|event| {
+					matches!(event,
+				egui::Event::Key { key: egui::Key::V, pressed, repeat: false, modifiers, .. }
+				if !modifiers.shift && (modifiers.ctrl || modifiers.command || modifiers.alt)
+					&& (*pressed || !self.paste_key_handled))
+				});
+				let has_paste = input.events.iter().any(|event| {
+					matches!(event, egui::Event::Paste(_) | egui::Event::PasteImage(_))
+				});
+				if has_paste || shortcut || menu {
+					requested = true;
+					self.paste_key_handled = true;
+					input.events.retain_mut(|event| match event {
+						egui::Event::Paste(text) => {
+							request.text = Some(std::mem::take(text));
+							false
+						}
+						egui::Event::PasteImage(image) => {
+							request.image = Some(image.clone());
+							false
+						}
+						egui::Event::Key {
+							key: egui::Key::V, ..
+						} => false,
+						// Option+V can also produce a platform text character.
+						egui::Event::Text(_) if shortcut => false,
+						_ => true,
+					});
+				}
+			});
+			if requested {
+				if request
+					.text
+					.as_ref()
+					.is_some_and(|text| text.len() > MAX_DRAFT_BYTES)
+				{
+					state.status = "Pasted text exceeds the draft limit";
+				} else if request
+					.image
+					.as_ref()
+					.is_some_and(|image| image.pixels.len() > 4 * 1024 * 1024)
+				{
+					state.status = "Paste an image with at most 4 million pixels";
+				} else {
+					self.attachment_paste_requested = Some(request);
+					self.upload_busy = true;
+				}
+			}
+		}
+		if paste_key_released {
+			self.paste_key_handled = false;
+		}
+	}
+
 	pub fn downloads(&mut self) -> &mut DownloadUi {
 		&mut self.timeline.download
 	}
@@ -3088,94 +3203,12 @@ impl MessagingUi {
 				)));
 			edit_state.store(ctx, composer_id);
 		}
-		let pasted_text = self.pasted_text.take();
-		let paste_key_released = ctx.input(|input| {
-			input.events.iter().any(|event| {
-				matches!(
-					event,
-					egui::Event::Key {
-						key: egui::Key::V,
-						pressed: false,
-						..
-					}
-				)
-			})
-		});
-		let paste_enabled = keyboard_enabled
+		let paste_allowed = keyboard_enabled
 			&& !editing_here
 			&& self.slash_commands.active.is_none()
 			&& !self.ime_active
-			&& !ime_this_frame
-			&& ctx.memory(|m| m.has_focus(composer_id));
-		if let Some((paste_channel, target, text)) = pasted_text {
-			if paste_enabled && paste_channel == channel && target == composer_id {
-				ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
-				self.pasted_text_frame = Some(ctx.cumulative_frame_nr());
-			} else {
-				state.status = "Paste cancelled; focus the message and paste again";
-			}
-		} else if paste_enabled && self.pasted_text_frame != Some(ctx.cumulative_frame_nr()) {
-			let mut request = AttachmentPaste {
-				target: composer_id,
-				text: None,
-				image: None,
-			};
-			let mut requested = false;
-			ctx.input_mut(|input| {
-				// eframe consumes native paste key-down. File-only clipboards can emit
-				// no Paste event, so the matching key-up is also a paste trigger.
-				let shortcut = input.events.iter().any(|event| {
-					matches!(event,
-					egui::Event::Key { key: egui::Key::V, pressed, repeat: false, modifiers, .. }
-					if !modifiers.shift && (modifiers.ctrl || modifiers.command || modifiers.alt)
-						&& (*pressed || !self.paste_key_handled))
-				});
-				let has_paste = input.events.iter().any(|event| {
-					matches!(event, egui::Event::Paste(_) | egui::Event::PasteImage(_))
-				});
-				if has_paste || shortcut {
-					requested = true;
-					self.paste_key_handled = true;
-					input.events.retain_mut(|event| match event {
-						egui::Event::Paste(text) => {
-							request.text = Some(std::mem::take(text));
-							false
-						}
-						egui::Event::PasteImage(image) => {
-							request.image = Some(image.clone());
-							false
-						}
-						egui::Event::Key {
-							key: egui::Key::V, ..
-						} => false,
-						// Option+V can also produce a platform text character.
-						egui::Event::Text(_) if shortcut => false,
-						_ => true,
-					});
-				}
-			});
-			if requested {
-				if request
-					.text
-					.as_ref()
-					.is_some_and(|text| text.len() > MAX_DRAFT_BYTES)
-				{
-					state.status = "Pasted text exceeds the draft limit";
-				} else if request
-					.image
-					.as_ref()
-					.is_some_and(|image| image.pixels.len() > 4 * 1024 * 1024)
-				{
-					state.status = "Paste an image with at most 4 million pixels";
-				} else {
-					self.attachment_paste_requested = Some(request);
-					self.upload_busy = true;
-				}
-			}
-		}
-		if paste_key_released {
-			self.paste_key_handled = false;
-		}
+			&& !ime_this_frame;
+		self.clipboard_paste(ctx, state, channel, composer_id, paste_allowed);
 		if !editing_here
 			&& state
 				.drafts
@@ -3253,6 +3286,9 @@ impl MessagingUi {
 			.filter(|r| r.is_empty())
 			.map(|r| r.primary.index.0);
 		self.mention_menu.hide_nitro_emojis = self.hide_nitro_emojis;
+		if std::mem::take(&mut self.mention_menu.retry_games) {
+			state.game_mentions.status = client_core::game_mentions::Status::Idle;
+		}
 		self.mention_menu.refresh(
 			state,
 			channel,
@@ -3260,6 +3296,12 @@ impl MessagingUi {
 			cursor.filter(|_| mention_enabled),
 			&mention_users,
 		);
+		if state.game_mentions.status == client_core::game_mentions::Status::Idle
+			&& (self.mention_menu.needs_games() || composer_content.contains("<@$"))
+		{
+			state.game_mentions.request();
+			ctx.request_repaint();
+		}
 		let mention_pick = if mention_enabled {
 			self.mention_menu.keys(ctx)
 		} else {
@@ -3425,6 +3467,7 @@ impl MessagingUi {
                         let pick = ui
                             .add_enabled_ui(!application_command && !self.ime_active && !ime_this_frame, |ui| {
                                 self.emoji_picker.hide_nitro_emojis = self.hide_nitro_emojis;
+                                self.emoji_picker.preload = self.preload_on_hover;
                                 self.emoji_picker
                                     .show(ui, state, channel, &mut self.avatars, commands)
                             })
@@ -3601,19 +3644,21 @@ impl MessagingUi {
                                 i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::Delete)
                             })
                         {
-                            rich_layout.galley(
+                            rich_layout.galley_games(
                                 ui,
                                 draft,
                                 ui.available_width(),
                                 &mention_users,
                                 mentions::known_roles(state, channel),
                                 &state.channels,
+                                &state.game_mentions,
                                 mass_mentions,
                                 &mut self.avatars,
                                 demo,
                             );
                             rich_layout.select_deleted_inline(ctx, composer_id);
                         }
+                        let selection = text_menu::selection_for_menu(ctx, composer_id);
                         let mut output = egui::ScrollArea::vertical()
                             .id_salt((composer_id, channel, editing_key))
                             .max_height(ui.ctx().viewport_rect().height() * 0.5)
@@ -3621,13 +3666,14 @@ impl MessagingUi {
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width: f32| {
-                                    rich_layout.galley(
+                                    rich_layout.galley_games(
                                         ui,
                                         buffer.as_str(),
                                         width,
                                         &mention_users,
                                         mentions::known_roles(state, channel),
                                         &state.channels,
+                                        &state.game_mentions,
                                         mass_mentions,
                                         &mut self.avatars,
                                         demo,
@@ -3706,6 +3752,9 @@ impl MessagingUi {
                             output.state.clone().store(ctx, composer_id);
                             output.response.request_focus();
                             mention_changed = true;
+                        }
+                        if text_menu::show(&mut output.response, composer_id, draft, paste_allowed, selection) {
+                            self.menu_paste = Some(composer_id);
                         }
                         let edit = output.response;
                         let cleared = draft.is_empty();
@@ -3941,6 +3990,17 @@ impl MessagingUi {
 			}
 		}
 		cleared
+	}
+
+	/// The server a profile card opens in: the one being administered, else the open channel's.
+	fn profile_guild(&self, state: &State) -> Option<model::Id> {
+		self.server_settings.guild().or_else(|| {
+			state
+				.channels
+				.iter()
+				.find(|channel| Some(channel.id) == state.selected)
+				.and_then(|channel| channel.guild)
+		})
 	}
 
 	fn sync_profile(
@@ -4640,6 +4700,27 @@ impl MessagingUi {
 					}
 				}
 				if selected_forum {
+					// Both post fields paste like the message composer: files and images from
+					// any app join the post's attachments, text lands in the focused field.
+					if let Some(field) = self.forum.paste.take() {
+						self.menu_paste = Some(field);
+					}
+					if let Some(field) =
+						[forum::title_id(), forum::body_id()]
+							.into_iter()
+							.find(|id| {
+								self.menu_paste == Some(*id)
+									|| ui.ctx().memory(|m| m.has_focus(*id))
+							}) {
+						let ctx = ui.ctx().clone();
+						self.clipboard_paste(
+							&ctx,
+							state,
+							channel,
+							field,
+							!egui::Popup::is_any_open(&ctx),
+						);
+					}
 					// A post's first message uses the same upload tray as the composer.
 					let textures = self.attachment_textures(ui.ctx());
 					let files = self.selected_files();
@@ -5184,13 +5265,7 @@ impl MessagingUi {
 		if let Some(user) = self.profile.open_user().cloned()
 			&& !direct_verifying
 		{
-			let profile_guild = self.server_settings.guild().or_else(|| {
-				state
-					.channels
-					.iter()
-					.find(|channel| Some(channel.id) == state.selected)
-					.and_then(|channel| channel.guild)
-			});
+			let profile_guild = self.profile_guild(state);
 			self.sync_profile(state, &mut commands, &user, profile_guild);
 			// The private note uses an independent read and never locks message actions.
 			if !user.webhook
@@ -5204,6 +5279,9 @@ impl MessagingUi {
 			{
 				commands.push(command);
 			}
+			self.profile
+				.own_status
+				.clone_from(&self.own_presence.custom_status);
 			let anchor = self.profile.anchor_or_place(&ctx, user.id);
 			self.profile.ingest_opener_rect(&ctx);
 			match profiles::show_with_session(
@@ -5295,8 +5373,15 @@ impl MessagingUi {
 						}
 					}
 				}
+				Some(profiles::Action::EditStatus) => self.open_custom_status_editor(),
+				Some(profiles::Action::ClearStatus) => self.clear_custom_status(),
 				Some(profiles::Action::Close) => {
 					self.profile.close_unless_armed(&ctx);
+				}
+				Some(profiles::Action::SaveBadges(settings)) => {
+					if let Some(command) = state.save_badge_settings(settings) {
+						commands.push(command);
+					}
 				}
 				Some(profiles::Action::Retry) => {
 					if let Some(command) = state.request_profile(user.id, profile_guild) {
@@ -5400,6 +5485,15 @@ impl MessagingUi {
 		// Clear the title bar and channel header so a notice never sits on the chrome.
 		self.toasts
 			.show(&ctx, if self.shows_title_bar() { 96.0 } else { 60.0 });
+		self.preload.person(self.profile.take_hovered());
+		let profile_guild = self.profile_guild(state);
+		self.preload.finish(
+			&ctx,
+			state,
+			self.preload_on_hover,
+			profile_guild,
+			&mut commands,
+		);
 		if !commands.is_empty() {
 			ctx.request_repaint();
 		}
@@ -5660,6 +5754,181 @@ mod composer_tests {
 					view.editing.is_none()
 				});
 				assert_eq!(state.drafts, draft);
+			}
+		}
+	}
+
+	#[test]
+	fn composer_context_menu_saves_cuts_and_gates_clipboard_requests() {
+		let ctx = egui::Context::default();
+		let mut state = edit_state();
+		let mut view = MessagingUi::default();
+		let frame = |view: &mut MessagingUi, state: &mut State, events| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1000.0, 700.0),
+					)),
+					events,
+					focused: true,
+					..Default::default()
+				},
+				|ui| {
+					view.show(ui, state);
+				},
+			);
+			let mut labels = Vec::new();
+			fn walk(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
+				match shape {
+					egui::Shape::Text(text) => labels.push((
+						text.galley.job.text.clone(),
+						text.galley.rect.translate(text.pos.to_vec2()),
+					)),
+					egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, labels)),
+					_ => {}
+				}
+			}
+			output
+				.shapes
+				.iter()
+				.for_each(|shape| walk(&shape.shape, &mut labels));
+			output.drop_without_applying_deltas();
+			labels
+		};
+		let click = |pos, button| {
+			let mut events = vec![egui::Event::PointerMoved(pos)];
+			for pressed in [true, false] {
+				events.push(egui::Event::PointerButton {
+					pos,
+					button,
+					pressed,
+					modifiers: Default::default(),
+				});
+			}
+			events
+		};
+		for _ in 0..3 {
+			frame(&mut view, &mut state, vec![]);
+		}
+		let channel = state.selected.unwrap();
+		state.drafts.insert(channel, "draft".into());
+		let composer = ctx
+			.memory(|memory| memory.focused())
+			.expect("composer focused");
+		let rect = ctx.read_response(composer).unwrap().rect;
+		frame(
+			&mut view,
+			&mut state,
+			click(rect.center(), egui::PointerButton::Secondary),
+		);
+		let labels = frame(&mut view, &mut state, vec![]);
+		for item in ["Cut", "Copy", "Select All"] {
+			assert!(
+				labels.iter().any(|(text, _)| text == item),
+				"{item}: {labels:?}"
+			);
+		}
+		let (_, paste) = labels
+			.iter()
+			.find(|(text, _)| text == "Paste")
+			.unwrap()
+			.clone();
+		frame(
+			&mut view,
+			&mut state,
+			click(paste.center(), egui::PointerButton::Primary),
+		);
+		frame(&mut view, &mut state, vec![]);
+		let request = view
+			.attachment_paste_requested
+			.take()
+			.expect("menu paste reads the system clipboard");
+		assert_eq!(request.target, composer);
+		assert!(request.text.is_none() && request.image.is_none());
+		for (editing, cut_all) in [(false, false), (false, true), (true, false)] {
+			state = edit_state();
+			view = MessagingUi::default();
+			state.drafts.insert(channel, "draft".into());
+			if editing {
+				view.editing = Some((Id(10), Id(20), "Original".into()));
+			}
+			for _ in 0..3 {
+				frame(&mut view, &mut state, vec![]);
+			}
+			let composer = ctx.memory(|memory| memory.focused()).unwrap();
+			let rect = ctx.read_response(composer).unwrap().rect;
+			let mut cursor = egui::TextEdit::load_state(&ctx, composer).unwrap();
+			cursor
+				.cursor
+				.set_char_range(Some(egui::text::CCursorRange::two(
+					egui::text::CCursor::new(0),
+					egui::text::CCursor::new(if cut_all { 5 } else { 2 }),
+				)));
+			cursor.store(&ctx, composer);
+			let mut open_menu = click(
+				rect.left_center() + egui::vec2(1.0, 0.0),
+				egui::PointerButton::Secondary,
+			);
+			if cut_all {
+				let release = open_menu.pop().unwrap();
+				frame(&mut view, &mut state, open_menu);
+				frame(&mut view, &mut state, vec![release]);
+			} else {
+				frame(&mut view, &mut state, open_menu);
+			}
+			frame(&mut view, &mut state, vec![]);
+			frame(&mut view, &mut state, vec![]);
+			let labels = frame(&mut view, &mut state, vec![]);
+			assert!(
+				!egui::TextEdit::load_state(&ctx, composer)
+					.unwrap()
+					.cursor
+					.char_range()
+					.unwrap()
+					.is_empty(),
+				"selection for cut: {editing}/{cut_all}"
+			);
+			let (_, cut) = labels.iter().find(|(text, _)| text == "Cut").unwrap();
+			view.draft_changes.clear();
+			frame(
+				&mut view,
+				&mut state,
+				click(cut.center(), egui::PointerButton::Primary),
+			);
+			if editing {
+				assert_eq!(view.editing.as_ref().unwrap().2, "iginal");
+				assert_eq!(view.edit_modified, Some((Id(10), Id(20), true)));
+				assert!(view.draft_changes.is_empty());
+				assert_eq!(state.drafts.get(&channel).unwrap(), "draft");
+				frame(&mut view, &mut state, vec![]);
+				frame(
+					&mut view,
+					&mut state,
+					click(rect.center(), egui::PointerButton::Secondary),
+				);
+				let labels = frame(&mut view, &mut state, vec![]);
+				let (_, paste) = labels.iter().find(|(text, _)| text == "Paste").unwrap();
+				frame(
+					&mut view,
+					&mut state,
+					click(paste.center(), egui::PointerButton::Primary),
+				);
+				frame(&mut view, &mut state, vec![]);
+				assert!(view.menu_paste.is_none());
+				assert!(view.attachment_paste_requested.is_none());
+			} else {
+				assert_eq!(
+					view.draft_changes,
+					[channel],
+					"cut={cut_all}, draft={:?}",
+					state.drafts
+				);
+				if cut_all {
+					assert!(!state.drafts.contains_key(&channel));
+				} else {
+					assert_eq!(state.drafts.get(&channel).unwrap(), "aft");
+				}
 			}
 		}
 	}

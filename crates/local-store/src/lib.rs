@@ -48,6 +48,8 @@ pub struct AppPreferences {
 	pub hide_nitro_emojis: bool,
 	/// Device-local opt-in; older saved preferences deserialize with conversion off.
 	pub convert_emoticons: bool,
+	/// Request a conversation's page while the pointer rests on it; older preferences enable it.
+	pub preload_on_hover: bool,
 	/// Hide the in-app title strip. macOS and Windows then show the system title bar.
 	pub hide_title_bar: bool,
 	pub hide_window_decorations: bool,
@@ -81,6 +83,8 @@ pub struct AppPreferences {
 	pub cosmetics: model::CosmeticPreferences,
 	/// Disk budgets and retention for downloaded images, from bounded presets.
 	pub image_cache: model::CachePreferences,
+	/// Clock style for message times; older preferences follow the language.
+	pub time_format: model::TimeFormat,
 }
 impl Default for AppPreferences {
 	fn default() -> Self {
@@ -94,6 +98,7 @@ impl Default for AppPreferences {
 			show_hidden_channels: false,
 			hide_nitro_emojis: false,
 			convert_emoticons: false,
+			preload_on_hover: true,
 			hide_title_bar: false,
 			hide_window_decorations: false,
 			primary_color: None,
@@ -116,6 +121,7 @@ impl Default for AppPreferences {
 			muted_users: Vec::new(),
 			cosmetics: Default::default(),
 			image_cache: Default::default(),
+			time_format: Default::default(),
 		}
 	}
 }
@@ -2235,6 +2241,16 @@ mod tests {
 		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
 		assert_eq!(legacy.cosmetics, model::CosmeticPreferences::default());
 		assert_eq!(legacy.image_cache, model::CachePreferences::default());
+		assert_eq!(legacy.time_format, model::TimeFormat::Auto);
+		for (key, format) in [
+			("12-hour", model::TimeFormat::TwelveHour),
+			("24-hour", model::TimeFormat::TwentyFourHour),
+			("36-hour", model::TimeFormat::Auto),
+		] {
+			let saved: AppPreferences =
+				serde_json::from_str(&format!(r#"{{"time_format":"{key}"}}"#)).unwrap();
+			assert_eq!(saved.time_format, format);
+		}
 		let partial: AppPreferences = serde_json::from_str(
 			r#"{"cosmetics":{"nameplates":true},"image_cache":{"media_mib":512}}"#,
 		)

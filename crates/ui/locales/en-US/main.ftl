@@ -4635,6 +4635,8 @@ member-in-voice = In voice
 settings-chat-box = Chat Box
 settings-convert-emoticons = Automatically convert emoticons in your messages to emoji
 settings-convert-emoticons-description = Convert standalone emoticons such as :) to 🙂 when sending or editing messages. Code and links stay unchanged.
+settings-preload-on-hover = Preload on hover
+settings-preload-on-hover-description = Load a conversation, a profile or the GIF picker while the pointer rests on it, so it opens instantly. Uses the same requests as opening it, at most 12 per minute for each kind.
 
 profiles-board = Board
 profiles-board-unavailable = This profile’s board is unavailable.
@@ -4815,3 +4817,88 @@ timeline-dm-intro = This is the beginning of your direct message history with { 
 timeline-channel-intro-title = Welcome to #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = This is the start of the #{ $channel } channel.
+# Context: text_menu
+text-menu-cut = Cut
+text-menu-copy = Copy
+text-menu-paste = Paste
+text-menu-select-all = Select All
+# Context: media_box
+forum-composer-attached-files = { $count ->
+    [one] { $count } attached file
+   *[other] { $count } attached files
+    }
+forum-composer-remove-file = Remove { $file }
+post-menu-post-action-failed = Post action failed
+post-menu-thread-action-failed = Thread action failed
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = Common
+# Context: badges
+badges-rarity-rare = Rare
+# Context: badges
+badges-rarity-epic = Epic
+# Context: badges
+badges-rarity-mythic = Mythic
+# Context: badges
+badges-always-visible = Always shown on your profile
+# Context: badges
+badges-click-show = Click to show
+# Context: badges
+badges-click-hide = Click to hide
+# Context: badges
+badges-customize-title = Customize your badges
+# Context: badges
+badges-customize-hint = Drag to reorder, and hide the ones you don't want others to see.
+# Context: badges
+badges-none = No badges to show yet.
+# Context: badges
+badges-reset = Reset
+# Context: badges
+badges-saving = Saving…
+# Context: badges
+badges-save = Save
+# Context: badges
+badges-view = View Badges
+# Context: badges
+badges-your = Your badges
+# Context: badges
+badges-user = { $name }'s badges
+# Context: badges
+badges-browse = Browse your badges and discover new ones you can unlock.
+# Context: badges
+badges-available = Available to unlock
+# Context: badges
+badges-customize-button = Customize Your Badges
+# Context: badges
+badges-close = Close
+# Context: badges
+badges-locked = Not unlocked yet
+# Context: badges
+badges-date-unlocked = Date unlocked
+# Context: badges
+badges-rarity = Rarity
+# Context: badges
+badges-max-level = You've reached the highest level of this badge.
+# Context: badges
+badges-next-level = Next Level: { $tier }
+# Context: badges
+badges-all-levels = View all levels
+# Context: badges
+badges-hide-levels = Hide levels
+# Context: badges
+badges-manage = Manage your badges
+page-language-time = Language & Time
+description-language-time = Display language and how times are shown.
+time-format-group = Time format
+time-format-auto = Auto
+time-format-12-hour = 12-hour
+time-format-24-hour = 24-hour
+profiles-status-edit = Edit status
+profiles-status-clear = Clear status
+game-mentions-loading = Loading games…
+game-mentions-header = GAMES MATCHING @{ $query }
+game-mentions-unavailable = Games are unavailable.
+game-mentions-empty = No matching games.
+game-mentions-retry = Retry

@@ -4715,3 +4715,80 @@ timeline-dm-intro = { $name } とのダイレクトメッセージ履歴の始�
 timeline-channel-intro-title = #{ $channel } へようこそ！
 # Context: timeline_channel_intro
 timeline-channel-intro-start = #{ $channel } チャンネルの始まりです。
+# Context: text_menu
+text-menu-cut = 切り取り
+text-menu-copy = コピー
+text-menu-paste = 貼り付け
+text-menu-select-all = すべて選択
+# Context: media_box
+forum-composer-attached-files = 添付ファイル { $count } 件
+forum-composer-remove-file = { $file } を削除
+post-menu-post-action-failed = 投稿の操作に失敗しました
+post-menu-thread-action-failed = スレッドの操作に失敗しました
+
+# Context: badges
+badges-nitro = Nitro
+# Context: badges
+badges-rarity-common = コモン
+# Context: badges
+badges-rarity-rare = レア
+# Context: badges
+badges-rarity-epic = エピック
+# Context: badges
+badges-rarity-mythic = ミシック
+# Context: badges
+badges-always-visible = プロフィールに常に表示されます
+# Context: badges
+badges-click-show = クリックで表示
+# Context: badges
+badges-click-hide = クリックで非表示
+# Context: badges
+badges-customize-title = バッジをカスタマイズ
+# Context: badges
+badges-customize-hint = ドラッグで並べ替え、他の人に見せたくないものは非表示にできます。
+# Context: badges
+badges-none = 表示できるバッジはまだありません。
+# Context: badges
+badges-reset = リセット
+# Context: badges
+badges-saving = 保存中…
+# Context: badges
+badges-save = 保存
+# Context: badges
+badges-view = バッジを見る
+# Context: badges
+badges-your = あなたのバッジ
+# Context: badges
+badges-user = { $name } のバッジ
+# Context: badges
+badges-browse = バッジを確認して、獲得できる新しいバッジを見つけましょう。
+# Context: badges
+badges-available = 獲得可能
+# Context: badges
+badges-customize-button = バッジをカスタマイズ
+# Context: badges
+badges-close = 閉じる
+# Context: badges
+badges-locked = 未獲得
+# Context: badges
+badges-date-unlocked = 獲得日
+# Context: badges
+badges-rarity = レア度
+# Context: badges
+badges-max-level = このバッジの最高レベルに到達しました。
+# Context: badges
+badges-next-level = 次のレベル: { $tier }
+# Context: badges
+badges-all-levels = すべてのレベルを表示
+# Context: badges
+badges-hide-levels = レベルを隠す
+# Context: badges
+badges-manage = バッジを管理
+page-language-time = 言語と時刻
+description-language-time = 表示言語と時刻の表示形式。
+time-format-group = 時刻の形式
+time-format-auto = 自動
+time-format-12-hour = 12時間制
+time-format-24-hour = 24時間制
+profiles-status-edit = ステータスを編集
+profiles-status-clear = ステータスを消去
