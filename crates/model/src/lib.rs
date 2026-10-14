@@ -19,6 +19,8 @@ pub mod forum;
 pub mod gifs;
 mod graphics;
 pub use graphics::{GpuPreference, VideoAdapter, VideoAdapterIdentity};
+mod time_format;
+pub use time_format::TimeFormat;
 pub mod guild_folders;
 pub mod message_options;
 pub mod permissions;

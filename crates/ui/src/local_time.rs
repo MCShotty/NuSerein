@@ -1,4 +1,72 @@
 //! Converts UTC instants to the user's local zone for display.
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Whether times of day use a 12-hour clock; set from Settings › Language & Time.
+static TWELVE_HOUR: AtomicBool = AtomicBool::new(false);
+
+/// Applies the clock style. `Auto` follows the display language, or the system locale when the
+/// language follows the system, as Discord does.
+pub fn set_format(format: model::TimeFormat, language: crate::i18n::Language) {
+	let twelve = match format {
+		model::TimeFormat::TwelveHour => true,
+		model::TimeFormat::TwentyFourHour => false,
+		model::TimeFormat::Auto => match language {
+			crate::i18n::Language::System => {
+				twelve_hour_locale(sys_locale::get_locale().as_deref().unwrap_or("en-US"))
+			}
+			language => language == crate::i18n::Language::English,
+		},
+	};
+	TWELVE_HOUR.store(twelve, Ordering::Relaxed);
+}
+
+/// Locales whose convention is a 12-hour clock with AM/PM.
+fn twelve_hour_locale(tag: &str) -> bool {
+	let tag = tag.split(['.', '@']).next().unwrap_or_default();
+	let tag = tag.replace('_', "-");
+	let mut parts = tag.split('-');
+	let language = parts.next().unwrap_or_default().to_ascii_lowercase();
+	let region = parts
+		.find(|part| part.len() == 2)
+		.map(str::to_ascii_uppercase);
+	match (language.as_str(), region.as_deref()) {
+		("en", None) => true,
+		("en", Some(region)) => matches!(region, "US" | "CA" | "AU" | "NZ" | "PH" | "IN"),
+		_ => false,
+	}
+}
+
+/// A time of day in the chosen clock style: `14:05` or `2:05 PM`.
+pub fn clock(at: time::OffsetDateTime) -> String {
+	clock_with(at, false)
+}
+
+/// [`clock`] with seconds: `14:05:09` or `2:05:09 PM`.
+pub fn clock_seconds(at: time::OffsetDateTime) -> String {
+	clock_with(at, true)
+}
+
+fn clock_with(at: time::OffsetDateTime, seconds: bool) -> String {
+	format_clock(at, seconds, TWELVE_HOUR.load(Ordering::Relaxed))
+}
+
+fn format_clock(at: time::OffsetDateTime, seconds: bool, twelve: bool) -> String {
+	let seconds = if seconds {
+		format!(":{:02}", at.second())
+	} else {
+		String::new()
+	};
+	if twelve {
+		let hour = match at.hour() % 12 {
+			0 => 12,
+			hour => hour,
+		};
+		let suffix = if at.hour() < 12 { "AM" } else { "PM" };
+		format!("{hour}:{:02}{seconds} {suffix}", at.minute())
+	} else {
+		format!("{:02}:{:02}{seconds}", at.hour(), at.minute())
+	}
+}
 
 /// Shifts `instant` to the local offset in effect at that moment; falls back to UTC.
 pub fn local(instant: time::OffsetDateTime) -> time::OffsetDateTime {
@@ -25,10 +93,10 @@ pub fn discord_timestamp(seconds: i64, style: u8) -> Option<String> {
 	}
 	let at = local(instant);
 	let date = at.date();
-	let clock = format!("{:02}:{:02}", at.hour(), at.minute());
+	let clock = clock(at);
 	Some(match style {
 		b't' => clock,
-		b'T' => format!("{clock}:{:02}", at.second()),
+		b'T' => clock_seconds(at),
 		b'd' => format!(
 			"{:02}/{:02}/{}",
 			u8::from(date.month()),
@@ -93,6 +161,43 @@ fn relative(delta: time::Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn clocks_follow_the_twelve_or_twenty_four_hour_style() {
+		let at = |hour, minute| {
+			time::OffsetDateTime::UNIX_EPOCH
+				.replace_time(time::Time::from_hms(hour, minute, 9).unwrap())
+		};
+		for (hour, twelve, twenty_four) in [
+			(0, "12:05 AM", "00:05"),
+			(9, "9:05 AM", "09:05"),
+			(12, "12:05 PM", "12:05"),
+			(23, "11:05 PM", "23:05"),
+		] {
+			assert_eq!(super::format_clock(at(hour, 5), false, true), twelve);
+			assert_eq!(super::format_clock(at(hour, 5), false, false), twenty_four);
+		}
+		assert_eq!(super::format_clock(at(14, 5), true, true), "2:05:09 PM");
+		assert_eq!(super::format_clock(at(14, 5), true, false), "14:05:09");
+	}
+
+	#[test]
+	fn auto_uses_twelve_hours_only_where_the_locale_does() {
+		for tag in ["en-US", "en_US.UTF-8", "en", "en-CA", "en-AU"] {
+			assert!(super::twelve_hour_locale(tag), "{tag}");
+		}
+		for tag in [
+			"en-GB",
+			"en_GB.UTF-8",
+			"en_GB@euro",
+			"de-DE",
+			"fr",
+			"ja-JP",
+			"cs_CZ",
+		] {
+			assert!(!super::twelve_hour_locale(tag), "{tag}");
+		}
+	}
+
 	#[test]
 	fn formats_every_discord_timestamp_style() {
 		let at = 1_700_000_000;

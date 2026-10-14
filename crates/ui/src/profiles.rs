@@ -65,6 +65,104 @@ pub(crate) fn user_in_voice(state: &State, user: Id) -> bool {
 		}))
 }
 
+/// The custom status as Discord's thought bubble: a small dot off the avatar, then a rounded
+/// bubble of at most three lines, always below the banner. On the account's own card, hovering
+/// it or focusing its controls offers edit and clear. Returns its bounds and any action picked.
+fn status_bubble(
+	ui: &egui::Ui,
+	avatar: Rect,
+	banner: Rect,
+	theme: &Theme,
+	text: &str,
+	(full, own): (bool, bool),
+) -> Option<(Rect, Option<Action>)> {
+	let left = avatar.right() + 10.0;
+	let room = banner.right() - PAD - left;
+	if room < 60.0 {
+		return None;
+	}
+	let width = room.min(if full { 240.0 } else { 190.0 });
+	let mut job = egui::text::LayoutJob::single_section(
+		text.to_owned(),
+		egui::TextFormat::simple(egui::FontId::proportional(13.0), theme.text),
+	);
+	job.wrap = egui::text::TextWrapping {
+		max_width: width - 28.0,
+		max_rows: 3,
+		break_anywhere: false,
+		overflow_character: Some('…'),
+	};
+	let galley = ui.painter().layout_job(job);
+	let size = galley.size() + vec2(28.0, 20.0);
+	let bubble = Rect::from_min_size(
+		pos2(left + 8.0, banner.bottom() + 8.0),
+		vec2(size.x.max(48.0), size.y),
+	);
+	let fill = theme.card.lerp_to_gamma(Color32::BLACK, 0.3);
+	let stroke = Stroke::new(1.0, theme.border);
+	let painter = ui.painter();
+	painter.circle(pos2(left + 1.0, bubble.top() - 1.0), 4.0, fill, stroke);
+	painter.rect(bubble, 14, fill, stroke, egui::StrokeKind::Inside);
+	painter.galley(bubble.min + vec2(14.0, 10.0), galley, theme.text);
+	let id = egui::Id::unique(("profile-status-bubble", full));
+	ui.interact(bubble, id, egui::Sense::hover())
+		.on_hover_text(text);
+	if !own {
+		return Some((bubble, None));
+	}
+	// Discord's tools ride the bubble's top-right corner: pencil, then trash.
+	const TOOL: f32 = 26.0;
+	let tools = Rect::from_min_size(
+		pos2(
+			bubble.right() - 2.0 * TOOL - 10.0,
+			bubble.top() - TOOL * 0.5,
+		),
+		vec2(2.0 * TOOL + 6.0, TOOL),
+	);
+	let pointer = ui.ctx().pointer_hover_pos();
+	let near = pointer.is_some_and(|pos| bubble.contains(pos) || tools.expand(2.0).contains(pos));
+	let controls = [
+		(Icon::Pencil, "profiles-status-edit", Action::EditStatus),
+		(Icon::Trash, "profiles-status-clear", Action::ClearStatus),
+	];
+	let responses: [_; 2] = std::array::from_fn(|index| {
+		let rect = Rect::from_min_size(
+			tools.min + vec2(3.0 + index as f32 * TOOL, 0.0),
+			Vec2::splat(TOOL),
+		);
+		ui.interact(rect, id.with(("tool", index)), egui::Sense::click())
+	});
+	let visible = near || responses.iter().any(egui::Response::has_focus);
+	if visible {
+		painter.rect(tools, 8, fill, stroke, egui::StrokeKind::Inside);
+	}
+	let mut picked = None;
+	for ((icon, label, action), response) in controls.into_iter().zip(responses) {
+		if visible {
+			let color = if response.hovered() || response.has_focus() {
+				theme.text
+			} else {
+				theme.muted
+			};
+			icons::paint(painter, icon, response.rect.shrink(6.0), color);
+			if response.has_focus() {
+				painter.rect_stroke(
+					response.rect.shrink(2.0),
+					4,
+					Stroke::new(1.0, theme.text),
+					egui::StrokeKind::Inside,
+				);
+			}
+		}
+		let label = crate::i18n::translate(label);
+		response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+		if response.on_hover_text(label).clicked() {
+			picked = Some(action);
+		}
+	}
+	Some((bubble, picked))
+}
+
 /// Prefix a status row with the shared voice badge, reserving room for its existing text.
 pub(crate) fn voice_badge(ui: &mut egui::Ui, in_voice: bool, has_status: bool) {
 	if !in_voice {
@@ -145,6 +243,10 @@ pub enum Action {
 	Banner(model::EmbedMedia),
 	/// Shared user action picked from the card's overflow menu.
 	Menu(crate::user_menu::Action),
+	/// The pencil on the account's own status bubble.
+	EditStatus,
+	/// The trash can on the account's own status bubble.
+	ClearStatus,
 }
 
 /// Shared Rich Presence card for member profiles and the account preview.
@@ -505,7 +607,7 @@ fn clan_chip(
 /// Discord's official support request form. No supported in-app reporting API is used.
 const REPORT_URL: &str = "https://support.discord.com/hc/en-us/requests/new";
 
-/// Best known account username: the loaded profile, then the relationship lists.
+/// Best known account username: a loaded or recently cached profile, then the relationship lists.
 pub(crate) fn known_username(state: &State, user: Id) -> Option<String> {
 	state
 		.profile
@@ -518,6 +620,11 @@ pub(crate) fn known_username(state: &State, user: Id) -> Option<String> {
 				.data
 				.as_ref()
 				.filter(|data| data.user.id == user && !data.username.is_empty())
+		})
+		.or_else(|| {
+			state
+				.known_profile(user)
+				.filter(|data| !data.username.is_empty())
 		})
 		.map(|data| data.username.clone())
 		.or_else(|| state.friend_username(user).map(str::to_owned))
@@ -592,13 +699,13 @@ pub(crate) fn report_button(ui: &mut egui::Ui, user: &User) {
 	}
 }
 
-fn friend_target(state: &State, user: &User) -> bool {
+pub(crate) fn friend_target(state: &State, user: &User) -> bool {
 	!user.webhook
 		&& user.kind == model::AccountKind::Human
 		&& state.user.as_ref().is_some_and(|own| own.id != user.id)
 }
 /// Whether the account may send relationship and moderation requests right now.
-fn actions_enabled(state: &State) -> bool {
+pub(crate) fn actions_enabled(state: &State) -> bool {
 	!state.user_action_pending()
 		&& (state.demo
 			|| (state.gateway_connected
@@ -2222,6 +2329,8 @@ pub(crate) fn profile_opener_id() -> egui::Id {
 
 #[derive(Default)]
 pub struct ProfileSession {
+	/// This account's own custom status, which presence updates never carry for itself.
+	pub(crate) own_status: String,
 	open: Option<User>,
 	anchor: Option<(Id, Pos2)>,
 	trigger: Option<Rect>,
@@ -2946,12 +3055,31 @@ pub fn show_with_session(
 		if let Some(status) = status {
 			presence_badge(ui, avatar_rect, status, clients, theme.card);
 		}
+		// Discord shows the custom status as a thought bubble beside the avatar.
+		let own = state.user.as_ref().is_some_and(|own| own.id == user.id);
+		let thought = if own {
+			(!session.own_status.trim().is_empty()).then(|| session.own_status.clone())
+		} else {
+			custom
+				.filter(|text| !text.trim().is_empty())
+				.map(str::to_owned)
+		};
 		let mut header_bottom = avatar_rect.bottom();
+		if let Some(text) = thought.as_deref()
+			&& let Some((bubble, picked)) =
+				status_bubble(ui, avatar_rect, banner, &theme, text, (full, own))
+		{
+			header_bottom = header_bottom.max(bubble.bottom());
+			if picked.is_some() {
+				action = picked;
+			}
+		}
 		let (icon_badges, text_badges): (Vec<_>, Vec<_>) = data
 			.map(|d| d.badges.iter().partition(|b| b.icon.is_some()))
 			.unwrap_or_default();
 		// The full profile lists badges inline after the username instead.
-		if !icon_badges.is_empty() && !full {
+		// With a status bubble in its place, the popout lists badges under the name instead.
+		if !icon_badges.is_empty() && !full && thought.is_none() {
 			const BADGE: f32 = 22.0;
 			let right = banner.right() - PAD;
 			let count = icon_badges.len() as f32;
@@ -3157,6 +3285,22 @@ pub fn show_with_session(
 								)
 								.truncate(),
 							);
+							if thought.is_some() && !icon_badges.is_empty() {
+								ui.horizontal_wrapped(|ui| {
+									ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+									for badge in &icon_badges {
+										avatars
+											.show_icon(
+												ui,
+												badge.icon_key(),
+												20.0,
+												state.demo,
+												&badge.description,
+											)
+											.on_hover_text(&badge.description);
+									}
+								});
+							}
 						}
 
 						if full {
@@ -3256,16 +3400,11 @@ pub fn show_with_session(
 								}
 							});
 						}
-						if custom.is_some() || in_voice {
+						if in_voice {
 							ui.add_space(4.0);
 							ui.horizontal(|ui| {
 								ui.spacing_mut().item_spacing.x = 4.0;
-								voice_badge(ui, in_voice, custom.is_some());
-								if let Some(custom) = custom {
-									ui.add(
-										egui::Label::new(RichText::new(custom).size(13.0)).wrap(),
-									);
-								}
+								voice_badge(ui, in_voice, false);
 							});
 						}
 						if !user.webhook && view.is_none_or(|v| v.loading) {
@@ -3785,7 +3924,9 @@ fn paint_collectibles(
 	} else {
 		ui.ctx().content_rect()
 	};
-	let painter = ui.painter().with_clip_rect(clip);
+	// The card's own clip stops at its constrained bounds; the frame overflows them on purpose.
+	let mut painter = ui.painter().clone();
+	painter.set_clip_rect(clip.intersect(ui.ctx().content_rect()));
 	let back = avatars.frame_shapes(ui.ctx(), frame, card, clip, false, demo);
 	painter.set(frame_back, egui::Shape::Vec(back));
 	for shape in avatars.frame_shapes(ui.ctx(), frame, card, clip, true, demo) {
@@ -4840,5 +4981,311 @@ mod tests {
 			activity_timer(Some(1_000), None, 131_000).as_deref(),
 			Some("2:10")
 		);
+	}
+
+	#[test]
+	fn own_card_shows_the_account_custom_status_as_a_bubble() {
+		for full in [false, true] {
+			for (own, live, cached, expected) in [
+				(
+					true,
+					"Live account status",
+					Some("Old guild status"),
+					Some("Live account status"),
+				),
+				(true, "", Some("Old guild status"), None),
+				(true, " \t ", Some("Old guild status"), None),
+				(
+					true,
+					"Live account status",
+					None,
+					Some("Live account status"),
+				),
+				(
+					false,
+					"Unrelated account status",
+					Some("Remote user status"),
+					Some("Remote user status"),
+				),
+			] {
+				let ctx = egui::Context::default();
+				let mut state = test_support::demo_state();
+				let account = state.user.clone().unwrap();
+				let user = if own {
+					account
+				} else {
+					test_support::message(1, Id(22)).author
+				};
+				state.selected = Some(Id(20));
+				state.members = Some(model::MemberList {
+					guild: Some(Id(10)),
+					channel: Id(20),
+					request: 1,
+					total: 1,
+					lazy: false,
+					groups: vec![],
+					ranges: vec![],
+					freshness: model::Freshness::Fresh,
+					start: 0,
+					slots: vec![Some(model::MemberSlot::Person(model::Member {
+						roles: vec![],
+						user: user.clone(),
+						nick: None,
+						status: Some("online".into()),
+						custom_status: cached.map(str::to_owned),
+						activities: vec![],
+						clients: model::ClientPlatforms::default(),
+					}))],
+				});
+				let view = ProfileView {
+					user: user.id,
+					guild: Some(Id(10)),
+					request: 0,
+					loading: false,
+					error: None,
+					data: Some(synthetic(&user, None)),
+				};
+				let mut session = ProfileSession {
+					own_status: live.into(),
+					full,
+					..Default::default()
+				};
+				let mut painted = String::new();
+				for _ in 0..2 {
+					let output = ctx.run_ui(
+						egui::RawInput {
+							screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 800.0))),
+							..Default::default()
+						},
+						|ui| {
+							show_with_session(
+								ui,
+								&user,
+								Some(&view),
+								&state,
+								&mut Avatars::default(),
+								&mut None,
+								&mut FormatCache::default(),
+								false,
+								pos2(300.0, 100.0),
+								&mut session,
+							);
+						},
+					);
+					painted.clear();
+					output
+						.shapes
+						.iter()
+						.for_each(|shape| text(&shape.shape, &mut painted));
+					output.drop_without_applying_deltas();
+				}
+				if let Some(expected) = expected {
+					assert!(painted.contains(expected), "{painted:?}");
+				}
+				if let Some(cached) = cached.filter(|cached| Some(*cached) != expected) {
+					assert!(!painted.contains(cached), "{painted:?}");
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn own_status_bubble_buttons_support_tab_enter_and_space_without_pointer() {
+		for full in [false, true] {
+			let ctx = egui::Context::default();
+			let id = egui::Id::unique(("profile-status-bubble", full));
+			let frame = |events| {
+				let mut picked = None;
+				let output = ctx.run_ui(input(vec2(600.0, 400.0), events), |ui| {
+					let theme = Theme::new(&design::palette(ui), None);
+					picked = status_bubble(
+						ui,
+						Rect::from_min_size(pos2(10.0, 50.0), Vec2::splat(80.0)),
+						Rect::from_min_size(pos2(10.0, 10.0), vec2(400.0, 100.0)),
+						&theme,
+						"Synthetic account status",
+						(full, true),
+					)
+					.unwrap()
+					.1;
+				});
+				output.drop_without_applying_deltas();
+				picked
+			};
+			frame(vec![]);
+			frame(vec![]);
+			let key = |key| {
+				[true, false]
+					.map(|pressed| egui::Event::Key {
+						key,
+						physical_key: None,
+						pressed,
+						repeat: false,
+						modifiers: egui::Modifiers::NONE,
+					})
+					.to_vec()
+			};
+			assert!(frame(key(egui::Key::Tab)).is_none());
+			assert_eq!(
+				ctx.memory(|memory| memory.focused()),
+				Some(id.with(("tool", 0usize)))
+			);
+			assert!(matches!(
+				frame(key(egui::Key::Enter)),
+				Some(Action::EditStatus)
+			));
+			assert!(frame(key(egui::Key::Tab)).is_none());
+			assert_eq!(
+				ctx.memory(|memory| memory.focused()),
+				Some(id.with(("tool", 1usize)))
+			);
+			assert!(matches!(
+				frame(key(egui::Key::Space)),
+				Some(Action::ClearStatus)
+			));
+		}
+	}
+
+	#[test]
+	fn elided_status_bubble_shows_full_hover_text_for_owner_and_other_users() {
+		const STATUS: &str = "A long synthetic status that wraps beyond three lines and ends with a visible tooltip marker.";
+		for own in [false, true] {
+			let ctx = egui::Context::default();
+			ctx.style_mut_of(ctx.theme(), |style| style.interaction.tooltip_delay = 0.0);
+			let mut bubble = Rect::NOTHING;
+			let mut full_tooltip = false;
+			for frame in 0..5 {
+				let events = if frame >= 2 {
+					vec![egui::Event::PointerMoved(bubble.center())]
+				} else {
+					vec![]
+				};
+				let mut raw = input(vec2(600.0, 400.0), events);
+				raw.time = Some(frame as f64);
+				let output = ctx.run_ui(raw, |ui| {
+					let theme = Theme::new(&design::palette(ui), None);
+					bubble = status_bubble(
+						ui,
+						Rect::from_min_size(pos2(10.0, 50.0), Vec2::splat(80.0)),
+						Rect::from_min_size(pos2(10.0, 10.0), vec2(340.0, 100.0)),
+						&theme,
+						STATUS,
+						(false, own),
+					)
+					.unwrap()
+					.0;
+				});
+				fn has_full_text(shape: &egui::Shape) -> bool {
+					match shape {
+						egui::Shape::Text(text) => {
+							text.galley.job.text == STATUS && !text.galley.elided
+						}
+						egui::Shape::Vec(shapes) => shapes.iter().any(has_full_text),
+						_ => false,
+					}
+				}
+				let shown = output
+					.shapes
+					.iter()
+					.any(|shape| has_full_text(&shape.shape));
+				if frame < 2 {
+					assert!(!shown, "bubble must elide this status");
+				}
+				full_tooltip |= shown;
+				output.drop_without_applying_deltas();
+			}
+			assert!(full_tooltip, "full hover text missing for own={own}");
+		}
+	}
+
+	#[test]
+	fn own_status_bubble_offers_edit_and_clear_on_hover() {
+		let ctx = egui::Context::default();
+		let state = test_support::demo_state();
+		let user = state.user.clone().unwrap();
+		let view = ProfileView {
+			user: user.id,
+			guild: None,
+			request: 0,
+			loading: false,
+			error: None,
+			data: Some(synthetic(&user, None)),
+		};
+		let mut session = ProfileSession {
+			own_status: "thank you for being my mirror".into(),
+			..Default::default()
+		};
+		let mut frame = |events: Vec<egui::Event>| {
+			let mut action = None;
+			let mut text_rect = None;
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 800.0))),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					action = show_with_session(
+						ui,
+						&user,
+						Some(&view),
+						&state,
+						&mut Avatars::default(),
+						&mut None,
+						&mut FormatCache::default(),
+						false,
+						pos2(300.0, 100.0),
+						&mut session,
+					);
+				},
+			);
+			fn walk(shape: &egui::Shape, out: &mut Option<Rect>) {
+				match shape {
+					egui::Shape::Text(text)
+						if text.galley.job.text == "thank you for being my mirror" =>
+					{
+						*out = Some(text.galley.rect.translate(text.pos.to_vec2()));
+					}
+					egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| walk(shape, out)),
+					_ => {}
+				}
+			}
+			output
+				.shapes
+				.iter()
+				.for_each(|shape| walk(&shape.shape, &mut text_rect));
+			output.drop_without_applying_deltas();
+			(action, text_rect)
+		};
+		let mut text = None;
+		for _ in 0..2 {
+			text = frame(vec![]).1;
+		}
+		let text = text.expect("status bubble painted");
+		// The bubble pads its text by 14 × 10; the tools sit on its top-right corner.
+		let bubble = Rect::from_min_max(text.min - vec2(14.0, 10.0), text.max + vec2(14.0, 10.0));
+		let tools = pos2(bubble.right() - 62.0, bubble.top() - 13.0);
+		let click = |pos: Pos2| {
+			let mut events = vec![egui::Event::PointerMoved(pos)];
+			for pressed in [true, false] {
+				events.push(egui::Event::PointerButton {
+					pos,
+					button: egui::PointerButton::Primary,
+					pressed,
+					modifiers: Default::default(),
+				});
+			}
+			events
+		};
+		for (offset, expected) in [(16.0, "edit"), (42.0, "clear")] {
+			let target = tools + vec2(offset, 13.0);
+			frame(vec![egui::Event::PointerMoved(bubble.center())]);
+			frame(vec![egui::Event::PointerMoved(target)]);
+			let (action, _) = frame(click(target));
+			match (expected, action) {
+				("edit", Some(Action::EditStatus)) | ("clear", Some(Action::ClearStatus)) => {}
+				(expected, other) => panic!("{expected}: {:?}", other.is_some()),
+			}
+		}
 	}
 }

@@ -4174,6 +4174,10 @@ voice-voice-card-section-disconnect = Disconnect
 # Context: voice_card_section
 voice-voice-card-section-dismiss-call = Dismiss call
 # Context: voice_card_section
+voice-voice-card-section-reconnect-attempt = { $reason } · attempt { $attempt } of { $total }
+# Context: voice_card_section
+voice-voice-card-section-reconnecting = Reconnecting…
+# Context: voice_card_section
 voice-voice-card-section-microphone-unavailable-a-still-connected-choose-another-input-in-audio = Microphone unavailable · still connected. Choose another input in Audio settings.
 # Context: voice_channel_button
 voice-voice-channel-button-connected = , connected
@@ -4837,3 +4841,19 @@ composer-placeholder = Message
 composer-placeholder-channel = Message #{ $channel }
 # Context: composer_placeholder
 composer-placeholder-direct = Message @{ $name }
+
+# Context: timeline_dm_intro
+timeline-dm-intro = This is the beginning of your direct message history with { $name }.
+
+# Context: timeline_channel_intro
+timeline-channel-intro-title = Welcome to #{ $channel }!
+# Context: timeline_channel_intro
+timeline-channel-intro-start = This is the start of the #{ $channel } channel.
+page-language-time = Language & Time
+description-language-time = Display language and how times are shown.
+time-format-group = Time format
+time-format-auto = Auto
+time-format-12-hour = 12-hour
+time-format-24-hour = 24-hour
+profiles-status-edit = Edit status
+profiles-status-clear = Clear status
