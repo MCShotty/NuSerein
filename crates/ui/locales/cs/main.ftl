@@ -3004,6 +3004,8 @@ server-menu-header-server-menu = Nabídka serveru
 server-menu-leave-item-leave-server = Opustit server
 # Context: read_item
 server-menu-read-item-mark-as-read = Označit jako přečtené
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Označit vše jako přečtené
 # Context: settings_item
 server-menu-settings-item-server-settings = Nastavení serveru
 # Context: show
@@ -4636,6 +4638,8 @@ member-in-voice = V hlasovém chatu
 settings-chat-box = Psaní zpráv
 settings-convert-emoticons = Automaticky převádět emotikony ve zprávách na emoji
 settings-convert-emoticons-description = Při odesílání nebo úpravě zpráv převést samostatné emotikony jako :) na 🙂. Kód a odkazy zůstanou beze změny.
+settings-preload-on-hover = Předem načítat po najetí myší
+settings-preload-on-hover-description = Načíst konverzaci, profil nebo výběr GIFů, když na nich spočine ukazatel, aby se otevřely okamžitě. Používá stejné požadavky jako otevření, nejvýše 12 za minutu pro každý druh.
 
 profiles-board = Board
 profiles-board-unavailable = This profile’s board is unavailable.
@@ -4816,6 +4820,16 @@ timeline-dm-intro = Toto je začátek vaší historie přímých zpráv s uživa
 timeline-channel-intro-title = Vítejte v #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Toto je začátek kanálu #{ $channel }.
+# Context: text_menu
+text-menu-cut = Vyjmout
+text-menu-copy = Kopírovat
+text-menu-paste = Vložit
+text-menu-select-all = Vybrat vše
+# Context: media_box
+forum-composer-attached-files = Přiložené soubory: { $count }
+forum-composer-remove-file = Odebrat { $file }
+post-menu-post-action-failed = Akce s příspěvkem selhala
+post-menu-thread-action-failed = Akce s vláknem selhala
 
 # Context: badges
 badges-nitro = Nitro
@@ -4883,3 +4897,15 @@ time-format-12-hour = 12hodinový
 time-format-24-hour = 24hodinový
 profiles-status-edit = Upravit stav
 profiles-status-clear = Vymazat stav
+send-throttled-title = Hola hola, moc pálivé
+send-throttled-body = Posíláte zprávy příliš rychle!
+send-throttled-dismiss = Vstoupit do zóny klidu
+profiles-private-profile = Soukromý profil
+profiles-private-notice = Profil uživatele { $name } je soukromý, takže některé informace jsou skryté. Pošlete žádost o přátelství, abyste viděli víc.
+settings-cosmetics-name-styles = Styly jmen
+settings-cosmetics-name-styles-description = Písma, barvy a efekty zobrazovaných jmen s Nitrem.
+search-overlays-message-contains = Zpráva obsahuje
+search-overlays-no-matching-content-types = Žádné odpovídající typy obsahu
+search-overlays-history = Historie
+search-overlays-clear-history = Vymazat historii hledání
+main-sign-in-rate-limited-detail = Discord omezuje toto přihlášení. Než to zkusíte znovu, počkejte. Dřívější pokus může čekání prodloužit.

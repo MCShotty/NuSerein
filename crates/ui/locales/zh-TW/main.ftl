@@ -3022,6 +3022,8 @@ server-menu-header-server-menu = 伺服器選單
 server-menu-leave-item-leave-server = 離開伺服器
 # Context: read_item
 server-menu-read-item-mark-as-read = 標為已讀
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = 全部標為已讀
 # Context: settings_item
 server-menu-settings-item-server-settings = 伺服器設定
 # Context: show
@@ -4648,6 +4650,8 @@ settings-chat-box = 聊天框
 settings-convert-emoticons = 自動把訊息中的顏文字轉成表情符號
 
 settings-convert-emoticons-description = 傳送或編輯訊息時，把 :) 這類獨立顏文字轉成 🙂。程式碼與連結不變。
+settings-preload-on-hover = 懸停時預先載入
+settings-preload-on-hover-description = 指標停留在對話、個人資料或 GIF 選擇器上時預先載入，開啟時即刻顯示。使用與開啟相同的請求，每類每分鐘最多 12 次。
 
 profiles-board = 看板
 profiles-board-unavailable = 這個個人檔案的看板無法使用。
@@ -4828,6 +4832,16 @@ timeline-dm-intro = 這是你與 { $name } 的私訊紀錄的開頭。
 timeline-channel-intro-title = 歡迎來到 #{ $channel }！
 # Context: timeline_channel_intro
 timeline-channel-intro-start = 這是 #{ $channel } 頻道的開頭。
+# Context: text_menu
+text-menu-cut = 剪下
+text-menu-copy = 複製
+text-menu-paste = 貼上
+text-menu-select-all = 全選
+# Context: media_box
+forum-composer-attached-files = 已附加 { $count } 個檔案
+forum-composer-remove-file = 移除 { $file }
+post-menu-post-action-failed = 貼文操作失敗
+post-menu-thread-action-failed = 討論串操作失敗
 
 # Context: badges
 badges-nitro = Nitro
@@ -4895,3 +4909,15 @@ time-format-12-hour = 12 小時制
 time-format-24-hour = 24 小時制
 profiles-status-edit = 編輯狀態
 profiles-status-clear = 清除狀態
+send-throttled-title = 哇，太辣了
+send-throttled-body = 你傳送訊息太快了！
+send-throttled-dismiss = 關閉提示
+profiles-private-profile = 私人個人資料
+profiles-private-notice = { $name } 的個人資料為私人，部分資訊已隱藏。加為好友即可查看更多。
+settings-cosmetics-name-styles = 名稱樣式
+settings-cosmetics-name-styles-description = Nitro 顯示名稱的字型、顏色與特效。
+search-overlays-message-contains = 訊息包含
+search-overlays-no-matching-content-types = 沒有符合的內容類型
+search-overlays-history = 歷史紀錄
+search-overlays-clear-history = 清除搜尋紀錄
+main-sign-in-rate-limited-detail = Discord 正在限制此次登入。請稍候再試。過早重試可能會延長等待時間。

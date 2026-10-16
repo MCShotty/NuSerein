@@ -2992,6 +2992,8 @@ server-menu-header-server-menu = Sunucu menüsü
 server-menu-leave-item-leave-server = Sunucudan ayrıl
 # Context: read_item
 server-menu-read-item-mark-as-read = Okundu Olarak İşaretle
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Tümünü Okundu Olarak İşaretle
 # Context: settings_item
 server-menu-settings-item-server-settings = Sunucu Ayarları
 # Context: show
@@ -4718,6 +4720,16 @@ timeline-dm-intro = { $name } ile doğrudan mesaj geçmişinin başlangıcı.
 timeline-channel-intro-title = #{ $channel } kanalına hoş geldin!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = #{ $channel } kanalının başlangıcı.
+# Context: text_menu
+text-menu-cut = Kes
+text-menu-copy = Kopyala
+text-menu-paste = Yapıştır
+text-menu-select-all = Tümünü seç
+# Context: media_box
+forum-composer-attached-files = { $count } ekli dosya
+forum-composer-remove-file = { $file } dosyasını kaldır
+post-menu-post-action-failed = Gönderi işlemi başarısız oldu
+post-menu-thread-action-failed = Konu işlemi başarısız oldu
 
 # Context: badges
 badges-nitro = Nitro
@@ -4785,3 +4797,15 @@ time-format-12-hour = 12 saat
 time-format-24-hour = 24 saat
 profiles-status-edit = Durumu düzenle
 profiles-status-clear = Durumu temizle
+send-throttled-title = Hop, biraz yavaş!
+send-throttled-body = Mesajları çok hızlı gönderiyorsun!
+send-throttled-dismiss = Tamam, yavaşlıyorum
+profiles-private-profile = Gizli Profil
+profiles-private-notice = { $name } adlı kullanıcının profili gizli, bu yüzden bazı bilgiler saklı. Daha fazlasını görmek için arkadaş olarak ekle.
+settings-cosmetics-name-styles = Ad stilleri
+settings-cosmetics-name-styles-description = Nitro görünen ad yazı tipleri, renkleri ve efektleri.
+search-overlays-message-contains = Mesaj şunu içerir
+search-overlays-no-matching-content-types = Eşleşen içerik türü yok
+search-overlays-history = Geçmiş
+search-overlays-clear-history = Arama geçmişini temizle
+main-sign-in-rate-limited-detail = Discord bu oturum açmayı sınırlıyor. Tekrar denemeden önce bekle. Daha erken bir deneme bekleme süresini uzatabilir.

@@ -2991,6 +2991,8 @@ server-menu-header-server-menu = Menu du serveur
 server-menu-leave-item-leave-server = Quitter le serveur
 # Context: read_item
 server-menu-read-item-mark-as-read = Marquer comme lu
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Tout marquer comme lu
 # Context: settings_item
 server-menu-settings-item-server-settings = Paramètres du serveur
 # Context: show
@@ -4729,6 +4731,19 @@ timeline-dm-intro = Ceci est le début de votre historique de messages privés a
 timeline-channel-intro-title = Bienvenue dans #{ $channel } !
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Ceci est le début du salon #{ $channel }.
+# Context: text_menu
+text-menu-cut = Couper
+text-menu-copy = Copier
+text-menu-paste = Coller
+text-menu-select-all = Tout sélectionner
+# Context: media_box
+forum-composer-attached-files = { $count ->
+    [one] { $count } fichier joint
+   *[other] { $count } fichiers joints
+    }
+forum-composer-remove-file = Retirer { $file }
+post-menu-post-action-failed = L'action sur la publication a échoué
+post-menu-thread-action-failed = L'action sur le fil a échoué
 
 # Context: badges
 badges-nitro = Nitro
@@ -4796,3 +4811,15 @@ time-format-12-hour = 12 heures
 time-format-24-hour = 24 heures
 profiles-status-edit = Modifier le statut
 profiles-status-clear = Effacer le statut
+send-throttled-title = Holà, beaucoup trop épicé
+send-throttled-body = Vous envoyez des messages trop rapidement !
+send-throttled-dismiss = Entrer dans la zone zen
+profiles-private-profile = Profil privé
+profiles-private-notice = Le profil de { $name } est privé, certaines infos sont donc masquées. Ajoutez cette personne en ami pour en voir plus.
+settings-cosmetics-name-styles = Styles de nom
+settings-cosmetics-name-styles-description = Polices, couleurs et effets de pseudo Nitro.
+search-overlays-message-contains = Le message contient
+search-overlays-no-matching-content-types = Aucun type de contenu correspondant
+search-overlays-history = Historique
+search-overlays-clear-history = Effacer l'historique de recherche
+main-sign-in-rate-limited-detail = Discord limite cette connexion. Patientez avant de réessayer. Une nouvelle tentative trop tôt peut prolonger l'attente.

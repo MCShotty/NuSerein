@@ -1106,6 +1106,11 @@ impl MessagingUi {
 					"settings-cosmetics-frames-description",
 					&mut cosmetics.frames,
 				),
+				(
+					"settings-cosmetics-name-styles",
+					"settings-cosmetics-name-styles-description",
+					&mut cosmetics.name_styles,
+				),
 			]
 			.into_iter()
 			.enumerate()
@@ -1143,6 +1148,12 @@ impl MessagingUi {
 					"settings-chat-settings-show-hidden-channels",
 					Some("settings-chat-settings-show-channels-you-cannot-currently-access"),
 					&mut self.show_hidden_channels,
+				);
+				design::switch(
+					ui,
+					"settings-preload-on-hover",
+					Some("settings-preload-on-hover-description"),
+					&mut self.preload_on_hover,
 				);
 			},
 		);

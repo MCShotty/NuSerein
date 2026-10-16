@@ -2991,6 +2991,8 @@ server-menu-header-server-menu = Menù server
 server-menu-leave-item-leave-server = Lascia il server
 # Context: read_item
 server-menu-read-item-mark-as-read = Segna come letto
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Segna tutto come letto
 # Context: settings_item
 server-menu-settings-item-server-settings = Impostazioni del server
 # Context: show
@@ -4729,6 +4731,19 @@ timeline-dm-intro = Questo è l'inizio della cronologia dei messaggi diretti con
 timeline-channel-intro-title = Benvenuto in #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Questo è l'inizio del canale #{ $channel }.
+# Context: text_menu
+text-menu-cut = Taglia
+text-menu-copy = Copia
+text-menu-paste = Incolla
+text-menu-select-all = Seleziona tutto
+# Context: media_box
+forum-composer-attached-files = { $count ->
+    [one] { $count } file allegato
+   *[other] { $count } file allegati
+    }
+forum-composer-remove-file = Rimuovi { $file }
+post-menu-post-action-failed = Azione sul post non riuscita
+post-menu-thread-action-failed = Azione sul thread non riuscita
 
 # Context: badges
 badges-nitro = Nitro
@@ -4796,3 +4811,15 @@ time-format-12-hour = 12 ore
 time-format-24-hour = 24 ore
 profiles-status-edit = Modifica stato
 profiles-status-clear = Cancella stato
+send-throttled-title = Ehi, troppo piccante
+send-throttled-body = Stai inviando messaggi troppo velocemente!
+send-throttled-dismiss = Entra nella zona relax
+profiles-private-profile = Profilo privato
+profiles-private-notice = Il profilo di { $name } è privato, quindi alcune informazioni sono nascoste. Invia una richiesta di amicizia per vedere di più.
+settings-cosmetics-name-styles = Stili del nome
+settings-cosmetics-name-styles-description = Caratteri, colori ed effetti del nome visualizzato Nitro.
+search-overlays-message-contains = Il messaggio contiene
+search-overlays-no-matching-content-types = Nessun tipo di contenuto corrispondente
+search-overlays-history = Cronologia
+search-overlays-clear-history = Cancella cronologia di ricerca
+main-sign-in-rate-limited-detail = Discord sta limitando questo accesso. Attendi prima di riprovare. Un nuovo tentativo troppo presto può allungare l'attesa.

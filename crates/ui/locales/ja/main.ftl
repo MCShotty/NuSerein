@@ -2992,6 +2992,8 @@ server-menu-header-server-menu = サーバーメニュー
 server-menu-leave-item-leave-server = サーバーから離れる
 # Context: read_item
 server-menu-read-item-mark-as-read = 既読としてマーク
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = すべて既読にする
 # Context: settings_item
 server-menu-settings-item-server-settings = サーバー設定
 # Context: show
@@ -4715,6 +4717,16 @@ timeline-dm-intro = { $name } とのダイレクトメッセージ履歴の始�
 timeline-channel-intro-title = #{ $channel } へようこそ！
 # Context: timeline_channel_intro
 timeline-channel-intro-start = #{ $channel } チャンネルの始まりです。
+# Context: text_menu
+text-menu-cut = 切り取り
+text-menu-copy = コピー
+text-menu-paste = 貼り付け
+text-menu-select-all = すべて選択
+# Context: media_box
+forum-composer-attached-files = 添付ファイル { $count } 件
+forum-composer-remove-file = { $file } を削除
+post-menu-post-action-failed = 投稿の操作に失敗しました
+post-menu-thread-action-failed = スレッドの操作に失敗しました
 
 # Context: badges
 badges-nitro = Nitro
@@ -4782,3 +4794,15 @@ time-format-12-hour = 12時間制
 time-format-24-hour = 24時間制
 profiles-status-edit = ステータスを編集
 profiles-status-clear = ステータスを消去
+send-throttled-title = ちょっと待って、刺激が強すぎ
+send-throttled-body = メッセージの送信が速すぎます！
+send-throttled-dismiss = チルゾーンへ
+profiles-private-profile = 非公開プロフィール
+profiles-private-notice = { $name } さんのプロフィールは非公開のため、一部の情報が表示されません。フレンドに追加すると詳しく見られます。
+settings-cosmetics-name-styles = 名前のスタイル
+settings-cosmetics-name-styles-description = Nitro の表示名のフォント、色とエフェクト。
+search-overlays-message-contains = メッセージに含まれるもの
+search-overlays-no-matching-content-types = 一致するコンテンツの種類はありません
+search-overlays-history = 履歴
+search-overlays-clear-history = 検索履歴を消去
+main-sign-in-rate-limited-detail = Discord がこのサインインを制限しています。しばらく待ってから再試行してください。早すぎる再試行は待ち時間を延ばすことがあります。

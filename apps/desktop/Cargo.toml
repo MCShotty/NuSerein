@@ -57,6 +57,8 @@ fontique = { version = "=0.11.1", default-features = false, features = ["system"
 log = { version = "=0.4.34", features = ["release_max_level_off"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Already built for eframe; maximizes the hidden startup window without flashing it.
+egui-winit.workspace = true
 # Already used by wgpu; read the selected Vulkan adapter's native DXGI LUID.
 ash = { version = "=0.38.0", default-features = false, features = ["std"] }
 

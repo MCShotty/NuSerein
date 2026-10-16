@@ -55,7 +55,7 @@ fragile-send-sync-non-atomic-wasm = ["wgpu/fragile-send-sync-non-atomic-wasm"]
 macos-window-resize-jitter-fix = ["wgpu/metal"]
 
 [dependencies]
-epaint = { git = "https://github.com/emilk/egui", rev = "bb622334e2f58afd84f6bb61980824f480c7e3d4", default-features = false, features = ["bytemuck"] }
+epaint = { git = "https://github.com/emilk/egui", rev = "4821fc54ae083ac516e137a61e70550330e55169", default-features = false, features = ["bytemuck"] }
 
 ahash = { version = "0.8.12", features = ["no-rng", "std"], default-features = false }
 bytemuck = "1.25"
@@ -69,5 +69,5 @@ wgpu = { version = "30.0", default-features = false, features = ["std", "wgsl"] 
 
 # Optional dependencies:
 
-egui = { git = "https://github.com/emilk/egui", rev = "bb622334e2f58afd84f6bb61980824f480c7e3d4", optional = true, default-features = false }
+egui = { git = "https://github.com/emilk/egui", rev = "4821fc54ae083ac516e137a61e70550330e55169", optional = true, default-features = false }
 winit = { version = "0.30.13", optional = true, default-features = false }

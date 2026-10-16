@@ -2991,6 +2991,8 @@ server-menu-header-server-menu = Menu serwera
 server-menu-leave-item-leave-server = Opuść serwer
 # Context: read_item
 server-menu-read-item-mark-as-read = Oznacz jako przeczytane
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Oznacz wszystko jako przeczytane
 # Context: settings_item
 server-menu-settings-item-server-settings = Ustawienia serwera
 # Context: show
@@ -4734,6 +4736,16 @@ timeline-dm-intro = To początek Twojej historii wiadomości prywatnych z { $nam
 timeline-channel-intro-title = Witaj na #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = To początek kanału #{ $channel }.
+# Context: text_menu
+text-menu-cut = Wytnij
+text-menu-copy = Kopiuj
+text-menu-paste = Wklej
+text-menu-select-all = Zaznacz wszystko
+# Context: media_box
+forum-composer-attached-files = Załączone pliki: { $count }
+forum-composer-remove-file = Usuń { $file }
+post-menu-post-action-failed = Działanie na poście nie powiodło się
+post-menu-thread-action-failed = Działanie na wątku nie powiodło się
 
 # Context: badges
 badges-nitro = Nitro
@@ -4801,3 +4813,15 @@ time-format-12-hour = 12-godzinny
 time-format-24-hour = 24-godzinny
 profiles-status-edit = Edytuj status
 profiles-status-clear = Wyczyść status
+send-throttled-title = Hola, za ostro
+send-throttled-body = Wysyłasz wiadomości zbyt szybko!
+send-throttled-dismiss = Wejdź do strefy spokoju
+profiles-private-profile = Profil prywatny
+profiles-private-notice = Profil użytkownika { $name } jest prywatny, więc część informacji jest ukryta. Wyślij zaproszenie do znajomych, aby zobaczyć więcej.
+settings-cosmetics-name-styles = Style nazw
+settings-cosmetics-name-styles-description = Czcionki, kolory i efekty nazw wyświetlanych z Nitro.
+search-overlays-message-contains = Wiadomość zawiera
+search-overlays-no-matching-content-types = Brak pasujących typów treści
+search-overlays-history = Historia
+search-overlays-clear-history = Wyczyść historię wyszukiwania
+main-sign-in-rate-limited-detail = Discord ogranicza to logowanie. Odczekaj, zanim spróbujesz ponownie. Wcześniejsza próba może wydłużyć oczekiwanie.

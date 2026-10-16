@@ -135,6 +135,17 @@ pub fn discord_timestamp(seconds: i64, style: u8) -> Option<String> {
 		_ => format!("{} {}, {} {clock}", date.month(), date.day(), date.year()),
 	})
 }
+/// A message header's time: just the time today, otherwise [`calendar`]'s "Yesterday at" or
+/// date form.
+pub fn header(utc: time::OffsetDateTime) -> String {
+	let at = local(utc);
+	if at.date() == now().date() {
+		clock(at)
+	} else {
+		calendar(utc)
+	}
+}
+
 /// Discord's calendar time: "Today at 2:05 PM", "Yesterday at 14:05", else "10/12/26, 5:37 PM".
 pub fn calendar(utc: time::OffsetDateTime) -> String {
 	let at = local(utc);
@@ -219,6 +230,27 @@ mod tests {
 		}
 		assert_eq!(super::format_clock(at(14, 5), true, true), "2:05:09 PM");
 		assert_eq!(super::format_clock(at(14, 5), true, false), "14:05:09");
+	}
+
+	/// Message headers read like Discord's: today, yesterday, then the short date.
+	#[test]
+	fn calendar_times_name_today_and_yesterday_and_date_older_messages() {
+		// A fixed noon keeps "today" and "yesterday" from crossing midnight mid-test.
+		let now =
+			time::OffsetDateTime::now_utc().replace_time(time::Time::from_hms(12, 0, 0).unwrap());
+		let _clock = super::pin_now(now);
+		assert!(super::calendar(now).starts_with("Today at "));
+		assert_eq!(super::header(now), super::clock(super::local(now)));
+		assert!(super::header(now - time::Duration::days(1)).starts_with("Yesterday at "));
+		assert!(super::calendar(now - time::Duration::days(1)).starts_with("Yesterday at "));
+		let older = time::OffsetDateTime::UNIX_EPOCH
+			.replace_date(time::Date::from_calendar_date(2026, time::Month::April, 29).unwrap())
+			.replace_time(time::Time::from_hms(3, 42, 0).unwrap());
+		let label = super::calendar(older);
+		assert!(
+			label == "4/29/26, 03:42" || label == "4/29/26, 3:42 AM",
+			"{label}"
+		);
 	}
 
 	#[test]

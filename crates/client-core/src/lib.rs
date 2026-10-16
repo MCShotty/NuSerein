@@ -6,6 +6,7 @@ pub mod captcha;
 pub mod channel_actions;
 pub mod fingerprint;
 pub mod forum;
+pub mod game_mentions;
 pub mod gifs;
 pub mod guild_creation;
 pub mod guild_folders;
@@ -23,6 +24,7 @@ pub mod message_actions;
 pub mod messaging_permissions;
 pub mod notifications;
 pub mod polls;
+pub mod preload;
 pub mod presence;
 pub mod profile;
 pub mod reactions;
@@ -62,6 +64,8 @@ pub const MAX_PREMIUM_CONTENT: usize = 4000;
 /// Discord accepts at most ten attachments per message.
 pub const MAX_ATTACHMENTS: usize = 10;
 pub const MAX_NAV: usize = model::account::MAX_ENTRIES;
+/// Mark-all-read pairs per command (16 KiB); the rest stay unread for another choice.
+pub const MAX_BULK_ACK: usize = 1024;
 const MAX_VIEWED_SERVERS: usize = 1024;
 pub const MAX_MEMBER_PRESENCE_BYTES: usize = 128 * 1024;
 pub const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
@@ -183,6 +187,8 @@ pub enum Command {
 		query: String,
 		before: Option<Id>,
 		offset: u32,
+		/// Oldest messages first; page one then starts at the earliest match.
+		oldest: bool,
 		request: u64,
 	},
 	CancelSearch,
@@ -212,6 +218,11 @@ pub enum Command {
 	MarkGuildRead {
 		guild: Id,
 		request: u64,
+	},
+	/// Latest message per unread channel, at most `MAX_BULK_ACK`.
+	MarkAllRead {
+		request: u64,
+		channels: Vec<(Id, Id)>,
 	},
 	Reactions(reactions::Command),
 	Profile {
@@ -255,6 +266,9 @@ pub enum Command {
 		after: Option<Id>,
 		request: u64,
 	},
+	/// The command a click would send, sent early on intent and answered by that command's own
+	/// event: a conversation's recent `History` page or a `Profile`.
+	Prefetch(Box<Command>),
 	Forward {
 		source: Id,
 		message: Id,
@@ -636,6 +650,11 @@ pub enum Event {
 		nonce: String,
 		result: Result<Message, auth::Failure>,
 	},
+	/// Discord rate-limited this message (documented: a 429 request is not processed). The
+	/// writer resends it after the service's wait, so it stays pending like on Discord.
+	SendThrottled {
+		nonce: String,
+	},
 	/// The service asked the user to solve a captcha before accepting this text message.
 	SendChallenge {
 		nonce: String,
@@ -689,6 +708,7 @@ pub struct State {
 	pub stickers: stickers::Stickers,
 	pub interactions: interactions::Interactions,
 	pub application_commands: application_commands::Catalog,
+	pub game_mentions: game_mentions::Catalog,
 	pub messaging_permissions: messaging_permissions::Settings,
 	pub guild_folders: Option<model::guild_folders::Settings>,
 	pub folders_pending: bool,
@@ -756,6 +776,9 @@ pub struct State {
 	pub direct_presence_bytes: Option<(usize, usize)>,
 	#[doc(hidden)]
 	pub direct_presence_epoch: u64,
+	/// A direct presence was dropped or evicted, or READY's presence was unavailable.
+	#[doc(hidden)]
+	pub direct_presence_lossy: bool,
 	pub member_request: u64,
 	pub guilds: Vec<Guild>,
 	pub channels: Vec<Channel>,
@@ -774,12 +797,20 @@ pub struct State {
 	pub timeline: Timeline,
 	pub preserve_deleted_messages: bool,
 	pub resident: resident::Windows,
+	pub preload: preload::Preload,
 	pub freshness: Freshness,
 	pub status: &'static str,
 	/// User-copyable cause of the last session failure, cleared by the next READY.
 	pub failure_detail: Option<Box<str>>,
 	pub drafts: BTreeMap<Id, String>,
 	pub pending: Vec<Pending>,
+	/// Discord rate-limited a send; the UI shows "sending too quickly" until dismissed.
+	pub send_throttled: bool,
+	/// The notice was dismissed for this burst; it returns only after the queue drains.
+	#[doc(hidden)]
+	pub send_throttle_seen: bool,
+	/// Search results run oldest first, sorted by Discord rather than per page.
+	pub search_oldest: bool,
 	pub send_verification: verification::SendVerification,
 	pub reply: Option<Reply>,
 	pub send_sequence: u64,
@@ -965,10 +996,12 @@ impl Default for State {
 			member_chunks: MemberChunks::default(),
 			member_search: Default::default(),
 			member_search_nonce: 0,
+			game_mentions: Default::default(),
 			direct_presences: vec![],
 			local_game_activity: Default::default(),
 			direct_presence_bytes: None,
 			direct_presence_epoch: 0,
+			direct_presence_lossy: false,
 			member_request: 0,
 			guilds: vec![],
 			channels: vec![],
@@ -980,11 +1013,15 @@ impl Default for State {
 			timeline: Timeline::default(),
 			preserve_deleted_messages: false,
 			resident: resident::Windows::default(),
+			preload: Default::default(),
 			freshness: Freshness::Stale,
 			status: "Disconnected",
 			failure_detail: None,
 			drafts: BTreeMap::new(),
 			pending: vec![],
+			send_throttled: false,
+			send_throttle_seen: false,
+			search_oldest: false,
 			send_verification: Default::default(),
 			reply: None,
 			send_sequence: 0,
@@ -1173,14 +1210,18 @@ impl State {
 		self.last_viewed_channels.splice(0..0, fresh);
 	}
 	pub fn select_guild(&mut self, guild: Id) -> Option<Command> {
+		let channel = self.guild_target(guild)?;
+		self.select(channel)
+	}
+	/// The channel a server icon opens: the current one, the last viewed, or the first text one.
+	pub fn guild_target(&self, guild: Id) -> Option<Id> {
 		self.guild(guild)?;
 		let available = |id| {
 			self.channel(id).is_some_and(|channel| {
 				channel.guild == Some(guild) && navigable(channel) && self.can_view(id)
 			})
 		};
-		let channel = self
-			.selected
+		self.selected
 			.filter(|id| available(*id))
 			.or_else(|| {
 				self.last_viewed_channels
@@ -1195,8 +1236,7 @@ impl State {
 					// Prefer ordinary text/forum channels over threads or voice on first visit.
 					.min_by_key(|c| (matches!(c.kind, 2 | 10..=12), c.position, c.id))
 					.map(|c| c.id)
-			})?;
-		self.select(channel)
+			})
 	}
 	pub fn select(&mut self, channel: Id) -> Option<Command> {
 		self.cancel_invite_navigation(channel);
@@ -1275,7 +1315,7 @@ impl State {
 		}
 		self.retire_archived_thread(Some(channel));
 		self.typing.clear();
-		self.select_resident(channel);
+		let trusted = self.select_resident(channel);
 		self.history_targeted = false;
 		self.history_navigation.clear();
 		if self.shared_member_list_id(channel).is_none() {
@@ -1336,7 +1376,30 @@ impl State {
 				return Apply::Opened(Some(command));
 			}
 		}
-		Apply::Opened(Some(self.history(None)))
+		if let Some(trusted) = trusted {
+			self.cancel_history();
+			self.history_before = None;
+			self.older_exhausted = trusted.older_exhausted;
+			self.freshness = Freshness::Fresh;
+			return Apply::Opened(self.call_sync(channel));
+		}
+		let command = self.history(None);
+		if let Command::History { request, .. } = command
+			&& self
+				.preload
+				.conversations
+				.adopt(channel, request, std::time::Instant::now())
+		{
+			// The page this click needs is already on its way.
+			return Apply::Opened(self.call_sync(channel));
+		}
+		Apply::Opened(Some(command))
+	}
+	/// Opening without a page request still synchronizes a direct call's state, as the host
+	/// does alongside a recent-page request.
+	fn call_sync(&self, channel: Id) -> Option<Command> {
+		(self.channel(channel).is_some_and(|c| c.guild.is_none()) && self.can_call(channel))
+			.then_some(Command::Voice(voice::Command::Sync { channel }))
 	}
 
 	/// Return to the last available direct message, or Friends when none remains.
@@ -1756,6 +1819,12 @@ impl State {
 		}
 		let before = self.timeline.row_ids().next()?;
 		Some(self.history(Some(before)))
+	}
+	/// Closes the "sending too quickly" notice for the rest of this burst.
+	pub fn dismiss_send_throttle(&mut self) {
+		self.send_throttled = false;
+		// A drained queue already ended the burst; the next one must be told again.
+		self.send_throttle_seen = self.pending.iter().any(|p| p.delivery == Delivery::Sending);
 	}
 	pub fn prepare_send(&mut self) -> Option<Command> {
 		self.prepare_send_with_attachment(None)
@@ -2180,6 +2249,14 @@ impl State {
 			});
 			return;
 		}
+		if let Command::MarkAllRead { request, .. } = command {
+			let _ = self.apply_read_state(read_state::Event::AllAck {
+				request,
+				acked: 0,
+				result: Err(auth::Failure::RateLimited),
+			});
+			return;
+		}
 		if let Command::Reactions(command) = command {
 			let event = match command {
 				reactions::Command::Read {
@@ -2309,6 +2386,33 @@ impl State {
 			self.invalidate_members();
 			return;
 		}
+		if let Command::Prefetch(command) = command {
+			// The click that adopted a rejected preload fails as its own request would.
+			match *command {
+				Command::History {
+					channel, request, ..
+				} => {
+					if let preload::Arrival::Adopted(own, _) =
+						self.preload.conversations.arrived(request, false)
+					{
+						self.command_rejected(Command::History {
+							channel,
+							before: None,
+							after: None,
+							request: own,
+						});
+					}
+				}
+				Command::Profile {
+					user,
+					guild,
+					request,
+					..
+				} => self.apply_profile(user, guild, request, Err(auth::Failure::Capacity)),
+				_ => {}
+			}
+			return;
+		}
 		if let Command::History {
 			channel, request, ..
 		} = &command
@@ -2421,6 +2525,7 @@ impl State {
 			if matches!(envelope.event, Event::Ready { .. } | Event::Resync) {
 				self.set_premium_type(0);
 			}
+			self.interrupt_preloads();
 			self.interrupt_stickers();
 			self.posts.clear_summaries();
 			self.interactions.reset();
@@ -2452,6 +2557,8 @@ impl State {
 		if let Event::DirectPresence(updates) = &envelope.event {
 			if envelope.event.bytes() <= MAX_MEMBER_PRESENCE_BYTES {
 				self.apply_direct_presence(updates);
+			} else {
+				self.direct_presence_lossy = true;
 			}
 			return;
 		}
@@ -2602,6 +2709,8 @@ impl State {
 				}
 				if warnings.presence {
 					self.clear_direct_presences();
+					// Without READY's presence, a missing record no longer means offline.
+					self.direct_presence_lossy = true;
 				}
 				Ok(())
 			}
@@ -3216,6 +3325,8 @@ impl State {
 				channels,
 			} => {
 				self.clear_direct_presences();
+				// READY starts a complete snapshot; a presence warning may follow it.
+				self.direct_presence_lossy = false;
 				if self
 					.user
 					.as_ref()
@@ -3320,10 +3431,17 @@ impl State {
 			}
 			Event::History {
 				channel,
-				request,
+				mut request,
 				older,
 				mut messages,
 			} => {
+				if preload::is_preload(request) {
+					match self.preload.conversations.arrived(request, true) {
+						preload::Arrival::Adopted(own, _) => request = own,
+						preload::Arrival::Keep => return self.park_preloaded(channel, messages),
+						preload::Arrival::Drop => return,
+					}
+				}
 				if self.selected != Some(channel)
 					|| request != self.request
 					|| !self.history_pending
@@ -3372,8 +3490,16 @@ impl State {
 							.and_then(|current| current.reactions.clone());
 					}
 				}
-				self.older_exhausted = if let Some(after) = self.history_after {
-					after.0 == 0
+				self.older_exhausted = if older {
+					// A short page of older messages is the conversation's start.
+					messages.len() < 50
+				} else if let Some(after) = self.history_after {
+					// A newer page extends the loaded window; it keeps a start already reached.
+					after.0 == 0 || (self.older_exhausted && !self.timeline.is_empty())
+				} else if self.history_targeted {
+					// A page fetched around a target can be short on its newer side, so it never
+					// proves the start; scrolling up loads older pages that do.
+					false
 				} else {
 					messages.len() < 50
 				};
@@ -3382,6 +3508,9 @@ impl State {
 					self.newer_may_have_more = messages.len() == 50;
 				}
 				let jump = self.history_after.is_some() && self.timeline.is_empty();
+				if self.older_exhausted {
+					self.timeline.mark_start_loaded();
+				}
 				let r = self.timeline.finish_page(messages, older);
 				if r.is_ok() && jump {
 					self.search_target = self.timeline.iter().next().map(|m| m.id);
@@ -3401,13 +3530,38 @@ impl State {
 			}
 			Event::HistoryFailed {
 				channel,
-				request,
+				mut request,
 				failure,
 			} => {
+				let mut adopted = false;
+				if preload::is_preload(request) {
+					let preload::Arrival::Adopted(own, _) =
+						self.preload.conversations.arrived(request, false)
+					else {
+						return;
+					};
+					request = own;
+					adopted = true;
+				}
 				if self.selected != Some(channel)
 					|| request != self.request
 					|| !self.history_pending
 				{
+					return;
+				}
+				if failure == auth::Failure::Capacity && adopted {
+					// Preloads give way to clicks and never reached the service: ask for the
+					// page as the click would have.
+					self.preload.retry = Some(self.history(None));
+					return;
+				}
+				if failure == auth::Failure::Capacity {
+					self.command_rejected(Command::History {
+						channel,
+						request,
+						before: None,
+						after: None,
+					});
 					return;
 				}
 				self.cancel_history();
@@ -3641,7 +3795,23 @@ impl State {
 					}
 				}
 				self.pending.retain(|p| p.delivery != Delivery::Confirmed);
+				if !self.pending.iter().any(|p| p.delivery == Delivery::Sending) {
+					self.send_throttle_seen = false;
+				}
 				reconciliation
+			}
+			Event::SendThrottled { nonce } => {
+				// Once per burst, like Discord: a dismissed notice stays away until every queued
+				// message has gone out.
+				if !self.send_throttle_seen
+					&& self
+						.pending
+						.iter()
+						.any(|p| p.nonce == nonce && p.delivery == Delivery::Sending)
+				{
+					self.send_throttled = true;
+				}
+				Ok(())
 			}
 			Event::SendChallenge {
 				nonce,
@@ -3707,6 +3877,8 @@ impl State {
 				self.cancel_invite_join();
 				self.cancel_guild_creation();
 				self.clear_direct_presences();
+				// Until the next READY, a missing record is unknown, not offline.
+				self.direct_presence_lossy = true;
 				self.permissions = permissions::Permissions::default();
 				self.read_state.cancel();
 				self.clear_profile();
@@ -4320,6 +4492,7 @@ impl Event {
 				Self::SendChallenge {
 					nonce, challenge, ..
 				} => nonce.capacity() + challenge.bytes(),
+				Self::SendThrottled { nonce } => nonce.capacity(),
 				_ => 0,
 			}
 	}
@@ -4386,6 +4559,89 @@ mod tests {
 					.collect(),
 			})
 			.unwrap();
+	}
+	#[test]
+	fn rate_limited_sends_stay_pending_and_raise_the_slow_down_notice() {
+		let mut state = State {
+			channels: vec![Channel {
+				id: Id(1),
+				guild: None,
+				parent_id: None,
+				kind: 1,
+				name: "Synthetic DM".into(),
+				position: 0,
+				recipients: vec![],
+				last_message: None,
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			}],
+			selected: Some(Id(1)),
+			auth: auth::AuthState::Authenticated,
+			freshness: Freshness::Fresh,
+			gateway_connected: true,
+			..State::default()
+		};
+		let mut queue = || {
+			state.drafts.insert(Id(1), "e".into());
+			let Command::Send { nonce, .. } = state.prepare_send().unwrap() else {
+				panic!()
+			};
+			nonce
+		};
+		let (first, second) = (queue(), queue());
+		let throttle = |nonce: &str| Event::SendThrottled {
+			nonce: nonce.into(),
+		};
+		apply(&mut state, throttle(&first));
+		assert!(state.send_throttled);
+		assert_eq!(state.pending[0].delivery, Delivery::Sending);
+		// Dismissed once, the notice stays away for the rest of the burst.
+		state.dismiss_send_throttle();
+		apply(&mut state, throttle(&second));
+		assert!(!state.send_throttled);
+		// A throttle for a message that is no longer pending raises nothing.
+		apply(&mut state, throttle("gone"));
+		assert!(!state.send_throttled);
+		// Once the queue drains, the next burst is told again.
+		state.user = Some(tests::message(1).author);
+		for (id, nonce) in [(10, &first), (11, &second)] {
+			let mut sent = tests::message(id);
+			sent.nonce = Some(nonce.clone());
+			apply(
+				&mut state,
+				Event::SendResult {
+					nonce: nonce.clone(),
+					result: Ok(sent),
+				},
+			);
+		}
+		assert!(state.pending.is_empty());
+		state.drafts.insert(Id(1), "e".into());
+		let Command::Send { nonce: third, .. } = state.prepare_send().unwrap() else {
+			panic!()
+		};
+		apply(&mut state, throttle(&third));
+		assert!(state.send_throttled);
+		// Closing a notice after its burst has drained does not hide the next burst's notice.
+		let mut sent = tests::message(12);
+		sent.nonce = Some(third.clone());
+		apply(
+			&mut state,
+			Event::SendResult {
+				nonce: third,
+				result: Ok(sent),
+			},
+		);
+		assert!(state.pending.is_empty());
+		state.dismiss_send_throttle();
+		state.drafts.insert(Id(1), "e".into());
+		let Command::Send { nonce: fourth, .. } = state.prepare_send().unwrap() else {
+			panic!()
+		};
+		apply(&mut state, throttle(&fourth));
+		assert!(state.send_throttled);
 	}
 	#[test]
 	fn rejected_sends_do_not_invalidate_a_healthy_conversation() {

@@ -2991,6 +2991,8 @@ server-menu-header-server-menu = Menu do servidor
 server-menu-leave-item-leave-server = Sair do servidor
 # Context: read_item
 server-menu-read-item-mark-as-read = Marcar como lido
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Marcar tudo como lido
 # Context: settings_item
 server-menu-settings-item-server-settings = Configurações do servidor
 # Context: show
@@ -4729,6 +4731,19 @@ timeline-dm-intro = Este é o começo do seu histórico de mensagens diretas com
 timeline-channel-intro-title = Boas-vindas a #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Este é o começo do canal #{ $channel }.
+# Context: text_menu
+text-menu-cut = Recortar
+text-menu-copy = Copiar
+text-menu-paste = Colar
+text-menu-select-all = Selecionar tudo
+# Context: media_box
+forum-composer-attached-files = { $count ->
+    [one] { $count } arquivo anexado
+   *[other] { $count } arquivos anexados
+    }
+forum-composer-remove-file = Remover { $file }
+post-menu-post-action-failed = A ação da publicação falhou
+post-menu-thread-action-failed = A ação do tópico falhou
 
 # Context: badges
 badges-nitro = Nitro
@@ -4796,3 +4811,15 @@ time-format-12-hour = 12 horas
 time-format-24-hour = 24 horas
 profiles-status-edit = Editar status
 profiles-status-clear = Limpar status
+send-throttled-title = Calma aí, apimentado demais
+send-throttled-body = Você está enviando mensagens rápido demais!
+send-throttled-dismiss = Entrar na zona de calma
+profiles-private-profile = Perfil privado
+profiles-private-notice = O perfil de { $name } é privado, então algumas informações estão ocultas. Envie um pedido de amizade para ver mais.
+settings-cosmetics-name-styles = Estilos de nome
+settings-cosmetics-name-styles-description = Fontes, cores e efeitos de nome de exibição do Nitro.
+search-overlays-message-contains = A mensagem contém
+search-overlays-no-matching-content-types = Nenhum tipo de conteúdo correspondente
+search-overlays-history = Histórico
+search-overlays-clear-history = Limpar histórico de pesquisa
+main-sign-in-rate-limited-detail = O Discord está limitando este login. Aguarde antes de tentar novamente. Outra tentativa antes disso pode aumentar a espera.

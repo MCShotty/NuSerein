@@ -2992,6 +2992,8 @@ server-menu-header-server-menu = Меню сервера
 server-menu-leave-item-leave-server = Покинуть сервер
 # Context: read_item
 server-menu-read-item-mark-as-read = Отметить как прочитанное
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Отметить всё как прочитанное
 # Context: settings_item
 server-menu-settings-item-server-settings = Настройки сервера
 # Context: show
@@ -4735,6 +4737,16 @@ timeline-dm-intro = Это начало истории ваших личных �
 timeline-channel-intro-title = Добро пожаловать в #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Это начало канала #{ $channel }.
+# Context: text_menu
+text-menu-cut = Вырезать
+text-menu-copy = Копировать
+text-menu-paste = Вставить
+text-menu-select-all = Выделить всё
+# Context: media_box
+forum-composer-attached-files = Прикреплённые файлы: { $count }
+forum-composer-remove-file = Удалить { $file }
+post-menu-post-action-failed = Не удалось выполнить действие с публикацией
+post-menu-thread-action-failed = Не удалось выполнить действие с веткой
 
 # Context: badges
 badges-nitro = Nitro
@@ -4802,3 +4814,15 @@ time-format-12-hour = 12-часовой
 time-format-24-hour = 24-часовой
 profiles-status-edit = Изменить статус
 profiles-status-clear = Очистить статус
+send-throttled-title = Полегче, слишком остро
+send-throttled-body = Вы отправляете сообщения слишком быстро!
+send-throttled-dismiss = В зону спокойствия
+profiles-private-profile = Закрытый профиль
+profiles-private-notice = Профиль { $name } закрыт, поэтому часть сведений скрыта. Добавьте пользователя в друзья, чтобы увидеть больше.
+settings-cosmetics-name-styles = Стили имён
+settings-cosmetics-name-styles-description = Шрифты, цвета и эффекты отображаемых имён Nitro.
+search-overlays-message-contains = Сообщение содержит
+search-overlays-no-matching-content-types = Нет подходящих типов содержимого
+search-overlays-history = История
+search-overlays-clear-history = Очистить историю поиска
+main-sign-in-rate-limited-detail = Discord ограничивает этот вход. Подождите, прежде чем пытаться снова. Повторная попытка раньше времени может продлить ожидание.

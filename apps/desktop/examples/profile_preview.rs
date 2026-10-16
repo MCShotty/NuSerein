@@ -642,7 +642,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -674,7 +674,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "appearance"
 			| "voice" | "storage"
 			| "general"
-			| "language"
+			| "chat" | "language"
 			| "keybinds"
 			| "extensions"
 			| "server"
@@ -693,7 +693,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "friends"
 			| "screen-share"
 	) {
-		return Err("Page must be profile, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log or screen-share".into());
+		return Err("Page must be profile, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log or screen-share".into());
 	}
 	let slash_command = value("--command=").unwrap_or("help").to_owned();
 	if !matches!(slash_command.as_str(), "help" | "weather") {
@@ -727,7 +727,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let theme_preview = args.iter().any(|arg| arg == "--theme-preview");
 	let thumbnail = args.iter().any(|arg| arg == "--thumbnail");
 	let extension = value("--extension=").map(str::to_owned);
+	let name_style = value("--name-style=").and_then(|id| id.parse::<u32>().ok());
+	let name_font = value("--name-font=").and_then(|id| id.parse::<u32>().ok());
+	// `--name-style=` and `--name-font=` give the previewed user a synthetic Nitro name style;
+	// a font alone uses the solid effect.
+	let styled = name_style.is_some() || name_font.is_some();
+	let style_name = |user: &mut model::User| {
+		if styled {
+			user.cosmetics.get_or_insert_default().name_style = Some(model::NameStyle {
+				font: name_font.unwrap_or(0),
+				effect: model::NameEffect::from_id(name_style.unwrap_or(1)),
+				colors: vec![0xff7ab8, 0x7a5cff, 0x34d6ff, 0xffd166],
+			});
+		}
+	};
+	let member_presence = value("--presence=").unwrap_or("online").to_owned();
 	let card_status = value("--status=").map(str::to_owned);
+	let private_profile = args.iter().any(|arg| arg == "--private");
 	let fixture = extension.as_deref().map(extension_fixture).transpose()?;
 	let saved = Arc::new(AtomicBool::new(false));
 	let completed = saved.clone();
@@ -837,10 +853,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				prime_channel_link_replies(&mut state);
 			}
 			if page == "profile" {
+				if let Some(own) = state.user.as_mut() {
+					style_name(own);
+				}
 				prime_profile(&mut state);
 			}
 			if page == "member-tags" {
-				let user = test_support::message(1, model::Id(20)).author;
+				let mut user = test_support::message(1, model::Id(20)).author;
+				style_name(&mut user);
 				state.members = Some(model::MemberList {
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),
@@ -855,7 +875,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						user,
 						nick: None,
 						roles: vec![],
-						status: Some("online".into()),
+						// `--presence=` shows another status glyph (idle, dnd, offline).
+						status: Some(member_presence.clone()),
 						custom_status: Some("Building a quieter place".into()),
 						activities: vec![],
 						clients: model::ClientPlatforms {
@@ -910,6 +931,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let _ = state.select(model::Id(26));
 			}
 			let mut messaging = ui::MessagingUi::default();
+			if styled {
+				messaging.cosmetics.name_styles = true;
+			}
 			if args.iter().any(|arg| arg == "--compact") {
 				messaging.apply_reading_preferences(
 					&cc.egui_ctx,
@@ -973,7 +997,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				// Synthetic cosmetics: the UI draws their artwork locally, offline. They are
 				// opt-in, so this page turns all four on.
 				messaging.cosmetics = model::CosmeticPreferences::SHOWN;
-				let user = test_support::message(1, model::Id(20)).author;
+				let mut user = test_support::message(1, model::Id(20)).author;
+				style_name(&mut user);
+				if let Some(own) = state.user.as_mut() {
+					style_name(own);
+				}
 				let mut offline = test_support::message(2, model::Id(20)).author;
 				offline.id = model::Id(3);
 				offline.name = "Sky (synthetic)".into();
@@ -1024,7 +1052,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			} else if page == "profile-card" {
 				state.demo = false;
 				state.gateway_connected = true;
-				let user = test_support::message(1, model::Id(20)).author;
+				let mut user = test_support::message(1, model::Id(20)).author;
+				style_name(&mut user);
 				state.members = Some(model::MemberList {
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),
@@ -1049,6 +1078,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						},
 					}))],
 				});
+				// `--private` serves the card a private profile, as Discord sends a non-friend.
+				let guild = Some(model::Id(10));
+				if private_profile
+					&& let Some(client_core::Command::Profile { request, .. }) =
+						state.request_profile(user.id, guild)
+				{
+					let mut profile = ui::synthetic_own_profile(&user);
+					profile.private = true;
+					profile.bio.clear();
+					profile.badges.clear();
+					profile.connections.clear();
+					state.apply(client_core::Envelope {
+						generation: state.generation,
+						event: client_core::Event::Profile {
+							user: user.id,
+							guild,
+							request,
+							result: Ok(Box::new(profile)),
+						},
+					});
+					state.clear_profile();
+				}
 				messaging.preview_profile(user);
 			} else if let Some((package, invocation, result)) = fixture {
 				prime_extension_chat(&mut state);
@@ -1193,6 +1244,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 							files: 642,
 						},
 					]);
+				}
+				if page == "chat" {
+					// The app applies saved preferences at startup; this fixture skips them.
+					messaging.preload_on_hover =
+						local_store::AppPreferences::default().preload_on_hover;
 				}
 				if page == "extensions" {
 					seed_catalog(

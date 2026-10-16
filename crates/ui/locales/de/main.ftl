@@ -2991,6 +2991,8 @@ server-menu-header-server-menu = Servermenü
 server-menu-leave-item-leave-server = Verlassen Sie den Server
 # Context: read_item
 server-menu-read-item-mark-as-read = Als gelesen markieren
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Alles als gelesen markieren
 # Context: settings_item
 server-menu-settings-item-server-settings = Servereinstellungen
 # Context: show
@@ -4729,6 +4731,19 @@ timeline-dm-intro = Das ist der Anfang deines Direktnachrichtenverlaufs mit { $n
 timeline-channel-intro-title = Willkommen in #{ $channel }!
 # Context: timeline_channel_intro
 timeline-channel-intro-start = Das ist der Anfang des Kanals #{ $channel }.
+# Context: text_menu
+text-menu-cut = Ausschneiden
+text-menu-copy = Kopieren
+text-menu-paste = Einfügen
+text-menu-select-all = Alles auswählen
+# Context: media_box
+forum-composer-attached-files = { $count ->
+    [one] { $count } angehängte Datei
+   *[other] { $count } angehängte Dateien
+    }
+forum-composer-remove-file = { $file } entfernen
+post-menu-post-action-failed = Beitragsaktion fehlgeschlagen
+post-menu-thread-action-failed = Thread-Aktion fehlgeschlagen
 
 # Context: badges
 badges-nitro = Nitro
@@ -4796,3 +4811,15 @@ time-format-12-hour = 12-Stunden
 time-format-24-hour = 24-Stunden
 profiles-status-edit = Status bearbeiten
 profiles-status-clear = Status löschen
+send-throttled-title = Hoppla, viel zu scharf
+send-throttled-body = Du sendest Nachrichten zu schnell!
+send-throttled-dismiss = Ab in die Chill-Zone
+profiles-private-profile = Privates Profil
+profiles-private-notice = Das Profil von { $name } ist privat, daher sind manche Infos verborgen. Sende eine Freundschaftsanfrage, um mehr zu sehen.
+settings-cosmetics-name-styles = Namensstile
+settings-cosmetics-name-styles-description = Nitro-Schriftarten, -Farben und -Effekte für Anzeigenamen.
+search-overlays-message-contains = Nachricht enthält
+search-overlays-no-matching-content-types = Keine passenden Inhaltstypen
+search-overlays-history = Verlauf
+search-overlays-clear-history = Suchverlauf löschen
+main-sign-in-rate-limited-detail = Discord begrenzt diese Anmeldung. Warte, bevor du es erneut versuchst. Ein früherer Versuch kann die Wartezeit verlängern.

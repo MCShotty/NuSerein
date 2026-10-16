@@ -27,6 +27,7 @@ mod extension_message_content;
 mod extensions;
 mod font_import;
 mod game_activity;
+mod game_mentions;
 mod gpu;
 mod gpu_video;
 mod group_icon;
@@ -498,9 +499,16 @@ fn main() -> eframe::Result {
 		viewport: {
 			let builder = egui::ViewportBuilder::default()
 				.with_transparent(transparency_available)
-				.with_inner_size(window_geometry.map_or([1120.0, 760.0], |geometry| {
-					geometry.size.map(|value| value as f32)
-				}))
+				.with_inner_size(
+					window_geometry
+						.map_or(app_settings::DEFAULT_WINDOW_SIZE, |geometry| geometry.size)
+						.map(|value| value as f32),
+				)
+				// Maximize before the first configure so the first frame is not painted small.
+				.with_maximized(
+					cfg!(target_os = "linux")
+						&& window_geometry.is_some_and(|geometry| geometry.maximized),
+				)
 				.with_min_inner_size(app_settings::MIN_WINDOW_SIZE.map(|size| size as f32))
 				.with_active(!start_minimized)
 				.with_app_id("cz.viceverse.serein");
@@ -584,6 +592,8 @@ fn main() -> eframe::Result {
 			desktop.instance = instance;
 			if let Some(geometry) = window_geometry {
 				app_settings::restore_window_geometry(&desktop.window, geometry);
+				desktop.maximize_after_show =
+					geometry.maximized && app_settings::maximize_after_show(&desktop.window);
 			}
 			if start_minimized {
 				cc.egui_ctx
@@ -980,6 +990,10 @@ struct Desktop {
 	clipboard: Option<clipboard::Paste>,
 	download_close_pending: bool,
 	window: Arc<winit::window::Window>,
+	/// The recent-page request whose cached window was already asked for.
+	cached_history_request: Option<(model::Id, u64)>,
+	/// The saved maximized state still has to be re-applied once the window is shown.
+	maximize_after_show: bool,
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,
 	monitor_period: Option<Duration>,
 	frame_metrics: FrameMetrics,
@@ -1008,6 +1022,7 @@ struct Desktop {
 	font_families: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 	updater: updater::Updater,
 	game_activity: toggle_setting::Settings,
+	game_mentions: game_mentions::Loader,
 	registered_games: registered_games::Registered,
 	tray_setting: toggle_setting::Settings,
 	startup: startup::Startup,
@@ -1186,16 +1201,36 @@ fn wants_cached_history(state: &State, channel: model::Id, request: u64) -> bool
 			.iter()
 			.any(|c| c.id == channel && c.supports_text())
 }
+impl Desktop {
+	/// Shows the selected conversation's cached window while its recent page loads.
+	fn load_cached_history(&mut self) {
+		let (state, request) = (&self.state, self.state.request);
+		if let Some(channel) = state.selected
+			&& self.cached_history_request != Some((channel, request))
+			&& state.history_before.is_none()
+			&& state.history_after.is_none()
+			&& !state.history_targeted
+			&& wants_cached_history(state, channel, request)
+		{
+			self.cached_history_request = Some((channel, request));
+			self.queue_cache(cache::Operation::LoadChannel { channel, request });
+		}
+	}
+}
 fn hydrate_cached_history(
 	state: &mut State,
 	channel: model::Id,
 	request: u64,
 	messages: Vec<model::Message>,
+	start: bool,
 ) {
 	if wants_cached_history(state, channel, request)
 		&& messages.iter().all(|message| message.channel == channel)
 		&& state.timeline.seed_cache(messages).is_ok()
 	{
+		// The channel's introduction can lead the cached window right away; the network page
+		// replaces this once it arrives.
+		state.older_exhausted = start;
 		state.revision += 1;
 	}
 	state.enforce_resident_budget();
@@ -1205,11 +1240,12 @@ fn hydrate_cache_result(state: &mut State, safety: &cache::HistorySafety, outcom
 		channel,
 		request,
 		messages,
+		start,
 		epoch,
 	} = outcome
 		&& safety.allows(epoch)
 	{
-		hydrate_cached_history(state, channel, request, messages);
+		hydrate_cached_history(state, channel, request, messages, start);
 	}
 }
 
@@ -1275,7 +1311,7 @@ fn changes_active_history(state: &State, event: &Event) -> bool {
 	let channel = match event {
 		Event::History {
 			channel, request, ..
-		} if *request == state.request && state.history_pending => channel,
+		} if state.history_request(*request) == state.request && state.history_pending => channel,
 		Event::Message(message)
 		| Event::SendResult {
 			result: Ok(message),
@@ -2274,6 +2310,8 @@ impl Desktop {
 			window_blur: transparency_available
 				.then(|| platform::window_effects::Blur::new(window.clone())),
 			window,
+			cached_history_request: None,
+			maximize_after_show: false,
 			monitor_geometry: None,
 			monitor_period: None,
 			frame_metrics: FrameMetrics::new(frame_sample),
@@ -2302,6 +2340,7 @@ impl Desktop {
 			font_families: None,
 			updater: updater::Updater::new(demo),
 			game_activity,
+			game_mentions: Default::default(),
 			registered_games: if demo {
 				registered_games::Registered::default()
 			} else {
@@ -3317,18 +3356,15 @@ impl Desktop {
 				self.messaging.camera_test_texture = None;
 			}
 		}
-		if let Command::History {
-			channel,
-			before: None,
-			after: None,
-			request,
-		} = &command
-			&& wants_cached_history(&self.state, *channel, *request)
-		{
-			self.queue_cache(cache::Operation::LoadChannel {
-				channel: *channel,
-				request: *request,
-			});
+		if matches!(
+			command,
+			Command::History {
+				before: None,
+				after: None,
+				..
+			}
+		) {
+			self.load_cached_history();
 		}
 		#[cfg(feature = "demo")]
 		if self.state.demo {
@@ -3532,6 +3568,13 @@ impl Desktop {
 						result: Ok(()),
 					})
 				}
+				Command::MarkAllRead { request, channels } => {
+					Event::ReadState(client_core::read_state::Event::AllAck {
+						request,
+						acked: channels.len(),
+						result: Ok(()),
+					})
+				}
 				Command::Polls(request) => {
 					polls_demo::respond(&self.state, request, &mut self.synthetic_id)
 				}
@@ -3612,7 +3655,11 @@ impl Desktop {
 						}
 					})
 				}
-				Command::Voice(_) | Command::CancelProfile | Command::CancelSearch => return,
+				// The offline fixture has nothing to preload.
+				Command::Voice(_)
+				| Command::CancelProfile
+				| Command::CancelSearch
+				| Command::Prefetch(_) => return,
 				Command::ThreadStarter {
 					thread,
 					parent,
@@ -3768,6 +3815,7 @@ impl Desktop {
 					query,
 					before,
 					offset,
+					oldest,
 					request,
 					..
 				} => {
@@ -3785,8 +3833,10 @@ impl Desktop {
 						.map_or(channel, model::Id);
 					for id in (1..=500)
 						.rev()
-						.filter(|id| before.is_none_or(|b| *id < b.0))
-					{
+						// The cursor continues older newest first, newer oldest first.
+						.filter(|id| {
+							before.is_none_or(|b| if oldest { *id > b.0 } else { *id < b.0 })
+						}) {
 						let message = test_support::message(id, source);
 						if message
 							.content
@@ -3841,7 +3891,8 @@ impl Desktop {
 								)
 							}) {
 							total += 1;
-							if total > u64::from(offset) && hits.len() < model::SEARCH_PAGE_SIZE {
+							// The fixture is small: keep every match, then page in the chosen order.
+							{
 								hits.push(model::SearchHit {
 									id: message.id,
 									channel: source,
@@ -3854,6 +3905,15 @@ impl Desktop {
 							}
 						}
 					}
+					hits.sort_unstable_by_key(|hit| std::cmp::Reverse(hit.id));
+					if oldest {
+						hits.reverse();
+					}
+					let hits = hits
+						.into_iter()
+						.skip(offset as usize)
+						.take(model::SEARCH_PAGE_SIZE)
+						.collect();
 					Event::Search {
 						channel,
 						request,
@@ -4265,6 +4325,12 @@ impl Desktop {
 				.poll(&self.runtime, &mut self.state, &mut self.messaging, ctx)
 		{
 			self.command(command);
+		}
+		// A heartbeat probe replaces a dead gateway socket in seconds, before the rejoin uses it.
+		if std::mem::take(&mut self.voice.gateway_check)
+			&& let Some(connection) = &self.connection
+		{
+			connection.reconnect();
 		}
 	}
 	fn poll(&mut self, ctx: &egui::Context) {
@@ -4684,7 +4750,7 @@ impl Desktop {
 			) || matches!(&event.event, Event::RecipientRemoved { user, .. } if self.state.user.as_ref().is_some_and(|owner| owner.id == *user))
 				|| matches!(&event.event, Event::Reactions(client_core::reactions::Event::Read {channel,result:Err(Failure::Forbidden),..}) if self.state.selected==Some(*channel))
 				|| matches!(&event.event, Event::HistoryFailed { channel, request, failure: Failure::Forbidden }
-                if self.state.selected == Some(*channel) && self.state.request == *request && self.state.history_pending);
+                if self.state.selected == Some(*channel) && self.state.request == self.state.history_request(*request) && self.state.history_pending);
 			let history_changed = changes_active_history(&self.state, &event.event);
 			if history_changed {
 				match &event.event {
@@ -4710,14 +4776,19 @@ impl Desktop {
 					_ => full_window = true,
 				}
 			}
-			let guild_ack = matches!(
-				&event.event,
+			let guild_ack = match &event.event {
 				Event::ReadState(client_core::read_state::Event::GuildAck {
 					guild,
 					request,
 					result: Ok(()),
-				}) if self.state.pending_guild_ack(*guild, *request)
-			);
+				}) => self.state.pending_guild_ack(*guild, *request),
+				Event::ReadState(client_core::read_state::Event::AllAck {
+					request,
+					result: Ok(()),
+					..
+				}) => self.state.pending_all_ack(*request),
+				_ => false,
+			};
 			if event.generation == self.state.generation
 				&& (invalidate
 					|| event.event.changes_access()
@@ -4875,13 +4946,19 @@ impl Desktop {
 				.filter(|m| full_window || changed_messages.contains(&m.id))
 				.cloned()
 				.collect();
+			let start = self.state.older_exhausted && !self.state.timeline.older_evicted();
 			let operation = if full_window {
-				cache::Operation::SaveChannel { channel, messages }
+				cache::Operation::SaveChannel {
+					channel,
+					messages,
+					start,
+				}
 			} else {
 				cache::Operation::SaveChanges {
 					channel,
 					messages,
 					retained: self.state.timeline.iter().map(|m| m.id).collect(),
+					start,
 				}
 			};
 			self.queue_cache(operation);
@@ -4912,6 +4989,10 @@ impl Desktop {
 				generation: self.state.generation,
 				event: Event::Failure(failure),
 			});
+			if failure == Failure::RateLimited && self.state.failure_detail.is_none() {
+				self.state.failure_detail =
+					Some(ui::i18n::translate("main-sign-in-rate-limited-detail").into());
+			}
 			if !matches!(self.state.auth, AuthState::Expired | AuthState::Challenged) {
 				self.state.auth = AuthState::Failed;
 			}
@@ -5024,29 +5105,48 @@ impl eframe::App for Desktop {
 	fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
 		// Before the pass begins, so the whole frame resolves System to the same theme.
 		self.sync_system_theme(ctx);
+		if self.maximize_after_show && self.window.is_visible() == Some(true) {
+			self.maximize_after_show = false;
+			self.window.set_maximized(true);
+		}
 		// Read native size independently of viewport rectangles: Wayland has no global position,
 		// so egui-winit cannot supply either rectangle there. Native scale excludes egui zoom.
 		if !self.fixture_only
 			&& !self.state.demo
 			&& self.app_settings.loaded
+			&& !self.maximize_after_show
 			&& let Some(viewport) = raw_input.viewports.get(&raw_input.viewport_id)
 			&& viewport.minimized != Some(true)
-			&& viewport.maximized != Some(true)
 			&& viewport.fullscreen != Some(true)
 			&& !viewport.close_requested()
 			&& self.window.is_visible() != Some(false)
 		{
-			let size = self
-				.window
-				.inner_size()
-				.to_logical::<u32>(self.window.scale_factor());
-			let geometry = local_store::WindowGeometry {
-				size: [size.width, size.height],
-				position: self
+			// While maximized, keep the normal geometry so un-maximizing after a restart returns to it.
+			let geometry = if viewport.maximized == Some(true) {
+				local_store::WindowGeometry {
+					maximized: true,
+					..self.app_settings.current.window_geometry.unwrap_or(
+						local_store::WindowGeometry {
+							size: app_settings::DEFAULT_WINDOW_SIZE,
+							position: None,
+							maximized: true,
+						},
+					)
+				}
+			} else {
+				let size = self
 					.window
-					.outer_position()
-					.ok()
-					.map(|position| [position.x, position.y]),
+					.inner_size()
+					.to_logical::<u32>(self.window.scale_factor());
+				local_store::WindowGeometry {
+					size: [size.width, size.height],
+					position: self
+						.window
+						.outer_position()
+						.ok()
+						.map(|position| [position.x, position.y]),
+					maximized: false,
+				}
 			};
 			if geometry.is_valid() && self.app_settings.current.window_geometry != Some(geometry) {
 				self.app_settings.current.window_geometry = Some(geometry);
@@ -6158,9 +6258,12 @@ impl eframe::App for Desktop {
 			if let Some(command) = self.state.take_gif_favorites_command() {
 				commands.push(command);
 			}
+			commands.extend(self.state.take_preload_retries());
 			for command in commands {
 				self.command(command);
 			}
+			// A click that adopted a hover preload sends no request of its own.
+			self.load_cached_history();
 			if self.messaging.logout_requested {
 				self.messaging.logout_requested = false;
 				self.request_session_end(&ctx, SessionEnd::Logout);
@@ -6210,6 +6313,9 @@ impl eframe::App for Desktop {
 		self.save_reading_preferences(&ctx);
 		self.sync_own_presence(&ctx);
 		self.sync_game_activity(&ctx);
+		let offline = self.fixture_only || self.state.demo;
+		self.game_mentions
+			.sync(&mut self.state, &self.runtime, &ctx, offline);
 		self.startup.sync(
 			&ctx,
 			&self.runtime,
@@ -6504,6 +6610,7 @@ mod tests {
 				alpha,
 				request,
 				vec![test_support::message(1003, alpha)],
+				false,
 			);
 			assert_eq!(
 				state.timeline.row_ids().collect::<Vec<_>>(),
@@ -6537,6 +6644,7 @@ mod tests {
 		let outcome = |epoch| cache::Outcome::Channel {
 			channel,
 			request,
+			start: false,
 			epoch,
 			messages: vec![test_support::message(1000, channel)],
 		};
@@ -6553,6 +6661,35 @@ mod tests {
 	}
 
 	#[test]
+	fn an_adopted_preload_page_is_saved_like_the_clicks_own() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = model::Id(21);
+		state.observe_last_message(channel, model::Id(2_000));
+		let Some(Command::Prefetch(preload)) =
+			state.preload_conversation(None, Some(channel), std::time::Instant::now())
+		else {
+			panic!("pressed conversation preloads");
+		};
+		let Command::History { request, .. } = *preload else {
+			panic!()
+		};
+		assert!(
+			state.select(channel).is_none(),
+			"the click adopts the preload"
+		);
+		let page = |request| Event::History {
+			channel,
+			request,
+			older: false,
+			messages: vec![],
+		};
+		assert!(changes_active_history(&state, &page(request)));
+		assert!(!changes_active_history(&state, &page(request ^ 1)));
+	}
+	#[test]
 	fn cached_history_requires_current_readable_navigation_and_pending_request() {
 		let mut state = test_support::demo_state();
 		let channel = state.selected.unwrap();
@@ -6564,6 +6701,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert_eq!(state.timeline.len(), 1);
 		assert_eq!(state.freshness, model::Freshness::Loading);
@@ -6577,6 +6715,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(
 			state.timeline.is_empty(),
@@ -6587,7 +6726,7 @@ mod tests {
 			vec![test_support::message(1001, model::Id(999))],
 			vec![test_support::message(1002, channel)],
 		] {
-			hydrate_cached_history(&mut state, channel, request.wrapping_sub(1), invalid);
+			hydrate_cached_history(&mut state, channel, request.wrapping_sub(1), invalid, false);
 			assert!(state.timeline.is_empty());
 		}
 		hydrate_cached_history(
@@ -6595,6 +6734,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1001, model::Id(999))],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		state.history_pending = false;
@@ -6603,6 +6743,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		state.history_pending = true;
@@ -6622,6 +6763,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		// Even an inconsistent queued-cache admission state cannot bypass current navigation.
@@ -6634,6 +6776,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		let mut restored = test_support::demo_state()
@@ -6648,6 +6791,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 	}
