@@ -254,14 +254,28 @@ impl State {
 		(self.demo || (self.auth == AuthState::Authenticated && self.gateway_connected))
 			&& !self.own_profile.loading
 			&& !self.own_profile.saving
+			&& !self.owned_cosmetics.saving
 			&& !self.own_profile.reload_required
 			&& self.own_profile.generation == self.generation
 			&& self.own_profile.data.as_ref().is_some_and(|data| {
 				!data.limited
+					&& !data.private
 					&& self
 						.user
 						.as_ref()
 						.is_some_and(|user| user.id == data.user.id)
+			})
+	}
+	pub fn own_profile_command_allowed(
+		&self,
+		user: Id,
+		request: u64,
+		changes: &Option<model::ProfileEdit>,
+	) -> bool {
+		self.own_profile_pending(user, request)
+			&& (self.demo || (self.auth == AuthState::Authenticated && self.gateway_connected))
+			&& changes.as_ref().is_none_or(|changes| {
+				changes.valid() && (!changes.needs_nitro() || self.premium_type == 2)
 			})
 	}
 	pub fn load_own_profile(&mut self) -> Option<Command> {
@@ -306,6 +320,11 @@ impl State {
 		}
 		if !changes.valid() {
 			self.own_profile.error = Some("Profile changes are invalid or exceed safe limits");
+			return None;
+		}
+		if changes.needs_nitro() && self.premium_type != 2 {
+			self.own_profile.error =
+				Some("Full Nitro is required to set a profile banner, theme or name style");
 			return None;
 		}
 		let user = self.user.as_ref()?.id;
@@ -379,7 +398,12 @@ impl State {
 		self.own_profile.loading = false;
 		self.own_profile.saving = false;
 		match result {
-			Ok(data) if data.user.id == user && data.guild.is_none() && data.valid() => {
+			Ok(data)
+				if data.user.id == user
+					&& data.guild.is_none()
+					&& !data.private
+					&& data.valid() =>
+			{
 				if !self.refresh_own_user(&data.user) {
 					self.own_profile.error =
 						Some("Profile metadata exceeds safe capacity; reload required");
@@ -1023,6 +1047,42 @@ mod tests {
 			global_name: Some(Some("After".into())),
 			..Default::default()
 		}
+	}
+	#[test]
+	fn profile_appearance_checks_full_nitro_again_at_dispatch_but_permits_removal() {
+		let mut state = own_state();
+		state.load_own_profile().unwrap();
+		complete_own(&mut state, Ok(own_data("Before")));
+		let edit = model::ProfileEdit {
+			theme_colors: Some(Some([0x123456, 0xabcdef])),
+			..Default::default()
+		};
+		assert!(state.save_own_profile(edit.clone()).is_none());
+		state.premium_type = 2;
+		let command = state.save_own_profile(edit).unwrap();
+		let Command::EditProfile {
+			user,
+			request,
+			ref changes,
+		} = command
+		else {
+			panic!();
+		};
+		assert!(state.own_profile_command_allowed(user, request, changes));
+		state.premium_type = 0;
+		assert!(!state.own_profile_command_allowed(user, request, changes));
+		state.command_rejected(command);
+		state.load_own_profile().unwrap();
+		complete_own(&mut state, Ok(own_data("Before")));
+		assert!(
+			state
+				.save_own_profile(model::ProfileEdit {
+					banner: Some(None),
+					theme_colors: Some(None),
+					..Default::default()
+				})
+				.is_some()
+		);
 	}
 	#[test]
 	fn incomplete_badge_catalog_cannot_replace_account_settings() {

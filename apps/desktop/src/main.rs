@@ -41,6 +41,8 @@ mod pointer;
 mod polls_demo;
 #[cfg(feature = "demo")]
 mod post_menu_demo;
+#[cfg(feature = "demo")]
+mod profile_settings_demo;
 mod proxy_auth;
 mod reading_settings;
 mod registered_games;
@@ -982,6 +984,7 @@ struct Desktop {
 	group_icon: group_icon::GroupIcon,
 	create_server_icon: group_icon::GroupIcon,
 	profile_avatar: group_icon::GroupIcon,
+	server_profile_image: group_icon::GroupIcon,
 	server_icon: group_icon::GroupIcon,
 	role_icon: group_icon::GroupIcon,
 	role_icon_scope: Option<(u64, model::Id, model::Id, u64)>,
@@ -2311,6 +2314,7 @@ impl Desktop {
 			group_icon: group_icon::GroupIcon::default(),
 			create_server_icon: group_icon::GroupIcon::default(),
 			profile_avatar: group_icon::GroupIcon::default(),
+			server_profile_image: group_icon::GroupIcon::default(),
 			server_icon: group_icon::GroupIcon::default(),
 			role_icon: group_icon::GroupIcon::default(),
 			role_icon_scope: None,
@@ -3209,6 +3213,57 @@ impl Desktop {
 			self.state.command_rejected(command);
 			return;
 		}
+		if let Command::EditProfile {
+			user,
+			request,
+			changes,
+		} = &command
+			&& !self
+				.state
+				.own_profile_command_allowed(*user, *request, changes)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::ServerProfile {
+			user,
+			guild,
+			request,
+			edit,
+		} = &command
+			&& !self
+				.state
+				.server_profile_command_allowed(*user, *guild, *request, edit)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::AccountConnections {
+			user,
+			request,
+			change,
+		} = &command
+			&& !self
+				.state
+				.account_connections_command_allowed(*user, *request, change)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::OwnedCosmetics {
+			user,
+			guild,
+			request,
+			change,
+			nitro,
+		} = &command
+			&& !self
+				.state
+				.owned_cosmetics_command_allowed(*user, *guild, *request, *change, *nitro)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::Send { channel, nonce, .. } = &command
 			&& self
 				.state
@@ -3447,6 +3502,26 @@ impl Desktop {
 
 				// Demo preference changes are applied synchronously by client-core.
 				Command::MessagingPermissions { .. } => return,
+				Command::AccountOverview { .. } | Command::AccountConnections { .. } => return,
+				Command::ServerProfile {
+					user,
+					guild,
+					request,
+					edit,
+				} => profile_settings_demo::execute(&self.state, user, guild, request, edit),
+				Command::OwnedCosmetics {
+					user,
+					guild,
+					request,
+					change,
+					..
+				} => profile_settings_demo::owned_cosmetics(
+					&self.state,
+					user,
+					guild,
+					request,
+					change,
+				),
 				Command::ChannelAction {
 					guild,
 					channel,
@@ -3985,52 +4060,7 @@ impl Desktop {
 					user,
 					request,
 					changes,
-				} => {
-					let result = self
-						.state
-						.user
-						.as_ref()
-						.filter(|own| own.id == user)
-						.map(|own| {
-							let mut profile = self
-								.state
-								.own_profile
-								.data
-								.clone()
-								.unwrap_or_else(|| ui::synthetic_own_profile(own));
-							if let Some(changes) = changes {
-								if !changes.valid() {
-									return Err(Failure::Capacity);
-								}
-								if let Some(name) = changes.global_name {
-									profile.user.name =
-										name.clone().unwrap_or_else(|| profile.username.clone());
-									profile.global_name = name;
-								}
-								if let Some(bio) = changes.bio {
-									profile.bio = bio;
-								}
-								if let Some(pronouns) = changes.pronouns {
-									profile.pronouns = pronouns;
-								}
-								if let Some(color) = changes.accent_color {
-									profile.accent_color = color;
-								}
-								if let Some(avatar) = changes.avatar {
-									// Synthetic hash: the fixture never uploads or fetches images.
-									profile.user.avatar = avatar
-										.map(|_| "0123456789abcdef0123456789abcdef".to_owned());
-								}
-							}
-							Ok(Box::new(profile))
-						})
-						.unwrap_or(Err(Failure::Protocol));
-					Event::ProfileEdited {
-						user,
-						request,
-						result,
-					}
-				}
+				} => profile_settings_demo::global_profile(&self.state, user, request, changes),
 				Command::Members {
 					guild,
 					channel,
@@ -5680,6 +5710,15 @@ impl eframe::App for Desktop {
 			}) {
 			self.messaging.accept_profile_picture(&ctx, scope, result);
 		}
+		if let Some((scope, result)) =
+			self.server_profile_image
+				.poll_scoped(self.state.generation, |guild| {
+					self.state.own_server_profile.guild == Some(guild)
+						&& self.state.can_edit_server_profile(guild)
+				}) {
+			self.messaging
+				.accept_server_profile_image(&ctx, scope, result);
+		}
 		if let Some((scope, result)) = self.server_icon.poll_server(&self.state) {
 			self.messaging.accept_server_icon(&ctx, scope, result);
 		}
@@ -6099,18 +6138,56 @@ impl eframe::App for Desktop {
 				{
 					Err("Sign in before changing your profile picture")
 				} else {
-					self.profile_avatar.start(
+					if self.messaging.profile_picture_is_banner() {
+						self.profile_avatar.start_banner(
+							scope,
+							self.runtime.handle(),
+							&ctx,
+							self.window.clone(),
+							"Choose profile banner",
+						)
+					} else {
+						self.profile_avatar.start(
+							scope,
+							self.runtime.handle(),
+							&ctx,
+							self.window.clone(),
+							"Choose profile picture",
+							256,
+						)
+					}
+				};
+				if let Err(error) = result {
+					self.messaging
+						.accept_profile_picture(&ctx, scope, Err(error));
+				}
+			}
+			if let Some((scope, banner)) = self.messaging.take_server_profile_image_request() {
+				let result = if scope.0 != self.state.generation
+					|| !self.state.can_edit_server_profile(scope.1)
+				{
+					Err("This server is no longer available")
+				} else if banner {
+					self.server_profile_image.start_banner(
 						scope,
 						self.runtime.handle(),
 						&ctx,
 						self.window.clone(),
-						"Choose profile picture",
+						"Choose server profile banner",
+					)
+				} else {
+					self.server_profile_image.start(
+						scope,
+						self.runtime.handle(),
+						&ctx,
+						self.window.clone(),
+						"Choose server profile picture",
 						256,
 					)
 				};
 				if let Err(error) = result {
 					self.messaging
-						.accept_profile_picture(&ctx, scope, Err(error));
+						.accept_server_profile_image(&ctx, scope, Err(error));
 				}
 			}
 			if let Some(scope) = self.messaging.take_group_icon_request() {

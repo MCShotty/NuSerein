@@ -1,5 +1,7 @@
 //! Offline native framebuffer capture; no account, filesystem cache, or network adapters.
 use eframe::egui;
+#[path = "../src/profile_settings_demo.rs"]
+mod profile_settings_demo;
 #[path = "../src/server_settings_demo.rs"]
 mod server_settings_demo;
 #[allow(dead_code)] // The shared fixture's CLI check is called by the desktop binary.
@@ -56,6 +58,30 @@ impl eframe::App for Preview {
 		// Only synthetic fixtures execute these commands; no service adapters exist here.
 		for command in self.messaging.show(ui, &mut self.state) {
 			let event = match command {
+				client_core::Command::EditProfile {
+					user,
+					request,
+					changes,
+				} => profile_settings_demo::global_profile(&self.state, user, request, changes),
+				client_core::Command::ServerProfile {
+					user,
+					guild,
+					request,
+					edit,
+				} => profile_settings_demo::execute(&self.state, user, guild, request, edit),
+				client_core::Command::OwnedCosmetics {
+					user,
+					guild,
+					request,
+					change,
+					..
+				} => profile_settings_demo::owned_cosmetics(
+					&self.state,
+					user,
+					guild,
+					request,
+					change,
+				),
 				client_core::Command::ApplicationCommands {
 					channel,
 					guild,
@@ -781,6 +807,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			};
 			if activities {
 				prime_activities(&mut state);
+			}
+			if args.iter().any(|arg| arg == "--nitro") {
+				state.premium_type = 2;
 			}
 			if page == "embeds" {
 				let channel = state.selected.expect("synthetic embed conversation");

@@ -34,6 +34,29 @@ impl GroupIcon {
 		title: &'static str,
 		output_edge: u32,
 	) -> Result<(), &'static str> {
+		self.start_image(scope, runtime, context, parent, title, output_edge, true)
+	}
+	pub fn start_banner(
+		&mut self,
+		scope: Scope,
+		runtime: &tokio::runtime::Handle,
+		context: &egui::Context,
+		parent: Arc<winit::window::Window>,
+		title: &'static str,
+	) -> Result<(), &'static str> {
+		self.start_image(scope, runtime, context, parent, title, 512, false)
+	}
+	#[allow(clippy::too_many_arguments)]
+	fn start_image(
+		&mut self,
+		scope: Scope,
+		runtime: &tokio::runtime::Handle,
+		context: &egui::Context,
+		parent: Arc<winit::window::Window>,
+		title: &'static str,
+		output_edge: u32,
+		square: bool,
+	) -> Result<(), &'static str> {
 		if self.choosing.is_some() {
 			return Err("Close the previous image picker first");
 		}
@@ -50,7 +73,7 @@ impl GroupIcon {
 						if decode_flag.load(Ordering::Acquire) {
 							Ok(None)
 						} else {
-							read(&path, output_edge).map(Some)
+							read(&path, output_edge, square).map(Some)
 						}
 					})
 					.await
@@ -111,7 +134,11 @@ impl Drop for GroupIcon {
 	}
 }
 
-fn read(path: &Path, output_edge: u32) -> Result<(String, egui::ColorImage), &'static str> {
+fn read(
+	path: &Path,
+	output_edge: u32,
+	square: bool,
+) -> Result<(String, egui::ColorImage), &'static str> {
 	let metadata =
 		std::fs::symlink_metadata(path).map_err(|_| "Could not open the chosen image")?;
 	if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -125,9 +152,10 @@ fn read(path: &Path, output_edge: u32) -> Result<(String, egui::ColorImage), &'s
 	file.take(MAX_INPUT as u64 + 1)
 		.read_to_end(&mut bytes)
 		.map_err(|_| "Could not read the chosen image")?;
-	decode(&bytes, output_edge)
+	decode_image(&bytes, output_edge, square)
 }
 
+#[cfg(test)]
 fn decode(bytes: &[u8], output_edge: u32) -> Result<(String, egui::ColorImage), &'static str> {
 	decode_image(bytes, output_edge, true)
 }
@@ -138,8 +166,12 @@ pub(crate) fn decode_image(
 	square: bool,
 ) -> Result<(String, egui::ColorImage), &'static str> {
 	let (png, preview) = decode_png(bytes, output_edge, square, 256 * 1024)?;
-	let uri = discord_protocol::group_actions::icon_data_uri(&png)
-		.ok_or("Prepared icon exceeds 256 KB; choose a simpler image")?;
+	let uri = if output_edge > 256 {
+		discord_protocol::profile::image_data_uri(&png)
+	} else {
+		discord_protocol::group_actions::icon_data_uri(&png)
+	}
+	.ok_or("Prepared icon exceeds 256 KB; choose a simpler image")?;
 	Ok((uri, preview))
 }
 
@@ -197,6 +229,18 @@ pub(crate) fn decode_png(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn profile_banners_preserve_aspect_and_use_the_larger_profile_bounds() {
+		let mut png = Cursor::new(Vec::new());
+		image::DynamicImage::new_rgba8(768, 256)
+			.write_to(&mut png, image::ImageFormat::Png)
+			.unwrap();
+		let (uri, preview) = decode_image(png.get_ref(), 512, false).unwrap();
+		assert_eq!(preview.size[0], 512);
+		assert!((170..=171).contains(&preview.size[1]));
+		assert!(model::valid_avatar_uri(&uri));
+		assert!(!discord_protocol::group_actions::valid_icon_data_uri(&uri));
+	}
 	#[test]
 	fn icon_decode_is_square_bounded_and_rejects_invalid_input() {
 		let mut png = Cursor::new(Vec::new());

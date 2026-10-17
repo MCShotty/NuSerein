@@ -136,6 +136,7 @@ impl MessagingUi {
 						profile.accent_color.map(Some)
 					},
 					avatar: None,
+					..Default::default()
 				};
 				queue(state.save_own_profile(changes), commands)?;
 			}

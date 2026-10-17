@@ -1,4 +1,5 @@
 // Origin-fixed REST adapter. No cookies, redirects, logging, persistence or bot SDK.
+mod account_settings;
 mod activity_sharing;
 mod archives;
 mod badges;
@@ -14,7 +15,9 @@ mod interactions;
 mod message_options;
 mod messaging_permissions;
 mod onboarding;
+mod owned_cosmetics;
 mod profile_edit;
+mod server_profile;
 #[cfg(debug_assertions)]
 pub use profile_edit::debug_profile_board_request_check;
 pub mod proxy;
@@ -1479,6 +1482,47 @@ impl DiscordApi {
 				request,
 				result: self.edit_profile(user, changes).await,
 			},
+			Command::AccountOverview { user, request } => Event::AccountOverview {
+				user,
+				request,
+				result: self.account_overview(user).await,
+			},
+			Command::OwnedCosmetics {
+				user,
+				guild,
+				request,
+				change,
+				nitro,
+			} => Event::OwnedCosmetics(client_core::owned_cosmetics::Event {
+				user,
+				guild,
+				request,
+				result: self.owned_cosmetics(user, guild, change, nitro).await,
+			}),
+			Command::AccountConnections {
+				user,
+				request,
+				change,
+			} => Event::AccountConnections {
+				user,
+				request,
+				result: if user.0 == 0 {
+					Err(Failure::Protocol)
+				} else {
+					self.account_connections(change).await
+				},
+			},
+			Command::ServerProfile {
+				user,
+				guild,
+				request,
+				edit,
+			} => Event::ServerProfile(client_core::server_profile::Event {
+				user,
+				guild,
+				request,
+				result: self.own_server_profile(user, guild, edit).await,
+			}),
 			Command::CancelProfile => Event::Failure(Failure::Protocol),
 			Command::MemberSearch(_) | Command::Voice(_) | Command::Members { .. } => {
 				Event::Failure(Failure::Protocol)

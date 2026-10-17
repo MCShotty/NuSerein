@@ -1,5 +1,80 @@
 # Discord compatibility — checked 2026-09-10
 
+## Own server profiles and account privacy settings — October 17, 2026
+
+Own server-profile editing uses the **unofficial** normal-account forms of
+`PATCH /guilds/{id}/members/@me` (nickname and avatar) and
+`PATCH /guilds/{id}/profile/@me` (bio, pronouns, banner and theme colors), followed
+by a full `GET /users/{own_id}/profile?guild_id={id}` read with mutual lists disabled.
+The [Userdoccers guild resource](https://docs.discord.food/resources/guild#modify-current-guild-member)
+and [profile metadata](https://docs.discord.food/resources/user#profile-metadata-object)
+describe these fields; they do not establish normal-account acceptance. A nickname
+edit requires the loaded Change Nickname permission. Setting rich overrides requires
+full Nitro reported by the session; removing an old override does not create an
+entitlement. Discord remains authoritative and can refuse any edit. Untouched fields
+are omitted; null restores inheritance, while an explicit empty bio/pronoun remains
+distinct. Member and profile writes are not transactional. Each changed route is
+attempted once, failed drafts are retained, and any unconfirmed outcome requires an
+explicit reload before another save. Replies from an old account, guild or request
+are retired. Server profile snapshots are separate from the global profile editor.
+
+Profile Privacy and Content Filters use the same version-guarded
+`/users/@me/settings-proto/1` path as Messaging Permissions. The community-maintained
+[PreloadedUserSettings schema](https://github.com/discord-userdoccers/discord-protos/blob/master/discord_protos/discord_users/v1/PreloadedUserSettings.proto)
+defines profile visibility (privacy field 32), sensitive-media/gore/self-harm
+preferences for servers, friend DMs and non-friend DMs (text fields 29, 32 and 35),
+and keyword filters (text field 30). Unknown enums stay unknown. Writes preserve
+unmodified nested fields, carry the required data version and require the response
+to confirm the requested values. Unconfirmed changes are retained for review after
+an explicit reload; reads never repeat a write. These configure service preferences;
+Serein does not infer sensitive content or run a local text/media classifier. An
+acknowledged preference alone does not prove service-side classification or rendering
+enforcement for already-loaded messages. Age, rollout and account restrictions remain
+service-controlled.
+
+Private account overview reads `GET /users/@me`. Native connection management uses
+`GET /users/@me/connections` and the unofficial normal-account PATCH/DELETE connection
+routes described by [Userdoccers](https://docs.discord.food/resources/connected-accounts).
+Only visibility, metadata visibility, activity sharing and friend sync are mutable;
+unsupported or absent field values remain unavailable. Each connection mutation
+rechecks the current list and verifies a fresh full list afterward. Disconnect requires
+an explicit confirmation that linked integration membership may be lost. External
+account IDs are encoded as one path segment. Third-party tokens and integrations
+are discarded, and token-bearing response buffers are zeroized. Email and phone are
+private own-account information and stay concealed until explicitly revealed.
+Purchases, subscriptions, external OAuth linking, password/email changes, MFA setup
+and locked-account recovery remain service-managed official-client operations.
+
+Owned cosmetic equip uses bounded `GET /users/@me/collectibles-purchases?variants_return_style=1`
+(the individual-products form), then freshly reads the scoped own profile before one explicit
+PATCH. The [Userdoccers collectibles resource](https://docs.discord.food/resources/collectibles)
+documents the inventory and expiry/subscription purchase types. Global and server avatar
+decorations and nameplates use the own-account/member routes. Profile effects and frames
+use the current [public client's profile update builder](https://github.com/Wumpus-Central/discord-mobile-datamining/blob/main/discord_app/modules/user_profile/ProfileUpdateRequestUtils.tsx)
+`collectibles_sku_ids` replacement field; all bounded unknown equipped SKU entries are preserved.
+Only affirmatively returned, unexpired owned items can be set. Subscription items and server
+sets also require current full Nitro; removals remain available. Unsupported product kinds
+are left untouched. Serein makes no purchase, gift, claim, entitlement or subscription write.
+Every equip requires readback confirmation and failures preserve an explicit draft behind a
+reload barrier. Current service acceptance is not established by these synthetic checks.
+
+Global banner/theme and global/server display-name style editors use documented nullable
+own-account/member/profile fields. The native style picker offers known nondeprecated fonts,
+effects and one or two colors; unfamiliar current styles are preserved until explicitly changed.
+Nitro settings are gated again at dispatch. Server theme viewing uses the server's own theme,
+while the server editor retains the global fallback separately. Server accent color remains a
+wire field but is not exposed as a cosmetic control because the documented client does not
+respect it on guild profiles. Settings Escape handling now respects IME composition and nested
+popups; new controls remain reachable in the existing narrow-window settings picker.
+Native avatar/banner uploads still normalize the chosen image to a bounded PNG;
+animated GIF/WebP uploads and the official client's image-crop workflow are not implemented.
+The existing native name-style renderer draws static effects rather than Discord's animations.
+
+All tests for these workflows are synthetic/offline. No owner account, external
+connection, profile, credential or microphone has been used for validation. Live
+normal-account interoperability and comparison with the supplied official desktop
+build remain separate owner-controlled evidence gates.
+
 ## Game mentions (October 14, 2026)
 
 The native composer offers `@game`, a searchable game catalog and application references
@@ -141,7 +216,7 @@ establish it.
   layers over it. The popout keeps the overflow on screen.
 
 Unknown palettes, layer kinds, anchors, malformed values and expired items are dropped
-without rejecting the user, member row or profile. Cosmetic editing is not supported. All
+without rejecting the user, member row or profile. Owned cosmetic equip is documented in the October 17 section above. All
 five are opt-in: they stay hidden, unrequested and without catalog reads until enabled in
 Settings › Appearance › Profile cosmetics. This is a local display choice; nothing is sent
 to Discord.
@@ -2092,7 +2167,7 @@ synthetic; live normal-account behavior remains unverified.
 
 Messaging Permissions exposes spam filtering, all-server/per-server DM and message
 request preferences, friend request sources and personalized messages, and connected
-game messaging preferences. Content Filters is not included. Reads and version-guarded
+game messaging preferences. The October 17 section adds Profile Privacy and Content Filters. Reads and version-guarded
 writes use the unofficial `/users/@me/settings-proto/1` route and preserve untouched
 fields in the changed subtree. The UI updates after the service confirms the values;
 these are account preferences, not a new local spam classifier or game integration.

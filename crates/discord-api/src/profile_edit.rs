@@ -46,26 +46,42 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 		if let Some(changes) = &changes {
-			let body = profile::encode_edit(changes).map_err(|_| Failure::Protocol)?;
+			let mut body = profile::encode_edit(changes).map_err(|_| Failure::Protocol)?;
+			let theme = body
+				.as_object_mut()
+				.and_then(|body| body.remove("theme_colors"));
 			if changes != &ProfileEdit::default() {
-				// One explicitly requested write, without retries. Account responses may
-				// contain tokens; ignore those fields and clear the owned response buffer.
-				let bytes = zeroize::Zeroizing::new(
-					self.request_limited(
-						Method::PATCH,
-						"/users/@me",
-						Some(body),
-						profile::MAX_PROFILE_WIRE,
-					)
-					.await?,
-				);
-				let saved: UserDto = discord_protocol::decode(&bytes).map_err(|_| {
-					Failure::ProtocolAt(
-						"Profile save could not be confirmed; reload before retrying",
-					)
-				})?;
-				if saved.id != user || saved.bot {
-					return Err(Failure::Protocol);
+				if body.as_object().is_some_and(|body| !body.is_empty()) {
+					// One explicitly requested write, without retries. Account responses may
+					// contain tokens; ignore those fields and clear the owned response buffer.
+					let bytes = zeroize::Zeroizing::new(
+						self.request_limited(
+							Method::PATCH,
+							"/users/@me",
+							Some(body),
+							profile::MAX_PROFILE_WIRE,
+						)
+						.await?,
+					);
+					let saved: UserDto = discord_protocol::decode(&bytes).map_err(|_| {
+						Failure::ProtocolAt(
+							"Profile save could not be confirmed; reload before retrying",
+						)
+					})?;
+					if saved.id != user || saved.bot {
+						return Err(Failure::Protocol);
+					}
+				}
+				if let Some(theme) = theme {
+					let _bytes = zeroize::Zeroizing::new(
+						self.request_limited(
+							Method::PATCH,
+							"/users/@me/profile",
+							Some(serde_json::json!({"theme_colors":theme})),
+							profile::MAX_PROFILE_WIRE,
+						)
+						.await?,
+					);
 				}
 			}
 		}
@@ -76,7 +92,7 @@ impl DiscordApi {
 			.request_limited(Method::GET, &path, None, profile::MAX_PROFILE_WIRE)
 			.await?;
 		let saved = profile::decode_profile(&bytes, None, false).map_err(|_| Failure::Protocol)?;
-		if saved.user.id != user || saved.limited || saved.guild.is_some() {
+		if saved.user.id != user || saved.limited || saved.private || saved.guild.is_some() {
 			return Err(Failure::ProtocolAt(
 				"Full account profile is unavailable; reload before editing",
 			));
@@ -97,7 +113,18 @@ impl DiscordApi {
 				|| changes
 					.avatar
 					.as_ref()
-					.is_some_and(|avatar| avatar.is_some() != saved.user.avatar.is_some()))
+					.is_some_and(|avatar| avatar.is_some() != saved.user.avatar.is_some())
+				|| changes
+					.banner
+					.as_ref()
+					.is_some_and(|banner| banner.is_some() != saved.banner.is_some())
+				|| changes
+					.theme_colors
+					.is_some_and(|colors| colors != saved.theme_colors)
+				|| changes
+					.name_style
+					.as_ref()
+					.is_some_and(|style| *style != model::ProfileNameStyle::from_user(&saved.user)))
 		{
 			return Err(Failure::ProtocolAt(
 				"Profile changes were not confirmed; reload before retrying",
@@ -129,6 +156,41 @@ pub fn debug_profile_board_request_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[tokio::test]
+	async fn profile_name_style_uses_own_account_fields_and_confirms_readback() {
+		use crate::server_profile::tests::reply;
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let mut api = DiscordApi::new(std::sync::Arc::new(
+			client_core::auth::SessionSecret::from_owner_input("SYNTHETIC_STYLE_TOKEN".into())
+				.unwrap(),
+		))
+		.unwrap();
+		api.base = format!("http://{}", listener.local_addr().unwrap());
+		let style = model::ProfileNameStyle {
+			font: 11,
+			effect: 2,
+			colors: vec![1, 2],
+		};
+		let server = async {
+			reply(&listener,"PATCH /users/@me",Some(serde_json::json!({"display_name_font_id":11,"display_name_effect_id":2,"display_name_colors":[1,2]})),200,r#"{"id":"1","username":"synthetic"}"#).await;
+			reply(&listener,"GET /users/1/profile?with_mutual_guilds=false&with_mutual_friends=false&with_mutual_friends_count=false",None,200,r#"{"user":{"id":"1","username":"synthetic","display_name_styles":{"font_id":11,"effect_id":2,"colors":[1,2]}},"user_profile":{}}"#).await;
+		};
+		let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+			tokio::join!(
+				api.edit_profile(
+					Id(1),
+					Some(ProfileEdit {
+						name_style: Some(Some(style.clone())),
+						..Default::default()
+					})
+				),
+				server
+			)
+		})
+		.await
+		.unwrap();
+		assert!(model::ProfileNameStyle::from_user(&result.unwrap().user) == Some(style));
+	}
 	use client_core::{Command, Event, auth::SessionSecret};
 	use serde_json::{Value, json};
 	use std::{sync::Arc, time::Duration};
@@ -142,6 +204,33 @@ mod tests {
 	const USER: &str =
 		r#"{"id":"1","username":"synthetic","global_name":null,"avatar":null,"discriminator":"0"}"#;
 	const PROFILE: &str = r#"{"user":{"id":"1","username":"synthetic","global_name":null,"avatar":null,"discriminator":"0"},"user_profile":{"bio":"hello","pronouns":"","accent_color":null},"mutual_guilds":null,"mutual_friends":null}"#;
+
+	#[tokio::test]
+	async fn banners_and_themes_are_explicitly_partitioned_and_confirmed() {
+		tokio::time::timeout(Duration::from_secs(10), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_PROFILE_APPEARANCE_TOKEN".into()).unwrap())).unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let banner = "data:image/png;base64,iVBORw0KGgo=";
+			let edit = ProfileEdit { banner: Some(Some(banner.into())), theme_colors: Some(Some([0x123456, 0xabcdef])), ..Default::default() };
+			let saved = json!({"user":{"id":"1","username":"synthetic"},"user_profile":{"banner":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","theme_colors":[0x123456,0xabcdef]}}).to_string();
+			let server = async {
+				respond(&listener, PATCH, Some(json!({"banner":banner})), 200, USER).await;
+				respond(&listener, "PATCH /users/@me/profile", Some(json!({"theme_colors":[0x123456,0xabcdef]})), 200, "{}").await;
+				respond(&listener, GET, None, 200, &saved).await;
+			};
+			let (result, ()) = tokio::join!(api.edit_profile(Id(1), Some(edit)), server);
+			assert_eq!(result.unwrap().theme_colors, Some([0x123456,0xabcdef]));
+			let clear = ProfileEdit { theme_colors: Some(None), ..Default::default() };
+			let server = async {
+				respond(&listener, "PATCH /users/@me/profile", Some(json!({"theme_colors":null})), 200, "{}").await;
+				respond(&listener, GET, None, 200, PROFILE).await;
+			};
+			let (result, ()) = tokio::join!(api.edit_profile(Id(1), Some(clear)), server);
+			assert!(result.unwrap().theme_colors.is_none());
+			assert!(tokio::time::timeout(Duration::from_millis(20), listener.accept()).await.is_err());
+		}).await.unwrap();
+	}
 
 	async fn respond(
 		listener: &TcpListener,
@@ -204,6 +293,7 @@ mod tests {
 				pronouns: Some(String::new()),
 				accent_color: Some(None),
 				avatar: None,
+				..Default::default()
 			};
 			let server = async {
 				respond(
@@ -242,6 +332,7 @@ mod tests {
 				pronouns: Some("they/them".into()),
 				accent_color: Some(Some(0x123456)),
 				avatar: None,
+				..Default::default()
 			};
 			let server = async {
 				respond(&listener, PATCH, Some(json!({"global_name":"New name","bio":"","pronouns":"they/them","accent_color":0x123456})), 200, USER).await;

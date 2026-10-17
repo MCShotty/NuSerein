@@ -4956,3 +4956,12 @@ profiles-private-notice = { $name }’s profile is private, so some info is hidd
 settings-cosmetics-name-styles = Name styles
 settings-cosmetics-name-styles-description = Nitro display name fonts, colours and effects.
 main-sign-in-rate-limited-detail = Discord is rate limiting this sign-in. Wait before trying again. Another attempt before that can make the wait longer.
+
+page-privacy = Profile Privacy
+page-content-filters = Content Filters
+page-connections = Connections
+page-accessibility = Accessibility
+description-privacy = Choose who can see your profile details and manage privacy preferences.
+description-content-filters = Manage the content filters Discord supports for your account.
+description-connections = Manage accounts connected to your Discord profile.
+description-accessibility = Adjust text, motion and scrolling for comfortable reading.
