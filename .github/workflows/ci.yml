@@ -27,13 +27,13 @@ jobs:
       - name: Compare current nightly and previous fork (offline workload)
         env:
           GH_TOKEN: ${{ github.token }}
-          SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/integration/desktop-parity-20261017' && 'f9e39f792b2fe0af02f2c1e791e1516147084824') || github.event.before }}
         run: python scripts/compare-replay.py --fork-base "$env:SEREIN_REPLAY_BASE" --output target/parity-replay.json
         if: runner.os == 'Windows'
       - name: Compare current nightly and previous fork (offline workload)
         env:
           GH_TOKEN: ${{ github.token }}
-          SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/integration/desktop-parity-20261017' && 'f9e39f792b2fe0af02f2c1e791e1516147084824') || github.event.before }}
         run: python3 scripts/compare-replay.py --fork-base "$SEREIN_REPLAY_BASE" --output target/parity-replay.json
         if: runner.os != 'Windows'
       - uses: actions/upload-artifact@v7.0.1
