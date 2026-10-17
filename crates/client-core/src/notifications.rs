@@ -487,7 +487,14 @@ impl State {
 			.filter(|until| *until > now)
 			.min()
 			.and_then(|until| {
-				std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(until as u64))
+				std::time::UNIX_EPOCH
+					.checked_add(std::time::Duration::from_secs(until as u64))
+					.or_else(|| {
+						// Windows SystemTime cannot represent every service timestamp. Recheck
+						// daily without changing when the mute itself expires.
+						std::time::SystemTime::now()
+							.checked_add(std::time::Duration::from_secs(24 * 60 * 60))
+					})
 			})
 	}
 
@@ -1469,6 +1476,111 @@ mod tests {
 		assert!(state.continue_mark_all_read().is_none());
 		assert_eq!(state.unread(Id(99)), Some(true));
 	}
+	#[test]
+	fn timed_mute_deadlines_select_the_earliest_future_expiry() {
+		use std::time::{Duration, UNIX_EPOCH};
+		let mut state = notification_state();
+		let now = State::permission_time();
+		let setting = state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap();
+		setting.muted = Some(true);
+		setting.mute_until = Some(now + 3600);
+		setting.channels = vec![(Id(20), Some(true), None), (Id(21), Some(true), None)];
+		setting.channel_mute_until = vec![(Id(20), now + 900), (Id(21), now - 1)];
+		assert_eq!(
+			state.next_mute_deadline(),
+			UNIX_EPOCH.checked_add(Duration::from_secs((now + 900) as u64))
+		);
+		assert_eq!(state.guild_channel_muted(Id(20)), Some(true));
+		assert_eq!(state.guild_channel_muted(Id(21)), Some(false));
+		let setting = state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap();
+		setting.channel_mute_until.clear();
+		assert_eq!(
+			state.next_mute_deadline(),
+			UNIX_EPOCH.checked_add(Duration::from_secs((now + 3600) as u64))
+		);
+		state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap()
+			.mute_until = Some(now - 1);
+		assert!(state.next_mute_deadline().is_none());
+		assert_eq!(state.server_notification_settings(Id(1)).muted, Some(false));
+		state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap()
+			.mute_until = None;
+		assert!(state.next_mute_deadline().is_none());
+		assert_eq!(state.server_notification_settings(Id(1)).muted, Some(true));
+	}
+
+	#[test]
+	fn far_future_mutes_keep_their_value_and_a_recheck_on_every_platform() {
+		use std::time::{Duration, SystemTime, UNIX_EPOCH};
+		for (guild, whole_guild) in [(None, false), (Some(Id(1)), false), (Some(Id(1)), true)] {
+			let mut state = notification_state();
+			if guild.is_none() {
+				state.channels[0].guild = None;
+				state.channels[0].kind = 1;
+			}
+			let setting = state
+				.notification_preferences
+				.settings
+				.entry(guild)
+				.or_default();
+			if whole_guild {
+				setting.muted = Some(true);
+				setting.mute_until = Some(i64::MAX);
+			} else {
+				setting.channels = vec![(Id(20), Some(true), None)];
+				setting.channel_mute_until = vec![(Id(20), i64::MAX)];
+			}
+			let before = SystemTime::now();
+			let deadline = state
+				.next_mute_deadline()
+				.expect("future mute needs a recheck");
+			let after = SystemTime::now();
+			if let Some(expected) = UNIX_EPOCH.checked_add(Duration::from_secs(i64::MAX as u64)) {
+				assert_eq!(deadline, expected);
+			} else {
+				// Exercise the actual Windows SystemTime limit, preserving a bounded wakeup.
+				let recheck = Duration::from_secs(24 * 60 * 60);
+				assert!(deadline >= before.checked_add(recheck).unwrap());
+				assert!(deadline <= after.checked_add(recheck).unwrap());
+			}
+			assert!(
+				state
+					.next_mute_expiry()
+					.is_some_and(|delay| !delay.is_zero())
+			);
+			let setting = &state.notification_preferences.settings[&guild];
+			if whole_guild {
+				assert_eq!(setting.mute_until, Some(i64::MAX));
+				assert_eq!(state.server_notification_settings(Id(1)).muted, Some(true));
+			} else {
+				assert_eq!(setting.channel_mute_until, vec![(Id(20), i64::MAX)]);
+				assert_eq!(
+					if guild.is_some() {
+						state.guild_channel_muted(Id(20))
+					} else {
+						state.dm_muted(Id(20))
+					},
+					Some(true)
+				);
+			}
+		}
+	}
+
 	#[test]
 	fn timed_dm_mute_confirms_expiry_and_rejects_old_account_results() {
 		use crate::{
