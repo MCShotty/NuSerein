@@ -202,10 +202,13 @@ pub(crate) fn decode_png(
 	} else {
 		image.view(0, 0, image.width(), image.height())
 	};
+	let longest = u64::from(crop.width().max(crop.height()));
+	let target = longest.min(u64::from(output_edge.clamp(1, 512)));
+	let scaled = |edge: u32| ((u64::from(edge) * target + longest / 2) / longest).max(1) as u32;
 	let image = image::DynamicImage::ImageRgba8(image::imageops::thumbnail(
 		&*crop,
-		crop.width().min(output_edge.clamp(1, 512)),
-		crop.height().min(output_edge.clamp(1, 512)),
+		scaled(crop.width()),
+		scaled(crop.height()),
 	));
 	let mut png = Cursor::new(Vec::new());
 	image
@@ -225,6 +228,22 @@ pub(crate) fn decode_png(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn artwork_resize_preserves_aspect_for_wide_tall_small_and_odd_sources() {
+		for (source, expected) in [
+			((768, 256), [512, 171]),
+			((256, 768), [171, 512]),
+			((300, 200), [300, 200]),
+			((1601, 901), [512, 288]),
+		] {
+			let mut png = Cursor::new(Vec::new());
+			image::DynamicImage::new_rgba8(source.0, source.1)
+				.write_to(&mut png, image::ImageFormat::Png)
+				.unwrap();
+			let (_, preview) = decode_image(png.get_ref(), 512, false).unwrap();
+			assert_eq!(preview.size, expected);
+		}
+	}
 	#[test]
 	fn profile_banners_preserve_aspect_and_use_the_larger_profile_bounds() {
 		let mut png = Cursor::new(Vec::new());
