@@ -420,6 +420,18 @@ pub(super) fn decode_stream(
 	current: &impl Fn() -> bool,
 	emit: &mut impl FnMut(&[f32], usize, u32, Option<Duration>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
+	decode_stream_using(source, current, emit, true)
+}
+
+fn decode_stream_using(
+	source: Box<dyn MediaSource>,
+	current: &impl Fn() -> bool,
+	emit: &mut impl FnMut(&[f32], usize, u32, Option<Duration>) -> Result<(), &'static str>,
+	prefer_ffmpeg: bool,
+) -> Result<(), &'static str> {
+	if !current() {
+		return Err("Cancelled");
+	}
 	let source = MediaSourceStream::new(source, Default::default());
 	let metadata = MetadataOptions::default()
 		.limit_tag_bytes(Limit::Maximum(0))
@@ -457,7 +469,7 @@ pub(super) fn decode_stream(
 		.num_frames
 		.map(|frames| Duration::from_secs_f64(frames as f64 / f64::from(rate)));
 	let track_id = track.id;
-	let mut opus = if parameters.codec == CODEC_ID_OPUS {
+	let mut ffmpeg_pre_skip = if parameters.codec == CODEC_ID_OPUS {
 		let header = parameters.extra_data.as_deref().ok_or(INVALID)?;
 		// Family 0 is the mono/stereo voice-message mapping. Reject multistream mappings.
 		if header.len() < 19
@@ -469,26 +481,38 @@ pub(super) fn decode_stream(
 		{
 			return Err(INVALID);
 		}
-		let mut decoder = opus2::Decoder::new(
-			rate,
-			if channels == 1 {
-				opus2::Channels::Mono
-			} else {
-				opus2::Channels::Stereo
-			},
-		)
-		.map_err(|_| INVALID)?;
-		decoder
-			.set_gain(i32::from(i16::from_le_bytes([header[16], header[17]])))
-			.map_err(|_| INVALID)?;
-		Some((
-			decoder,
-			usize::from(u16::from_le_bytes([header[10], header[11]])),
-		))
+		usize::from(u16::from_le_bytes([header[10], header[11]]))
+	} else {
+		0
+	};
+	let mut ffmpeg = if prefer_ffmpeg {
+		ffmpeg_decoder(parameters, rate, channels)?
 	} else {
 		None
 	};
-	let mut decoder = if opus.is_none() {
+	let mut opus = if parameters.codec == CODEC_ID_OPUS {
+		let header = parameters.extra_data.as_deref().ok_or(INVALID)?;
+		if ffmpeg.is_some() {
+			None
+		} else {
+			let mut decoder = opus2::Decoder::new(
+				rate,
+				if channels == 1 {
+					opus2::Channels::Mono
+				} else {
+					opus2::Channels::Stereo
+				},
+			)
+			.map_err(|_| INVALID)?;
+			decoder
+				.set_gain(i32::from(i16::from_le_bytes([header[16], header[17]])))
+				.map_err(|_| INVALID)?;
+			Some((decoder, ffmpeg_pre_skip))
+		}
+	} else {
+		None
+	};
+	let mut decoder = if ffmpeg.is_none() && opus.is_none() {
 		Some(
 			symphonia::default::get_codecs()
 				.make_audio_decoder(parameters, &AudioDecoderOptions::default())
@@ -514,7 +538,21 @@ pub(super) fn decode_stream(
 		if packet.track_id != track_id {
 			return Err(INVALID);
 		}
-		let decoded = if let Some((decoder, pre_skip)) = &mut opus {
+		let decoded = if let Some(decoder) = &mut ffmpeg {
+			let samples = decoder.decode(Some(&packet.data)).map_err(|_| INVALID)?;
+			let frames = samples.len() / channels;
+			let skip = ffmpeg_pre_skip.min(frames);
+			ffmpeg_pre_skip -= skip;
+			let start = usize::try_from(packet.trim_start.get())
+				.map_err(|_| INVALID)?
+				.max(skip);
+			// Gapless MP3 metadata can mark an entire padding packet for discard.
+			// Match the demuxer's existing decoder: trimming past a packet's end
+			// yields no samples, rather than rejecting an otherwise valid clip.
+			let end =
+				frames.saturating_sub(usize::try_from(packet.trim_end.get()).map_err(|_| INVALID)?);
+			&samples[start.min(end) * channels..end * channels]
+		} else if let Some((decoder, pre_skip)) = &mut opus {
 			// Opus packets decode to at most 120 ms at 48 kHz.
 			buffer.resize(5760 * channels, 0.0);
 			if packet.data.is_empty() {
@@ -556,13 +594,72 @@ pub(super) fn decode_stream(
 		}
 		total_samples += count;
 		if !decoded.is_empty() {
+			if !current() {
+				return Err("Cancelled");
+			}
 			emit(decoded, channels, rate, duration)?;
+		}
+	}
+	if let Some(decoder) = &mut ffmpeg {
+		if !current() {
+			return Err("Cancelled");
+		}
+		let tail = decoder.decode(None).map_err(|_| INVALID)?;
+		if !current() {
+			return Err("Cancelled");
+		}
+		if tail.len() > max_samples - total_samples {
+			return Err(TOO_LARGE);
+		}
+		total_samples += tail.len();
+		if !tail.is_empty() {
+			emit(tail, channels, rate, duration)?;
 		}
 	}
 	if total_samples == 0 {
 		return Err(INVALID);
 	}
 	Ok(())
+}
+
+fn ffmpeg_decoder(
+	parameters: &symphonia::core::codecs::audio::AudioCodecParameters,
+	rate: u32,
+	channels: usize,
+) -> Result<Option<platform::video::ffmpeg::AudioDecoder>, &'static str> {
+	use symphonia::core::codecs::audio::well_known::*;
+	let name = match parameters.codec {
+		CODEC_ID_MP3 => c"mp3",
+		CODEC_ID_VORBIS => c"vorbis",
+		CODEC_ID_OPUS => c"opus",
+		CODEC_ID_PCM_U8 => c"pcm_u8",
+		CODEC_ID_PCM_S16LE => c"pcm_s16le",
+		CODEC_ID_PCM_S24LE => c"pcm_s24le",
+		CODEC_ID_PCM_S32LE => c"pcm_s32le",
+		CODEC_ID_PCM_F32LE => c"pcm_f32le",
+		CODEC_ID_PCM_F64LE => c"pcm_f64le",
+		_ => return Ok(None),
+	};
+	let extra = parameters.extra_data.as_deref().unwrap_or_default();
+	// Vorbis setup is bounded to 64 KiB by preflight; its identification header
+	// and the Xiph framing added below need a few more bytes.
+	if extra.len() > 65536 + 30 {
+		return Err(INVALID);
+	}
+	let mut extra = extra.to_vec();
+	if parameters.codec == CODEC_ID_VORBIS {
+		// Symphonia concatenates identification/setup; FFmpeg expects Xiph lacing
+		// and a comment header. Supply an empty comment, retaining no metadata.
+		if extra.len() < 37 || &extra[..7] != b"\x01vorbis" || &extra[30..37] != b"\x05vorbis" {
+			return Err(INVALID);
+		}
+		let mut headers = vec![2, 30, 16];
+		headers.extend_from_slice(&extra[..30]);
+		headers.extend_from_slice(b"\x03vorbis\0\0\0\0\0\0\0\0\x01");
+		headers.extend_from_slice(&extra[30..]);
+		extra = headers;
+	}
+	platform::video::ffmpeg::AudioDecoder::open(name, rate, channels, &extra).map_err(|_| INVALID)
 }
 
 // Skip metadata without decoding attacker-provided tag lengths/artwork. Compact in-place:
@@ -1047,6 +1144,148 @@ impl Playback {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn ffmpeg_audio_matches_fallback_duration_channels_and_signal() {
+		for (name, mut bytes) in [
+			("wav", demo_wav()),
+			(
+				"mp3",
+				include_bytes!("../tests/fixtures/audio-tone.mp3").to_vec(),
+			),
+			(
+				"gapless_stereo_mp3",
+				include_bytes!("../../../assets/sounds/discord/message.mp3").to_vec(),
+			),
+			(
+				"opus",
+				include_bytes!("../tests/fixtures/voice-message.ogg").to_vec(),
+			),
+			(
+				"vorbis",
+				include_bytes!("../tests/fixtures/audio-tone.ogg").to_vec(),
+			),
+		] {
+			prepare_media(&mut bytes).unwrap();
+			let format = symphonia::default::get_probe()
+				.probe(
+					&Hint::new(),
+					MediaSourceStream::new(
+						Box::new(Cursor::new(bytes.clone())),
+						Default::default(),
+					),
+					FormatOptions::default(),
+					MetadataOptions::default(),
+				)
+				.unwrap();
+			let parameters = format
+				.default_track(TrackType::Audio)
+				.unwrap()
+				.codec_params
+				.as_ref()
+				.unwrap()
+				.audio()
+				.unwrap();
+			assert!(
+				ffmpeg_decoder(
+					parameters,
+					parameters.sample_rate.unwrap(),
+					parameters.channels.as_ref().unwrap().count()
+				)
+				.unwrap()
+				.is_some(),
+				"{name}: bundled decoder"
+			);
+			let collect = |prefer_ffmpeg| {
+				let mut pcm = Pcm {
+					samples: Vec::new(),
+					channels: 0,
+					rate: 0,
+				};
+				decode_stream_using(
+					Box::new(Cursor::new(bytes.clone())),
+					&|| true,
+					&mut |samples, channels, rate, _| {
+						assert!(samples.len() <= 65536 * channels);
+						assert!(samples.iter().all(|x| x.is_finite()));
+						pcm.channels = channels;
+						pcm.rate = rate;
+						pcm.samples.extend_from_slice(samples);
+						Ok(())
+					},
+					prefer_ffmpeg,
+				)
+				.unwrap_or_else(|error| panic!("{name}: {error}"));
+				pcm
+			};
+			let legacy = collect(false);
+			let preferred = collect(true);
+			assert_eq!(
+				(preferred.rate, preferred.channels, preferred.samples.len()),
+				(legacy.rate, legacy.channels, legacy.samples.len()),
+				"{name}: gapless playback"
+			);
+			assert!(preferred.samples.iter().any(|x| x.abs() > 0.01), "{name}");
+			let rms = |pcm: &Pcm| {
+				(pcm.samples
+					.iter()
+					.map(|x| f64::from(*x).powi(2))
+					.sum::<f64>() / pcm.samples.len() as f64)
+					.sqrt()
+			};
+			assert!(
+				(rms(&preferred) - rms(&legacy)).abs() < 0.005,
+				"{name}: signal level"
+			);
+			let calls = std::cell::Cell::new(0);
+			assert_eq!(
+				decode_stream(
+					Box::new(Cursor::new(bytes)),
+					&|| calls.get() == 0,
+					&mut |_, _, _, _| {
+						calls.set(calls.get() + 1);
+						Ok(())
+					}
+				),
+				Err("Cancelled")
+			);
+			assert_eq!(
+				calls.get(),
+				1,
+				"{name}: stale PCM must not escape cancellation"
+			);
+		}
+	}
+
+	#[test]
+	fn ffmpeg_audio_selection_requires_a_decoder_and_valid_headers() {
+		use symphonia::core::codecs::audio::{AudioCodecParameters, well_known::*};
+		for codec in [
+			CODEC_ID_MP3,
+			CODEC_ID_PCM_S16LE,
+			CODEC_ID_PCM_S24LE,
+			CODEC_ID_PCM_F32LE,
+		] {
+			let mut params = AudioCodecParameters::new();
+			params.for_codec(codec);
+			assert!(ffmpeg_decoder(&params, 24000, 1).unwrap().is_some());
+		}
+		let mut params = AudioCodecParameters::new();
+		params
+			.for_codec(CODEC_ID_VORBIS)
+			.with_extra_data(vec![0; 37].into_boxed_slice());
+		assert!(ffmpeg_decoder(&params, 24000, 1).is_err());
+		assert!(
+			platform::video::ffmpeg::AudioDecoder::open(c"serein-missing-codec", 24000, 1, &[])
+				.unwrap()
+				.is_none()
+		);
+		for (rate, channels) in [(0, 1), (96001, 1), (48000, 0), (48000, 3)] {
+			assert!(
+				platform::video::ffmpeg::AudioDecoder::open(c"pcm_s16le", rate, channels, &[])
+					.is_err()
+			);
+		}
+	}
 	#[test]
 	fn start_admits_large_attachments_and_rejects_invalid_sizes() {
 		check_large_attachment_admission();

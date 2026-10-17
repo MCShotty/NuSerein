@@ -48,6 +48,10 @@ Matroska/WebM demuxers, scaling and audio resampling serve attachment
 playback. `build.json` records exact encoder and decoder names; native registry
 checks reject additions outside those allowlists. Decoders receive an anonymous
 reader bounded to 100 MiB, never a service URL or credentials.
+Standalone audio playback and bundled sounds feed bounded packets from the
+existing audio demuxer into these same libraries, falling back when the compiled
+codec is absent. Video posters and short embedded clips also prefer the shared media decoder.
+These paths require no additional codec libraries or FFmpeg network protocols.
 
 Incoming streams admit visible pictures through 7680×4320, including portrait
 equivalents and 6144×2560. Admission checks coded geometry, reference counts and

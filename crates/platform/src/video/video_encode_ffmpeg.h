@@ -148,6 +148,14 @@ int serein_media_video(void *media, SereinPicture *picture, uint8_t *output, siz
 int serein_media_audio(void *media, float *output, size_t frames, size_t *written, double *pts);
 int serein_media_seek(void *media, double seconds);
 
+/* Audio packets are demuxed and size-checked by the application's anonymous reader.
+ * Return 0 only for an unavailable decoder; malformed parameters return negative. */
+int serein_audio_open(const char *name, uint32_t rate, uint32_t channels,
+                      const uint8_t *extra, size_t extra_size, void **output);
+void serein_audio_close(void *audio);
+int serein_audio_decode(void *audio, const uint8_t *packet, size_t bytes,
+                        float *output, size_t capacity, size_t *written);
+
 #ifdef __cplusplus
 }
 #endif

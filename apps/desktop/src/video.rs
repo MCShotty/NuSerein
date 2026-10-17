@@ -3,6 +3,7 @@
 mod fallback;
 mod output;
 mod source;
+use platform::video::ffmpeg::AttachmentDecoder;
 use std::sync::{
 	Arc, Mutex,
 	atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -362,11 +363,6 @@ impl Video {
 /// Opens the attachment and returns its first decoded video frame, downscaled for
 /// a light poster; bounded reads only.
 fn decode_poster(job: &PosterJob, runtime: &tokio::runtime::Handle) -> Option<(u32, u32, Vec<u8>)> {
-	use platform::video::Sample;
-	use std::{
-		task::Poll::Ready,
-		time::{Duration, Instant},
-	};
 	let source = source::source(
 		job.url.clone(),
 		job.size,
@@ -374,16 +370,34 @@ fn decode_poster(job: &PosterJob, runtime: &tokio::runtime::Handle) -> Option<(u
 		runtime.clone(),
 	)
 	.ok()?;
-	let mut decoder = platform::video::Decoder::open(source).ok()?;
+	poster_frame(source, &job.cancelled)
+}
+
+fn poster_frame(
+	source: Box<dyn platform::video::ReadSeek>,
+	cancelled: &AtomicBool,
+) -> Option<(u32, u32, Vec<u8>)> {
+	use platform::video::ffmpeg::Sample;
+	use std::{
+		task::Poll::Ready,
+		time::{Duration, Instant},
+	};
+	if cancelled.load(Ordering::Acquire) {
+		return None;
+	}
+	let mut decoder = AttachmentDecoder::open(source, None).ok()?;
 	// Backends that signal `Pending` (Linux GStreamer) need waiting, not a poll
 	// count: give the first frame a bounded ten seconds, then mark it failed.
 	let deadline = Instant::now() + Duration::from_secs(10);
 	loop {
-		if Instant::now() >= deadline || job.cancelled.load(Ordering::Acquire) {
+		if Instant::now() >= deadline || cancelled.load(Ordering::Acquire) {
 			return None;
 		}
 		match decoder.poll_video().ok()? {
 			// Posters are converted once on the CPU, then cached as ordinary textures.
+			Ready(Some(Sample::Picture { frame, .. })) => {
+				return frame.thumbnail(POSTER_EDGE).ok();
+			}
 			Ready(Some(Sample::Video { picture, .. })) => {
 				let (width, height, rgba) = picture.to_rgba()?;
 				return Some(downscale_poster(width, height, rgba));
@@ -484,7 +498,7 @@ fn play(
 				session.cancelled.clone(),
 				runtime.clone(),
 			)?;
-			let decoder = fallback::open(source, &session.cancelled)?;
+			let decoder = fallback::open(source, &session.cancelled, request.adapter)?;
 			// A seek made during conversion takes precedence over automatic resumption.
 			let _ = session.seek.compare_exchange(
 				u64::MAX,
@@ -859,70 +873,6 @@ mod tests {
 enum DisplayFrame {
 	Native(platform::video::Picture),
 	Picture(Arc<platform::video::ffmpeg::Frame>),
-}
-enum AttachmentDecoder {
-	Ffmpeg(platform::video::ffmpeg::File),
-	Native(Box<platform::video::Decoder>),
-}
-impl From<platform::video::Decoder> for AttachmentDecoder {
-	fn from(value: platform::video::Decoder) -> Self {
-		Self::Native(Box::new(value))
-	}
-}
-impl AttachmentDecoder {
-	fn take_restart(&mut self) -> bool {
-		match self {
-			Self::Ffmpeg(d) => d.take_restart(),
-			Self::Native(_) => false,
-		}
-	}
-	fn open(
-		source: Box<dyn platform::video::ReadSeek>,
-		adapter: Option<model::VideoAdapter>,
-	) -> Result<Self, &'static str> {
-		match platform::video::ffmpeg::File::open(source, adapter) {
-			Ok(decoder) => Ok(Self::Ffmpeg(decoder)),
-			Err((mut source, error)) if error == platform::video::UNSUPPORTED => {
-				source
-					.seek(std::io::SeekFrom::Start(0))
-					.map_err(|_| platform::video::INVALID)?;
-				platform::video::Decoder::open(source).map(Self::from)
-			}
-			Err((_, error)) => Err(error),
-		}
-	}
-	fn info(&self) -> platform::video::Info {
-		match self {
-			Self::Ffmpeg(d) => d.info(),
-			Self::Native(d) => d.info(),
-		}
-	}
-	fn seek(&mut self, seconds: f64) -> Result<(), &'static str> {
-		match self {
-			Self::Ffmpeg(d) => d.seek(seconds),
-			Self::Native(d) => d.seek(seconds),
-		}
-	}
-	fn poll_video(
-		&mut self,
-	) -> Result<std::task::Poll<Option<platform::video::ffmpeg::Sample>>, &'static str> {
-		match self {
-			Self::Ffmpeg(d) => d.poll_video(),
-			Self::Native(d) => d
-				.poll_video()
-				.map(|poll| poll.map(|sample| sample.map(Into::into))),
-		}
-	}
-	fn poll_audio(
-		&mut self,
-	) -> Result<std::task::Poll<Option<platform::video::ffmpeg::Sample>>, &'static str> {
-		match self {
-			Self::Ffmpeg(d) => d.poll_audio(),
-			Self::Native(d) => d
-				.poll_audio()
-				.map(|poll| poll.map(|sample| sample.map(Into::into))),
-		}
-	}
 }
 
 pub(super) fn media_view(
@@ -1550,6 +1500,29 @@ mod render_tests {
 #[cfg(test)]
 mod poster_tests {
 	use super::*;
+	#[test]
+	fn posters_use_ffmpeg_and_honor_cancellation() {
+		let source = || {
+			Box::new(std::io::Cursor::new(
+				include_bytes!("../tests/fixtures/video.mov").as_slice(),
+			)) as Box<dyn platform::video::ReadSeek>
+		};
+		assert!(matches!(
+			AttachmentDecoder::open(source(), None).unwrap(),
+			AttachmentDecoder::Ffmpeg(_)
+		));
+		let (width, height, rgba) = poster_frame(source(), &AtomicBool::new(false)).unwrap();
+		assert!(width > 0 && height > 0 && width.max(height) <= POSTER_EDGE);
+		assert_eq!(rgba.len(), width as usize * height as usize * 4);
+		assert!(poster_frame(source(), &AtomicBool::new(true)).is_none());
+		assert!(
+			poster_frame(
+				Box::new(std::io::Cursor::new(b"broken video")),
+				&AtomicBool::new(false)
+			)
+			.is_none()
+		);
+	}
 	/// Small frames pass through untouched; large ones shrink to the poster edge averaged.
 	#[test]
 	fn downscale_shrinks_and_averages() {

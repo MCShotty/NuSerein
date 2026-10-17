@@ -30,7 +30,8 @@ impl Drop for Temporary {
 pub(super) fn open(
 	source: Box<dyn platform::video::ReadSeek>,
 	cancelled: &AtomicBool,
-) -> Result<platform::video::Decoder, &'static str> {
+	adapter: Option<model::VideoAdapter>,
+) -> Result<super::AttachmentDecoder, &'static str> {
 	let executable = [
 		"/opt/homebrew/bin/ffmpeg",
 		"/usr/local/bin/ffmpeg",
@@ -51,7 +52,7 @@ pub(super) fn open(
 		.create(&directory)
 		.map_err(|_| FAILED)?;
 	let temporary = Temporary(directory);
-	let result = convert(source, cancelled, executable, &temporary);
+	let result = convert(source, cancelled, adapter, executable, &temporary);
 	fs::remove_dir_all(&temporary.0).map_err(
 		|_| "Temporary video cleanup failed; remove serein-video files from the system temporary folder",
 	)?;
@@ -61,9 +62,10 @@ pub(super) fn open(
 fn convert(
 	mut source: Box<dyn platform::video::ReadSeek>,
 	cancelled: &AtomicBool,
+	adapter: Option<model::VideoAdapter>,
 	executable: &str,
 	temporary: &Temporary,
-) -> Result<platform::video::Decoder, &'static str> {
+) -> Result<super::AttachmentDecoder, &'static str> {
 	let input = temporary.0.join("input");
 	let output = temporary.0.join("output.mp4");
 	let mut file = OpenOptions::new()
@@ -133,5 +135,5 @@ fn convert(
 		return Err("Converted video exceeds the 100 MiB preview limit");
 	}
 	// macOS keeps the open descriptor valid after unlink; no playback file is retained.
-	platform::video::Decoder::open(Box::new(file))
+	super::AttachmentDecoder::open(Box::new(file), adapter)
 }
