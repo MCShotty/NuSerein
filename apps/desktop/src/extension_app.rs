@@ -1806,6 +1806,7 @@ mod tests {
 					nsfw: false,
 					overwrites: vec![],
 					forum: None,
+					voice: None,
 				})),
 			}),
 		});
