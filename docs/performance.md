@@ -1495,3 +1495,92 @@ The earlier full workspace, fuzz, replay and package results above retain their 
 revision scope; they are not measurements of these corrections. The native connection
 cancellation test awaits CI because its local code-generation run was deferred for the
 workspace memory budget. Current revision results are linked in the PR.
+
+
+### Current Inbox application and package verification at `3d20f9bb`
+
+[Run 39054844003](https://github.com/MCShotty/Serein/actions/runs/39054844003)
+passed all four native application/package jobs (Linux x64, Windows x64/ARM64,
+macOS ARM64), installer fixtures, SDK, licenses, ASan fuzz and all three release
+replay comparisons. Its merge checkout `071e456b` has the exact Git tree of
+`3d20f9bb`. The connection-cancellation test is included in the current native
+workspace gate; its formerly deferred local run is not claimed separately.
+Security and separate Nix failures remain inherited.
+
+The initial package measurements above remain historical. Current standard
+voice-inclusive packages use the same regular-file installed-payload and fixed
+ZIP DEFLATE-6 normalization method. Baselines remain published nightly
+`3a4bf8d` and previous fork `f9e39f7`; one artifact per revision/platform.
+No installer or outer CI archive is included in the normalized distribution.
+Values are MiB (1,048,576 bytes), with absolute/percentage deltas versus the fork.
+
+| Platform / metric | Nightly | Previous fork | Current Inbox | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / executable | 83.682 | 87.900 | 88.273 | +0.373 (+0.42%) |
+| Linux-X64 / installed payload | 88.006 | 130.657 | 131.031 | +0.373 (+0.29%) |
+| Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.712 | +0.158 (+0.19%) |
+| Windows-X64 / executable | 82.910 | 87.505 | 87.970 | +0.465 (+0.53%) |
+| Windows-X64 / installed payload | 86.909 | 135.216 | 135.681 | +0.465 (+0.34%) |
+| Windows-X64 / normalized distribution | 47.986 | 80.844 | 81.007 | +0.163 (+0.20%) |
+| macOS-ARM64 / executable | 65.946 | 69.884 | 70.198 | +0.314 (+0.45%) |
+| macOS-ARM64 / installed payload | 71.641 | 95.216 | 95.530 | +0.314 (+0.33%) |
+| macOS-ARM64 / normalized distribution | 46.027 | 63.548 | 63.686 | +0.138 (+0.22%) |
+
+Windows x64 and ARM64 clean/cached packages both pass archive validation and the
+bounded driver-query launch without the development FFmpeg prefix in PATH.
+The x64 clean/cached ZIPs are both 86,047,535 bytes; ARM64 is 69,104,411 bytes.
+Their metadata-dependent hashes differ, so bit-for-bit reproducibility is not
+claimed. The helper exits before UI/account/audio initialization: these are not
+interactive application launches or hardware-encoding acceptance tests. No manual
+staging repair was used. macOS nightly is signed while the CI bundle is unsigned;
+all package figures are observed build deltas, not an isolated feature cost.
+Current artifacts and clean/cached JSON evidence are retained by that run.
+Release UI CPU/RSS, media throughput and physical display checks remain unmeasured.
+
+
+### Current Inbox cross-platform release replay at `3d20f9bb`
+
+[Run 39054844003](https://github.com/MCShotty/Serein/actions/runs/39054844003)
+compares published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), previous
+fork `f9e39f7` and Inbox code `3d20f9bb`. The same release settings and sampling
+method above apply: one warmup, five rotated samples, one allowed logical CPU
+on Linux/Windows and platform scheduling on macOS. Per-OS artifacts record exact
+revisions, OS/CPU, settings and raw samples. Values are milliseconds, median
+(minimum–maximum). They measure core state, not native UI/media performance.
+
+| Platform / workload | Nightly | Previous fork | Inbox | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 56.668 (55.112–57.319) | 57.320 (55.984–60.732) | 56.592 (55.781–56.929) | -0.1% / -1.3% |
+| Linux-X64 / wide channels | 100.255 (89.555–102.417) | 109.163 (107.814–110.290) | 95.278 (93.712–96.481) | -5.0% / -12.7% |
+| Windows-X64 / reducer | 110.119 (103.805–124.310) | 107.383 (106.629–108.035) | 106.993 (106.750–109.522) | -2.8% / -0.4% |
+| Windows-X64 / wide channels | 228.188 (222.732–231.541) | 227.009 (224.482–233.393) | 224.888 (222.317–228.622) | -1.4% / -0.9% |
+| macOS-ARM64 / reducer | 65.531 (64.239–70.252) | 70.053 (60.927–79.586) | 66.613 (62.559–79.989) | +1.7% / -4.9% |
+| macOS-ARM64 / wide channels | 100.838 (94.759–111.089) | 94.479 (91.853–99.470) | 98.590 (90.037–116.093) | -2.2% / +4.4% |
+
+Ranges overlap and no causal improvement is claimed. Earlier local slower measurements above remain historical and unisolated.
+
+
+### Final Inbox native evidence and footer correction
+
+The final pair replaces the initial feature screenshots with fresh native captures
+of fork `f9e39f7` and Inbox code `3d20f9bb` plus the footer-only correction.
+Both use the same synthetic channel-links scenario, 1120 × 760 dark window and
+scale 1. The baseline has the two documented demo-only build repairs (duplicate
+avatar helpers and the missing optional error argument to `pending::show`),
+with its displayed feature UI unchanged. The new frame opens the Unread tab;
+no live account or service is used. Light mode at the supported minimum 760 × 520
+was also inspected. Only one small current pair is committed.
+
+The final native capture exposed an empty action strip on a fresh Unread page.
+The footer now draws when another tab has controls or an existing stale-status
+message needs it. The ten Inbox regressions, pinned formatting and strict native
+UI all-target/demo Clippy pass after this conditional-rendering correction.
+The native preview is rebuilt for the final captures. Capture uses explicit
+`--demo --interactive`, Xvfb/software rendering, process-liveness checks and
+ImageMagick's application-window capture; no image editing is used.
+
+Full native application/package CI above is for `3d20f9bb`, before the footer
+correction. Core release replay and package snapshots retain that revision label;
+the footer does not change the measured core workload. The final UI/code-and-evidence
+head receives its own CI. Release UI CPU/RSS, media throughput, physical displays
+and owner-controlled Discord acceptance remain unmeasured or unverified here.

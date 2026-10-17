@@ -379,39 +379,41 @@ impl MessagingUi {
 						));
 					}
 				});
-				body.footer(|ui| {
-					if state.inbox.stale {
-						ui.weak(i18n::translate("inbox-refresh-needed"));
-					}
-					let enabled = state.can_load_mentions() && !state.inbox.loading;
-					if self.inbox_controls.tab != Tab::Unread
-						&& ui
-							.add_enabled(
-								enabled,
-								egui::Button::new(i18n::translate("inbox-refresh")),
-							)
-							.clicked()
-					{
-						if self.inbox_controls.tab == Tab::Saved {
-							action = Some(Action::Saved);
-						} else {
-							load = Some(None);
+				if self.inbox_controls.tab != Tab::Unread || state.inbox.stale {
+					body.footer(|ui| {
+						if state.inbox.stale {
+							ui.weak(i18n::translate("inbox-refresh-needed"));
 						}
-					}
-					if self.inbox_controls.tab == Tab::Mentions
-						&& ui
-							.add_enabled(
-								enabled && state.inbox.next.is_some(),
-								egui::Button::new(i18n::translate("inbox-older")),
-							)
-							.clicked()
-					{
-						load = Some(state.inbox.next);
-					}
-					if self.inbox_controls.tab == Tab::Saved {
-						ui.weak(i18n::translate("inbox-service-availability"));
-					}
-				});
+						let enabled = state.can_load_mentions() && !state.inbox.loading;
+						if self.inbox_controls.tab != Tab::Unread
+							&& ui
+								.add_enabled(
+									enabled,
+									egui::Button::new(i18n::translate("inbox-refresh")),
+								)
+								.clicked()
+						{
+							if self.inbox_controls.tab == Tab::Saved {
+								action = Some(Action::Saved);
+							} else {
+								load = Some(None);
+							}
+						}
+						if self.inbox_controls.tab == Tab::Mentions
+							&& ui
+								.add_enabled(
+									enabled && state.inbox.next.is_some(),
+									egui::Button::new(i18n::translate("inbox-older")),
+								)
+								.clicked()
+						{
+							load = Some(state.inbox.next);
+						}
+						if self.inbox_controls.tab == Tab::Saved {
+							ui.weak(i18n::translate("inbox-service-availability"));
+						}
+					});
+				}
 			});
 		if changed_tab {
 			commands.push(state.clear_mentions());
