@@ -2332,7 +2332,24 @@ A complete valid settings snapshot permits defaults for omitted guild entries,
 matching the [primary unofficial client implementation](https://github.com/dolfies/discord.py-self/blob/2ba64a9a997e151a9c259984e0a179b1fdf4aff4/discord/settings.py#L1986).
 Missing or invalid snapshots, unknown DND, and explicit unknown values remain
 conservative. Expired guild mute timers no longer suppress alerts indefinitely.
-The new mute switch sets an untimed mute; it does not add a duration picker.
+Personal-control extension (October 17): server, category, channel, DM and group-DM
+menus offer timed and indefinite mutes. Timed writes retain an absolute deadline
+and require the response to confirm it. Server-level drafts preserve existing
+deadlines when only an unrelated option changes. The Notification Settings dialog
+also offers explicit category/channel overrides using the existing account settings
+route; this is personal configuration and does not require channel-management rights.
+Category inheritance follows bounded, same-guild ancestry through threads. Expiry
+refreshes local unread/sidebar caches without waiting for another Gateway event.
+
+Category and folder Mark as Read use bounded batches of existing acknowledgement
+requests, limited to their readable descendants or member servers. Partial results
+retain the original request order, and newer read-state observations take precedence.
+Unread navigation, category collapse and message-target notification activation
+reuse permission-checked local navigation; selecting a conversation does not itself
+acknowledge messages or join a voice channel. Timed DM/group settings use
+`PATCH /users/@me/guilds/@me/settings`. These normal-account routes and payloads are
+**unofficial**; synthetic HTTP/Gateway and native UI checks do not establish live
+Discord synchronization or interoperability. Owner-controlled live checks remain pending.
 
 The guild stream-preview part of issue #458 was already delivered in
 [PR #457](https://github.com/ViceVerse-cz/Serein/pull/457): hover a LIVE participant

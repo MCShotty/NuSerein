@@ -716,7 +716,7 @@ impl State {
 		}
 		ChannelAccess {
 			hidden,
-			muted: self.guild_channel_muted(channel) == Some(true),
+			muted: self.guild_channel_effectively_muted(channel) == Some(true),
 			limited: self.everyone_view(channel) == Some(false),
 		}
 	}

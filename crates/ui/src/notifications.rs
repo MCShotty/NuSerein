@@ -15,6 +15,7 @@ const RAIL_MARGIN: i8 = ((RAIL_WIDTH - RAIL_TILE) / 2.0) as i8;
 #[derive(Default)]
 pub(super) struct RailCache {
 	key: Option<(u64, u64, bool, Option<Id>)>,
+	mute_expiry: Option<std::time::SystemTime>,
 	// Fixed-size records only: at most MAX_NAV * size_of::<(Id, (bool, u32))>() bytes
 	// for badges, 15 * size_of::<Id>() bytes for direct-message rows and at most
 	// voice::MAX_ROSTER * size_of::<Id>() bytes for servers with someone in voice.
@@ -31,9 +32,14 @@ impl RailCache {
 			state.gateway_connected,
 			call,
 		);
-		if self.key == Some(key) {
+		if self.key == Some(key)
+			&& self
+				.mute_expiry
+				.is_none_or(|until| until > std::time::SystemTime::now())
+		{
 			return false;
 		}
+		self.mute_expiry = state.next_mute_deadline();
 		let mut badges = std::collections::BTreeMap::<Id, (bool, u32)>::new();
 		for channel in state.channels.iter().take(client_core::MAX_NAV) {
 			if let Some(guild) = channel.guild {
@@ -682,5 +688,40 @@ mod tests {
 			assert!(cache.sync(&state));
 			assert_eq!(cache.direct.len(), 15);
 		}
+	}
+	#[test]
+	fn timed_mute_expiry_refreshes_unread_rail_without_a_gateway_event() {
+		let mut state = test_support::notification_demo_state();
+		let mut cache = RailCache::default();
+		cache.sync(&state);
+		assert!(cache.guild_badge(Id(10)).0);
+		let until = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_secs() as i64
+			+ 2;
+		apply(
+			&mut state,
+			Event::NotificationPreferences(client_core::notifications::Event::Settings {
+				entries: vec![client_core::notifications::Setting {
+					guild: Some(Id(10)),
+					muted: Some(true),
+					mute_until: Some(until),
+					overrides_known: true,
+					..Default::default()
+				}],
+				replace: false,
+			}),
+		);
+		cache.sync(&state);
+		assert!(!cache.guild_badge(Id(10)).0);
+		let revision = state.rail_revision();
+		std::thread::sleep(
+			state.next_mute_expiry().unwrap() + std::time::Duration::from_millis(25),
+		);
+		assert_eq!(state.rail_revision(), revision);
+		assert!(cache.sync(&state));
+		assert!(cache.guild_badge(Id(10)).0);
+		assert!(!cache.sync(&state));
 	}
 }

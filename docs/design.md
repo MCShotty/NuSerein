@@ -182,9 +182,35 @@ and pressing Enter, which replaced the welcome with the synthetic message.
 Server Notification Settings are available from the server dropdown and server
 icon context menu, independently of administrative Server Settings. The shared
 modal uses four radio choices, mute and mention-suppression switches, and an
-explicit Save changes action. The content scrolls in short/narrow viewports while
+explicit Save changes action. Muting offers the standard 15-minute, 1-hour,
+3-hour, 8-hour, 24-hour and indefinite durations. A searchable channel/category
+chooser exposes notification overrides without requiring administrative permissions;
+choosing a source alone never changes its settings. Override choices apply explicitly,
+while the server-level draft uses Save changes. The content scrolls in short/narrow viewports while
 the footer remains accessible. `--demo --demo-chat --demo-server-notifications`
 with `--features demo` opens the synthetic editor without contacting Discord.
+
+Server, category, channel, DM and group-DM menus share the mute-duration choices.
+Category mutes apply to descendant channels and threads; timed expiry refreshes
+hidden channels and unread indicators even without another Gateway event. Collapsed
+categories retain the selected conversation, unmuted unread channels and mentions.
+Collapse all / Expand all affects only the current server. Category and folder
+Mark as Read actions acknowledge their own readable conversations without navigating.
+Alt+Shift+Down/Up moves between unread conversations, skipping muted conversations
+unless they contain mentions; Ctrl+Shift+U (Command+Shift+U on macOS) opens the
+current unread boundary. These shortcuts are rebindable and respect modal, IME
+and key-capture input. Notification clicks open the referenced message through the
+normal permission checks and retain existing composer drafts.
+
+The personal notification controls were inspected in the native Linux `profile_preview`
+fixture (`--demo --interactive --page=channel-links`), with the installed Inter fonts
+and WGPU on an isolated Xvfb display at 1× scale. The matched dark pair in
+`docs/pr-evidence/user-controls-qol/` uses 1120×760; the before image is `f9e39f7`
+with the demo-only pending-upload tuple repair required to build that fixture.
+Native inspection also covered duration selection with Arrow Down/Enter, picker
+closure, and scrolling with the footer visible at 760×520 in light and dark mode.
+The fixture has no service adapters. Synthetic UI/HTTP regressions cover writes;
+live synchronization and OS notification activation on Windows, macOS and Linux remain unverified.
 
 Poll cards follow the desktop layout shown in Discord's
 [Polls FAQ](https://support.discord.com/hc/en-us/articles/22163184112407-Polls-FAQ):

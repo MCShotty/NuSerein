@@ -4834,3 +4834,24 @@ application-menu-refresh = Refresh commands
 
 application-menu-retry-suggestions = Retry suggestions
 application-menu-type-suggestions = Type to load suggestions.
+
+# Personal notification and navigation controls
+qol-mute-category = Silenzia categoria
+qol-unmute-category = Riattiva categoria
+qol-mute-server = Silenzia server
+qol-unmute-server = Riattiva server
+qol-mute-duration = Durata del silenziamento
+qol-current-mute = Mantieni la durata attuale
+qol-notification-overrides = Eccezioni alle notifiche
+qol-choose-channel-category = Le modifiche qui vengono applicate subito.
+qol-select-channel = Seleziona un canale o una categoria
+qol-search-channels = Cerca canali e categorie
+qol-more-channels = Ci sono altri risultati; restringi la ricerca.
+qol-use-inherited = Usa impostazione predefinita
+qol-mute-selection = Silenzia
+qol-unmute-selection = Riattiva notifiche
+qol-collapse-categories = Comprimi tutte le categorie
+qol-expand-categories = Espandi tutte le categorie
+qol-next-unread = Conversazione non letta successiva
+qol-previous-unread = Conversazione non letta precedente
+qol-jump-unread = Vai al primo messaggio non letto

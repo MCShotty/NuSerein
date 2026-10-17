@@ -4817,3 +4817,24 @@ application-menu-refresh = Refresh commands
 
 application-menu-retry-suggestions = Retry suggestions
 application-menu-type-suggestions = Type to load suggestions.
+
+# Personal notification and navigation controls
+qol-mute-category = カテゴリーをミュート
+qol-unmute-category = カテゴリーのミュートを解除
+qol-mute-server = サーバーをミュート
+qol-unmute-server = サーバーのミュートを解除
+qol-mute-duration = ミュート期間
+qol-current-mute = 現在の期間を維持
+qol-notification-overrides = 通知の個別設定
+qol-choose-channel-category = ここでの変更はすぐに適用されます。
+qol-select-channel = チャンネルまたはカテゴリーを選択
+qol-search-channels = チャンネルとカテゴリーを検索
+qol-more-channels = 他にも結果があります。検索を絞り込んでください。
+qol-use-inherited = 既定の設定を使用
+qol-mute-selection = ミュート
+qol-unmute-selection = ミュートを解除
+qol-collapse-categories = すべてのカテゴリーを折りたたむ
+qol-expand-categories = すべてのカテゴリーを展開
+qol-next-unread = 次の未読の会話
+qol-previous-unread = 前の未読の会話
+qol-jump-unread = 最初の未読メッセージに移動

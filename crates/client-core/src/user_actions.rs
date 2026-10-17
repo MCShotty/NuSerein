@@ -45,17 +45,48 @@ fn replace_id_set(
 #[derive(Clone, PartialEq, Eq)]
 pub enum Action {
 	LoadNote(Id),
-	Note { user: Id, text: String },
-	Nickname { user: Id, text: String },
-	AddFriend { username: String },
-	ResolveFriend { user: Id, accept: bool },
-	ProfileFriend { user: Id, friend: bool },
+	Note {
+		user: Id,
+		text: String,
+	},
+	Nickname {
+		user: Id,
+		text: String,
+	},
+	AddFriend {
+		username: String,
+	},
+	ResolveFriend {
+		user: Id,
+		accept: bool,
+	},
+	ProfileFriend {
+		user: Id,
+		friend: bool,
+	},
 	OpenDm(Id),
 	CloseDm(Id),
-	Block { user: Id, blocked: bool },
-	Ignore { user: Id, ignored: bool },
-	Mute { channel: Id, muted: bool },
-	MessageRequest { channel: Id, accept: bool },
+	Block {
+		user: Id,
+		blocked: bool,
+	},
+	Ignore {
+		user: Id,
+		ignored: bool,
+	},
+	Mute {
+		channel: Id,
+		muted: bool,
+	},
+	MuteFor {
+		channel: Id,
+		seconds: u32,
+		until: i64,
+	},
+	MessageRequest {
+		channel: Id,
+		accept: bool,
+	},
 }
 impl std::fmt::Debug for Action {
 	/// Redacted debug output; never prints note, nickname or username text.
@@ -86,6 +117,7 @@ impl Action {
 				"Conversation notifications muted until you turn them back on"
 			}
 			Self::Mute { muted: false, .. } => "Conversation notifications unmuted",
+			Self::MuteFor { .. } => "Conversation notifications muted temporarily",
 			Self::MessageRequest { accept: true, .. } => "Message request accepted",
 			Self::MessageRequest { accept: false, .. } => "Message request ignored",
 		}
@@ -729,6 +761,15 @@ impl State {
 	pub(crate) fn pending_dm_muted(&self, channel: Id) -> Option<bool> {
 		match &self.user_actions.pending {
 			Some((
+				Action::MuteFor {
+					channel: target,
+					until,
+					..
+				},
+				_,
+				false,
+			)) if *target == channel => Some(*until > Self::permission_time()),
+			Some((
 				Action::Mute {
 					channel: target,
 					muted,
@@ -864,6 +905,25 @@ impl State {
 		}
 		self.request_user_action(Action::Mute { channel, muted })
 	}
+	pub fn set_dm_mute(
+		&mut self,
+		channel: Id,
+		mute: crate::channel_actions::Mute,
+	) -> Option<Command> {
+		if !mute.valid() || (!self.is_one_to_one_dm(channel) && !self.is_group_dm(channel)) {
+			return None;
+		}
+		if let crate::channel_actions::Mute::For(seconds) = mute {
+			let until = mute.expires_at(Self::permission_time())?;
+			self.request_user_action(Action::MuteFor {
+				channel,
+				seconds,
+				until,
+			})
+		} else {
+			self.set_dm_muted(channel, mute != crate::channel_actions::Mute::Unmute)
+		}
+	}
 	fn is_one_to_one_dm(&self, channel: Id) -> bool {
 		self.channel(channel)
 			.is_some_and(|c| c.guild.is_none() && c.kind == 1 && c.recipients.len() == 1)
@@ -913,7 +973,9 @@ impl State {
 		}
 	}
 	pub(crate) fn observe_dm_settings(&mut self, event: &crate::notifications::Event) {
-		if let Some((Action::Mute { .. }, _, observed)) = &mut self.user_actions.pending {
+		if let Some((Action::Mute { .. } | Action::MuteFor { .. }, _, observed)) =
+			&mut self.user_actions.pending
+		{
 			*observed |= match event {
 				crate::notifications::Event::Invalidate => true,
 				crate::notifications::Event::Settings { entries, replace } => {
@@ -1575,6 +1637,9 @@ impl State {
 							})?;
 						}
 						Action::Mute { channel, muted } => self.confirm_dm_muted(channel, muted)?,
+						Action::MuteFor { channel, until, .. } => {
+							self.confirm_dm_timed_mute(channel, until)?
+						}
 						Action::MessageRequest { channel, accept } => {
 							self.set_message_request(channel, false)?;
 							if !accept {

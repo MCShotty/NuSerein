@@ -22,7 +22,7 @@ pub(super) struct GroupMenu {
 	dialog: Option<Dialog>,
 	generation: u64,
 	revision: u64,
-	mute: Option<(Id, bool)>,
+	mute: Option<(u64, Id, client_core::channel_actions::Mute)>,
 	pub pin_requested: Option<Intent>,
 	pub icon_request: Option<IconRequest>,
 }
@@ -89,21 +89,18 @@ impl GroupMenu {
 			}
 			ui.separator();
 			let muted = state.dm_muted(channel.id) == Some(true);
-			if row(
-				ui,
-				if muted {
-					"group-menu-menu-unmute-conversation"
-				} else {
-					"group-menu-menu-mute-conversation"
-				},
-				colors.text,
-			)
-			.on_hover_text(crate::i18n::translate(
-				"group-menu-menu-mute-notifications-until-you-unmute-this-conversation",
-			))
-			.clicked()
+			if muted && row(ui, "group-menu-menu-unmute-conversation", colors.text).clicked() {
+				self.mute = Some((
+					state.generation,
+					channel.id,
+					client_core::channel_actions::Mute::Unmute,
+				));
+				ui.close();
+			}
+			if let Some(mute) =
+				crate::server_notifications::mute_menu(ui, "group-menu-menu-mute-conversation")
 			{
-				self.mute = Some((channel.id, !muted));
+				self.mute = Some((state.generation, channel.id, mute));
 				ui.close();
 			}
 			ui.separator();
@@ -186,8 +183,9 @@ impl GroupMenu {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
-		if let Some((channel, muted)) = self.mute.take()
-			&& let Some(command) = state.set_dm_muted(channel, muted)
+		if let Some((generation, channel, mute)) = self.mute.take()
+			&& generation == state.generation
+			&& let Some(command) = state.set_dm_mute(channel, mute)
 		{
 			commands.push(command);
 		}
@@ -627,6 +625,24 @@ mod tests {
 					&mut commands,
 				);
 				if action == "Mute Conversation" {
+					assert!(commands.is_empty(), "opening mute choices does not write");
+					let position = text
+						.iter()
+						.find(|(text, _)| text == "Until I Turn It Back On")
+						.unwrap()
+						.1
+						.center();
+					for pressed in [true, false] {
+						frame(
+							&ctx,
+							width,
+							&mut menu,
+							&mut state,
+							channel,
+							pointer(position, false, pressed),
+							&mut commands,
+						);
+					}
 					assert_eq!(commands.len(), 1);
 					assert_eq!(state.dm_muted(channel), Some(true));
 					continue;

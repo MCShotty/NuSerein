@@ -51,6 +51,7 @@ pub(super) struct ChannelMenu {
 	posts: crate::post_menu::PostMenu,
 	pub invite_requested: Option<(Id, Id)>,
 	pub shortcut_requested: Option<crate::shortcuts::Intent>,
+	pub categories_collapsed_requested: Option<bool>,
 	requested: Option<(Id, Intent)>,
 	dialog: Option<Dialog>,
 	feedback: Option<Id>,
@@ -175,36 +176,30 @@ impl ChannelMenu {
 			ui.separator();
 			ui.add_enabled_ui(available, |ui| {
 				if state.guild_channel_muted(channel.id) == Some(true)
-					&& row(ui, "channel-menu-context-unmute-channel", true, false).clicked()
+					&& row(
+						ui,
+						if channel.kind == 4 {
+							"qol-unmute-category"
+						} else {
+							"channel-menu-context-unmute-channel"
+						},
+						true,
+						false,
+					)
+					.clicked()
 				{
 					intent = Some(Intent::Write(Action::Mute(Mute::Unmute)));
 				}
-				ui.menu_button(
-					crate::i18n::translate("channel-menu-context-mute-channel"),
-					|ui| {
-						for (label, seconds) in [
-							("channel-menu-report-capacity-for-15-minutes", 900),
-							("channel-menu-report-capacity-for-1-hour", 3600),
-							("channel-menu-report-capacity-for-3-hours", 10800),
-							("channel-menu-report-capacity-for-8-hours", 28800),
-							("channel-menu-report-capacity-for-24-hours", 86400),
-						] {
-							if row(ui, label, true, false).clicked() {
-								intent = Some(Intent::Write(Action::Mute(Mute::For(seconds))));
-							}
-						}
-						if row(
-							ui,
-							"channel-menu-context-until-i-turn-it-back-on",
-							true,
-							false,
-						)
-						.clicked()
-						{
-							intent = Some(Intent::Write(Action::Mute(Mute::Forever)));
-						}
+				if let Some(mute) = crate::server_notifications::mute_menu(
+					ui,
+					if channel.kind == 4 {
+						"qol-mute-category"
+					} else {
+						"channel-menu-context-mute-channel"
 					},
-				);
+				) {
+					intent = Some(Intent::Write(Action::Mute(mute)));
+				}
 				ui.menu_button(
 					crate::i18n::translate("channel-menu-context-notification-settings"),
 					|ui| {
@@ -213,7 +208,7 @@ impl ChannelMenu {
 							(0, "channel-menu-report-capacity-all-messages"),
 							(1, "channel-menu-report-capacity-only-mentions"),
 							(2, "channel-menu-report-capacity-nothing"),
-							(3, "channel-menu-report-capacity-use-server-default"),
+							(3, "qol-use-inherited"),
 						] {
 							if ui
 								.selectable_label(
@@ -319,6 +314,16 @@ impl ChannelMenu {
 			let anchor = state.channels.iter().find(|channel| {
 				channel.guild == Some(guild) && state.can_manage_channel(channel.id)
 			});
+			for (collapsed, label) in [
+				(true, "qol-collapse-categories"),
+				(false, "qol-expand-categories"),
+			] {
+				if row(ui, label, true, false).clicked() {
+					self.categories_collapsed_requested = Some(collapsed);
+					self.generation = state.generation;
+					ui.close();
+				}
+			}
 			if let Some(anchor) = anchor {
 				for (label, kind) in [
 					("channel-menu-context-create-channel", Kind::Create),

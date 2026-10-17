@@ -4968,3 +4968,24 @@ slash-commands-sending = Sending command…
 slash-commands-choose-file = Choose file…
 slash-commands-remove-file = Remove file
 slash-commands-file-help = Choose one file for this option.
+
+# Personal notification and navigation controls
+qol-mute-category = Mute Category
+qol-unmute-category = Unmute Category
+qol-mute-server = Mute Server
+qol-unmute-server = Unmute Server
+qol-mute-duration = Mute duration
+qol-current-mute = Keep current duration
+qol-notification-overrides = Notification overrides
+qol-choose-channel-category = Changes here apply immediately.
+qol-select-channel = Select a channel or category
+qol-search-channels = Search channels and categories
+qol-more-channels = More matches; narrow your search.
+qol-use-inherited = Use default
+qol-mute-selection = Mute
+qol-unmute-selection = Unmute
+qol-collapse-categories = Collapse All Categories
+qol-expand-categories = Expand All Categories
+qol-next-unread = Next Unread Conversation
+qol-previous-unread = Previous Unread Conversation
+qol-jump-unread = Jump to First Unread

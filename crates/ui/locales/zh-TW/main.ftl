@@ -4932,3 +4932,24 @@ application-menu-refresh = Refresh commands
 
 application-menu-retry-suggestions = Retry suggestions
 application-menu-type-suggestions = Type to load suggestions.
+
+# Personal notification and navigation controls
+qol-mute-category = 將類別靜音
+qol-unmute-category = 取消類別靜音
+qol-mute-server = 將伺服器靜音
+qol-unmute-server = 取消伺服器靜音
+qol-mute-duration = 靜音時間
+qol-current-mute = 保留目前的時間
+qol-notification-overrides = 通知個別設定
+qol-choose-channel-category = 此處的變更會立即生效。
+qol-select-channel = 選擇頻道或類別
+qol-search-channels = 搜尋頻道和類別
+qol-more-channels = 還有更多結果，請縮小搜尋範圍。
+qol-use-inherited = 使用預設設定
+qol-mute-selection = 靜音
+qol-unmute-selection = 取消靜音
+qol-collapse-categories = 收合所有類別
+qol-expand-categories = 展開所有類別
+qol-next-unread = 下一個未讀對話
+qol-previous-unread = 上一個未讀對話
+qol-jump-unread = 跳至第一則未讀訊息
