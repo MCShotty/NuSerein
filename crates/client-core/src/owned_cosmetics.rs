@@ -243,20 +243,21 @@ mod tests {
 		profile_cosmetics::{Current, Inventory, Item, Kind},
 	};
 	fn state() -> State {
-		let mut state = State::default();
-		state.user = Some(User {
-			id: Id(1),
-			name: "Synthetic".into(),
-			kind: Default::default(),
-			webhook: false,
-			avatar: None,
-			discriminator: 0,
-			primary_guild: None,
-			cosmetics: None,
-		});
-		state.demo = true;
-		state.premium_type = 2;
-		state
+		State {
+			user: Some(User {
+				id: Id(1),
+				name: "Synthetic".into(),
+				kind: Default::default(),
+				webhook: false,
+				avatar: None,
+				discriminator: 0,
+				primary_guild: None,
+				cosmetics: None,
+			}),
+			demo: true,
+			premium_type: 2,
+			..State::default()
+		}
 	}
 	fn snapshot() -> Snapshot {
 		Snapshot {
