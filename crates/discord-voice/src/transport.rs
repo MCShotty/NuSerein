@@ -1754,6 +1754,7 @@ mod tests {
 			Some(camera),
 			None,
 			None,
+			None,
 			|_| Ok(()),
 			Identity::generate(),
 			format!("ws://{address}"),
