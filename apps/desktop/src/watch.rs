@@ -333,6 +333,7 @@ impl Watch {
 		let session = voice::Secret::new(pending.session.to_string())
 			.map_err(|_| "Invalid stream voice session")?;
 		let credentials = voice::VoiceConnection {
+			mode: Default::default(),
 			channel: rtc_channel,
 			guild: Some(rtc_server),
 			user: pending.user,

@@ -94,6 +94,7 @@ async fn connect(
 
 fn credentials(user: u64) -> VoiceConnection {
 	VoiceConnection {
+		mode: Default::default(),
 		channel: Id(3),
 		guild: Some(Id(4)),
 		user: Id(user),

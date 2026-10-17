@@ -4,6 +4,7 @@ mod archives;
 mod badges;
 mod channel_actions;
 mod collectibles;
+mod community;
 pub mod detectable;
 pub mod external_assets;
 mod forum;
@@ -902,6 +903,13 @@ impl DiscordApi {
 				request,
 				result: self.account_messaging_permissions(change).await,
 			},
+			Command::Community {
+				guild,
+				user,
+				request,
+				action,
+				..
+			} => Event::Community(self.community(guild, user, request, &action).await),
 			Command::ServerAdmin {
 				guild,
 				request,

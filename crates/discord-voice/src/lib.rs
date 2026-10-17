@@ -36,6 +36,8 @@ pub struct CapturedFrame {
 #[derive(Clone, Copy)]
 pub struct Controls {
 	pub muted: bool,
+	/// Separate from mute: only a current, explicitly accepted Stage speaker can send PCM.
+	pub stage_speaker: bool,
 	/// Current Audio::capture_generation(); rejects PCM queued before a privacy transition.
 	pub capture_generation: u64,
 	/// Local indicator threshold; independent of received participants.
@@ -56,6 +58,7 @@ impl Default for Controls {
 	fn default() -> Self {
 		Self {
 			muted: false,
+			stage_speaker: false,
 			capture_generation: 0,
 			activity_threshold_db: -45,
 			camera: 0,

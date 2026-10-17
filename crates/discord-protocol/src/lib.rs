@@ -6,6 +6,7 @@ pub mod archives;
 mod attachments;
 pub mod badges;
 pub mod collectibles;
+pub mod community;
 mod diagnostics;
 mod embeds;
 mod extra_content;
@@ -2181,8 +2182,10 @@ pub struct VoiceStateDto {
 	pub mute: bool,
 	#[serde(default, deserialize_with = "lossy::null_default")]
 	pub deaf: bool,
-	#[serde(default, deserialize_with = "lossy::null_default")]
-	pub suppress: bool,
+	#[serde(default)]
+	pub suppress: Option<bool>,
+	#[serde(default)]
+	pub request_to_speak_timestamp: Option<String>,
 	#[serde(default, deserialize_with = "lossy::null_default")]
 	pub self_video: bool,
 	#[serde(default, deserialize_with = "lossy::null_default")]

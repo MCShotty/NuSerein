@@ -345,7 +345,7 @@ impl MessagingUi {
 									.show(ui, |ui| {
 										for target in state.channels.iter().filter(|target| {
 											target.guild == Some(guild)
-												&& target.kind == 2 && target.id != channel
+												&& matches!(target.kind, 2 | 13) && target.id != channel
 										}) {
 											let change = VoiceChange::Move(Some(target.id));
 											if state.can_view(target.id)
@@ -894,6 +894,18 @@ impl MessagingUi {
 		);
 		// A short stage clips notices and tiles instead of drawing them over the call bar.
 		body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
+		if state.is_stage(channel) {
+			body_ui.scope(|ui| {
+				*ui.visuals_mut() = egui::Visuals::dark();
+				egui::ScrollArea::vertical()
+					.id_salt("stage-community-controls")
+					.max_height((body.height() * 0.55).max(80.0))
+					.show(ui, |ui| {
+						self.community_ui
+							.stage_controls(ui, state, channel, commands);
+					});
+			});
+		}
 		stage_notices(&mut body_ui, &notices);
 		call_failure(
 			&mut body_ui,
@@ -1880,6 +1892,7 @@ impl MessagingUi {
 			member: None,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			request: None,
 			channel: None,
 			user: peer,
@@ -2109,8 +2122,10 @@ impl MessagingUi {
 		let guild = state
 			.channels
 			.iter()
-			.any(|c| c.id == channel && c.kind == 2);
-		let label = if guild {
+			.any(|c| c.id == channel && matches!(c.kind, 2 | 13));
+		let label = if state.is_stage(channel) {
+			"Join audience"
+		} else if guild {
 			"Join Voice"
 		} else if incoming {
 			"Answer call"
@@ -2361,7 +2376,7 @@ impl MessagingUi {
 			);
 		}
 		if active
-			&& !input && let Some(code) = &self.voice_privacy_code
+			&& !input && let Some(code) = self.voice_privacy_code.as_ref().filter(|c| !c.is_empty())
 		{
 			egui::CollapsingHeader::new(crate::i18n::translate(
 				"voice-voice-popup-content-voice-privacy-code",
@@ -2520,7 +2535,7 @@ impl MessagingUi {
 			&crate::i18n::translate("voice-voice-settings-content-camera"),
 			|ui| self.camera_settings_content(ui, demo),
 		);
-		if active && let Some(code) = &self.voice_privacy_code {
+		if active && let Some(code) = self.voice_privacy_code.as_ref().filter(|c| !c.is_empty()) {
 			egui::CollapsingHeader::new(crate::i18n::translate(
 				"voice-voice-settings-content-voice-privacy-code",
 			))
@@ -4816,7 +4831,12 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 			.voice
 			.roster
 			.iter()
-			.filter(|entry| entry.channel == channel)
+			.filter(|entry| {
+				entry.channel == channel
+					&& (!state.is_stage(channel)
+						|| entry.participant.stage == model::community::StageParticipation::Speaker)
+			})
+			.take(client_core::voice::MAX_PARTICIPANTS)
 			.cloned()
 			.collect()
 	};
@@ -4844,6 +4864,7 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 						deafened: false,
 						server_muted: false,
 						server_deafened: false,
+						stage: Default::default(),
 						video: false,
 						streaming: false,
 					},
@@ -4851,8 +4872,11 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 			}
 		}
 	}
-	if let Some(call) = call.filter(|call| call.phase != Phase::Failed)
-		&& let Some(user) = &state.user
+	if let Some(call) = call.filter(|call| {
+		call.phase != Phase::Failed
+			&& (!state.is_stage(channel)
+				|| call.stage_role() == model::community::StageParticipation::Speaker)
+	}) && let Some(user) = &state.user
 	{
 		if let Some(index) = entries
 			.iter()
@@ -4871,6 +4895,7 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 						deafened: call.deafened,
 						server_muted: call.server_muted,
 						server_deafened: call.server_deafened,
+						stage: call.stage,
 						video: call.camera,
 						streaming: false,
 					},
@@ -4900,6 +4925,7 @@ fn shown_participant(state: &State, entry: &RosterEntry) -> Participant {
 		participant.muted = call.self_muted();
 		participant.server_muted |= call.server_muted;
 		participant.server_deafened |= call.server_deafened;
+		participant.stage = call.stage_role();
 	}
 	participant
 }
@@ -7144,6 +7170,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: true,
 			},

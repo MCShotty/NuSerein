@@ -10,6 +10,7 @@ fn participant(user: Id) -> voice::Participant {
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		video: false,
 		streaming: false,
 	}

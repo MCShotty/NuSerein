@@ -1,5 +1,71 @@
 # Discord compatibility — checked 2026-09-10
 
+## Scheduled events and Stage channels — October 17, 2026
+
+Native server events now provide a bounded list and detail view, canonical event links,
+create/edit/delete, start/end/cancel and explicit Interested/Not interested actions. The
+editor accepts RFC3339 times with an explicit UTC offset and previews the local time;
+recurrence uses the UTC weekday and clock time, so local daylight saving changes do
+not silently shift the recurrence rule. Daily, weekday, weekly, fortnightly, monthly
+nth-weekday and yearly rules use the current documented writable subset. Existing
+service-only end/count/year-day rules survive unrelated sparse edits, with occurrence
+controls unavailable for rules the client cannot expand safely. The current series
+exposes up to eight upcoming occurrences plus its retained exceptions: edit, cancel,
+restore the series schedule, RSVP/skip and reset the individual RSVP to the series.
+Unknown subscription state is displayed as unavailable; confirming one RSVP never
+turns the other unknown responses into “not interested.”
+
+Schemas, permission bits and event/Stage resource routes were checked against the
+[official scheduled-event resource](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/resources/guild-scheduled-event.mdx),
+[Stage resource](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/resources/stage-instance.mdx)
+and [voice connection documentation](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/topics/voice-connections.mdx).
+Normal-account subscription reads/writes and recurring exception routes are **unofficial**,
+checked against the maintained [Userdoccers event reference at `01624d9`](https://github.com/discord-userdoccers/discord-userdoccers/blob/01624d9b7a75cd8b1e838e009b434d108d9fcdff/pages/resources/guild-scheduled-event.mdx):
+`GET /users/@me/scheduled-events?guild_ids=...`, event `users/@me`, exception
+`POST/PATCH/DELETE /guilds/{guild}/scheduled-events/{event}/exceptions[/{occurrence}]`
+and `PUT/DELETE /guilds/{guild}/scheduled-events/{event}/{occurrence}/users/@me`.
+Occurrences are identified by the original UTC start snowflake, bounded to the loaded
+series. Restoring an exception deliberately removes that occurrence override; writes
+are never repeated automatically after an uncertain outcome.
+
+Stage channels have native audience/speaker state, request/cancel request, invitation
+accept/decline, moderator invitations/demotion, topic editing and confirmed Stage end.
+Audience joins disable microphone device opening and transmission. A service speaker
+state or invitation cannot grant local microphone consent. Only an explicit
+Accept invitation/Become speaker action grants consent; permission loss, demotion,
+Stage end, a failed acceptance or a fresh media rejoin revokes it. Authorization
+revisions retire queued PCM even when permission loss and restoration happen between
+UI polls. Moderation and replies are scoped to the current account, guild, channel,
+call request and current permissions.
+
+The immutable media mode comes from the authenticated current channel type. The
+[official DAVE scope](https://github.com/discord/dave-protocol/blob/1b2b706ad4a562ede5c2ef901f9d77f6dbe79446/protocol.md#introduction)
+excludes Stage channels. Stage therefore requires negotiated
+`aead_xchacha20_poly1305_rtpsize` transport encryption and DAVE version 0; ordinary
+voice, DMs and separate Go Live transports retain mandatory DAVE version 1. There is
+no service-selected downgrade between these modes. Stage audio can be processed by
+Discord and has no end-to-end privacy code. A Stage signaling outage uses the existing
+bounded fresh-media rejoin path, returning to audience consent. A Stage roster can
+contain 4,096 entries / 1 MiB, while at most 63 remote authenticated audio sources
+receive decoder/jitter working sets; audience announcements do not allocate an audio
+resource per audience member. Member controls page 64 rows at a time.
+
+One community worker and one result lane are retained. Event lists are capped at
+100 events / 768 KiB with a 1 MiB response, 64 exceptions per series and 400 subscription
+records. Access/session changes cancel outstanding work, late responses cannot reopen
+closed views or restore revoked access, and uncertain writes require an explicit
+appropriate refresh before another write. Drafts stay in session RAM through failures.
+No automatic RSVP, request to speak, notification, Stage creation or destructive retry
+runs during browsing.
+
+Evidence is synthetic protocol/model/reducer/native-egui tests and loopback HTTP/voice
+fixtures. These fixtures do **not** establish normal-account route acceptance, real
+Stage server negotiation, physical microphone/speaker behavior or agreement with the
+owner-supplied Stable 641004 (`c9ac31f`), host 1.0.9262 x64 (`94186`) client. No live
+Discord/account/microphone traffic was used. These current capabilities supersede the
+historical “Stage unsupported” statements below; historical measurements remain historical.
+
+
 ## Game mentions (October 14, 2026)
 
 The native composer offers `@game`, a searchable game catalog and application references

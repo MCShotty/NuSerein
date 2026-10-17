@@ -247,8 +247,13 @@ impl Connection {
 		let gateway_reconnect = reconnect.clone();
 		let status_changed = Arc::new(tokio::sync::Notify::new());
 		let status_refresh = status_changed.clone();
+		let (community_fence, community_scope) = watch::channel(0u64);
 		let task=runtime.spawn(async move {
             let emit=move |event:Event| -> Result<(),Failure> {
+                if event.changes_access() || matches!(&event,Event::Disconnected|Event::Resumed|Event::Voice(client_core::voice::Event::TakenOver{..})) {
+                    community_fence.send_modify(|r|*r=r.wrapping_add(1));
+                    emit_event(&send,&typing_send,Envelope{generation,event:Event::CommunityFence(*community_fence.borrow())},&ctx)?;
+                }
                 if let Event::AccountSettings { status: true, .. } = &event { status_changed.notify_one(); }
                 if let Event::Typing(signal) = &event {
                     let active = active_typing.load(Ordering::Relaxed);
@@ -359,6 +364,8 @@ impl Connection {
                 // Preloads never cancel the open conversation's reads or each other; each kind
                 // keeps at most one in flight, so this list stays tiny.
                 let mut prefetches:Vec<AbortTask>=Vec::new();
+                let mut community_job:Option<AbortTask>=None;
+                let mut community_call:Option<(model::Id,u64,model::Id,u64)>=None;
                 let mut profile:Option<AbortTask>=None;
                 let mut profile_note:Option<AbortTask>=None;
 				let mut stream_preview:Option<AbortTask>=None;
@@ -453,6 +460,27 @@ impl Connection {
                                 if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                             }
                             let Some(command)=command else {break;};
+                            if let Command::Community {guild,request,fence,action,..} = &command {
+                                let (guild,request,fence)=(*guild,*request,*fence);
+                                let call=match action.as_ref(){model::community::Action::StageVoice{channel,call_request,..}|model::community::Action::GetStage{channel,call_request:Some(call_request)}=>Some((*channel,*call_request)),_=>None};
+                                if call.is_some_and(|call|voice_request.map(|(c,r,_)|(c,r))!=Some(call)) || *community_scope.borrow()!=fence || community_job.as_ref().is_some_and(|job|!job.0.is_finished()) {
+                                    emit(Event::Community(client_core::community::Event {guild,request,result:Err(Failure::ProtocolAt("Community action expired or is already pending; refresh to continue"))}))?;continue;
+                                }
+                                drop(community_job.take());
+                                community_call=call.map(|(c,r)|(guild,request,c,r));
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();let mut scope=community_scope.clone();
+                                community_job=Some(AbortTask(tokio::spawn(async move {
+                                    let event=tokio::select! {
+                                        biased;
+                                        _=async {loop {if *scope.borrow_and_update()!=fence {break;} if scope.changed().await.is_err(){break;}}}=>return,
+                                        event=api.execute(command)=>event,
+                                    };
+                                    let failure=match &event {Event::Community(client_core::community::Event{result:Err(f),..}) if f.ends_session()=>Some(*f),_=>None};
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
                             if matches!(command,Command::CancelSearch) {drop(search.take());continue;}
                             if matches!(command,Command::CancelGifs) {drop(gifs.take());continue;}
                             if matches!(command,Command::GifFavorites{..}) {
@@ -608,6 +636,10 @@ impl Connection {
                             }
 							if let Command::Voice(control)=command {
                                 use client_core::voice::{Command as V,Event as E};
+                                if matches!(control,V::Join{..}|V::Leave{..}|V::AbandonSession{..}) && let Some((guild,request,_,_))=community_call.take() {
+                                    drop(community_job.take());
+                                    emit(Event::Community(client_core::community::Event{guild,request,result:Err(Failure::Ambiguous)}))?;
+                                }
                                 let (channel,request)=match control {V::AbandonSession{channel,request}|V::ConfirmSession{channel,request,..}|V::Join{channel,request,..}|V::Ring{channel,request}|V::Leave{channel,request}|V::SetMute{channel,request,..}|V::SetCamera{channel,request,..}=>(channel,request),V::Decline{channel}=>(channel,0),V::RingRecipient{..}|V::Sync{..}|V::StartStream{..}|V::StopStream{..}|V::WatchStream{..}|V::StopWatching{..}=>unreachable!("sync and stream actions routed above")};
                                 if let V::AbandonSession{channel,request}=control {
                                     let owner=voice_request.map(|(channel,request,_)|(channel,request));
@@ -3082,6 +3114,7 @@ mod tests {
 			negotiation_revision: None,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			muted: false,
 			deafened: false,
 			video: false,
@@ -3159,6 +3192,7 @@ mod tests {
 				negotiation_revision: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted,
 				deafened: muted,
 				video,
@@ -3450,6 +3484,7 @@ mod tests {
 				negotiation_revision: Some(1),
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted: false,
 				deafened: false,
 				video: false,
@@ -3571,6 +3606,7 @@ mod tests {
 				negotiation_revision: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted: false,
 				deafened: false,
 				video: false,
@@ -3766,6 +3802,7 @@ mod tests {
 				negotiation_revision: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted,
 				deafened: muted,
 				video,
@@ -3799,6 +3836,7 @@ mod tests {
 			negotiation_revision: None,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			muted: false,
 			deafened: false,
 			video: false,

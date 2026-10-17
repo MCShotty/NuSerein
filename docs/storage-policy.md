@@ -1,5 +1,23 @@
 # Local storage policy and audit
 
+
+## Scheduled events and Stage session state (October 17, 2026)
+
+Event lists, subscriptions, recurrence exceptions, Stage topics, audience roles and
+unfinished event/occurrence/topic drafts stay in session RAM; no SQLite schema,
+credential-store entry, recording or history cache is added. One community request
+and one cancellable worker are retained. Event data is capped at 100 events / 768 KiB,
+64 exceptions per event, 400 subscription records and a 1 MiB wire response. Reads
+retire when their view closes; an in-flight write can settle without reopening it.
+Session/access invalidation retires correlation, and an uncertain write requires
+an explicit scoped refresh instead of an automatic repeat. Drafts survive service
+errors and are cleared with their owning account generation. Stage microphone
+consent is session/call scoped and never persisted. Its authorization revision
+fences queued PCM across demotion, permission loss/return and reconnect. The existing
+4,096-entry / 1 MiB guild roster holds Stage audience metadata; only up to 63 remote
+audio sources allocate decoder/jitter/PCM working sets. No live filesystem/audio
+driver tracing was performed for this addition.
+
 ## Per-conversation reply and attachment staging (October 16, 2026)
 
 Leaving a conversation keeps its unsent reply target and staged files in session RAM for

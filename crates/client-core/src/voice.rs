@@ -4,6 +4,7 @@ use crate::{
 	auth::{AuthState, Failure},
 	screen,
 };
+pub use model::community::StageParticipation;
 use model::{Id, Member};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub const MAX_PARTICIPANTS: usize = 64;
@@ -35,7 +36,23 @@ impl fmt::Debug for Secret {
 		f.write_str("VoiceSecret([REDACTED])")
 	}
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MediaMode {
+	#[default]
+	Dave,
+	Stage,
+}
+impl MediaMode {
+	pub fn participant_limit(self) -> usize {
+		if self == Self::Stage {
+			MAX_ROSTER
+		} else {
+			MAX_PARTICIPANTS
+		}
+	}
+}
 pub struct VoiceConnection {
+	pub mode: MediaMode,
 	pub channel: Id,
 	pub guild: Option<Id>,
 	pub user: Id,
@@ -80,6 +97,7 @@ pub struct Participant {
 	pub deafened: bool,
 	pub server_muted: bool,
 	pub server_deafened: bool,
+	pub stage: StageParticipation,
 	/// Camera on (`self_video`); frames arrive on the call transport.
 	pub video: bool,
 	/// Go Live screen share announced (`self_stream`); viewing needs an explicit watch.
@@ -113,9 +131,15 @@ pub struct Call {
 	pub channel: Id,
 	pub guild: Option<Id>,
 	pub connected_at: Option<Instant>,
+	/// Changes even if audience/speaker transitions coalesce before a media poll.
+	pub stage_revision: u64,
+	pub media_mode: MediaMode,
+	/// Only an explicit accept/become-speaker action may authorize a microphone in a Stage.
+	pub stage_consent: bool,
 	pub channel_started_at: Option<Instant>,
 	pub server_muted: bool,
 	pub server_deafened: bool,
+	pub stage: StageParticipation,
 	pub request: u64,
 	pub phase: Phase,
 	pub muted: bool,
@@ -130,6 +154,13 @@ pub struct Call {
 	pub reconnecting: Option<(u8, &'static str)>,
 }
 impl Call {
+	pub fn stage_role(&self) -> StageParticipation {
+		if self.stage == StageParticipation::Speaker && !self.stage_consent {
+			StageParticipation::Invited
+		} else {
+			self.stage
+		}
+	}
 	/// Discord's microphone indicator: deafening always reads (and is sent) as muted.
 	pub fn self_muted(&self) -> bool {
 		self.muted || self.deafened
@@ -318,6 +349,7 @@ pub enum Event {
 		member: Option<Box<Member>>,
 		server_muted: bool,
 		server_deafened: bool,
+		stage: StageParticipation,
 		request: Option<u64>,
 		channel: Option<Id>,
 		user: Id,
@@ -505,13 +537,25 @@ impl ClientState {
 			channel,
 			model::permissions::VIEW_CHANNEL | model::permissions::CONNECT,
 		) == Some(true)
-			&& self.channels.iter().any(|c| {
-				c.id == channel
-					&& ((c.guild.is_some() && c.kind == 2)
-						|| (c.guild.is_none()
-							&& ((c.kind == 1 && c.recipients.len() == 1)
-								|| (c.kind == 3 && c.recipients.len() < MAX_PARTICIPANTS))))
-			})
+			&& self
+				.voice
+				.active
+				.as_ref()
+				.filter(|c| c.channel == channel)
+				.is_none_or(|call| {
+					call.media_mode
+						== if self.is_stage(channel) {
+							MediaMode::Stage
+						} else {
+							MediaMode::Dave
+						}
+				}) && self.channels.iter().any(|c| {
+			c.id == channel
+				&& ((c.guild.is_some() && matches!(c.kind, 2 | 13))
+					|| (c.guild.is_none()
+						&& ((c.kind == 1 && c.recipients.len() == 1)
+							|| (c.kind == 3 && c.recipients.len() < MAX_PARTICIPANTS))))
+		})
 	}
 	fn dm_call_participant(&self, channel: Id, user: Id) -> bool {
 		self.channel(channel).is_some_and(|c| {
@@ -522,7 +566,9 @@ impl ClientState {
 		})
 	}
 	pub fn can_camera(&self, channel: Id) -> bool {
-		self.can_call(channel) && self.permission(channel, model::permissions::STREAM) == Some(true)
+		self.can_call(channel)
+			&& (!self.is_stage(channel) || self.can_speak(channel))
+			&& self.permission(channel, model::permissions::STREAM) == Some(true)
 	}
 	pub fn start_call(&mut self, channel: Id, ring: bool) -> Option<crate::Command> {
 		self.start_call_with_mute(channel, ring, false, false)
@@ -538,6 +584,11 @@ impl ClientState {
 			return None;
 		}
 		let guild = self.channel(channel)?.guild;
+		let media_mode = if self.is_stage(channel) {
+			MediaMode::Stage
+		} else {
+			MediaMode::Dave
+		};
 		let ring = ring && guild.is_none() && !self.voice.has_dm_call(channel);
 		let participants: Vec<_> = if guild.is_some() {
 			self.voice
@@ -549,15 +600,24 @@ impl ClientState {
 		} else {
 			self.voice.dm_participants(channel).to_vec()
 		};
-		if participants.len() >= MAX_PARTICIPANTS {
-			self.status = "Voice channel exceeds the 64 participant limit";
+		if participants.len() >= media_mode.participant_limit() {
+			self.status = "Voice channel exceeds the bounded participant limit";
 			return None;
 		}
 		let own = participants
 			.iter()
 			.find(|p| self.user.as_ref().is_some_and(|u| u.id == p.user));
-		let server_muted = own.is_some_and(|p| p.server_muted);
+		let server_muted = own.is_some_and(|p| {
+			p.server_muted
+				|| (media_mode == MediaMode::Dave
+					&& matches!(p.stage, StageParticipation::Audience { .. }))
+		});
 		let server_deafened = own.is_some_and(|p| p.server_deafened);
+		let stage = if self.is_stage(channel) {
+			StageParticipation::Audience { requested: false }
+		} else {
+			StageParticipation::Unknown
+		};
 		let muted = muted || !self.can_speak(channel);
 		self.voice.sequence = self.voice.sequence.wrapping_add(1);
 		let request = self.voice.sequence;
@@ -567,9 +627,13 @@ impl ClientState {
 			channel,
 			guild,
 			connected_at: None,
+			stage_revision: 0,
+			media_mode,
+			stage_consent: false,
 			channel_started_at: None,
 			server_muted,
 			server_deafened,
+			stage,
 			request,
 			phase: Phase::Connecting,
 			muted,
@@ -594,6 +658,20 @@ impl ClientState {
 	/// Joined media for `request` dropped; keep the call (and Discord's voice state) while the
 	/// desktop waits to rejoin. Media-dependent state ends with the old session.
 	pub fn reconnect_call(&mut self, request: u64, attempt: u8, reason: &'static str) {
+		if let Some(channel) = self
+			.voice
+			.active
+			.as_ref()
+			.filter(|c| c.request == request)
+			.map(|c| c.channel)
+		{
+			self.retire_community_call(channel, request);
+		}
+		let is_stage = self
+			.voice
+			.active
+			.as_ref()
+			.is_some_and(|call| self.is_stage(call.channel));
 		if let Some(call) = &mut self.voice.active
 			&& call.request == request
 			&& call.phase != Phase::Failed
@@ -602,6 +680,12 @@ impl ClientState {
 			call.camera = false;
 			call.watching = None;
 			call.reconnecting = Some((attempt, reason));
+			if is_stage {
+				call.stage = StageParticipation::Unknown;
+				call.stage_consent = false;
+				call.stage_revision = call.stage_revision.wrapping_add(1);
+				call.muted = true;
+			}
 		}
 	}
 	/// Rejoin the reconnecting call with a fresh Discord voice session, as Discord's client
@@ -615,11 +699,17 @@ impl ClientState {
 		{
 			return None;
 		}
-		let muted = call.muted || !self.can_speak(call.channel);
+		let is_stage = self.is_stage(call.channel);
+		let muted = call.muted || !self.can_speak(call.channel) || is_stage;
 		self.voice.sequence = self.voice.sequence.wrapping_add(1);
 		let request = self.voice.sequence;
 		let call = self.voice.active.as_mut()?;
 		call.request = request;
+		if is_stage {
+			call.stage = StageParticipation::Unknown;
+			call.stage_consent = false;
+			call.stage_revision = call.stage_revision.wrapping_add(1);
+		}
 		call.muted = muted;
 		Some(crate::Command::Voice(Command::Join {
 			channel: call.channel,
@@ -632,6 +722,7 @@ impl ClientState {
 	pub fn leave_call(&mut self) -> Option<crate::Command> {
 		self.voice.outgoing = None;
 		let call = self.voice.active.take()?;
+		self.retire_community_call(call.channel, call.request);
 		self.voice.ring_error = None;
 		self.voice.departed = None;
 		Some(crate::Command::Voice(Command::Leave {
@@ -925,6 +1016,7 @@ impl ClientState {
 				member,
 				server_muted,
 				server_deafened,
+				stage,
 				request,
 				channel,
 				user,
@@ -934,12 +1026,23 @@ impl ClientState {
 				streaming,
 				..
 			} => {
+				// Stale own states cannot alter either capture authorization or its roster source.
+				if self.user.as_ref().is_some_and(|u| u.id == user)
+					&& self
+						.voice
+						.active
+						.as_ref()
+						.is_some_and(|call| request != Some(call.request))
+				{
+					return;
+				}
 				let participant = Participant {
 					user,
 					muted,
 					deafened,
 					server_muted,
 					server_deafened,
+					stage,
 					video,
 					streaming,
 				};
@@ -1012,17 +1115,41 @@ impl ClientState {
 					return;
 				}
 				if self.user.as_ref().is_some_and(|u| u.id == user) {
-					call.server_muted = server_muted;
+					if call.media_mode == MediaMode::Stage
+						&& (call.server_muted != server_muted
+							|| call.server_deafened != server_deafened)
+					{
+						call.stage_revision = call.stage_revision.wrapping_add(1);
+						if server_muted || server_deafened {
+							call.stage_consent = false;
+							call.muted = true;
+							call.camera = false;
+						}
+					}
+					call.server_muted = server_muted
+						|| (call.media_mode == MediaMode::Dave
+							&& matches!(stage, StageParticipation::Audience { .. }));
 					call.server_deafened = server_deafened;
+					if call.media_mode == MediaMode::Stage && call.stage != stage {
+						call.stage_revision = call.stage_revision.wrapping_add(1);
+						call.stage = stage;
+						if stage != StageParticipation::Speaker {
+							call.stage_consent = false;
+							call.muted = true;
+							call.camera = false;
+						}
+					}
 				}
 				call.participants.retain(|p| p.user != user);
 				if channel == Some(call.channel) {
 					if self.user.as_ref().is_some_and(|own| own.id != user) {
 						self.voice.outgoing = None;
 					}
-					if call.participants.len() >= MAX_PARTICIPANTS {
-						self.disconnect_voice("Voice channel exceeds the 64 participant limit");
-						self.status = "Voice channel exceeds the 64 participant limit";
+					if call.participants.len() >= call.media_mode.participant_limit() {
+						self.disconnect_voice(
+							"Voice channel exceeds the bounded participant limit",
+						);
+						self.status = "Voice channel exceeds the bounded participant limit";
 						return;
 					}
 					call.participants.push(participant);
@@ -1085,11 +1212,9 @@ impl ClientState {
 	}
 	fn update_roster(&mut self, entry: RosterEntry) -> bool {
 		if !self.can_view(entry.channel)
-			|| !self
-				.channels
-				.iter()
-				.any(|c| c.id == entry.channel && c.guild == Some(entry.guild) && c.kind == 2)
-		{
+			|| !self.channels.iter().any(|c| {
+				c.id == entry.channel && c.guild == Some(entry.guild) && matches!(c.kind, 2 | 13)
+			}) {
 			return true;
 		}
 		self.voice
@@ -1128,8 +1253,31 @@ impl ClientState {
 				.iter()
 				.find(|p| self.user.as_ref().is_some_and(|u| u.id == p.user))
 			{
-				call.server_muted = own.server_muted;
+				if call.media_mode == MediaMode::Stage
+					&& (call.server_muted != own.server_muted
+						|| call.server_deafened != own.server_deafened)
+				{
+					call.stage_revision = call.stage_revision.wrapping_add(1);
+					if own.server_muted || own.server_deafened {
+						call.stage_consent = false;
+						call.muted = true;
+						call.camera = false;
+					}
+				}
+				call.server_muted = own.server_muted
+					|| (call.media_mode == MediaMode::Dave
+						&& matches!(own.stage, StageParticipation::Audience { .. }));
 				call.server_deafened = own.server_deafened;
+				if call.media_mode == MediaMode::Stage
+					&& call.stage == StageParticipation::Speaker
+					&& own.stage != StageParticipation::Speaker
+				{
+					call.stage = own.stage;
+					call.stage_consent = false;
+					call.stage_revision = call.stage_revision.wrapping_add(1);
+					call.muted = true;
+					call.camera = false;
+				}
 			}
 			if call
 				.watching
@@ -1137,8 +1285,8 @@ impl ClientState {
 			{
 				call.watching = None;
 			}
-			if call.participants.len() > MAX_PARTICIPANTS {
-				self.disconnect_voice("Voice channel exceeds the 64 participant limit");
+			if call.participants.len() > call.media_mode.participant_limit() {
+				self.disconnect_voice("Voice channel exceeds the bounded participant limit");
 			}
 		}
 	}
@@ -1261,6 +1409,7 @@ mod tests {
 						deafened: false,
 						server_muted: false,
 						server_deafened: false,
+						stage: Default::default(),
 						video: false,
 						streaming: true,
 					},
@@ -1476,6 +1625,7 @@ mod tests {
 					deafened: false,
 					server_muted: true,
 					server_deafened: false,
+					stage: Default::default(),
 					video: false,
 					streaming: false,
 				},
@@ -1561,6 +1711,7 @@ mod tests {
 				deafened: true,
 				server_muted: false,
 				server_deafened: true,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			});
@@ -1784,6 +1935,7 @@ mod tests {
 					deafened: false,
 					server_muted: false,
 					server_deafened: false,
+					stage: Default::default(),
 					video: false,
 					streaming: false,
 				},
@@ -1838,6 +1990,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			});
@@ -1994,6 +2147,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			});
@@ -2197,6 +2351,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			};
@@ -2225,6 +2380,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			});
@@ -2245,6 +2401,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			});
@@ -2359,6 +2516,7 @@ mod tests {
 						member: None,
 						server_muted: false,
 						server_deafened: false,
+						stage: Default::default(),
 						request: Some(request),
 						channel: (end == "peer-state").then_some(Id(2)),
 						user: if end == "peer-state" { Id(3) } else { Id(1) },
@@ -2378,6 +2536,7 @@ mod tests {
 							deafened: false,
 							server_muted: false,
 							server_deafened: false,
+							stage: Default::default(),
 							video: false,
 							streaming: false,
 						}]),

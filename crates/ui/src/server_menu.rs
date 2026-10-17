@@ -21,6 +21,7 @@ impl Dialog {
 #[derive(Default)]
 pub(super) struct ServerMenu {
 	pub settings_requested: Option<Id>,
+	pub events_requested: Option<Id>,
 	pub mark_read_requested: Option<Id>,
 	pub mark_all_read_requested: bool,
 	dialog: Option<Dialog>,
@@ -228,6 +229,10 @@ impl ServerMenu {
 						&& (state.demo || state.gateway_connected);
 					self.read_item(ui, state, guild);
 					ui.separator();
+					if ui.button("Server events").clicked() {
+						self.events_requested = Some(guild);
+						ui.close();
+					}
 					self.settings_item(ui, state, guild);
 					self.notifications_item(ui, state, guild);
 					if ui

@@ -4,6 +4,7 @@ pub mod archives;
 pub mod auth;
 pub mod captcha;
 pub mod channel_actions;
+pub mod community;
 pub mod fingerprint;
 pub mod forum;
 pub mod game_mentions;
@@ -73,6 +74,13 @@ pub const EVENT_SLOTS: usize = 8; // UI drain batch; reliable events share a 32 
 pub const COMMAND_SLOTS: usize = 16; // ordinary commands <=16 KiB; bulk DM settings <=33 KiB; channel edit <=128 KiB; group icon <=350 KiB
 
 pub enum Command {
+	Community {
+		guild: Id,
+		user: Id,
+		fence: u64,
+		request: u64,
+		action: Box<model::community::Action>,
+	},
 	Polls(polls::Request),
 	StickerPacks,
 	Sticker(Id),
@@ -441,6 +449,13 @@ fn prepare_navigation(
 	Ok(permission_state)
 }
 pub enum Event {
+	Community(community::Event),
+	CommunityChanged {
+		guild: Id,
+		channel: Option<Id>,
+		stage_ended: bool,
+	},
+	CommunityFence(u64),
 	Polls(polls::Event),
 	StickerEntitlement {
 		user: Id,
@@ -715,6 +730,7 @@ pub struct ReadingCursor {
 }
 
 pub struct State {
+	pub community: community::Community,
 	/// The signed-in account's Discord `premium_type`; 0 until READY reports one.
 	pub premium_type: u8,
 	pub stickers: stickers::Stickers,
@@ -954,6 +970,7 @@ enum Apply {
 impl Default for State {
 	fn default() -> Self {
 		Self {
+			community: Default::default(),
 			premium_type: 0,
 			stickers: Default::default(),
 			interactions: Default::default(),
@@ -1058,7 +1075,7 @@ impl Default for State {
 /// Channels the conversation pane can present: text, voice, and forum containers.
 fn navigable(channel: &Channel) -> bool {
 	channel.supports_text()
-		|| channel.kind == 2
+		|| matches!(channel.kind, 2 | 13)
 		|| (channel.guild.is_some() && matches!(channel.kind, 15 | 16))
 }
 impl State {
@@ -2108,6 +2125,16 @@ impl State {
 			);
 			return;
 		}
+		if let Command::Community { guild, request, .. } = command {
+			let _ = self.apply_community(community::Event {
+				guild,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Community action was not queued; try again",
+				)),
+			});
+			return;
+		}
 		if let Command::ServerAdmin { guild, request, .. } = command {
 			let _ = self.apply_server_admin(server_admin::Event {
 				guild,
@@ -2551,6 +2578,11 @@ impl State {
 		if envelope.generation != self.generation {
 			return;
 		}
+		if envelope.event.changes_access()
+			|| matches!(&envelope.event, Event::Disconnected | Event::Resumed)
+		{
+			self.community.invalidate();
+		}
 		if self.handle_private_message_event(&envelope.event) {
 			return;
 		}
@@ -2969,6 +3001,26 @@ impl State {
 			Event::ChannelAction(event) => self.apply_channel_action(event),
 			Event::ServerSettings(event) => self.apply_server_settings(event),
 			Event::Onboarding(event) => self.apply_onboarding(event),
+			Event::Community(event) => self.apply_community(event),
+			Event::CommunityFence(revision) => {
+				self.community.invalidate();
+				self.community.fence = revision;
+				Ok(())
+			}
+			Event::CommunityChanged {
+				guild,
+				channel,
+				stage_ended,
+			} => {
+				self.community.invalidate_metadata(guild, channel);
+				if stage_ended && let Some(channel) = channel {
+					self.stop_stage_participation(channel);
+					if self.community.stage_channel == Some(channel) {
+						self.community.stage = None;
+					}
+				}
+				Ok(())
+			}
 			Event::ServerAdmin(event) => self.apply_server_admin(event),
 			Event::GroupAction(event) => self.apply_group_action(event),
 			Event::ThreadsSync {
@@ -4052,6 +4104,7 @@ impl State {
 		}
 		if access_changed {
 			self.reconcile_permissions(previous_access);
+			self.prune_community();
 			if let Some(previous) = previous_member_list {
 				let current = self
 					.selected
@@ -4203,6 +4256,7 @@ impl State {
 			_ => {}
 		}
 		if failure.ends_session() {
+			self.community = Default::default();
 			self.reset_thread_starter();
 			self.application_commands.clear();
 			self.interrupt_stickers();
@@ -4354,6 +4408,10 @@ impl Event {
 					})
 				}
 				Self::Onboarding(event) => event.bytes(),
+				Self::Community(event) => event
+					.result
+					.as_ref()
+					.map_or(0, model::community::Outcome::bytes),
 				Self::ServerAdmin(event) => event
 					.result
 					.as_ref()
@@ -6446,6 +6504,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			},

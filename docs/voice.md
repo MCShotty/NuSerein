@@ -1,6 +1,6 @@
 # DM and server voice
 
-The standard build implements native audio calls in existing one-to-one and group Discord DMs and guild voice channels. It uses the owner's existing account, Discord signaling/voice servers, Opus and DAVE version 1. There is no bot, project relay, separate account, recording service or webview call UI. **Live Discord interoperability and physical microphone/speaker behavior have not been tested; milestone 4 has not passed.**
+The standard build implements native audio calls in existing one-to-one and group Discord DMs and guild voice and Stage channels. It uses the owner's existing account, Discord signaling/voice servers, Opus, DAVE version 1 for ordinary voice, and authenticated transport encryption for Stage audio. There is no bot, project relay, separate account, recording service or webview call UI. **Live Discord interoperability and physical microphone/speaker behavior have not been tested; milestone 4 has not passed.**
 
 ```sh
 cargo run --locked
@@ -9,6 +9,33 @@ cargo xtask package                     # standard artifact under dist
 ```
 
 Voice is included in every build without a feature flag. Source builds require CMake for bundled static libopus; Linux needs ALSA development headers. See [platform requirements](platform-support.md) and the [voice adapter README](../crates/discord-voice/README.md) for dependencies, exact resource limits and protocol tests.
+
+## Stage audience, speakers and reconnects (October 17, 2026)
+
+Stage channels use an explicit media mode selected from the current authenticated
+channel type. As specified by the [official DAVE scope](https://github.com/discord/dave-protocol/blob/1b2b706ad4a562ede5c2ef901f9d77f6dbe79446/protocol.md#introduction),
+Stages require authenticated transport encryption, with DAVE version 0. Ordinary
+voice and DM calls still require DAVE version 1, and a Stage allocation cannot
+change that requirement. The Stage UI states that Discord can process its audio;
+no end-to-end privacy code is displayed. Service acceptance remains unverified.
+
+Join audience never enables microphone opening, capture or transmission. A current
+voice state distinguishes audience, a pending request, invitation and speaker;
+missing suppression state grants nothing. Accept invitation or Become speaker is
+the explicit local consent gate, followed by a current service speaker state and
+normal SPEAK/USE_VAD/server mute checks. Decline, audience demotion, permission loss,
+Stage end, failed acceptance and a fresh-media reconnect retire consent and queued
+PCM generations. A signaling outage uses the existing bounded fresh-media rejoin
+path and returns to audience consent; ordinary voice WebSocket Resume is unchanged.
+
+Requests, moderator invitation/demotion and instance topic/create/end actions use
+current channel/call/account permissions and the bounded community worker. The
+audience metadata budget stays 4,096 entries / 1 MiB, independently of the 63 remote
+audio decoder/jitter resources. Authenticated speaking/source announcements admit
+those sources; the audience list does not allocate per-person audio handles. Member
+controls page 64 rows. No account or physical audio test follows from offline
+loopback AEAD/Opus and device-free generation tests. See the detailed [community
+compatibility and pinned references](discord-compatibility.md#scheduled-events-and-stage-channels--october-17-2026).
 
 ## Implemented behavior and limits
 
@@ -127,7 +154,7 @@ audio, leaving/rejoining while the peer stays, and disappearance after the peer 
 
 Mute/deafen, saved input/output selection and focused V push-to-talk are implemented. Remappable mute and deafen bindings use global native registration when supported and when a modifier is present; they fall back to focused input on Wayland or when registration is unavailable. Settings → Keybinds offers **Enable global keybinds**, saved on this device and enabled by default. Turning it off unregisters global voice shortcuts; mute, deafen and push-to-talk still work while Serein is focused, with the existing text-entry guards. Push-to-talk releases when focus is lost and is disabled while text entry has focus. It remains focused-only by default. Push to Mute is unassigned by default; once bound, holding it mutes the microphone during a call and releasing it restores the previous state, and it registers globally like push-to-talk. Voice and other remappable actions can also use mouse 3, 4 or 5, optionally with modifiers; left and right click cancel recording instead. A bound mouse button no longer starts middle-click autoscroll or back/forward navigation. Mouse bindings work while Serein is focused on every platform and, with global keybinds enabled, are polled globally on Windows only; macOS, X11 and the Wayland portal have no global mouse-button registration. Devices are initialized only following an explicit call with authenticated empty-room waiting or encrypted readiness, or an explicit local microphone test; no microphone test runs at startup. Acoustic echo cancellation follows the selected input profile; see below for its limits. A microphone that fails to open or start, reports a fatal callback error, or delivers no audio callbacks for five seconds is disabled with a visible warning. The call and speaker playback remain connected, and the client periodically retries microphone setup in the background while selecting another input immediately retries. Transient buffer discontinuities and non-fatal stream glitches do not disable the microphone. Ordinary silence does not trigger the warning. Selected speaker failures can fall back to the default output; an unusable output can still fail the call.
 
-One-to-one DM calls accept only their expected peer. Group DM and server calls support up to 64 total participants, with independent bounded decoder/jitter state and mixed mono playback. Only DAVE version 1 is accepted; encryption downgrades and group identities outside the authenticated participant roster fail closed. Stage channels and recording are unsupported. Outgoing screen sharing and macOS camera support is described below. Voice WebSocket resumption has a finite retry budget; failed voice resumption or a fresh main Gateway session requires an explicit new call. A transient main Gateway disconnect suspends controls and cancels pending call HTTP; successful Resume preserves confirmed DM call ownership. Voice credentials, ephemeral DAVE identities and audio stay in bounded session memory. The displayed privacy code applies to the current group epoch; identities are not remembered across calls. Comparing codes does not establish long-term identity verification or text-message encryption.
+One-to-one DM calls accept only their expected peer. Group DM and ordinary server voice calls support up to 64 total participants, with independent bounded decoder/jitter state and mixed mono playback. Ordinary voice accepts only DAVE version 1; encryption downgrades and group identities outside the authenticated participant roster fail closed. Stage mode and its separate audience/source bounds are described below. Recording is unsupported. Outgoing screen sharing and macOS camera support is described below. Voice WebSocket resumption has a finite retry budget; failed voice resumption or a fresh main Gateway session requires an explicit new call. A transient main Gateway disconnect suspends controls and cancels pending call HTTP; successful Resume preserves confirmed DM call ownership. Voice credentials, ephemeral DAVE identities and audio stay in bounded session memory. The displayed privacy code applies to the current group epoch; identities are not remembered across calls. Comparing codes does not establish long-term identity verification or text-message encryption.
 
 ## Group DM calls
 
@@ -169,7 +196,7 @@ implementation pass does not establish production readiness or physical media be
 |---|---|---|
 | DM entry, incoming call events and ringing | [discord.py-self Gateway](https://github.com/dolfies/discord.py-self/blob/master/discord/gateway.py), [dispatch](https://github.com/dolfies/discord.py-self/blob/master/discord/state.py), [HTTP](https://github.com/dolfies/discord.py-self/blob/master/discord/http.py): unofficial normal-user behavior | Real local WebSocket op13/op4 join/leave and local HTTP ring/decline tests; no Discord call |
 | Voice WebSocket, UDP discovery, RTP and codec negotiation | [Discord voice documentation](https://docs.discord.com/developers/topics/voice-connections): documented transport, not an approval of normal-user clients | Synthetic loopback voice event loop, authenticated RTP and Opus tests |
-| Required end-to-end encryption | [Discord DAVE protocol](https://daveprotocol.com/): documented; [Davey](https://github.com/Snazzah/davey): unofficial implementation, not an independent security-audit claim | Synthetic two-party MLS/DAVE exchange, tamper/replay rejection and encrypted audio across local sockets |
+| Required end-to-end encryption for ordinary voice | [Discord DAVE protocol](https://daveprotocol.com/): documented; [Davey](https://github.com/Snazzah/davey): unofficial implementation, not an independent security-audit claim | Synthetic two-party MLS/DAVE exchange, tamper/replay rejection and encrypted audio across local sockets |
 | Microphone, playback, resampling and devices | CPAL/native platform APIs | Device-free capture/resampling tests only; physical audio and permission dialogs unverified |
 
 The [compatibility matrix](discord-compatibility.md) distinguishes this from restricted OAuth/RPC capabilities. No OAuth voice grant or bot connection substitutes for the user's session.
