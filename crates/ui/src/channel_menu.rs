@@ -947,6 +947,8 @@ impl Dialog {
 			if topic.changed() {
 				self.draft.topic.shrink_to_fit();
 			}
+		}
+		if self.kind == Kind::Edit && matches!(channel.kind, 0 | 2 | 5 | 13) {
 			ui.add_space(14.0);
 			dialog::label(ui, "channel-menu-overview-slowmode");
 			crate::forum_settings::slowmode(ui, "slowmode", &mut self.draft.slowmode);
@@ -1486,6 +1488,133 @@ mod tests {
 			for pressed in [true, false] {
 				self.frame(ctx, pointer(pos, button, pressed));
 			}
+		}
+	}
+	#[test]
+	fn voice_and_stage_overviews_edit_message_controls_without_a_topic() {
+		fn frame(
+			ctx: &egui::Context,
+			dialog: &mut Dialog,
+			channel: &Channel,
+			events: Vec<Event>,
+		) -> Vec<(String, Rect)> {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 1000.0))),
+					events,
+					..Default::default()
+				},
+				|ui| dialog.overview(ui, channel),
+			);
+			let mut text = vec![];
+			for shape in &output.shapes {
+				labels(&shape.shape, &mut text);
+			}
+			output.drop_without_applying_deltas();
+			text
+		}
+		for kind in [2, 13] {
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			let state = test_support::chat_demo_state();
+			let mut channel = state.channel(Id(20)).unwrap().clone();
+			channel.kind = kind;
+			let before = Edit {
+				name: "Voice".into(),
+				voice: Some(Box::new(client_core::channel_actions::VoiceEdit {
+					bitrate: 64000,
+					user_limit: 0,
+					region: None,
+					video_quality: 1,
+					regions: vec![],
+				})),
+				..Default::default()
+			};
+			let mut dialog = Dialog {
+				channel: channel.id,
+				guild: Id(10),
+				kind: Kind::Edit,
+				create_kind: CreateKind::Text,
+				draft: before.clone(),
+				before,
+				loaded: true,
+				submitted: false,
+				page: Page::Overview,
+				integrations: crate::server_integrations::IntegrationsUi::for_channel(channel.id),
+				integrations_opened: false,
+				discard: false,
+				permissions: Default::default(),
+				forum: Default::default(),
+			};
+			let text = frame(&ctx, &mut dialog, &channel, vec![]);
+			assert!(
+				!text
+					.iter()
+					.any(|(text, _)| text == &crate::i18n::translate("channel-menu-overview-topic"))
+			);
+			assert!(
+				text.iter()
+					.any(|(text, _)| text
+						== &crate::i18n::translate("channel-menu-overview-slowmode"))
+			);
+			let switch = text
+				.iter()
+				.find(|(text, _)| {
+					text == &crate::i18n::translate("channel-menu-overview-age-restricted-channel")
+				})
+				.unwrap()
+				.1
+				.center();
+			for pressed in [true, false] {
+				frame(
+					&ctx,
+					&mut dialog,
+					&channel,
+					pointer(switch, PointerButton::Primary, pressed),
+				);
+			}
+			assert!(dialog.draft.nsfw);
+			let text = frame(&ctx, &mut dialog, &channel, vec![]);
+			let combo = text
+				.iter()
+				.find(|(text, _)| text == &crate::i18n::translate("forum-settings-module-off"))
+				.unwrap()
+				.1
+				.center();
+			for pressed in [true, false] {
+				frame(
+					&ctx,
+					&mut dialog,
+					&channel,
+					pointer(combo, PointerButton::Primary, pressed),
+				);
+			}
+			let text = frame(&ctx, &mut dialog, &channel, vec![]);
+			let step = text
+				.iter()
+				.find(|(text, _)| {
+					text == &crate::i18n::translate("forum-settings-module-10-seconds")
+				})
+				.unwrap()
+				.1
+				.center();
+			for pressed in [true, false] {
+				frame(
+					&ctx,
+					&mut dialog,
+					&channel,
+					pointer(step, PointerButton::Primary, pressed),
+				);
+			}
+			assert_eq!(dialog.draft.slowmode, 10);
+			assert!(dialog.draft.topic.is_empty());
+			assert!(
+				Action::Edit {
+					before: dialog.before,
+					after: dialog.draft
+				}
+				.valid()
+			);
 		}
 	}
 	#[test]

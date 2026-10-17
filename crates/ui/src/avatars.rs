@@ -430,6 +430,7 @@ impl Avatars {
 			|| key.starts_with("spotify-")
 			|| key.starts_with("banner-")
 			|| key.starts_with("member-banner-")
+			|| key.starts_with("guide-header-")
 		{
 			EMBED_EDGE as usize
 		} else if key.starts_with("emoji-unicode-") {
@@ -1716,6 +1717,31 @@ fn synthetic_gif(gif: &model::Gif) -> ColorImage {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn guide_headers_admit_prepared_artwork_with_the_existing_bounded_image_budget() {
+		use super::*;
+		let ctx = egui::Context::default();
+		let mut avatars = Avatars::default();
+		for (key, size, accepted) in [
+			("guide-header-1-valid", [512, 171], true),
+			(
+				"guide-header-1-oversize",
+				[EMBED_EDGE as usize + 1, 1],
+				false,
+			),
+			("default-0", [512, 171], false),
+		] {
+			avatars.request(key.into());
+			avatars.accept(
+				&ctx,
+				key.into(),
+				Some(ColorImage::filled(size, egui::Color32::WHITE)),
+			);
+			assert_eq!(avatars.texture_id(key).is_some(), accepted);
+		}
+		assert_eq!(avatars.bytes, 512 * 171 * 4);
+	}
+
 	#[test]
 	fn malformed_placeholders_keep_attempts_bounded_and_leave_room_for_real_images() {
 		use super::*;

@@ -558,12 +558,11 @@ impl State {
 		if overview && !self.can_manage_channel(channel) {
 			return false;
 		}
-		if (before.topic != after.topic
-			|| before.slowmode != after.slowmode
-			|| before.nsfw != after.nsfw)
-			&& !self
-				.channel(channel)
-				.is_some_and(|c| matches!(c.kind, 0 | 5 | 15 | 16))
+		if before.topic != after.topic && !matches!(kind, Some(0 | 5 | 15 | 16)) {
+			return false;
+		}
+		if (before.slowmode != after.slowmode || before.nsfw != after.nsfw)
+			&& !matches!(kind, Some(0 | 2 | 5 | 13 | 15 | 16))
 		{
 			return false;
 		}
@@ -1961,6 +1960,43 @@ mod tests {
 #[cfg(test)]
 mod voice_edit_tests {
 	use super::*;
+	#[test]
+	fn voice_and_stage_message_controls_require_management_and_keep_topics_text_only() {
+		for kind in [2, 13] {
+			for bits in [0, MANAGE_CHANNELS] {
+				let mut state = crate::community_admin::tests::state(bits);
+				state
+					.channels
+					.iter_mut()
+					.find(|c| c.id == Id(10))
+					.unwrap()
+					.kind = kind;
+				let before = Edit {
+					name: "Voice".into(),
+					..Default::default()
+				};
+				let mut after = before.clone();
+				after.nsfw = true;
+				after.slowmode = 21600;
+				assert_eq!(
+					state.channel_edit_allowed(Id(10), &before, &after),
+					bits != 0
+				);
+				assert!(
+					Action::Edit {
+						before: before.clone(),
+						after: after.clone()
+					}
+					.valid()
+				);
+				after.topic = "Text channel topic".into();
+				assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+				after.topic.clear();
+				after.slowmode = 21601;
+				assert!(!Action::Edit { before, after }.valid());
+			}
+		}
+	}
 	#[test]
 	fn voice_and_stage_limits_and_channel_management_are_admitted_locally() {
 		let mut state = crate::community_admin::tests::state(MANAGE_CHANNELS);

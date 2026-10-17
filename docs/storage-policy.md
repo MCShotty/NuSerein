@@ -1919,3 +1919,5 @@ independently bounded copies. At most five member completion intents are retaine
 message transcript. Guide image preparation uses the existing single-slot cancellable native
 picker and never retains its source file path after preparation. Prepared PNGs are limited to
 256 KiB, and draft artwork is discarded with the settings session. None of this data is persisted.
+Welcome-author display borrows existing bounded member, profile and friend state and adds no
+author cache or user lookup worker. Unknown authors remain ID-backed placeholders.
