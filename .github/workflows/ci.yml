@@ -1,7 +1,7 @@
 name: native-client
 on:
   push:
-    branches: [main, comparison/ffmpeg-video-and-reliability]
+    branches: [main, comparison/ffmpeg-video-and-reliability, integration/desktop-parity-20261017]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 concurrency:
