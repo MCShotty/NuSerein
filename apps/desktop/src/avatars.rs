@@ -1819,6 +1819,7 @@ fn resize_to(image: image::RgbaImage, fit: u32) -> image::RgbaImage {
 /// The opening picture of a clip: the still for provider video Discord cannot proxy, and for a
 /// clip too long to decode whole.
 fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
+	use platform::video::ffmpeg::Sample;
 	let started = Instant::now();
 	let bytes: Arc<[u8]> = bytes.into();
 	let mut decoder = open_preview_decoder(bytes, started)?;
@@ -1828,15 +1829,10 @@ fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
 				let _ = decoder.poll_audio();
 				std::thread::sleep(Duration::from_millis(2));
 			}
-			Ok(std::task::Poll::Ready(Some(platform::video::Sample::Video {
-				picture, ..
-			}))) => {
-				let (width, height, rgba) = picture.to_rgba()?;
-				let pixels = (width as usize).checked_mul(height as usize)?;
-				if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
-					return None;
-				}
-				let image = resize_to(image::RgbaImage::from_raw(width, height, rgba)?, fit);
+			Ok(std::task::Poll::Ready(Some(
+				sample @ (Sample::Video { .. } | Sample::Picture { .. }),
+			))) => {
+				let (_, image) = preview_image(sample, fit)?;
 				return Some(egui::ColorImage::from_rgba_unmultiplied(
 					[image.width() as usize, image.height() as usize],
 					image.as_raw(),
@@ -1849,15 +1845,68 @@ fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
 	None
 }
 
-fn open_preview_decoder(bytes: Arc<[u8]>, started: Instant) -> Option<platform::video::Decoder> {
-	let source = Box::new(Cursor::new(bytes));
-	#[cfg(target_os = "linux")]
-	let decoder = platform::video::Decoder::open_until(source, started + Duration::from_secs(3));
-	#[cfg(not(target_os = "linux"))]
-	let decoder = platform::video::Decoder::open(source);
-	decoder
-		.ok()
-		.filter(|_| started.elapsed() < Duration::from_secs(3))
+fn open_preview_decoder(
+	bytes: Arc<[u8]>,
+	started: Instant,
+) -> Option<platform::video::ffmpeg::AttachmentDecoder> {
+	let deadline = started + Duration::from_secs(3);
+	let source = Box::new(PreviewSource {
+		bytes: Cursor::new(bytes),
+		deadline,
+	});
+	platform::video::ffmpeg::AttachmentDecoder::open_until(source, deadline).ok()
+}
+
+/// Stop native probing and packet reads when the preview's existing work deadline expires.
+struct PreviewSource {
+	bytes: Cursor<Arc<[u8]>>,
+	deadline: Instant,
+}
+impl PreviewSource {
+	fn check_deadline(&self) -> io::Result<()> {
+		if Instant::now() >= self.deadline {
+			Err(io::ErrorKind::TimedOut.into())
+		} else {
+			Ok(())
+		}
+	}
+}
+impl Read for PreviewSource {
+	fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+		self.check_deadline()?;
+		self.bytes.read(output)
+	}
+}
+impl io::Seek for PreviewSource {
+	fn seek(&mut self, position: io::SeekFrom) -> io::Result<u64> {
+		self.check_deadline()?;
+		self.bytes.seek(position)
+	}
+}
+
+fn preview_image(
+	sample: platform::video::ffmpeg::Sample,
+	fit: u32,
+) -> Option<(f64, image::RgbaImage)> {
+	use platform::video::ffmpeg::Sample;
+	match sample {
+		Sample::Picture { pts, frame } => {
+			let (width, height, rgba) = frame.thumbnail(fit).ok()?;
+			Some((pts, image::RgbaImage::from_raw(width, height, rgba)?))
+		}
+		Sample::Video { pts, picture } => {
+			let (width, height, rgba) = picture.to_rgba()?;
+			let pixels = (width as usize).checked_mul(height as usize)?;
+			if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
+				return None;
+			}
+			Some((
+				pts,
+				resize_to(image::RgbaImage::from_raw(width, height, rgba)?, fit),
+			))
+		}
+		Sample::Audio { .. } => None,
+	}
 }
 
 fn decode_motion_video(
@@ -1865,6 +1914,7 @@ fn decode_motion_video(
 	budget: &FrameBudget,
 	first: impl Fn(&egui::ColorImage),
 ) -> Option<ui::GifFrames> {
+	use platform::video::ffmpeg::Sample;
 	let started = Instant::now();
 	let mut fit = budget.fit;
 	let mut shrinks = budget.shrinks;
@@ -1888,22 +1938,15 @@ fn decode_motion_video(
 					let _ = decoder.poll_audio();
 					std::thread::sleep(Duration::from_millis(2));
 				}
-				Ok(std::task::Poll::Ready(Some(platform::video::Sample::Video {
-					pts,
-					picture,
-				}))) => {
-					// Clip frames are resized and cached once, so the CPU conversion stays.
-					let (width, height, rgba) = picture.to_rgba()?;
-					let pixels = (width as usize).checked_mul(height as usize)?;
-					if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
-						return None;
-					}
+				Ok(std::task::Poll::Ready(Some(
+					sample @ (Sample::Video { .. } | Sample::Picture { .. }),
+				))) => {
 					if !index.is_multiple_of(stride) {
 						index += 1;
 						continue;
 					}
-					let image = image::RgbaImage::from_raw(width, height, rgba)?;
-					let image = resize_to(image, fit);
+					// Clip frames are resized and cached once, so the CPU conversion stays.
+					let (pts, image) = preview_image(sample, fit)?;
 					let frame_bytes = image.width() as usize * image.height() as usize * 4;
 					// accept_frames also keeps one playback texture the size of this frame.
 					if total + 2 * frame_bytes > budget.bytes && shrinks > 0 {
@@ -3070,6 +3113,66 @@ mod tests {
 				.is_none()
 			);
 		}
+	}
+
+	#[test]
+	fn video_previews_use_ffmpeg_with_bounded_frames_and_deadlines() {
+		let bytes = include_bytes!("../tests/fixtures/video.mov").as_slice();
+		assert!(matches!(
+			open_preview_decoder(Arc::from(bytes), Instant::now()).unwrap(),
+			platform::video::ffmpeg::AttachmentDecoder::Ffmpeg(_)
+		));
+		let image = first_video_frame(bytes, 64).expect("video poster");
+		assert!(image.size.into_iter().all(|side| (1..=64).contains(&side)));
+		let budget = FrameBudget {
+			fit: 64,
+			count: 10,
+			..FrameBudget::legacy(64)
+		};
+		let posted = std::sync::atomic::AtomicUsize::new(0);
+		let frames = decode_animation(bytes, &budget, |_| {
+			posted.fetch_add(1, Ordering::Relaxed);
+		})
+		.expect("looping video preview");
+		assert_eq!(posted.load(Ordering::Relaxed), 1);
+		assert!((2..=budget.count).contains(&frames.len()));
+		assert!(frames.iter().all(|(delay, image)| {
+			!delay.is_zero() && image.size.into_iter().all(|side| (1..=64).contains(&side))
+		}));
+		assert!(
+			frames
+				.iter()
+				.map(|(_, image)| image.pixels.len() * 4)
+				.sum::<usize>()
+				<= budget.bytes
+		);
+		assert!(
+			(frames
+				.iter()
+				.map(|(delay, _)| delay.as_secs_f64())
+				.sum::<f64>()
+				- 3.0)
+				.abs() < 0.1
+		);
+		assert!(
+			open_preview_decoder(Arc::from(bytes), Instant::now() - Duration::from_secs(4))
+				.is_none()
+		);
+		assert!(first_video_frame(b"broken video", 64).is_none());
+		let mut expired = PreviewSource {
+			bytes: Cursor::new(Arc::from(bytes)),
+			deadline: Instant::now(),
+		};
+		assert_eq!(
+			expired.read(&mut [0; 1]).unwrap_err().kind(),
+			io::ErrorKind::TimedOut
+		);
+		assert_eq!(
+			io::Seek::seek(&mut expired, io::SeekFrom::Start(0))
+				.unwrap_err()
+				.kind(),
+			io::ErrorKind::TimedOut
+		);
 	}
 
 	#[test]

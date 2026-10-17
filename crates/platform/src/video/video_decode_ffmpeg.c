@@ -21,6 +21,115 @@
 #define SEREIN_MAX_UNIT ((size_t)8 * 1024 * 1024 + 65536)
 #define SEREIN_MAX_PICTURE ((size_t)7680 * 4320 * 4)
 
+/* Standalone attachment audio keeps the existing bounded Rust demuxer. Native
+ * code sees codec headers and packets only, never a URL or a file path. */
+typedef struct SereinAudio {
+    AVCodecContext *codec;
+    AVFrame *frame;
+    AVPacket *packet;
+    SwrContext *resample;
+    enum AVSampleFormat format;
+    uint32_t rate, channels;
+} SereinAudio;
+
+void serein_audio_close(void *pointer)
+{
+    SereinAudio *audio = pointer;
+    if (!audio) return;
+    swr_free(&audio->resample);
+    av_packet_free(&audio->packet);
+    av_frame_free(&audio->frame);
+    avcodec_free_context(&audio->codec);
+    free(audio);
+}
+
+int serein_audio_open(const char *name, uint32_t rate, uint32_t channels,
+                      const uint8_t *extra, size_t extra_size, void **output)
+{
+    if (!output) return -1;
+    *output = NULL;
+    if (!name || rate < 8000 || rate > 96000 || channels < 1 || channels > 2 ||
+        extra_size > 65536 + 64 || (extra_size && !extra)) return -1;
+    const AVCodec *implementation = avcodec_find_decoder_by_name(name);
+    if (!implementation) return 0;
+    if (implementation->type != AVMEDIA_TYPE_AUDIO) return -1;
+    SereinAudio *audio = calloc(1, sizeof(*audio));
+    if (!audio) return -1;
+    audio->rate = rate;
+    audio->channels = channels;
+    audio->format = AV_SAMPLE_FMT_NONE;
+    audio->codec = avcodec_alloc_context3(implementation);
+    audio->frame = av_frame_alloc();
+    audio->packet = av_packet_alloc();
+    if (!audio->codec || !audio->frame || !audio->packet) goto failed;
+    audio->codec->sample_rate = (int)rate;
+    av_channel_layout_default(&audio->codec->ch_layout, (int)channels);
+    audio->codec->thread_count = 1;
+    audio->codec->max_samples = 65536;
+    /* Rust applies demuxer gapless trims and Opus pre-skip exactly once. */
+    audio->codec->flags2 |= AV_CODEC_FLAG2_SKIP_MANUAL;
+    if (extra_size) {
+        audio->codec->extradata = av_mallocz(extra_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!audio->codec->extradata) goto failed;
+        memcpy(audio->codec->extradata, extra, extra_size);
+        audio->codec->extradata_size = (int)extra_size;
+    }
+    if (avcodec_open2(audio->codec, implementation, NULL) < 0 ||
+        audio->codec->sample_rate != (int)rate ||
+        audio->codec->ch_layout.nb_channels != (int)channels) goto failed;
+    *output = audio;
+    return 1;
+failed:
+    serein_audio_close(audio);
+    return -1;
+}
+
+int serein_audio_decode(void *pointer, const uint8_t *packet, size_t bytes,
+                        float *output, size_t capacity, size_t *written)
+{
+    SereinAudio *audio = pointer;
+    if (!audio || !output || !written || capacity < 65536 * audio->channels ||
+        bytes > 1024 * 1024 || (bytes && !packet)) return -1;
+    *written = 0;
+    av_packet_unref(audio->packet);
+    if (bytes) {
+        if (av_new_packet(audio->packet, (int)bytes) < 0) return -1;
+        memcpy(audio->packet->data, packet, bytes);
+    }
+    const int sent = avcodec_send_packet(audio->codec, bytes ? audio->packet : NULL);
+    av_packet_unref(audio->packet);
+    if (sent < 0) return -1;
+    for (int step = 0; step < 64; step++) {
+        const int result = avcodec_receive_frame(audio->codec, audio->frame);
+        if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) return 1;
+        if (result < 0) return -1;
+        AVFrame *frame = audio->frame;
+        if (frame->nb_samples < 0 || frame->nb_samples > 65536 ||
+            frame->sample_rate != (int)audio->rate ||
+            frame->ch_layout.nb_channels != (int)audio->channels ||
+            !av_channel_layout_check(&frame->ch_layout) ||
+            av_get_bytes_per_sample((enum AVSampleFormat)frame->format) <= 0) return -1;
+        if (audio->resample && audio->format != frame->format) return -1;
+        if (!audio->resample) {
+            audio->format = (enum AVSampleFormat)frame->format;
+            if (swr_alloc_set_opts2(&audio->resample, &frame->ch_layout, AV_SAMPLE_FMT_FLT,
+                    (int)audio->rate, &frame->ch_layout, audio->format, (int)audio->rate,
+                    0, NULL) < 0 || swr_init(audio->resample) < 0) return -1;
+        }
+        const size_t remaining = capacity - *written;
+        if ((size_t)frame->nb_samples > remaining / audio->channels) return -1;
+        uint8_t *planes[] = {(uint8_t *)(output + *written)};
+        const int samples = swr_convert(audio->resample, planes,
+            (int)(remaining / audio->channels), (const uint8_t **)frame->extended_data,
+            frame->nb_samples);
+        /* No rate conversion: retain neither a hidden tail nor unbounded PCM. */
+        if (samples != frame->nb_samples || swr_get_delay(audio->resample, audio->rate)) return -1;
+        *written += (size_t)samples * audio->channels;
+        av_frame_unref(frame);
+    }
+    return -1;
+}
+
 typedef struct SereinDecoder {
     AVCodecContext *codec;
     AVCodecContext *header_codec;

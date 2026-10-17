@@ -61,21 +61,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let mut decoder = fallback::open(
 		Box::new(std::io::Cursor::new(bytes)),
 		&AtomicBool::new(false),
+		None,
 	)?;
-	assert!(matches!(
-		decoder.read_video()?,
-		Some(platform::video::Sample::Video { .. })
-	));
+	first_video(&mut decoder)?;
 	let mut mov = fallback::open(
 		Box::new(std::io::Cursor::new(include_bytes!(
 			"../tests/fixtures/video.mov"
 		))),
 		&AtomicBool::new(false),
+		None,
 	)?;
-	assert!(matches!(
-		mov.read_video()?,
-		Some(platform::video::Sample::Video { .. })
-	));
+	first_video(&mut mov)?;
 	assert!(fallback::eligible(platform::video::TOO_LARGE));
 	assert!(fallback::eligible(platform::video::INVALID));
 	assert!(!fallback::eligible(platform::video::TOO_LONG));
@@ -98,15 +94,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 	let mut native = platform::video::Decoder::open(Box::new(std::io::Cursor::new(bytes)))?;
 	let mut packets = 0;
-	while let Some(platform::video::Sample::Audio { pts, frames }) = native.read_audio()? {
-		assert!(pts.is_finite() && !frames.is_empty());
-		packets += 1;
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+	loop {
+		assert!(
+			std::time::Instant::now() < deadline,
+			"Synthetic AAC decode timed out"
+		);
+		match native.poll_audio()? {
+			std::task::Poll::Ready(Some(platform::video::Sample::Audio { pts, frames })) => {
+				assert!(pts.is_finite() && !frames.is_empty());
+				packets += 1;
+			}
+			std::task::Poll::Ready(None) => break,
+			std::task::Poll::Pending => {
+				let _ = native.poll_video()?;
+				std::thread::sleep(std::time::Duration::from_millis(5));
+			}
+			std::task::Poll::Ready(Some(_)) => {}
+		}
 	}
 	assert!(packets > 100);
 	println!(
 		"Synthetic WebM/MOV conversion, fallback selection, and AAC with a separate media clock passed."
 	);
 	Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn first_video(
+	decoder: &mut platform::video::ffmpeg::AttachmentDecoder,
+) -> Result<(), Box<dyn std::error::Error>> {
+	use platform::video::ffmpeg::Sample;
+	use std::{
+		task::Poll,
+		time::{Duration, Instant},
+	};
+	let deadline = Instant::now() + Duration::from_secs(10);
+	while Instant::now() < deadline {
+		match decoder.poll_video()? {
+			Poll::Ready(Some(Sample::Picture { .. } | Sample::Video { .. })) => return Ok(()),
+			Poll::Ready(None) => {
+				return Err("Synthetic video ended before its first picture".into());
+			}
+			Poll::Pending => {
+				let _ = decoder.poll_audio()?;
+				std::thread::sleep(Duration::from_millis(5));
+			}
+			Poll::Ready(Some(Sample::Audio { .. })) => {}
+		}
+	}
+	Err("Synthetic video picture timed out".into())
 }
 
 #[cfg(not(target_os = "macos"))]

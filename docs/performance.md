@@ -1476,3 +1476,38 @@ revision/platform; MiB = 1,048,576 bytes. Other native platforms remain pending.
 | Linux-X64 / executable | 83.682 | 87.900 | 88.037 | +0.137 (+0.16%) |
 | Linux-X64 / installed payload | 88.006 | 130.657 | 130.795 | +0.137 (+0.11%) |
 | Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.614 | +0.061 (+0.07%) |
+
+## FFmpeg media playback — October 17, 2026
+
+The audio/preview change starts from fork main `f9e39f7`. A native component
+comparison uses that revision's Cargo-built libopus static library versus the
+new `serein_audio_open/decode/close` wrapper and the existing pinned FFmpeg build.
+Both consume the same 151 packets from the original three-second mono Opus
+fixture at 48 kHz, recreating the decoder 200 times per sample. The temporary C
+harness uses GCC `-O3 -DNDEBUG`; the shared Linux worker has a Xeon Platinum
+8573C, five available CPUs and a 16 GiB memory limit. One warmup precedes five
+alternating measured runs per backend; elapsed time uses `CLOCK_MONOTONIC`.
+Other workspace compilation was running, so these are indicative component
+measurements, not isolated native application benchmarks.
+
+| Metric / method | `f9e39f7` libopus path | FFmpeg packet path | Delta |
+| --- | ---: | ---: | ---: |
+| Median elapsed per 200 full decodes | 1.5084 s | 0.8771 s | −0.6313 s (−41.9%) |
+| Decoded mono samples, before demuxer trim | 28,992,000 | 28,992,000 | 0 |
+| Release executable / installed payload / compressed package | Unmeasured | Unmeasured | Unavailable |
+
+The component comparison excludes demuxing, Rust allocation, HTTP, output devices,
+GUI rendering and the playback queue. Separate production-path regressions compare
+trimmed duration, channel count and RMS level for WAV, MP3, Opus and Vorbis, and
+check cancellation, SDR/HDR posters, rotation and bounded embedded-clip playback.
+A full-clip regression also covers FFmpeg growing its input buffer: larger native
+requests receive bounded 64 KiB reads instead of failing partway through playback.
+No application CPU/RSS, startup, video throughput or physical display performance
+claim follows from these results.
+The shared audio wrapper also completed 200 decoder lifecycles with AddressSanitizer
+and UndefinedBehaviorSanitizer; linked codec libraries were not instrumented.
+
+Full local release packaging was not repeated: earlier production fat-LTO links
+exceeded this worker's memory limit, and remaining disk space cannot support a
+fresh matching package pair. Current native packages remain CI checks. No new
+runtime library, codec recipe or license dependency is introduced by this change.

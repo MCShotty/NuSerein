@@ -395,6 +395,17 @@ Supported H.264, HEVC and AV1 attachments use the bundled FFmpeg media bridge in
 bounded software fallback (dav1d for AV1). Anonymous attachment readers are
 limited to 100 MiB and two hours; FFmpeg network protocols are disabled. Native
 players remain a fallback for formats outside the bundled demux/codec allowlists.
+Video posters and short embedded clips use the same FFmpeg-first selection, with
+bounded SDR thumbnails that preserve rotation and tone-map PQ/HLG. Preview clips
+retain their three-second work deadline and bounded frame cache. Audio attachments,
+voice messages and bundled notification sounds also prefer FFmpeg whenever their decoder is present.
+Their existing sanitized, forward-only demuxer still owns container parsing and
+anonymous reads; FFmpeg receives only bounded headers and compressed packets.
+Unsupported audio codecs retain the existing Symphonia/libopus fallback. A decode
+failure does not restart playback through another decoder. Gapless trimming,
+the one-second PCM queue, cancellation and audio preview limits remain enforced.
+This playback selection is independent of the Stable/Experimental video encoding
+setting. Still images and animated GIFs keep their existing image decoders.
 Audio synchronization, seeking, rotation, pause, volume and cancellation remain
 in the desktop player. Incoming camera/screen video uses the same typed pictures
 through 8K, including 6144×2560, with bounded queues and latest-frame presentation.
@@ -415,7 +426,8 @@ synthetic fixtures establish neither display behavior nor interoperability.
 WebM, MOV and MP4 codecs unavailable in the native inline decoder can use an installed
 FFmpeg from `/opt/homebrew/bin`, `/usr/local/bin`, or `/usr/bin`. Nothing is installed
 automatically. The helper must include H.264 (`libx264`) and AAC encoding; converted
-video plays through the existing native controls. Conversion may take up to two
+video uses the same FFmpeg-first decoder selection and existing player controls.
+Conversion may take up to two
 minutes before playback and is limited to 100 MiB input/output, 1080p and two hours.
 Native format failures during opening or playback retry conversion once, resuming at
 the last displayed position. Sources above the native 1080p limit also use this
