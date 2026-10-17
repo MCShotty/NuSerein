@@ -58,12 +58,12 @@ impl MessagingUi {
 		}
 		if let Some(error) = state.account_settings.overview_error {
 			design::notice(ui, design::Level::Error, error);
-			if !state.account_settings.overview_pending
-				&& design::text_action(ui, "Reload account details").clicked()
-				&& let Some(command) = state.request_account_overview()
-			{
-				commands.push(command);
-			}
+		}
+		if !state.account_settings.overview_pending
+			&& design::text_action(ui, "Reload account details").clicked()
+			&& let Some(command) = state.request_account_overview()
+		{
+			commands.push(command);
 		}
 		if let Some(overview) = &state.account_settings.overview {
 			design::group(ui, "Account information", |ui| {
@@ -156,12 +156,12 @@ impl MessagingUi {
 		}
 		if let Some(error) = state.account_settings.connections_error {
 			design::notice(ui, design::Level::Error, error);
-			if !state.account_settings.connections_pending
-				&& design::text_action(ui, "Reload connections").clicked()
-				&& let Some(command) = state.request_account_connections()
-			{
-				commands.push(command);
-			}
+		}
+		if !state.account_settings.connections_pending
+			&& design::text_action(ui, "Reload connections").clicked()
+			&& let Some(command) = state.request_account_connections()
+		{
+			commands.push(command);
 		}
 		let editable = !state.account_settings.connections_pending
 			&& !state.account_settings.connections_reload_required;
