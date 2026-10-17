@@ -1403,8 +1403,9 @@ Based on fork `f9e39f7`. Focused permission/hierarchy, sparse rule preservation,
 parsing, loopback HTTP and native UI-state regressions pass, including whitespace
 preservation on unrelated rule edits. Replay and the 120-second soak passed (1,531
 passes). Login-handoff, cached-xtask workspace and license-policy fixtures pass; the
-locked graph is unchanged. The first local ASan compilation hit the workspace memory
-limit before fuzzing; no fuzz success is inferred. Final gates are recorded in the PR.
+locked graph is unchanged. After sequencing builds, bounded ASan decoder/state smoke
+passed at `91c95fdd` (112,105 and 3,638 runs, 31 seconds per target). The earlier compiler
+OOM did not produce a fuzz result. Native application checks are recorded separately in the PR.
 
 `scripts/compare-replay.py` compares the reviewed commit, the current published upstream
 nightly and the previous fork on independent Windows/macOS/Linux CI workers. Matching
@@ -1412,3 +1413,92 @@ Rust 1.98.1 release overrides, separate worktrees/targets, one warmup and five r
 samples produce revision-labelled JSON artifacts including sample ranges. Native
 packages must separately establish executable, installed-payload and distribution
 sizes. Native UI CPU/RSS, moderation latency and live service behavior remain unmeasured.
+
+
+### Moderation release comparison at `91c95fdd`
+
+[Native CI run 39056325676](https://github.com/MCShotty/Serein/actions/runs/39056325676)
+compares published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), previous fork
+`f9e39f7` and moderation code `91c95fdd`. Rust 1.98.1, opt-level 3, thin LTO, one
+codegen unit, stripped symbols and panic=abort match across each worker's builds.
+One warmup precedes five rotated samples of each bounded workload. Linux/Windows
+pin one allowed logical CPU; macOS uses its platform scheduler. The run's per-OS JSON
+artifacts include the exact OS/CPU, full revisions, settings and raw samples. These
+are separate GitHub-hosted x64 Linux/Windows and ARM64 macOS workers; elapsed values
+are milliseconds, with minimum–maximum ranges below.
+
+| Platform / workload | Nightly median (range) | Previous fork | Moderation | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 48.866 (47.986–49.167) | 47.722 (47.084–48.275) | 47.769 (47.428–48.763) | -2.2% / +0.1% |
+| Linux-X64 / wide channels | 61.633 (60.952–68.746) | 61.370 (60.250–66.805) | 62.140 (60.508–63.802) | +0.8% / +1.3% |
+| Windows-X64 / reducer | 97.703 (95.286–130.104) | 97.112 (93.646–113.227) | 96.023 (94.101–144.464) | -1.7% / -1.1% |
+| Windows-X64 / wide channels | 94.748 (81.093–118.035) | 116.428 (107.706–146.935) | 112.896 (109.315–161.461) | +19.2% / -3.0% |
+| macOS-ARM64 / reducer | 79.794 (73.478–90.337) | 80.099 (61.130–91.886) | 80.526 (70.608–92.206) | +0.9% / +0.5% |
+| macOS-ARM64 / wide channels | 137.806 (112.357–141.365) | 125.894 (113.885–155.284) | 130.810 (107.787–215.842) | -5.1% / +3.9% |
+
+The Windows wide-channel result is slower than nightly; its cause is unisolated.
+The workloads exercise core state, not moderation latency, native UI or media throughput.
+No causal performance improvement or official-client equivalence is claimed.
+
+
+### Native package snapshot at `91c95fdd`
+
+Standard voice-inclusive native CI packages, compared with published nightly
+`3a4bf8d` and previous fork `f9e39f7`. Installed size sums regular-file bytes;
+distribution normalizes those files with Python 3.12 ZIP DEFLATE level 6 and
+fixed metadata, excluding outer CI archives and installers. One artifact per
+revision/platform; MiB = 1,048,576 bytes. The Windows x64 snapshot below completes this three-platform comparison.
+
+| Platform / metric | Nightly | Previous fork | This code | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / executable | 83.682 | 87.900 | 88.186 | +0.286 (+0.33%) |
+| Linux-X64 / installed payload | 88.006 | 130.657 | 130.944 | +0.287 (+0.22%) |
+| Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.678 | +0.124 (+0.15%) |
+| macOS-ARM64 / executable | 65.946 | 69.884 | 70.135 | +0.251 (+0.36%) |
+| macOS-ARM64 / installed payload | 71.641 | 95.216 | 95.467 | +0.251 (+0.26%) |
+| macOS-ARM64 / normalized distribution | 46.027 | 63.548 | 63.659 | +0.111 (+0.17%) |
+
+macOS nightly is signed while CI is unsigned; these are observed package deltas, not an isolated feature cost.
+
+
+### Current moderation native evidence
+
+Code `91c95fdd` passes the local strict native `ui`/`serein` all-target/demo
+Clippy run, three AutoMod UI regressions and the moderation cancellation UI
+regression. The native preview rebuild also passes. These checks follow the
+read-only ban-view permission correction and whitespace-preservation fix.
+Native CI run 39056325676 passes the full application/package gate on Linux x64,
+Windows x64/ARM64 and macOS ARM64, plus SDK, licenses, ASan fuzz, installer
+fixtures and all three release replay comparisons. Inherited security/Nix
+failures are reported separately; an earlier local resource-limited full-gate
+attempt is not claimed as passed.
+
+`pr-evidence/server-moderation` contains an actual native X11 window pair at
+1120 × 760, scale 1, dark mode. The same synthetic server settings fixture shows
+feature absence at fork `f9e39f7` and the AutoMod page at `91c95fdd`. The baseline
+has only the two documented demo-build repairs (duplicate avatar helpers and
+missing `pending::show` optional-error argument); its feature UI is unchanged.
+The supported minimum 760 × 520 light-mode moderation layout was also inspected.
+Captures use explicit `--demo --interactive`, Xvfb/software rendering, bounded
+process-liveness checks and ImageMagick application-window capture. They do not
+establish live moderation, release UI performance or a side-by-side official
+client comparison. Only one small current pair is committed.
+
+
+### Windows moderation package snapshot at `91c95fdd`
+
+Same standard package and normalization method as the Linux/macOS snapshot above.
+One artifact per revision; MiB = 1,048,576 bytes. Baseline nightly `3a4bf8d`,
+previous fork `f9e39f7`, after `91c95fdd`.
+
+| Metric | Nightly | Previous fork | Moderation | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| executable | 82.910 | 87.505 | 87.870 | +0.365 (+0.42%) |
+| installed payload | 86.909 | 135.216 | 135.581 | +0.365 (+0.27%) |
+| normalized distribution | 47.986 | 80.844 | 80.979 | +0.135 (+0.17%) |
+
+Windows x64/ARM64 CI validates both clean and cached normal packages from empty
+output directories. The bounded packaged driver-query helper launches with the
+development FFmpeg prefix removed from PATH; no manual staging repair was used.
+This check stops before UI/account/audio initialization and is not a full
+interactive launch or hardware-encoding result. Archive metadata may change hashes.
