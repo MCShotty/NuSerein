@@ -472,7 +472,10 @@ impl Connection {
                                 community_job=Some(AbortTask(tokio::spawn(async move {
                                     let event=tokio::select! {
                                         biased;
-                                        _=async {loop {if *scope.borrow_and_update()!=fence {break;} if scope.changed().await.is_err(){break;}}}=>return,
+                                        _=async {loop {
+                                        if *scope.borrow_and_update()!=fence {break;}
+                                        if scope.changed().await.is_err(){break;}
+                                    }}=>return,
                                         event=api.execute(command)=>event,
                                     };
                                     let failure=match &event {Event::Community(client_core::community::Event{result:Err(f),..}) if f.ends_session()=>Some(*f),_=>None};
