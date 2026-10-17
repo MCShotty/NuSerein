@@ -6070,9 +6070,11 @@ mod tests {
 		call.participants = entries.iter().map(|entry| entry.participant).collect();
 		let (channel, request) = (call.channel, call.request);
 		let ctx = egui::Context::default();
-		let mut view = MessagingUi::default();
-		view.voice_focus = Some(StageFocus::LocalScreen);
-		view.voice_focus_participants = true;
+		let mut view = MessagingUi {
+			voice_focus: Some(StageFocus::LocalScreen),
+			voice_focus_participants: true,
+			..Default::default()
+		};
 		view.screen.context = Some((state.generation, channel, request));
 		view.screen.busy = true;
 		view.screen.preview = Some(ctx.load_texture(

@@ -60,6 +60,7 @@ impl VoiceMessages {
 		{
 			self.retiring = None;
 		}
+		self.review.volume(ui.audio().volume);
 		let view = &mut ui.voice_messages;
 		let review = self.review.poll();
 		view.reviewing = matches!(
@@ -231,8 +232,6 @@ impl VoiceMessages {
 						&& !fixture_only && let Some(recording) = &self.recording
 					{
 						self.review.output.clone_from(&ui.media_output);
-						self.review
-							.volume(f32::from(ui.voice_gain.output_percent.min(100)) / 100.0);
 						view.review_error = self
 							.review
 							.start_review(

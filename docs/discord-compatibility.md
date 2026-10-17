@@ -827,8 +827,9 @@ The offline `video_interop` example exercises authenticated feedback, rate chang
 loss/RTX recovery, paced packetization, transport/DAVE round trips, source replacement
 and the existing playback debug checks. Native Linux/Windows rate changes, real network
 behavior and official-client error 2012 still require an owner-operated retest. This is
-a bounded loss/REMB controller, not WebRTC's full congestion-control algorithm;
-RTCP sender-clock synchronization remains absent. The
+a bounded loss/REMB controller, not WebRTC's full congestion-control algorithm.
+The October 17 receive path additionally correlates authenticated sender reports
+for bounded software presentation; physical timing remains unverified. The
 [Discord-RE sender](https://github.com/Discord-RE/Discord-video-stream/blob/master/src/client/voice/WebRtcWrapper.ts)
 provides the comparison for pacing, feedback and retransmission behavior.
 
@@ -849,8 +850,9 @@ SSRC, coalescing requests to at most twice per second. Windows/macOS can freshly
 one retained current snapshot on an idle keyframe request, without waiting for screen
 movement. The additional snapshot is bounded to 33,177,600 bytes, normally reduced to
 the chosen output resolution. Ordinary idle time does not encode extra frames. Linux
-already requests periodic PipeWire keepalive frames. Sender RTX repair, receiver NACK
-requests and adaptive bitrate remain unsupported. The viewer accepts announced RTX
+already requests periodic PipeWire keepalive frames. These September 15 changes
+predate the sender RTX repair and bitrate controller described above; receiver NACK
+requests remain unsupported. The viewer accepts announced RTX
 packets and bounded packet reordering within the current picture; native/live video
 quality is not established by these changes.
 
@@ -858,7 +860,9 @@ Watched streams have a session-only 0–200% audio volume and mute control, inde
 of participant voice levels. Audio playout retains at most two queued 20 ms frames
 and clears delayed mixer output after a stall. Decoder input is bounded to 16 pictures
 and 16 MiB, with a 150 ms age limit and keyframe recovery. These bounds reduce backlog;
-they do not implement sender-clock audio/video synchronization or establish live sync.
+those original bounds alone do not establish live sync. The October 17 receive
+path adds bounded sender-report correlation at software playout, with native-device
+timing and current service behavior still unverified.
 
 September 27 preview update: hovering a currently streaming guild participant requests
 Discord's still preview and shows it in a compact 16:9 popover with a Watch Stream action.
@@ -980,7 +984,7 @@ error or periodic keyframe. A regression reproduces the missing request before t
 and verifies recovery afterward. The owner's later Linux-to-macOS video-only lag is
 not yet attributed to this defect by matching logs.
 
-Stop, call teardown, changed generation, lost video permission or stream-server replacement stop capture and transport. New sharing waits for native worker retirement and matching STREAM_DELETE. No automatic retry or recording is performed. Rekeying pauses capture readiness, drains queued encoded frames, and requires an IDR before resuming transmission. The encoder requests periodic IDRs every two seconds of encoded frames. The current sender handles RTCP PLI and optional system audio, but has no NACK/RTX repair or congestion adaptation; lossy-network quality and service acceptance of high-quality presets remain unverified.
+Stop, call teardown, changed generation, lost video permission or stream-server replacement stop capture and transport. New sharing waits for native worker retirement and matching STREAM_DELETE. No automatic retry or recording is performed. Rekeying pauses capture readiness, drains queued encoded frames, and requires an IDR before resuming transmission. The encoder requests periodic IDRs every two seconds of encoded frames. The current sender handles RTCP PLI, bounded authenticated NACK/RTX repair, optional system audio and loss/REMB bitrate adaptation as described above. Receiver NACK requests remain unsupported; lossy-network quality and service acceptance of high-quality presets remain unverified.
 
 Owner-operated validation is still required: allow screen-recording permission, join a private call, choose a window, verify viewing in the official client, then test Stop, source closure, permission loss, viewer changes/rekey and both quality presets. No live account/capture was used for agent tests. Native Windows execution and live Discord video interoperability are not established by macOS builds or synthetic tests.
 

@@ -1266,8 +1266,19 @@ This schedules video against the audio frame handed to software playout. Native
 output queues, device buffer latency, clock drift at physical devices and remote
 sender-report availability still require owner-controlled measurements. Received
 stream audio remains mono; stereo attachment playback and stereo outgoing screen
-audio are separate existing paths. Offline scheduling/reorder/crypto tests do not
+audio are separate existing paths. This change consumes sender reports; it does
+not synthesize outgoing reports from unknown capture-clock origins. Receivers
+retain PLI recovery without emitting NACK requests; the sender's bounded NACK/RTX
+repair remains supported. Offline scheduling/reorder/crypto tests do not
 establish audible lip sync or current Discord/SFU interoperability.
+
+The screen-audio audit confirms existing Linux per-stream monitors and Windows
+process-loopback capture exclude Serein's own playback while sharing other eligible
+applications. The native control says **Share system audio**; Linux/Windows do not
+offer selected-application-only audio for a selected window. macOS captures the
+selected application's audio with current-process exclusion. None of these paths
+captures a microphone or writes audio to disk. Permission, isolation across actual
+applications and output-device changes still require native owner validation.
 
 The call-layout audit covers DM/group/guild grids, focused video/share, fullscreen,
 Show chat and narrow stages. Focused participant strips now scroll to every
