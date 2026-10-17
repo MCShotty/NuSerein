@@ -4559,6 +4559,7 @@ impl MessagingUi {
 		{
 			self.search.focus_conversation(channel, state);
 		}
+		self.reconcile_submitted_command(state);
 		self.search.sync(&ctx, state, &mut commands);
 		let search_open =
 			self.search.results_visible(state) && state.selected.is_some() && !selected_voice;
@@ -5294,7 +5295,11 @@ impl MessagingUi {
 			&mut self.avatars,
 			&mut self.timeline.opening,
 		);
-		self.interaction_file_request = self.interaction_components.file_request.take();
+		self.interaction_file_request = self
+			.interaction_components
+			.file_request
+			.take()
+			.or_else(|| self.slash_commands.file_request.take());
 		if let Some(id) = self.timeline.dismiss_ephemeral.take() {
 			state.dismiss_ephemeral(id);
 			self.timeline.components.forget_message(id);

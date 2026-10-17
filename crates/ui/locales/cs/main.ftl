@@ -4920,3 +4920,8 @@ application-menu-refresh = Refresh commands
 
 application-menu-retry-suggestions = Retry suggestions
 application-menu-type-suggestions = Type to load suggestions.
+
+slash-commands-sending = Odesílání příkazu…
+slash-commands-choose-file = Vybrat soubor…
+slash-commands-remove-file = Odebrat soubor
+slash-commands-file-help = Vyberte jeden soubor pro tuto možnost.

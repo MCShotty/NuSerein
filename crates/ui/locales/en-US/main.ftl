@@ -4963,3 +4963,8 @@ application-menu-refresh = Refresh commands
 
 application-menu-retry-suggestions = Retry suggestions
 application-menu-type-suggestions = Type to load suggestions.
+
+slash-commands-sending = Sending command…
+slash-commands-choose-file = Choose file…
+slash-commands-remove-file = Remove file
+slash-commands-file-help = Choose one file for this option.

@@ -2656,14 +2656,24 @@ The [official command schema](https://docs.discord.com/developers/interactions/a
 and [normal-user account interaction reference](https://docs.discord.food/interactions/application-commands)
 provide protocol evidence. Account discovery and autocomplete dispatch are unofficial;
 account entitlement and live service acceptance remain owner-controlled and unverified.
-Attachment command arguments still require a separate native file-selection integration;
-this branch does not mislabel modal file support as slash-command attachment parity.
+Attachment arguments use the native file picker, one file per option and at most ten
+files / 500 MB per command. Typed attachment indexes refer to the same signed-upload
+batch sent with the command. Suggestions never upload attachments. Storage receives
+no Discord credentials, and the final interaction is submitted once.
 
 Context-menu target evidence is scoped to the active conversation. A cached author
 from another channel cannot make an unrelated Friends/notification contact eligible;
 availability is checked again before dispatch.
 
-Attachment arguments remain unsupported. The existing submitted-command form clears
-after queuing; a later HTTP failure requires re-entry. Local validation failures retain
-the form. No application command is automatically retried. This is a remaining recovery
-gap, not a claim of complete command parity.
+The form stays until HTTP acceptance or a matching Gateway acknowledgement. Failed or
+timed-out submissions retain arguments and file descriptors for a deliberate retry;
+the next upload validates those descriptors again. A completed Gateway response wins
+over a later ambiguous HTTP outcome. No application command is automatically retried.
+Offline regressions cover signed staging, uncertain outcomes, stale acknowledgements,
+file reindexing and keyboard selection; they do not establish live interoperability.
+
+Mention suggestions and command user selectors prefer the guild nickname while inserting
+the real user ID. Labels resolved outside the member sidebar remain available across
+subsequent searches in the same accessible conversation, within the bounded lookup cache.
+Changing account, channel or access retires those labels; display metadata never grants
+permission to act on a member.

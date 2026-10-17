@@ -60,6 +60,7 @@ pub(crate) fn valid_uploads(request: &Request, count: usize) -> bool {
 	}
 	let mut seen = std::collections::BTreeSet::new();
 	match &request.data {
+		Data::ApplicationCommand { invocation } => invocation.attachment_count() == Some(count),
 		Data::Modal { components, .. } => {
 			components.iter().all(|c| walk(c, count, &mut seen)) && seen.len() == count
 		}
@@ -246,7 +247,7 @@ impl DiscordApi {
 			}
 		};
 		if let Some(attachments) = attachments {
-			if kind != 5 {
+			if !matches!(kind, 2 | 5) {
 				return Err(Failure::Protocol);
 			}
 			data["attachments"] = attachments.into();
@@ -301,6 +302,9 @@ pub(crate) fn valid_file_types(request: &Request, sources: &[crate::upload::Sour
 			.all(|c| valid(c, sources))
 	}
 	match &request.data {
+		Data::ApplicationCommand { invocation } => {
+			invocation.attachment_count() == Some(sources.len())
+		}
 		Data::Modal { components, .. } => components.iter().all(|c| valid(c, sources)),
 		_ => sources.is_empty(),
 	}

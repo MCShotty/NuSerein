@@ -13,7 +13,8 @@ pub fn catalog(guild: Option<Id>) -> Vec<schema::Command> {
 					{"name":"Celsius","value":"celsius"},{"name":"Fahrenheit","value":"fahrenheit"}
 				]},
 				{"type":4,"name":"days","description":"Number of forecast days.","min_value":1,"max_value":7},
-				{"type":5,"name":"detailed","description":"Include a detailed forecast."}
+				{"type":5,"name":"detailed","description":"Include a detailed forecast."},
+				{"type":11,"name":"image","description":"Optional image for the forecast."}
 			]
 		},
 		{

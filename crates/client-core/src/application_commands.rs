@@ -468,13 +468,130 @@ mod tests {
 					schema::CommandOption {
 						kind: 11,
 						name: "file".into(),
-						description: "An unsupported attachment".into(),
+						description: "An optional attachment".into(),
 						..Default::default()
 					},
 				],
 				..Default::default()
 			}],
 		}
+	}
+	#[test]
+	fn command_submission_outcomes_are_correlated_and_require_deliberate_retry() {
+		let mut state = bot_state();
+		state.application_commands.scope = Some(Id(2));
+		state.application_commands.commands = vec![command()];
+		let prepare = |state: &mut State| {
+			let Command::Interaction(request) = state
+				.prepare_application_command(
+					Id(4),
+					&["run".into()],
+					&[("count".into(), "2".into()), ("file".into(), "0".into())],
+				)
+				.unwrap()
+			else {
+				panic!()
+			};
+			assert!(request.valid());
+			request.nonce
+		};
+		let first = prepare(&mut state);
+		state
+			.apply_interaction(interactions::Event::Submitted {
+				nonce: "unrelated".into(),
+				result: Err(Failure::RateLimited),
+			})
+			.unwrap();
+		assert!(state.interactions.busy());
+		assert_eq!(state.interactions.submission_result(&first), None);
+		state
+			.apply_interaction(interactions::Event::Submitted {
+				nonce: first.clone(),
+				result: Err(Failure::Ambiguous),
+			})
+			.unwrap();
+		assert!(!state.interactions.busy());
+		assert_eq!(
+			state.interactions.submission_result(&first),
+			Some(Err(Failure::Ambiguous))
+		);
+		assert!(
+			state.interactions.pending.is_none(),
+			"a failed write is never queued again"
+		);
+
+		let second = prepare(&mut state);
+		assert_eq!(state.interactions.submission_result(&first), None);
+		state
+			.apply_interaction(interactions::Event::Submitted {
+				nonce: first,
+				result: Ok(()),
+			})
+			.unwrap();
+		assert_eq!(state.interactions.submission_result(&second), None);
+		// Gateway completion can arrive before the HTTP worker finishes.
+		state
+			.apply_interaction(interactions::Event::Success {
+				nonce: second.clone(),
+			})
+			.unwrap();
+		state
+			.apply_interaction(interactions::Event::Submitted {
+				nonce: second.clone(),
+				result: Err(Failure::Ambiguous),
+			})
+			.unwrap();
+		assert_eq!(state.interactions.submission_result(&second), Some(Ok(())));
+		assert!(!state.interactions.busy());
+
+		let third = prepare(&mut state);
+		state
+			.apply_interaction(interactions::Event::Submitted {
+				nonce: third.clone(),
+				result: Ok(()),
+			})
+			.unwrap();
+		assert_eq!(state.interactions.submission_result(&third), Some(Ok(())));
+		assert!(
+			state.interactions.busy(),
+			"HTTP acceptance is not application completion"
+		);
+		let deadline = state.interactions.pending.as_ref().unwrap().deadline;
+		state.expire_interaction(deadline);
+		assert!(!state.interactions.busy());
+		assert_eq!(
+			state.interactions.submission_result(&third),
+			Some(Err(Failure::Ambiguous))
+		);
+		let fourth = prepare(&mut state);
+		let original_deadline = state.interactions.pending.as_ref().unwrap().deadline;
+		let after_upload_gap = original_deadline + std::time::Duration::from_secs(1);
+		state.renew_interaction_upload("unrelated", after_upload_gap);
+		assert_eq!(
+			state.interactions.pending.as_ref().unwrap().deadline,
+			original_deadline
+		);
+		state.renew_interaction_upload(&fourth, after_upload_gap);
+		state.expire_interaction(after_upload_gap);
+		assert!(
+			state.interactions.busy(),
+			"transfer progress is observed before response expiry"
+		);
+		state
+			.apply_interaction(interactions::Event::Submitted {
+				nonce: fourth.clone(),
+				result: Ok(()),
+			})
+			.unwrap();
+		assert_eq!(state.interactions.submission_result(&fourth), Some(Ok(())));
+		state.interactions.reset();
+		state
+			.apply_interaction(interactions::Event::Submitted {
+				nonce: fourth.clone(),
+				result: Ok(()),
+			})
+			.unwrap();
+		assert_eq!(state.interactions.submission_result(&fourth), None);
 	}
 	#[test]
 	fn autocomplete_is_partial_correlated_and_never_executes_a_command() {

@@ -40,10 +40,45 @@ impl Request {
 pub struct View {
 	pub request: Option<Request>,
 	pub rows: Vec<Member>,
+	/// Recently resolved labels for the same conversation, bounded like one search page.
+	pub retained: Vec<Member>,
 	pub finished: bool,
 	pub error: Option<&'static str>,
 }
 impl State {
+	/// Presentation metadata only; callers must use the permission state to authorize actions.
+	pub fn display_member(&self, channel: Id, user: Id) -> Option<&Member> {
+		let guild = self.channel(channel)?.guild?;
+		if !self.can_view(channel) {
+			return None;
+		}
+		self.members
+			.as_ref()
+			.filter(|list| list.guild == Some(guild) && list.channel == channel)
+			.and_then(|list| {
+				list.slots.iter().flatten().find_map(|slot| match slot {
+					model::MemberSlot::Person(member) if member.user.id == user => Some(member),
+					_ => None,
+				})
+			})
+			.or_else(|| {
+				self.member_search.iter().find_map(|view| {
+					view.request
+						.as_ref()
+						.filter(|request| request.channel == channel && request.guild == guild)?;
+					view.rows.iter().find(|member| member.user.id == user)
+				})
+			})
+			.or_else(|| {
+				self.member_search.iter().find_map(|view| {
+					view.request
+						.as_ref()
+						.filter(|request| request.channel == channel && request.guild == guild)?;
+					view.retained.iter().find(|member| member.user.id == user)
+				})
+			})
+	}
+
 	pub fn search_members(&mut self, channel: Id, query: &str, slot: usize) -> Option<Command> {
 		let guild = self.channel(channel)?.guild?;
 		if slot != 0
@@ -65,7 +100,29 @@ impl State {
 		if !request.valid() {
 			return None;
 		}
+		let previous = &mut self.member_search[slot];
+		let retained = if previous
+			.request
+			.as_ref()
+			.is_some_and(|old| old.channel == channel && old.guild == guild)
+		{
+			let mut retained = std::mem::take(&mut previous.retained);
+			for member in std::mem::take(&mut previous.rows) {
+				retained.retain(|old| old.user.id != member.user.id);
+				retained.push(member);
+				while retained.len() > LIMIT
+					|| retained.iter().map(Member::bytes).sum::<usize>() > MAX_BYTES
+				{
+					retained.remove(0);
+				}
+			}
+			retained.shrink_to(LIMIT);
+			retained
+		} else {
+			vec![]
+		};
 		self.member_search[slot] = View {
+			retained,
 			request: Some(request.clone()),
 			..Default::default()
 		};
