@@ -1474,7 +1474,10 @@ including a dropped POST response that is not retried. Separate synthetic replay
 120-second soak runs passed (1,168 passes), before the final read-only spinner guard.
 Login-handoff, cached-xtask and license-policy fixtures pass; the dependency graph and
 FFmpeg recipe are unchanged. Full native/UI/decoder checks and ASan results are
-reported separately in the PR; earlier upstream measurements are historical evidence.
+reported separately in the PR; earlier upstream measurements are historical evidence. Bounded ASan
+decoder/state smoke subsequently passed (93,615 and 2,469 runs, 31 seconds each) on the
+reviewed media implementation. The subsequent Windows-only test-argument correction
+changes no fuzzed parser/reducer code.
 
 The branch's release comparison jobs use the current published upstream nightly,
 previous fork and reviewed commit on Windows/macOS/Linux. Matching Rust 1.98.1
@@ -1483,3 +1486,107 @@ in JSON with exact revisions, environment and sample ranges. Core reducer timing
 not measure audio stretching, media decode, native UI latency or CPU/RSS. Those media
 measurements remain unavailable here. Current-head standard native packages provide
 the executable, installed payload and compressed distribution comparisons.
+
+
+### Current media release comparison at `a94983ab`
+
+[Run 39058677973](https://github.com/MCShotty/Serein/actions/runs/39058677973)
+compares published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), previous
+fork `f9e39f7` and media code `a94983ab` on separate Windows x64, Linux x64 and
+macOS ARM64 workers. Rust 1.98.1, opt-level 3, thin LTO, one codegen unit and
+panic=abort match; one warmup precedes five rotated measured runs. Linux/Windows
+pin one allowed CPU, while macOS uses the platform scheduler. Raw CI JSON records
+OS/CPU, exact revisions, settings and ranges. Values are milliseconds, median
+(minimum–maximum). This core-only workload does not exercise audio decoding,
+stretching, soundboard mixing or GUI rendering.
+
+| Platform / workload | Nightly | Previous fork | Media | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 63.295 (61.608–64.248) | 63.491 (61.648–64.701) | 64.237 (60.519–65.560) | +1.5% / +1.2% |
+| Linux-X64 / wide channels | 112.988 (94.424–117.141) | 119.903 (116.312–121.558) | 121.310 (116.398–122.577) | +7.4% / +1.2% |
+| Windows-X64 / reducer | 58.066 (57.603–60.780) | 58.144 (57.711–60.494) | 56.240 (55.600–57.943) | -3.1% / -3.3% |
+| Windows-X64 / wide channels | 69.075 (64.426–84.789) | 64.319 (62.407–66.892) | 64.566 (63.838–68.376) | -6.5% / +0.4% |
+| macOS-ARM64 / reducer | 67.099 (66.357–70.469) | 68.648 (66.939–70.439) | 68.725 (67.667–70.565) | +2.4% / +0.1% |
+| macOS-ARM64 / wide channels | 100.793 (97.166–103.192) | 105.346 (103.715–108.621) | 100.973 (99.229–106.693) | +0.2% / -4.2% |
+
+Linux wide-channel replay is 7.4% slower than nightly and 1.2% slower than the
+previous fork; the cause is unisolated. No causal speed improvement is claimed.
+The inherited FFmpeg-first decoder changes in prerequisite #7 are included here;
+these comparisons do not isolate soundboard cost. Standard native package sizes
+are recorded below; release media throughput, idle CPU, RSS and frame latency remain
+unmeasured. This is not proof of official-client interoperability.
+
+
+### Current media focused native checks
+
+At `a94983ab`, strict native `ui`/`serein` all-target/demo Clippy and
+formatting pass. Focused native checks pass four sound-editor UI cases, eight
+audio/UI cases, twelve sound/worker/upload cases, one Ogg Opus round-trip and
+two pitch-preserving speed cases. They cover bounded clips, stale-call worker
+cancellation, deafen, released cached PCM, trim encoding, damaged audio, keyboard
+controls, narrow cards and preserved unknown/custom emoji on unrelated edits.
+These are offline fixtures, not a microphone or live-call test.
+
+Native CI run 39058677973 passes all four application/package gates (Linux x64,
+Windows x64/ARM64 and macOS ARM64), all three release replay comparisons,
+x64/ARM64 installer fixtures, SDK, licenses and ASan fuzz.
+Inherited security and separate Nix failures remain visible in the PR. The
+Windows-only missing optional-effects test argument was corrected at `a94983ab`.
+
+### Linux media package snapshot at `a94983ab`
+
+Standard release including voice, compared with nightly `3a4bf8d` and previous
+fork `f9e39f7`. Installed values sum regular-file bytes; distribution recompresses
+the payload using Python 3.12 ZIP DEFLATE level 6 and fixed metadata, excluding
+the outer CI archive/installers. One artifact per revision; MiB = 1,048,576 bytes.
+
+| Metric | Nightly | Previous fork | Media | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| executable | 83.682 | 87.900 | 88.282 | +0.382 (+0.43%) |
+| installed payload | 88.006 | 130.657 | 131.039 | +0.382 (+0.29%) |
+| normalized distribution | 51.211 | 84.553 | 84.700 | +0.147 (+0.17%) |
+
+This includes prerequisite #7 and does not isolate the soundboard contribution. Windows/macOS package snapshots follow below.
+
+
+### Current media native screenshots
+
+The matched native pair in `pr-evidence/desktop-media` uses the synthetic server
+settings fixture at 1120 × 760, scale 1, dark mode. Before is fork `f9e39f7`
+with only the two demo-build repairs (duplicate avatar helpers and the missing
+`pending::show` optional-error argument). Prerequisite #7 has no changes to these
+UI/settings/preview paths, verified against `f3abb039`; the baseline represents
+feature absence. After is media code `a94983ab`, not an upstream screenshot.
+The supported minimum 760 × 520 light-mode soundboard layout was inspected too.
+
+The native preview build passes. Captures launch explicitly with
+`--demo --interactive` on Xvfb/software rendering, check process liveness and
+capture only the app window with ImageMagick. No account, microphone, speaker
+playback or service was used. Only one small current pair is committed. Debug
+preview captures are not release CPU/RSS, frame latency or live acceptance evidence.
+
+
+### Windows and macOS media package snapshots at `a94983ab`
+
+Same standard voice-inclusive package and normalization method as Linux above.
+One artifact per revision/platform; MiB = 1,048,576 bytes. Baselines are nightly
+`3a4bf8d` and previous fork `f9e39f7`. CI checkout `d03ae140` has the exact Git
+tree of source `a94983ab`, verified before these measurements were recorded.
+
+| Platform / metric | Nightly | Previous fork | Media | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Windows-X64 / executable | 82.910 | 87.505 | 87.982 | +0.477 (+0.54%) |
+| Windows-X64 / installed payload | 86.909 | 135.216 | 135.693 | +0.477 (+0.35%) |
+| Windows-X64 / normalized distribution | 47.986 | 80.844 | 81.015 | +0.170 (+0.21%) |
+| macOS-ARM64 / executable | 65.946 | 69.884 | 70.198 | +0.314 (+0.45%) |
+| macOS-ARM64 / installed payload | 71.641 | 95.216 | 95.530 | +0.314 (+0.33%) |
+| macOS-ARM64 / normalized distribution | 46.027 | 63.548 | 63.677 | +0.129 (+0.20%) |
+
+Windows x64/ARM64 both pass clean and cached normal packaging from empty job-owned
+output directories, archive validation and a bounded packaged driver-query launch
+without development FFmpeg paths. No manual staging repair was used. The x64 ZIPs
+are both 86,052,573 bytes with metadata-dependent hashes; bit-for-bit reproducibility
+is not claimed. The query helper exits before account/UI/audio initialization,
+so these checks do not establish an interactive launch or hardware encoding.
+macOS nightly is signed and the CI bundle is unsigned. These are observed package
+deltas, not isolated soundboard cost or release media/UI performance claims.
