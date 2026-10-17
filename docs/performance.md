@@ -1395,3 +1395,20 @@ Protection adds temporary passes only for candidate URLs containing `_`, `*`, `~
 or `&`; other messages use an early return. Source remains capped at 8 KiB, each
 pass at 512 events (exhaustion falls back to bounded literal text), and stored
 links at 16. No dependency or retained cache is added.
+
+
+## Application-command follow-up — October 17, 2026
+
+Based on fork `f9e39f7`. Focused command schema, discovery, API loopback, autocomplete
+correlation and composer regressions pass. Separate replay and 120-second soak runs
+passed (1,024 passes). The bounded ASan decoder/state smoke passed; dependencies and
+lockfiles are unchanged. The final full-form stale-suggestion guard has focused Core
+and UI coverage. Full workspace/native demo checks are recorded in the PR.
+
+`scripts/compare-replay.py` compares the reviewed commit, the current published upstream
+nightly and the previous fork on independent Windows/macOS/Linux CI workers. It uses
+matching Rust 1.98.1 release overrides, separate worktrees/targets, one warmup and five
+rotated samples per workload. Artifacts retain revisions, environment and sample ranges.
+These synthetic reducer results are not UI latency or media throughput measurements.
+Current-head executable, installed-payload and compressed-package comparisons await
+native CI; UI CPU/RSS and live command performance remain unmeasured.

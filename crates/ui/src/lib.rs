@@ -5246,6 +5246,18 @@ impl MessagingUi {
 			}
 		}
 
+		if let Some(input) = self.slash_commands.completion_request.take()
+			&& let Some(command) =
+				state.request_autocomplete(input.id, input.path, input.values, input.focused)
+		{
+			commands.push(command);
+		}
+		if self.slash_commands.active.is_none()
+			&& state.application_commands.completion.query.is_some()
+		{
+			state.application_commands.completion = Default::default();
+			commands.push(Command::CancelAutocomplete);
+		}
 		if let Some(message) = self.timeline.forward_request.take() {
 			self.forwarding.open(state, message);
 		}
@@ -10159,7 +10171,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");

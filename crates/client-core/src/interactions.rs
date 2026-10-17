@@ -25,6 +25,16 @@ impl Request {
 			&& !self.nonce.is_empty()
 			&& self.nonce.bytes().all(|b| b.is_ascii_digit())
 			&& match &self.data {
+				Data::Autocomplete { query } => {
+					self.message_id.is_none()
+						&& self.message_flags == 0
+						&& self.application_id == query.command.application_id
+						&& query
+							.command
+							.guild_id
+							.is_none_or(|guild| Some(guild) == self.guild_id)
+						&& query.options().is_ok()
+				}
 				Data::ApplicationCommand { invocation } => {
 					self.message_id.is_none()
 						&& self.message_flags == 0
@@ -63,6 +73,9 @@ impl Request {
 	}
 }
 pub enum Data {
+	Autocomplete {
+		query: Box<model::application_commands::Completion>,
+	},
 	ApplicationCommand {
 		invocation: Box<model::application_commands::Invocation>,
 	},
@@ -276,15 +289,7 @@ impl State {
 		};
 		self.begin_interaction(application, Some(message), flags, data)
 	}
-	pub(crate) fn begin_interaction(
-		&mut self,
-		application_id: Id,
-		message_id: Option<Id>,
-		message_flags: u64,
-		data: Data,
-	) -> Option<Command> {
-		let channel_id = self.selected?;
-		let guild_id = self.channel(channel_id)?.guild;
+	pub(crate) fn next_interaction_identity(&mut self) -> (u64, String) {
 		self.interactions.sequence = self.interactions.sequence.wrapping_add(1);
 		let request = self.interactions.sequence;
 		let nonce = crate::fingerprint::nonce(
@@ -294,6 +299,19 @@ impl State {
 				.as_millis(),
 			request,
 		);
+		(request, nonce)
+	}
+
+	pub(crate) fn begin_interaction(
+		&mut self,
+		application_id: Id,
+		message_id: Option<Id>,
+		message_flags: u64,
+		data: Data,
+	) -> Option<Command> {
+		let channel_id = self.selected?;
+		let guild_id = self.channel(channel_id)?.guild;
+		let (request, nonce) = self.next_interaction_identity();
 		self.interactions.pending = Some(Pending {
 			nonce: nonce.clone(),
 			channel: channel_id,
@@ -347,6 +365,7 @@ impl State {
 		self.interactions.ephemeral.retain(|m| m.id != id);
 	}
 	pub fn expire_interaction(&mut self, now: Instant) {
+		self.expire_autocomplete(now);
 		if !self.interactions_allowed()
 			&& (self.interactions.busy()
 				|| self.interactions.modal.is_some()

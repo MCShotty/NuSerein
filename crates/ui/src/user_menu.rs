@@ -5,6 +5,12 @@ use model::{Shortcut, User};
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Action {
+	RefreshCommands,
+	ApplicationCommand {
+		command: model::Id,
+		target: model::Id,
+		kind: u8,
+	},
 	Note(User),
 	Nickname(User),
 	Mention(User),
@@ -13,10 +19,22 @@ pub enum Action {
 	AddFriend(User),
 	AcceptFriend(model::Id),
 	CloseDm(model::Id),
-	Block { user: model::Id, blocked: bool },
-	Ignore { user: model::Id, ignored: bool },
-	Mute { channel: model::Id, muted: bool },
-	MessageRequest { channel: model::Id, accept: bool },
+	Block {
+		user: model::Id,
+		blocked: bool,
+	},
+	Ignore {
+		user: model::Id,
+		ignored: bool,
+	},
+	Mute {
+		channel: model::Id,
+		muted: bool,
+	},
+	MessageRequest {
+		channel: model::Id,
+		accept: bool,
+	},
 	Shortcut(Intent),
 }
 impl std::fmt::Debug for Action {
@@ -27,6 +45,18 @@ impl std::fmt::Debug for Action {
 
 pub(super) fn prepare(action: Action, state: &mut State) -> Option<Command> {
 	match action {
+		Action::RefreshCommands => state.request_application_commands(state.selected?, true),
+		Action::ApplicationCommand {
+			command,
+			target,
+			kind,
+		} => match state.prepare_context_command(command, target, kind) {
+			Ok(command) => Some(command),
+			Err(error) => {
+				state.status = error;
+				None
+			}
+		},
 		Action::Note(_)
 		| Action::Nickname(_)
 		| Action::Shortcut(_)
@@ -104,6 +134,70 @@ pub(super) fn show_with_pin(
 		.show(|ui| contents(ui, state, user, profile, action, view));
 }
 
+pub(super) fn application_menu(
+	ui: &mut egui::Ui,
+	state: &State,
+	kind: u8,
+	target: model::Id,
+	action: &mut Option<Action>,
+) {
+	let Some(channel) = state
+		.selected
+		.filter(|id| state.can_request_application_commands(*id))
+	else {
+		return;
+	};
+	ui.menu_button(crate::i18n::translate("application-menu-title"), |ui| {
+		if state.application_commands.loading {
+			ui.spinner();
+		}
+		if let Some(error) = state.application_commands.error {
+			ui.weak(error);
+		}
+		let mut found = false;
+		if state.application_commands_cover(channel)
+			&& !state.application_commands.loading
+			&& state.application_commands.error.is_none()
+		{
+			for command in state
+				.application_commands
+				.commands
+				.iter()
+				.filter(|command| {
+					command.kind == kind && state.can_use_application_command(channel, command)
+				})
+				.take(64)
+			{
+				found = true;
+				if ui
+					.button(format!("{} · {}", command.application_name, command.name))
+					.clicked()
+				{
+					*action = Some(Action::ApplicationCommand {
+						command: command.id,
+						target,
+						kind,
+					});
+					ui.close();
+				}
+			}
+			if !found {
+				ui.weak(crate::i18n::translate("application-menu-empty"));
+			}
+		}
+		if ui
+			.add_enabled(
+				!state.application_commands.loading,
+				egui::Button::new(crate::i18n::translate("application-menu-refresh")),
+			)
+			.clicked()
+		{
+			*action = Some(Action::RefreshCommands);
+			ui.close();
+		}
+	});
+}
+
 const VOICE_AVAILABLE: &str = "user-menu-voice-available";
 
 /// Publishes this frame's voice availability so every menu caller reflects it without threading it.
@@ -125,6 +219,9 @@ pub(super) fn contents(
 ) {
 	let colors = crate::design::palette(ui);
 	ui.set_min_width(200.0);
+	if !user.webhook {
+		application_menu(ui, state, 2, user.id, action);
+	}
 	ui.spacing_mut().button_padding = egui::vec2(8.0, 6.0);
 	if ui
 		.button(crate::i18n::translate("user-menu-contents-profile"))

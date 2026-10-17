@@ -3179,6 +3179,20 @@ impl Desktop {
 			self.interaction_upload(command);
 			return;
 		}
+		if let Command::Autocomplete(request) = &command
+			&& !self.state.autocomplete_dispatch_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+
+		if let Command::Interaction(request) = &command
+			&& !self.state.application_command_dispatch_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+
 		if let Command::ServerAdmin {
 			guild,
 			request,
@@ -3388,11 +3402,13 @@ impl Desktop {
 					channel,
 					guild,
 					request,
+					..
 				} => Event::ApplicationCommands {
 					channel,
 					request,
 					result: Ok(slash_demo::catalog(guild)),
 				},
+				Command::Autocomplete(request) => slash_demo::autocomplete(request),
 				Command::Interaction(request) => {
 					if matches!(
 						&request.data,
@@ -3669,6 +3685,7 @@ impl Desktop {
 				Command::Voice(_)
 				| Command::CancelProfile
 				| Command::CancelSearch
+				| Command::CancelAutocomplete
 				| Command::Prefetch(_) => return,
 				Command::ThreadStarter {
 					thread,

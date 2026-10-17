@@ -1331,6 +1331,7 @@ enum DeletedLocalAction {
 fn deleted_message_actions(popup: egui::Popup<'_>, action: &mut Option<DeletedLocalAction>) {
 	popup.show(|ui| {
 		ui.set_min_width(160.0);
+
 		if ui
 			.button(crate::i18n::translate(
 				"timeline-deleted-message-actions-toggle-deleted-highlight",
@@ -1354,6 +1355,7 @@ fn deleted_message_actions(popup: egui::Popup<'_>, action: &mut Option<DeletedLo
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn message_actions(
 	popup: egui::Popup<'_>,
+	application: Option<(&State, &mut Option<crate::user_menu::Action>)>,
 	(message, link, extension_actions, extension_request): (
 		&Message,
 		Option<&str>,
@@ -1383,6 +1385,11 @@ fn message_actions(
 	let (can_thread, thread_request) = thread;
 	popup.show(|ui| {
 		ui.set_min_width(160.0);
+		if !message.ephemeral
+			&& let Some((state, action)) = application
+		{
+			crate::user_menu::application_menu(ui, state, 3, message.id, action);
+		}
 		if !extension_actions.is_empty() {
 			ui.menu_button(
 				crate::i18n::translate("timeline-message-actions-extensions"),
@@ -4196,6 +4203,7 @@ impl TimelineView {
 							}
 							message_actions(
 								popup,
+								Some((state, &mut self.user_action)),
 								(
 									message,
 									link.as_deref(),
@@ -6367,6 +6375,7 @@ mod tests {
 						let menu = action_button(ui, crate::icons::Icon::More, "More");
 						message_actions(
 							egui::Popup::menu(&menu),
+							None,
 							(&message, None, &[], &mut None),
 							(own, true, true, can_delete),
 							(None, None, &mut reply),

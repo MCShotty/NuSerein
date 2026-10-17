@@ -4827,3 +4827,10 @@ search-overlays-no-matching-content-types = Nenhum tipo de conteúdo corresponde
 search-overlays-history = Histórico
 search-overlays-clear-history = Limpar histórico de pesquisa
 main-sign-in-rate-limited-detail = O Discord está limitando este login. Aguarde antes de tentar novamente. Outra tentativa antes disso pode aumentar a espera.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.

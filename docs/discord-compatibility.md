@@ -2630,3 +2630,31 @@ the official notice in place of the withheld details, and omits Member Since and
 matching the official client. Roles, mutuals and the message field stay. The service
 withholds the hidden data itself; Serein never infers privacy from missing fields. No live
 private-profile response has been used as validation.
+
+
+## Application command parity — October 17, 2026
+
+This branch extends fork `f9e39f7`. The owner-supplied desktop reference is Discord Stable
+641004 (`c9ac31f`), host 1.0.9262 x64 (`94186`); no official client was run here.
+Native user/message context commands appear in the Apps submenu of existing context menus.
+They require a known target in the current accessible conversation, the current received
+schema, current permissions and one explicit interaction. Discovery merges the bounded
+conversation index with eligible account-installed commands from the unofficial
+`GET /users/@me/application-command-index` route, using guild/bot-DM/private contexts
+rather than treating every direct message as a bot conversation.
+
+Autocomplete uses a separate replaceable worker and nonce/deadline correlation. A partial
+form posts interaction type 4 with one focused string value, including numeric options.
+HTTP acceptance leaves suggestions pending until the matching Gateway choices event.
+Older, oversized, wrong-schema, disconnected and retired responses cannot replace the
+current choices. Input changes are debounced; requests contain only the selected form's
+bounded inputs. They never execute the command or block the ordinary interaction lifecycle.
+There are at most 25 choices; failures expose an explicit retry. Account scopes and current
+permissions retire suggestions. Command acceptance remains distinct from application response.
+
+The [official command schema](https://docs.discord.com/developers/interactions/application-commands)
+and [normal-user account interaction reference](https://docs.discord.food/interactions/application-commands)
+provide protocol evidence. Account discovery and autocomplete dispatch are unofficial;
+account entitlement and live service acceptance remain owner-controlled and unverified.
+Attachment command arguments still require a separate native file-selection integration;
+this branch does not mislabel modal file support as slash-command attachment parity.

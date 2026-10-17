@@ -4830,3 +4830,10 @@ search-overlays-no-matching-content-types = No hay tipos de contenido coincident
 search-overlays-history = Historial
 search-overlays-clear-history = Borrar historial de búsqueda
 main-sign-in-rate-limited-detail = Discord está limitando este inicio de sesión. Espera antes de volver a intentarlo. Otro intento antes de tiempo puede alargar la espera.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.

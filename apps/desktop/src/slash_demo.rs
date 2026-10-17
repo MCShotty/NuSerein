@@ -8,7 +8,7 @@ pub fn catalog(guild: Option<Id>) -> Vec<schema::Command> {
 			"id":"99101", "version":"1", "application_id":"99000", "name":"weather",
 			"description":"Look up a city forecast.", "contexts":[0,1],
 			"options":[
-				{"type":3,"name":"city","description":"City to look up.","required":true,"max_length":100},
+				{"type":3,"name":"city","description":"City to look up.","required":true,"max_length":100,"autocomplete":true},
 				{"type":3,"name":"units","description":"Temperature units.","choices":[
 					{"name":"Celsius","value":"celsius"},{"name":"Fahrenheit","value":"fahrenheit"}
 				]},
@@ -24,9 +24,11 @@ pub fn catalog(guild: Option<Id>) -> Vec<schema::Command> {
 			"id":"99104", "version":"1", "application_id":"99000", "name":"help",
 			"description":"Get help with the app's commands.", "contexts":[0,1],
 			"options":[
-				{"type":3,"name":"input","description":"The command or topic to learn about.","max_length":100}
+				{"type":3,"name":"input","description":"The command or topic to learn about.","max_length":100,"autocomplete":true}
 			]
 		},
+		{"id":"99105","version":"1","application_id":"99000","type":2,"name":"Inspect member","contexts":[0,1,2],"integration_types":[0,1]},
+		{"id":"99106","version":"1","application_id":"99000","type":3,"name":"Inspect message","contexts":[0,1,2],"integration_types":[0,1]},
 		{
 			"id":"99103", "version":"1", "application_id":"99010", "name":"canvas",
 			"description":"Create something with Studio.", "contexts":[0,1],
@@ -126,7 +128,7 @@ pub fn respond(state: &mut State, request: interactions::Request) {
 pub fn check() {
 	let mut state = preview();
 	let channel = state.selected.unwrap();
-	assert_eq!(state.application_commands.commands.len(), 4);
+	assert_eq!(state.application_commands.commands.len(), 6);
 	assert_eq!(state.drafts[&channel], "/");
 	assert!(
 		state
@@ -183,4 +185,32 @@ pub fn check() {
 	println!(
 		"Slash command debug check passed: two synthetic apps, nested command, typed options, choices, duplicate prevention, private response and draft isolation."
 	);
+}
+
+pub fn autocomplete(request: client_core::interactions::Request) -> client_core::Event {
+	use model::application_commands::{Choice, Value};
+	let choices = if let client_core::interactions::Data::Autocomplete { query } = &request.data {
+		let option = query
+			.command
+			.options_at(&query.path)
+			.ok()
+			.and_then(|options| options.iter().find(|option| option.name == query.focused));
+		let value = match option.map(|option| option.kind) {
+			Some(4) => Value::Integer(2),
+			Some(10) => Value::Number(2.0),
+			_ => Value::String("Synthetic choice".into()),
+		};
+		vec![Choice {
+			name: "Synthetic choice".into(),
+			value,
+		}]
+	} else {
+		Vec::new()
+	};
+	client_core::Event::Autocomplete(
+		client_core::application_commands::CompletionEvent::Choices {
+			nonce: request.nonce,
+			choices,
+		},
+	)
 }

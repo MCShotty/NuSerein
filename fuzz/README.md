@@ -65,3 +65,5 @@ The seeds are replayed during corpus initialization before coverage-guided mutat
 smoke run establishes only that these seeds and generated inputs found no failing oracle during
 that run. Coverage counters are instrumentation feedback, not a whole-repository coverage
 percentage, proof of absent bugs, native UI evidence or live Discord compatibility.
+
+Command parity also exercises the bounded autocomplete-choice and private-context account-index parsers (selectors 11 and 12). Seeds are synthetic and contain no account or service traffic.

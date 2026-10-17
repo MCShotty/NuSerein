@@ -380,6 +380,7 @@ cargo xtask package
 | **Reactions & Emojis** | Implemented | Twemoji rendering, native reaction counts, eight-emoji quick picker, full emoji picker integration, custom guild emojis, and add/remove reaction controls |
 | **GIFs & Media Search** | Implemented | KLIPY GIF picker with search, favorites category, and one-click direct sending |
 | **User Mentions & Autocomplete** | Implemented | Clickable user mentions with interactive composer autocompletion and visual highlight styling |
+| **Application Commands** | Partial | Slash commands, autocomplete, user/message Apps menus and eligible account-installed commands; attachment arguments remain unsupported |
 | **Media Previews & Video Player** | Implemented | Inline MOV, MP4, and WebM playback where platform codecs are available; media copy/save context menus, inline image cards, embed cards, related embed image galleries, and full-resolution image viewer modals |
 | **File & Attachment Uploads** | Implemented | Multi-attachment batch staging with file-type badges (PDF, ZIP, STL, images), thumbnail previews, individual file removal, upload progress bar, and drag-and-drop |
 | **Voice Engine & Calls** | Implemented | 1-to-1/group DM calls & server channels, Opus codec, DAVE v1 E2EE, Sonora AEC3 acoustic echo cancellation, RNNoise suppression, push-to-talk (`V`), audio device selector |

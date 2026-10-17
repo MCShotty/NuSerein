@@ -201,3 +201,9 @@ and Post controls. Its content scrolls while the footer remains available. Escap
 the close icon and a backdrop click dismiss an idle editor; a pending submission
 keeps it open. Unknown results and expired but unfinalized polls retain explicit
 status text. `--features demo -- --demo --demo-polls` previews the fixture offline.
+
+
+Application context commands use the existing user/message context menu's Apps submenu.
+Command arguments with autocomplete retain text input and add a keyboard-accessible choices
+menu with loading/error/retry states. Suggestions update after a short typing pause and
+never submit the command. The ordinary composer preserves its draft and explicit Run action.

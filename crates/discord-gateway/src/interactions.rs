@@ -46,6 +46,15 @@ pub(super) fn event(name: &str, bytes: &[u8]) -> Result<Option<Event>, Failure> 
 	else {
 		return Ok(None);
 	};
+	if name == "APPLICATION_COMMAND_AUTOCOMPLETE_RESPONSE" {
+		let Ok(choices) = discord_protocol::application_commands::autocomplete_choices(bytes)
+		else {
+			return Ok(None);
+		};
+		return Ok(Some(Event::Autocomplete(
+			client_core::application_commands::CompletionEvent::Choices { nonce, choices },
+		)));
+	}
 	let event = match name {
 		"INTERACTION_SUCCESS" => interactions::Event::Success { nonce },
 		"INTERACTION_FAILURE" => interactions::Event::Failed { nonce },

@@ -41,8 +41,19 @@ pub(super) struct Active {
 	name: String,
 }
 
+#[derive(Clone, PartialEq)]
+pub(super) struct CompletionInput {
+	pub id: Id,
+	pub path: Vec<String>,
+	pub values: Vec<(String, String)>,
+	pub focused: String,
+}
+
 #[derive(Default)]
 pub(super) struct Menu {
+	pub completion_request: Option<CompletionInput>,
+	completion_wait: Option<(std::time::Instant, CompletionInput)>,
+	last_completion: Option<CompletionInput>,
 	channel: Option<Id>,
 	generation: u64,
 	query: Option<String>,
@@ -70,6 +81,9 @@ impl Menu {
 			*self = Self::default();
 		}
 		self.enabled = false;
+		self.completion_request = None;
+		self.completion_wait = None;
+		self.last_completion = None;
 		self.rect = None;
 		self.argument_rect = None;
 		self.run = false;
@@ -174,7 +188,7 @@ impl Menu {
 			}
 		}
 		for command in &state.application_commands.commands {
-			if !state.can_use_application_command(channel, command) {
+			if command.kind != 1 || !state.can_use_application_command(channel, command) {
 				continue;
 			}
 			self.applications.insert(command.application_id);
@@ -733,6 +747,8 @@ impl Menu {
 		let colors = design::palette(ui);
 		let width = ui.available_width();
 		let focus_first = allowed && std::mem::take(&mut self.focus_argument);
+		let mut completion_current =
+			state.autocomplete_matches_form(channel, active.id, &active.path, &active.values);
 		let mut back = false;
 		let response = egui::ScrollArea::vertical()
 			.id_salt(("inline-arguments", channel, active.id))
@@ -940,12 +956,24 @@ impl Menu {
 								{
 									self.run = true;
 								}
-								let response = argument(ui, option, value, state, channel, id);
+								let response = argument(
+									ui,
+									option,
+									value,
+									state,
+									(channel, active.id, &active.path, completion_current),
+									id,
+								);
 								if focus_first && index == 0 {
 									response.request_focus();
 								}
 								if response.gained_focus() || (focus_first && index == 0) {
 									response.scroll_to_me(None);
+								}
+								if response.changed() {
+									completion_current = false;
+									self.last_completion = None;
+									self.completion_wait = None;
 								}
 								if response.has_focus() || response.hovered() {
 									self.focused_option = index;
@@ -956,6 +984,48 @@ impl Menu {
 				})
 			});
 		self.argument_rect = Some(response.inner_rect);
+		let completion = self
+			.active
+			.as_ref()
+			.filter(|_| self.enabled && self.visible())
+			.and_then(|active| {
+				let command = state.application_commands.commands.iter().find(|command| {
+					command.id == active.id && state.can_use_application_command(channel, command)
+				})?;
+				let option = command
+					.options_at(&active.path)
+					.ok()?
+					.get(self.focused_option)
+					.filter(|option| option.autocomplete)?;
+				Some(CompletionInput {
+					id: active.id,
+					path: active.path.clone(),
+					values: active.values.clone(),
+					focused: option.name.clone(),
+				})
+			});
+		if let Some(input) = completion.filter(|input| self.last_completion.as_ref() != Some(input))
+		{
+			if self
+				.completion_wait
+				.as_ref()
+				.is_none_or(|(_, previous)| previous != &input)
+			{
+				self.completion_wait = Some((std::time::Instant::now(), input.clone()));
+			}
+			if let Some((changed, _)) = &self.completion_wait {
+				let delay = std::time::Duration::from_millis(300);
+				if changed.elapsed() >= delay {
+					self.completion_request = Some(input.clone());
+					self.last_completion = Some(input);
+					self.completion_wait = None;
+				} else {
+					ui.ctx()
+						.request_repaint_after(delay.saturating_sub(changed.elapsed()));
+				}
+			}
+		}
+
 		if back {
 			self.active = None;
 			self.error = None;
@@ -1262,7 +1332,7 @@ fn argument(
 	option: &CommandOption,
 	value: &mut String,
 	state: &State,
-	channel: Id,
+	(channel, command, path, completion_current): (Id, Id, &[String], bool),
 	id: egui::Id,
 ) -> egui::Response {
 	if !option.choices.is_empty() || option.kind == 5 {
@@ -1362,6 +1432,48 @@ fn argument(
 			response
 		})
 		.inner
+	} else if option.autocomplete {
+		ui.horizontal(|ui| {
+			let mut response = ui.add(
+				egui::TextEdit::singleline(value)
+					.id(id)
+					.frame(egui::Frame::NONE)
+					.char_limit(usize::from(option.max_length.unwrap_or(6000)).min(6000))
+					.desired_width((ui.available_width() - 25.0).max(24.0)),
+			);
+			let suggestions = completion_current
+				.then(|| state.autocomplete_view(channel, command, path, &option.name, value))
+				.flatten();
+			ui.menu_button("▾", |ui| {
+				if let Some(view) = suggestions {
+					if view.loading {
+						ui.spinner();
+					}
+					if let Some(error) = view.error {
+						ui.weak(error);
+					}
+					for choice in &view.choices {
+						if ui.button(&choice.name).clicked() {
+							*value = value_text(&choice.value);
+							response.mark_changed();
+							ui.close();
+						}
+					}
+					if !view.loading
+						&& ui
+							.button(crate::i18n::translate("application-menu-retry-suggestions"))
+							.clicked()
+					{
+						response.mark_changed();
+						ui.close();
+					}
+				} else {
+					ui.weak(crate::i18n::translate("application-menu-type-suggestions"));
+				}
+			});
+			response
+		})
+		.inner
 	} else if option.kind == 11 {
 		ui.add(
 			egui::Label::new(crate::i18n::translate(
@@ -1438,7 +1550,7 @@ impl crate::MessagingUi {
 				.application_commands
 				.commands
 				.iter()
-				.filter(|command| command.name == name)
+				.filter(|command| command.kind == 1 && command.name == name)
 				.peekable();
 			if matching.peek().is_some()
 				&& !matching.any(|command| state.can_use_application_command(channel, command))
@@ -1708,6 +1820,37 @@ mod tests {
 				"required blank input is rejected"
 			);
 			view.slash_commands.active.as_mut().unwrap().values[0].1 = "Hello".into();
+			state.application_commands.commands[0].options[0].autocomplete = true;
+			frame(&mut view, &mut state, None);
+			let (changed, _) = view.slash_commands.completion_wait.as_mut().unwrap();
+			*changed = std::time::Instant::now() - std::time::Duration::from_millis(400);
+			frame(&mut view, &mut state, None);
+			let input = view.slash_commands.completion_request.take().unwrap();
+			let Some(Command::Autocomplete(request)) =
+				state.request_autocomplete(input.id, input.path, input.values, input.focused)
+			else {
+				panic!("autocomplete request")
+			};
+			state.apply_autocomplete(
+				client_core::application_commands::CompletionEvent::Submitted {
+					nonce: request.nonce,
+					result: Err(client_core::auth::Failure::Network),
+				},
+			);
+			frame(&mut view, &mut state, None);
+			assert!(
+				view.slash_commands.completion_request.is_none(),
+				"failed suggestions do not retry automatically"
+			);
+			assert!(
+				!state.interactions.busy(),
+				"suggestions never execute commands"
+			);
+			assert_eq!(state.drafts[&channel], "/ask ");
+			assert_eq!(
+				view.slash_commands.active.as_ref().unwrap().values[0].1,
+				"Hello"
+			);
 			state.application_commands.commands[0].permissions.user = Some(false);
 			state.application_commands.request += 1;
 			frame(&mut view, &mut state, None);
