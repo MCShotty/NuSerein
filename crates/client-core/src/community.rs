@@ -1467,4 +1467,45 @@ mod tests {
 			voice::MediaMode::Dave
 		);
 	}
+	#[test]
+	fn concurrent_fence_notices_cannot_rewind_scope_or_restore_an_old_account() {
+		let mut state = fixture(p::ADMINISTRATOR);
+		let generation = state.generation;
+		state.apply(Envelope {
+			generation,
+			event: CoreEvent::CommunityFence(2),
+		});
+		assert_eq!(state.community.fence, 2);
+		let r = request(&mut state, Action::ListEvents);
+		state.apply(Envelope {
+			generation,
+			event: CoreEvent::CommunityFence(1),
+		});
+		assert_eq!(state.community.fence, 2);
+		assert!(state.community.pending());
+		state.apply(Envelope {
+			generation,
+			event: CoreEvent::CommunityFence(3),
+		});
+		assert_eq!(state.community.fence, 3);
+		assert!(!state.community.pending());
+		apply(
+			&mut state,
+			r,
+			Ok(Outcome::Events(EventPage {
+				guild: Id(10),
+				events: vec![event()],
+				subscriptions: None,
+				subscriptions_complete: false,
+			})),
+		);
+		assert!(state.community.events.is_none());
+		state.logout();
+		state.apply(Envelope {
+			generation,
+			event: CoreEvent::CommunityFence(4),
+		});
+		assert_eq!(state.community.fence, 0);
+		assert!(state.community.events.is_none());
+	}
 }
