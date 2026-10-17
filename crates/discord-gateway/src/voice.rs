@@ -2276,11 +2276,14 @@ mod tests {
 				})
 			));
 			calls.dispatch("VOICE_STATE_UPDATE", br#"{"guild_id":"10","channel_id":"20","user_id":"1","session_id":"synthetic-session","suppress":true}"#, Some(Id(1)), &emit).unwrap();
+			// Suppression is independent of the server mute flag. The reducer still maps
+			// ordinary-voice suppression to its effective microphone mute gate.
 			assert!(matches!(
 				events.lock().unwrap()[2],
 				Event::Voice(voice::Event::State {
 					request: Some(5),
-					server_muted: true,
+					server_muted: false,
+					stage: voice::StageParticipation::Audience { requested: false },
 					muted: true,
 					..
 				})
