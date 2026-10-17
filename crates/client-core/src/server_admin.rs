@@ -413,7 +413,7 @@ impl State {
 				channel,
 				change,
 			} => self.can_moderate_voice(guild, *channel, *user, *change),
-			Action::Community(action) => self.community_action_allowed(guild, action),
+			Action::Community(action) => self.community_admin_action_allowed(guild, action),
 			Action::AutoMod(action) => self.automod_action_allowed(guild, action),
 			Action::Moderation(action) => self.moderation_action_allowed(guild, action),
 			Action::AuditLog(query) => self.audit_log_action_allowed(guild, query),

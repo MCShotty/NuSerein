@@ -127,7 +127,7 @@ impl State {
 		}
 		value & (p::ADMINISTRATOR | p::MANAGE_GUILD | p::MANAGE_ROLES) != 0
 	}
-	pub(super) fn community_action_allowed(&self, guild: Id, action: &Action) -> bool {
+	pub(super) fn community_admin_action_allowed(&self, guild: Id, action: &Action) -> bool {
 		if !action.valid() || !self.can_open_community_settings(guild) {
 			return false;
 		}
@@ -478,13 +478,13 @@ pub(crate) mod tests {
 	#[test]
 	fn community_permission_and_role_hierarchy_admission() {
 		let mut manager = state(p::MANAGE_GUILD);
-		assert!(manager.community_action_allowed(Id(2), &Action::Load(Section::Onboarding)));
-		assert!(!manager.community_action_allowed(Id(2), &edit(&manager)));
+		assert!(manager.community_admin_action_allowed(Id(2), &Action::Load(Section::Onboarding)));
+		assert!(!manager.community_admin_action_allowed(Id(2), &edit(&manager)));
 		manager.permissions.guilds.get_mut(&Id(2)).unwrap().owner = Some(Id(1));
 		manager.permissions.clear_cache();
-		assert!(manager.community_action_allowed(Id(2), &edit(&manager)));
+		assert!(manager.community_admin_action_allowed(Id(2), &edit(&manager)));
 		let administrator = state(p::ADMINISTRATOR);
-		assert!(administrator.community_action_allowed(Id(2), &edit(&administrator)));
+		assert!(administrator.community_admin_action_allowed(Id(2), &edit(&administrator)));
 		assert!(administrator.community_role_allowed(Id(2), Id(4)));
 		assert!(!administrator.community_role_allowed(Id(2), Id(5)));
 		assert!(!administrator.community_role_allowed(Id(2), Id(6)));
@@ -573,6 +573,6 @@ pub(crate) mod tests {
 			panic!()
 		};
 		o.enabled = true;
-		assert!(!state.community_action_allowed(Id(2), &action));
+		assert!(!state.community_admin_action_allowed(Id(2), &action));
 	}
 }
