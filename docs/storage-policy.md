@@ -705,7 +705,9 @@ suppression boolean to Custom with RNNoise/Off, AEC on, and no AGC/sensitivity g
 The selected profile and retained Custom settings are saved together; suppression strength
 is bounded to 0–3 and sensitivity to −80..=0 dBFS or disabled. Active processing settings
 replace one fixed-size watch snapshot. Existing eight-frame PCM queue limits are unchanged;
-processing has no downloaded model, recording, or persistent audio data.
+processing has no downloaded model or persistent audio data. Only the explicit
+voice-message recorder described below retains a bounded microphone clip; calls
+and microphone preview do not retain recordings.
 
 Recently visited conversations now keep at most eight dormant RAM timelines in the current
 account session, moved rather than cloned; the shared row/byte budget below usually evicts sooner.
@@ -821,7 +823,8 @@ The owner explicitly withdrew the no-storage policy on 2026-09-09. Local files, 
 | Reading/layout | One application-wide SQLite row with bounded scalar fields, including the double-click reaction opt-in and Unicode preset | Reset reading and layout removes only this override; retained across account logout |
 | Theme preset | One application-wide SQLite row (`theme_variant`, ≤32-byte key such as `onyx`); absent means Default | Select Default to remove it; unknown keys are ignored; retained across account logout |
 | SQLite working files | DELETE journal mode, in-memory temporary tables, 2 MiB page cache; transaction journal may temporarily add disk usage | SQLite transaction completion; normal SQLite crash recovery |
-| Voice credentials, DAVE identities/keys and PCM/Opus audio | Session memory only; one call, bounded media queues; no recording or audio cache | Hangup, failure, logout and application teardown; no forensic-erasure claim |
+| Voice credentials, DAVE identities/keys and call PCM/Opus audio | Session memory only; one call, bounded media queues; no call recording or audio cache | Hangup, failure, logout and application teardown; no forensic-erasure claim |
+| Explicit voice-message microphone clip | One session-only Ogg/Opus clip, at most 120 seconds / 8 MiB; no audio file, SQLite blob or saved audio draft | Send completion, discard/close, navigation, plugin disable, permission/session loss, logout and teardown; cancellation after submission cannot retract a remotely accepted message |
 | Audio devices, input profile/custom processing, push-to-talk and gain | Device-wide `app_preferences` SQLite singleton, bounded to 16 KiB; device names ≤1,024 bytes each | Retained across restart/logout; demo changes remain in memory |
 | Automatic emoticon conversion | Boolean in the existing device-wide `app_preferences` singleton; defaults off, including older saved preferences | Retained across restart/logout; converts standalone emoticons on message send/edit; demo changes remain in memory |
 | Preload on hover | Boolean in the existing device-wide `app_preferences` singleton; defaults on, including older saved preferences | Retained across restart/logout; off stops conversation, profile and GIF picker preloads; demo never preloads conversations or profiles |
@@ -909,7 +912,7 @@ the UI copies it for GPU colour conversion. No live media was used to establish 
 
 Service-confirmed DM ringing retains at most 64 calls × 64 recipient IDs (32 KiB ID storage plus bounded vector metadata), alongside the existing call roster. It is session-only and clears on call deletion, access loss, fresh resync and disconnect. Targeted ringing adds one fixed-size pending UI action and one cancellable HTTP task, with no retries or persisted history. The dispatcher reuses a navigation-limited private-channel map, retaining at most 63 recipient IDs and 512 allocated ID bytes per channel for membership checks; no directory fetch is added. A coalesced revision invalidates pending actions when membership changes.
 
-Voice introduces no application audio files, recordings or voice-key store. Device preferences are saved locally as described above. Voice tokens/session IDs use redacted, zeroizing buffers and never enter SQLite or diagnostics; DAVE identities are regenerated for a new call. Eight-frame PCM queues, bounded Opus packets and one bounded decoder/jitter/PCM working set per remote speaker (up to 63) are transient media allocations, not disk caches. Guild voice rosters are session-only with 4,096-entry and 1 MiB budgets; they are never persisted. Upstream cryptographic tracing is compiled out. Audio-device shutdown is fenced before another device session starts. Synthetic crypto, transport and device-free capture-gate tests passed; actual audio-driver/permission artifacts and process writes during a physical call have not been traced. OS microphone permissions and driver behavior are outside Serein's cache-clearing guarantee.
+Calls introduce no application audio files, recordings or voice-key store. The separate explicit voice-message recorder retains one bounded microphone clip in RAM, as described below. Device preferences are saved locally as described above. Voice tokens/session IDs use redacted, zeroizing buffers and never enter SQLite or diagnostics; DAVE identities are regenerated for a new call. Eight-frame PCM queues, bounded Opus packets and one bounded decoder/jitter/PCM working set per remote speaker (up to 63) are transient media allocations, not disk caches. Guild voice rosters are session-only with 4,096-entry and 1 MiB budgets; they are never persisted. Upstream cryptographic tracing is compiled out. Audio-device shutdown is fenced before another device session starts. Synthetic crypto, transport and device-free capture-gate tests passed; actual audio-driver/permission artifacts and process writes during a physical call have not been traced. OS microphone permissions and driver behavior are outside Serein's cache-clearing guarantee.
 
 The optional READY voice-user lookup and per-snapshot/passive-update member lookup each admit
 at most 4,096 unique nonzero users / 1 MiB of estimated model storage, checking before insertion.
@@ -1195,6 +1198,40 @@ the conversation changes, the window is minimized/occluded, or the session ends.
 An atomic generation gate mutes obsolete output; the single worker releases its
 stream/buffers on cancellation. Pausing retains only bounded buffered audio;
 seeking replays decoding from the start instead of retaining the file.
+
+## Explicit microphone voice-message storage (October 17, 2026)
+
+One explicitly started recorder owns one microphone stream and an eight-frame
+48 kHz mono f32 PCM ring: 30,720 sample bytes, plus current-frame/callback scratch.
+It reuses native permission/device selection and rejects PCM behind the initial
+and live mute/deafen/PTT gates. A single worker performs DSP and mono Opus encoding
+at a 32 kbit/s target, then writes Ogg pages into one Vec whose requested capacity
+is capped at 8 MiB. Duration is at most 120 seconds / 6,000 encoded 20 ms frames;
+waveform accumulation is at most 6,000 amplitude bytes. The UI receives a latest-value
+fixed snapshot with a timer, state and 64 waveform bytes; no sample/packet event
+queue enters rendering. Codec/DSP and OS/driver allocations remain additional.
+
+The completed clip moves through one result slot into one session-only review
+slot and, on explicit Send, the existing single attachment-upload worker. The review
+player and upload share the encoded Arc; review uses the existing one-second PCM
+ring and decoded-byte/duration limits. Conversion
+from the recording Vec to the shared encoded buffer can transiently overlap two
+encoded allocations of at most 8 MiB each. HTTP/TLS and bounded existing upload
+buffers are additional; this is not a whole-process RAM cap. Attachment duration,
+base64 waveform and filename use ordinary message metadata; raw audio never enters
+SQLite, diagnostics, text drafts, a temporary file or an application recording cache.
+The plugin stores only its bounded settings using the existing granted extension
+storage and receives no audio or capture/device API.
+
+Stop gates callbacks immediately and closes the native microphone before final
+encoder flush. Discard/close, navigation, disabling the plugin, lost access or
+session, logout and call teardown cancel capture/review/upload and release unsent
+bytes. One process-wide microphone lease and completion fences prevent overlapping
+recorders, calls and microphone tests; desktop admission also fences camera previews.
+A stalled native driver can delay worker retirement. Accepted remote uploads/messages
+cannot be erased by local cancellation, and ambiguous sends are never retried.
+Physical permission/driver cleanup and live Discord acceptance remain unverified;
+ordinary tests and synthetic demo never open a microphone.
 
 ## Screen sharing
 
@@ -1908,3 +1945,31 @@ retains at most eight clips. Call stop/account change cancels the scope and rele
 PCM and pending plays; blocking decoders check cancellation between packets. Anonymous CDN
 reads never receive the API session. Playback speed processing has a bounded grain/search
 window and operates on the decoder worker, outside rendering and device callbacks.
+
+## Independent media output (October 17, 2026)
+
+The optional media output device ID joins device-local application preferences,
+bounded to 1,024 bytes and the existing 16 KiB preference record. It survives logout
+and restart; demo changes remain in memory. Attachment audio/video workers take
+one selected ID per playback request. A watched-stream routing worker retains at
+most eight mono 20 ms frames (30,720 bytes), one stereo output ring of at most
+2,880 sample pairs (23,040 bytes), and one frame being processed (3,840 bytes).
+The media callback and native driver buffers are additional. There is one worker
+per explicit watched stream, replaced and stopped with its owning watch context.
+A retiring worker must finish native output teardown before the next worker starts;
+rapid watch switches cannot accumulate output workers. Each drain pass examines
+at most eight frames even if incoming packets continue refilling the channel.
+Mute/deafen, device changes and stop clear the pending PCM; nothing is persisted,
+recorded, logged or sent anywhere beyond existing Discord transports.
+
+### Watched-stream synchronization metadata (October 17, 2026)
+
+The authenticated RTCP parser admits at most eight sender reports per compound
+packet. A watched RTC session retains at most 16 current user clock entries, with
+one audio report, one video report and one RTP/software-playout anchor each. Reports
+expire after 15 seconds; the audio anchor expires after 250 ms. No wall-clock,
+identifiers, samples or reports are persisted or logged. Each speaker's eight existing
+Opus reorder slots add only optional RTP timestamps. Decoded-picture scheduling
+holds the already bounded decoder scratch for at most 120 ms, checks cancellation
+within 2 ms and allocates no additional picture queue. Source changes, rekeys,
+watch stop and account teardown revoke old mappings and native decoder lifetimes.

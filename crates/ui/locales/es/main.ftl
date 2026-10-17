@@ -4574,6 +4574,8 @@ voice-recipient-not-in-call = Fuera de la llamada
 
 reconnect-now = Reconectar ahora
 
+voice-media-output = Salida multimedia
+voice-media-output-hint = Se aplica a nuevas reproducciones de audio/vídeo y a las transmisiones que ves.
 voice-call-moved-to-another-client = Se reemplazó la sesión de llamada de este dispositivo
 
 server-settings-page-safety = Configuración de seguridad
@@ -4935,3 +4937,28 @@ search-overlays-history = Historial
 search-overlays-clear-history = Borrar historial de búsqueda
 main-sign-in-rate-limited-detail = Discord está limitando este inicio de sesión. Espera antes de volver a intentarlo. Otro intento antes de tiempo puede alargar la espera.
 audio-playback-speed = Velocidad de reproducción
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection

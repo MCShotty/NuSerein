@@ -227,6 +227,7 @@ impl Screen {
 			ui.screen.supported = false;
 			ui.screen.preview = None;
 			ui.screen.capture_status = None;
+			ui.screen.adapting = false;
 			return None;
 		}
 		ui.screen.supported = discord_voice::screen::supported();
@@ -458,6 +459,10 @@ impl Screen {
 			.live
 			.as_ref()
 			.and_then(|live| live.worker.capture_status());
+		ui.screen.adapting = self
+			.live
+			.as_ref()
+			.is_some_and(|live| live.worker.adapting());
 		self.command.take()
 	}
 	fn finish_start(&mut self, runtime: &Runtime, ctx: &egui::Context) {

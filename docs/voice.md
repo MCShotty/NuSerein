@@ -2,6 +2,27 @@
 
 The standard build implements native audio calls in existing one-to-one and group Discord DMs and guild voice channels. It uses the owner's existing account, Discord signaling/voice servers, Opus and DAVE version 1. There is no bot, project relay, separate account, recording service or webview call UI. **Live Discord interoperability and physical microphone/speaker behavior have not been tested; milestone 4 has not passed.**
 
+### Independent media output
+
+Settings → Voice & Video offers a saved **Media output** device independently of
+the voice speaker device. New attachment audio/video playback uses that selection;
+already playing attachments keep their current output until restarted. Watched
+screen-share audio switches on its worker when the selection changes, without
+rejoining the call. Stream volume/mute and deafen still apply; voice speaker gain
+does not affect a separately routed stream. The existing received-stream mono
+decode remains unchanged; attachment stereo is preserved.
+
+**Default** keeps the existing routing: attachments use the system output and
+watched streams mix into the voice speaker output. A missing or unusable selected
+device stops media audio with a visible error and retains the preference; choose
+another device to retry. An explicit selection never falls back to another output.
+Discovery does not open
+devices or capture a microphone. Separate stream playout starts only after the
+owner explicitly watches a stream, retains eight 20 ms mono frames (30,720 bytes)
+plus at most 60 ms stereo output PCM (23,040 bytes), and discards queued audio on
+mute, deafen, device change and stop. Hardware routing and live stream compatibility
+remain unverified by the offline tests.
+
 ```sh
 cargo run --locked
 cargo run --locked -- --demo  # offline UI; calling/device access disabled
@@ -125,9 +146,9 @@ For the owner-controlled live gate, leave the peer connected in a private DM cal
 DM in Serein, wait for the banner, then explicitly Join. Verify no new ring, actual two-way
 audio, leaving/rejoining while the peer stays, and disappearance after the peer ends the call.
 
-Mute/deafen, saved input/output selection and focused V push-to-talk are implemented. Remappable mute and deafen bindings use global native registration when supported and when a modifier is present; they fall back to focused input on Wayland or when registration is unavailable. Settings → Keybinds offers **Enable global keybinds**, saved on this device and enabled by default. Turning it off unregisters global voice shortcuts; mute, deafen and push-to-talk still work while Serein is focused, with the existing text-entry guards. Push-to-talk releases when focus is lost and is disabled while text entry has focus. It remains focused-only by default. Push to Mute is unassigned by default; once bound, holding it mutes the microphone during a call and releasing it restores the previous state, and it registers globally like push-to-talk. Voice and other remappable actions can also use mouse 3, 4 or 5, optionally with modifiers; left and right click cancel recording instead. A bound mouse button no longer starts middle-click autoscroll or back/forward navigation. Mouse bindings work while Serein is focused on every platform and, with global keybinds enabled, are polled globally on Windows only; macOS, X11 and the Wayland portal have no global mouse-button registration. Devices are initialized only following an explicit call with authenticated empty-room waiting or encrypted readiness, or an explicit local microphone test; no microphone test runs at startup. Acoustic echo cancellation follows the selected input profile; see below for its limits. A microphone that fails to open or start, reports a fatal callback error, or delivers no audio callbacks for five seconds is disabled with a visible warning. The call and speaker playback remain connected, and the client periodically retries microphone setup in the background while selecting another input immediately retries. Transient buffer discontinuities and non-fatal stream glitches do not disable the microphone. Ordinary silence does not trigger the warning. Selected speaker failures can fall back to the default output; an unusable output can still fail the call.
+Mute/deafen, saved input/output selection and focused V push-to-talk are implemented. Remappable mute and deafen bindings use global native registration when supported and when a modifier is present; they fall back to focused input on Wayland or when registration is unavailable. Settings → Keybinds offers **Enable global keybinds**, saved on this device and enabled by default. Turning it off unregisters global voice shortcuts; mute, deafen and push-to-talk still work while Serein is focused, with the existing text-entry guards. Push-to-talk releases when focus is lost and is disabled while text entry has focus. It remains focused-only by default. Push to Mute is unassigned by default; once bound, holding it mutes the microphone during a call and releasing it restores the previous state, and it registers globally like push-to-talk. Voice and other remappable actions can also use mouse 3, 4 or 5, optionally with modifiers; left and right click cancel keybind recording instead. A bound mouse button no longer starts middle-click autoscroll or back/forward navigation. Mouse bindings work while Serein is focused on every platform and, with global keybinds enabled, are polled globally on Windows only; macOS, X11 and the Wayland portal have no global mouse-button registration. Devices are initialized only following an explicit call with authenticated empty-room waiting or encrypted readiness, an explicit local microphone test, or an explicitly started voice-message recording; no microphone test or recording runs at startup. Acoustic echo cancellation follows the selected input profile; see below for its limits. During a call, a microphone that fails to open or start, reports a fatal callback error, or delivers no audio callbacks for five seconds is disabled with a visible warning. The call and speaker playback remain connected, and the client periodically retries microphone setup in the background while selecting another input immediately retries. Transient buffer discontinuities and non-fatal stream glitches do not disable the microphone. Ordinary silence does not trigger the warning. Selected speaker failures can fall back to the default output; an unusable output can still fail the call.
 
-One-to-one DM calls accept only their expected peer. Group DM and server calls support up to 64 total participants, with independent bounded decoder/jitter state and mixed mono playback. Only DAVE version 1 is accepted; encryption downgrades and group identities outside the authenticated participant roster fail closed. Stage channels and recording are unsupported. Outgoing screen sharing and macOS camera support is described below. Voice WebSocket resumption has a finite retry budget; failed voice resumption or a fresh main Gateway session requires an explicit new call. A transient main Gateway disconnect suspends controls and cancels pending call HTTP; successful Resume preserves confirmed DM call ownership. Voice credentials, ephemeral DAVE identities and audio stay in bounded session memory. The displayed privacy code applies to the current group epoch; identities are not remembered across calls. Comparing codes does not establish long-term identity verification or text-message encryption.
+One-to-one DM calls accept only their expected peer. Group DM and server calls support up to 64 total participants, with independent bounded decoder/jitter state and mixed mono playback. Only DAVE version 1 is accepted; encryption downgrades and group identities outside the authenticated participant roster fail closed. Stage channels and call recording are unsupported. Explicit microphone clips use the separate voice-message recorder below. Outgoing screen sharing and macOS camera support is described below. Voice WebSocket resumption has a finite retry budget; failed resumption or main Gateway disconnect requires an explicit new call. Voice credentials, ephemeral DAVE identities and audio stay in bounded session memory. The displayed privacy code applies to the current group epoch; identities are not remembered across calls. Comparing codes does not establish long-term identity verification or text-message encryption.
 
 ## Group DM calls
 
@@ -553,11 +574,15 @@ RNNoise/Off choice, echo cancellation enabled, and gain control/sensitivity gati
 The worker processes AEC/WebRTC suppression, then optional RNNoise,
 then digital automatic gain, manual gain, the local meter, and sensitivity gating.
 Calls and microphone preview share this path; playback audio is not denoised.
+Explicit voice-message recording reuses suppression, automatic/manual gain and
+sensitivity, with no speaker echo reference and no playback device.
 No DSP runs in rendering or native audio callbacks. Settings replace one fixed-size
 worker snapshot and do not add a queue. Native PCM queues remain eight frames each.
 
 RNNoise uses bundled nnnoiseless 0.5.2. These processors keep bounded session state,
-with no audio recordings or remote processing. Quality, CPU cost, physical latency and
+without retaining call or microphone-preview audio or using remote processing.
+The explicit voice-message recorder below retains one bounded microphone clip in
+RAM. Quality, CPU cost, physical latency and
 cross-platform behavior require owner-operated checks; this local implementation does
 not establish production readiness or superiority over Discord's processing.
 
@@ -1126,6 +1151,57 @@ Start-Process .\dist\serein.exe -RedirectStandardError "$PWD\stream-debug-retest
 Start sharing promptly after launch so the bounded diagnostic budget covers the test.
 Keep these local logs out of commits.
 
+## Explicit voice messages
+
+**Voice Messages** is an opt-in bundled Starter plugin under Settings → Extensions.
+Install/enable it and grant its declared voice-message and settings-storage access;
+opening its card or saving preferences never opens the microphone. The plugin
+configures the native host and never receives microphone samples, encoded audio,
+credentials or device access. Settings offer a maximum duration of 5–120 seconds
+(default 120), Bars/Line waveform style and RNNoise suppression on/off (default on).
+Changes apply to new recordings.
+
+Choose **Record voice message** from the composer's **+** menu in an eligible
+conversation, then **Record**. A timer and 64-point waveform show capture progress.
+**Stop** closes the microphone before final encoding and presents the duration and
+waveform for review. **Listen before sending** plays the clip locally through the
+selected media output; **Stop listening** stops it. **Send** uploads one
+`voice-message.ogg` voice attachment.
+The typed text draft remains available for a separate send. This requires fresh
+channel access, ordinary send/attachment permission and Send Voice Messages;
+active uploads, message edits and selected ordinary attachments block recording.
+Calls, microphone tests and camera previews cannot start conflicting capture.
+
+The recorder uses the selected microphone and existing native permission path,
+including the bounded macOS authorization wait. Mute, deafen, Push to Mute and
+push-to-talk apply before capture and during recording; a closed gate records
+silence while the duration continues. The selected profile's gain and sensitivity
+still apply, with the recorder's suppression choice overriding profile suppression.
+Capture opens no speaker device or playback echo reference. Review playback
+requires its separate explicit Listen action and stops on Send or discard.
+
+One worker encodes mono 48 kHz Opus at a 32 kbit/s target into an Ogg container,
+with a 120-second duration ceiling and 8 MiB encoded-byte ceiling. DSP, encoding
+and device work stay off rendering and audio callbacks. Audio stays in session
+RAM; no audio file, draft blob or recording cache is created. Discard, closing the
+dialog, navigation, permission/session loss, disabling the plugin, logout and
+call teardown cancel the current capture/review/upload. Native retirement is
+fenced before another microphone owner starts. A blocked OS driver can still
+delay retirement. Upload cancellation after submission can be ambiguous; check
+the conversation before recording again. Sends are never automatically retried.
+The recorder receives only the explicitly requested microphone clip; no call
+audio or participant stream is connected to it.
+
+`cargo run --locked -p serein --features demo -- --demo --demo-chat --demo-recorder` exposes a
+synthetic recorder with generated timer/waveform data, no microphone access and
+Send disabled. Device-free checks cover Ogg/Opus output, waveform and resource
+bounds, initial mute/control gates, scope cancellation and local HTTP upload
+metadata. The attachment uses Discord's documented voice-message fields through
+the existing signed-upload path; normal-account acceptance, physical devices,
+permissions and audible delivery remain live-unverified. Only the owner may elect
+an explicitly controlled private-conversation test; ordinary automation never
+captures a microphone or sends a Discord voice message.
+
 ## Local microphone preview
 
 Voice & Video settings has an explicit Start testing / Stop testing control, a live RMS
@@ -1161,3 +1237,41 @@ continues to show service-confirmed state instead of reporting successful state
 changes as failures.
 
 Microphone preview restarts and call audio wait for the prior native audio worker to finish shutting down. Incoming video recovery tracks delivered pictures per participant, so an active sender cannot hide another sender’s stalled decoder; source replacement retires its previous progress.
+
+## Stream quality and synchronization audit — October 17, 2026
+
+Screen senders already adjust their bitrate from authenticated RTCP loss reports
+and REMB estimates, with bounded pacing and encoder reconfiguration. The selected
+source size, aspect ratio, frame rate, codec, GPU and HDR/SDR policy remain intact.
+Quality settings explain automatic adjustment; a simple status appears while the
+network target is reduced. Automatic resolution/FPS switching and simulcast layer
+selection are not implemented.
+
+Watched streams now preserve audio RTP timestamps through the bounded reorder
+and decode path and correlate them with the decoded video's FFmpeg presentation
+timestamp using authenticated RFC 3550 sender reports for current announced SSRCs.
+Only one timestamped audio source supplies a synchronization anchor; mixed,
+unknown, stale or inconsistent clocks use the existing immediate-picture path.
+No RTP-origin or wall-clock offset is guessed from packet arrival times.
+
+Correlation retains at most 16 user entries with one report per medium and one
+software audio-playout anchor each; compound RTCP holds at most eight reports.
+Reports expire after 15 seconds and audio anchors after 250 ms. A decoded picture
+may wait at most 120 ms on its decoder worker, in cancellable 2 ms increments;
+rendering and audio callbacks never wait or take this clock's mutex. Stop,
+rekeying and source replacement revoke old waits and decoder lifetimes. The
+jitter window retains eight packets as before, now with their optional timestamps.
+
+This schedules video against the audio frame handed to software playout. Native
+output queues, device buffer latency, clock drift at physical devices and remote
+sender-report availability still require owner-controlled measurements. Received
+stream audio remains mono; stereo attachment playback and stereo outgoing screen
+audio are separate existing paths. Offline scheduling/reorder/crypto tests do not
+establish audible lip sync or current Discord/SFU interoperability.
+
+The call-layout audit covers DM/group/guild grids, focused video/share, fullscreen,
+Show chat and narrow stages. Focused participant strips now scroll to every
+remaining tile rather than permanently truncating the roster to the first row.
+Existing explicit join/answer/recipient-ring, bounded group membership, mute/deafen,
+per-user levels and encrypted readiness remain the admission path. Physical calls,
+portal capture, output routing and official-client interoperability remain unverified.

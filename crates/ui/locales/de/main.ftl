@@ -4572,6 +4572,8 @@ voice-recipient-ringing = Klingelt…
 voice-recipient-not-in-call = Nicht im Anruf
 reconnect-now = Jetzt neu verbinden
 
+voice-media-output = Medienausgabe
+voice-media-output-hint = Gilt für neu gestartete Audio-/Videowiedergabe und angesehene Streams.
 voice-call-moved-to-another-client = Die Anrufsitzung dieses Geräts wurde ersetzt
 
 server-settings-page-safety = Sicherheitseinstellungen
@@ -4932,3 +4934,28 @@ search-overlays-history = Verlauf
 search-overlays-clear-history = Suchverlauf löschen
 main-sign-in-rate-limited-detail = Discord begrenzt diese Anmeldung. Warte, bevor du es erneut versuchst. Ein früherer Versuch kann die Wartezeit verlängern.
 audio-playback-speed = Wiedergabegeschwindigkeit
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection

@@ -33,6 +33,7 @@ impl Desktop {
 		} else {
 			"Connecting with the supplied session; saved login unchanged"
 		};
+		self.voice_messages.cancel();
 		self.voice.stop();
 		self.messaging.camera_test_requested = false;
 		self.messaging.camera_test_texture = None;
@@ -118,6 +119,7 @@ impl Desktop {
 		self.audio.stop();
 		self.video.stop();
 		self.video.cancel_posters();
+		self.voice_messages.cancel();
 		self.voice.stop();
 		self.messaging.camera_test_requested = false;
 		self.messaging.camera_test_texture = None;

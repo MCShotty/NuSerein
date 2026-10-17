@@ -5026,3 +5026,28 @@ search-overlays-history = 歷史紀錄
 search-overlays-clear-history = 清除搜尋紀錄
 main-sign-in-rate-limited-detail = Discord 正在限制此次登入。請稍候再試。過早重試可能會延長等待時間。
 audio-playback-speed = 播放速度
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection

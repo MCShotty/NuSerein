@@ -1134,7 +1134,7 @@ September 10 People/avatar continuation: the member subscription uses the opcode
 
 Normal-user DM entry uses guild_id:null with main Gateway opcodes 13/4, based on the original [discord.py-self Gateway implementation](https://github.com/dolfies/discord.py-self/blob/master/discord/gateway.py). CALL_CREATE/UPDATE/DELETE and voice state/server shapes follow its [dispatch source](https://github.com/dolfies/discord.py-self/blob/master/discord/state.py) and [voice types](https://github.com/dolfies/discord.py-self/blob/master/discord/types/voice.py). Ring/stop-ringing use the [HTTP implementation](https://github.com/dolfies/discord.py-self/blob/master/discord/http.py); its [DM connect flow](https://github.com/dolfies/discord.py-self/blob/master/discord/channel.py) establishes voice before ringing. These are unofficial interoperability evidence, not approved normal-account APIs or a bot-token workaround. No source-code blocks were copied.
 
-Discord's documented voice transport and [DAVE protocol](https://daveprotocol.com/) supply encryption/protocol requirements. Serein uses Davey 0.1.4/OpenMLS, an unofficial implementation, rather than claiming to ship Discord's libdave or an independently audited engine. Real MLS, DAVE, RTP, Opus and loopback WebSocket/UDP tests exercise the adapter with synthetic participants. They do not verify current Discord acceptance, microphone permission, device quality or a remote official client. Existing group DMs, Stage channels and camera video remain unsupported; outgoing screen sharing is covered by the September 11 addendum. Guild voice is implemented separately below, with its live gate still unverified. See [voice scope and owner-operated gate](voice.md) and [adapter details](../crates/discord-voice/README.md).
+Discord's documented voice transport and [DAVE protocol](https://daveprotocol.com/) supply encryption/protocol requirements. Serein uses Davey 0.1.4/OpenMLS, an unofficial implementation, rather than claiming to ship Discord's libdave or an independently audited engine. Real MLS, DAVE, RTP, Opus and loopback WebSocket/UDP tests exercise the adapter with synthetic participants. They do not verify current Discord acceptance, microphone permission, device quality or a remote official client. This September 10 snapshot excluded group DMs, Stage channels and camera video; the later group-DM/camera sections supersede those exclusions, with Stage tracked separately. Outgoing screen sharing is covered by the September 11 addendum. Guild voice is implemented separately below, with its live gate still unverified. See [voice scope and owner-operated gate](voice.md) and [adapter details](../crates/discord-voice/README.md).
 
 Image attachments: documented wire metadata and spoiler bit 3 are implemented; additional sensitive flags and proxy PNG conversion rely on unofficial implementation evidence. Native viewing and bounded cache/patch behavior have offline coverage; actual account image delivery remains unverified. Scope and sources.
 
@@ -1261,7 +1261,7 @@ The composer now displays known user mentions as `@name`, Unicode as bundled Twe
 
 Guild voice entry uses the documented [Gateway voice state update and voice allocation flow](https://docs.discord.com/developers/topics/voice-connections): guild-scoped join/mute/leave, matching owner session plus guild server update, and guild ID as voice Identify/Resume server ID. The DAVE group remains identified by channel ID. This protocol documentation is not approval or live evidence for normal-user accounts. Server channel rosters use READY, GUILD_CREATE, VOICE_STATE_UPDATE and unofficial READY_SUPPLEMENTAL/PASSIVE_UPDATE_V2 shapes from the original [discord.py-self dispatcher](https://github.com/dolfies/discord.py-self/blob/master/discord/state.py).
 
-The media engine extends the existing DAVE/Opus path to bounded group membership and simultaneous remote audio mixing. Server mute/deafen gates local media. Empty rooms wait without opening audio devices; microphone capture requires an established encrypted group. Stage channels and group DMs remain visibly unsupported. Main Gateway disconnect, channel/session moves, permission invalidation or voice server migration stop the current media session and require deliberate rejoin. A dropped media session of a joined call (unacknowledged heartbeats, failed resume, negotiation timeout) is rejoined automatically up to three times by re-sending opcode 4 for the same channel; that Discord answers this with fresh voice credentials is unverified. Each scheduled rejoin first asks the main Gateway to confirm its socket with a heartbeat. A rejoin waits while the Gateway is disconnected, and one whose answer was lost to a Gateway outage asks again after reconnecting without spending an attempt. No automatic call or DM ringing is triggered by viewing a roster or joining a guild channel.
+The media engine extends the existing DAVE/Opus path to bounded group membership and simultaneous remote audio mixing. Server mute/deafen gates local media. Empty rooms wait without opening audio devices; microphone capture requires an established encrypted group. This September 10 milestone excluded Stage channels and group DMs. Existing group-DM calls are implemented by the later group workflow; Stage is tracked separately. Main Gateway disconnect, channel/session moves, permission invalidation or voice server migration stop the current media session and require deliberate rejoin. A dropped media session of a joined call (unacknowledged heartbeats, failed resume, negotiation timeout) is rejoined automatically up to three times by re-sending opcode 4 for the same channel; that Discord answers this with fresh voice credentials is unverified. Each scheduled rejoin first asks the main Gateway to confirm its socket with a heartbeat. A rejoin waits while the Gateway is disconnected, and one whose answer was lost to a Gateway outage asks again after reconnecting without spending an attempt. No automatic call or DM ringing is triggered by viewing a roster or joining a guild channel.
 
 The implementation is tested with synthetic protocol/crypto/UI data. The owner-controlled official-client two-way audio, multi-party join/leave, permission, device and network tests in [voice.md](voice.md) remain required before claiming working live interoperability.
 
@@ -2635,6 +2635,52 @@ bounded packetization have synthetic roundtrip fixtures, which do not prove live
 Discord playback. Physical AMD/Intel/NVIDIA/Apple encoders and official-client
 H.265/AV1/DAVE interoperability remain unverified; AV1 final-OBU size handling
 especially requires a paired live check. See [voice settings](voice.md#video-backend-and-codec-settings).
+## Voice Messages extension (preview, October 5, 2026)
+
+The opt-in bundled Voice Messages plugin adds **Record a voice message** to the
+composer `+` menu. Enable it and explicitly grant `voice_messages` (plus `storage`
+for settings) in Extensions. The native dialog requires separate Record, Stop and
+Send gestures. Importing, enabling, opening the plugin panel or saving settings
+never opens the microphone or sends a message. Wasm receives configuration only,
+without audio, device paths, microphone, filesystem or networking access.
+
+The host records mono 48 kHz Ogg Opus in session memory, capped at 120 seconds and
+8 MiB. The plugin selects a 5–120-second maximum, bars/line display and RNNoise
+suppression. Native device selection, gain, mute/deafen, held push-to-mute,
+push-to-talk and OS microphone permission gates apply. Recording is unavailable
+while a call or local device test owns capture. Stop closes input before encoding
+finalization. Cancel, navigation, permission/connection loss, disable, session reset,
+logout and call commands discard the local clip and gate microphone callbacks;
+asynchronous native retirement fences a replacement microphone owner. This records
+an explicitly created message clip, never a call or another participant.
+
+Sending requires ordinary send/attachment permission, fresh connected history and
+[`SEND_VOICE_MESSAGES` (bit 46)](https://docs.discord.com/developers/topics/permissions).
+One signed attachment upload produces `voice-message.ogg` with audio MIME,
+`duration_secs`, at most 64 base64 amplitude bins and message flag
+`IS_VOICE_MESSAGE` (8192). No caption or stickers are included; the existing text
+draft remains for a separate message, while an explicit reply can accompany the clip.
+The fields, one-audio-attachment restriction and Ogg Opus format follow
+[Discord's voice-message documentation](https://docs.discord.com/developers/resources/message#voice-messages).
+The normal-account staged upload/reply path was also inspected in the primary
+[Vencord plugin](https://github.com/Vendicated/Vencord/blob/main/src/plugins/voiceMessages/index.tsx);
+Serein's implementation is original.
+
+No recording, local path, upload target or audio recovery file is written to disk.
+Cancellation cannot erase bytes already uploaded or recall a message Discord has
+accepted. Failed/uncertain sends require a new recording and are never replayed.
+Returned message metadata uses the existing bounded timeline/history cache; ordinary
+explicit attachment downloads remain a separate user action.
+
+Device-free tests encode and decode synthetic Opus, check Ogg CRC/duration/bounds,
+exercise recorder control/retirement, validate the real Wasm settings plugin, and
+inspect local HTTP allocation/audio PUT/message POST including no-retry behavior.
+`--features demo -- --demo --demo-chat --demo-recorder` enables a labeled synthetic
+recorder preview; it uses generated amplitude/timer data and disables Send, without
+opening any device or contacting Discord. A preview is not a recording test.
+Normal-account sends, physical microphone/OS permissions and Windows/macOS native
+interaction remain unofficial and live-unverified; no account or microphone was
+used for this delivery.
 
 ## GIF favorites admission — October 6, 2026
 
@@ -2685,9 +2731,25 @@ reconnect cancel a pending send. Uncertain HTTP acceptance is reported without r
 the sound. Deafening discards waiting plays, even if their downloads finish after undeafening.
 Existing FFmpeg decode, HDR, GPU selection, codecs and source resolution remain unchanged.
 Historical upstream screenshots/measurements are archive links and are not current-fork evidence.
-Voice recording, separate media output, native provider playback, Stage and adaptive stream
-quality remain separate roadmap gaps until integrated and tested.
+The subsequent integration adds explicit voice-message capture/review/send, separate media
+output, native Discord-proxied embedded video and receiver clock scheduling. Screen bitrate
+adaptation already exists; resolution/FPS remain explicit selections. Provider player pages
+retain confirmed external links; no new webview or network-enabled FFmpeg path is added.
+Stage is tracked separately. See the October 17 audit in [voice.md](voice.md#stream-quality-and-synchronization-audit--october-17-2026).
 
 New related-emoji values must match one complete entry from the existing bundled
 Unicode palette. Unchanged service/custom values are preserved when editing other
 fields; no new dependency or retained emoji cache is introduced.
+
+### Native embedded videos — October 17, 2026
+
+Reviewed native portions of upstream PR #439 add MP4/MOV/M4V embed playback from
+validated HTTPS `media.discordapp.net/external/` video proxies. Play is explicit;
+unknown lengths require a one-byte range probe with a nonzero total at most 100 MiB.
+Anonymous bounded range reads feed the existing FFmpeg-first decoder and native
+HDR/GPU presentation. Redirects and credentials are refused. Suppressed/spoiler
+media retain their existing reveal gates; source changes revoke fullscreen playback.
+Provider HTML/JavaScript players remain confirmed external links. No general
+webview, provider extraction service, arbitrary-origin fetch or FFmpeg networking
+is introduced. Native visual/decoder tests and owner-controlled playback acceptance
+must be reported separately; historical upstream evidence is not current-fork evidence.

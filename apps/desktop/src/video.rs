@@ -1,7 +1,7 @@
 //! One explicit inline player; native decoding and network reads stay on one lazy worker.
 #[cfg(target_os = "macos")]
 mod fallback;
-mod output;
+pub(crate) mod output;
 mod source;
 use platform::video::ffmpeg::AttachmentDecoder;
 use std::sync::{
@@ -40,6 +40,7 @@ impl Session {
 }
 #[derive(Clone)]
 struct Request {
+	output: Option<String>,
 	session: Arc<Session>,
 	url: Option<url::Url>,
 	size: usize,
@@ -62,6 +63,7 @@ struct PosterDone {
 #[derive(Default)]
 pub struct Video {
 	adapter: Option<model::VideoAdapter>,
+	pub output: Option<String>,
 	session: Option<Arc<Session>>,
 	requests: Option<tokio::sync::watch::Sender<Option<Request>>>,
 	poster_jobs: Option<std::sync::mpsc::Sender<PosterJob>>,
@@ -81,6 +83,7 @@ impl Video {
 	pub fn for_adapter(adapter: model::VideoAdapter) -> Self {
 		Self {
 			adapter: Some(adapter),
+			output: None,
 			session: None,
 			requests: None,
 			poster_jobs: None,
@@ -201,11 +204,14 @@ impl Video {
 		ctx: &eframe::egui::Context,
 		demo: bool,
 	) -> Result<(), &'static str> {
-		if !attachment.is_video() || attachment.size == 0 || attachment.size > 100 * 1024 * 1024 {
+		if !attachment.is_video() || attachment.size > 100 * 1024 * 1024 {
 			return Err("Video preview limit: 100 MiB");
 		}
 		let url = if demo {
 			None
+		} else if attachment.size == 0 {
+			// Embed videos have no declared size; the worker probes it before decoding.
+			Some(embed_url(&attachment.media).ok_or("Video embed unavailable")?)
 		} else {
 			Some(
 				crate::downloads::original_url(&attachment)
@@ -244,6 +250,7 @@ impl Video {
 		}
 		let session = Arc::new(Session::new(volume));
 		requests.send_replace(Some(Request {
+			output: self.output.clone(),
 			session: session.clone(),
 			url,
 			size: attachment.size as usize,
@@ -459,6 +466,21 @@ fn downscale_poster(width: u32, height: u32, rgba: Vec<u8>) -> (u32, u32, Vec<u8
 	}
 	(out_width, out_height, out)
 }
+/// Only Discord's media proxy copy of an external MP4/MOV; never the third-party origin.
+fn embed_url(media: &model::EmbedMedia) -> Option<url::Url> {
+	let raw = media.url.as_deref().filter(|url| url.len() <= 2048)?;
+	let url = url::Url::parse(raw).ok()?;
+	(url.scheme() == "https"
+		&& url.host_str() == Some("media.discordapp.net")
+		&& url.port_or_known_default() == Some(443)
+		&& url.username().is_empty()
+		&& url.password().is_none()
+		&& url.fragment().is_none()
+		&& url.path().starts_with("/external/")
+		&& !url.path().contains('\\')
+		&& ui::is_motion_video(url.path()))
+	.then_some(url)
+}
 impl Drop for Video {
 	fn drop(&mut self) {
 		self.stop();
@@ -478,7 +500,7 @@ fn play(
 		runtime.clone(),
 	)?;
 	let result = AttachmentDecoder::open(source, request.adapter)
-		.and_then(|decoder| play_decoded(decoder, session, ctx));
+		.and_then(|decoder| play_decoded(decoder, session, request.output.as_deref(), ctx));
 	#[cfg(target_os = "macos")]
 	let result = match result {
 		Err(error) if fallback::eligible(error) && !session.cancelled.load(Ordering::Acquire) => {
@@ -506,7 +528,7 @@ fn play(
 				Ordering::AcqRel,
 				Ordering::Acquire,
 			);
-			play_decoded(decoder, session, ctx)
+			play_decoded(decoder, session, request.output.as_deref(), ctx)
 		}
 		result => result,
 	};
@@ -520,6 +542,7 @@ fn play(
 fn play_decoded(
 	decoder: impl Into<AttachmentDecoder>,
 	session: &Session,
+	selected_output: Option<&str>,
 	ctx: &eframe::egui::Context,
 ) -> Result<(), &'static str> {
 	let mut decoder = decoder.into();
@@ -545,6 +568,8 @@ fn play_decoded(
 		let mut output = if info.sample_rate > 0 {
 			Some(output::open(
 				info.sample_rate,
+				selected_output,
+				info.sample_rate as usize,
 				output::Controls {
 					cancelled: session.cancelled.clone(),
 					paused: session.paused.clone(),
@@ -553,6 +578,7 @@ fn play_decoded(
 					position: position.clone(),
 					eof: eof.clone(),
 					failed: failed.clone(),
+					revision: Arc::new(AtomicU64::new(0)),
 				},
 			)?)
 		} else {
@@ -771,7 +797,12 @@ mod tests {
 		let started = Instant::now();
 		let thread = std::thread::spawn(move || {
 			let decoder = platform::video::Decoder::open(Box::new(std::io::Cursor::new(bytes)))?;
-			play_decoded(decoder, &worker_session, &eframe::egui::Context::default())
+			play_decoded(
+				decoder,
+				&worker_session,
+				None,
+				&eframe::egui::Context::default(),
+			)
 		});
 		while !thread.is_finished() {
 			let update = session.update.lock().unwrap();
@@ -801,6 +832,7 @@ mod tests {
 		let runtime = tokio::runtime::Runtime::new().unwrap();
 		let session = Arc::new(Session::new(0.));
 		let request = Request {
+			output: None,
 			session: session.clone(),
 			url: None,
 			size: 120000,
@@ -853,7 +885,12 @@ mod tests {
 			let thread = std::thread::spawn(move || {
 				let decoder =
 					platform::video::Decoder::open(Box::new(std::io::Cursor::new(bytes))).unwrap();
-				play_decoded(decoder, &worker_session, &eframe::egui::Context::default())
+				play_decoded(
+					decoder,
+					&worker_session,
+					None,
+					&eframe::egui::Context::default(),
+				)
 			});
 			let start = Instant::now();
 			while !thread.is_finished() {

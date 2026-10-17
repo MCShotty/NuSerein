@@ -4607,6 +4607,9 @@ voice-recipient-ringing = Ringing…
 voice-recipient-not-in-call = Not in call
 reconnect-now = Reconnect now
 
+voice-media-output = Media output
+voice-media-output-hint = Applies to new audio/video playback and watched streams.
+
 # Explicit public attachment hosting
 public-upload-host-file = Share link instead…
 public-upload-heading = Share with a public link
@@ -4778,6 +4781,26 @@ voice-video-encoder-test-checking = Testing…
 voice-video-encoder-test-not-tested = Not tested
 voice-video-encoder-test-incomplete = Test incomplete — try again
 voice-video-encoder-test-no-success = No hardware encoder passed this test
+
+# Native voice-message recorder
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
 settings-chat-box = Chat Box
 settings-convert-emoticons = Automatically convert emoticons in your messages to emoji
 settings-convert-emoticons-description = Convert standalone emoticons such as :) to 🙂 when sending or editing messages. Code and links stay unchanged.
@@ -5061,3 +5084,9 @@ settings-cosmetics-name-styles = Name styles
 settings-cosmetics-name-styles-description = Nitro display name fonts, colours and effects.
 main-sign-in-rate-limited-detail = Discord is rate limiting this sign-in. Wait before trying again. Another attempt before that can make the wait longer.
 audio-playback-speed = Playback speed
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection

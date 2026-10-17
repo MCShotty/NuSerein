@@ -34,6 +34,13 @@ use tokio_tungstenite::{
 };
 use zeroize::Zeroizing;
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+struct StreamTiming(Arc<crate::stream_sync::StreamSync>);
+impl Drop for StreamTiming {
+	fn drop(&mut self) {
+		self.0.stop();
+	}
+}
+
 /// Time a sole member gives the roster announcement before waiting for a peer.
 const PEER_GRACE: Duration = Duration::from_millis(500);
 
@@ -1262,6 +1269,21 @@ async fn run_stream_inner(
 		return Err("Stable video supports H264 only");
 	}
 	let outgoing_codec = video_settings.codec;
+	let timing = Arc::new(crate::stream_sync::StreamSync::default());
+	let sink = sink.map(|sink| {
+		let timing = timing.clone();
+		Arc::new(move |frame: crate::RemoteFrame<'_>| {
+			if frame
+				.picture
+				.timestamp()
+				.is_some_and(|timestamp| !timing.present(frame.user, timestamp))
+			{
+				return;
+			}
+			sink(frame);
+		}) as VideoSink
+	});
+
 	let (decoder, lost) = match sink
 		.map(|sink| spawn_decoder_on_adapter(sink, adapter))
 		.transpose()?
@@ -1269,6 +1291,7 @@ async fn run_stream_inner(
 		Some((decoder, lost)) => (Some(decoder), Some(lost)),
 		None => (None, None),
 	};
+	let _timing_scope = StreamTiming(timing.clone());
 	let mut receivers = Receivers::default();
 	let mut metrics = crate::diagnostics::Metrics::new(if video.is_some() {
 		crate::diagnostics::Scope::StreamSend
@@ -1387,7 +1410,21 @@ async fn run_stream_inner(
 	let mut packet = [0u8; MAX_PACKET + 1];
 	let mut tick = tokio::time::interval(Duration::from_millis(20));
 	tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+	let mut sync_secure = false;
 	loop {
+		let current_secure = dave.ready && dave.session.is_ready() && !dave.transitioning();
+		if sync_secure && !current_secure {
+			timing.reset();
+			mixer.clear();
+			let users: Vec<_> = receivers.users().collect();
+			for user in users {
+				if let Some(decoder) = &decoder {
+					remove_decoder(decoder, user);
+				}
+				receivers.require_keyframe(user);
+			}
+		}
+		sync_secure = current_secure;
 		let encoder_secure = announced
 			&& dave.ready
 			&& dave.pending.is_none()
@@ -1513,16 +1550,17 @@ async fn run_stream_inner(
 					share_audio.is_some() || audio.is_some(),
 				], video.as_ref().and_then(|video|video.audio.as_ref()).map_or(0,|source|source.len()));
 				if let Some(audio)=&audio {
-					if now.saturating_duration_since(receive_tick)>=Duration::from_millis(80) {mixer.clear();}
+					if now.saturating_duration_since(receive_tick)>=Duration::from_millis(80) {mixer.clear();timing.reset();}
 					receive_tick=now;
 					if secure {
 						let start=metrics.start();
-						if let (Some(frame),_)=mixer.pop() {
+						if let (Some(frame),_,clock)=mixer.pop_timed() {
 							let dropped=audio.try_send(frame).is_err();
+							if !dropped { if let Some((user,timestamp))=clock { timing.audio(user,timestamp,now.into_std()); } else { timing.mixed_audio(); } }
 							metrics.finish(crate::diagnostics::Stage::Mix,start);
 							metrics.poll(false,u64::from(dropped),false,0);
 						}
-					} else {mixer.clear();}
+					} else {mixer.clear();timing.reset();}
 				}
 				let stalled=watch.tick(&mut metrics,&mut receivers,decoder.as_ref(),now);
 				if let Some(decoder)=&decoder && let Ok(mut failures)=decoder.counters.failures.lock() && let Some((_,error))=failures.pop() {return Err(error);}
@@ -1594,8 +1632,20 @@ async fn run_stream_inner(
 				}
 				if length>MAX_PACKET {continue;}
 				let Some(crypto)=&encryption else {continue;};
-				if let Some(video)=&video && let Some(feedback)=crypto.feedback(&packet[..length],video_ssrc) {
-					if announced && dave.ready && !dave.transitioning() && video.ready.load(Ordering::Acquire) {
+				if let Some(feedback)=crypto.feedback(&packet[..length],video_ssrc) {
+					if dave.ready && !dave.transitioning() && dave.session.is_ready() {
+						for report in &feedback.sender_reports {
+							let source = match (mixer.user(report.ssrc),receivers.user(report.ssrc)) {
+								(Some(user),None)=>Some((user,crate::stream_sync::Kind::Audio)),
+								(None,Some(user))=>Some((user,crate::stream_sync::Kind::Video)),
+								_=>None,
+							};
+							if let Some((user,kind))=source && dave.contains(user) {
+								timing.report(user,kind,report.ssrc,report.timestamp,report.ntp,Instant::now().into_std());
+							}
+						}
+					}
+					if let Some(video)=&video && announced && dave.ready && !dave.transitioning() && video.ready.load(Ordering::Acquire) {
 						let now=Instant::now();
 						rate.observe(feedback.loss,feedback.bitrate);
 						let missing=if rtx_ssrc!=0 {history.request(&feedback.nacks,now)} else {!feedback.nacks.is_empty()};
@@ -1617,7 +1667,7 @@ async fn run_stream_inner(
 					let start=metrics.start();
 					let Ok(opus)=dave.session.decrypt(user,davey::MediaType::AUDIO,&rtp.payload) else {metrics.poll(false,1,false,0);continue;};
 					metrics.finish(crate::diagnostics::Stage::Receive,start);
-					mixer.push(rtp.ssrc,rtp.sequence,opus);
+					mixer.push_timed(rtp.ssrc,rtp.sequence,rtp.timestamp,opus);
 					continue;
 				}
 				let Some(decoder)=&decoder else {continue;};
@@ -1680,15 +1730,16 @@ async fn run_stream_inner(
 								encryption=Some(Encryption::new(&key));secured_at=Some(Instant::now());send(&mut ws,Message::Binary(dave.key_package()?.into())).await?;metrics.signal(Signal::KeyPackageSent,1);emit(Status::TransportReady).map_err(|_|"Stream interface closed")?;emit(Status::Securing).map_err(|_|"Stream interface closed")?;
 							},
 							11=>{let ids=data["user_ids"].as_array().ok_or("Missing stream participants")?;if ids.len()>crate::crypto::MAX_PARTICIPANTS{return Err("Too many stream participants");}let ids=ids.iter().map(|value|value.as_str().and_then(|value|value.parse().ok()).filter(|id|*id!=0).ok_or("Malformed stream participant")).collect::<Result<Vec<_>,_>>()?;let was_ready=dave.ready;if dave.connect(&ids)?{if was_ready{dave.ready=true;}else{deadline=Some(Instant::now()+Duration::from_secs(90));announced=false;awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);}}},
-							5=>{let user=id(data,"user_id")?;if user!=credentials.user.0 && audio.is_some() && dave.contains(user) {let value=u32::try_from(number(data,"ssrc")?).map_err(|_|"Invalid stream SSRC")?;mixer.announce(user,value)?;}},
+							5=>{let user=id(data,"user_id")?;if user!=credentials.user.0 && audio.is_some() && dave.contains(user) {let value=u32::try_from(number(data,"ssrc")?).ok().filter(|ssrc|*ssrc!=0).ok_or("Invalid stream SSRC")?;if mixer.ssrc(user)!=Some(value) {timing.remove(user);}mixer.announce(user,value)?;}},
 							12=>{
 								let user=id(data,"user_id")?;
 								if user!=credentials.user.0 && dave.contains(user) {
+									timing.remove(user);
 									if let Some(decoder) = decoder.as_ref() {announce_video(&mut receivers,decoder,user,data)?;}
 									if audio.is_some() && let Some(value)=data["audio_ssrc"].as_u64().and_then(|v|u32::try_from(v).ok()).filter(|v|*v!=0) {mixer.announce(user,value)?;}
 								}
 							},
-							13=>{let user=id(data,"user_id")?;receivers.remove(user);if let Some(decoder)=decoder.as_ref(){remove_decoder(decoder,user);}mixer.remove(user);let was_group_member=dave.is_group_member(user);let was_ready=dave.ready;if dave.disconnect(user)?{if dave.alone(){announced=false;awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);dave.enter_sole_member_waiting()?;deadline=None;}else if was_group_member{deadline=Some(Instant::now()+Duration::from_secs(30));announced=false;awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);}else if was_ready{dave.ready=true;deadline=None;}}},
+							13=>{let user=id(data,"user_id")?;timing.remove(user);receivers.remove(user);if let Some(decoder)=decoder.as_ref(){remove_decoder(decoder,user);}mixer.remove(user);let was_group_member=dave.is_group_member(user);let was_ready=dave.ready;if dave.disconnect(user)?{if dave.alone(){announced=false;awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);dave.enter_sole_member_waiting()?;deadline=None;}else if was_group_member{deadline=Some(Instant::now()+Duration::from_secs(30));announced=false;awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);}else if was_ready{dave.ready=true;deadline=None;}}},
 							21=>{if number(data,"protocol_version")?!=1{return Err("Discord requested a stream encryption downgrade");}announced=false;awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);let id=transition(data)?;dave.prepare_protocol(id);if id==0{if dave.session.is_ready(){dave.execute(0)?;}else if dave.alone(){dave.enter_sole_member_waiting()?;deadline=None;}else{dave.pending_protocol=None;dave.ready=false;}}else{json_send(&mut ws,json!({"op":23,"d":{"transition_id":id}})).await?;}},
 							22=>{dave.execute(transition(data)?)?;},
 							24=>{if number(data,"protocol_version")?!=1{return Err("Unsupported stream DAVE version");}

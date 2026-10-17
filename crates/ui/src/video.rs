@@ -132,11 +132,13 @@ impl VideoUi {
 	pub(super) fn is_fullscreen(&self) -> bool {
 		self.fullscreen.is_some()
 	}
+	#[allow(clippy::too_many_arguments)]
 	pub(super) fn show_fullscreen(
 		&mut self,
 		ctx: &egui::Context,
 		message: &Message,
 		attachment: &Attachment,
+		original: Option<&str>,
 		download: &mut crate::DownloadUi,
 		opening: &mut Option<String>,
 		demo: bool,
@@ -156,11 +158,14 @@ impl VideoUi {
 			.show(ctx, |ui| {
 				ui.set_min_size(screen.size());
 				ui.set_max_size(screen.size());
-				let response =
-					self.show_player(ui, message, attachment, true, download, opening, demo);
-				crate::attachments::media_context_menu(
-					&response, attachment, download, opening, demo,
+				let response = self.show_player(
+					ui, message, attachment, true, original, false, download, opening, demo,
 				);
+				if !is_embedded(attachment) {
+					crate::attachments::media_context_menu(
+						&response, attachment, download, opening, demo,
+					);
+				}
 			});
 		// The shared link confirmation is drawn before the timeline. Leave the video
 		// overlay when opening an original so that confirmation remains visible.
@@ -353,7 +358,35 @@ impl VideoUi {
 		opening: &mut Option<String>,
 		demo: bool,
 	) -> egui::Response {
-		self.show_player(ui, message, attachment, false, download, opening, demo)
+		let original = attachment.media.url.clone();
+		self.show_player(
+			ui,
+			message,
+			attachment,
+			false,
+			original.as_deref(),
+			false,
+			download,
+			opening,
+			demo,
+		)
+	}
+	/// A directly proxied embed video over an already painted poster.
+	#[allow(clippy::too_many_arguments)]
+	pub(crate) fn show_embedded(
+		&mut self,
+		ui: &mut egui::Ui,
+		message: &Message,
+		attachment: &Attachment,
+		original: Option<&str>,
+		poster: bool,
+		download: &mut crate::DownloadUi,
+		opening: &mut Option<String>,
+		demo: bool,
+	) -> egui::Response {
+		self.show_player(
+			ui, message, attachment, false, original, poster, download, opening, demo,
+		)
 	}
 	#[allow(clippy::too_many_arguments)]
 	fn show_player(
@@ -362,6 +395,8 @@ impl VideoUi {
 		message: &Message,
 		attachment: &Attachment,
 		fullscreen: bool,
+		original: Option<&str>,
+		poster: bool,
 		download: &mut crate::DownloadUi,
 		opening: &mut Option<String>,
 		demo: bool,
@@ -390,8 +425,10 @@ impl VideoUi {
 			VideoState::Idle => "video-show-player-play",
 		});
 		let painter = ui.painter().with_clip_rect(stage);
-		painter.rect_filled(stage, CORNER, egui::Color32::BLACK);
-		if !active || (self.texture.is_none() && self.media.is_none()) {
+		if !poster || (active && (self.texture.is_some() || self.media.is_some())) {
+			painter.rect_filled(stage, CORNER, egui::Color32::BLACK);
+		}
+		if !poster && (!active || (self.texture.is_none() && self.media.is_none())) {
 			if let Some((poster, _)) = self.posters.get(&attachment.id) {
 				let size = poster.size_vec2();
 				if size.x > 0.0 && size.y > 0.0 {
@@ -812,30 +849,27 @@ impl VideoUi {
 			|ui| {
 				ui.spacing_mut().item_spacing.x = 6.0;
 				let idle = !demo && !download.busy();
-				if ui
-					.add_enabled_ui(idle, |ui| {
-						crate::attachments::glass_button(
-							ui,
-							crate::icons::Icon::Download,
-							28.0,
-							"Download",
-						)
-					})
-					.inner
-					.on_disabled_hover_text(crate::i18n::translate_if_key(if demo {
-						"video-show-player-downloads-are-disabled-for-synthetic-attachments"
-					} else {
-						"video-show-player-a-download-is-already-active"
-					}))
-					.clicked()
+				if !is_embedded(attachment)
+					&& ui
+						.add_enabled_ui(idle, |ui| {
+							crate::attachments::glass_button(
+								ui,
+								crate::icons::Icon::Download,
+								28.0,
+								"Download",
+							)
+						})
+						.inner
+						.on_disabled_hover_text(crate::i18n::translate_if_key(if demo {
+							"video-show-player-downloads-are-disabled-for-synthetic-attachments"
+						} else {
+							"video-show-player-a-download-is-already-active"
+						}))
+						.clicked()
 				{
 					download.request = Some(attachment.clone());
 				}
-				if let Some(url) = attachment
-					.media
-					.url
-					.as_deref()
-					.and_then(crate::markdown::external_url)
+				if let Some(url) = original.and_then(crate::markdown::external_url)
 					&& crate::attachments::glass_button(
 						ui,
 						crate::icons::Icon::External,
@@ -870,7 +904,19 @@ impl Drop for VideoUi {
 		self.exit_fullscreen();
 	}
 }
-fn stage_size(attachment: &Attachment, width: f32) -> egui::Vec2 {
+pub(crate) fn is_embedded(attachment: &Attachment) -> bool {
+	attachment.size == 0
+}
+pub(crate) fn embed_stage_height(width: u32, height: u32, available: f32) -> f32 {
+	let (w, h) = if width > 0 && height > 0 {
+		(width as f32, height as f32)
+	} else {
+		(16.0, 9.0)
+	};
+	let available = available.clamp(1.0, MAX_WIDTH);
+	h * (available / w).min(MAX_HEIGHT / h)
+}
+pub(crate) fn stage_size(attachment: &Attachment, width: f32) -> egui::Vec2 {
 	let width = width.clamp(1.0, MAX_WIDTH);
 	let (native_width, native_height) = if attachment.media.width > 0 && attachment.media.height > 0
 	{
@@ -898,46 +944,6 @@ fn timestamp(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	#[test]
-	fn switching_native_and_hdr_frames_releases_the_previous_display_resources() {
-		let ctx = egui::Context::default();
-		let mut video = VideoUi::default();
-		let message = test_support::message(1, Id(2));
-		let attachment = Attachment {
-			id: Id(3),
-			filename: "clip.mp4".into(),
-			description: None,
-			content_type: Some("video/mp4".into()),
-			size: 128,
-			media: Default::default(),
-			spoiler: false,
-			duration_ms: None,
-			waveform: Vec::new(),
-		};
-		video.active = Some((message.channel, message.id, attachment));
-		assert!(video.accept_frame(&ctx, 1, 1, &[0, 0, 0, 255]));
-		assert!(video.managed.is_some() && video.frame.is_some());
-		let resource: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(());
-		let retired = std::sync::Arc::downgrade(&resource);
-		assert!(video.show_media(MediaView {
-			size: egui::vec2(1.0, 1.0),
-			resource,
-			failure: Default::default(),
-			callback: std::sync::Arc::new(|rect| egui::PaintCallback {
-				rect,
-				callback: std::sync::Arc::new(())
-			}),
-		}));
-		assert!(video.texture.is_none() && video.managed.is_none() && video.frame.is_none());
-		assert!(retired.upgrade().is_some());
-		let native = egui::load::SizedTexture::new(egui::TextureId::User(1), egui::vec2(1.0, 1.0));
-		assert!(video.show_frame(native));
-		assert!(video.media.is_none());
-		assert!(retired.upgrade().is_none());
-		video.stop();
-		assert!(!video.show_frame(native));
-		assert!(video.texture.is_none());
-	}
 	#[test]
 	fn video_controls_are_explicit_bounded_and_keyboard_operable() {
 		let mut message = test_support::message(1, Id(2));

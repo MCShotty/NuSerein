@@ -219,6 +219,8 @@ pub fn sources() -> Result<Vec<Source>, &'static str> {
 pub struct Worker {
 	stop: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
+	output: Arc<Mutex<Option<Output>>>,
+	bitrate: Arc<AtomicU32>,
 	preview: Arc<Mutex<Option<image::RgbaImage>>>,
 	done: Option<mpsc::Receiver<Result<(), &'static str>>>,
 	#[cfg(target_os = "linux")]
@@ -333,6 +335,8 @@ impl Worker {
 			Self {
 				stop,
 				ready: ready.clone(),
+				output: output.clone(),
+				bitrate: bitrate.clone(),
 				preview,
 				done: Some(done),
 				#[cfg(target_os = "linux")]
@@ -363,6 +367,16 @@ impl Worker {
 		return self.status.try_lock().ok().map(|status| *status);
 		#[cfg(not(target_os = "linux"))]
 		None
+	}
+	/// A simple presentation signal from the existing adaptive sender target.
+	pub fn adapting(&self) -> bool {
+		let Some(output) = self.output.try_lock().ok().and_then(|output| *output) else {
+			return false;
+		};
+		!self.stop.load(Ordering::Acquire)
+			&& self.ready.load(Ordering::Acquire)
+			&& output.settings.valid()
+			&& self.bitrate.load(Ordering::Acquire) < output.settings.bit_rate()
 	}
 
 	pub fn result(&self) -> Option<Result<(), &'static str>> {
@@ -1274,6 +1288,8 @@ mod tests {
 		let worker = Worker {
 			stop: Arc::new(AtomicBool::new(false)),
 			ready: Arc::new(AtomicBool::new(false)),
+			output: Arc::new(Mutex::new(None)),
+			bitrate: Arc::new(AtomicU32::new(250_000)),
 			preview: Arc::new(Mutex::new(Some(preview))),
 			done: None,
 			#[cfg(target_os = "linux")]

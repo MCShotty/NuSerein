@@ -3,6 +3,7 @@
 use crate::diagnostics::{Metrics, Scope, Stage};
 use crate::{CapturedFrame, Frame};
 mod echo;
+pub mod recording;
 use model::voice_settings::{NoiseSuppression, Processing, VoiceProcessing};
 #[cfg(target_os = "macos")]
 mod permission_macos;
@@ -13,6 +14,24 @@ use std::sync::{
 	mpsc,
 };
 use std::time::{Duration, Instant};
+
+// One native microphone owner across calls, local previews and voice clips.
+// Held by the worker until its actual device teardown, including failed opens.
+static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+struct CaptureLease;
+impl CaptureLease {
+	fn acquire() -> Result<Self, &'static str> {
+		CAPTURE_ACTIVE
+			.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+			.map(|_| Self)
+			.map_err(|_| "Microphone is in use or previous audio is still closing")
+	}
+}
+impl Drop for CaptureLease {
+	fn drop(&mut self) {
+		CAPTURE_ACTIVE.store(false, Ordering::Release);
+	}
+}
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Devices {
@@ -202,6 +221,7 @@ impl Audio {
 		emit: impl Fn(Result<(), &'static str>) + Send + 'static,
 		preview: bool,
 	) -> Result<Self, &'static str> {
+		let lease = CaptureLease::acquire()?;
 		let gate = Arc::new(Gate::default());
 		let worker_gate = gate.clone();
 		let (settings, mut selected) = tokio::sync::watch::channel(settings);
@@ -450,6 +470,7 @@ impl Audio {
 				}
 				worker_gate.stopped.store(true, Ordering::Release);
 				drop(streams);
+				drop(lease);
 				let _ = finished.send(());
 			})
 			.map_err(|_| "Could not start audio device worker")?;
@@ -1203,6 +1224,20 @@ pub fn debug_processing_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn native_capture_lease_survives_until_the_worker_releases_it() {
+		let lease = CaptureLease::acquire().unwrap();
+		assert!(CaptureLease::acquire().is_err());
+		let (release, wait) = mpsc::sync_channel(1);
+		let worker = std::thread::spawn(move || {
+			wait.recv().unwrap();
+			drop(lease);
+		});
+		assert!(CaptureLease::acquire().is_err());
+		release.send(()).unwrap();
+		worker.join().unwrap();
+		assert!(CaptureLease::acquire().is_ok());
+	}
 	fn audio_without_devices() -> Audio {
 		let (settings, _) = tokio::sync::watch::channel(Devices::default());
 		let (processing, _) =

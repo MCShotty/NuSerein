@@ -1083,27 +1083,41 @@ impl MessagingUi {
 			);
 			toggle = self.tile(ui, state, channel, &tiles[index], main, false, true);
 			if strip > 0.0 {
-				// Narrow stages show as many square-or-wider tiles as fit, never clipped ones.
-				let fits = ((area.width() + TILE_GAP) / (strip + TILE_GAP)).floor() as usize;
-				let shown = (tiles.len() - 1).min(fits.max(1));
-				let width = ((area.width() - TILE_GAP * (shown as f32 - 1.0)) / shown as f32)
-					.min(strip * 16.0 / 9.0);
-				let size = egui::vec2(width, strip);
-				let row = size.x * shown as f32 + TILE_GAP * (shown as f32 - 1.0);
-				let mut x = area.center().x - row * 0.5;
-				let top = main.bottom() + TILE_GAP;
-				for (_, tile) in tiles
-					.iter()
-					.enumerate()
-					.filter(|(position, _)| *position != index)
-					.take(shown)
-				{
-					let rect = egui::Rect::from_min_size(egui::pos2(x, top), size);
-					x += size.x + TILE_GAP;
-					if let Some(focus) = self.tile(ui, state, channel, tile, rect, false, false) {
-						toggle = Some(focus);
-					}
-				}
+				let strip_rect = egui::Rect::from_min_size(
+					egui::pos2(area.left(), main.bottom() + TILE_GAP),
+					egui::vec2(area.width(), strip),
+				);
+				let mut strip_ui = ui.new_child(egui::UiBuilder::new().max_rect(strip_rect));
+				strip_ui.set_clip_rect(strip_rect.intersect(ui.clip_rect()));
+				let height = (strip - 18.0).max(24.0);
+				let size = egui::vec2((height * 16.0 / 9.0).min(area.width()), height);
+				let count = tiles.len() - 1;
+				let width = size.x * count as f32 + TILE_GAP * count.saturating_sub(1) as f32;
+				// All participants remain reachable when the focused strip is narrower than
+				// the roster. Its scroll state and tile count stay bounded by this call.
+				egui::ScrollArea::horizontal()
+					.id_salt(("voice-focus-strip", channel))
+					.auto_shrink([false, false])
+					.max_height(strip)
+					.show(&mut strip_ui, |ui| {
+						ui.spacing_mut().item_spacing.x = TILE_GAP;
+						ui.horizontal(|ui| {
+							ui.add_space(((area.width() - width) * 0.5).max(0.0));
+							for (_, tile) in tiles
+								.iter()
+								.enumerate()
+								.filter(|(position, _)| *position != index)
+							{
+								let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+								if ui.is_rect_visible(rect)
+									&& let Some(focus) =
+										self.tile(ui, state, channel, tile, rect, false, false)
+								{
+									toggle = Some(focus);
+								}
+							}
+						});
+					});
 			}
 		} else {
 			// Pick the column count that makes the tiles largest inside the stage, so two
@@ -1791,6 +1805,12 @@ impl MessagingUi {
 				let status = self.screen.capture_status.unwrap_or(self.screen.status);
 				if !status.is_empty() {
 					notices.push((status.into(), false));
+				}
+				if self.screen.adapting {
+					notices.push((
+						crate::i18n::translate("screen-adaptive-quality-active"),
+						false,
+					));
 				}
 			}
 			if !self.voice_camera_status.is_empty() {
@@ -3035,6 +3055,18 @@ impl MessagingUi {
 			device(ui, true);
 			device(ui, false);
 		}
+		let media_label = ui.label(crate::i18n::translate("voice-media-output"));
+		device_combo(
+			ui,
+			"media-output",
+			&self.voice_outputs,
+			&mut self.media_output,
+		)
+		.labelled_by(media_label.id);
+		ui.label(
+			design::medium(ui, crate::i18n::translate("voice-media-output-hint"), 12.0)
+				.color(colors.muted),
+		);
 		gain_controls(ui, &mut self.voice_gain);
 		ui.horizontal(|ui| {
 			ui.spacing_mut().item_spacing.x = 4.0;
@@ -6016,6 +6048,90 @@ mod tests {
 			let avatar = tile_avatar(size, true);
 			assert!(avatar <= size.x && avatar <= size.y.max(12.0));
 		}
+	}
+	#[test]
+	fn focused_call_strip_scrolls_to_participants_beyond_the_first_visible_row() {
+		let mut state = test_support::voice_demo_state();
+		let template = state.voice.roster[1].clone();
+		let entries: Vec<_> = (1..=32)
+			.map(|id| {
+				let mut entry = template.clone();
+				entry.participant.user = Id(id);
+				entry.participant.streaming = false;
+				if let Some(member) = &mut entry.member {
+					member.user.id = Id(id);
+					member.user.name = format!("Strip {id:02}");
+				}
+				entry
+			})
+			.collect();
+		state.voice.roster.clone_from(&entries);
+		let call = state.voice.active.as_mut().unwrap();
+		call.participants = entries.iter().map(|entry| entry.participant).collect();
+		let (channel, request) = (call.channel, call.request);
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		view.voice_focus = Some(StageFocus::LocalScreen);
+		view.voice_focus_participants = true;
+		view.screen.context = Some((state.generation, channel, request));
+		view.screen.busy = true;
+		view.screen.preview = Some(ctx.load_texture(
+			"strip-test",
+			egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+			egui::TextureOptions::LINEAR,
+		));
+		let mut seen_last = false;
+		for index in 0..40 {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(480.0, 400.0),
+					)),
+					time: Some(f64::from(index) / 60.0),
+					events: if index == 2 {
+						vec![
+							egui::Event::PointerMoved(egui::pos2(240.0, 365.0)),
+							egui::Event::MouseWheel {
+								phase: egui::TouchPhase::Move,
+								source: egui::MouseWheelSource::Unknown,
+								unit: egui::MouseWheelUnit::Point,
+								delta: egui::vec2(-10_000.0, 0.0),
+								modifiers: egui::Modifiers::NONE,
+							},
+						]
+					} else {
+						vec![]
+					},
+					..Default::default()
+				},
+				|ui| view.participant_tiles(ui, &state, channel, &entries, false),
+			);
+			fn last_avatar(shape: &egui::Shape, last: egui::TextureId) -> bool {
+				match shape {
+					egui::Shape::Mesh(mesh) => mesh.texture_id == last,
+					egui::Shape::Rect(rect) => rect.fill_texture_id() == last,
+					egui::Shape::Vec(shapes) => shapes.iter().any(|shape| last_avatar(shape, last)),
+					_ => false,
+				}
+			}
+			let visible = view.avatars.texture_id("preview-32").is_some_and(|last| {
+				output
+					.shapes
+					.iter()
+					.any(|shape| last_avatar(&shape.shape, last))
+			});
+			if index < 2 {
+				assert!(!visible);
+			}
+			seen_last |= visible;
+			output.drop_without_applying_deltas();
+		}
+		assert!(
+			seen_last,
+			"later participants were unreachable from the focused strip"
+		);
+		assert_eq!(view.voice_focus, Some(StageFocus::LocalScreen));
 	}
 
 	#[test]

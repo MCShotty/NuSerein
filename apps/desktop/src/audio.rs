@@ -84,8 +84,11 @@ impl Gate {
 }
 #[derive(Clone)]
 struct Request {
+	output: Option<String>,
 	generation: u64,
 	url: Option<url::Url>,
+	/// Host-generated review audio, never fetched or written to a file.
+	bytes: Option<Arc<[u8]>>,
 	expected: usize,
 	#[cfg(feature = "demo")]
 	voice_message: bool,
@@ -98,6 +101,7 @@ struct Worker {
 }
 #[derive(Default)]
 pub struct Audio {
+	pub output: Option<String>,
 	gate: Arc<Gate>,
 	worker: Option<Worker>,
 	status: Status,
@@ -138,6 +142,59 @@ impl Audio {
 					.ok_or("Audio attachment unavailable")?,
 			)
 		};
+		self.submit(
+			Request {
+				output: self.output.clone(),
+				generation: 0,
+				url,
+				bytes: None,
+				expected,
+				#[cfg(feature = "demo")]
+				voice_message: attachment.is_voice_message(),
+				duration: Duration::from_millis(u64::from(attachment.duration_ms.unwrap_or(0))),
+			},
+			runtime,
+			context,
+		)
+	}
+	/// Explicit listening in the recorder's Review phase. Shares the bounded decoder
+	/// and selected media output; no URL, temporary file or microphone is involved.
+	pub fn start_review(
+		&mut self,
+		bytes: Arc<[u8]>,
+		duration: Duration,
+		runtime: &tokio::runtime::Handle,
+		context: &eframe::egui::Context,
+	) -> Result<(), &'static str> {
+		self.stop();
+		if bytes.is_empty()
+			|| bytes.len() > discord_voice::recording::MAX_BYTES
+			|| duration.is_zero()
+			|| duration > Duration::from_secs(120)
+		{
+			return Err("Invalid voice-message review");
+		}
+		self.submit(
+			Request {
+				output: self.output.clone(),
+				generation: 0,
+				url: None,
+				expected: bytes.len(),
+				bytes: Some(bytes),
+				#[cfg(feature = "demo")]
+				voice_message: true,
+				duration,
+			},
+			runtime,
+			context,
+		)
+	}
+	fn submit(
+		&mut self,
+		mut request: Request,
+		runtime: &tokio::runtime::Handle,
+		context: &eframe::egui::Context,
+	) -> Result<(), &'static str> {
 		if self.worker.is_none() {
 			let (requests, receiver) = watch::channel(None);
 			let (status, updates) = watch::channel((0, Status::default()));
@@ -171,14 +228,8 @@ impl Audio {
 			self.status.state = State::Failed("Audio worker stopped; restart Serein");
 			return Err("Audio worker stopped; restart Serein");
 		}
-		worker.requests.send_replace(Some(Request {
-			generation,
-			url,
-			expected,
-			#[cfg(feature = "demo")]
-			voice_message: attachment.is_voice_message(),
-			duration: Duration::from_millis(u64::from(attachment.duration_ms.unwrap_or(0))),
-		}));
+		request.generation = generation;
+		worker.requests.send_replace(Some(request));
 		worker.wake.notify_one();
 		Ok(())
 	}
@@ -1070,6 +1121,7 @@ fn check_large_attachment_admission() {
 	let (_status, updates) = watch::channel((0, Status::default()));
 	let mut audio = Audio {
 		gate: Arc::new(Gate::default()),
+		output: None,
 		worker: Some(Worker {
 			requests,
 			status: updates,
@@ -1141,8 +1193,10 @@ pub fn debug_voice_message_check() {
 		.unwrap();
 	for voice_message in [false, true] {
 		let request = Request {
+			output: None,
 			generation: 0,
 			url: None,
+			bytes: None,
 			expected: 1,
 			voice_message,
 			duration: Duration::ZERO,

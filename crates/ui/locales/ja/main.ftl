@@ -4554,6 +4554,8 @@ voice-recipient-ringing = 呼び出し中…
 voice-recipient-not-in-call = 通話に未参加
 reconnect-now = 今すぐ再接続
 
+voice-media-output = メディア出力
+voice-media-output-hint = 新しく再生する音声・動画と視聴中の配信に適用します。
 voice-call-moved-to-another-client = このデバイスの通話セッションが置き換えられました
 
 server-settings-page-safety = 安全設定
@@ -4911,3 +4913,28 @@ search-overlays-history = 履歴
 search-overlays-clear-history = 検索履歴を消去
 main-sign-in-rate-limited-detail = Discord がこのサインインを制限しています。しばらく待ってから再試行してください。早すぎる再試行は待ち時間を延ばすことがあります。
 audio-playback-speed = 再生速度
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection

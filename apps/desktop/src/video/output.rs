@@ -1,5 +1,5 @@
 //! One second of decoded stereo PCM; the device callback only touches its ring and atomics.
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use std::sync::{
 	Arc,
 	atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -14,6 +14,8 @@ pub struct Controls {
 	pub position: Arc<AtomicU64>,
 	pub eof: Arc<AtomicBool>,
 	pub failed: Arc<AtomicBool>,
+	/// Device and privacy changes revoke even a native open still in progress.
+	pub revision: Arc<AtomicU64>,
 }
 pub struct Output {
 	pub producer: rtrb::Producer<[f32; 2]>,
@@ -25,6 +27,7 @@ struct Playback {
 	phase: f64,
 	read_frames: u64,
 	rate: u32,
+	revision: u64,
 	controls: Controls,
 }
 impl Playback {
@@ -35,7 +38,8 @@ impl Playback {
 		rate: u32,
 	) {
 		data.fill(T::from_sample(0.0));
-		if self.controls.cancelled.load(Ordering::Acquire)
+		if self.revision != self.controls.revision.load(Ordering::Acquire)
+			|| self.controls.cancelled.load(Ordering::Acquire)
 			|| self.controls.paused.load(Ordering::Acquire)
 			|| self.controls.seek.load(Ordering::Acquire) != u64::MAX
 		{
@@ -43,7 +47,7 @@ impl Playback {
 		}
 		let volume = f32::from_bits(self.controls.volume.load(Ordering::Acquire));
 		let volume = if volume.is_finite() {
-			volume.clamp(0.0, 1.0)
+			volume.clamp(0.0, 2.0)
 		} else {
 			0.0
 		};
@@ -84,7 +88,8 @@ impl Playback {
 				}
 			};
 			let stereo = std::array::from_fn::<_, 2, _>(|i| {
-				(clean(left[i]) + (clean(right[i]) - clean(left[i])) * self.phase as f32) * volume
+				((clean(left[i]) + (clean(right[i]) - clean(left[i])) * self.phase as f32) * volume)
+					.clamp(-1.0, 1.0)
 			});
 			if channels == 1 {
 				output[0] = T::from_sample((stereo[0] + stereo[1]) * 0.5);
@@ -106,14 +111,18 @@ impl Playback {
 		}
 	}
 }
-pub fn open(rate: u32, controls: Controls) -> Result<Output, &'static str> {
+pub fn open(
+	rate: u32,
+	selected: Option<&str>,
+	capacity: usize,
+	controls: Controls,
+) -> Result<Output, &'static str> {
 	if !(8000..=96000).contains(&rate) {
 		return Err("Unsupported video audio sample rate");
 	}
+	let revision = controls.revision.load(Ordering::Acquire);
 	let host = cpal::default_host();
-	let device = host
-		.default_output_device()
-		.ok_or("No audio output device")?;
+	let device = crate::media_output::choose(&host, selected)?;
 	let supported = device
 		.default_output_config()
 		.map_err(|_| "Audio output unavailable")?;
@@ -121,7 +130,7 @@ pub fn open(rate: u32, controls: Controls) -> Result<Output, &'static str> {
 	if !(1..=8).contains(&config.channels) || !(8000..=192000).contains(&config.sample_rate) {
 		return Err("Unsupported audio output format");
 	}
-	let (producer, frames) = rtrb::RingBuffer::new(rate as usize);
+	let (producer, frames) = rtrb::RingBuffer::new(capacity.clamp(960, rate as usize));
 	controls.position.store(0, Ordering::Release);
 	let playback = Playback {
 		frames,
@@ -129,6 +138,7 @@ pub fn open(rate: u32, controls: Controls) -> Result<Output, &'static str> {
 		phase: 0.0,
 		read_frames: 0,
 		rate,
+		revision,
 		controls,
 	};
 	let stream = match supported.sample_format() {
@@ -169,6 +179,40 @@ fn output<T: cpal::SizedSample + cpal::FromSample<f32>>(
 mod tests {
 	use super::*;
 	#[test]
+	fn route_revision_silences_buffered_pcm_after_a_coalesced_privacy_change() {
+		let controls = Controls {
+			cancelled: Arc::new(AtomicBool::new(false)),
+			paused: Arc::new(AtomicBool::new(false)),
+			seek: Arc::new(AtomicU64::new(u64::MAX)),
+			volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+			position: Arc::new(AtomicU64::new(0)),
+			eof: Arc::new(AtomicBool::new(false)),
+			failed: Arc::new(AtomicBool::new(false)),
+			revision: Arc::new(AtomicU64::new(0)),
+		};
+		let (mut producer, frames) = rtrb::RingBuffer::new(960);
+		for _ in 0..960 {
+			producer.push([0.75; 2]).unwrap();
+		}
+		let mut playback = Playback {
+			frames,
+			current: None,
+			phase: 0.0,
+			read_frames: 0,
+			rate: 48000,
+			revision: 0,
+			controls: controls.clone(),
+		};
+		controls.paused.store(true, Ordering::Release);
+		controls.revision.fetch_add(1, Ordering::AcqRel);
+		controls.paused.store(false, Ordering::Release);
+		controls.revision.fetch_add(1, Ordering::AcqRel);
+		let mut data = [1.0f32; 128];
+		playback.render(&mut data, 2, 48000);
+		assert_eq!(data, [0.0; 128]);
+		assert_eq!(controls.position.load(Ordering::Acquire), 0);
+	}
+	#[test]
 	fn video_pcm_clock_freezes_when_paused_cancelled_starved_or_ended() {
 		for output_rate in [8000, 44100, 48000, 96000] {
 			let controls = Controls {
@@ -179,6 +223,7 @@ mod tests {
 				position: Arc::new(AtomicU64::new(0)),
 				eof: Arc::new(AtomicBool::new(false)),
 				failed: Arc::new(AtomicBool::new(false)),
+				revision: Arc::new(AtomicU64::new(0)),
 			};
 			let (mut producer, frames) = rtrb::RingBuffer::new(8);
 			let mut playback = Playback {
@@ -187,6 +232,7 @@ mod tests {
 				phase: 0.0,
 				read_frames: 0,
 				rate: 48000,
+				revision: 0,
 				controls: controls.clone(),
 			};
 			let mut data = [1.0f32; 64];
@@ -226,6 +272,7 @@ mod tests {
 				phase: 0.0,
 				read_frames: 0,
 				rate: 48000,
+				revision: 0,
 				controls: controls.clone(),
 			};
 			let mut queued = 0;
