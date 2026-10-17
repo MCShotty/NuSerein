@@ -201,3 +201,11 @@ and Post controls. Its content scrolls while the footer remains available. Escap
 the close icon and a backdrop click dismiss an idle editor; a pending submission
 keeps it open. Unknown results and expired but unfinalized polls retain explicit
 status text. `--features demo -- --demo --demo-polls` previews the fixture offline.
+
+
+Native server settings include AutoMod and Moderation pages. AutoMod edits use typed trigger
+and action controls, bounded line lists and explicit save/discard/delete confirmation.
+Moderation presents a known-member chooser or explicit lookup, timeout duration, history
+retention and a reason in its final confirmation. Role hierarchy and current permissions
+control availability. Failed writes keep input; refresh and reapply are explicit after an
+unknown outcome. These pages use the existing settings navigation, focus and scrolling.

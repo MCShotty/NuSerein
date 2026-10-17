@@ -107,10 +107,12 @@ mod search_navigation_tests;
 pub mod select;
 mod server_admin;
 mod server_audit_log;
+mod server_automod;
 mod server_integrations;
 mod server_invite;
 mod server_invites;
 mod server_menu;
+mod server_moderation;
 #[cfg(test)]
 mod server_notification_tests;
 mod server_notifications;
@@ -10159,7 +10161,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");

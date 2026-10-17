@@ -1900,3 +1900,15 @@ No new capture files, media cache, driver installer or secrets are persisted.
 Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.
 
 Schema 29 adds a bounded boolean opt-in for double-click reactions, disabled for new and migrated settings. The selected Unicode preset is retained while disabled; Reset chat restores the disabled default.
+
+
+## Moderation and AutoMod session state
+
+Bans retain one page of at most 100 entries/256 KiB; a specific member lookup does not
+create a directory cache. AutoMod retains at most 32 rules/512 KiB, with bounded metadata,
+20 exempt roles and 50 exempt channels per rule. Wire bodies are bounded separately.
+One existing server-administration worker owns reads/writes; its sequence, account generation,
+server scope and permission revision reject retired results. No new local store or telemetry
+is introduced. Rule drafts and audit reasons stay in session RAM and clear on account/server
+change or explicit discard. Failed saves preserve the draft. Uncertain writes require an
+explicit reload before a further mutation; no queued automatic destructive retry exists.

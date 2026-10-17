@@ -27,6 +27,14 @@ fuzz_target!(|data: &[u8]| {
 	}
 	// These are the same public decode/normalization boundaries used by the API
 	// and Gateway. A decoded message need not pass the separate timeline policy.
+	if selector == 9 {
+		let _ = black_box(discord_protocol::automod::rules(payload, model::Id(2)));
+		return;
+	}
+	if selector == 10 {
+		let _ = black_box(discord_protocol::moderation::bans(payload, model::Id(2), None));
+		return;
+	}
 	match selector % 8 {
 		0 => {
 			if let Ok(message) = discord_protocol::decode::<MessageDto>(payload) {

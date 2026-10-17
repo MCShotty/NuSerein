@@ -40,6 +40,7 @@ pub mod server_actions;
 pub mod server_admin;
 pub mod server_audit_log;
 pub mod server_integrations;
+mod server_moderation;
 pub mod server_roles;
 pub mod server_settings;
 mod thread_starter;

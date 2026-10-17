@@ -1395,3 +1395,20 @@ Protection adds temporary passes only for candidate URLs containing `_`, `*`, `~
 or `&`; other messages use an early return. Source remains capped at 8 KiB, each
 pass at 512 events (exhaustion falls back to bounded literal text), and stored
 links at 16. No dependency or retained cache is added.
+
+
+## Moderation and AutoMod — October 17, 2026
+
+Based on fork `f9e39f7`. Focused permission/hierarchy, sparse rule preservation, bounded
+parsing, loopback HTTP and native UI-state regressions pass, including whitespace
+preservation on unrelated rule edits. Replay and the 120-second soak passed (1,531
+passes). Login-handoff, cached-xtask workspace and license-policy fixtures pass; the
+locked graph is unchanged. The first local ASan compilation hit the workspace memory
+limit before fuzzing; no fuzz success is inferred. Final gates are recorded in the PR.
+
+`scripts/compare-replay.py` compares the reviewed commit, the current published upstream
+nightly and the previous fork on independent Windows/macOS/Linux CI workers. Matching
+Rust 1.98.1 release overrides, separate worktrees/targets, one warmup and five rotated
+samples produce revision-labelled JSON artifacts including sample ranges. Native
+packages must separately establish executable, installed-payload and distribution
+sizes. Native UI CPU/RSS, moderation latency and live service behavior remain unmeasured.

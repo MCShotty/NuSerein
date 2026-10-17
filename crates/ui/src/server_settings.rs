@@ -20,10 +20,14 @@ enum Page {
 	Invites,
 	Integrations,
 	AuditLog,
+	AutoMod,
+	Moderation,
 }
 impl Page {
 	fn allowed(self, state: &State, guild: Id) -> bool {
 		match self {
+			Self::AutoMod => state.can_manage_guild(guild),
+			Self::Moderation => state.can_open_moderation(guild),
 			Self::Profile | Self::Engagement | Self::Safety => state.can_manage_guild(guild),
 			Self::Emoji => state.can_open_emoji_settings(guild),
 			Self::Stickers => state.can_open_sticker_settings(guild),
@@ -36,6 +40,8 @@ impl Page {
 	}
 	fn label(self) -> &'static str {
 		match self {
+			Self::AutoMod => "automod-title",
+			Self::Moderation => "moderation-title",
 			Self::Profile => "server-settings-page-profile",
 			Self::Engagement => "server-settings-page-engagement",
 			Self::Safety => "server-settings-page-safety",
@@ -52,6 +58,8 @@ impl Page {
 
 #[derive(Default)]
 pub(super) struct Editor {
+	automod: crate::server_automod::AutoModUi,
+	moderation: crate::server_moderation::ModerationUi,
 	scope: Option<(u64, Id)>,
 	page: Page,
 	draft: Option<Settings>,
@@ -78,6 +86,48 @@ pub(super) struct Editor {
 }
 
 impl MessagingUi {
+	pub fn preview_server_moderation(
+		&mut self,
+		state: &mut State,
+		guild: Id,
+		user: Option<Id>,
+	) -> Option<Command> {
+		if !state.can_open_moderation(guild) {
+			return None;
+		}
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::Moderation,
+			..Default::default()
+		};
+		if let Some(user) = user {
+			self.server_settings
+				.moderation
+				.select(state.generation, guild, user);
+			state.request_server_admin(
+				guild,
+				model::server_admin::Action::Moderation(model::moderation::Action::Member(user)),
+			)
+		} else {
+			None
+		}
+	}
+	pub fn preview_server_automod(&mut self, state: &mut State, guild: Id) -> Option<Command> {
+		if !state.can_manage_guild(guild) {
+			return None;
+		}
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::AutoMod,
+			..Default::default()
+		};
+		state.request_server_admin(
+			guild,
+			model::server_admin::Action::AutoMod(model::automod::Action::Load),
+		)
+	}
 	/// Select the engagement page in the offline preview harness.
 	pub fn preview_server_engagement(&mut self) {
 		self.server_settings.page = Page::Engagement;
@@ -137,6 +187,12 @@ impl MessagingUi {
 					.preview_editor(page == "role-permissions");
 			}
 			return command;
+		}
+		if page == "automod" {
+			return self.preview_server_automod(state, guild);
+		}
+		if page == "moderation" {
+			return self.preview_server_moderation(state, guild, None);
 		}
 		let webhooks = page == "webhooks";
 		let expand_audit = page == "audit-log-expanded";
@@ -231,6 +287,8 @@ impl MessagingUi {
 			&& (self.server_settings.dirty()
 				|| self.server_settings.submitted
 				|| self.server_settings.icon_pending)
+			|| self.server_settings.automod.has_changes()
+			|| self.server_settings.moderation.has_changes()
 			|| self.server_settings.admin.has_changes()
 			|| self.server_settings.stickers.has_changes()
 			|| self.server_settings.roles.has_changes()
@@ -240,6 +298,9 @@ impl MessagingUi {
 	/// Opens the same permission-checked editor used by the server menu.
 	pub fn preview_server_settings(&mut self, state: &mut State, guild: Id) -> Option<Command> {
 		if !state.can_manage_guild(guild) {
+			if state.can_open_moderation(guild) {
+				return self.preview_server_moderation(state, guild, None);
+			}
 			if state.can_open_role_settings(guild) {
 				return self.preview_server_roles(state, guild, None);
 			}
@@ -324,10 +385,14 @@ impl Editor {
 		if !self.is_open() {
 			return true;
 		}
-		if self.integrations.has_changes()
+		if self.automod.has_changes()
+			|| self.moderation.has_changes()
+			|| self.integrations.has_changes()
 			|| self.roles.has_changes()
 			|| self.invites.busy()
 			|| self.dirty()
+			|| self.automod.has_changes()
+			|| self.moderation.has_changes()
 			|| self.admin.has_changes()
 			|| state.server_admin.saving
 			|| state.server_settings.saving
@@ -373,7 +438,8 @@ impl Editor {
 				|| state.can_open_member_settings(guild)
 				|| state.can_open_role_settings(guild)
 				|| state.can_open_integration_settings(guild)
-				|| state.can_open_audit_log_settings(guild))
+				|| state.can_open_audit_log_settings(guild)
+				|| state.can_open_moderation(guild))
 			|| !state.guilds.iter().any(|known| known.id == guild)
 		{
 			*self = Self::default();
@@ -398,6 +464,8 @@ impl Editor {
 				Page::Emoji
 			} else if state.can_open_sticker_settings(guild) {
 				Page::Stickers
+			} else if state.can_open_moderation(guild) {
+				Page::Moderation
 			} else if state.can_open_member_settings(guild) {
 				Page::Members
 			} else if state.can_open_integration_settings(guild) {
@@ -405,6 +473,8 @@ impl Editor {
 			} else {
 				Page::AuditLog
 			};
+			self.automod = crate::server_automod::AutoModUi::default();
+			self.moderation = crate::server_moderation::ModerationUi::default();
 			self.admin = crate::server_admin::Admin::default();
 			self.stickers = crate::server_stickers::StickersUi::default();
 			self.roles = crate::server_roles::RolesUi::default();
@@ -515,6 +585,8 @@ impl Editor {
 		if !invite_overlay && close {
 			if self.dirty()
 				|| state.server_settings.saving
+				|| self.automod.has_changes()
+				|| self.moderation.has_changes()
 				|| self.admin.has_changes()
 				|| self.stickers.has_changes()
 				|| self.roles.has_changes()
@@ -525,6 +597,8 @@ impl Editor {
 				self.discard = true;
 			} else {
 				self.scope = None;
+				self.automod = crate::server_automod::AutoModUi::default();
+				self.moderation = crate::server_moderation::ModerationUi::default();
 				self.roles = crate::server_roles::RolesUi::default();
 				self.stickers = crate::server_stickers::StickersUi::default();
 				self.invites = crate::server_invites::InvitesUi::default();
@@ -577,7 +651,7 @@ impl Editor {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
-		const PAGES: [Page; 10] = [
+		const PAGES: [Page; 12] = [
 			Page::Profile,
 			Page::Engagement,
 			Page::Safety,
@@ -587,6 +661,8 @@ impl Editor {
 			Page::Roles,
 			Page::Invites,
 			Page::Integrations,
+			Page::AutoMod,
+			Page::Moderation,
 			Page::AuditLog,
 		];
 		let colors = design::palette(ui);
@@ -823,6 +899,14 @@ impl Editor {
 		commands: &mut Vec<Command>,
 	) {
 		match self.page {
+			Page::AutoMod => {
+				self.automod.show(ui, state, guild, commands);
+				return;
+			}
+			Page::Moderation => {
+				self.moderation.show(ui, state, guild, commands);
+				return;
+			}
 			Page::AuditLog => {
 				self.audit_log.show(ui, state, guild, avatars, commands);
 				return;

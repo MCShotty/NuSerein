@@ -83,256 +83,360 @@ pub fn execute_admin(
 		"synthetic admin action must satisfy wire bounds"
 	);
 	let owner = state.user.as_ref().expect("fixture user");
-	let result = match action {
-		Action::AuditLog(query) => execute_audit_log(state, guild, query),
-		Action::Invites(action) => execute_invites(state, guild, action),
-		Action::Integrations(action) => execute_integrations(state, guild, action),
-		Action::Roles(action) => execute_roles(state, guild, action),
-		Action::LoadEmojis
-		| Action::CreateEmoji { .. }
-		| Action::RenameEmoji { .. }
-		| Action::DeleteEmoji { .. } => {
-			let mut page = state.server_admin.emojis.clone().unwrap_or_else(|| Emojis {
-				items: vec![Emoji {
-					emoji: model::CustomEmoji {
-						id: Id(9001),
-						name: "serein".into(),
-						animated: false,
-						available: true,
-						managed: false,
-						roles: Some(Vec::new()),
-					},
-					uploader: Some(owner.clone()),
-				}],
-				static_limit: Some(50),
-				animated_limit: Some(50),
-			});
-			match action {
-				Action::CreateEmoji { name, image } => {
-					let id = Id(page
-						.items
-						.iter()
-						.map(|row| row.emoji.id.0)
-						.max()
-						.unwrap_or(9000) + 1);
-					page.items.push(Emoji {
-						emoji: model::CustomEmoji {
+	let result =
+		match action {
+			Action::AutoMod(action) => {
+				let mut page = state.server_admin.automod.clone().unwrap_or_else(|| {
+					model::automod::Snapshot {
+						guild,
+						rules: vec![model::automod::Rule {
+							id: Id(9901),
+							guild,
+							creator: owner.id,
+							settings: model::automod::Settings {
+								name: "Synthetic keyword filter".into(),
+								metadata: model::automod::Metadata {
+									keywords: vec!["sample phrase".into()],
+									..Default::default()
+								},
+								..Default::default()
+							},
+						}],
+					}
+				});
+				match action {
+					model::automod::Action::Load => {}
+					model::automod::Action::Create { settings, .. } => {
+						let id = Id(page
+							.rules
+							.iter()
+							.map(|rule| rule.id.0)
+							.max()
+							.unwrap_or(9900)
+							.saturating_add(1));
+						page.rules.push(model::automod::Rule {
 							id,
-							name,
-							animated: image.starts_with("data:image/gif"),
+							guild,
+							creator: owner.id,
+							settings: *settings,
+						});
+					}
+					model::automod::Action::Edit { id, after, .. } => {
+						if let Some(rule) = page.rules.iter_mut().find(|rule| rule.id == id) {
+							rule.settings = *after;
+						}
+					}
+					model::automod::Action::Delete { id, .. } => {
+						page.rules.retain(|rule| rule.id != id)
+					}
+				}
+				Outcome::AutoMod(page)
+			}
+			Action::Moderation(action) => {
+				use model::moderation::{Action as M, Change, Outcome as O};
+				let result = match action {
+					M::Bans { after } => {
+						let mut user = owner.clone();
+						user.id = Id(9902);
+						user.name = "Synthetic banned member".into();
+						let items = if after.is_none() {
+							vec![model::moderation::Ban {
+								user,
+								reason: Some("Synthetic moderation reason".into()),
+							}]
+						} else {
+							vec![]
+						};
+						O::Bans(model::moderation::Bans {
+							guild,
+							items,
+							next: None,
+						})
+					}
+					M::Member(id) => {
+						let mut user = owner.clone();
+						user.id = id;
+						user.name = "Synthetic member".into();
+						O::Member(Box::new(Member {
+							user,
+							nick: None,
+							roles: vec![],
+							joined_at: None,
+							join_source: None,
+							invite_code: None,
+							flags: None,
+							unusual_dm_until: None,
+							timeout_until: None,
+						}))
+					}
+					M::Unban { user, .. } => O::Changed { user, member: None },
+					M::Change { user, change, .. } => {
+						let member = if let Change::Timeout { until } = change {
+							state
+								.server_admin
+								.moderation_target
+								.clone()
+								.map(|mut member| {
+									member.timeout_until = until.map(|at| at / 1_000_000);
+									Box::new(member)
+								})
+						} else {
+							None
+						};
+						O::Changed { user, member }
+					}
+				};
+				Outcome::Moderation(result)
+			}
+			Action::AuditLog(query) => execute_audit_log(state, guild, query),
+			Action::Invites(action) => execute_invites(state, guild, action),
+			Action::Integrations(action) => execute_integrations(state, guild, action),
+			Action::Roles(action) => execute_roles(state, guild, action),
+			Action::LoadEmojis
+			| Action::CreateEmoji { .. }
+			| Action::RenameEmoji { .. }
+			| Action::DeleteEmoji { .. } => {
+				let mut page = state.server_admin.emojis.clone().unwrap_or_else(|| Emojis {
+					items: vec![Emoji {
+						emoji: model::CustomEmoji {
+							id: Id(9001),
+							name: "serein".into(),
+							animated: false,
 							available: true,
 							managed: false,
 							roles: Some(Vec::new()),
 						},
 						uploader: Some(owner.clone()),
-					});
-				}
-				Action::RenameEmoji { id, name } => {
-					if let Some(row) = page.items.iter_mut().find(|row| row.emoji.id == id) {
-						row.emoji.name = name;
+					}],
+					static_limit: Some(50),
+					animated_limit: Some(50),
+				});
+				match action {
+					Action::CreateEmoji { name, image } => {
+						let id = Id(page
+							.items
+							.iter()
+							.map(|row| row.emoji.id.0)
+							.max()
+							.unwrap_or(9000) + 1);
+						page.items.push(Emoji {
+							emoji: model::CustomEmoji {
+								id,
+								name,
+								animated: image.starts_with("data:image/gif"),
+								available: true,
+								managed: false,
+								roles: Some(Vec::new()),
+							},
+							uploader: Some(owner.clone()),
+						});
 					}
+					Action::RenameEmoji { id, name } => {
+						if let Some(row) = page.items.iter_mut().find(|row| row.emoji.id == id) {
+							row.emoji.name = name;
+						}
+					}
+					Action::DeleteEmoji { id } => page.items.retain(|row| row.emoji.id != id),
+					_ => {}
 				}
-				Action::DeleteEmoji { id } => page.items.retain(|row| row.emoji.id != id),
-				_ => {}
+				Outcome::Emojis(page)
 			}
-			Outcome::Emojis(page)
-		}
-		Action::LoadStickers
-		| Action::CreateSticker { .. }
-		| Action::EditSticker { .. }
-		| Action::DeleteSticker { .. } => {
-			let mut page = state
-				.server_admin
-				.stickers
-				.clone()
-				.unwrap_or_else(|| Stickers {
-					items: [
-						(9101, "Wave", "hello,wave"),
-						(9102, "Smile", "smile,happy"),
-						(9103, "Celebrate", "party,celebrate"),
+			Action::LoadStickers
+			| Action::CreateSticker { .. }
+			| Action::EditSticker { .. }
+			| Action::DeleteSticker { .. } => {
+				let mut page = state
+					.server_admin
+					.stickers
+					.clone()
+					.unwrap_or_else(|| Stickers {
+						items: [
+							(9101, "Wave", "hello,wave"),
+							(9102, "Smile", "smile,happy"),
+							(9103, "Celebrate", "party,celebrate"),
+						]
+						.into_iter()
+						.map(|(id, name, tags)| Sticker {
+							sticker: model::Sticker {
+								id: Id(id),
+								name: name.into(),
+								description: "Original synthetic sticker artwork".into(),
+								tags: tags.into(),
+								format_type: 1,
+								guild_id: Some(guild),
+								pack_id: None,
+								available: true,
+							},
+							uploader: Some(owner.clone()),
+						})
+						.collect(),
+						limit: Some(5),
+					});
+				match action {
+					Action::CreateSticker {
+						name,
+						description,
+						tags,
+						..
+					} => {
+						let id = Id(page
+							.items
+							.iter()
+							.map(|row| row.sticker.id.0)
+							.max()
+							.unwrap_or(9100) + 1);
+						page.items.push(Sticker {
+							sticker: model::Sticker {
+								id,
+								name,
+								description,
+								tags,
+								format_type: 1,
+								guild_id: Some(guild),
+								pack_id: None,
+								available: true,
+							},
+							uploader: Some(owner.clone()),
+						});
+					}
+					Action::EditSticker {
+						id,
+						name,
+						description,
+						tags,
+					} => {
+						if let Some(row) = page.items.iter_mut().find(|row| row.sticker.id == id) {
+							row.sticker.name = name;
+							row.sticker.description = description;
+							row.sticker.tags = tags;
+						}
+					}
+					Action::DeleteSticker { id } => page.items.retain(|row| row.sticker.id != id),
+					_ => {}
+				}
+				Outcome::Stickers(page)
+			}
+			Action::LoadMembers(query) => {
+				let mut page = {
+					let roles: Vec<_> = state
+						.permissions
+						.guilds
+						.get(&guild)
+						.and_then(|guild| guild.roles.as_ref())
+						.into_iter()
+						.flatten()
+						.map(|role| Role {
+							role: role.clone(),
+							managed: false,
+						})
+						.collect();
+					let roles = state.server_admin.roles.as_ref().map_or(roles, |catalog| {
+						catalog
+							.items
+							.iter()
+							.map(|role| Role {
+								role: role.permission_role(),
+								managed: role.managed,
+							})
+							.collect()
+					});
+					let items = [
+						"Avery", "Mika", "Rowan", "Sam", "Taylor", "Morgan", "Alex", "Jamie",
 					]
 					.into_iter()
-					.map(|(id, name, tags)| Sticker {
-						sticker: model::Sticker {
-							id: Id(id),
-							name: name.into(),
-							description: "Original synthetic sticker artwork".into(),
-							tags: tags.into(),
-							format_type: 1,
-							guild_id: Some(guild),
-							pack_id: None,
-							available: true,
-						},
-						uploader: Some(owner.clone()),
+					.enumerate()
+					.map(|(index, name)| {
+						let mut user = owner.clone();
+						user.id = Id(((1_620_070_400_000u64 + index as u64 * 86_400_000
+							- 1_420_070_400_000) << 22)
+							| 1);
+						user.name = name.into();
+						user.avatar = None;
+						Member {
+							user,
+							nick: None,
+							roles: roles
+								.iter()
+								.filter(|role| role.role.id != guild)
+								.skip(index % 4)
+								.take(1)
+								.map(|role| role.role.id)
+								.collect(),
+							joined_at: Some(1_789_200_000_000 - index as i128 * 86_400_000),
+							join_source: Some(1),
+							invite_code: Some("demo".into()),
+							flags: Some(0),
+							unusual_dm_until: None,
+							timeout_until: None,
+						}
 					})
-					.collect(),
-					limit: Some(5),
-				});
-			match action {
-				Action::CreateSticker {
-					name,
-					description,
-					tags,
-					..
-				} => {
-					let id = Id(page
-						.items
-						.iter()
-						.map(|row| row.sticker.id.0)
-						.max()
-						.unwrap_or(9100) + 1);
-					page.items.push(Sticker {
-						sticker: model::Sticker {
-							id,
-							name,
-							description,
-							tags,
-							format_type: 1,
-							guild_id: Some(guild),
-							pack_id: None,
-							available: true,
-						},
-						uploader: Some(owner.clone()),
-					});
-				}
-				Action::EditSticker {
-					id,
-					name,
-					description,
-					tags,
-				} => {
-					if let Some(row) = page.items.iter_mut().find(|row| row.sticker.id == id) {
-						row.sticker.name = name;
-						row.sticker.description = description;
-						row.sticker.tags = tags;
+					.collect::<Vec<_>>();
+					Members {
+						total: items.len() as u64,
+						items,
+						roles,
+						next: None,
+						features: Vec::new(),
+						show_in_channel_list: Some(false),
 					}
-				}
-				Action::DeleteSticker { id } => page.items.retain(|row| row.sticker.id != id),
-				_ => {}
-			}
-			Outcome::Stickers(page)
-		}
-		Action::LoadMembers(query) => {
-			let mut page = {
-				let roles: Vec<_> = state
-					.permissions
-					.guilds
-					.get(&guild)
-					.and_then(|guild| guild.roles.as_ref())
-					.into_iter()
-					.flatten()
-					.map(|role| Role {
-						role: role.clone(),
-						managed: false,
-					})
-					.collect();
-				let roles = state.server_admin.roles.as_ref().map_or(roles, |catalog| {
-					catalog
-						.items
-						.iter()
-						.map(|role| Role {
-							role: role.permission_role(),
-							managed: role.managed,
-						})
-						.collect()
-				});
-				let items = [
-					"Avery", "Mika", "Rowan", "Sam", "Taylor", "Morgan", "Alex", "Jamie",
-				]
-				.into_iter()
-				.enumerate()
-				.map(|(index, name)| {
-					let mut user = owner.clone();
-					user.id = Id(((1_620_070_400_000u64 + index as u64 * 86_400_000
-						- 1_420_070_400_000)
-						<< 22) | 1);
-					user.name = name.into();
-					user.avatar = None;
-					Member {
-						user,
-						nick: None,
-						roles: roles
+				};
+				if let Some(cached) = &state.server_admin.members {
+					for row in &mut page.items {
+						if let Some(previous) = cached
+							.items
 							.iter()
-							.filter(|role| role.role.id != guild)
-							.skip(index % 4)
-							.take(1)
-							.map(|role| role.role.id)
-							.collect(),
-						joined_at: Some(1_789_200_000_000 - index as i128 * 86_400_000),
-						join_source: Some(1),
-						invite_code: Some("demo".into()),
-						flags: Some(0),
-						unusual_dm_until: None,
-						timeout_until: None,
+							.find(|previous| previous.user.id == row.user.id)
+						{
+							*row = previous.clone();
+						}
 					}
-				})
-				.collect::<Vec<_>>();
-				Members {
-					total: items.len() as u64,
-					items,
-					roles,
-					next: None,
-					features: Vec::new(),
-					show_in_channel_list: Some(false),
 				}
-			};
-			if let Some(cached) = &state.server_admin.members {
-				for row in &mut page.items {
-					if let Some(previous) = cached
+				page.items.retain(|row| {
+					query.search.is_empty()
+						|| row
+							.user
+							.name
+							.to_lowercase()
+							.contains(&query.search.to_lowercase())
+						|| row.user.id.to_string() == query.search
+				});
+				match query.sort {
+					2 => page.items.sort_by_key(|row| row.joined_at),
+					3 => page.items.sort_by_key(|row| std::cmp::Reverse(row.user.id)),
+					4 => page.items.sort_by_key(|row| row.user.id),
+					_ => page
 						.items
-						.iter()
-						.find(|previous| previous.user.id == row.user.id)
-					{
-						*row = previous.clone();
+						.sort_by_key(|row| std::cmp::Reverse(row.joined_at)),
+				}
+				Outcome::Members(page)
+			}
+			Action::SetRole { user, .. } | Action::SetNickname { user, .. } => {
+				let mut member = state
+					.server_admin
+					.members
+					.as_ref()
+					.and_then(|page| page.items.iter().find(|row| row.user.id == user))
+					.expect("fixture target member")
+					.clone();
+				match action {
+					Action::SetRole { role, assigned, .. } => {
+						member.roles.retain(|id| *id != role);
+						if assigned {
+							member.roles.push(role);
+						}
 					}
-				}
-			}
-			page.items.retain(|row| {
-				query.search.is_empty()
-					|| row
-						.user
-						.name
-						.to_lowercase()
-						.contains(&query.search.to_lowercase())
-					|| row.user.id.to_string() == query.search
-			});
-			match query.sort {
-				2 => page.items.sort_by_key(|row| row.joined_at),
-				3 => page.items.sort_by_key(|row| std::cmp::Reverse(row.user.id)),
-				4 => page.items.sort_by_key(|row| row.user.id),
-				_ => page
-					.items
-					.sort_by_key(|row| std::cmp::Reverse(row.joined_at)),
-			}
-			Outcome::Members(page)
-		}
-		Action::SetRole { user, .. } | Action::SetNickname { user, .. } => {
-			let mut member = state
-				.server_admin
-				.members
-				.as_ref()
-				.and_then(|page| page.items.iter().find(|row| row.user.id == user))
-				.expect("fixture target member")
-				.clone();
-			match action {
-				Action::SetRole { role, assigned, .. } => {
-					member.roles.retain(|id| *id != role);
-					if assigned {
-						member.roles.push(role);
+					Action::SetNickname { nick, .. } => {
+						member.nick = (!nick.is_empty()).then_some(nick)
 					}
+					_ => {}
 				}
-				Action::SetNickname { nick, .. } => {
-					member.nick = (!nick.is_empty()).then_some(nick)
-				}
-				_ => {}
+				Outcome::Member(member)
 			}
-			Outcome::Member(member)
-		}
-		Action::Voice { user, .. } => Outcome::VoiceUpdated(user),
-		Action::Kick { user } => Outcome::Kicked(user),
-		Action::Prune { .. } => Outcome::Pruned(Some(0)),
-		Action::ShowMembers { enabled } => Outcome::ChannelList(enabled),
-	};
+			Action::Voice { user, .. } => Outcome::VoiceUpdated(user),
+			Action::Kick { user } => Outcome::Kicked(user),
+			Action::Prune { .. } => Outcome::Pruned(Some(0)),
+			Action::ShowMembers { enabled } => Outcome::ChannelList(enabled),
+		};
 	assert!(
 		result.valid(),
 		"synthetic administration response must stay bounded"

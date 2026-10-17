@@ -1,5 +1,36 @@
 # Discord compatibility — checked 2026-09-10
 
+## Native moderation and AutoMod — October 17, 2026
+
+The desktop comparison reference supplied by the owner is Discord Stable 641004
+(`c9ac31f`), host 1.0.9262 x64 (`94186`). No live official-client comparison was run here.
+This feature branch extends fork `f9e39f7`; it does not alter parent #567/#620 or merge
+other parity work. Existing roles, channel/category organization, permission synchronization,
+invites and server lifecycle implementations remain in place.
+
+Server settings now expose bans/unbans, timeouts/removal, kicks, optional audit reasons
+and native AutoMod rules. Moderators can look up a specific member or choose one already
+loaded in the conversation. Ban pages retain at most 100 entries/256 KiB. Self, owner,
+equal/higher role, unknown hierarchy and administrator timeout cases fail closed.
+Current permissions are rechecked before dispatch, and permission changes retire results.
+An uncertain mutation requires a refresh and a deliberate decision; no destructive write
+is automatically repeated. The default ban action deletes no message history.
+
+The documented [moderation and AutoMod resource](https://docs.discord.com/developers/resources/auto-moderation)
+routes use bounded reads and `X-Audit-Log-Reason`. AutoMod supports keyword, spam,
+keyword preset, mention spam and member-profile triggers, with compatible block, alert,
+timeout and member-interaction actions. A catalog retains at most 32 rules/512 KiB.
+The editor keeps rejected drafts and offers explicit reapplication after refreshing.
+Sparse edits preserve unrelated settings, unknown trigger/action metadata and concurrent
+exemption additions. Rule/role/channel IDs are scoped to the current server. User accounts
+do not reliably receive bot-only rule lifecycle dispatches; refresh is explicit.
+
+These are native implementations with synthetic parser/reducer/HTTP/UI checks. Service
+acceptance, entitlement differences and owner-controlled moderation interoperability
+remain unverified. Scheduled events, Stage participation and administrative onboarding
+are separate unfinished roadmap items; these settings do not enable Stage microphone use.
+
+
 ## Game mentions (October 14, 2026)
 
 The native composer offers `@game`, a searchable game catalog and application references
