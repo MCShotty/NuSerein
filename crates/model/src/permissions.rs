@@ -3,6 +3,9 @@
 use crate::Id;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub const REQUEST_TO_SPEAK: u128 = 1 << 32;
+pub const MANAGE_EVENTS: u128 = 1 << 33;
+pub const CREATE_EVENTS: u128 = 1 << 44;
 pub const SEND_POLLS: u128 = 1 << 49;
 pub const SEND_VOICE_MESSAGES: u128 = 1 << 46;
 pub const ADMINISTRATOR: u128 = 1 << 3;

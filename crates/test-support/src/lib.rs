@@ -1,6 +1,8 @@
 //! Handcrafted synthetic data. No network imports; never evidence of live compatibility.
 use client_core::{Envelope, Event, State};
 use model::*;
+mod community;
+pub use community::community_state;
 mod message_links;
 pub use message_links::{load_message_link_page, message_links_demo_state};
 /// Synthetic Tenor-shaped results. Previews under `/synthetic/` are painted locally; no request.
@@ -786,6 +788,7 @@ pub fn voice_demo_state() -> State {
 			deafened,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			video: false,
 			streaming: false,
 		},
@@ -819,11 +822,15 @@ pub fn voice_demo_state() -> State {
 		request: 0,
 		phase: Phase::Connected,
 		connected_at: Some(Instant::now() - Duration::from_secs(3663)),
+		stage_revision: 0,
+		media_mode: Default::default(),
+		stage_consent: false,
 		channel_started_at: Some(Instant::now() - Duration::from_secs(3663)),
 		muted: false,
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		participants: state
 			.voice
 			.roster
@@ -900,6 +907,7 @@ pub fn call_demo_state() -> State {
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		video: false,
 		streaming: false,
 	};
@@ -911,11 +919,15 @@ pub fn call_demo_state() -> State {
 		request: 0,
 		phase: Phase::Connected,
 		connected_at: Some(Instant::now() - Duration::from_secs(754)),
+		stage_revision: 0,
+		media_mode: Default::default(),
+		stage_consent: false,
 		channel_started_at: None,
 		muted: false,
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		participants: vec![participant(1, false), participant(2, true)],
 		error: None,
 		reconnecting: None,

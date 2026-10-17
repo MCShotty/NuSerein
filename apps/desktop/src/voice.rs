@@ -84,6 +84,7 @@ fn device_wait(
 }
 
 struct Pending {
+	mode: voice::MediaMode,
 	video_settings: model::voice_settings::VideoSettings,
 	generation: u64,
 	channel: Id,
@@ -510,6 +511,7 @@ impl Voice {
 			return Err("The DM recipient is unavailable");
 		}
 		self.pending = Some(Pending {
+			mode: call.media_mode,
 			video_settings,
 			generation: state.generation,
 			channel: call.channel,
@@ -1096,7 +1098,8 @@ impl Voice {
 				|| ui.voice_ptm_active;
 			live.audio.set_controls(muted, deafened);
 			live.audio.set_processing(ui.voice_processing.effective());
-			live.audio.set_input_enabled(state.can_speak(call.channel));
+			live.audio
+				.set_stage_authorization(call.stage_revision, state.can_speak(call.channel));
 			live.audio
 				.set_gain(ui.voice_gain.input_percent, ui.voice_gain.output_percent);
 			let user_volumes = ui.voice_user_volumes();
@@ -1125,6 +1128,9 @@ impl Voice {
 			}
 			live.controls.send_if_modified(|control| {
 				if control.muted == muted
+					&& control.stage_speaker
+						== (call.media_mode == voice::MediaMode::Stage
+							&& state.can_speak(call.channel))
 					&& control.capture_generation == capture_generation
 					&& control.deafened == deafened
 					&& control.user_volumes == user_volumes
@@ -1134,6 +1140,8 @@ impl Voice {
 					false
 				} else {
 					control.muted = muted;
+					control.stage_speaker =
+						call.media_mode == voice::MediaMode::Stage && state.can_speak(call.channel);
 					control.capture_generation = capture_generation;
 					control.deafened = deafened;
 					control.user_volumes = user_volumes;
@@ -1297,7 +1305,11 @@ impl Voice {
 					ready,
 					state.gateway_connected,
 					live.user,
-					&call.participants,
+					if call.media_mode == voice::MediaMode::Stage {
+						&[]
+					} else {
+						&call.participants
+					},
 				) && ui.notification_options.allows(cue)
 				{
 					ui.notification_preview = Some(cue);
@@ -1864,6 +1876,7 @@ impl Voice {
 				.sensitivity_db
 				.unwrap_or(-70),
 			muted: listen_only || ui.voice_push_to_talk,
+			stage_speaker: pending.mode == voice::MediaMode::Stage && input_enabled,
 			capture_generation: audio.capture_generation(),
 			camera: 0,
 			video: pending.video_settings,
@@ -1929,6 +1942,7 @@ impl Voice {
 		let token = Secret::new(token.expose().to_owned()).map_err(|_| "Invalid voice token")?;
 		let endpoint = endpoint.clone();
 		let credentials = voice::VoiceConnection {
+			mode: pending.mode,
 			channel: pending.channel,
 			request: pending.request,
 			user: pending.user,
@@ -2132,6 +2146,7 @@ pub fn debug_call_cues_check() {
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		video: false,
 		streaming: false,
 	};
@@ -3201,6 +3216,7 @@ mod tests {
 					member: None,
 					server_muted: false,
 					server_deafened: false,
+					stage: Default::default(),
 					channel: Some(Id(22)),
 					user: Id(1),
 					session: Some(Secret::new(id.into()).unwrap()),
@@ -3374,6 +3390,7 @@ mod tests {
 				member: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				channel: Some(Id(22)),
 				user: Id(user),
 				session: Some(Secret::new(id.into()).unwrap()),

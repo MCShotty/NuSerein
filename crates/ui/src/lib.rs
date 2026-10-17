@@ -65,6 +65,7 @@ pub fn debug_channel_creation(state: client_core::State) {
 	channel_menu::debug_creation(state);
 }
 mod channel_pill;
+mod community;
 mod formatting;
 mod forum;
 mod forum_settings;
@@ -259,6 +260,7 @@ pub struct MessagingUi {
 	pub own_presence_status: &'static str,
 	group_menu: group_menu::GroupMenu,
 	server_menu: server_menu::ServerMenu,
+	community_ui: community::CommunityUi,
 	channel_menu: channel_menu::ChannelMenu,
 	pub channel_preferences: model::ChannelPreferences,
 	pub channel_preferences_changed: bool,
@@ -830,6 +832,11 @@ impl MessagingUi {
 	#[cfg(feature = "demo")]
 	pub fn preview_forum(&mut self, forum: Id, tags: &[Id], draft: Option<&str>) {
 		self.forum.preview(forum, tags, draft);
+	}
+	#[cfg(any(test, feature = "demo"))]
+	pub fn preview_community(&mut self, state: &mut State, guild: Id, detail: bool, edit: bool) {
+		self.guild = Some(guild);
+		self.community_ui.preview(state, guild, detail, edit);
 	}
 	/// Fixture-only: open the server invite dialog at startup, as the rail menu would.
 	#[cfg(any(test, feature = "demo"))]
@@ -4358,8 +4365,10 @@ impl MessagingUi {
 		}
 		self.keybinds_shortcut(&ctx);
 		self.theme_preview_navigation(ui);
-		let settings_open =
-			self.settings.open || self.server_settings.is_open() || self.channel_menu.is_open();
+		let settings_open = self.settings.open
+			|| self.server_settings.is_open()
+			|| self.channel_menu.is_open()
+			|| self.community_ui.is_open();
 		self.extensions.begin_theme_editor_frame();
 		if self.settings.open {
 			self.show_settings(&ctx, state, &mut commands);
@@ -4420,6 +4429,16 @@ impl MessagingUi {
 				Ok(None) => {}
 				Err(message) => state.status = message,
 			}
+		}
+		if let Some((guild, event)) = self
+			.timeline
+			.opening
+			.as_deref()
+			.and_then(model::community::event_link)
+		{
+			self.timeline.opening = None;
+			self.community_ui
+				.open_link(state, guild, event, &mut commands);
 		}
 		markdown::confirm_external_link(
 			&ctx,
@@ -4639,6 +4658,11 @@ impl MessagingUi {
 		{
 			commands.push(command);
 		}
+
+		if let Some(guild) = self.server_menu.events_requested.take() {
+			self.community_ui.open_events(state, guild, &mut commands);
+		}
+		self.community_ui.show(&ctx, state, &mut commands);
 		if let Some(guild) = self.server_menu.settings_requested.take()
 			&& let Some(command) = self.preview_server_settings(state, guild)
 		{
@@ -4660,7 +4684,7 @@ impl MessagingUi {
 		let selected_voice = state
 			.selected
 			.and_then(|id| state.channel(id))
-			.is_some_and(|c| c.kind == 2);
+			.is_some_and(|c| matches!(c.kind, 2 | 13));
 		let selected_forum = state.selected.is_some_and(|id| state.is_forum(id));
 		if let Some(id) = state.posting.created.take()
 			&& let Some(command) = state.select(id)
@@ -10078,6 +10102,7 @@ pub fn debug_member_voice_status_check(mut state: State, mut private: State) {
 			deafened: false,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			video: false,
 			streaming: false,
 		}]),

@@ -108,7 +108,7 @@ pub(super) fn ready_calls(ready: &Ready, calls: &mut Calls) -> Result<BTreeSet<I
 			continue;
 		}
 		for channel in &guild.channels {
-			if !channel.is_obfuscated() && channel.kind == 2 {
+			if !channel.is_obfuscated() && matches!(channel.kind, 2 | 13) {
 				calls.allowed.insert(channel.id, Some(guild.id));
 			}
 		}
@@ -119,7 +119,7 @@ pub(super) fn ready_calls(ready: &Ready, calls: &mut Calls) -> Result<BTreeSet<I
 pub(super) fn admit_call(channel: &Channel, guilds: &BTreeSet<Id>, calls: &mut Calls) {
 	let eligible = channel.id.0 != 0
 		&& match channel.guild {
-			Some(guild) => guilds.contains(&guild) && channel.kind == 2,
+			Some(guild) => guilds.contains(&guild) && matches!(channel.kind, 2 | 13),
 			None => private_call(channel.kind, channel.recipients.len()),
 		};
 	if eligible

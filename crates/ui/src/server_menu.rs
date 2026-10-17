@@ -22,6 +22,7 @@ impl Dialog {
 pub(super) struct ServerMenu {
 	pub guide_requested: Option<Id>,
 	pub settings_requested: Option<Id>,
+	pub events_requested: Option<Id>,
 	pub mark_read_requested: Option<Id>,
 	pub mark_all_read_requested: bool,
 	mute_requested: Option<(u64, Id, client_core::channel_actions::Mute)>,
@@ -272,6 +273,11 @@ impl ServerMenu {
 					self.read_item(ui, state, guild);
 					ui.separator();
 					self.guide_item(ui, state, guild);
+
+					if ui.button("Server events").clicked() {
+						self.events_requested = Some(guild);
+						ui.close();
+					}
 					self.settings_item(ui, state, guild);
 					self.notifications_item(ui, state, guild);
 					self.mute_item(ui, state, guild);

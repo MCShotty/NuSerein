@@ -132,7 +132,7 @@ impl State {
 				entry.guild == guild && entry.channel == channel && entry.participant.user == user
 			}) || !self
 			.channel(channel)
-			.is_some_and(|source| source.guild == Some(guild) && source.kind == 2)
+			.is_some_and(|source| source.guild == Some(guild) && matches!(source.kind, 2 | 13))
 			|| !self.can_view(channel)
 		{
 			return false;
@@ -145,10 +145,9 @@ impl State {
 			&& match change {
 				VoiceChange::Move(Some(to)) => {
 					to != channel
-						&& self
-							.channel(to)
-							.is_some_and(|target| target.guild == Some(guild) && target.kind == 2)
-						&& self.can_view(to)
+						&& self.channel(to).is_some_and(|target| {
+							target.guild == Some(guild) && matches!(target.kind, 2 | 13)
+						}) && self.can_view(to)
 						&& self.permission(to, p::CONNECT) == Some(true)
 				}
 				_ => true,
@@ -1185,6 +1184,7 @@ impl State {
 							_ => participant.server_muted,
 						},
 						server_deafened: participant.server_deafened,
+						stage: participant.stage,
 						muted: participant.muted,
 						deafened: participant.deafened,
 						video: participant.video,

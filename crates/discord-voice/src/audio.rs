@@ -87,6 +87,7 @@ pub struct Gate {
 	/// Bumped when the speaker gate changes; only playback drops queued audio.
 	playback_generation: AtomicU64,
 	input_enabled: AtomicBool,
+	stage_revision: AtomicU64,
 	input_gain: AtomicU16,
 	output_gain: AtomicU16,
 	echo_reset: AtomicBool,
@@ -109,6 +110,7 @@ impl Default for Gate {
 			capture_generation: AtomicU64::new(0),
 			playback_generation: AtomicU64::new(0),
 			input_enabled: AtomicBool::new(true),
+			stage_revision: AtomicU64::new(0),
 			input_gain: AtomicU16::new(100),
 			output_gain: AtomicU16::new(100),
 			echo_reset: AtomicBool::new(false),
@@ -522,6 +524,14 @@ impl Audio {
 			self.gate.revision.fetch_add(1, Ordering::AcqRel);
 			self.thread.unpark();
 		}
+	}
+	/// Stage audience/invitation transitions retire queued PCM even when transitions coalesce.
+	pub fn set_stage_authorization(&self, revision: u64, enabled: bool) {
+		if self.gate.stage_revision.swap(revision, Ordering::AcqRel) != revision {
+			self.gate.capture_generation.fetch_add(1, Ordering::AcqRel);
+			self.gate.echo_reset.store(true, Ordering::Release);
+		}
+		self.set_input_enabled(enabled);
 	}
 	/// True only after streams for the current device/security revision have opened.
 	pub fn is_ready(&self) -> bool {
@@ -1468,6 +1478,38 @@ mod tests {
 		assert!(audio.gate.capture() && audio.gate.playback());
 	}
 
+	#[test]
+	fn stage_audience_never_opens_input_and_coalesced_role_changes_retire_pcm() {
+		let audio = audio_without_devices();
+		audio.set_stage_authorization(0, false);
+		audio.set_ready(true);
+		let revision = audio.gate.revision.load(Ordering::Acquire);
+		assert!(audio.gate.acknowledge(revision));
+		assert!(audio.gate.check_input_open(revision).is_err());
+		assert!(!audio.gate.capture());
+		let (send, mut received) = rtrb::RingBuffer::new(8);
+		Capture::new(48_000, send).process(&[0.5_f32; 961], 1, &audio.gate);
+		assert!(received.pop().is_err());
+		audio.set_stage_authorization(1, true);
+		assert!(
+			audio
+				.gate
+				.acknowledge(audio.gate.revision.load(Ordering::Acquire))
+		);
+		let captured_generation = audio.capture_generation();
+		assert!(audio.gate.capture_in_generation(captured_generation));
+		// A speaker -> audience -> speaker sequence can be consumed in one UI frame.
+		audio.set_stage_authorization(3, true);
+		assert!(!audio.gate.capture_in_generation(captured_generation));
+		audio.set_stage_authorization(4, false);
+		assert!(
+			audio
+				.gate
+				.check_input_open(audio.gate.revision.load(Ordering::Acquire))
+				.is_err()
+		);
+		assert!(!audio.gate.capture());
+	}
 	#[test]
 	fn callback_gain_defaults_clamps_and_sanitizes_without_devices() {
 		let audio = audio_without_devices();

@@ -1,6 +1,6 @@
 # Discord voice adapter
 
-Native media for an explicitly joined one-to-one or group Discord DM or server voice channel (up to 64 participants including yourself). The desktop owns call intent, main Gateway/REST signaling and the audio-device lifetime. This crate owns the separate voice WebSocket, UDP transport, codec and ephemeral DAVE group. It never records audio, persists voice keys or contacts a project relay.
+Native media for an explicitly joined one-to-one or group Discord DM, server voice channel (up to 64 participants including yourself), or Stage channel. The desktop owns call intent, main Gateway/REST signaling and the audio-device lifetime. This crate owns the separate voice WebSocket, UDP transport, codec and ephemeral DAVE group. It never records audio, persists voice keys or contacts a project relay.
 
 Protocol evidence checked September 10, 2026:
 
@@ -9,7 +9,22 @@ Protocol evidence checked September 10, 2026:
 - [Davey 0.1.4 source](https://github.com/Snazzah/davey): OpenMLS-based interoperable primitives. This is an unofficial implementation, not Discord's libdave or an assertion of an independent security audit. Opcode 26 carries the raw TLS KeyPackage, following the reference implementations described below. Additional guards reject unexpected channel group IDs, users outside the authenticated voice participant list, duplicate membership, non-external proposals and proposal types other than Add/Remove. One-to-one DM membership remains restricted to its original two users; group DMs use the authenticated voice-server roster. All `tracing` output is compiled out because upstream trace statements can contain cryptographic secrets.
 - [Opus2](https://github.com/cijiugechu/opus2), bundled libopus and [CPAL](https://github.com/RustAudio/cpal): native codec and device bindings. The audio engine accepts 48 kHz mono frames; microphone Opus is mono at 64 kbit/s and 20 ms, while received audio is decoded to mono. Screen-share audio uses stereo at 128 kbit/s.
 
-Only DAVE version 1 is negotiated. No media is sent before an authenticated group and its transition have completed. Group DM and guild membership follows bounded voice WebSocket opcodes 11/13; joins and departures pause media until the next validated MLS transition. An empty room stays joined with audio devices enabled for local microphone detection while its epoch-zero group waits for a peer. Empty-room capture is consumed locally without retaining frames for transmission; mute, deafen, push-to-talk and SPEAK permission still apply. Encryption downgrades, unannounced group members and unsupported control states fail closed. The displayed privacy code compares the current group epoch; ephemeral identities are regenerated on rejoin and are not remembered or vouched for across sessions.
+Ordinary DM/server voice negotiates only DAVE version 1. No ordinary voice media is sent before an authenticated group and its transition have completed. Group DM and guild membership follows bounded voice WebSocket opcodes 11/13; joins and departures pause media until the next validated MLS transition. An empty room stays joined with audio devices enabled for local microphone detection while its epoch-zero group waits for a peer. Empty-room capture is consumed locally without retaining frames for transmission; mute, deafen, push-to-talk and SPEAK permission still apply. Encryption downgrades, unannounced group members and unsupported control states fail closed. The displayed privacy code compares the current group epoch; ephemeral identities are regenerated on rejoin and are not remembered or vouched for across sessions.
+
+Stage mode (October 17, 2026) is selected only from the authenticated current channel
+type, independently of server negotiation. The [official DAVE scope](https://github.com/discord/dave-protocol/blob/1b2b706ad4a562ede5c2ef901f9d77f6dbe79446/protocol.md#introduction)
+excludes Stages: this mode requires XChaCha20-Poly1305 RTP-size transport encryption
+and DAVE version 0, with no end-to-end privacy code. An ordinary allocation cannot
+use this mode to downgrade DAVE. Stage audio is admitted only for authenticated
+source announcements and remains bounded to 63 remote decoder/jitter working sets;
+the separate 4,096-entry audience metadata budget creates no per-audience audio
+resource. Audience joins cannot open a microphone, capture or transmit. Explicit
+local speaker consent, current server role/access, authorization revision and PCM
+generation gates apply before any microphone transmission. A signaling outage
+returns through the bounded fresh-media rejoin path with audience consent reset;
+ordinary voice retains its existing Resume behavior. Topic/request/invitation and
+moderation workflows use the independent community API lane. All Stage service
+acceptance and physical media behavior remain unverified. See [community compatibility](../../docs/discord-compatibility.md#scheduled-events-and-stage-channels--october-17-2026).
 
 Soundboard clips are local playback only: up to eight overlapping pre-decoded 48 kHz mono clips of at most six seconds (288,000 samples) each are added to the mixed frame on the transport tick, after participant and stream audio, and are never encoded or sent. Deafen discards them.
 
