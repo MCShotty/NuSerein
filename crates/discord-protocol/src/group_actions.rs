@@ -1,6 +1,17 @@
 //! Bounded group icon encoding shared by the native picker and HTTP boundary.
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
+#[derive(serde::Deserialize)]
+pub struct MembersDto {
+	pub id: model::Id,
+	#[serde(rename = "type")]
+	pub kind: u8,
+	#[serde(default)]
+	pub guild_id: Option<model::Id>,
+	pub owner_id: model::Id,
+	pub recipients: Vec<crate::UserDto>,
+}
+
 pub const MAX_GROUP_ICON_PNG_BYTES: usize = 256 * 1024;
 pub const MAX_ICON_DATA_URI: usize = 22 + 4 * MAX_GROUP_ICON_PNG_BYTES.div_ceil(3);
 

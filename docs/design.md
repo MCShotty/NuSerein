@@ -84,6 +84,26 @@ viewport when the start of a tall message scrolls away, without changing its cac
 
 ## Layout
 
+The sidebar's Inbox button opens one native dialog with Unread, Mentions and Bookmarks
+tabs. Filters apply to known accessible conversations and can include muted conversations
+or restrict results to the current server/direct-message area. Opening the dialog alone
+never acknowledges messages. Read, dismiss, save and reminder changes are explicit;
+Write errors preserve the current page unless access or service updates invalidate it;
+no write retries happen automatically. Spoiler text
+stays concealed, message jumps retain drafts, and Escape releases the session-only page.
+Standard reminder intervals and a bounded custom UTC date/time are available where the
+account's service accepts saved messages. This is not a local reminder scheduler.
+
+Blocked and ignored message bodies use a native Show/Hide control before the author,
+text and media. The same rule applies to thread starters, search/pins, Inbox and forward
+previews; loaded reply previews name the restriction. Revealing a body is local to that
+view and expires when the content or relationship changes. Friends exposes New Group
+DM; group management exposes member refresh, invitations, confirmed owner transfers
+and owner-only removals. Threads provide
+public/private creation and a member manager; existing forum posts provide a bounded
+tag editor. Announcement channels expose Follow with destination selection, and eligible
+messages expose confirmed Publish. All of these keep the ordinary conversation draft.
+
 - 36px title strip (`base`): hidden native title bar on macOS with traffic lights inline, centred
   context title, session status text and an OFFLINE PREVIEW / EXPERIMENTAL pill. Eframe centres the
   native macOS buttons in the active title strip every frame, including after resizing or zooming;

@@ -4309,6 +4309,15 @@ voice-server-mute = Ztlumit na serveru
 voice-server-unmute = Zrušit ztlumení na serveru
 voice-move-to = Přesunout do
 voice-disconnect-member = Odpojit
+inbox-title = Doručené
+inbox-description = Nepřečtené konverzace, nedávné zmínky a záložky
+inbox-loading = Načítání zmínek…
+inbox-empty = V dostupných konverzacích nejsou žádné nedávné zmínky.
+inbox-refresh-needed = Obnovte seznam pro načtení nedávných zmínek.
+inbox-refresh = Obnovit
+inbox-retry = Zkusit znovu
+inbox-older = Starší zmínky
+inbox-open-message = Otevřít zprávu
 # Context: voice_participant_menu
 voice-voice-participant-menu-silence-this-person-on-this-device-only-nobody-else-is = Ztišit tuto osobu pouze na tomto zařízení. Nikdo jiný není ovlivněn.
 # Context: voice_participant_menu
@@ -5148,3 +5157,27 @@ moderation-days = days
 moderation-hours = hours
 moderation-minutes = minutes
 server-roles-permissions-ban-members = Ban members
+
+# Desktop Inbox
+inbox-unread = Unread
+inbox-mentions = Mentions
+inbox-saved = Bookmarks
+inbox-filter = Filter by conversation or server
+inbox-include-muted = Include muted conversations
+inbox-current-place = Current server or direct messages
+inbox-open-conversation = Open conversation
+inbox-mark-read = Mark as read
+inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
+inbox-dismiss = Dismiss
+inbox-bookmark = Bookmark message
+inbox-unsave = Remove bookmark
+inbox-remind = Remind me
+inbox-in-hour = In 1 hour
+inbox-in-day = In 1 day
+inbox-in-week = In 1 week
+inbox-clear-reminder = Clear reminder
+inbox-message-unavailable = Message unavailable
+inbox-service-availability = Availability depends on your Discord account.
+inbox-spoiler = Spoiler
+inbox-custom-reminder = Custom date and time (UTC)
+inbox-set-reminder = Set reminder

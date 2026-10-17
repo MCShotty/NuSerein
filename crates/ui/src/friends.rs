@@ -450,6 +450,12 @@ impl MessagingUi {
 							self.friends.query.clear();
 						}
 					}
+					if ui
+						.button(crate::i18n::translate("group-create-title"))
+						.clicked()
+					{
+						self.group_create.open(state);
+					}
 				});
 			});
 		ui.separator();

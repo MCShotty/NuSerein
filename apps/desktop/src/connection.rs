@@ -101,6 +101,29 @@ impl Drop for AbortTask {
 	}
 }
 
+// Reads belong to the open Inbox view. Accepted writes belong to this connection,
+// so closing/switching a tab cannot discard their confirmation or start a duplicate.
+#[derive(Default)]
+struct InboxTasks {
+	read: Option<AbortTask>,
+	write: Option<AbortTask>,
+}
+impl InboxTasks {
+	fn cancel_read(&mut self) {
+		drop(self.read.take());
+	}
+	fn can_start(&self, write: bool) -> bool {
+		!write || self.write.as_ref().is_none_or(|task| task.0.is_finished())
+	}
+	fn track(&mut self, write: bool, task: JoinHandle<()>) {
+		if write {
+			self.write = Some(AbortTask(task));
+		} else {
+			self.read = Some(AbortTask(task));
+		}
+	}
+}
+
 // Separate revisions retain interruptions even when a fast Resume coalesces the online watch.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct VoiceLifecycle {
@@ -383,7 +406,7 @@ impl Connection {
                 let mut writes=AbortTask(tokio::spawn(async move {
                     while let Some(command)=write_receive.recv().await {
                         let event=write_api.execute_write(command,|nonce|{let _=write_emit(Event::SendThrottled{nonce:nonce.to_owned()});write_wake.request_repaint();}).await;
-                        let failure=match &event {Event::MemberGuide(client_core::member_guide::Event{result:Err(f),..})=>Some(*f),Event::Interaction(client_core::interactions::Event::Submitted{result:Err(f),..})=>Some(*f),Event::MessagingPermissions{result:Err(f),..}=>Some(*f),Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})=>Some(*f),Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})=>Some(*f),Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})=>Some(*f),Event::Onboarding(client_core::onboarding::Event::Loaded{result:Err(f),..}|client_core::onboarding::Event::Submitted{result:Err(f),..})=>Some(*f),Event::Failure(f)=>Some(*f),Event::ProfileEdited{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::OwnedCosmetics(client_core::owned_cosmetics::Event{result:Err(f),..})|Event::ServerProfile(client_core::server_profile::Event{result:Err(f),..})|Event::AccountOverview{result:Err(f),..}|Event::AccountConnections{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::Edited{result:Err(f),..}|Event::Pinned{result:Err(f),..}=>Some(*f),Event::GuildFolders(Err(f))=>Some(*f),Event::JoinInvite{result:Err(f),..}|Event::GuildCreated{result:Err(f),..}=>Some(*f),Event::SendResult{result:Err(f),..}=>Some(*f),Event::UserAction(client_core::user_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::UserAction(client_core::user_actions::Event::DmOpened{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::InviteSent{result:Err(f),..})=>Some(*f),Event::GroupAction(client_core::group_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::Reactions(client_core::reactions::Event::Written{result:Err(f),..})=>Some(*f),Event::ReadState(client_core::read_state::Event::Result{result:Err(f),..})=>Some(*f),_=>None};
+                        let failure=match &event {Event::MemberGuide(client_core::member_guide::Event{result:Err(f),..})=>Some(*f),Event::Interaction(client_core::interactions::Event::Submitted{result:Err(f),..})=>Some(*f),Event::MessagingPermissions{result:Err(f),..}=>Some(*f),Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})=>Some(*f),Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})=>Some(*f),Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})=>Some(*f),Event::Onboarding(client_core::onboarding::Event::Loaded{result:Err(f),..}|client_core::onboarding::Event::Submitted{result:Err(f),..})=>Some(*f),Event::Failure(f)=>Some(*f),Event::ProfileEdited{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::OwnedCosmetics(client_core::owned_cosmetics::Event{result:Err(f),..})|Event::ServerProfile(client_core::server_profile::Event{result:Err(f),..})|Event::AccountOverview{result:Err(f),..}|Event::AccountConnections{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::Edited{result:Err(f),..}|Event::Pinned{result:Err(f),..}=>Some(*f),Event::GuildFolders(Err(f))=>Some(*f),Event::JoinInvite{result:Err(f),..}|Event::GuildCreated{result:Err(f),..}=>Some(*f),Event::SendResult{result:Err(f),..}=>Some(*f),Event::UserAction(client_core::user_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::UserAction(client_core::user_actions::Event::DmOpened{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::InviteSent{result:Err(f),..})=>Some(*f),Event::GroupAction(client_core::group_actions::Event::Written{result:Err(f),..}|client_core::group_actions::Event::MembersLoaded{result:Err(f),..}|client_core::group_actions::Event::Created{result:Err(f),..})=>Some(*f),Event::Reactions(client_core::reactions::Event::Written{result:Err(f),..})=>Some(*f),Event::ReadState(client_core::read_state::Event::Result{result:Err(f),..})=>Some(*f),_=>None};
                         let error=write_emit(event).err().or(failure.filter(|f|f.ends_session()));
                         if let Some(error)=error {write_api.stop();let _=write_finished.send(Some(error));write_wake.request_repaint();break;}
                     }
@@ -399,6 +422,7 @@ impl Connection {
 				let mut stream_preview:Option<AbortTask>=None;
                 let mut invite:Option<AbortTask>=None;
                 let mut search:Option<AbortTask>=None;
+                let mut inbox=InboxTasks::default();
                 let mut gifs:Option<AbortTask>=None;
                 let mut gif_favorites:Option<AbortTask>=None;
                 let mut application_commands:Option<AbortTask>=None;
@@ -444,14 +468,14 @@ impl Connection {
                         }
                         changed=voice_availability.changed()=> {
 								if changed.is_err() {break;}
-								if !*voice_availability.borrow_and_update() {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
+								if !*voice_availability.borrow_and_update() {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());inbox.cancel_read();if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                         }
                         changed=lifecycle_changed.changed()=> {
                             if changed.is_err() {break;}
                             let latest=*lifecycle_changed.borrow_and_update();
                             let channels=dm_channels.lock().map_err(|_|Failure::Protocol)?;
                             let calls=recipient_call.lock().map_err(|_|Failure::Protocol)?;
-                            if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
+                            if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());inbox.cancel_read();if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                         }
                         request=upload_receive.recv()=>{
                             let Some(request)=request else {break;};
@@ -522,6 +546,24 @@ impl Connection {
                                 continue;
                             }
                             if matches!(command,Command::CancelSearch) {drop(search.take());continue;}
+                            if matches!(command,Command::CancelMentions) {inbox.cancel_read();continue;}
+                            if matches!(command,Command::Mentions{..}|Command::InboxAction{..}) {
+                                let write=matches!(&command,Command::InboxAction{action,..} if action.write());
+                                if !inbox.can_start(write) {
+                                    if let Command::InboxAction{request,..}=command {emit(Event::InboxAction{request,result:Err(Failure::ProtocolAt("An Inbox change is still pending; refresh after it finishes"))})?;}
+                                    continue;
+                                }
+                                if !write {inbox.cancel_read();}
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                inbox.track(write,tokio::spawn(async move {
+                                    let event=api.execute(command).await;
+                                    let failure=match &event {Event::Mentions{result:Err(f),..}|Event::InboxAction{result:Err(f),..} if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+                                    let error=emit(event).err().or(failure);
+                                    if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                }));
+                                continue;
+                            }
                             if matches!(command,Command::CancelGifs) {drop(gifs.take());continue;}
                             if matches!(command,Command::GifFavorites{..}) {
                                 drop(gif_favorites.take());
@@ -2005,6 +2047,50 @@ mod tests {
 			released.load(Ordering::SeqCst),
 			"cancelled operations must release their resources"
 		);
+	}
+
+	#[tokio::test]
+	async fn inbox_cancellation_retires_reads_but_preserves_accepted_writes() {
+		let mut tasks = InboxTasks::default();
+		let (read, mut read_cancelled) = tokio::sync::oneshot::channel::<()>();
+		tasks.track(
+			false,
+			tokio::spawn(async move {
+				let _read = read;
+				std::future::pending::<()>().await;
+			}),
+		);
+		let (accepted, wait) = tokio::sync::oneshot::channel();
+		let (result, received) = tokio::sync::oneshot::channel();
+		tasks.track(
+			true,
+			tokio::spawn(async move {
+				wait.await.unwrap();
+				let _ = result.send(Event::InboxAction {
+					request: 7,
+					result: Ok(client_core::inbox::Outcome::Done),
+				});
+			}),
+		);
+		assert!(!tasks.can_start(true));
+		tasks.cancel_read();
+		tokio::time::timeout(Duration::from_secs(1), &mut read_cancelled)
+			.await
+			.unwrap()
+			.unwrap_err();
+		accepted.send(()).unwrap();
+		assert!(matches!(
+			tokio::time::timeout(Duration::from_secs(1), received)
+				.await
+				.unwrap()
+				.unwrap(),
+			Event::InboxAction {
+				request: 7,
+				result: Ok(_)
+			}
+		));
+		(&mut tasks.write.as_mut().unwrap().0).await.unwrap();
+		assert!(tasks.can_start(true));
 	}
 	#[tokio::test]
 	async fn full_prefetch_pool_rejects_new_reads_without_aborting_accepted_work() {

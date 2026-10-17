@@ -1820,3 +1820,191 @@ output directories. The bounded packaged driver-query helper launches with the
 development FFmpeg prefix removed from PATH; no manual staging repair was used.
 This check stops before UI/account/audio initialization and is not a full
 interactive launch or hardware-encoding result. Archive metadata may change hashes.
+
+## Desktop Inbox — October 17, 2026
+
+Code revision `2139384fcb259e504535bd9688c9de6cb2e4a727`, based on fork `f9e39f7`.
+The current published upstream nightly was rechecked on October 17:
+`v1.0.0-nightly.20261014.58` (`3a4bf8d`). The owner-supplied Discord Stable build is
+recorded in the compatibility inventory; it is not the performance baseline.
+
+Release reducer comparison: Rust 1.98.1, committed lockfiles and release profiles,
+Linux 6.18.44 x86_64/glibc 2.41, Intel Xeon Platinum 8573C, 16 GiB container memory,
+four-CPU quota. Each binary/workload received one warmup and five rotating measured
+runs, pinned to CPU 0. Task compiler processes were paused during sampling and no
+native preview was running. Values below are medians; ranges expose host variation.
+
+| Workload / elapsed milliseconds | Current nightly | Previous fork | Inbox | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| 100,000-event reducer | 152.105 (146.564–254.134) | 151.199 (139.729–213.125) | 149.063 (139.452–223.483) | −2.0% / −1.4% |
+| Wide channel navigation | 185.019 (156.702–248.175) | 211.192 (195.419–287.684) | 219.871 (206.293–231.027) | +18.8% / +4.1% |
+
+The wide-channel result is slower; its cause has not been isolated. The overlapping,
+wide ranges do not establish a causal improvement or regression from the Inbox alone.
+These are synthetic core workloads, not GUI latency, media throughput or process RSS.
+The final 120-second soak passed 1,457 passes, 46,624 visits and six logout cycles
+in 120.041 seconds, with the existing retained-history budgets unchanged.
+
+`cargo xtask check` passed on the implementation before the final navigation/content
+retirement corrections. Focused navigation and Inbox tests, strict Clippy and native
+preview builds were rerun after those corrections; the initial follow-up Inbox suite has nine
+passing cases, including dark/light narrow layouts and read-marker isolation.
+The bounded ASan fuzz smoke passed 80,860 decoder inputs and 3,079 state transitions.
+Login-handoff, cached-xtask workspace, license-policy and packaging fixtures passed.
+
+The matched native screenshot pair in `pr-evidence/desktop-inbox` uses the same
+1120 × 760 channel-links fixture, font setup and dark appearance. Before is fork
+`f9e39f7` (with its required demo-only pending-upload tuple repair); after adds the
+new synthetic Inbox state, not live account data. Light/narrow rendering and bookmark
+navigation were inspected separately. The feature branches also remove byte-identical
+duplicate demo helpers so their previews compile; production behavior is unaffected.
+
+The initial native/package results are recorded below; subsequent review fixes require
+their own current-head CI. Baseline fork artifacts are pinned to run `39021847864` at `f9e39f7`;
+its native, installer, license and fuzz jobs passed, while security and separate Nix
+checks failed. Native release UI CPU/RSS, frame latency, media throughput and physical
+Windows/macOS/Discord interoperability remain unmeasured here. No debug-preview result
+is represented as a release or official-client performance measurement.
+
+### Initial Inbox package comparison
+
+These are the initial feature packages at PR head `f19c412`, built by native CI
+run [39048221415](https://github.com/MCShotty/Serein/actions/runs/39048221415).
+GitHub checked out merge `37cd8be`; both revisions have the same Git tree
+`f291a249939b99466b9ff42c68ee0620a3a243a2`. Later review corrections are not included
+in these measurements; their current-head checks/results are reported in the PR.
+
+Baselines are published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`) and previous
+fork `f9e39f7`. All are standard release packages including voice. Installed values
+sum regular-file payload bytes; distribution values recompress that payload with
+Python 3.12 ZIP DEFLATE level 6 and fixed metadata, excluding outer CI archives and
+installers. Debian payloads are read without installation. Values below are MiB
+(1,048,576 bytes); deltas are against the previous fork. One artifact per build/platform.
+
+| Platform | Metric | Nightly | Previous fork | Initial Inbox | Delta vs fork |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Linux-X64 | Executable | 83.682 | 87.900 | 88.274 | +0.374 (+0.43%) |
+| Linux-X64 | Installed payload | 88.006 | 130.657 | 131.031 | +0.374 (+0.29%) |
+| Linux-X64 | Normalized distribution | 51.211 | 84.553 | 84.710 | +0.157 (+0.19%) |
+| Windows-X64 | Executable | 82.910 | 87.505 | 87.968 | +0.462 (+0.53%) |
+| Windows-X64 | Installed payload | 86.909 | 135.216 | 135.678 | +0.462 (+0.34%) |
+| Windows-X64 | Normalized distribution | 47.986 | 80.844 | 81.007 | +0.162 (+0.20%) |
+| macOS-ARM64 | Executable | 65.946 | 69.884 | 70.198 | +0.314 (+0.45%) |
+| macOS-ARM64 | Installed payload | 71.641 | 95.216 | 95.529 | +0.314 (+0.33%) |
+| macOS-ARM64 | Normalized distribution | 46.027 | 63.548 | 63.683 | +0.135 (+0.21%) |
+
+Windows x64 and ARM64 CI completed clean and cached packages from empty output
+directories and validated their archives. The packaged driver-query helper exited
+successfully with the development FFmpeg prefix removed from PATH. This is a bounded
+load/query check before UI, account, capture or audio initialization; it is not a full
+interactive application launch or a hardware encoding result. No staging repair was used.
+A separate local release build was interrupted before staging for review corrections;
+no completed local clean/cached package is claimed. Native playback throughput, UI
+CPU/RSS and physical display/Discord checks remain unmeasured.
+
+The sibling feature branches add `scripts/compare-replay.py` and three isolated CI jobs.
+Each records the current published nightly, previous fork and reviewed head, Rust 1.98.1,
+matching release overrides, OS/CPU, one warmup and five rotated samples per workload.
+Linux/Windows sampling uses one allowed logical CPU when available; macOS reports the
+platform scheduler. Raw results include ranges and are uploaded per OS/architecture.
+These are synthetic core measurements, not UI/media performance or a parity claim.
+
+### Inbox review corrections
+
+The subsequent lifecycle review adds ten passing Inbox regressions, including service
+echoes before/after REST confirmation, closing/reopening during accepted writes,
+transient Gateway outages and a stopped connection retiring an unknown outcome.
+Rust 1.98.1 formatting and native/demo all-target strict Clippy passed after these fixes.
+The earlier full workspace, fuzz, replay and package results above retain their original
+revision scope; they are not measurements of these corrections. The native connection
+cancellation test awaits CI because its local code-generation run was deferred for the
+workspace memory budget. Current revision results are linked in the PR.
+
+
+### Current Inbox application and package verification at `3d20f9bb`
+
+[Run 39054844003](https://github.com/MCShotty/Serein/actions/runs/39054844003)
+passed all four native application/package jobs (Linux x64, Windows x64/ARM64,
+macOS ARM64), installer fixtures, SDK, licenses, ASan fuzz and all three release
+replay comparisons. Its merge checkout `071e456b` has the exact Git tree of
+`3d20f9bb`. The connection-cancellation test is included in the current native
+workspace gate; its formerly deferred local run is not claimed separately.
+Security and separate Nix failures remain inherited.
+
+The initial package measurements above remain historical. Current standard
+voice-inclusive packages use the same regular-file installed-payload and fixed
+ZIP DEFLATE-6 normalization method. Baselines remain published nightly
+`3a4bf8d` and previous fork `f9e39f7`; one artifact per revision/platform.
+No installer or outer CI archive is included in the normalized distribution.
+Values are MiB (1,048,576 bytes), with absolute/percentage deltas versus the fork.
+
+| Platform / metric | Nightly | Previous fork | Current Inbox | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / executable | 83.682 | 87.900 | 88.273 | +0.373 (+0.42%) |
+| Linux-X64 / installed payload | 88.006 | 130.657 | 131.031 | +0.373 (+0.29%) |
+| Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.712 | +0.158 (+0.19%) |
+| Windows-X64 / executable | 82.910 | 87.505 | 87.970 | +0.465 (+0.53%) |
+| Windows-X64 / installed payload | 86.909 | 135.216 | 135.681 | +0.465 (+0.34%) |
+| Windows-X64 / normalized distribution | 47.986 | 80.844 | 81.007 | +0.163 (+0.20%) |
+| macOS-ARM64 / executable | 65.946 | 69.884 | 70.198 | +0.314 (+0.45%) |
+| macOS-ARM64 / installed payload | 71.641 | 95.216 | 95.530 | +0.314 (+0.33%) |
+| macOS-ARM64 / normalized distribution | 46.027 | 63.548 | 63.686 | +0.138 (+0.22%) |
+
+Windows x64 and ARM64 clean/cached packages both pass archive validation and the
+bounded driver-query launch without the development FFmpeg prefix in PATH.
+The x64 clean/cached ZIPs are both 86,047,535 bytes; ARM64 is 69,104,411 bytes.
+Their metadata-dependent hashes differ, so bit-for-bit reproducibility is not
+claimed. The helper exits before UI/account/audio initialization: these are not
+interactive application launches or hardware-encoding acceptance tests. No manual
+staging repair was used. macOS nightly is signed while the CI bundle is unsigned;
+all package figures are observed build deltas, not an isolated feature cost.
+Current artifacts and clean/cached JSON evidence are retained by that run.
+Release UI CPU/RSS, media throughput and physical display checks remain unmeasured.
+
+
+### Current Inbox cross-platform release replay at `3d20f9bb`
+
+[Run 39054844003](https://github.com/MCShotty/Serein/actions/runs/39054844003)
+compares published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), previous
+fork `f9e39f7` and Inbox code `3d20f9bb`. The same release settings and sampling
+method above apply: one warmup, five rotated samples, one allowed logical CPU
+on Linux/Windows and platform scheduling on macOS. Per-OS artifacts record exact
+revisions, OS/CPU, settings and raw samples. Values are milliseconds, median
+(minimum–maximum). They measure core state, not native UI/media performance.
+
+| Platform / workload | Nightly | Previous fork | Inbox | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 56.668 (55.112–57.319) | 57.320 (55.984–60.732) | 56.592 (55.781–56.929) | -0.1% / -1.3% |
+| Linux-X64 / wide channels | 100.255 (89.555–102.417) | 109.163 (107.814–110.290) | 95.278 (93.712–96.481) | -5.0% / -12.7% |
+| Windows-X64 / reducer | 110.119 (103.805–124.310) | 107.383 (106.629–108.035) | 106.993 (106.750–109.522) | -2.8% / -0.4% |
+| Windows-X64 / wide channels | 228.188 (222.732–231.541) | 227.009 (224.482–233.393) | 224.888 (222.317–228.622) | -1.4% / -0.9% |
+| macOS-ARM64 / reducer | 65.531 (64.239–70.252) | 70.053 (60.927–79.586) | 66.613 (62.559–79.989) | +1.7% / -4.9% |
+| macOS-ARM64 / wide channels | 100.838 (94.759–111.089) | 94.479 (91.853–99.470) | 98.590 (90.037–116.093) | -2.2% / +4.4% |
+
+Ranges overlap and no causal improvement is claimed. Earlier local slower measurements above remain historical and unisolated.
+
+
+### Final Inbox native evidence and footer correction
+
+The final pair replaces the initial feature screenshots with fresh native captures
+of fork `f9e39f7` and Inbox code `3d20f9bb` plus the footer-only correction.
+Both use the same synthetic channel-links scenario, 1120 × 760 dark window and
+scale 1. The baseline has the two documented demo-only build repairs (duplicate
+avatar helpers and the missing optional error argument to `pending::show`),
+with its displayed feature UI unchanged. The new frame opens the Unread tab;
+no live account or service is used. Light mode at the supported minimum 760 × 520
+was also inspected. Only one small current pair is committed.
+
+The final native capture exposed an empty action strip on a fresh Unread page.
+The footer now draws when another tab has controls or an existing stale-status
+message needs it. The ten Inbox regressions, pinned formatting and strict native
+UI all-target/demo Clippy pass after this conditional-rendering correction.
+The native preview is rebuilt for the final captures. Capture uses explicit
+`--demo --interactive`, Xvfb/software rendering, process-liveness checks and
+ImageMagick's application-window capture; no image editing is used.
+
+Full native application/package CI above is for `3d20f9bb`, before the footer
+correction. Core release replay and package snapshots retain that revision label;
+the footer does not change the measured core workload. The final UI/code-and-evidence
+head receives its own CI. Release UI CPU/RSS, media throughput, physical displays
+and owner-controlled Discord acceptance remain unmeasured or unverified here.

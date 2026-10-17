@@ -56,7 +56,8 @@ pub fn now_ms() -> i128 {
 }
 impl State {
 	pub fn can_create_poll(&self, channel: Id) -> bool {
-		self.can_send(channel)
+		self.gateway_connected
+			&& self.can_send(channel)
 			&& self.permission(channel, model::permissions::SEND_POLLS) == Some(true)
 	}
 	pub fn can_vote_poll(&self, message: &Message) -> bool {
@@ -239,5 +240,81 @@ impl State {
 			}
 		}
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn poll_creation_waits_for_connection_and_rejects_retired_completions_without_losing_drafts() {
+		let mut state = State {
+			auth: AuthState::Authenticated,
+			selected: Some(Id(10)),
+			freshness: Freshness::Fresh,
+			user: Some(model::User {
+				id: Id(1),
+				name: "Synthetic".into(),
+				avatar: None,
+				webhook: false,
+				kind: Default::default(),
+				discriminator: 0,
+				primary_guild: None,
+				cosmetics: None,
+			}),
+			channels: vec![model::Channel {
+				id: Id(10),
+				guild: None,
+				kind: 1,
+				name: "Synthetic DM".into(),
+				parent_id: None,
+				position: 0,
+				recipients: vec![],
+				last_message: None,
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			}],
+			..State::default()
+		};
+		state
+			.drafts
+			.insert(Id(10), "Keep ordinary composer draft".into());
+		let poll = || {
+			Action::Create(Box::new(Create {
+				question: "Choose one".into(),
+				duration: 24,
+				multiselect: false,
+				answers: vec![
+					model::polls::Media {
+						text: "One".into(),
+						emoji: None,
+					},
+					model::polls::Media {
+						text: "Two".into(),
+						emoji: None,
+					},
+				],
+			}))
+		};
+		assert!(state.prepare_poll(None, poll()).is_none());
+		assert!(state.polls.pending.is_none());
+		state.gateway_connected = true;
+		let crate::Command::Polls(request) = state.prepare_poll(None, poll()).unwrap() else {
+			panic!();
+		};
+		assert!(state.prepare_poll(None, poll()).is_none());
+		state.polls.reset();
+		state
+			.apply_poll(Event::Result {
+				channel: Id(10),
+				message: None,
+				request: request.request,
+				result: Err(Failure::Ambiguous),
+			})
+			.unwrap();
+		assert!(state.polls.pending.is_none() && state.polls.error.is_none());
+		assert_eq!(state.drafts[&Id(10)], "Keep ordinary composer draft");
 	}
 }

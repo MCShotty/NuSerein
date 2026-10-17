@@ -6,6 +6,8 @@ pub mod automod;
 pub mod community_admin;
 mod image_sharing;
 pub mod moderation;
+
+pub mod inbox;
 pub mod polls;
 pub mod public_upload;
 pub mod registered_games;

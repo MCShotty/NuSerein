@@ -46,7 +46,7 @@ Neither libFuzzer nor its instrumentation is linked into the application.
 
 ## Targets and limits
 
-`decode` consumes a selector byte and up to `MAX_WIRE + 1` payload bytes. Selector 9 covers bounded AutoMod rules and selector 10 covers ban pages. The original eight branches cover
+`decode` consumes a selector byte and up to `MAX_WIRE + 1` payload bytes. Selector 8 covers bounded saved-message parsing, selector 9 covers AutoMod rules and selector 10 covers ban pages. The original eight branches cover
 message/patch model conversion, READY navigation/users, permission snapshots, thread sync,
 presence normalization and channel/full-patch conversion. Selector 255 derives a valid JSON
 message padded to the 4 MiB boundary, then verifies rejection one byte above it, so large seeds

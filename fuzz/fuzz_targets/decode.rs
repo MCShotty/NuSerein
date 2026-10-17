@@ -67,6 +67,10 @@ fuzz_target!(|data: &[u8]| {
 		));
 		return;
 	}
+	if selector == 8 {
+		let _ = black_box(discord_protocol::inbox::saved(payload));
+		return;
+	}
 	match selector % 8 {
 		0 => {
 			if let Ok(message) = discord_protocol::decode::<MessageDto>(payload) {

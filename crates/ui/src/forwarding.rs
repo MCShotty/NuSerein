@@ -25,6 +25,7 @@ fn destinations(state: &State, query: &str) -> Vec<Id> {
 
 #[derive(Default)]
 pub(super) struct ForwardDialog {
+	restricted: crate::restricted::Visibility,
 	source: Option<(u64, Id, Id)>,
 	query: String,
 	note: String,
@@ -66,6 +67,13 @@ impl ForwardDialog {
 			*self = Self::default();
 			return;
 		}
+		self.restricted.sync(state, |id| {
+			state
+				.timeline
+				.get(id)
+				.filter(|source| source.id == message)
+				.map(crate::restricted::Key::message)
+		});
 		let mut submit = false;
 		let mut close = false;
 		let submitted = !self.sent.is_empty();
@@ -202,6 +210,12 @@ impl ForwardDialog {
 				crate::design::card_divider(ui);
 				ui.add_space(2.0);
 				if let Some(source) = state.timeline.get(message) {
+					if !self
+						.restricted
+						.show(ui, state, crate::restricted::Key::message(source))
+					{
+						return;
+					}
 					let preview: String = if source.content.contains("||") {
 						"[Spoiler hidden]".into()
 					} else {
@@ -275,7 +289,12 @@ impl ForwardDialog {
 				if !submitted {
 					submit = ui
 						.add_enabled_ui(
-							!self.targets.is_empty() && state.can_forward(message),
+							!self.targets.is_empty()
+								&& state.can_forward(message)
+								&& state.timeline.get(message).is_some_and(|source| {
+									self.restricted
+										.allows(state, crate::restricted::Key::message(source))
+								}),
 							|ui| {
 								dialog::action(ui, "forwarding-show-send", dialog::Action::Primary)
 							},
@@ -295,7 +314,11 @@ impl ForwardDialog {
 				.clicked();
 			});
 		});
-		if submit {
+		if submit
+			&& state.timeline.get(message).is_some_and(|source| {
+				self.restricted
+					.allows(state, crate::restricted::Key::message(source))
+			}) {
 			let outgoing = state.prepare_forward(message, &self.targets, &self.note);
 			self.error = outgoing.is_empty().then_some(state.status);
 			for command in &outgoing {

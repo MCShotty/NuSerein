@@ -34,7 +34,11 @@ mod game_activity;
 mod game_mentions;
 mod gpu;
 mod gpu_video;
+#[cfg(feature = "demo")]
+mod group_demo;
 mod group_icon;
+#[cfg(feature = "demo")]
+mod inbox_demo;
 mod interaction_uploads;
 mod media_output;
 mod notification_runtime;
@@ -967,6 +971,8 @@ impl SessionEnd {
 	}
 }
 struct Desktop {
+	#[cfg(feature = "demo")]
+	inbox_demo: inbox_demo::Store,
 	proxy_auth: proxy_auth::Authentication,
 	api_proxy: tokio::sync::watch::Sender<Option<discord_api::proxy::ApiProxy>>,
 	extensions: extension_bridge::Bridge,
@@ -1094,6 +1100,8 @@ struct Desktop {
 	sign_in_height: f32,
 	#[cfg(feature = "demo")]
 	synthetic_id: u64,
+	#[cfg(feature = "demo")]
+	demo_groups: group_demo::Groups,
 	token_input: Zeroizing<String>,
 }
 /// Check only navigation whose effective access can change with this event.
@@ -2324,6 +2332,8 @@ impl Desktop {
 			.map(|menu| (menu, ui::i18n::Language::System))
 		};
 		Ok(Self {
+			#[cfg(feature = "demo")]
+			inbox_demo: inbox_demo::Store::default(),
 			proxy_auth: proxy_auth::Authentication::default(),
 			api_proxy: tokio::sync::watch::channel(None).0,
 			extensions: extension_bridge::Bridge::default(),
@@ -2456,6 +2466,8 @@ impl Desktop {
 			sign_in_height: 0.0,
 			#[cfg(feature = "demo")]
 			synthetic_id,
+			#[cfg(feature = "demo")]
+			demo_groups: Default::default(),
 			token_input: Zeroizing::new(String::new()),
 		})
 	}
@@ -3266,6 +3278,14 @@ impl Desktop {
 			self.state.command_rejected(command);
 			return;
 		}
+		if let Command::InboxAction { request, action } = &command
+			&& (self.state.inbox.request != *request
+				|| self.state.inbox.operation.as_ref() != Some(action)
+				|| !self.state.inbox_action_allowed(action))
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::ServerAdmin {
 			guild,
 			request,
@@ -3717,40 +3737,10 @@ impl Desktop {
 					request,
 					result: Ok(()),
 				}),
-				Command::GroupAction { action, request } => {
-					use client_core::group_actions::{Action, Event as GroupEvent};
-					use model::Patch;
-					let channel = action.channel();
-					let patch = match action {
-						Action::Leave(_) => None,
-						Action::Edit { name, icon, .. } => Some(model::ChannelPatch {
-							id: channel,
-							name: name.map_or(Patch::Absent, Patch::Value),
-							icon: match icon {
-								Patch::Absent => self
-									.state
-									.channel(channel)
-									.and_then(|c| c.icon.clone())
-									.map_or(Patch::Null, Patch::Value),
-								Patch::Null => Patch::Null,
-								Patch::Value(_) => {
-									Patch::Value("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into())
-								}
-							},
-							last_message: Patch::Absent,
-							parent_id: Patch::Absent,
-							position: Patch::Absent,
-							kind: Patch::Absent,
-							message_count: Patch::Absent,
-							tags: Patch::Absent,
-						}),
-					};
-					Event::GroupAction(GroupEvent::Written {
-						channel,
-						request,
-						result: Ok(patch),
-					})
-				}
+				Command::GroupAction { action, request } => Event::GroupAction(
+					self.demo_groups
+						.respond(&self.state, action, request, &mut self.synthetic_id),
+				),
 				Command::MarkRead {
 					channel,
 					message,
@@ -3869,12 +3859,15 @@ impl Desktop {
 						}
 					})
 				}
-				// The offline fixture has nothing to preload.
 				Command::Voice(_)
 				| Command::CancelProfile
 				| Command::CancelSearch
 				| Command::CancelAutocomplete
+				| Command::CancelMentions
 				| Command::Prefetch(_) => return,
+				command @ (Command::InboxAction { .. } | Command::Mentions { .. }) => {
+					self.inbox_demo.execute(&self.state, command)
+				}
 				Command::ThreadStarter {
 					thread,
 					parent,
