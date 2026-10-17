@@ -380,13 +380,32 @@ pub fn valid_sticker_fields(name: &str, description: &str, tags: &str) -> bool {
 		&& (1..=200).contains(&tags.chars().count())
 		&& !tags.chars().any(char::is_control)
 }
-/// A 2 to 32 character name and an optional short emoji, without control characters.
+/// A 2 to 32 character name and at most one supported standard emoji.
 pub fn valid_sound_fields(name: &str, emoji: &str) -> bool {
 	(2..=32).contains(&name.chars().count())
 		&& name.trim() == name
 		&& !name.chars().any(char::is_control)
 		&& emoji.len() <= 64
 		&& !emoji.chars().any(|c| c.is_control() || c.is_whitespace())
+		&& (emoji.is_empty() || standard_sound_emoji(emoji))
+}
+// Reuse the bundled Unicode palette, with no new dependency or retained cache.
+// Matching the complete normalized sequence rejects text and multiple emoji while
+// accepting variation selectors, modifiers, flags, keycaps and ZWJ sequences.
+fn standard_sound_emoji(emoji: &str) -> bool {
+	let mut normalized = [0u8; 64];
+	let mut length = 0;
+	for character in emoji.chars().filter(|character| *character != '\u{fe0f}') {
+		length += character.encode_utf8(&mut normalized[length..]).len();
+	}
+	let key = std::str::from_utf8(&normalized[..length]).expect("normalized UTF-8");
+	include_str!("../../../assets/twemoji/index.tsv")
+		.lines()
+		.any(|entry| {
+			entry
+				.split_once('\t')
+				.is_some_and(|(value, _)| value == key)
+		})
 }
 impl Member {
 	pub fn bytes(&self) -> usize {
@@ -555,5 +574,39 @@ impl Members {
 				.all(|role| role.role.id.0 != 0 && role.role.name.len() <= 400)
 			&& self.features.len() <= 256
 			&& self.features.iter().all(|value| value.len() <= 128)
+	}
+}
+
+#[cfg(test)]
+mod sound_tests {
+	use super::*;
+	#[test]
+	fn sound_changes_require_one_supported_standard_emoji_before_dispatch() {
+		for emoji in ["", "🦆", "❤️", "👍🏽", "🇨🇿", "1️⃣", "👨‍👩‍👧‍👦"]
+		{
+			assert!(valid_sound_fields("Air horn", emoji), "{emoji}");
+		}
+		for emoji in ["x", "ordinary text", "🦆🔥", "🦆\n", "\u{200d}", "❤︎"] {
+			assert!(!valid_sound_fields("Air horn", emoji), "{emoji}");
+			assert!(
+				!Action::CreateSound {
+					name: "Air horn".into(),
+					emoji: emoji.into(),
+					volume: 80,
+					content_type: "audio/ogg".into(),
+					file: b"OggS".to_vec()
+				}
+				.valid()
+			);
+			assert!(
+				!Action::EditSound {
+					id: Id(30),
+					name: "Air horn".into(),
+					emoji: crate::Patch::Value(emoji.into()),
+					volume: 80
+				}
+				.valid()
+			);
+		}
 	}
 }

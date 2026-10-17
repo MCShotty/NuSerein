@@ -767,7 +767,7 @@ mod sound_tests {
 				.unwrap();
 		}
 	}
-	const LIST: &str = r#"{"items":[{"name":"Air horn","sound_id":"30","volume":0.8,"emoji_name":"x","guild_id":"9","user":{"id":"5","username":"Uploader"}}]}"#;
+	const LIST: &str = r#"{"items":[{"name":"Air horn","sound_id":"30","volume":0.8,"emoji_name":"🦆","guild_id":"9","user":{"id":"5","username":"Uploader"}}]}"#;
 	const GUILD: &str =
 		r#"{"id":"9","owner_id":"5","roles":[],"features":["COMMUNITY"],"premium_tier":1}"#;
 
@@ -790,7 +790,7 @@ mod sound_tests {
 							"name": "Air horn",
 							"sound": "data:audio/ogg;base64,T2dnUw==",
 							"volume": 0.8,
-							"emoji_name": "x",
+							"emoji_name": "🦆",
 						})),
 						r#"{"name":"Air horn","sound_id":"30","volume":0.8,"guild_id":"9"}"#,
 					),
@@ -823,7 +823,7 @@ mod sound_tests {
 					Id(9),
 					&Action::CreateSound {
 						name: "Air horn".into(),
-						emoji: "x".into(),
+						emoji: "🦆".into(),
 						volume: 80,
 						content_type: "audio/ogg".into(),
 						file: b"OggS".to_vec(),

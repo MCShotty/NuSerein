@@ -680,7 +680,7 @@ impl SoundsUi {
 							.add_enabled_ui(
 								!state.server_admin.pending
 									&& state.can_edit_guild_sound(guild, *id)
-									&& valid_fields(name, emoji),
+									&& valid_edit_fields(name, emoji, original),
 								|ui| {
 									crate::dialog::action(
 										ui,
@@ -997,7 +997,8 @@ fn fields(ui: &mut egui::Ui, name: &mut String, emoji: &mut String, volume: &mut
 	crate::dialog::input(ui, egui::TextEdit::singleline(name).char_limit(32)).labelled_by(label.id);
 	ui.add_space(12.0);
 	let label = crate::dialog::label(ui, "server-sounds-emoji");
-	crate::dialog::input(ui, egui::TextEdit::singleline(emoji).char_limit(8)).labelled_by(label.id);
+	crate::dialog::input(ui, egui::TextEdit::singleline(emoji).char_limit(32))
+		.labelled_by(label.id);
 	ui.add_space(12.0);
 	let label = crate::dialog::label(ui, "server-sounds-volume");
 	design::slider(ui, volume, 0..=100, "%").labelled_by(label.id);
@@ -1031,6 +1032,10 @@ fn emoji_patch(emoji: &str, original: &str, custom: bool) -> Patch<String> {
 
 fn valid_fields(name: &str, emoji: &str) -> bool {
 	model::server_admin::valid_sound_fields(name.trim(), emoji.trim())
+}
+fn valid_edit_fields(name: &str, emoji: &str, original: &str) -> bool {
+	// An unchanged service value is omitted from PATCH, including future/custom emoji.
+	valid_fields(name, if emoji.trim() == original { "" } else { emoji })
 }
 
 #[cfg(test)]
@@ -1224,7 +1229,18 @@ mod tests {
 	#[test]
 	fn sound_fields_are_bounded_and_emoji_edits_preserve_unchanged_or_custom_emoji() {
 		assert!(valid_fields(" Air horn ", ""));
-		assert!(valid_fields("Air horn", "x"));
+		assert!(valid_fields("Air horn", "👨‍👩‍👧‍👦"));
+		assert!(!valid_fields("Air horn", "x"));
+		assert!(!valid_fields("Air horn", "🦆🔥"));
+		assert!(valid_edit_fields(
+			"Renamed sound",
+			"future-value",
+			"future-value"
+		));
+		assert!(!valid_edit_fields("Renamed sound", "x", "🦆"));
+		assert!(!valid_edit_fields("Renamed sound", "🦆🔥", "🦆"));
+		assert!(valid_edit_fields("Renamed sound", "🔥", "🦆"));
+		assert!(!valid_edit_fields("x", "future-value", "future-value"));
 		assert!(!valid_fields("x", ""));
 		assert!(!valid_fields(&"x".repeat(33), ""));
 		assert!(!valid_fields("Air horn", "two words"));

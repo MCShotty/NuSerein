@@ -2687,3 +2687,7 @@ Existing FFmpeg decode, HDR, GPU selection, codecs and source resolution remain 
 Historical upstream screenshots/measurements are archive links and are not current-fork evidence.
 Voice recording, separate media output, native provider playback, Stage and adaptive stream
 quality remain separate roadmap gaps until integrated and tested.
+
+New related-emoji values must match one complete entry from the existing bundled
+Unicode palette. Unchanged service/custom values are preserved when editing other
+fields; no new dependency or retained emoji cache is introduced.
