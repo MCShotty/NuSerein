@@ -1436,8 +1436,11 @@ fn argument(
 		ui.horizontal(|ui| {
 			let mut response = ui.add(
 				egui::TextEdit::singleline(value)
+					.align(egui::Align2::LEFT_CENTER)
 					.id(id)
 					.frame(egui::Frame::NONE)
+					.font(egui::FontId::proportional(14.0))
+					.text_color(design::palette(ui).text_strong)
 					.char_limit(usize::from(option.max_length.unwrap_or(6000)).min(6000))
 					.desired_width((ui.available_width() - 25.0).max(24.0)),
 			);

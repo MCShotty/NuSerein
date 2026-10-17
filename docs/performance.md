@@ -1412,3 +1412,27 @@ rotated samples per workload. Artifacts retain revisions, environment and sample
 These synthetic reducer results are not UI latency or media throughput measurements.
 Current-head executable, installed-payload and compressed-package comparisons await
 native CI; UI CPU/RSS and live command performance remain unmeasured.
+
+
+### Command review and native evidence at `564d8dd1` plus the field-style correction
+
+The complete local `cargo xtask check` passed 1,676 tests (32 ignored), policy
+checks and the minimal application build at `564d8dd1`. The later autocomplete
+field correction only matches the existing proportional 14-point scalar-field
+font, alignment and text color. Its existing composer regression, strict native
+UI all-target/demo Clippy, formatting and native `profile_preview` rebuild pass.
+
+The native before/after pair in `pr-evidence/application-commands` uses the same
+1120 × 760, scale-1 dark X11 window and synthetic `/weather` form with `Pra`.
+Before is fork `f9e39f7`; after is `564d8dd1` plus that three-line style fix.
+The before build has two demo-only compilation repairs: remove duplicated avatar
+helpers and supply the missing optional error argument to `pending::show`.
+Neither changes the displayed feature. After opens the new synthetic suggestions
+popup; this is feature-absence evidence, not live service data. Native light-mode
+layout at the supported minimum 760 × 520 was also inspected; those extra captures
+are not bundled. Capture uses explicit `--demo --interactive`, Xvfb, software
+rendering and ImageMagick's application-window capture, with process-liveness checks.
+These debug preview pictures do not establish release CPU/RSS or frame latency.
+
+A submitted command's later HTTP failure still requires form re-entry. Only local
+validation failures preserve that form; this limitation remains in the inventory.

@@ -2662,3 +2662,8 @@ this branch does not mislabel modal file support as slash-command attachment par
 Context-menu target evidence is scoped to the active conversation. A cached author
 from another channel cannot make an unrelated Friends/notification contact eligible;
 availability is checked again before dispatch.
+
+Attachment arguments remain unsupported. The existing submitted-command form clears
+after queuing; a later HTTP failure requires re-entry. Local validation failures retain
+the form. No application command is automatically retried. This is a remaining recovery
+gap, not a claim of complete command parity.
