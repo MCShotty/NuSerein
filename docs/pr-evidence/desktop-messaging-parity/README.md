@@ -59,3 +59,9 @@ normal session; Discord's public route describes an OAuth flow. Pinned protocol
 sources and request/recovery bounds are recorded in
 [compatibility](../../discord-compatibility.md) and
 [storage policy](../../storage-policy.md).
+
+## Combined native verification
+
+The combined feature tree passed `cargo xtask check` at `0e7c26e3`: **1,919 tests passed**, 32 tests/examples ignored, strict workspace Clippy, formatting, the no-development-data application check and policy checks passed. Demo all-target Clippy and the native preview build also pass after demo-only follow-ups. Login-handoff, cached-xtask workspace, license checks for both lockfiles, six license-policy fixtures, the release replay and the 120-second soak pass. Bounded ASan fuzz smoke completed 128,905 decode and 4,340 state-transition runs without a finding. These checks use synthetic data and local peers, with no Discord session or physical audio/capture.
+
+The combined release reducer comparison at `eee7fd75` uses published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`) and unchanged fork main `f9e39f7`: one warmup and five rotated samples, Rust 1.98.1, opt-level 3, thin LTO, one codegen unit, panic abort and stripped symbols. Native build threads were kept off sampling CPU 0. Reducer medians were 71.035 / 74.009 / 78.581 ms (nightly / fork / combined): **+10.6% / +6.2%**. Wide-channel medians were 117.102 / 124.630 / 128.122 ms: **+9.4% / +2.8%**, with overlapping ranges. Cause is unisolated; this measures all sibling features together, not this PR alone, UI/media throughput or process RSS. Current-head per-OS CI remains separate.
