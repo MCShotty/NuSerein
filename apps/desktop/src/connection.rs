@@ -160,6 +160,34 @@ async fn wait_for_voice_interruption(
 	}
 }
 
+async fn wait_for_soundboard_owner(
+	mut owner: watch::Receiver<Option<(model::Id, u64)>>,
+	expected: (model::Id, u64),
+) {
+	loop {
+		if *owner.borrow_and_update() != Some(expected) {
+			return;
+		}
+		if owner.changed().await.is_err() {
+			return;
+		}
+	}
+}
+async fn scoped_soundboard_event(
+	operation: impl std::future::Future<Output = Event>,
+	owner: watch::Receiver<Option<(model::Id, u64)>>,
+	expected: (model::Id, u64),
+	lifecycle: watch::Receiver<VoiceLifecycle>,
+	revision: u64,
+) -> Option<Event> {
+	tokio::select! {
+		biased;
+		_ = wait_for_soundboard_owner(owner, expected) => None,
+		_ = wait_for_voice_interruption(lifecycle, revision) => None,
+		event = operation => Some(event),
+	}
+}
+
 fn reject_prefetch_at_capacity(tasks: &mut Vec<AbortTask>, command: &Command) -> Option<Event> {
 	tasks.retain(|task| !task.0.is_finished());
 	if tasks.len() < PREFETCHES {
@@ -370,16 +398,21 @@ impl Connection {
                 let mut autocomplete:Option<AbortTask>=None;
                 let mut sticker_packs:Option<AbortTask>=None;
                 let mut sticker_detail:Option<AbortTask>=None;
+                // Default catalog, server catalog and the one unanswered play request.
+                let mut soundboard:[Option<AbortTask>;3]=[None,None,None];
                 let mut reaction_read:Option<AbortTask>=None;
                 let mut ringing:Option<AbortTask>=None;
                 let mut recipient_ringing:Option<(client_core::voice::Command,AbortTask)>=None;
                 let mut upload:Option<AbortTask>=None;
                 let mut upload_cancel:Option<watch::Sender<bool>>=None;
-                let mut voice_request=None;
+                let mut voice_request:Option<(model::Id,u64,bool)>=None;
+				let (soundboard_owner,soundboard_owner_changed)=watch::channel(None);
                 let mut current_lifecycle=VoiceLifecycle::default();
                 // One local release may wait for queue space; later joins cannot overtake it.
                 let mut pending_abandonment=None;
                 loop {
+					let owner=voice_request.map(|(channel,request,_)|(channel,request));
+					soundboard_owner.send_if_modified(|current| {if *current==owner {false} else {*current=owner;true}});
                     tokio::select! {
                         _=&mut gateway_task.0=>{break;}
                         _=&mut writes.0=>{break;}
@@ -429,7 +462,13 @@ impl Connection {
                             let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
                             upload=Some(AbortTask(tokio::spawn(async move {
                                 let mut updates=request.progress.subscribe();
-                                let operation=api.upload_messages(request.command,request.source,request.progress,request.cancel.subscribe());
+                                let operation=async {
+                                    if let Some(voice)=request.voice_message {
+                                        api.upload_voice_message(request.command,voice,request.progress,request.cancel.subscribe()).await
+                                    } else {
+                                        api.upload_messages(request.command,request.source,request.progress,request.cancel.subscribe()).await
+                                    }
+                                };
                                 tokio::pin!(operation);
                                 let mut observing=true;
                                 let event=loop {
@@ -500,6 +539,28 @@ impl Connection {
                                 *task=Some(AbortTask(tokio::spawn(async move {
                                     let event=api.execute(command).await;
                                     let failure=match &event {Event::StickerPacks(Err(f))|Event::Sticker{result:Err(f),..} if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+                                    let error=emit(event).err().or(failure);
+                                    if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
+                            if let Command::Soundboard(request)=&command {
+                                use client_core::soundboard::{Event as E,Request as R};
+								let scope=match request {R::Send {request,call,channel,sound,..}=>Some((*request,*channel,*sound,*call)),_=>None};
+								if let Some((request,channel,sound,call))=scope && *soundboard_owner.borrow()!=Some((channel,call)) {
+									emit(Event::Soundboard(E::Sent {request,channel,sound,result:Err(Failure::ProtocolAt("Call changed; the sound was not sent"))}))?;
+									continue;
+								}
+                                let task=&mut soundboard[match request {R::Default{..}=>0,R::Guild{..}=>1,R::Send{..}=>2}];
+                                drop(task.take());
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+								let owner=soundboard_owner_changed.clone();let lifecycle=lifecycle_changed.clone();let revision=current_lifecycle.interruption;
+                                *task=Some(AbortTask(tokio::spawn(async move {
+									let event=if let Some((request,channel,sound,call))=scope {
+										scoped_soundboard_event(api.execute(command),owner,(channel,call),lifecycle,revision).await.unwrap_or(Event::Soundboard(E::Sent {request,channel,sound,result:Err(Failure::Ambiguous)}))
+									} else {api.execute(command).await};
+                                    let failure=match &event {Event::Soundboard(E::Default{result:Err(f),..}|E::Guild{result:Err(f),..}|E::Sent{result:Err(f),..}) if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
                                     let error=emit(event).err().or(failure);
                                     if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
                                     wake.request_repaint();
@@ -1829,6 +1890,90 @@ fn scope_history_failure(event: Event, channel: model::Id, request: u64) -> Even
 
 #[cfg(test)]
 mod tests {
+	#[tokio::test]
+	async fn soundboard_scope_cancels_unpolled_and_inflight_operations() {
+		use std::sync::{
+			Arc,
+			atomic::{AtomicBool, Ordering},
+		};
+		let (owner, updates) = watch::channel(None);
+		let (lifecycle, epochs) = watch::channel(VoiceLifecycle::default());
+		let contacted = Arc::new(AtomicBool::new(false));
+		let started = contacted.clone();
+		let result = scoped_soundboard_event(
+			async move {
+				started.store(true, Ordering::SeqCst);
+				Event::Failure(Failure::Forbidden)
+			},
+			updates.clone(),
+			(model::Id(2), 7),
+			epochs.clone(),
+			0,
+		)
+		.await;
+		assert!(result.is_none() && !contacted.load(Ordering::SeqCst));
+		owner.send_replace(Some((model::Id(2), 7)));
+		lifecycle.send_modify(|state| {
+			state.observe(&Event::Disconnected);
+			state.observe(&Event::Resumed);
+		});
+		let started = contacted.clone();
+		assert!(
+			scoped_soundboard_event(
+				async move {
+					started.store(true, Ordering::SeqCst);
+					Event::Failure(Failure::Forbidden)
+				},
+				updates.clone(),
+				(model::Id(2), 7),
+				epochs.clone(),
+				0
+			)
+			.await
+			.is_none()
+		);
+		assert!(
+			!contacted.load(Ordering::SeqCst),
+			"a fast resume must not revive an old operation"
+		);
+		let revision = lifecycle.borrow().interruption;
+		struct Released(Arc<AtomicBool>);
+		impl Drop for Released {
+			fn drop(&mut self) {
+				self.0.store(true, Ordering::SeqCst);
+			}
+		}
+		let released = Arc::new(AtomicBool::new(false));
+		let signal = released.clone();
+		let (entered, waiting) = tokio::sync::oneshot::channel();
+		let task = tokio::spawn(scoped_soundboard_event(
+			async move {
+				let _resource = Released(signal);
+				let _ = entered.send(());
+				std::future::pending::<Event>().await
+			},
+			updates,
+			(model::Id(2), 7),
+			epochs,
+			revision,
+		));
+		tokio::time::timeout(Duration::from_secs(1), waiting)
+			.await
+			.unwrap()
+			.unwrap();
+		owner.send_replace(Some((model::Id(2), 8)));
+		assert!(
+			tokio::time::timeout(Duration::from_secs(1), task)
+				.await
+				.unwrap()
+				.unwrap()
+				.is_none()
+		);
+		assert!(
+			released.load(Ordering::SeqCst),
+			"cancelled operations must release their resources"
+		);
+	}
 	#[tokio::test]
 	async fn full_prefetch_pool_rejects_new_reads_without_aborting_accepted_work() {
 		let mut tasks: Vec<_> = (0..PREFETCHES)

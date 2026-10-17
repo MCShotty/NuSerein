@@ -14,7 +14,7 @@ impl Playout {
 		enabled: bool,
 		stalled: bool,
 	) -> Option<Frame> {
-		// ponytail: bound clock drift by trimming PCM; sender-clock A/V sync needs RTCP timing.
+		// Bound queue drift after the receiver's optional RTCP software-clock scheduling.
 		// The source queue holds eight 20 ms frames. Retain at most two: absorb small
 		// scheduling bursts without playing the full backlog after a delayed tick.
 		for _ in 0..8 {

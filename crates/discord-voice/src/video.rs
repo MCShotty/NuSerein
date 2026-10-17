@@ -195,6 +195,59 @@ impl Rate {
 	}
 }
 
+#[cfg(test)]
+mod rate_tests {
+	use super::*;
+	#[test]
+	fn loss_reduces_once_per_second_and_silence_never_grows_the_target() {
+		let now = Instant::now();
+		let mut rate = Rate::new(4_000_000, now);
+		rate.observe(Some(13), None);
+		rate.observe(Some(0), None); // A later healthy report must not hide congestion.
+		assert_eq!(rate.tick(now + Duration::from_millis(999)), None);
+		assert_eq!(rate.tick(now + Duration::from_secs(1)), Some(3_200_000));
+		for seconds in 2..30 {
+			assert_eq!(rate.tick(now + Duration::from_secs(seconds)), None);
+		}
+		assert_eq!(rate.target, 3_200_000);
+	}
+	#[test]
+	fn receiver_estimate_is_a_wire_budget_ceiling_with_bounded_expiry_and_recovery() {
+		let now = Instant::now();
+		let mut rate = Rate::new(4_000_000, now);
+		rate.observe(None, Some(1_000_000));
+		rate.observe(None, Some(3_000_000));
+		assert_eq!(rate.tick(now + Duration::from_secs(1)), Some(800_000));
+		for seconds in 2..=5 {
+			rate.observe(Some(0), None);
+			assert_eq!(rate.tick(now + Duration::from_secs(seconds)), None);
+		}
+		// Expiring the estimate alone is not evidence that the network recovered.
+		assert_eq!(rate.tick(now + Duration::from_secs(6)), None);
+		rate.observe(Some(0), None);
+		assert_eq!(rate.tick(now + Duration::from_secs(7)), Some(840_000));
+		for seconds in 8..120 {
+			rate.observe(Some(0), Some(u32::MAX));
+			rate.tick(now + Duration::from_secs(seconds));
+			assert!(rate.target <= 4_000_000);
+		}
+		assert_eq!(rate.target, 4_000_000);
+	}
+	#[test]
+	fn repeated_loss_respects_the_encoder_floor_and_current_selection() {
+		let now = Instant::now();
+		for maximum in [250_000, 1_000_000, 50_000_000] {
+			let mut rate = Rate::new(maximum, now);
+			for seconds in 1..120 {
+				rate.observe(Some(u8::MAX), Some(1));
+				rate.tick(now + Duration::from_secs(seconds));
+				assert!((250_000..=maximum).contains(&rate.target));
+			}
+			assert_eq!(rate.target, 250_000);
+		}
+	}
+}
+
 const HISTORY_PACKETS: usize = 2048;
 const HISTORY_BYTES: usize = 2 * 1024 * 1024;
 const HISTORY_AGE: Duration = Duration::from_secs(1);

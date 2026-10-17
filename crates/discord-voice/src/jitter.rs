@@ -2,7 +2,7 @@
 const SLOTS: usize = 8;
 #[derive(Default)]
 pub(crate) struct Jitter {
-	packets: Vec<(u16, Vec<u8>)>,
+	packets: Vec<(u16, Vec<u8>, Option<u32>)>,
 	next: Option<u16>,
 	wait: u8,
 	missing: u8,
@@ -12,6 +12,9 @@ impl Jitter {
 		*self = Self::default();
 	}
 	pub fn push(&mut self, sequence: u16, opus: Vec<u8>) {
+		self.push_timed(sequence, None, opus);
+	}
+	pub fn push_timed(&mut self, sequence: u16, timestamp: Option<u32>, opus: Vec<u8>) {
 		if opus.len() > 1275 {
 			return;
 		}
@@ -29,12 +32,16 @@ impl Jitter {
 			self.wait = 2;
 			self.missing = 0;
 		}
-		if self.packets.len() < SLOTS && !self.packets.iter().any(|(id, _)| *id == sequence) {
-			self.packets.push((sequence, opus));
+		if self.packets.len() < SLOTS && !self.packets.iter().any(|(id, _, _)| *id == sequence) {
+			self.packets.push((sequence, opus, timestamp));
 		}
 	}
 	/// An empty packet requests Opus packet-loss concealment, at most three consecutive packets.
+	#[cfg(test)]
 	pub fn pop(&mut self) -> Option<Vec<u8>> {
+		self.pop_timed().map(|(opus, _)| opus)
+	}
+	pub fn pop_timed(&mut self) -> Option<(Vec<u8>, Option<u32>)> {
 		if self.wait > 0 {
 			// Short packets can fill the fixed window before 40ms. Start before
 			// the next arrival would repeatedly reset a full window.
@@ -46,32 +53,49 @@ impl Jitter {
 		}
 		let next = self.next?;
 		self.next = Some(next.wrapping_add(1));
-		if let Some(index) = self.packets.iter().position(|(id, _)| *id == next) {
+		if let Some(index) = self.packets.iter().position(|(id, _, _)| *id == next) {
 			self.missing = 0;
-			return Some(self.packets.swap_remove(index).1);
+			let (_, opus, timestamp) = self.packets.swap_remove(index);
+			return Some((opus, timestamp));
 		}
 		self.missing += 1;
 		if self.missing > 3 {
 			// Stop concealing the gap, but retain speech that already arrived after it.
-			if let Some((index, (sequence, _))) = self
+			if let Some((index, (sequence, _, _))) = self
 				.packets
 				.iter()
 				.enumerate()
-				.min_by_key(|(_, (sequence, _))| sequence.wrapping_sub(next))
+				.min_by_key(|(_, (sequence, _, _))| sequence.wrapping_sub(next))
 			{
 				self.next = Some(sequence.wrapping_add(1));
 				self.missing = 0;
-				return Some(self.packets.swap_remove(index).1);
+				let (_, opus, timestamp) = self.packets.swap_remove(index);
+				return Some((opus, timestamp));
 			}
 			self.clear();
 			return None;
 		}
-		Some(Vec::new())
+		Some((Vec::new(), None))
 	}
 }
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn timestamps_follow_reordered_packets_and_survive_sequence_wrap() {
+		let mut jitter = Jitter::default();
+		for (sequence, timestamp) in [(u16::MAX, u32::MAX - 959), (1, 960), (0, 0)] {
+			jitter.push_timed(sequence, Some(timestamp), vec![1]);
+		}
+		assert!(jitter.pop_timed().is_none());
+		assert!(jitter.pop_timed().is_none());
+		for timestamp in [u32::MAX - 959, 0, 960] {
+			assert_eq!(jitter.pop_timed(), Some((vec![1], Some(timestamp))));
+		}
+		assert_eq!(jitter.pop_timed(), Some((vec![], None)));
+		jitter.clear();
+		assert!(jitter.pop_timed().is_none());
+	}
 	#[test]
 	fn burst_loss_preserves_buffered_recovery_and_resets_on_far_jump() {
 		for first in [0u16, u16::MAX - 2] {

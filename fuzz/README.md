@@ -67,3 +67,6 @@ that run. Coverage counters are instrumentation feedback, not a whole-repository
 percentage, proof of absent bugs, native UI evidence or live Discord compatibility.
 
 Command parity also exercises the bounded autocomplete-choice and private-context account-index parsers (selectors 11 and 12). Seeds are synthetic and contain no account or service traffic.
+
+Soundboard catalogs, administration rows and Gateway effects also use synthetic seeds
+(selectors 13 and 14); successful parsing does not establish live soundboard support.

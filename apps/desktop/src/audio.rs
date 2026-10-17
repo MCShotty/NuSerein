@@ -3,6 +3,8 @@
 mod source;
 #[path = "audio/streaming.rs"]
 mod streaming;
+#[path = "audio/stretch.rs"]
+mod stretch;
 use model::Attachment;
 #[cfg(any(test, all(debug_assertions, feature = "demo")))]
 use std::io::Cursor;
@@ -52,6 +54,8 @@ struct Gate {
 	generation: AtomicU64,
 	paused: AtomicBool,
 	volume: AtomicU32,
+	/// Playback speed as `f32` bits; 1.0 plays the source untouched.
+	speed: AtomicU32,
 	seek_millis: AtomicU64,
 	position_frames: AtomicU64,
 	failed: AtomicBool,
@@ -64,6 +68,7 @@ impl Default for Gate {
 			generation: AtomicU64::new(0),
 			paused: AtomicBool::new(false),
 			volume: AtomicU32::new(1.0f32.to_bits()),
+			speed: AtomicU32::new(1.0f32.to_bits()),
 			seek_millis: AtomicU64::new(NO_SEEK),
 			position_frames: AtomicU64::new(0),
 			failed: AtomicBool::new(false),
@@ -79,8 +84,11 @@ impl Gate {
 }
 #[derive(Clone)]
 struct Request {
+	output: Option<String>,
 	generation: u64,
 	url: Option<url::Url>,
+	/// Host-generated review audio, never fetched or written to a file.
+	bytes: Option<Arc<[u8]>>,
 	expected: usize,
 	#[cfg(feature = "demo")]
 	voice_message: bool,
@@ -93,6 +101,7 @@ struct Worker {
 }
 #[derive(Default)]
 pub struct Audio {
+	pub output: Option<String>,
 	gate: Arc<Gate>,
 	worker: Option<Worker>,
 	status: Status,
@@ -133,6 +142,59 @@ impl Audio {
 					.ok_or("Audio attachment unavailable")?,
 			)
 		};
+		self.submit(
+			Request {
+				output: self.output.clone(),
+				generation: 0,
+				url,
+				bytes: None,
+				expected,
+				#[cfg(feature = "demo")]
+				voice_message: attachment.is_voice_message(),
+				duration: Duration::from_millis(u64::from(attachment.duration_ms.unwrap_or(0))),
+			},
+			runtime,
+			context,
+		)
+	}
+	/// Explicit listening in the recorder's Review phase. Shares the bounded decoder
+	/// and selected media output; no URL, temporary file or microphone is involved.
+	pub fn start_review(
+		&mut self,
+		bytes: Arc<[u8]>,
+		duration: Duration,
+		runtime: &tokio::runtime::Handle,
+		context: &eframe::egui::Context,
+	) -> Result<(), &'static str> {
+		self.stop();
+		if bytes.is_empty()
+			|| bytes.len() > discord_voice::recording::MAX_BYTES
+			|| duration.is_zero()
+			|| duration > Duration::from_secs(120)
+		{
+			return Err("Invalid voice-message review");
+		}
+		self.submit(
+			Request {
+				output: self.output.clone(),
+				generation: 0,
+				url: None,
+				expected: bytes.len(),
+				bytes: Some(bytes),
+				#[cfg(feature = "demo")]
+				voice_message: true,
+				duration,
+			},
+			runtime,
+			context,
+		)
+	}
+	fn submit(
+		&mut self,
+		mut request: Request,
+		runtime: &tokio::runtime::Handle,
+		context: &eframe::egui::Context,
+	) -> Result<(), &'static str> {
 		if self.worker.is_none() {
 			let (requests, receiver) = watch::channel(None);
 			let (status, updates) = watch::channel((0, Status::default()));
@@ -166,14 +228,8 @@ impl Audio {
 			self.status.state = State::Failed("Audio worker stopped; restart Serein");
 			return Err("Audio worker stopped; restart Serein");
 		}
-		worker.requests.send_replace(Some(Request {
-			generation,
-			url,
-			expected,
-			#[cfg(feature = "demo")]
-			voice_message: attachment.is_voice_message(),
-			duration: Duration::from_millis(u64::from(attachment.duration_ms.unwrap_or(0))),
-		}));
+		request.generation = generation;
+		worker.requests.send_replace(Some(request));
 		worker.wake.notify_one();
 		Ok(())
 	}
@@ -227,6 +283,26 @@ impl Audio {
 			self.gate
 				.volume
 				.store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Release);
+		}
+	}
+	/// Pitch-preserving speed, like Discord's 0.75–2× voice message control. Playing audio
+	/// restarts from where it is, so the new speed is heard at once.
+	pub fn speed(&mut self, speed: f32) {
+		if !speed.is_finite() {
+			return;
+		}
+		let speed = speed.clamp(0.5, 2.0);
+		let previous = f32::from_bits(self.gate.speed.swap(speed.to_bits(), Ordering::AcqRel));
+		if previous != speed
+			&& matches!(
+				self.status.state,
+				State::Playing | State::Paused | State::Loading
+			) {
+			let rate = self.gate.sample_rate.load(Ordering::Acquire);
+			if rate > 0 {
+				let at = self.gate.position_frames.load(Ordering::Acquire) as f64 / f64::from(rate);
+				self.seek(Duration::from_secs_f64(at));
+			}
 		}
 	}
 	pub fn stop(&mut self) {
@@ -422,11 +498,27 @@ pub(super) fn decode_stream(
 ) -> Result<(), &'static str> {
 	decode_stream_using(source, current, emit, true)
 }
-
 fn decode_stream_using(
 	source: Box<dyn MediaSource>,
 	current: &impl Fn() -> bool,
 	emit: &mut impl FnMut(&[f32], usize, u32, Option<Duration>) -> Result<(), &'static str>,
+	prefer_ffmpeg: bool,
+) -> Result<(), &'static str> {
+	decode_packets_using(source, current, emit, false, prefer_ffmpeg)
+}
+fn decode_packets(
+	source: Box<dyn MediaSource>,
+	current: &impl Fn() -> bool,
+	emit: &mut impl FnMut(&[f32], usize, u32, Option<Duration>) -> Result<(), &'static str>,
+	truncate: bool,
+) -> Result<(), &'static str> {
+	decode_packets_using(source, current, emit, truncate, true)
+}
+fn decode_packets_using(
+	source: Box<dyn MediaSource>,
+	current: &impl Fn() -> bool,
+	emit: &mut impl FnMut(&[f32], usize, u32, Option<Duration>) -> Result<(), &'static str>,
+	truncate: bool,
 	prefer_ffmpeg: bool,
 ) -> Result<(), &'static str> {
 	if !current() {
@@ -459,9 +551,10 @@ fn decode_stream_using(
 		return Err(INVALID);
 	}
 	let max_samples = MAX_SAMPLES.min(rate as usize * channels * MAX_SECONDS as usize);
-	if track
-		.num_frames
-		.is_some_and(|frames| frames > (max_samples / channels) as u64)
+	if !truncate
+		&& track
+			.num_frames
+			.is_some_and(|frames| frames > (max_samples / channels) as u64)
 	{
 		return Err(TOO_LARGE);
 	}
@@ -590,7 +683,15 @@ fn decode_stream_using(
 		};
 		let count = decoded.len();
 		if count > max_samples - total_samples {
-			return Err(TOO_LARGE);
+			if !truncate {
+				return Err(TOO_LARGE);
+			}
+			let keep = (max_samples - total_samples) / channels * channels;
+			if keep > 0 {
+				total_samples += keep;
+				emit(&decoded[..keep], channels, rate, duration)?;
+			}
+			break;
 		}
 		total_samples += count;
 		if !decoded.is_empty() {
@@ -660,6 +761,72 @@ fn ffmpeg_decoder(
 		extra = headers;
 	}
 	platform::video::ffmpeg::AudioDecoder::open(name, rate, channels, &extra).map_err(|_| INVALID)
+}
+
+/// Decode a small, complete download to 48 kHz mono, keeping at most `max_samples`.
+pub(super) fn decode_clip(bytes: Vec<u8>, max_samples: usize) -> Result<Vec<f32>, &'static str> {
+	decode_clip_using(bytes, max_samples, &|| true)
+}
+pub(super) fn decode_clip_using(
+	bytes: Vec<u8>,
+	max_samples: usize,
+	current: &dyn Fn() -> bool,
+) -> Result<Vec<f32>, &'static str> {
+	if !current() {
+		return Err("Sound decoding cancelled");
+	}
+	let mut mono = Vec::new();
+	let mut source_rate = 0u32;
+	let full = std::cell::Cell::new(false);
+	let result = decode_packets(
+		source::memory(bytes)?,
+		&|| current() && !full.get(),
+		&mut |chunk, channels, rate, _| {
+			source_rate = rate;
+			// Source frames that fill the 48 kHz budget.
+			let limit = (max_samples as u64 * u64::from(rate)).div_ceil(48_000) as usize;
+			for frame in chunk.chunks_exact(channels) {
+				if mono.len() >= limit {
+					full.set(true);
+					break;
+				}
+				let sample = frame.iter().sum::<f32>() / channels as f32;
+				mono.push(if sample.is_finite() {
+					sample.clamp(-1.0, 1.0)
+				} else {
+					0.0
+				});
+			}
+			Ok(())
+		},
+		true,
+	);
+	if !current() {
+		return Err("Sound decoding cancelled");
+	}
+	// A clip longer than the budget is truncated rather than rejected.
+	if !full.get() {
+		result?;
+	}
+	if mono.is_empty() || source_rate == 0 {
+		return Err(INVALID);
+	}
+	if source_rate == 48_000 {
+		mono.truncate(max_samples);
+		return Ok(mono);
+	}
+	let frames = mono.len();
+	// ponytail: linear rate conversion; use a band-limited resampler if quality measurements require it.
+	Ok(
+		(0..(frames * 48_000 / source_rate as usize).min(max_samples))
+			.map(|frame| {
+				let position = frame as f64 * f64::from(source_rate) / 48_000.0;
+				let index = (position as usize).min(frames - 1);
+				let next = (index + 1).min(frames - 1);
+				mono[index] + (mono[next] - mono[index]) * (position - index as f64) as f32
+			})
+			.collect(),
+	)
 }
 
 // Skip metadata without decoding attacker-provided tag lengths/artwork. Compact in-place:
@@ -954,6 +1121,7 @@ fn check_large_attachment_admission() {
 	let (_status, updates) = watch::channel((0, Status::default()));
 	let mut audio = Audio {
 		gate: Arc::new(Gate::default()),
+		output: None,
 		worker: Some(Worker {
 			requests,
 			status: updates,
@@ -1025,8 +1193,10 @@ pub fn debug_voice_message_check() {
 		.unwrap();
 	for voice_message in [false, true] {
 		let request = Request {
+			output: None,
 			generation: 0,
 			url: None,
+			bytes: None,
 			expected: 1,
 			voice_message,
 			duration: Duration::ZERO,

@@ -14,6 +14,7 @@ mod video;
 pub use video::{MediaView, VideoCommand, VideoState, VideoUi};
 mod attachments;
 pub mod external_upload;
+pub mod voice_messages;
 pub use attachments::DownloadUi;
 mod avatars;
 #[cfg(feature = "demo")]
@@ -116,6 +117,7 @@ mod server_notification_tests;
 mod server_notifications;
 mod server_roles;
 mod server_settings;
+mod server_sounds;
 mod server_stickers;
 mod settings;
 mod shortcuts;
@@ -397,6 +399,7 @@ pub struct MessagingUi {
 	/// Selected files still being inspected; shown as loading tiles in the upload tray.
 	pub attachment_loading: usize,
 	pub external_upload: external_upload::ExternalUpload,
+	pub voice_messages: voice_messages::VoiceMessages,
 	/// Transient problem and progress notices. Nothing here outlives its deadline.
 	pub toasts: toasts::Toasts,
 	pending_upload: Option<pending::Upload>,
@@ -427,6 +430,8 @@ pub struct MessagingUi {
 	/// Session-only stream playback level; unset is 100%. Mute preserves the level.
 	voice_stream_volume: Option<u16>,
 	voice_stream_muted: bool,
+	/// Session-only soundboard playback level; unset is 100%.
+	voice_soundboard_volume: Option<u16>,
 	/// Enlarged stage tile; cleared when it stops showing video or on Escape.
 	pub voice_focus: Option<voice::StageFocus>,
 	/// Screen share currently owning the client surface, its prior window mode and focus target.
@@ -450,6 +455,7 @@ pub struct MessagingUi {
 	pub voice_outputs: Vec<(String, String)>,
 	pub voice_input: Option<String>,
 	pub voice_output: Option<String>,
+	pub media_output: Option<String>,
 	pub voice_gain: VoiceGain,
 	voice_user_volumes: Option<Box<[(u64, u16); 64]>>,
 	/// Speakers silenced on this device only; never sent to Discord.
@@ -3496,7 +3502,7 @@ impl MessagingUi {
                         None
                     } else {
                         Some(ui
-                            .add_enabled_ui(can_attach || can_create_poll, |ui| {
+                            .add_enabled_ui(can_attach || can_create_poll || self.voice_messages.available, |ui| {
                                 icons::button(ui, icons::Icon::Attach, 28.0, &crate::i18n::translate("lib-ime-updates-text-attach-files"))
                             })
                             .inner
@@ -3522,6 +3528,10 @@ impl MessagingUi {
                                 };
                                 if ui.add_enabled(can_attach, item(icons::Icon::File, "lib-ime-updates-text-attach-files")).clicked() {
                                     self.attach_requested = true;
+                                    ui.close();
+                                }
+                                if self.voice_messages.config.is_some() && ui.add_enabled(self.voice_messages.available && !editing_here && self.attachment.is_none() && !self.upload_busy, item(icons::Icon::Microphone, "voice-message-menu")).clicked() {
+                                    self.voice_messages.open(state, channel);
                                     ui.close();
                                 }
                                 if ui.add_enabled(can_create_poll, item(icons::Icon::ChartBar, "lib-ime-updates-text-create-a-poll")).clicked() {
@@ -5214,6 +5224,7 @@ impl MessagingUi {
 		{
 			commands.push(command);
 		}
+		self.voice_messages.show(&ctx, state);
 		self.external_upload
 			.show(&ctx, state, &mut self.draft_changes);
 		self.search

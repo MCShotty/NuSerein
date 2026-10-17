@@ -3217,6 +3217,8 @@ server-settings-page-profile = サーバープロファイル
 server-settings-page-roles = 役割
 # Context: label
 server-settings-page-stickers = ステッカー
+# Context: label
+server-settings-page-soundboard = サウンドボード
 # Context: preview
 server-settings-preview-established = 設立
 # Context: preview
@@ -3272,6 +3274,84 @@ server-settings-show-people = 人々
 # Context: timeout_picker
 server-settings-timeout-picker-minutes = 分
 
+# Context: server_sounds
+server-sounds-title = サウンドボード
+# Context: server_sounds
+server-sounds-upload-title = サウンドをアップロード
+# Context: server_sounds
+server-sounds-preview = プレビュー
+# Context: server_sounds
+server-sounds-trim-hint = ハンドルをドラッグして最大 5.2 秒を選択します。ハンドルを止めたままにすると拡大します。
+# Context: server_sounds
+server-sounds-never-mind = やめておく
+# Context: server_sounds
+server-sounds-play-preview = 選択範囲を再生
+# Context: server_sounds
+server-sounds-stop-preview = プレビューを停止
+# Context: server_sounds
+server-sounds-description = このサーバーの誰もが使えるカスタムサウンドリアクションをアップロードします。
+# Context: server_sounds
+server-sounds-upload-sound = サウンドをアップロード
+# Context: server_sounds
+server-sounds-reload = 再読み込み
+# Context: server_sounds
+server-sounds-saving = 変更を保存中…
+# Context: server_sounds
+server-sounds-loading = サウンドを読み込み中…
+# Context: server_sounds
+server-sounds-hint = MP3、Ogg、WAV 音声。サウンドは最大 5.2 秒、512 KB です。長いファイルはトリミングできます。
+# Context: server_sounds
+server-sounds-preparing = サウンドを準備中…
+# Context: server_sounds
+server-sounds-name = 名前
+# Context: server_sounds
+server-sounds-emoji = 関連する絵文字（任意）
+# Context: server_sounds
+server-sounds-volume = 音量
+# Context: server_sounds
+server-sounds-upload = アップロード
+# Context: server_sounds
+server-sounds-cancel = キャンセル
+# Context: server_sounds
+server-sounds-invalid = 名前は 2～32 文字、絵文字は 1 つまでにしてください。
+# Context: server_sounds
+server-sounds-section = サウンド
+# Context: server_sounds
+server-sounds-count = サウンド: { $count }
+# Context: server_sounds
+server-sounds-slots = 空きスロット: { $count } / { $limit }
+# Context: server_sounds
+server-sounds-empty = カスタムサウンドはまだありません
+# Context: server_sounds
+server-sounds-empty-detail = サウンドをアップロードして始めましょう。
+# Context: server_sounds
+server-sounds-column-emoji = 絵文字
+# Context: server_sounds
+server-sounds-column-name = 名前
+# Context: server_sounds
+server-sounds-column-uploaded-by = アップロード者
+# Context: server_sounds
+server-sounds-unknown = 不明
+# Context: server_sounds
+server-sounds-unavailable = 利用不可
+# Context: server_sounds
+server-sounds-actions = サウンドの操作
+# Context: server_sounds
+server-sounds-edit = 編集
+# Context: server_sounds
+server-sounds-delete = サウンドを削除
+# Context: server_sounds
+server-sounds-edit-title = サウンドを編集
+# Context: server_sounds
+server-sounds-edit-subtitle = サウンドの名前、絵文字、音量を変更します。
+# Context: server_sounds
+server-sounds-delete-title = サウンドを削除しますか？
+# Context: server_sounds
+server-sounds-delete-subtitle = { $name } を削除すると元に戻せません。
+# Context: server_sounds
+server-sounds-save = 保存
+# Context: server_sounds
+server-sounds-custom-emoji-kept = このサウンドはカスタム絵文字を使用しています。維持するには空欄のままにしてください。
 ## crates/ui/src/server_stickers.rs
 # Context: dialog
 server-stickers-dialog-cancel = キャンセル
@@ -4134,6 +4214,26 @@ voice-mute-toggle-unmute = ミュートを解除する
 voice-mute-toggle-with-settings-input-settings = 入力設定
 # Context: mute_toggle_with_settings
 voice-mute-toggle-with-settings-output-settings = 出力設定
+# Context: soundboard_panel
+voice-soundboard-title = サウンドボード
+# Context: soundboard_panel
+voice-soundboard-open = このボイスチャンネルでサウンドを再生
+# Context: soundboard_panel
+voice-soundboard-server-only = サウンドボードはサーバーのボイスチャンネルで利用できます
+# Context: soundboard_panel
+voice-soundboard-server-sounds = サーバーのサウンド
+# Context: soundboard_panel
+voice-soundboard-default-sounds = デフォルトのサウンド
+# Context: soundboard_panel
+voice-soundboard-loading = サウンドを読み込み中…
+# Context: soundboard_panel
+voice-soundboard-empty = 利用できるサウンドがありません。
+# Context: soundboard_panel
+voice-soundboard-retry = 再試行
+# Context: soundboard_panel
+voice-soundboard-volume = サウンドボードの音量
+# Context: soundboard_panel
+voice-soundboard-sound-unavailable = このサウンドは利用できません
 # Context: stream_audio_controls
 voice-stream-audio-controls-mute-stream-audio = ストリーム音声をミュートする
 # Context: stream_audio_controls
@@ -4454,6 +4554,8 @@ voice-recipient-ringing = 呼び出し中…
 voice-recipient-not-in-call = 通話に未参加
 reconnect-now = 今すぐ再接続
 
+voice-media-output = メディア出力
+voice-media-output-hint = 新しく再生する音声・動画と視聴中の配信に適用します。
 voice-call-moved-to-another-client = このデバイスの通話セッションが置き換えられました
 
 server-settings-page-safety = 安全設定
@@ -4838,3 +4940,30 @@ qol-expand-categories = すべてのカテゴリーを展開
 qol-next-unread = 次の未読の会話
 qol-previous-unread = 前の未読の会話
 qol-jump-unread = 最初の未読メッセージに移動
+
+audio-playback-speed = 再生速度
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection

@@ -43,6 +43,14 @@ pub enum RemotePicture<'a> {
 	},
 }
 impl<'a> RemotePicture<'a> {
+	/// FFmpeg preserves the original 90 kHz RTP presentation timestamp across
+	/// decoder reordering; test-only legacy pictures have no trustworthy clock.
+	pub(crate) fn timestamp(&self) -> Option<u32> {
+		match self {
+			Self::Ffmpeg { picture, .. } => u32::try_from(picture.pts).ok(),
+			Self::Native(_) => None,
+		}
+	}
 	/// Borrow an SDR picture without converting or copying its planes.
 	pub fn native(&self) -> Option<platform::video::Picture<&'a [u8]>> {
 		match self {
@@ -572,6 +580,12 @@ pub(crate) struct ReceiveStats {
 	pub complete: u64,
 }
 impl Receivers {
+	pub fn user(&self, ssrc: u32) -> Option<u64> {
+		self.sources
+			.iter()
+			.find(|(source, _, _)| *source == ssrc)
+			.map(|(_, user, _)| *user)
+	}
 	/// Bind an announced video SSRC to a user; zero clears that user's sources.
 	pub fn announce(&mut self, user: u64, ssrc: u32) -> Result<(), &'static str> {
 		if ssrc == 0 {

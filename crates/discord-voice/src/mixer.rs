@@ -11,6 +11,8 @@ struct Speaker {
 	offset: usize,
 	length: usize,
 	activity: u8,
+	/// Timestamp of the next sample in the current decoded packet.
+	timestamp: Option<u32>,
 }
 #[derive(Default)]
 pub(crate) struct Mixer {
@@ -46,6 +48,7 @@ impl Mixer {
 			offset: 0,
 			length: 0,
 			activity: 0,
+			timestamp: None,
 		});
 		Ok(())
 	}
@@ -58,9 +61,20 @@ impl Mixer {
 			.find(|s| s.ssrc == ssrc)
 			.map(|s| s.user)
 	}
+	pub fn ssrc(&self, user: u64) -> Option<u32> {
+		self.speakers
+			.iter()
+			.find(|s| s.user == user)
+			.map(|s| s.ssrc)
+	}
 	pub fn push(&mut self, ssrc: u32, sequence: u16, opus: Vec<u8>) {
 		if let Some(speaker) = self.speakers.iter_mut().find(|s| s.ssrc == ssrc) {
 			speaker.jitter.push(sequence, opus);
+		}
+	}
+	pub fn push_timed(&mut self, ssrc: u32, sequence: u16, timestamp: u32, opus: Vec<u8>) {
+		if let Some(speaker) = self.speakers.iter_mut().find(|s| s.ssrc == ssrc) {
+			speaker.jitter.push_timed(sequence, Some(timestamp), opus);
 		}
 	}
 	pub fn clear(&mut self) {
@@ -70,6 +84,7 @@ impl Mixer {
 			speaker.offset = 0;
 			speaker.length = 0;
 			speaker.activity = 0;
+			speaker.timestamp = None;
 		}
 	}
 	pub fn speaking(&self) -> impl Iterator<Item = u64> + '_ {
@@ -79,13 +94,27 @@ impl Mixer {
 			.map(|s| s.user)
 	}
 	/// Mix one 20ms frame, preserving up to 120ms packets without bursting playback queues.
+	#[cfg(test)]
 	pub fn pop(&mut self) -> (Option<Frame>, bool) {
 		self.pop_with_volumes(&[])
 	}
 	pub fn pop_with_volumes(&mut self, volumes: &[(u64, u16)]) -> (Option<Frame>, bool) {
+		let (frame, heard, _) = self.pop_timed_with_volumes(volumes);
+		(frame, heard)
+	}
+	/// Timing is meaningful only when exactly one timestamped source contributes.
+	pub fn pop_timed(&mut self) -> (Option<Frame>, bool, Option<(u64, u32)>) {
+		self.pop_timed_with_volumes(&[])
+	}
+	fn pop_timed_with_volumes(
+		&mut self,
+		volumes: &[(u64, u16)],
+	) -> (Option<Frame>, bool, Option<(u64, u32)>) {
 		let mut output = [0.0; 960];
 		let mut active = false;
 		let mut heard = false;
+		let mut timing = None;
+		let mut mixed_timing = false;
 		for speaker in &mut self.speakers {
 			let gain = f32::from(
 				volumes
@@ -103,7 +132,7 @@ impl Mixer {
 					if decoded == 8 {
 						break;
 					}
-					let Some(opus) = speaker.jitter.pop() else {
+					let Some((opus, timestamp)) = speaker.jitter.pop_timed() else {
 						break;
 					};
 					decoded += 1;
@@ -124,11 +153,23 @@ impl Mixer {
 					else {
 						continue;
 					};
+					if timestamp.is_some() || !opus.is_empty() {
+						speaker.timestamp = timestamp;
+					}
 					speaker.offset = 0;
 					speaker.length = length;
 					heard |= !opus.is_empty() && opus != davey::OPUS_SILENCE_PACKET;
 				}
 				let count = (output.len() - filled).min(speaker.length - speaker.offset);
+				if count > 0 && filled == 0 {
+					match (timing, speaker.timestamp) {
+						(None, Some(timestamp)) => timing = Some((speaker.user, timestamp)),
+						_ => mixed_timing = true,
+					}
+				}
+				speaker.timestamp = speaker
+					.timestamp
+					.map(|timestamp| timestamp.wrapping_add(count as u32));
 				for (mixed, sample) in output[filled..filled + count]
 					.iter_mut()
 					.zip(&speaker.pcm[speaker.offset..speaker.offset + count])
@@ -148,7 +189,11 @@ impl Mixer {
 		output
 			.iter_mut()
 			.for_each(|sample| *sample = sample.clamp(-1.0, 1.0));
-		(active.then_some(output), heard)
+		(
+			active.then_some(output),
+			heard,
+			timing.filter(|_| !mixed_timing),
+		)
 	}
 }
 
@@ -216,6 +261,7 @@ mod tests {
 			] {
 				for speaker in &mut mixer.speakers {
 					speaker.pcm.fill(speaker.user as f32 * 0.1);
+					speaker.timestamp = None;
 					speaker.offset = 0;
 					speaker.length = 960;
 				}
@@ -240,6 +286,51 @@ mod tests {
 					.all(|s| *s == 1.0)
 			);
 		}
+	}
+	#[test]
+	fn stream_timestamps_follow_long_packets_wrap_loss_and_mixed_sources() {
+		let mut mixer = Mixer::default();
+		mixer.announce(1, 11).unwrap();
+		let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Audio).unwrap();
+		let pcm: Vec<_> = (0..2880).map(|i| (i as f32 * 0.04).sin() * 0.2).collect();
+		let mut packet = [0; 1275];
+		let len = encoder.encode_float(&pcm, &mut packet).unwrap();
+		let origin = u32::MAX - 1439;
+		for (sequence, offset) in [(u16::MAX, 0), (1, 5760), (0, 2880)] {
+			mixer.push_timed(
+				11,
+				sequence,
+				origin.wrapping_add(offset),
+				packet[..len].to_vec(),
+			);
+		}
+		assert!(mixer.pop_timed().0.is_none());
+		assert!(mixer.pop_timed().0.is_none());
+		for tick in 0..12 {
+			// The missing fourth packet uses bounded PLC and continues the last RTP clock.
+			let (frame, _, timestamp) = mixer.pop_timed();
+			assert!(frame.is_some());
+			assert_eq!(timestamp, Some((1, origin.wrapping_add(tick * 960))));
+		}
+		mixer.announce(2, 22).unwrap();
+		mixer.push_timed(22, 0, 55, opus(0.02));
+		for _ in 0..2 {
+			mixer.pop_timed();
+		}
+		assert!(
+			mixer.pop_timed().2.is_none(),
+			"mixed sources cannot claim one common clock"
+		);
+		mixer.clear();
+		assert!(mixer.pop_timed().0.is_none());
+		assert!(
+			mixer
+				.speakers
+				.iter()
+				.all(|speaker| speaker.timestamp.is_none())
+		);
+		mixer.remove(1);
+		assert_eq!(mixer.user(11), None);
 	}
 	#[test]
 	fn short_packets_fill_realtime_ticks_without_silence_or_reorder_starvation() {

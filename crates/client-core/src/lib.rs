@@ -11,6 +11,7 @@ pub mod gifs;
 pub mod guild_creation;
 pub mod guild_folders;
 pub mod permissions;
+pub mod soundboard;
 pub mod stickers;
 pub use permissions::ChannelAccess;
 #[cfg(test)]
@@ -76,6 +77,7 @@ pub enum Command {
 	Autocomplete(interactions::Request),
 	CancelAutocomplete,
 	Polls(polls::Request),
+	Soundboard(soundboard::Request),
 	StickerPacks,
 	Sticker(Id),
 	Interaction(interactions::Request),
@@ -446,6 +448,7 @@ fn prepare_navigation(
 pub enum Event {
 	Autocomplete(application_commands::CompletionEvent),
 	Polls(polls::Event),
+	Soundboard(soundboard::Event),
 	StickerEntitlement {
 		user: Id,
 		premium_type: Patch<u8>,
@@ -722,6 +725,7 @@ pub struct State {
 	/// The signed-in account's Discord `premium_type`; 0 until READY reports one.
 	pub premium_type: u8,
 	pub stickers: stickers::Stickers,
+	pub soundboard: soundboard::Soundboard,
 	pub interactions: interactions::Interactions,
 	pub application_commands: application_commands::Catalog,
 	pub game_mentions: game_mentions::Catalog,
@@ -960,6 +964,7 @@ impl Default for State {
 		Self {
 			premium_type: 0,
 			stickers: Default::default(),
+			soundboard: Default::default(),
 			interactions: Default::default(),
 			application_commands: Default::default(),
 			messaging_permissions: Default::default(),
@@ -1886,6 +1891,14 @@ impl State {
 	pub fn prepare_image_send(&mut self, filenames: &[&str]) -> Option<Command> {
 		self.prepare_message(filenames, None, true)
 	}
+	/// A voice clip is sent alone; the text draft stays available for a separate send.
+	pub fn prepare_voice_message(&mut self) -> Option<Command> {
+		if !self.can_send_voice_message(self.selected?) {
+			self.status = "Voice messages are unavailable with the current permissions";
+			return None;
+		}
+		self.prepare_image_send(&["voice-message.ogg"])
+	}
 	pub(crate) fn prepare_message(
 		&mut self,
 		filenames: &[&str],
@@ -2062,6 +2075,10 @@ impl State {
 				request: request.request,
 				result: Err(auth::Failure::Capacity),
 			});
+			return;
+		}
+		if let Command::Soundboard(request) = &command {
+			self.soundboard_rejected(request);
 			return;
 		}
 		match &command {
@@ -2632,6 +2649,7 @@ impl State {
 			}
 			self.interrupt_preloads();
 			self.interrupt_stickers();
+			self.interrupt_soundboard();
 			self.posts.clear_summaries();
 			self.interactions.reset();
 			self.application_commands.clear();
@@ -3001,6 +3019,10 @@ impl State {
 				Ok(())
 			}
 			Event::Polls(event) => self.apply_poll(event),
+			Event::Soundboard(event) => {
+				self.apply_soundboard(event);
+				Ok(())
+			}
 			Event::Reactions(event) => self.apply_reactions(event),
 			Event::InviteChallenge { request, challenge } => {
 				self.apply_invite_challenge(request, *challenge);
@@ -4220,6 +4242,7 @@ impl State {
 			self.reset_thread_starter();
 			self.application_commands.clear();
 			self.interrupt_stickers();
+			self.interrupt_soundboard();
 			self.interrupt_gif_favorites();
 			self.invalidate_messaging_permissions(Some(failure));
 			self.interrupt_own_profile();
@@ -4518,6 +4541,7 @@ impl Event {
 				Self::Permissions(event) => event.bytes(),
 				Self::GuildEmojis { emojis, .. } => custom_emoji_bytes(emojis),
 				Self::GuildStickers { stickers, .. } => sticker_bytes(stickers),
+				Self::Soundboard(event) => event.bytes(),
 				Self::StickerPacks(result) => result.as_ref().map_or(0, stickers::pack_bytes),
 				Self::Sticker { result, .. } => result.as_ref().map_or(0, Sticker::heap_bytes),
 				Self::GuildChanged(patch) => [&patch.name, &patch.icon]
@@ -4964,6 +4988,51 @@ mod tests {
 		state.discard_pending(&nonce);
 		assert_eq!(state.pending.len(), 1);
 	}
+	#[test]
+	fn voice_message_send_preserves_draft_and_requires_fresh_attachment_admission() {
+		let mut state = State {
+			channels: vec![Channel {
+				id: Id(1),
+				guild: None,
+				parent_id: None,
+				kind: 1,
+				name: "Synthetic DM".into(),
+				position: 0,
+				recipients: vec![],
+				last_message: None,
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			}],
+			selected: Some(Id(1)),
+			auth: auth::AuthState::Authenticated,
+			freshness: Freshness::Fresh,
+			gateway_connected: true,
+			..State::default()
+		};
+		state
+			.drafts
+			.insert(Id(1), "@silent text stays separate".into());
+		state.reply = Some(Reply::to(Id(7)));
+		let command = state.prepare_voice_message().unwrap();
+		assert!(
+			matches!(command, Command::Send { content, reply: Some(reply), sticker: None, .. } if content.is_empty() && reply.target() == Id(7))
+		);
+		assert_eq!(state.drafts[&Id(1)], "@silent text stays separate");
+		assert_eq!(state.pending[0].attachments, ["voice-message.ogg"]);
+		assert!(state.reply.is_none());
+		state.gateway_connected = false;
+		assert!(state.prepare_voice_message().is_none());
+		state.gateway_connected = true;
+		state.freshness = Freshness::Stale;
+		assert!(state.prepare_voice_message().is_none());
+		state.freshness = Freshness::Fresh;
+		state.auth = auth::AuthState::Expired;
+		assert!(state.prepare_voice_message().is_none());
+		assert_eq!(state.pending.len(), 1);
+	}
+
 	#[test]
 	fn attachment_only_sends_are_bounded_and_keep_existing_confirmation() {
 		let mut state = State {

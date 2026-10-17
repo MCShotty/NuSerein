@@ -3216,6 +3216,8 @@ server-settings-page-profile = Profil serwera
 server-settings-page-roles = Role
 # Context: label
 server-settings-page-stickers = Naklejki
+# Context: label
+server-settings-page-soundboard = Soundboard
 # Context: preview
 server-settings-preview-established = Przyjęty
 # Context: preview
@@ -3271,6 +3273,84 @@ server-settings-show-people = LUDZIE
 # Context: timeout_picker
 server-settings-timeout-picker-minutes = protokół
 
+# Context: server_sounds
+server-sounds-title = Soundboard
+# Context: server_sounds
+server-sounds-upload-title = Prześlij dźwięk
+# Context: server_sounds
+server-sounds-preview = Podgląd
+# Context: server_sounds
+server-sounds-trim-hint = Przeciągnij uchwyty, aby wybrać do 5,2 sekundy. Przytrzymaj uchwyt nieruchomo, aby przybliżyć.
+# Context: server_sounds
+server-sounds-never-mind = Nieważne
+# Context: server_sounds
+server-sounds-play-preview = Odtwórz zaznaczenie
+# Context: server_sounds
+server-sounds-stop-preview = Zatrzymaj podgląd
+# Context: server_sounds
+server-sounds-description = Prześlij własne reakcje dźwiękowe, których może używać każdy na tym serwerze.
+# Context: server_sounds
+server-sounds-upload-sound = Prześlij dźwięk
+# Context: server_sounds
+server-sounds-reload = Wczytaj ponownie
+# Context: server_sounds
+server-sounds-saving = Zapisywanie zmian…
+# Context: server_sounds
+server-sounds-loading = Wczytywanie dźwięków…
+# Context: server_sounds
+server-sounds-hint = Dźwięk MP3, Ogg lub WAV. Dźwięki mają najwyżej 5,2 sekundy i 512 KB; dłuższe pliki można przyciąć.
+# Context: server_sounds
+server-sounds-preparing = Przygotowywanie dźwięku…
+# Context: server_sounds
+server-sounds-name = Nazwa
+# Context: server_sounds
+server-sounds-emoji = Powiązane emoji (opcjonalnie)
+# Context: server_sounds
+server-sounds-volume = Głośność
+# Context: server_sounds
+server-sounds-upload = Prześlij
+# Context: server_sounds
+server-sounds-cancel = Anuluj
+# Context: server_sounds
+server-sounds-invalid = Użyj nazwy o długości 2–32 znaków i najwyżej jednego emoji.
+# Context: server_sounds
+server-sounds-section = Dźwięki
+# Context: server_sounds
+server-sounds-count = Dźwięki: { $count }
+# Context: server_sounds
+server-sounds-slots = Wolne miejsca: { $count } z { $limit }
+# Context: server_sounds
+server-sounds-empty = Brak własnych dźwięków
+# Context: server_sounds
+server-sounds-empty-detail = Prześlij dźwięk, aby zacząć.
+# Context: server_sounds
+server-sounds-column-emoji = Emoji
+# Context: server_sounds
+server-sounds-column-name = Nazwa
+# Context: server_sounds
+server-sounds-column-uploaded-by = Przesłane przez
+# Context: server_sounds
+server-sounds-unknown = Nieznany
+# Context: server_sounds
+server-sounds-unavailable = Niedostępny
+# Context: server_sounds
+server-sounds-actions = Akcje dźwięku
+# Context: server_sounds
+server-sounds-edit = Edytuj
+# Context: server_sounds
+server-sounds-delete = Usuń dźwięk
+# Context: server_sounds
+server-sounds-edit-title = Edytuj dźwięk
+# Context: server_sounds
+server-sounds-edit-subtitle = Zmień nazwę, emoji i głośność dźwięku.
+# Context: server_sounds
+server-sounds-delete-title = Usunąć dźwięk?
+# Context: server_sounds
+server-sounds-delete-subtitle = Usunięcia { $name } nie można cofnąć.
+# Context: server_sounds
+server-sounds-save = Zapisz
+# Context: server_sounds
+server-sounds-custom-emoji-kept = Ten dźwięk używa własnego emoji. Pozostaw pole puste, aby je zachować.
 ## crates/ui/src/server_stickers.rs
 # Context: dialog
 server-stickers-dialog-cancel = Anulować
@@ -4143,6 +4223,26 @@ voice-mute-toggle-unmute = Wyłącz wyciszenie
 voice-mute-toggle-with-settings-input-settings = Ustawienia wejściowe
 # Context: mute_toggle_with_settings
 voice-mute-toggle-with-settings-output-settings = Ustawienia wyjściowe
+# Context: soundboard_panel
+voice-soundboard-title = Soundboard
+# Context: soundboard_panel
+voice-soundboard-open = Odtwórz dźwięk na tym kanale głosowym
+# Context: soundboard_panel
+voice-soundboard-server-only = Soundboard jest dostępny na kanałach głosowych serwera
+# Context: soundboard_panel
+voice-soundboard-server-sounds = Dźwięki serwera
+# Context: soundboard_panel
+voice-soundboard-default-sounds = Dźwięki domyślne
+# Context: soundboard_panel
+voice-soundboard-loading = Wczytywanie dźwięków…
+# Context: soundboard_panel
+voice-soundboard-empty = Brak dostępnych dźwięków.
+# Context: soundboard_panel
+voice-soundboard-retry = Spróbuj ponownie
+# Context: soundboard_panel
+voice-soundboard-volume = Głośność soundboardu
+# Context: soundboard_panel
+voice-soundboard-sound-unavailable = Ten dźwięk jest niedostępny
 # Context: stream_audio_controls
 voice-stream-audio-controls-mute-stream-audio = Wycisz dźwięk strumienia
 # Context: stream_audio_controls
@@ -4473,6 +4573,8 @@ voice-recipient-ringing = Dzwoni…
 voice-recipient-not-in-call = Poza rozmową
 reconnect-now = Połącz ponownie
 
+voice-media-output = Wyjście multimediów
+voice-media-output-hint = Dotyczy nowego odtwarzania audio/wideo i oglądanych transmisji.
 voice-call-moved-to-another-client = Sesja połączenia na tym urządzeniu została zastąpiona
 
 server-settings-page-safety = Konfiguracja bezpieczeństwa
@@ -4857,3 +4959,30 @@ qol-expand-categories = Rozwiń wszystkie kategorie
 qol-next-unread = Następna nieprzeczytana rozmowa
 qol-previous-unread = Poprzednia nieprzeczytana rozmowa
 qol-jump-unread = Przejdź do pierwszej nieprzeczytanej wiadomości
+
+audio-playback-speed = Prędkość odtwarzania
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection

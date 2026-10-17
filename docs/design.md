@@ -162,6 +162,8 @@ and a red hang-up button, a green "In a call" badge in the header, mute/deafen t
 account card, and a "Voice Connected" panel above it while connected. Camera and screen
 sharing depend on native capture and negotiated codec support; offline previews keep
 capture inert. Activities and soundboard remain disabled where unsupported.
+The soundboard pill opens a popup of bounded sound buttons and a volume slider; it is
+disabled outside server voice channels.
 
 ## Verification notes
 
