@@ -29,6 +29,10 @@ try {
     fs.mkdirSync(path.dirname(path.join(fixture, name)), { recursive: true });
     fs.copyFileSync(path.join(repo, name), path.join(fixture, name));
   }
+  // Include the newly bundled display-name licenses in this synthetic workspace.
+  for (const name of fs.readdirSync(path.join(repo, 'assets/fonts')).filter(name => name.endsWith('-OFL.txt'))) {
+    fs.copyFileSync(path.join(repo, 'assets/fonts', name), path.join(fixture, 'assets/fonts', name));
+  }
   fs.cpSync(path.join(repo, 'assets/licenses'), path.join(fixture, 'assets/licenses'), { recursive: true });
   const source = path.join(fixture, 'configured target', 'x86_64-unknown-linux-gnu', 'release', 'serein');
   fs.mkdirSync(path.dirname(source), { recursive: true });

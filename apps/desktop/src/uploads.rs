@@ -418,7 +418,7 @@ fn decode_preview(bytes: &[u8]) -> Option<egui::ColorImage> {
 struct Parked {
 	scope: (u64, Id),
 	selected: Vec<Chosen>,
-	previewing: Vec<(u64, mpsc::Receiver<Option<egui::ColorImage>>)>,
+	previewing: Vec<Previewing>,
 }
 impl Parked {
 	/// Session memory this selection keeps; a still-decoding thumbnail counts at its largest.
@@ -1951,6 +1951,42 @@ mod tests {
 	}
 
 	#[test]
+	fn parked_previews_complete_on_return_and_cancel_when_forgotten() {
+		let (a, b) = (Id(1), Id(2));
+		let mut uploads = Uploads::default();
+		stage(&mut uploads, 1, a, 3);
+		let (finished, result) = mpsc::sync_channel(1);
+		let cancelled = Arc::new(AtomicBool::new(false));
+		uploads.previewing.push(Previewing {
+			key: uploads.selected[0].key,
+			result,
+			cancelled: cancelled.clone(),
+		});
+		uploads.follow_conversation(1, Some(b), true, |_| true);
+		assert!(!cancelled.load(Ordering::Acquire));
+		assert!(uploads.previews().is_empty());
+		finished
+			.send(Some(egui::ColorImage::filled([2, 3], egui::Color32::WHITE)))
+			.unwrap();
+		uploads.follow_conversation(1, Some(a), true, |_| true);
+		uploads.poll(1, Some(a), true, &egui::Context::default());
+		assert_eq!(uploads.previews()[0].as_ref().unwrap().size, [2, 3]);
+
+		let (pending, result) = mpsc::sync_channel(1);
+		let cancelled = Arc::new(AtomicBool::new(false));
+		uploads.previewing.push(Previewing {
+			key: uploads.selected[0].key,
+			result,
+			cancelled: cancelled.clone(),
+		});
+		uploads.follow_conversation(1, Some(b), true, |_| true);
+		assert!(!cancelled.load(Ordering::Acquire));
+		uploads.forget_parked();
+		assert!(cancelled.load(Ordering::Acquire));
+		assert!(pending.send(None).is_err());
+	}
+
+	#[test]
 	fn parked_files_drop_on_session_change_disconnect_or_lost_access() {
 		let (a, b) = (Id(1), Id(2));
 		let mut uploads = Uploads::default();
@@ -2066,7 +2102,11 @@ mod tests {
 			previewing: Vec::new(),
 		};
 		assert_eq!(parked.bytes(), 1 + 24);
-		parked.previewing.push((0, mpsc::sync_channel(1).1));
+		parked.previewing.push(Previewing {
+			key: 0,
+			result: mpsc::sync_channel(1).1,
+			cancelled: Arc::new(AtomicBool::new(false)),
+		});
 		assert_eq!(
 			parked.bytes(),
 			1 + 24 + u64::from(PREVIEW_EDGE * PREVIEW_EDGE * 4)
