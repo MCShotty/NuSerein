@@ -218,7 +218,7 @@ impl ModerationUi {
 				});
 			});
 		}
-		if state.guild_permission(guild, model::permissions::BAN_MEMBERS) {
+		if state.can_view_guild_bans(guild) {
 			ui.separator();
 			ui.heading(i18n::translate("moderation-bans"));
 			if ui
@@ -243,7 +243,10 @@ impl ModerationUi {
 						}
 						if ui
 							.add_enabled(
-								available && !state.server_admin.needs_refresh,
+								available
+									&& !state.server_admin.needs_refresh
+									&& state
+										.guild_permission(guild, model::permissions::BAN_MEMBERS),
 								egui::Button::new(i18n::translate("moderation-unban")),
 							)
 							.clicked()

@@ -3,7 +3,17 @@ use crate::State;
 use model::{Id, automod as a, moderation as m, permissions as p};
 impl State {
 	pub fn can_open_moderation(&self, guild: Id) -> bool {
-		[p::KICK_MEMBERS, p::BAN_MEMBERS, p::MODERATE_MEMBERS]
+		[
+			p::KICK_MEMBERS,
+			p::BAN_MEMBERS,
+			p::MODERATE_MEMBERS,
+			p::VIEW_AUDIT_LOG,
+		]
+		.into_iter()
+		.any(|bits| self.guild_permission(guild, bits))
+	}
+	pub fn can_view_guild_bans(&self, guild: Id) -> bool {
+		[p::BAN_MEMBERS, p::VIEW_AUDIT_LOG]
 			.into_iter()
 			.any(|bits| self.guild_permission(guild, bits))
 	}
@@ -43,7 +53,7 @@ impl State {
 		}
 		match action {
 			m::Action::Bans { after } => {
-				self.guild_permission(guild, p::BAN_MEMBERS)
+				self.can_view_guild_bans(guild)
 					&& after.is_none_or(|after| {
 						self.server_admin
 							.bans
@@ -221,6 +231,54 @@ mod tests {
 		state.server_admin.moderation_target = Some(member(7, vec![Id(4)]));
 		state
 	}
+	#[test]
+	fn audit_log_permission_can_read_bans_without_allowing_moderation_writes() {
+		let mut state = state(p::VIEW_AUDIT_LOG);
+		assert!(state.can_open_moderation(Id(2)) && state.can_view_guild_bans(Id(2)));
+		let Some(Command::ServerAdmin { request, .. }) =
+			state.request_server_admin(Id(2), Action::Moderation(m::Action::Bans { after: None }))
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Bans(m::Bans {
+					guild: Id(2),
+					items: vec![m::Ban {
+						user: user(9),
+						reason: None,
+					}],
+					next: Some(Id(9)),
+				}))),
+			})
+			.unwrap();
+		assert!(state.server_admin.bans.is_some());
+		assert!(state.moderation_action_allowed(Id(2), &m::Action::Bans { after: Some(Id(9)) }));
+		assert!(!state.moderation_action_allowed(
+			Id(2),
+			&m::Action::Unban {
+				user: Id(9),
+				reason: String::new()
+			}
+		));
+		assert!(!state.can_ban_guild_member(Id(2), Id(7)));
+		assert!(!state.can_kick_guild_member(Id(2), Id(7)));
+		assert!(!state.can_timeout_guild_member(Id(2), Id(7)));
+		state
+			.permissions
+			.guilds
+			.get_mut(&Id(2))
+			.unwrap()
+			.roles
+			.as_mut()
+			.unwrap()[1]
+			.bits = 0;
+		state.permissions.clear_cache();
+		assert!(!state.can_open_moderation(Id(2)) && !state.can_view_guild_bans(Id(2)));
+	}
+
 	#[test]
 	fn moderation_checks_member_moderator_admin_owner_and_hierarchy() {
 		let mut state = state(0);

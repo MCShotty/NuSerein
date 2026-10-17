@@ -2661,3 +2661,7 @@ the official notice in place of the withheld details, and omits Member Since and
 matching the official client. Roles, mutuals and the message field stay. The service
 withholds the hidden data itself; Serein never infers privacy from missing fields. No live
 private-profile response has been used as validation.
+
+Ban browsing accepts either View Audit Log or Ban Members, matching the documented
+resource permission. Unban/ban writes retain Ban Members, and other moderation writes
+retain their distinct permissions and hierarchy checks.

@@ -32,7 +32,11 @@ fuzz_target!(|data: &[u8]| {
 		return;
 	}
 	if selector == 10 {
-		let _ = black_box(discord_protocol::moderation::bans(payload, model::Id(2), None));
+		let _ = black_box(discord_protocol::moderation::bans(
+			payload,
+			model::Id(2),
+			None,
+		));
 		return;
 	}
 	match selector % 8 {
