@@ -4,6 +4,53 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
+## Personal notification and navigation controls — October 17, 2026
+
+Compared current upstream nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`),
+fork baseline `f9e39f7`, and implementation `8205c36d931b`. Each release replay
+was built with Rust 1.98.1, the committed lockfile, default replay features, fat
+LTO and one codegen unit, using a separate source/target directory. Linux 6.18.44
+x86-64/glibc 2.41 container, Xeon Platinum 8573C, five visible CPUs and
+18,440,136 KiB visible RAM. Builds and tests were idle during sampling. One warmup
+and five measured direct-binary runs per revision/workload, rotating revision order,
+with the measurement process and its children pinned to CPU 0; elapsed times are
+reported by the workload's `Instant` timer. No account, network, storage or audio device.
+
+| Release workload / median | Current nightly | Fork baseline | After | After vs nightly | After vs fork |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Reducer, 100,000 events | 108.718 ms | 124.482 ms | 122.868 ms | +13.0% | −1.3% |
+| Wide-channel reducer, 10,000 messages / 20,001 channels | 166.945 ms | 196.989 ms | 174.953 ms | +4.8% | −11.2% |
+| Steady retained timeline estimates, 500 records | 393,492–393,977 B | 401,492–401,977 B | 401,492–401,977 B | +8,000 B | unchanged |
+
+Scheduling variation is substantial: reducer ranges were 104.234–218.455 ms
+(nightly), 110.811–216.428 ms (fork), and 112.729–185.926 ms (after); wide-channel
+ranges were 146.976–175.158, 169.186–227.320, and 162.341–221.322 ms respectively.
+An initial unpinned trial gave +5.2% / +33.2% against nightly, with a noisy
+106.586–406.827 ms nightly wide-channel range, prompting the affinity-controlled
+comparison above. No speedup is claimed. The nightly comparison includes earlier
+video, reliability and upstream changes already in the fork; it does not isolate
+this milestone. The feature's retained timeline estimates match its fork baseline.
+
+The 120-second release lifecycle soak completed 1,444 passes / 46,208 channel
+visits / 27,724,800 live inserts and six logout cycles in 120.896 seconds, with
+its shipping row/byte assertions passing. This measures synthetic core pressure;
+native UI CPU/RSS, frame latency and live synchronization remain unmeasured.
+
+Current-nightly package baselines were downloaded from the immutable release tag
+and checked against its published SHA256SUMS. Payload bytes sum regular archive
+entries; Linux uses the Debian data archive, Windows its portable ZIP, and macOS
+the complete ZIP including the app bundle and notices.
+
+| Nightly package | Executable bytes | Full payload bytes | Published archive bytes |
+| --- | ---: | ---: | ---: |
+| Ubuntu 26.04 x64 DEB | 87,746,736 | 92,280,770 | 44,864,244 |
+| Windows x64 ZIP | 86,937,600 | 91,130,889 | 51,171,600 |
+| macOS ARM64 ZIP | 69,149,632 | 75,120,529 | 48,274,698 |
+
+Current-head native application/package checks and matching after-package
+measurements are tracked in the PR. No local production package, native Windows/macOS
+UI performance comparison or live OS-notification check is claimed here.
+
 ## Name styles and bundled name fonts - October 15, 2026
 
 Compared baseline `5f83077e` (`main`) with the name-styles branch on Linux (CachyOS, x86_64),
