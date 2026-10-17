@@ -97,11 +97,11 @@ impl State {
 				}
 			}
 		}
-		if let Some(mut page) = self.community.events.take() {
-			if self.can_browse_events(page.guild) {
-				page.events.retain(|e| self.event_visible(e));
-				self.community.events = Some(page);
-			}
+		if let Some(mut page) = self.community.events.take()
+			&& self.can_browse_events(page.guild)
+		{
+			page.events.retain(|e| self.event_visible(e));
+			self.community.events = Some(page);
 		}
 		if self.community.stage.as_ref().is_some_and(|s| {
 			!self.can_view(s.channel)
