@@ -12,6 +12,7 @@ mod clipboard;
 #[cfg(feature = "demo")]
 mod community_admin_demo;
 
+#[cfg(feature = "demo")]
 mod community_demo;
 #[cfg(feature = "demo")]
 mod components_demo;
