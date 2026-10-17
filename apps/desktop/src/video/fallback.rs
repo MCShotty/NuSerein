@@ -1,4 +1,5 @@
 //! Optional local codec conversion; the helper receives private files, never service URLs.
+use platform::video::ffmpeg::AttachmentDecoder;
 use std::{
 	fs::{self, File, OpenOptions},
 	io::{Read, Write},
@@ -31,7 +32,7 @@ pub(super) fn open(
 	source: Box<dyn platform::video::ReadSeek>,
 	cancelled: &AtomicBool,
 	adapter: Option<model::VideoAdapter>,
-) -> Result<super::AttachmentDecoder, &'static str> {
+) -> Result<AttachmentDecoder, &'static str> {
 	let executable = [
 		"/opt/homebrew/bin/ffmpeg",
 		"/usr/local/bin/ffmpeg",
@@ -65,7 +66,7 @@ fn convert(
 	adapter: Option<model::VideoAdapter>,
 	executable: &str,
 	temporary: &Temporary,
-) -> Result<super::AttachmentDecoder, &'static str> {
+) -> Result<AttachmentDecoder, &'static str> {
 	let input = temporary.0.join("input");
 	let output = temporary.0.join("output.mp4");
 	let mut file = OpenOptions::new()
@@ -135,5 +136,5 @@ fn convert(
 		return Err("Converted video exceeds the 100 MiB preview limit");
 	}
 	// macOS keeps the open descriptor valid after unlink; no playback file is retained.
-	super::AttachmentDecoder::open(Box::new(file), adapter)
+	AttachmentDecoder::open(Box::new(file), adapter)
 }
