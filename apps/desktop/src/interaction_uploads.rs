@@ -198,16 +198,15 @@ impl Desktop {
 		}
 	}
 	pub(crate) fn choose_interaction_files(&mut self, ctx: &eframe::egui::Context) {
-		if let Some(field) = self.messaging.take_command_file_remove() {
-			if !self.state.interactions.busy()
-				&& let Some((_, uploads)) = self
-					.interaction_files
-					.fields
-					.iter_mut()
-					.find(|(name, _)| *name == field)
-			{
-				uploads.remove();
-			}
+		if let Some(field) = self.messaging.take_command_file_remove()
+			&& !self.state.interactions.busy()
+			&& let Some((_, uploads)) = self
+				.interaction_files
+				.fields
+				.iter_mut()
+				.find(|(name, _)| *name == field)
+		{
+			uploads.remove();
 		}
 		let Some(field) = self.messaging.interaction_file_request.take() else {
 			return;
