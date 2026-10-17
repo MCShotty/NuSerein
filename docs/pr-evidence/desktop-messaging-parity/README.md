@@ -39,9 +39,12 @@ credentials, microphone or media device. Completed checks:
 | Full headless UI library suite, one test thread | 588 passed, 9 manual workloads ignored |
 | Channel action HTTP tests | 7 passed |
 | Group action HTTP tests | 3 passed |
+| Core/API/protocol/UI/test-support Clippy, all targets, warnings denied | Passed |
 | Format and diff whitespace checks | Passed |
 
-Scoped Clippy with warnings denied is running at source handoff. Full workspace
+The final fingerprint-only follow-up replaces egui ID hashing with a standard hasher
+to avoid its debug source registry. Scoped Clippy covers that final source; the full
+headless UI run preceded this follow-up. Full workspace
 `cargo xtask check`, the standard package and release replay/native measurements
 remain in the coordinated integration pass. Native screenshots, the standard package,
 and release before/after measurements are pending the parent task's coordinated
