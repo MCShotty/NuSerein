@@ -3003,8 +3003,12 @@ impl State {
 			Event::Onboarding(event) => self.apply_onboarding(event),
 			Event::Community(event) => self.apply_community(event),
 			Event::CommunityFence(revision) => {
-				self.community.invalidate();
-				self.community.fence = revision;
+				// Concurrent transports can enqueue an older notice after a newer revision.
+				let advance = revision.wrapping_sub(self.community.fence);
+				if advance != 0 && advance < (1u64 << 63) {
+					self.community.invalidate();
+					self.community.fence = revision;
+				}
 				Ok(())
 			}
 			Event::CommunityChanged {
