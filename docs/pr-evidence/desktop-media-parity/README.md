@@ -74,6 +74,7 @@ build job and a separate task target directory.
 | `python3 extensions/test_catalog.py` | Passed |
 | SDK wiki `scripts/test_sync.py` | Passed; wiki publication deferred until reviewed source is pushed |
 | `cargo fmt --all`, `git diff --check` | Passed |
+| Scoped Clippy: `ui`, `extensions`, `discord-api`, `client-core`, `local-store`; all targets, `ui/demo`, `-D warnings` | Passed after correcting the new focused-strip test initializer |
 | `node tests/license-policy.cjs` | Blocked: `cargo-deny` is absent from the task environment |
 
 The standalone std checks exercise the production source, but are not a substitute
@@ -96,6 +97,10 @@ native queue/device latency and physical A/V drift remain unmeasured. Remote
 sender-report availability and current SFU behavior remain unverified. Received
 stream audio remains mono. Automatic bitrate adaptation already exists and now
 has a simple quality status; automatic resolution/FPS changes and simulcast-layer
-selection are not implemented. Provider pages requiring browser playback remain
+selection are not implemented. This receive-clock change adds no synthesized
+outgoing sender reports. Receiver recovery emits PLI without NACK requests; the
+sender accepts bounded NACK/RTX repair. Linux/Windows screen audio shares other
+eligible applications rather than only the selected window's application; macOS
+retains application-filtered capture. Provider pages requiring browser playback remain
 confirmed external links. Stage/event functionality is owned by the separate
 community slice. Games and Activities are excluded.
