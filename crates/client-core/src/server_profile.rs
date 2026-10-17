@@ -71,10 +71,11 @@ impl State {
 				.is_some_and(|bits| bits & permissions::CHANGE_NICKNAME != 0)
 	}
 	pub fn load_server_profile(&mut self, guild: Id) -> Option<Command> {
-		if self.own_server_profile.saving
-			|| !self.can_edit_server_profile(guild)
-			|| (!self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected))
-		{
+		if self.own_server_profile.saving || !self.can_edit_server_profile(guild) {
+			return None;
+		}
+		if !self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected) {
+			self.own_server_profile.error = Some("Reconnect and reload your server profile");
 			return None;
 		}
 		if self.own_server_profile.guild == Some(guild) && self.own_server_profile.pending {
@@ -246,6 +247,15 @@ impl State {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn server_profile_first_offline_load_offers_an_explicit_retry() {
+		let mut state = state();
+		state.demo = false;
+		state.gateway_connected = false;
+		assert!(state.load_server_profile(Id(2)).is_none());
+		assert!(state.own_server_profile.error.is_some());
+		assert!(!state.own_server_profile.pending);
+	}
 	use crate::{Envelope, Event as CoreEvent};
 	use model::{GuildProfile, User, UserProfile, server_profile::Values};
 	fn state() -> State {
