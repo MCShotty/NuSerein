@@ -1824,7 +1824,7 @@ mod tests {
 					ws.send(Message::Text(json!({"op":4,"d":{"mode":MODE,"secret_key":vec![7;32],"dave_protocol_version":version}}).to_string().into())).await.unwrap();
 				});
 				let credentials=VoiceConnection{mode,channel:Id(3),guild:Some(Id(30)),user:Id(1),peer:None,session:Secret::new("synthetic-session".into()).unwrap(),token:Secret::new("synthetic-token".into()).unwrap(),endpoint:"unused-in-loopback".into(),request:1};let(_capture_send,capture)=std::sync::mpsc::sync_channel(1);let(playback,_playback)=std::sync::mpsc::sync_channel(1);let(_controls,control)=watch::channel(Controls::default());
-				assert_eq!(run_inner(credentials,capture,playback,control,None,None,None,|_|Ok(()),Identity::generate(),format!("ws://{address}/?v=8"),true).await,Err("The channel did not negotiate its required encrypted media mode"));server.await.unwrap();
+				assert_eq!(run_inner(credentials,capture,playback,control,None,None,None,None,|_|Ok(()),Identity::generate(),format!("ws://{address}/?v=8"),true).await,Err("The channel did not negotiate its required encrypted media mode"));server.await.unwrap();
 			}
 		}).await.unwrap();
 	}
@@ -1886,7 +1886,7 @@ mod tests {
 			});
 			let credentials=VoiceConnection{mode:MediaMode::Stage,channel:Id(3),guild:Some(Id(30)),user:Id(1),peer:None,session:Secret::new("synthetic-stage-session".into()).unwrap(),token:Secret::new("synthetic-stage-token".into()).unwrap(),endpoint:"unused-in-loopback".into(),request:1};
 			let(capture_send,capture)=std::sync::mpsc::sync_channel(8);capture_send.try_send(CapturedFrame{generation:0,pcm:[0.75;960]}).unwrap();let(playback,playback_receive)=std::sync::mpsc::sync_channel(16);let(controls,control)=watch::channel(Controls{muted:false,stage_speaker:false,..Default::default()});let(status,mut statuses)=tokio::sync::mpsc::channel(32);
-			let worker=tokio::spawn(run_inner(credentials,capture,playback,control,None,None,None,move|event|status.try_send(event).map_err(|_|()),Identity::generate(),format!("ws://{address}/?v=8"),true));
+			let worker=tokio::spawn(run_inner(credentials,capture,playback,control,None,None,None,None,move|event|status.try_send(event).map_err(|_|()),Identity::generate(),format!("ws://{address}/?v=8"),true));
 			audience_wait.await.unwrap();let mut ready=false;while let Ok(status)=statuses.try_recv(){if let Status::Ready{privacy_code}=status{assert!(privacy_code.is_empty());ready=true;}}assert!(ready);assert!(playback_receive.try_iter().any(|pcm|pcm.iter().any(|v|v.abs()>0.001)),"Stage audience must receive AEAD-encrypted remote audio");
 			controls.send_modify(|c|{c.stage_speaker=true;c.capture_generation=1;});capture_send.try_send(CapturedFrame{generation:1,pcm:std::array::from_fn(|i|(i as f32*0.04).sin()*0.25)}).unwrap();received.await.unwrap();drop(controls);assert!(worker.await.unwrap().is_ok());finish.send(()).unwrap();server.await.unwrap();
 		}).await.unwrap();
