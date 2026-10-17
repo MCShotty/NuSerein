@@ -4,6 +4,7 @@ mod archives;
 mod badges;
 mod channel_actions;
 mod collectibles;
+mod community_admin;
 pub mod detectable;
 pub mod external_assets;
 mod forum;
@@ -11,6 +12,7 @@ mod gif_favorites;
 mod group_actions;
 mod guild_folders;
 mod interactions;
+mod member_guide;
 mod message_options;
 mod messaging_permissions;
 mod onboarding;
@@ -956,6 +958,12 @@ impl DiscordApi {
 				request,
 				edit,
 			} => Event::ServerSettings(self.server_settings(guild, request, edit).await),
+			Command::MemberGuide {
+				guild,
+				user,
+				request,
+				action,
+			} => Event::MemberGuide(self.member_guide(guild, user, request, action).await),
 			Command::Onboarding {
 				guild,
 				request,

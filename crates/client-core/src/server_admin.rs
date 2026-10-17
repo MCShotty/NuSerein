@@ -16,6 +16,7 @@ pub struct Event {
 
 #[derive(Default)]
 pub struct View {
+	pub community: Option<model::community_admin::Snapshot>,
 	pub automod: Option<model::automod::Snapshot>,
 	pub bans: Option<model::moderation::Bans>,
 	pub moderation_target: Option<model::server_admin::Member>,
@@ -46,6 +47,15 @@ pub struct View {
 	prune_days: Option<u8>,
 }
 impl View {
+	pub(crate) fn invalidate_community(&mut self) {
+		self.permission_revision = self.permission_revision.wrapping_add(1);
+		if matches!(self.action, Some(Action::Community(_))) {
+			self.needs_refresh = true;
+			self.error = Some(
+				"Channels, roles or permissions changed; reload community settings before saving",
+			);
+		}
+	}
 	pub(crate) fn revoke_audit_access(&mut self) {
 		self.audit_log = None;
 		self.audit_query = None;
@@ -78,14 +88,18 @@ impl View {
 				guild.is_none_or(|guild| guild == active)
 					&& (self.integrations.is_some()
 						|| self.automod.is_some()
+						|| self.community.is_some()
 						|| matches!(
 							self.action,
-							Some(Action::Integrations(_) | Action::AutoMod(_))
+							Some(
+								Action::Integrations(_) | Action::AutoMod(_) | Action::Community(_)
+							)
 						))
 			}
 		};
 		if relevant {
 			self.automod = None;
+			self.community = None;
 			self.bans = None;
 			self.moderation_target = None;
 			self.webhook_url = None;
@@ -399,6 +413,7 @@ impl State {
 				channel,
 				change,
 			} => self.can_moderate_voice(guild, *channel, *user, *change),
+			Action::Community(action) => self.community_action_allowed(guild, action),
 			Action::AutoMod(action) => self.automod_action_allowed(guild, action),
 			Action::Moderation(action) => self.moderation_action_allowed(guild, action),
 			Action::AuditLog(query) => self.audit_log_action_allowed(guild, query),
@@ -573,6 +588,11 @@ impl State {
 	pub(crate) fn cancel_server_admin(&mut self) {
 		self.server_admin.webhook_url = None;
 		if self.server_admin.pending {
+			if self.server_admin.saving
+				&& matches!(self.server_admin.action, Some(Action::Community(_)))
+			{
+				self.server_admin.community = None;
+			}
 			self.server_admin.needs_refresh |= self.server_admin.saving;
 			self.server_admin.error = Some(if self.server_admin.saving {
 				"Outcome unknown; reload before retrying"
@@ -598,6 +618,8 @@ impl State {
 		if action.as_ref().is_none_or(|action| {
 			if matches!(action, Action::Voice { .. }) {
 				self.guild(event.guild).is_none()
+			} else if matches!(action, Action::Community(_)) {
+				!self.can_open_community_settings(event.guild)
 			} else if matches!(action, Action::AutoMod(_)) {
 				!self.can_manage_guild(event.guild)
 			} else if matches!(action, Action::Moderation(_)) {
@@ -632,9 +654,11 @@ impl State {
 			self.server_admin.reset();
 			return Ok(());
 		}
-		if matches!(action, Some(Action::AutoMod(_) | Action::Moderation(_)))
-			&& self.server_admin.requested_permission_revision
-				!= self.server_admin.permission_revision
+		if matches!(
+			action,
+			Some(Action::AutoMod(_) | Action::Moderation(_) | Action::Community(_))
+		) && self.server_admin.requested_permission_revision
+			!= self.server_admin.permission_revision
 		{
 			self.server_admin.error = Some("Server permissions changed; reload before continuing");
 			self.server_admin.needs_refresh = true;
@@ -643,12 +667,20 @@ impl State {
 		let result = match event.result {
 			Ok(result) if result.valid() => result,
 			Ok(_) => {
+				if matches!(action, Some(Action::Community(_))) {
+					self.server_admin.community = None;
+				}
 				self.server_admin.error =
 					Some("Server administration response exceeded safe bounds");
 				self.server_admin.needs_refresh = true;
 				return Ok(());
 			}
 			Err(failure) => {
+				if matches!(action, Some(Action::Community(_)))
+					&& matches!(failure, Failure::Forbidden | Failure::Ambiguous)
+				{
+					self.server_admin.community = None;
+				}
 				if matches!(action, Some(Action::Voice { .. })) {
 					self.status = failure.label();
 				}
@@ -715,6 +747,11 @@ impl State {
 				})),
 				Outcome::WebhookUrl(url),
 			) => url.guild == event.guild && url.webhook == *webhook && url.channel == *channel,
+			(Some(Action::Community(action)), Outcome::Community(page)) => {
+				page.guild == event.guild
+					&& action.confirms(page)
+					&& self.community_snapshot_current(page)
+			}
 			(Some(Action::AutoMod(action)), Outcome::AutoMod(page)) => {
 				page.guild == event.guild
 					&& match action {
@@ -854,6 +891,9 @@ impl State {
 			_ => false,
 		};
 		if !expected {
+			if matches!(action, Some(Action::Community(_))) {
+				self.server_admin.community = None;
+			}
 			self.server_admin.error =
 				Some("Unexpected server administration response; reload to continue");
 			self.server_admin.needs_refresh = true;
@@ -917,6 +957,7 @@ impl State {
 					}
 				}
 			},
+			Outcome::Community(page) => self.server_admin.community = Some(page),
 			Outcome::WebhookUrl(url) => self.server_admin.webhook_url = Some(url),
 			Outcome::AuditLog(page) => self.apply_audit_log(page),
 			Outcome::Integrations(snapshot) => {
@@ -1088,6 +1129,7 @@ impl State {
 			action,
 			Some(
 				Action::LoadEmojis
+					| Action::Community(model::community_admin::Action::Load(_))
 					| Action::LoadStickers
 					| Action::Invites(model::server_invites::Action::Load)
 					| Action::Integrations(model::server_integrations::Action::Load { .. })

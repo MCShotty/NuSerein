@@ -51,6 +51,7 @@ fn edit(value: ChannelEditInput) -> Result<Edit, String> {
 			.map(overwrite)
 			.collect::<Result<_, _>>()?,
 		forum: None,
+		voice: None,
 	})
 }
 

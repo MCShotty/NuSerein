@@ -20,6 +20,7 @@ impl Dialog {
 
 #[derive(Default)]
 pub(super) struct ServerMenu {
+	pub guide_requested: Option<Id>,
 	pub settings_requested: Option<Id>,
 	pub mark_read_requested: Option<Id>,
 	pub mark_all_read_requested: bool,
@@ -30,6 +31,22 @@ pub(super) struct ServerMenu {
 }
 
 impl ServerMenu {
+	pub fn guide_item(&mut self, ui: &mut egui::Ui, state: &State, guild: Id) -> bool {
+		if state.guild(guild).is_some()
+			&& menu_row(
+				ui,
+				icons::Icon::Check,
+				"community-guide",
+				design::palette(ui).text,
+			)
+			.clicked()
+		{
+			self.guide_requested = Some(guild);
+			ui.close();
+			return true;
+		}
+		false
+	}
 	pub fn open_notifications(&mut self, state: &mut State, guild: Id) {
 		state.clear_server_action_result(guild);
 		self.dialog = Some(Dialog::Notifications(guild));
@@ -229,6 +246,7 @@ impl ServerMenu {
 						&& (state.demo || state.gateway_connected);
 					self.read_item(ui, state, guild);
 					ui.separator();
+					self.guide_item(ui, state, guild);
 					self.settings_item(ui, state, guild);
 					self.notifications_item(ui, state, guild);
 					if ui

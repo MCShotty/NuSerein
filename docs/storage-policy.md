@@ -1912,3 +1912,10 @@ server scope and permission revision reject retired results. No new local store 
 is introduced. Rule drafts and audit reasons stay in session RAM and clear on account/server
 change or explicit discard. Failed saves preserve the draft. Uncertain writes require an
 explicit reload before a further mutation; no queued automatic destructive retry exists.
+
+Community configuration and member Server Guide progress stay in bounded session RAM. Each
+active admin/member snapshot is capped at 512 KiB; an administration draft and its baseline are
+independently bounded copies. At most five member completion intents are retained, without a
+message transcript. Guide image preparation uses the existing single-slot cancellable native
+picker and never retains its source file path after preparation. Prepared PNGs are limited to
+256 KiB, and draft artwork is discarded with the settings session. None of this data is persisted.

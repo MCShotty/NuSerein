@@ -69,6 +69,10 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 		match action {
+			Action::Community(action) => self
+				.community_admin(guild, action)
+				.await
+				.map(Outcome::Community),
 			Action::AutoMod(action) => self.automod(guild, action).await.map(Outcome::AutoMod),
 			Action::Moderation(action) => self
 				.moderation(guild, action)

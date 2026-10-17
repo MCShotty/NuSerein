@@ -85,6 +85,9 @@ pub fn execute_admin(
 	let owner = state.user.as_ref().expect("fixture user");
 	let result =
 		match action {
+			Action::Community(action) => {
+				Outcome::Community(crate::community_admin_demo::execute(state, guild, action))
+			}
 			Action::AutoMod(action) => {
 				let mut page = state.server_admin.automod.clone().unwrap_or_else(|| {
 					model::automod::Snapshot {

@@ -40,6 +40,26 @@ pub fn execute(
 			Action::Load => {
 				Outcome::Details(state.channel_details(channel).cloned().unwrap_or_else(|| {
 					Edit {
+						voice: matches!(source.kind, 2 | 13).then(|| {
+							Box::new(client_core::channel_actions::VoiceEdit {
+								bitrate: 64000,
+								user_limit: 0,
+								region: None,
+								video_quality: 1,
+								regions: vec![
+									client_core::channel_actions::VoiceRegion {
+										id: "us-east".into(),
+										name: "US East".into(),
+										deprecated: false,
+									},
+									client_core::channel_actions::VoiceRegion {
+										id: "rotterdam".into(),
+										name: "Rotterdam".into(),
+										deprecated: false,
+									},
+								],
+							})
+						}),
 						name: source.name.clone(),
 						overwrites: state
 							.permissions

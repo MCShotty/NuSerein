@@ -31,7 +31,9 @@ pub mod reactions;
 pub mod read_state;
 mod replies;
 pub use replies::{HistoryNavigation, ParkedReplies, Reply, ReplyDeletions};
+pub mod community_admin;
 pub mod group_actions;
+pub mod member_guide;
 pub mod onboarding;
 pub mod resident;
 pub mod screen;
@@ -103,6 +105,12 @@ pub enum Command {
 		guild: Id,
 		request: u64,
 		edit: Option<Box<model::server_settings::Edit>>,
+	},
+	MemberGuide {
+		guild: Id,
+		user: Id,
+		request: u64,
+		action: model::member_guide::Action,
 	},
 	Onboarding {
 		guild: Id,
@@ -481,6 +489,7 @@ pub enum Event {
 	ChannelAction(channel_actions::Event),
 	ServerAdmin(server_admin::Event),
 	ServerSettings(server_settings::Event),
+	MemberGuide(member_guide::Event),
 	Onboarding(onboarding::Event),
 	JoinInvite {
 		request: u64,
@@ -732,6 +741,7 @@ pub struct State {
 	pub server_actions: server_actions::Actions,
 	pub channel_actions: channel_actions::Actions,
 	pub server_settings: server_settings::Editor,
+	pub member_guide: member_guide::View,
 	pub onboarding: onboarding::Onboarding,
 	pub server_admin: server_admin::View,
 	pub server_members_shortcuts: BTreeMap<Id, bool>,
@@ -946,6 +956,8 @@ pub struct NavStep {
 	pub command: Option<Command>,
 }
 
+// Navigation carries one bounded command; keep this short-lived result allocation-free.
+#[allow(clippy::large_enum_variant)]
 enum Apply {
 	Opened(Option<Command>),
 	AlreadyHere,
@@ -968,6 +980,7 @@ impl Default for State {
 			server_actions: server_actions::Actions::default(),
 			channel_actions: channel_actions::Actions::default(),
 			server_settings: server_settings::Editor::default(),
+			member_guide: member_guide::View::default(),
 			onboarding: onboarding::Onboarding::default(),
 			server_admin: server_admin::View::default(),
 			server_members_shortcuts: BTreeMap::new(),
@@ -2119,6 +2132,23 @@ impl State {
 			});
 			return;
 		}
+		if let Command::MemberGuide {
+			guild,
+			user,
+			request,
+			..
+		} = command
+		{
+			let _ = self.apply_member_guide(member_guide::Event {
+				guild,
+				user,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Server Guide was not queued; try again",
+				)),
+			});
+			return;
+		}
 		if let Command::Onboarding { guild, request, .. } = command {
 			let _ = self.apply_onboarding(onboarding::Event::Loaded {
 				guild,
@@ -2734,6 +2764,8 @@ impl State {
 		self.invalidate_resident_event(&envelope.event);
 		self.observe_thread_starter_event(&envelope.event);
 		self.observe_channel_action(&envelope.event);
+		self.observe_community_event(&envelope.event);
+		self.observe_member_guide_event(&envelope.event);
 		if let Event::ChannelCreated(channel) = &envelope.event {
 			self.observe_dm_reopened(channel.id);
 			self.observe_group_change(channel.id, true);
@@ -2969,6 +3001,7 @@ impl State {
 			Event::ServerAction(event) => self.apply_server_action(event),
 			Event::ChannelAction(event) => self.apply_channel_action(event),
 			Event::ServerSettings(event) => self.apply_server_settings(event),
+			Event::MemberGuide(event) => self.apply_member_guide(event),
 			Event::Onboarding(event) => self.apply_onboarding(event),
 			Event::ServerAdmin(event) => self.apply_server_admin(event),
 			Event::GroupAction(event) => self.apply_group_action(event),
@@ -3510,6 +3543,7 @@ impl State {
 				self.cancel_channel_action();
 				self.cancel_server_settings();
 				self.cancel_onboarding();
+				self.cancel_member_guide();
 				self.cancel_server_admin();
 				self.cancel_group_action();
 				self.cancel_invite_join();
@@ -3519,6 +3553,7 @@ impl State {
 				self.channel_actions.reset();
 				self.server_settings.reset();
 				self.reset_onboarding();
+				self.member_guide.reset();
 				self.server_admin.reset();
 				self.server_members_shortcuts.clear();
 				self.group_actions.reset();
@@ -3954,6 +3989,7 @@ impl State {
 				self.cancel_channel_action();
 				self.cancel_server_settings();
 				self.cancel_onboarding();
+				self.cancel_member_guide();
 				self.cancel_server_admin();
 				self.cancel_group_action();
 				self.cancel_invite_join();
@@ -3986,6 +4022,7 @@ impl State {
 				self.cancel_channel_action();
 				self.cancel_server_settings();
 				self.cancel_onboarding();
+				self.cancel_member_guide();
 				self.cancel_server_admin();
 				self.cancel_group_action();
 				self.cancel_invite_join();
@@ -4095,6 +4132,9 @@ impl State {
 		}
 		if let Some(guild) = self.server_admin.guild {
 			self.prune_integration_access(guild);
+			if !self.can_open_community_settings(guild) {
+				self.server_admin.community = None;
+			}
 			if !self.can_open_audit_log_settings(guild) {
 				self.server_admin.revoke_audit_access();
 			}
@@ -4120,6 +4160,7 @@ impl State {
 				}
 			}
 		}
+		self.reconcile_member_guide_access();
 		self.enforce_resident_budget();
 	}
 	fn invalidate_members(&mut self) {
@@ -4222,6 +4263,7 @@ impl State {
 			self.cancel_channel_action();
 			self.cancel_server_settings();
 			self.cancel_onboarding();
+			self.cancel_member_guide();
 			self.cancel_server_admin();
 			self.cancel_group_action();
 			self.cancel_invite_join();
@@ -4354,6 +4396,10 @@ impl Event {
 						size_of::<model::server_settings::Settings>() + value.heap_bytes()
 					})
 				}
+				Self::MemberGuide(event) => event
+					.result
+					.as_ref()
+					.map_or(0, model::member_guide::Snapshot::bytes),
 				Self::Onboarding(event) => event.bytes(),
 				Self::ServerAdmin(event) => event
 					.result

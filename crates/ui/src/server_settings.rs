@@ -22,10 +22,17 @@ enum Page {
 	AuditLog,
 	AutoMod,
 	Moderation,
+	Onboarding,
+	ChannelsRoles,
+	Screening,
+	Guide,
 }
 impl Page {
 	fn allowed(self, state: &State, guild: Id) -> bool {
 		match self {
+			Self::Onboarding | Self::ChannelsRoles | Self::Screening | Self::Guide => {
+				state.can_open_community_settings(guild)
+			}
 			Self::AutoMod => state.can_manage_guild(guild),
 			Self::Moderation => state.can_open_moderation(guild),
 			Self::Profile | Self::Engagement | Self::Safety => state.can_manage_guild(guild),
@@ -40,6 +47,10 @@ impl Page {
 	}
 	fn label(self) -> &'static str {
 		match self {
+			Self::Onboarding => "community-onboarding",
+			Self::ChannelsRoles => "community-channels-roles",
+			Self::Screening => "community-screening",
+			Self::Guide => "community-guide",
 			Self::AutoMod => "automod-title",
 			Self::Moderation => "moderation-title",
 			Self::Profile => "server-settings-page-profile",
@@ -58,6 +69,7 @@ impl Page {
 
 #[derive(Default)]
 pub(super) struct Editor {
+	community: crate::community_admin::CommunityUi,
 	automod: crate::server_automod::AutoModUi,
 	moderation: crate::server_moderation::ModerationUi,
 	scope: Option<(u64, Id)>,
@@ -86,6 +98,30 @@ pub(super) struct Editor {
 }
 
 impl MessagingUi {
+	pub fn take_community_artwork_request(&mut self) -> Option<(u64, Id, Option<Id>, bool, u64)> {
+		let (generation, guild) = self.server_settings.scope?;
+		let (channel, resource, request) = self.server_settings.community.take_artwork_request()?;
+		Some((generation, guild, channel, resource, request))
+	}
+	pub fn community_artwork_active(&self, scope: (u64, Id, Option<Id>, bool, u64)) -> bool {
+		self.server_settings.scope == Some((scope.0, scope.1))
+			&& self
+				.server_settings
+				.community
+				.artwork_active((scope.2, scope.3, scope.4))
+	}
+	pub fn accept_community_artwork(
+		&mut self,
+		ctx: &egui::Context,
+		scope: (u64, Id, Option<Id>, bool, u64),
+		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
+	) {
+		if self.server_settings.scope == Some((scope.0, scope.1)) {
+			self.server_settings
+				.community
+				.accept_artwork(ctx, (scope.2, scope.3, scope.4), result);
+		}
+	}
 	pub fn preview_server_moderation(
 		&mut self,
 		state: &mut State,
@@ -196,7 +232,15 @@ impl MessagingUi {
 		}
 		let webhooks = page == "webhooks";
 		let expand_audit = page == "audit-log-expanded";
-		let page = if matches!(page, "audit-log" | "audit-log-expanded") {
+		let page = if page == "onboarding" {
+			Page::Onboarding
+		} else if page == "channels-roles" {
+			Page::ChannelsRoles
+		} else if page == "screening" {
+			Page::Screening
+		} else if page == "guide" {
+			Page::Guide
+		} else if matches!(page, "audit-log" | "audit-log-expanded") {
 			Page::AuditLog
 		} else if matches!(page, "integrations" | "webhooks") {
 			Page::Integrations
@@ -218,7 +262,21 @@ impl MessagingUi {
 			page,
 			..Editor::default()
 		};
-		if page == Page::AuditLog {
+		if matches!(
+			page,
+			Page::Onboarding | Page::ChannelsRoles | Page::Screening | Page::Guide
+		) {
+			state.request_server_admin(
+				guild,
+				model::server_admin::Action::Community(model::community_admin::Action::Load(
+					match page {
+						Page::Screening => model::community_admin::Section::Screening,
+						Page::Guide => model::community_admin::Section::Guide,
+						_ => model::community_admin::Section::Onboarding,
+					},
+				)),
+			)
+		} else if page == Page::AuditLog {
 			self.server_settings.audit_log.preview(expand_audit);
 			self.server_settings.audit_log.load(state, guild)
 		} else if page == Page::Integrations {
@@ -287,6 +345,7 @@ impl MessagingUi {
 			&& (self.server_settings.dirty()
 				|| self.server_settings.submitted
 				|| self.server_settings.icon_pending)
+			|| self.server_settings.community.has_changes()
 			|| self.server_settings.automod.has_changes()
 			|| self.server_settings.moderation.has_changes()
 			|| self.server_settings.admin.has_changes()
@@ -385,7 +444,8 @@ impl Editor {
 		if !self.is_open() {
 			return true;
 		}
-		if self.automod.has_changes()
+		if self.community.has_changes()
+			|| self.automod.has_changes()
 			|| self.moderation.has_changes()
 			|| self.integrations.has_changes()
 			|| self.roles.has_changes()
@@ -473,6 +533,7 @@ impl Editor {
 			} else {
 				Page::AuditLog
 			};
+			self.community = crate::community_admin::CommunityUi::default();
 			self.automod = crate::server_automod::AutoModUi::default();
 			self.moderation = crate::server_moderation::ModerationUi::default();
 			self.admin = crate::server_admin::Admin::default();
@@ -585,6 +646,7 @@ impl Editor {
 		if !invite_overlay && close {
 			if self.dirty()
 				|| state.server_settings.saving
+				|| self.community.has_changes()
 				|| self.automod.has_changes()
 				|| self.moderation.has_changes()
 				|| self.admin.has_changes()
@@ -597,6 +659,7 @@ impl Editor {
 				self.discard = true;
 			} else {
 				self.scope = None;
+				self.community = crate::community_admin::CommunityUi::default();
 				self.automod = crate::server_automod::AutoModUi::default();
 				self.moderation = crate::server_moderation::ModerationUi::default();
 				self.roles = crate::server_roles::RolesUi::default();
@@ -651,10 +714,14 @@ impl Editor {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
-		const PAGES: [Page; 12] = [
+		const PAGES: [Page; 16] = [
 			Page::Profile,
 			Page::Engagement,
 			Page::Safety,
+			Page::Onboarding,
+			Page::ChannelsRoles,
+			Page::Screening,
+			Page::Guide,
 			Page::Emoji,
 			Page::Stickers,
 			Page::Members,
@@ -899,6 +966,24 @@ impl Editor {
 		commands: &mut Vec<Command>,
 	) {
 		match self.page {
+			Page::Onboarding | Page::ChannelsRoles | Page::Screening | Page::Guide => {
+				self.community.show(
+					ui,
+					state,
+					guild,
+					(
+						match self.page {
+							Page::Screening => model::community_admin::Section::Screening,
+							Page::Guide => model::community_admin::Section::Guide,
+							_ => model::community_admin::Section::Onboarding,
+						},
+						self.page == Page::ChannelsRoles,
+					),
+					avatars,
+					commands,
+				);
+				return;
+			}
 			Page::AutoMod => {
 				self.automod.show(ui, state, guild, commands);
 				return;
