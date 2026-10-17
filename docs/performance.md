@@ -1436,3 +1436,43 @@ These debug preview pictures do not establish release CPU/RSS or frame latency.
 
 A submitted command's later HTTP failure still requires form re-entry. Only local
 validation failures preserve that form; this limitation remains in the inventory.
+
+
+### Cross-platform command replay at `564d8dd1`
+
+[Run 39056323878](https://github.com/MCShotty/Serein/actions/runs/39056323878)
+compares nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), fork `f9e39f7`
+and command code `564d8dd1`. The later field-style correction does not change
+this core workload. Five rotated measured runs follow one warmup per build;
+Rust 1.98.1, opt-level 3, thin LTO, one codegen unit and panic=abort match.
+Linux/Windows pin one allowed logical CPU; macOS uses its platform scheduler.
+Raw CI JSON records each worker's OS/CPU, full revisions, settings and ranges.
+Values are milliseconds; each entry is median (minimum–maximum).
+
+| Platform / workload | Nightly | Previous fork | Commands | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 80.517 (79.993–80.916) | 79.284 (78.504–80.101) | 79.093 (79.018–82.000) | -1.8% / -0.2% |
+| Linux-X64 / wide channels | 226.205 (221.134–229.776) | 230.142 (224.395–234.305) | 226.427 (221.166–231.768) | +0.1% / -1.6% |
+| Windows-X64 / reducer | 78.035 (77.959–101.676) | 79.240 (79.080–106.378) | 78.814 (78.539–79.393) | +1.0% / -0.5% |
+| Windows-X64 / wide channels | 48.810 (48.105–49.212) | 69.543 (68.001–74.627) | 68.152 (67.905–68.479) | +39.6% / -2.0% |
+| macOS-ARM64 / reducer | 55.292 (55.175–55.410) | 55.624 (55.409–56.302) | 55.943 (55.716–56.636) | +1.2% / +0.6% |
+| macOS-ARM64 / wide channels | 83.693 (83.187–84.001) | 83.590 (83.116–84.013) | 82.957 (82.794–83.901) | -0.9% / -0.8% |
+
+The Windows wide-channel result is 39.6% slower than nightly; the previous fork
+is already slower. Its cause is unisolated. These are core reducer measurements,
+not autocomplete, UI latency, media throughput or a causal improvement claim.
+
+
+### Native package snapshot at `564d8dd1`
+
+Standard voice-inclusive native CI packages, compared with published nightly
+`3a4bf8d` and previous fork `f9e39f7`. Installed size sums regular-file bytes;
+distribution normalizes those files with Python 3.12 ZIP DEFLATE level 6 and
+fixed metadata, excluding outer CI archives and installers. One artifact per
+revision/platform; MiB = 1,048,576 bytes. Other native platforms remain pending.
+
+| Platform / metric | Nightly | Previous fork | This code | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / executable | 83.682 | 87.900 | 88.037 | +0.137 (+0.16%) |
+| Linux-X64 / installed payload | 88.006 | 130.657 | 130.795 | +0.137 (+0.11%) |
+| Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.614 | +0.061 (+0.07%) |
