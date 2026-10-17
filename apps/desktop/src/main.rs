@@ -3174,11 +3174,25 @@ impl Desktop {
 		{
 			connection.recover_send();
 		}
-		if matches!(&command, Command::Interaction(client_core::interactions::Request {data:client_core::interactions::Data::Modal{components,..},..}) if interaction_uploads::has_files(components))
+		if let Command::Autocomplete(request) = &command
+			&& !self.state.autocomplete_dispatch_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+
+		if let Command::Interaction(request) = &command
+			&& !self.state.application_command_dispatch_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if matches!(&command, Command::Interaction(request) if interaction_uploads::request_has_files(request))
 		{
 			self.interaction_upload(command);
 			return;
 		}
+
 		if let Command::ServerAdmin {
 			guild,
 			request,
@@ -3388,11 +3402,13 @@ impl Desktop {
 					channel,
 					guild,
 					request,
+					..
 				} => Event::ApplicationCommands {
 					channel,
 					request,
 					result: Ok(slash_demo::catalog(guild)),
 				},
+				Command::Autocomplete(request) => slash_demo::autocomplete(request),
 				Command::Interaction(request) => {
 					if matches!(
 						&request.data,
@@ -3669,6 +3685,7 @@ impl Desktop {
 				Command::Voice(_)
 				| Command::CancelProfile
 				| Command::CancelSearch
+				| Command::CancelAutocomplete
 				| Command::Prefetch(_) => return,
 				Command::ThreadStarter {
 					thread,
@@ -5259,11 +5276,11 @@ impl eframe::App for Desktop {
 			// Installing needs a real exit, so this close must not stop at the tray.
 			self.tray_window.quit(ctx);
 		}
+		self.poll_interaction_files(ctx);
 		self.state.expire_interaction(std::time::Instant::now());
 		if self.state.interactions.busy() {
 			ctx.request_repaint_after(Duration::from_millis(250));
 		}
-		self.poll_interaction_files(ctx);
 		self.state.expire_verification();
 		if self.state.verification().is_some() {
 			ctx.request_repaint_after(Duration::from_secs(1));

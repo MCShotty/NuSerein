@@ -141,6 +141,7 @@ pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 	};
 	if let Some(request) = &state.member_search[0].request
 		&& request.channel == channel
+		&& state.channel(channel).and_then(|c| c.guild) == Some(request.guild)
 		&& state.can_view(channel)
 	{
 		for member in &state.member_search[0].rows {
@@ -165,6 +166,15 @@ pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 				model::MemberSlot::Person(m) => Some(m),
 				_ => None,
 			}) {
+			add(&member.user);
+		}
+	}
+	if let Some(request) = &state.member_search[0].request
+		&& request.channel == channel
+		&& state.channel(channel).and_then(|c| c.guild) == Some(request.guild)
+		&& state.can_view(channel)
+	{
+		for member in &state.member_search[0].retained {
 			add(&member.user);
 		}
 	}
@@ -216,20 +226,7 @@ pub struct MentionSource<'a> {
 }
 
 fn member(state: &State, channel: Id, id: Id) -> Option<&model::Member> {
-	state
-		.members
-		.as_ref()
-		.filter(|list| list.channel == channel)
-		.and_then(|list| {
-			list.slots
-				.iter()
-				.flatten()
-				.filter_map(|slot| match slot {
-					model::MemberSlot::Person(m) => Some(m),
-					_ => None,
-				})
-				.find(|member| member.user.id == id)
-		})
+	state.display_member(channel, id)
 }
 
 pub fn find_user<'a>(
@@ -1053,6 +1050,117 @@ fn row(
 mod tests {
 	use super::*;
 	use model::Channel;
+
+	#[test]
+	fn searched_nicknames_label_suggestions_and_insert_user_ids() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let client_core::Command::MemberSearch(request) =
+			state.search_members(channel, "Shared", 0).unwrap()
+		else {
+			panic!("synthetic member search");
+		};
+		let rows: Vec<_> = [90001, 90002]
+			.into_iter()
+			.map(|id| model::Member {
+				user: user(id, &format!("Account{id}")),
+				roles: vec![],
+				nick: Some("Shared nickname".into()),
+				status: None,
+				custom_status: None,
+				activities: vec![],
+				clients: Default::default(),
+			})
+			.collect();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberSearch {
+				request,
+				result: Ok(rows),
+			},
+		});
+		let mut menu = Menu::default();
+		menu.refresh(
+			&state,
+			channel,
+			"@Shared",
+			Some(7),
+			&known_users(&state, channel),
+		);
+		assert_eq!(menu.candidates.len(), 2);
+		for (index, candidate) in menu.candidates.iter().enumerate() {
+			assert!(matches!(candidate, Candidate::User { name, .. } if name == "Shared nickname"));
+			let mut draft = "@Shared".to_owned();
+			insert(&mut draft, menu.pick(index).unwrap(), false).unwrap();
+			assert_eq!(draft, format!("<@{}> ", candidate.id()));
+		}
+		let target = Id(90001);
+		let label =
+			|state: &State| mention_label(target, &[], Some(&MentionSource { state, channel }));
+		assert_eq!(label(&state), "@Shared nickname");
+		state.member_search[0].rows[0].nick = Some("Renamed".into());
+		assert_eq!(label(&state), "@Renamed");
+		let _ = state.search_members(channel, "Different", 0).unwrap();
+		assert_eq!(
+			label(&state),
+			"@Renamed",
+			"an inserted mention keeps its label while another search runs"
+		);
+		state.member_search[0].rows = std::mem::take(&mut state.member_search[0].retained);
+		state.member_search[0].rows[0].nick = None;
+		assert_eq!(label(&state), "@Account90001");
+		state.member_search[0].request.as_mut().unwrap().guild = Id(99999);
+		assert!(state.display_member(channel, target).is_none());
+		state.member_search[0].request.as_mut().unwrap().guild =
+			state.channel(channel).unwrap().guild.unwrap();
+		state.member_search[0].request.as_mut().unwrap().channel = Id(99999);
+		assert!(state.display_member(channel, target).is_none());
+	}
+
+	#[test]
+	fn author_lookup_nickname_is_used_without_loading_the_member_sidebar() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let client_core::Command::MemberSearch(request) =
+			state.request_author_members(&[Id(90003)]).unwrap()
+		else {
+			panic!("synthetic author lookup");
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberSearch {
+				request,
+				result: Ok(vec![model::Member {
+					user: user(90003, "Account name"),
+					roles: vec![],
+					nick: Some("Server nickname".into()),
+					status: None,
+					custom_status: None,
+					activities: vec![],
+					clients: Default::default(),
+				}]),
+			},
+		});
+		assert_eq!(
+			mention_label(
+				Id(90003),
+				&[],
+				Some(&MentionSource {
+					state: &state,
+					channel
+				})
+			),
+			"@Server nickname"
+		);
+		state.member_search = Default::default();
+		assert!(state.display_member(channel, Id(90003)).is_none());
+	}
 
 	#[test]
 	fn game_empty_search_keeps_editor_keys_unless_retrying() {

@@ -883,14 +883,27 @@ impl DiscordApi {
 	}
 	pub async fn execute(&self, command: Command) -> Event {
 		match command {
+			Command::CancelAutocomplete => Event::Autocomplete(
+				client_core::application_commands::CompletionEvent::Submitted {
+					nonce: String::new(),
+					result: Ok(()),
+				},
+			),
+			Command::Autocomplete(request) => Event::Autocomplete(
+				client_core::application_commands::CompletionEvent::Submitted {
+					result: self.interaction(&request, None).await,
+					nonce: request.nonce,
+				},
+			),
 			Command::ApplicationCommands {
 				channel,
 				guild,
+				context,
 				request,
 			} => Event::ApplicationCommands {
 				channel,
 				request,
-				result: self.application_commands(channel, guild).await,
+				result: self.application_commands(channel, guild, context).await,
 			},
 			Command::Interaction(request) => {
 				Event::Interaction(client_core::interactions::Event::Submitted {

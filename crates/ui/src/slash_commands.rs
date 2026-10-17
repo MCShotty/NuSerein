@@ -41,8 +41,19 @@ pub(super) struct Active {
 	name: String,
 }
 
+#[derive(Clone, PartialEq)]
+pub(super) struct CompletionInput {
+	pub id: Id,
+	pub path: Vec<String>,
+	pub values: Vec<(String, String)>,
+	pub focused: String,
+}
+
 #[derive(Default)]
 pub(super) struct Menu {
+	pub completion_request: Option<CompletionInput>,
+	completion_wait: Option<(std::time::Instant, CompletionInput)>,
+	last_completion: Option<CompletionInput>,
 	channel: Option<Id>,
 	generation: u64,
 	query: Option<String>,
@@ -62,6 +73,11 @@ pub(super) struct Menu {
 	pub error: Option<&'static str>,
 	pub run: bool,
 	pub retry: bool,
+	pub file_request: Option<String>,
+	file_remove: Option<String>,
+	files: Vec<(String, usize, String)>,
+	files_busy: bool,
+	submitted: Option<String>,
 }
 
 impl Menu {
@@ -70,6 +86,9 @@ impl Menu {
 			*self = Self::default();
 		}
 		self.enabled = false;
+		self.completion_request = None;
+		self.completion_wait = None;
+		self.last_completion = None;
 		self.rect = None;
 		self.argument_rect = None;
 		self.run = false;
@@ -174,7 +193,7 @@ impl Menu {
 			}
 		}
 		for command in &state.application_commands.commands {
-			if !state.can_use_application_command(channel, command) {
+			if command.kind != 1 || !state.can_use_application_command(channel, command) {
 				continue;
 			}
 			self.applications.insert(command.application_id);
@@ -688,7 +707,9 @@ impl Menu {
 	}
 	pub fn can_submit(&self, state: &State, channel: Id) -> bool {
 		self.active.as_ref().is_some_and(|active| {
-			!state.interactions.busy()
+			!self.files_busy
+				&& self.submitted.is_none()
+				&& !state.interactions.busy()
 				&& state.interactions.modal.is_none()
 				&& state.application_commands_cover(channel)
 				&& !state.application_commands.loading
@@ -696,11 +717,7 @@ impl Menu {
 				&& state.application_commands.commands.iter().any(|command| {
 					command.id == active.id
 						&& state.can_use_application_command(channel, command)
-						&& command.options_at(&active.path).is_ok_and(|options| {
-							!options
-								.iter()
-								.any(|option| option.kind == 11 && option.required)
-						})
+						&& command.options_at(&active.path).is_ok()
 				})
 		})
 	}
@@ -722,8 +739,9 @@ impl Menu {
 			.commands
 			.iter()
 			.find(|command| command.id == active.id);
-		let allowed =
-			command.is_some_and(|command| state.can_use_application_command(channel, command));
+		let allowed = self.submitted.is_none()
+			&& !state.interactions.busy()
+			&& command.is_some_and(|command| state.can_use_application_command(channel, command));
 		let options = command.and_then(|command| command.options_at(&active.path).ok());
 		if allowed && let Some(options) = options {
 			active
@@ -733,6 +751,8 @@ impl Menu {
 		let colors = design::palette(ui);
 		let width = ui.available_width();
 		let focus_first = allowed && std::mem::take(&mut self.focus_argument);
+		let mut completion_current =
+			state.autocomplete_matches_form(channel, active.id, &active.path, &active.values);
 		let mut back = false;
 		let response = egui::ScrollArea::vertical()
 			.id_salt(("inline-arguments", channel, active.id))
@@ -776,7 +796,7 @@ impl Menu {
 						}
 						self.run |= name_submit;
 					}
-					back = name.clicked() && !name_submit;
+					back = name.clicked() && !name_submit && self.submitted.is_none();
 					name.widget_info(|| {
 						egui::WidgetInfo::labeled(
 							egui::Role::Button,
@@ -801,7 +821,9 @@ impl Menu {
 						ui.add(
 							egui::Label::new(
 								egui::RichText::new(crate::i18n::translate_if_key(
-									if command.is_some() {
+									if self.submitted.is_some() {
+										"slash-commands-sending"
+									} else if command.is_some() {
 										NO_PERMISSION
 									} else {
 										"slash-commands-composer-command-unavailable-your-arguments-are-kept"
@@ -857,6 +879,18 @@ impl Menu {
 								) + 3
 						} else if matches!(option.kind, 6..=9) {
 							value.chars().count().max("ID or choose…".chars().count()) + 3
+						} else if option.kind == 11 {
+							self.files
+								.iter()
+								.find(|(name, _, _)| name == &option.name)
+								.map_or_else(
+									|| {
+										crate::i18n::translate("slash-commands-choose-file")
+											.chars()
+											.count()
+									},
+									|(_, _, name)| name.chars().count() + 4,
+								)
 						} else {
 							value.chars().count()
 						};
@@ -936,16 +970,101 @@ impl Menu {
 								ui.add_space(18.0);
 								if had_focus
 									&& option.choices.is_empty()
-									&& option.kind != 5 && inline_submit(ui, send_chord)
+									&& !matches!(option.kind, 5 | 11)
+									&& inline_submit(ui, send_chord)
 								{
 									self.run = true;
 								}
-								let response = argument(ui, option, value, state, channel, id);
+								let response = if option.kind == 11 {
+									ui.horizontal(|ui| {
+										let selected = self
+											.files
+											.iter()
+											.find(|(name, _, _)| name == &option.name);
+										let button_width = (ui.available_width()
+											- if selected.is_some() { 24.0 } else { 0.0 })
+										.max(24.0);
+										let response = ui
+											.add_enabled_ui(!self.files_busy, |ui| {
+												ui.add_sized(
+													egui::vec2(button_width, CHIP),
+													egui::Button::new(selected.map_or_else(
+														|| {
+															crate::i18n::translate(
+																"slash-commands-choose-file",
+															)
+														},
+														|(_, _, name)| name.clone(),
+													))
+													.truncate(),
+												)
+											})
+											.inner;
+										response.widget_info(|| {
+											egui::WidgetInfo::labeled(
+												egui::Role::Button,
+												!self.files_busy,
+												format!(
+													"{}: {}",
+													crate::i18n::translate(
+														"slash-commands-choose-file"
+													),
+													option.name
+												),
+											)
+										});
+										if response.clicked() {
+											self.file_request = Some(option.name.clone());
+										}
+										if selected.is_some() {
+											let remove = ui
+												.add_enabled(
+													!self.files_busy,
+													egui::Button::new("×"),
+												)
+												.on_hover_text(crate::i18n::translate(
+													"slash-commands-remove-file",
+												));
+											remove.widget_info(|| {
+												egui::WidgetInfo::labeled(
+													egui::Role::Button,
+													!self.files_busy,
+													format!(
+														"{}: {}",
+														crate::i18n::translate(
+															"slash-commands-remove-file"
+														),
+														option.name
+													),
+												)
+											});
+											if remove.clicked() {
+												self.file_remove = Some(option.name.clone());
+											}
+										}
+										response
+									})
+									.inner
+								} else {
+									argument(
+										ui,
+										option,
+										value,
+										state,
+										(channel, active.id, &active.path, completion_current),
+										id,
+									)
+								};
 								if focus_first && index == 0 {
 									response.request_focus();
 								}
 								if response.gained_focus() || (focus_first && index == 0) {
 									response.scroll_to_me(None);
+								}
+								if response.changed() {
+									completion_current = false;
+									self.last_completion = None;
+									self.completion_wait = None;
 								}
 								if response.has_focus() || response.hovered() {
 									self.focused_option = index;
@@ -956,6 +1075,48 @@ impl Menu {
 				})
 			});
 		self.argument_rect = Some(response.inner_rect);
+		let completion = self
+			.active
+			.as_ref()
+			.filter(|_| self.enabled && self.visible())
+			.and_then(|active| {
+				let command = state.application_commands.commands.iter().find(|command| {
+					command.id == active.id && state.can_use_application_command(channel, command)
+				})?;
+				let option = command
+					.options_at(&active.path)
+					.ok()?
+					.get(self.focused_option)
+					.filter(|option| option.autocomplete)?;
+				Some(CompletionInput {
+					id: active.id,
+					path: active.path.clone(),
+					values: active.values.clone(),
+					focused: option.name.clone(),
+				})
+			});
+		if let Some(input) = completion.filter(|input| self.last_completion.as_ref() != Some(input))
+		{
+			if self
+				.completion_wait
+				.as_ref()
+				.is_none_or(|(_, previous)| previous != &input)
+			{
+				self.completion_wait = Some((std::time::Instant::now(), input.clone()));
+			}
+			if let Some((changed, _)) = &self.completion_wait {
+				let delay = std::time::Duration::from_millis(300);
+				if changed.elapsed() >= delay {
+					self.completion_request = Some(input.clone());
+					self.last_completion = Some(input);
+					self.completion_wait = None;
+				} else {
+					ui.ctx()
+						.request_repaint_after(delay.saturating_sub(changed.elapsed()));
+				}
+			}
+		}
+
 		if back {
 			self.active = None;
 			self.error = None;
@@ -1000,6 +1161,7 @@ impl Menu {
 				.and_then(|(_, value)| option.problem(value))
 		});
 		let error = error.filter(|_| problem.is_none());
+		let file_help = crate::i18n::translate("slash-commands-file-help");
 		let (detail, color) = if let Some(problem) = problem.as_deref() {
 			(problem, colors.danger)
 		} else if let Some(error) = error {
@@ -1007,10 +1169,7 @@ impl Menu {
 		} else if state.interactions.busy() {
 			("Waiting for the application…", colors.muted)
 		} else if option.is_some_and(|option| option.kind == 11) {
-			(
-				"Attachment arguments are not supported yet.",
-				colors.warning,
-			)
+			(file_help.as_str(), colors.muted)
 		} else {
 			(
 				option
@@ -1262,7 +1421,7 @@ fn argument(
 	option: &CommandOption,
 	value: &mut String,
 	state: &State,
-	channel: Id,
+	(channel, command, path, completion_current): (Id, Id, &[String], bool),
 	id: egui::Id,
 ) -> egui::Response {
 	if !option.choices.is_empty() || option.kind == 5 {
@@ -1322,7 +1481,12 @@ fn argument(
 					.show(ui, |ui| {
 						if matches!(option.kind, 6 | 9) {
 							for user in mentions::known_users(state, channel) {
-								if ui.button(format!("@{}", user.name)).clicked() {
+								let label = mentions::mention_label(
+									user.id,
+									std::slice::from_ref(&user),
+									Some(&mentions::MentionSource { state, channel }),
+								);
+								if ui.button(label).clicked() {
 									*value = user.id.to_string();
 									ui.close();
 								}
@@ -1362,16 +1526,51 @@ fn argument(
 			response
 		})
 		.inner
-	} else if option.kind == 11 {
-		ui.add(
-			egui::Label::new(crate::i18n::translate(
-				"slash-commands-argument-unavailable",
-			))
-			.truncate(),
-		)
-		.on_hover_text(crate::i18n::translate(
-			"slash-commands-argument-attachment-arguments-are-not-supported-yet",
-		))
+	} else if option.autocomplete {
+		ui.horizontal(|ui| {
+			let mut response = ui.add(
+				egui::TextEdit::singleline(value)
+					.align(egui::Align2::LEFT_CENTER)
+					.id(id)
+					.frame(egui::Frame::NONE)
+					.font(egui::FontId::proportional(14.0))
+					.text_color(design::palette(ui).text_strong)
+					.char_limit(usize::from(option.max_length.unwrap_or(6000)).min(6000))
+					.desired_width((ui.available_width() - 25.0).max(24.0)),
+			);
+			let suggestions = completion_current
+				.then(|| state.autocomplete_view(channel, command, path, &option.name, value))
+				.flatten();
+			ui.menu_button("▾", |ui| {
+				if let Some(view) = suggestions {
+					if view.loading {
+						ui.spinner();
+					}
+					if let Some(error) = view.error {
+						ui.weak(error);
+					}
+					for choice in &view.choices {
+						if ui.button(&choice.name).clicked() {
+							*value = value_text(&choice.value);
+							response.mark_changed();
+							ui.close();
+						}
+					}
+					if !view.loading
+						&& ui
+							.button(crate::i18n::translate("application-menu-retry-suggestions"))
+							.clicked()
+					{
+						response.mark_changed();
+						ui.close();
+					}
+				} else {
+					ui.weak(crate::i18n::translate("application-menu-type-suggestions"));
+				}
+			});
+			response
+		})
+		.inner
 	} else {
 		ui.add(
 			egui::TextEdit::singleline(value)
@@ -1387,6 +1586,78 @@ fn argument(
 }
 
 impl crate::MessagingUi {
+	pub fn take_command_file_remove(&mut self) -> Option<String> {
+		self.slash_commands.file_remove.take()
+	}
+	pub fn command_file_scope(&self, state: &State) -> Option<(Id, Id, Vec<String>)> {
+		let channel = state.selected?;
+		if self.slash_commands.channel != Some(channel)
+			|| self.slash_commands.generation != state.generation
+		{
+			return None;
+		}
+		let active = self.slash_commands.active.as_ref()?;
+		let definition = state
+			.application_commands
+			.commands
+			.iter()
+			.find(|command| command.id == active.id)?;
+		Some((active.id, definition.version, active.path.clone()))
+	}
+	pub fn set_command_files(&mut self, files: Vec<(String, usize, String)>, busy: bool) {
+		let menu = &mut self.slash_commands;
+		if let Some(active) = &mut menu.active {
+			active
+				.values
+				.retain(|(name, _)| !menu.files.iter().any(|(field, _, _)| field == name));
+			for (name, index, _) in files.iter().take(10) {
+				active.values.retain(|(field, _)| field != name);
+				active.values.push((name.clone(), index.to_string()));
+			}
+		}
+		menu.files = files.into_iter().take(10).collect();
+		menu.files_busy = busy;
+	}
+	pub(crate) fn reconcile_submitted_command(&mut self, state: &mut State) {
+		if self.slash_commands.generation != state.generation
+			|| self.slash_commands.channel != state.selected
+		{
+			return;
+		}
+		let Some(nonce) = self.slash_commands.submitted.as_deref() else {
+			return;
+		};
+		let result = match state.interactions.submission_result(nonce) {
+			Some(result) => result,
+			None if state
+				.interactions
+				.pending
+				.as_ref()
+				.is_some_and(|p| p.nonce == nonce) =>
+			{
+				return;
+			}
+			None => Err(client_core::auth::Failure::Ambiguous),
+		};
+		let channel = self.slash_commands.channel;
+		self.slash_commands.submitted = None;
+		match result {
+			Ok(()) => {
+				if let Some(channel) = channel {
+					self.clear_draft(state, channel);
+				}
+				self.slash_commands = Menu {
+					channel,
+					generation: state.generation,
+					..Default::default()
+				};
+			}
+			Err(failure) => {
+				self.slash_commands.error = Some(failure.label());
+				self.slash_commands.focus_argument = true;
+			}
+		}
+	}
 	#[cfg(feature = "demo")]
 	pub fn preview_slash_command_options(&mut self, state: &mut State) {
 		if !state.demo || self.slash_commands.active.is_some() {
@@ -1422,6 +1693,12 @@ impl crate::MessagingUi {
 		channel: Id,
 		commands: &mut Vec<Command>,
 	) -> bool {
+		if self.slash_commands.active.is_some()
+			&& (self.slash_commands.submitted.is_some() || self.slash_commands.files_busy)
+		{
+			state.status = "Wait for the current command or file selection to finish";
+			return true;
+		}
 		let Some(active) = self.slash_commands.active.as_ref() else {
 			let Some(draft) = state
 				.drafts
@@ -1438,7 +1715,7 @@ impl crate::MessagingUi {
 				.application_commands
 				.commands
 				.iter()
-				.filter(|command| command.name == name)
+				.filter(|command| command.kind == 1 && command.name == name)
 				.peekable();
 			if matching.peek().is_some()
 				&& !matching.any(|command| state.can_use_application_command(channel, command))
@@ -1463,13 +1740,10 @@ impl crate::MessagingUi {
 		};
 		match state.prepare_application_command(active.id, &active.path, &active.values) {
 			Ok(command) => {
+				if let Command::Interaction(request) = &command {
+					self.slash_commands.submitted = Some(request.nonce.clone());
+				}
 				commands.push(command);
-				self.clear_draft(state, channel);
-				self.slash_commands = Menu {
-					channel: Some(channel),
-					generation: state.generation,
-					..Default::default()
-				};
 			}
 			Err(error) => {
 				self.slash_commands.error = Some(error);
@@ -1484,6 +1758,131 @@ impl crate::MessagingUi {
 mod tests {
 	use super::*;
 	#[test]
+	fn command_files_reindex_without_losing_arguments_and_keyboard_opens_the_picker() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let mut permissions = test_support::permission_snapshot(&state);
+		for guild in &mut permissions.guilds {
+			for role in guild.roles.iter_mut().flatten() {
+				role.bits |= model::permissions::USE_APPLICATION_COMMANDS
+					| model::permissions::SEND_MESSAGES;
+			}
+		}
+		state.permissions.replace(permissions).unwrap();
+		let definition = model::application_commands::Command {
+			id: Id(987),
+			version: Id(1),
+			application_id: Id(986),
+			guild_id: None,
+			kind: 1,
+			name: "files".into(),
+			description: "Synthetic command attachments".into(),
+			options: vec!["first", "second"]
+				.into_iter()
+				.map(|name| CommandOption {
+					kind: 11,
+					name: name.into(),
+					description: "A synthetic attachment".into(),
+					required: true,
+					..Default::default()
+				})
+				.collect(),
+			contexts: None,
+			integration_types: None,
+			application_name: "Synthetic app".into(),
+			application_icon: None,
+			default_member_permissions: None,
+			permissions: Default::default(),
+			application_permissions: Default::default(),
+		};
+		let Some(Command::ApplicationCommands { request, .. }) =
+			state.request_application_commands(channel, true)
+		else {
+			panic!("catalog request");
+		};
+		state.apply_application_commands(channel, request, Ok(vec![definition]));
+		let mut view = crate::MessagingUi {
+			slash_commands: Menu {
+				channel: Some(channel),
+				generation: state.generation,
+				enabled: true,
+				active: Some(Active {
+					id: Id(987),
+					path: vec![],
+					name: "files".into(),
+					values: vec![("text".into(), "Keep this text".into())],
+				}),
+				focus_argument: true,
+				..Default::default()
+			},
+			..Default::default()
+		};
+		assert_eq!(
+			view.command_file_scope(&state),
+			Some((Id(987), Id(1), vec![]))
+		);
+		view.set_command_files(
+			vec![
+				("first".into(), 0, "a.txt".into()),
+				("second".into(), 1, "b.txt".into()),
+			],
+			false,
+		);
+		view.set_command_files(vec![("second".into(), 0, "b.txt".into())], true);
+		let values = &view.slash_commands.active.as_ref().unwrap().values;
+		assert!(values.contains(&("text".into(), "Keep this text".into())));
+		assert!(!values.iter().any(|(name, _)| name == "first"));
+		assert!(values.contains(&("second".into(), "0".into())));
+		assert!(!view.slash_commands.can_submit(&state, channel));
+		view.set_command_files(vec![], false);
+		assert!(view.slash_commands.can_submit(&state, channel));
+
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut frame = |key: Option<egui::Key>| {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(760.0, 520.0),
+					)),
+					events: key
+						.into_iter()
+						.map(|key| egui::Event::Key {
+							key,
+							physical_key: None,
+							pressed: true,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+						})
+						.collect(),
+					..Default::default()
+				},
+				|ui| {
+					view.slash_commands.composer(
+						ui,
+						&state,
+						channel,
+						&model::Keybinds::default().send_message,
+					);
+				},
+			)
+			.drop_without_applying_deltas();
+			ctx.input_mut(|input| input.keys_down.clear());
+		};
+		frame(None);
+		frame(Some(egui::Key::Enter));
+		assert_eq!(view.slash_commands.file_request.as_deref(), Some("first"));
+		assert!(
+			!view.slash_commands.run,
+			"Enter on a file button chooses rather than submits"
+		);
+		state.generation += 1;
+		assert_eq!(view.command_file_scope(&state), None);
+		view.slash_commands.suspend(&state, channel);
+		assert!(view.slash_commands.files.is_empty());
+	}
+	#[test]
 	fn slash_picker_selects_before_sending_and_preserves_failed_fields() {
 		for (width, theme) in [(1000.0, egui::Theme::Dark), (390.0, egui::Theme::Light)] {
 			let ctx = egui::Context::default();
@@ -1496,6 +1895,7 @@ mod tests {
 			let frame = |view: &mut crate::MessagingUi,
 			             state: &mut State,
 			             key: Option<(egui::Key, bool)>| {
+				view.reconcile_submitted_command(state);
 				let mut commands = Vec::new();
 				let output = ctx.run_ui(
 					egui::RawInput {
@@ -1708,6 +2108,37 @@ mod tests {
 				"required blank input is rejected"
 			);
 			view.slash_commands.active.as_mut().unwrap().values[0].1 = "Hello".into();
+			state.application_commands.commands[0].options[0].autocomplete = true;
+			frame(&mut view, &mut state, None);
+			let (changed, _) = view.slash_commands.completion_wait.as_mut().unwrap();
+			*changed = std::time::Instant::now() - std::time::Duration::from_millis(400);
+			frame(&mut view, &mut state, None);
+			let input = view.slash_commands.completion_request.take().unwrap();
+			let Some(Command::Autocomplete(request)) =
+				state.request_autocomplete(input.id, input.path, input.values, input.focused)
+			else {
+				panic!("autocomplete request")
+			};
+			state.apply_autocomplete(
+				client_core::application_commands::CompletionEvent::Submitted {
+					nonce: request.nonce,
+					result: Err(client_core::auth::Failure::Network),
+				},
+			);
+			frame(&mut view, &mut state, None);
+			assert!(
+				view.slash_commands.completion_request.is_none(),
+				"failed suggestions do not retry automatically"
+			);
+			assert!(
+				!state.interactions.busy(),
+				"suggestions never execute commands"
+			);
+			assert_eq!(state.drafts[&channel], "/ask ");
+			assert_eq!(
+				view.slash_commands.active.as_ref().unwrap().values[0].1,
+				"Hello"
+			);
 			state.application_commands.commands[0].permissions.user = Some(false);
 			state.application_commands.request += 1;
 			frame(&mut view, &mut state, None);
@@ -1739,6 +2170,37 @@ mod tests {
 			assert!(view.slash_commands.applications.contains(&Id(986)));
 			let commands = frame(&mut view, &mut state, Some((egui::Key::Enter, false)));
 			assert!(matches!(commands.as_slice(), [Command::Interaction(_)]));
+			assert!(
+				view.slash_commands.active.is_some(),
+				"the form stays until HTTP acceptance"
+			);
+			let Command::Interaction(request) = &commands[0] else {
+				unreachable!()
+			};
+			let nonce = request.nonce.clone();
+			state
+				.apply_interaction(client_core::interactions::Event::Submitted {
+					nonce,
+					result: Err(client_core::auth::Failure::RateLimited),
+				})
+				.unwrap();
+			frame(&mut view, &mut state, None);
+			assert_eq!(
+				view.slash_commands.active.as_ref().unwrap().values[0].1,
+				"Hello"
+			);
+			assert!(!state.interactions.busy());
+			let commands = frame(&mut view, &mut state, Some((egui::Key::Enter, false)));
+			let Command::Interaction(request) = &commands[0] else {
+				panic!("explicit retry")
+			};
+			state
+				.apply_interaction(client_core::interactions::Event::Submitted {
+					nonce: request.nonce.clone(),
+					result: Ok(()),
+				})
+				.unwrap();
+			frame(&mut view, &mut state, None);
 			assert!(
 				view.slash_commands.active.is_none(),
 				"a sent command leaves no sticky status behind"

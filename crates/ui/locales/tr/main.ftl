@@ -4813,3 +4813,10 @@ search-overlays-no-matching-content-types = Eşleşen içerik türü yok
 search-overlays-history = Geçmiş
 search-overlays-clear-history = Arama geçmişini temizle
 main-sign-in-rate-limited-detail = Discord bu oturum açmayı sınırlıyor. Tekrar denemeden önce bekle. Daha erken bir deneme bekleme süresini uzatabilir.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.

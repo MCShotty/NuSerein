@@ -25,6 +25,16 @@ impl Request {
 			&& !self.nonce.is_empty()
 			&& self.nonce.bytes().all(|b| b.is_ascii_digit())
 			&& match &self.data {
+				Data::Autocomplete { query } => {
+					self.message_id.is_none()
+						&& self.message_flags == 0
+						&& self.application_id == query.command.application_id
+						&& query
+							.command
+							.guild_id
+							.is_none_or(|guild| Some(guild) == self.guild_id)
+						&& query.options().is_ok()
+				}
 				Data::ApplicationCommand { invocation } => {
 					self.message_id.is_none()
 						&& self.message_flags == 0
@@ -63,6 +73,9 @@ impl Request {
 	}
 }
 pub enum Data {
+	Autocomplete {
+		query: Box<model::application_commands::Completion>,
+	},
 	ApplicationCommand {
 		invocation: Box<model::application_commands::Invocation>,
 	},
@@ -138,8 +151,15 @@ pub struct Interactions {
 	modal_channel: Option<Id>,
 	// A success acknowledgement can precede the modal dispatch.
 	completed: Option<Pending>,
+	submission: Option<(String, Result<(), Failure>)>,
 }
 impl Interactions {
+	pub fn submission_result(&self, nonce: &str) -> Option<Result<(), Failure>> {
+		self.submission
+			.as_ref()
+			.filter(|(id, _)| id == nonce)
+			.map(|(_, result)| *result)
+	}
 	pub fn busy(&self) -> bool {
 		self.pending.is_some()
 	}
@@ -150,6 +170,7 @@ impl Interactions {
 		self.modal_channel = None;
 		self.ephemeral.clear();
 		self.error = None;
+		self.submission = None;
 	}
 }
 fn valid_values(c: &Component, values: &[String], required: bool) -> bool {
@@ -276,15 +297,7 @@ impl State {
 		};
 		self.begin_interaction(application, Some(message), flags, data)
 	}
-	pub(crate) fn begin_interaction(
-		&mut self,
-		application_id: Id,
-		message_id: Option<Id>,
-		message_flags: u64,
-		data: Data,
-	) -> Option<Command> {
-		let channel_id = self.selected?;
-		let guild_id = self.channel(channel_id)?.guild;
+	pub(crate) fn next_interaction_identity(&mut self) -> (u64, String) {
 		self.interactions.sequence = self.interactions.sequence.wrapping_add(1);
 		let request = self.interactions.sequence;
 		let nonce = crate::fingerprint::nonce(
@@ -294,6 +307,19 @@ impl State {
 				.as_millis(),
 			request,
 		);
+		(request, nonce)
+	}
+
+	pub(crate) fn begin_interaction(
+		&mut self,
+		application_id: Id,
+		message_id: Option<Id>,
+		message_flags: u64,
+		data: Data,
+	) -> Option<Command> {
+		let channel_id = self.selected?;
+		let guild_id = self.channel(channel_id)?.guild;
+		let (request, nonce) = self.next_interaction_identity();
 		self.interactions.pending = Some(Pending {
 			nonce: nonce.clone(),
 			channel: channel_id,
@@ -303,6 +329,7 @@ impl State {
 			modal: matches!(data, Data::Modal { .. }),
 		});
 		self.interactions.completed = None;
+		self.interactions.submission = None;
 		self.interactions.error = None;
 		Some(Command::Interaction(Request {
 			request,
@@ -346,7 +373,18 @@ impl State {
 	pub fn dismiss_ephemeral(&mut self, id: Id) {
 		self.interactions.ephemeral.retain(|m| m.id != id);
 	}
+	/// Upload time is separate from the application's response deadline. The host
+	/// calls this before expiry while the matching native transfer owns its slot.
+	pub fn renew_interaction_upload(&mut self, nonce: &str, now: Instant) {
+		if self.interactions_allowed()
+			&& let Some(pending) = &mut self.interactions.pending
+			&& pending.nonce == nonce
+		{
+			pending.deadline = now + Duration::from_secs(30);
+		}
+	}
 	pub fn expire_interaction(&mut self, now: Instant) {
+		self.expire_autocomplete(now);
 		if !self.interactions_allowed()
 			&& (self.interactions.busy()
 				|| self.interactions.modal.is_some()
@@ -360,7 +398,8 @@ impl State {
 			.as_ref()
 			.is_some_and(|p| now >= p.deadline)
 		{
-			self.interactions.pending = None;
+			let pending = self.interactions.pending.take().unwrap();
+			self.interactions.submission = Some((pending.nonce, Err(Failure::Ambiguous)));
 			self.interactions.error =
 				Some("No response received; check the conversation before trying again");
 		}
@@ -422,6 +461,7 @@ impl State {
 				}
 				self.interactions.pending = None;
 				self.interactions.completed = None;
+				self.interactions.submission = Some((nonce, Ok(())));
 				self.interactions.modal_channel = self.selected;
 				self.interactions.modal = Some(*modal);
 				self.interactions.error = None;
@@ -434,6 +474,7 @@ impl State {
 					.is_some_and(|p| p.nonce == nonce)
 				{
 					let p = self.interactions.pending.take().unwrap();
+					self.interactions.submission = Some((nonce, Ok(())));
 					if p.modal {
 						self.interactions.modal = None;
 						self.interactions.modal_channel = None;
@@ -450,6 +491,14 @@ impl State {
 				nonce,
 				result: Err(failure),
 			} => {
+				if self
+					.interactions
+					.pending
+					.as_ref()
+					.is_some_and(|p| p.nonce == nonce)
+				{
+					self.interactions.submission = Some((nonce.clone(), Err(failure)));
+				}
 				self.interaction_failed(&nonce, failure.label());
 				if failure.ends_session() {
 					self.fail(failure);
@@ -462,7 +511,15 @@ impl State {
 				if let Some(pending) = &mut self.interactions.pending
 					&& pending.nonce == nonce
 				{
+					self.interactions.submission = Some((nonce, Ok(())));
 					pending.deadline = Instant::now() + Duration::from_secs(30);
+				} else if self
+					.interactions
+					.completed
+					.as_ref()
+					.is_some_and(|p| p.nonce == nonce)
+				{
+					self.interactions.submission = Some((nonce, Ok(())));
 				}
 			}
 		}
@@ -477,6 +534,10 @@ impl State {
 			.is_some_and(|p| p.nonce == nonce)
 		{
 			self.interactions.pending = None;
+			if self.interactions.submission_result(nonce).is_none() {
+				self.interactions.submission =
+					Some((nonce.to_owned(), Err(Failure::ProtocolAt(error))));
+			}
 			self.interactions.error = Some(error);
 		}
 	}

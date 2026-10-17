@@ -98,6 +98,17 @@ struct Header {
 }
 
 pub fn decode(bytes: &[u8], guild: Option<Id>) -> Result<Vec<Command>, DecodeError> {
+	decode_context(bytes, guild, u8::from(guild.is_none()))
+}
+
+pub fn decode_context(
+	bytes: &[u8],
+	guild: Option<Id>,
+	context: u8,
+) -> Result<Vec<Command>, DecodeError> {
+	if context > 2 || (guild.is_some() != (context == 0)) {
+		return Err(DecodeError);
+	}
 	let index: Index = crate::decode(bytes)?;
 	let mut applications = BTreeMap::new();
 	let mut application_bytes = 0;
@@ -131,14 +142,14 @@ pub fn decode(bytes: &[u8], guild: Option<Id>) -> Result<Vec<Command>, DecodeErr
 	for raw in index.application_commands.0 {
 		let header: Header = serde_json::from_str(raw.get()).map_err(|_| DecodeError)?;
 		// Account/channel age eligibility is not represented by this client yet.
-		if header.kind != 1
+		if !(1..=3).contains(&header.kind)
 			|| header.nsfw
 			|| header.guild_id.is_some_and(|id| Some(id) != guild)
 			|| header
 				.contexts
 				.as_ref()
-				.is_some_and(|contexts| !contexts.0.contains(&u8::from(guild.is_none())))
-			|| (guild.is_none() && header.dm_permission == Some(false))
+				.is_some_and(|contexts| !contexts.0.contains(&context))
+			|| (header.contexts.is_none() && guild.is_none() && header.dm_permission == Some(false))
 		{
 			continue;
 		}
@@ -163,4 +174,81 @@ pub fn decode(bytes: &[u8], guild: Option<Id>) -> Result<Vec<Command>, DecodeErr
 	}
 	commands.shrink_to_fit();
 	Ok(commands)
+}
+
+/// Bounded, correlatable Gateway autocomplete choices. Scope/schema checks remain in core.
+pub fn autocomplete_choices(
+	bytes: &[u8],
+) -> Result<Vec<model::application_commands::Choice>, DecodeError> {
+	if bytes.len() > 32 * 1024 {
+		return Err(DecodeError);
+	}
+	#[derive(Deserialize)]
+	struct Response {
+		choices: List<model::application_commands::Choice, 25>,
+	}
+	let mut choices = crate::decode::<Response>(bytes)?.choices.0;
+	if !choices.iter().all(|choice| {
+		!choice.name.is_empty()
+			&& choice.name.chars().count() <= 100
+			&& choice.name.capacity() <= 400
+			&& match &choice.value {
+				model::application_commands::Value::String(value) => {
+					value.chars().count() <= 100 && value.capacity() <= 400
+				}
+				model::application_commands::Value::Number(value) => value.is_finite(),
+				_ => true,
+			}
+	}) {
+		return Err(DecodeError);
+	}
+	choices.shrink_to_fit();
+	Ok(choices)
+}
+
+#[cfg(test)]
+mod parity_tests {
+	use super::*;
+	#[test]
+	fn context_indexes_and_suggestions_remain_bounded() {
+		let index = serde_json::json!({"application_commands":[{"type":2,"id":"20","version":"21","application_id":"12","name":"Inspect member","contexts":[2],"integration_types":[1]},{"type":1,"id":"30","version":"31","application_id":"12","name":"bot_only","description":"Bot command","contexts":[1]}]});
+		let rows = decode_context(&serde_json::to_vec(&index).unwrap(), None, 2).unwrap();
+		assert_eq!(rows.len(), 1);
+		assert_eq!(rows[0].kind, 2);
+		assert!(rows[0].valid());
+		let mut legacy = index.clone();
+		legacy["application_commands"][0]["dm_permission"] = serde_json::json!(false);
+		assert_eq!(
+			decode_context(&serde_json::to_vec(&legacy).unwrap(), None, 2)
+				.unwrap()
+				.len(),
+			1,
+			"explicit contexts supersede the deprecated DM flag"
+		);
+		legacy["application_commands"][0]
+			.as_object_mut()
+			.unwrap()
+			.remove("contexts");
+		assert!(
+			decode_context(&serde_json::to_vec(&legacy).unwrap(), None, 2)
+				.unwrap()
+				.is_empty()
+		);
+		for count in [0, 25, 26] {
+			let data = serde_json::to_vec(
+				&serde_json::json!({"choices":vec![serde_json::json!({"name":"Two","value":2});count]}),
+			)
+			.unwrap();
+			assert_eq!(autocomplete_choices(&data).is_ok(), count <= 25);
+		}
+		assert!(
+			autocomplete_choices(
+				&serde_json::to_vec(
+					&serde_json::json!({"choices":[{"name":"x".repeat(101),"value":"example"}]})
+				)
+				.unwrap()
+			)
+			.is_err()
+		);
+	}
 }

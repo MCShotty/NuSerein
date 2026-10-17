@@ -2630,3 +2630,50 @@ the official notice in place of the withheld details, and omits Member Since and
 matching the official client. Roles, mutuals and the message field stay. The service
 withholds the hidden data itself; Serein never infers privacy from missing fields. No live
 private-profile response has been used as validation.
+
+
+## Application command parity — October 17, 2026
+
+This branch extends fork `f9e39f7`. The owner-supplied desktop reference is Discord Stable
+641004 (`c9ac31f`), host 1.0.9262 x64 (`94186`); no official client was run here.
+Native user/message context commands appear in the Apps submenu of existing context menus.
+They require a known target in the current accessible conversation, the current received
+schema, current permissions and one explicit interaction. Discovery merges the bounded
+conversation index with eligible account-installed commands from the unofficial
+`GET /users/@me/application-command-index` route, using guild/bot-DM/private contexts
+rather than treating every direct message as a bot conversation.
+
+Autocomplete uses a separate replaceable worker and nonce/deadline correlation. A partial
+form posts interaction type 4 with one focused string value, including numeric options.
+HTTP acceptance leaves suggestions pending until the matching Gateway choices event.
+Older, oversized, wrong-schema, disconnected and retired responses cannot replace the
+current choices. Input changes are debounced; requests contain only the selected form's
+bounded inputs. They never execute the command or block the ordinary interaction lifecycle.
+There are at most 25 choices; failures expose an explicit retry. Account scopes and current
+permissions retire suggestions. Command acceptance remains distinct from application response.
+
+The [official command schema](https://docs.discord.com/developers/interactions/application-commands)
+and [normal-user account interaction reference](https://docs.discord.food/interactions/application-commands)
+provide protocol evidence. Account discovery and autocomplete dispatch are unofficial;
+account entitlement and live service acceptance remain owner-controlled and unverified.
+Attachment arguments use the native file picker, one file per option and at most ten
+files / 500 MB per command. Typed attachment indexes refer to the same signed-upload
+batch sent with the command. Suggestions never upload attachments. Storage receives
+no Discord credentials, and the final interaction is submitted once.
+
+Context-menu target evidence is scoped to the active conversation. A cached author
+from another channel cannot make an unrelated Friends/notification contact eligible;
+availability is checked again before dispatch.
+
+The form stays until HTTP acceptance or a matching Gateway acknowledgement. Failed or
+timed-out submissions retain arguments and file descriptors for a deliberate retry;
+the next upload validates those descriptors again. A completed Gateway response wins
+over a later ambiguous HTTP outcome. No application command is automatically retried.
+Offline regressions cover signed staging, uncertain outcomes, stale acknowledgements,
+file reindexing and keyboard selection; they do not establish live interoperability.
+
+Mention suggestions and command user selectors prefer the guild nickname while inserting
+the real user ID. Labels resolved outside the member sidebar remain available across
+subsequent searches in the same accessible conversation, within the bounded lookup cache.
+Changing account, channel or access retires those labels; display metadata never grants
+permission to act on a member.

@@ -4925,3 +4925,10 @@ search-overlays-no-matching-content-types = 没有匹配的内容类型
 search-overlays-history = 历史记录
 search-overlays-clear-history = 清除搜索历史
 main-sign-in-rate-limited-detail = Discord 正在限制此次登录。请稍候再试。过早重试可能会延长等待时间。
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.

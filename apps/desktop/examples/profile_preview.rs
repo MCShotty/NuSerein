@@ -60,11 +60,13 @@ impl eframe::App for Preview {
 					channel,
 					guild,
 					request,
+					..
 				} => client_core::Event::ApplicationCommands {
 					channel,
 					request,
 					result: Ok(slash_demo::catalog(guild)),
 				},
+				client_core::Command::Autocomplete(request) => slash_demo::autocomplete(request),
 				client_core::Command::Interaction(request) => {
 					slash_demo::respond(&mut self.state, request);
 					continue;

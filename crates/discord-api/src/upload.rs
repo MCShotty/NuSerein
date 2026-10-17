@@ -270,14 +270,18 @@ impl DiscordApi {
 				if !request.valid()
 					|| !crate::interactions::valid_uploads(&request, sources.len())
 					|| !crate::interactions::valid_file_types(&request, &sources)
-					|| !matches!(&request.data, client_core::interactions::Data::Modal { .. })
-				{
-					progress
-						.send_replace(Status::Failed("Invalid modal upload; reselect the files"));
+					|| !matches!(
+						&request.data,
+						client_core::interactions::Data::Modal { .. }
+							| client_core::interactions::Data::ApplicationCommand { .. }
+					) {
+					progress.send_replace(Status::Failed(
+						"Invalid interaction upload; reselect the files",
+					));
 					return Event::Interaction(client_core::interactions::Event::Submitted {
 						nonce: request.nonce,
 						result: Err(Failure::ProtocolAt(
-							"Invalid modal upload; reselect the files",
+							"Invalid interaction upload; reselect the files",
 						)),
 					});
 				}
@@ -817,6 +821,64 @@ mod tests {
 		};
 		assert_eq!(nonce, "synthetic-upload");
 		failure
+	}
+
+	#[tokio::test]
+	async fn command_attachments_use_signed_uploads_and_never_repeat_uncertain_execution() {
+		use client_core::interactions::{Data, Request};
+		use model::{Id, application_commands::Command as Definition};
+		for ambiguous in [false, true] {
+			tokio::time::timeout(Duration::from_secs(10), async {
+                let fixture=Fixture::new(b"synthetic command attachment").await;
+                let source=Source::inspect(fixture.0.clone()).await.unwrap();
+                let filename=source.filename().to_owned();
+                let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let storage=TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let mut api=api();
+                api.base=format!("http://{}",listener.local_addr().unwrap());
+                api.upload_origin=Some(storage.local_addr().unwrap());
+                api.interaction_session(Some(zeroize::Zeroizing::new("synthetic-session".into()))).unwrap();
+                let upload_url=format!("http://{}/signed",storage.local_addr().unwrap());
+                let server=tokio::spawn(async move {
+                    let (mut socket,_)=listener.accept().await.unwrap();
+                    let (head,_)=request(&mut socket).await;
+                    assert!(head.starts_with("POST /channels/1/attachments "));
+                    respond(&mut socket,"200 OK",&serde_json::json!({"attachments":[{"id":0,"upload_url":upload_url,"upload_filename":"synthetic/command"}]}).to_string()).await;
+                    let (mut socket,_)=storage.accept().await.unwrap();
+                    let (head,bytes)=request(&mut socket).await;
+                    assert!(head.starts_with("PUT /signed "));
+                    assert!(!head.to_ascii_lowercase().contains("authorization"));
+                    assert!(!head.to_ascii_lowercase().contains("cookie"));
+                    assert!(!head.contains("SYNTHETIC_UPLOAD_TOKEN"));
+                    assert_eq!(bytes,b"synthetic command attachment");
+                    respond(&mut socket,"200 OK","").await;
+                    let (mut socket,_)=listener.accept().await.unwrap();
+                    let (head,bytes)=request(&mut socket).await;
+                    assert!(head.starts_with("POST /interactions "));
+                    let body:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(body["type"],2);
+                    assert_eq!(body["data"]["options"][0]["options"][0]["value"],"0");
+                    assert_eq!(body["data"]["attachments"],serde_json::json!([{"id":"0","filename":filename,"uploaded_filename":"synthetic/command"}]));
+                    if ambiguous { drop(socket); } else { respond(&mut socket,"204 No Content","").await; }
+                    assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
+                });
+                let definition:Definition=serde_json::from_value(serde_json::json!({
+                    "id":"10","version":"11","application_id":"12","name":"upload","description":"Upload",
+                    "options":[{"type":1,"name":"post","description":"Post","options":[{"type":11,"name":"file","description":"File","required":true}]}]
+                })).unwrap();
+                let invocation=definition.invocation(&["post".into()],&[("file".into(),"0".into())]).unwrap();
+                let request=Request {request:1,nonce:"1234".into(),application_id:Id(12),channel_id:Id(1),guild_id:None,message_id:None,message_flags:0,data:Data::ApplicationCommand {invocation:Box::new(invocation)}};
+                assert!(request.valid());
+                assert!(!crate::interactions::valid_uploads(&request,0));
+                assert!(crate::interactions::valid_uploads(&request,1));
+                assert!(!crate::interactions::valid_uploads(&request,2));
+                let (progress,_)=watch::channel(Status::Preparing);
+                let (_cancel,cancelled)=watch::channel(false);
+                let Event::Interaction(client_core::interactions::Event::Submitted {result,..})=api.upload_messages(Command::Interaction(request),vec![source],progress,cancelled).await else {panic!("command submission outcome")};
+                assert_eq!(result,if ambiguous {Err(Failure::Ambiguous)} else {Ok(())});
+                server.await.unwrap();
+            }).await.unwrap();
+		}
 	}
 
 	#[tokio::test]

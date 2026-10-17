@@ -4829,3 +4829,10 @@ search-overlays-no-matching-content-types = Brak pasujących typów treści
 search-overlays-history = Historia
 search-overlays-clear-history = Wyczyść historię wyszukiwania
 main-sign-in-rate-limited-detail = Discord ogranicza to logowanie. Odczekaj, zanim spróbujesz ponownie. Wcześniejsza próba może wydłużyć oczekiwanie.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.

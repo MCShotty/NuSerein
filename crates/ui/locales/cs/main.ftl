@@ -4913,3 +4913,15 @@ search-overlays-no-matching-content-types = Žádné odpovídající typy obsahu
 search-overlays-history = Historie
 search-overlays-clear-history = Vymazat historii hledání
 main-sign-in-rate-limited-detail = Discord omezuje toto přihlášení. Než to zkusíte znovu, počkejte. Dřívější pokus může čekání prodloužit.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.
+
+slash-commands-sending = Odesílání příkazu…
+slash-commands-choose-file = Vybrat soubor…
+slash-commands-remove-file = Odebrat soubor
+slash-commands-file-help = Vyberte jeden soubor pro tuto možnost.

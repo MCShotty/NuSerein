@@ -4830,3 +4830,10 @@ search-overlays-no-matching-content-types = Нет подходящих типо
 search-overlays-history = История
 search-overlays-clear-history = Очистить историю поиска
 main-sign-in-rate-limited-detail = Discord ограничивает этот вход. Подождите, прежде чем пытаться снова. Повторная попытка раньше времени может продлить ожидание.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.

@@ -1900,3 +1900,23 @@ No new capture files, media cache, driver installer or secrets are persisted.
 Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.
 
 Schema 29 adds a bounded boolean opt-in for double-click reactions, disabled for new and migrated settings. The selected Unicode preset is retained while disabled; Reset chat restores the disabled default.
+
+
+Application command autocomplete owns one partial form (at most the 256 KiB submission
+budget), one replaceable read worker and at most 25 bounded choices. It has its own nonce
+and ten-second response deadline, sharing identity generation with ordinary interactions.
+No typed form, choices or interaction response is persisted. Closing a form, account/session
+change or lost access retires the state; uncertain command submissions are never repeated
+by the suggestions path. Account-installed discovery merges into the existing 2,000-command /
+4 MiB catalog; no new unbounded per-account catalog is retained.
+
+Command attachments retain at most ten source descriptors / 500 MB total, one per option,
+in the active channel/account generation and command version/path. They reuse the bounded
+native upload/preview workers; form values contain only numeric attachment indexes.
+Failed submissions keep descriptors for an explicit retry and validate their sources again;
+accepted, replaced or retired forms release them. Files, filenames and form values are not
+persisted or logged. One matching submission outcome is retained, without an event history.
+Each of the two member-lookup slots can retain one prior label window of at most 100 members /
+128 KiB alongside its current bounded result page. Current loaded member metadata wins over
+retained labels, including nickname removal. Navigation, access/session invalidation and
+account changes clear the lookup state.

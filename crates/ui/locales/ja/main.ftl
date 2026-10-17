@@ -4810,3 +4810,10 @@ search-overlays-no-matching-content-types = 一致するコンテンツの種類
 search-overlays-history = 履歴
 search-overlays-clear-history = 検索履歴を消去
 main-sign-in-rate-limited-detail = Discord がこのサインインを制限しています。しばらく待ってから再試行してください。早すぎる再試行は待ち時間を延ばすことがあります。
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.

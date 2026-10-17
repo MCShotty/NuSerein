@@ -73,6 +73,8 @@ pub const EVENT_SLOTS: usize = 8; // UI drain batch; reliable events share a 32 
 pub const COMMAND_SLOTS: usize = 16; // ordinary commands <=16 KiB; bulk DM settings <=33 KiB; channel edit <=128 KiB; group icon <=350 KiB
 
 pub enum Command {
+	Autocomplete(interactions::Request),
+	CancelAutocomplete,
 	Polls(polls::Request),
 	StickerPacks,
 	Sticker(Id),
@@ -80,6 +82,7 @@ pub enum Command {
 	ApplicationCommands {
 		channel: Id,
 		guild: Option<Id>,
+		context: u8,
 		request: u64,
 	},
 	MemberSearch(member_search::Request),
@@ -441,6 +444,7 @@ fn prepare_navigation(
 	Ok(permission_state)
 }
 pub enum Event {
+	Autocomplete(application_commands::CompletionEvent),
 	Polls(polls::Event),
 	StickerEntitlement {
 		user: Id,
@@ -2085,6 +2089,12 @@ impl State {
 			}
 			_ => {}
 		}
+		if let Command::Autocomplete(request) = &command {
+			self.apply_autocomplete(application_commands::CompletionEvent::Submitted {
+				nonce: request.nonce.clone(),
+				result: Err(auth::Failure::Network),
+			});
+		}
 		if let Command::Interaction(request) = command {
 			let _ = self.apply_interaction(interactions::Event::Submitted {
 				nonce: request.nonce,
@@ -2978,6 +2988,10 @@ impl State {
 				removed,
 			} => self.apply_threads_sync(guild, parents, threads, removed),
 			Event::Interaction(event) => self.apply_interaction(event),
+			Event::Autocomplete(event) => {
+				self.apply_autocomplete(event);
+				Ok(())
+			}
 			Event::ApplicationCommands {
 				channel,
 				request,
@@ -4318,6 +4332,7 @@ impl Event {
 		size_of::<Self>()
 			+ match self {
 				Self::Interaction(event) => event.bytes(),
+				Self::Autocomplete(event) => event.bytes(),
 				Self::ApplicationCommands { result, .. } => result.as_ref().map_or(0, |commands| {
 					commands.capacity() * size_of::<model::application_commands::Command>()
 						+ commands

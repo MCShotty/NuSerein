@@ -4559,6 +4559,7 @@ impl MessagingUi {
 		{
 			self.search.focus_conversation(channel, state);
 		}
+		self.reconcile_submitted_command(state);
 		self.search.sync(&ctx, state, &mut commands);
 		let search_open =
 			self.search.results_visible(state) && state.selected.is_some() && !selected_voice;
@@ -5246,6 +5247,18 @@ impl MessagingUi {
 			}
 		}
 
+		if let Some(input) = self.slash_commands.completion_request.take()
+			&& let Some(command) =
+				state.request_autocomplete(input.id, input.path, input.values, input.focused)
+		{
+			commands.push(command);
+		}
+		if self.slash_commands.active.is_none()
+			&& state.application_commands.completion.query.is_some()
+		{
+			state.application_commands.completion = Default::default();
+			commands.push(Command::CancelAutocomplete);
+		}
 		if let Some(message) = self.timeline.forward_request.take() {
 			self.forwarding.open(state, message);
 		}
@@ -5282,7 +5295,11 @@ impl MessagingUi {
 			&mut self.avatars,
 			&mut self.timeline.opening,
 		);
-		self.interaction_file_request = self.interaction_components.file_request.take();
+		self.interaction_file_request = self
+			.interaction_components
+			.file_request
+			.take()
+			.or_else(|| self.slash_commands.file_request.take());
 		if let Some(id) = self.timeline.dismiss_ephemeral.take() {
 			state.dismiss_ephemeral(id);
 			self.timeline.components.forget_message(id);
@@ -10159,7 +10176,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");
