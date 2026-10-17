@@ -4813,3 +4813,24 @@ search-overlays-no-matching-content-types = Eşleşen içerik türü yok
 search-overlays-history = Geçmiş
 search-overlays-clear-history = Arama geçmişini temizle
 main-sign-in-rate-limited-detail = Discord bu oturum açmayı sınırlıyor. Tekrar denemeden önce bekle. Daha erken bir deneme bekleme süresini uzatabilir.
+
+# Personal notification and navigation controls
+qol-mute-category = Kategoriyi sessize al
+qol-unmute-category = Kategorinin sesini aç
+qol-mute-server = Sunucuyu sessize al
+qol-unmute-server = Sunucunun sesini aç
+qol-mute-duration = Sessize alma süresi
+qol-current-mute = Geçerli süreyi koru
+qol-notification-overrides = Bildirim istisnaları
+qol-choose-channel-category = Buradaki değişiklikler hemen uygulanır.
+qol-select-channel = Bir kanal veya kategori seçin
+qol-search-channels = Kanallarda ve kategorilerde ara
+qol-more-channels = Daha fazla sonuç var; aramayı daraltın.
+qol-use-inherited = Varsayılan ayarı kullan
+qol-mute-selection = Sessize al
+qol-unmute-selection = Sesi aç
+qol-collapse-categories = Tüm kategorileri daralt
+qol-expand-categories = Tüm kategorileri genişlet
+qol-next-unread = Sonraki okunmamış konuşma
+qol-previous-unread = Önceki okunmamış konuşma
+qol-jump-unread = İlk okunmamış mesaja git

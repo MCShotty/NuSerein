@@ -4956,3 +4956,24 @@ profiles-private-notice = { $name }’s profile is private, so some info is hidd
 settings-cosmetics-name-styles = Name styles
 settings-cosmetics-name-styles-description = Nitro display name fonts, colours and effects.
 main-sign-in-rate-limited-detail = Discord is rate limiting this sign-in. Wait before trying again. Another attempt before that can make the wait longer.
+
+# Personal notification and navigation controls
+qol-mute-category = Mute Category
+qol-unmute-category = Unmute Category
+qol-mute-server = Mute Server
+qol-unmute-server = Unmute Server
+qol-mute-duration = Mute duration
+qol-current-mute = Keep current duration
+qol-notification-overrides = Notification overrides
+qol-choose-channel-category = Changes here apply immediately.
+qol-select-channel = Select a channel or category
+qol-search-channels = Search channels and categories
+qol-more-channels = More matches; narrow your search.
+qol-use-inherited = Use default
+qol-mute-selection = Mute
+qol-unmute-selection = Unmute
+qol-collapse-categories = Collapse All Categories
+qol-expand-categories = Expand All Categories
+qol-next-unread = Next Unread Conversation
+qol-previous-unread = Previous Unread Conversation
+qol-jump-unread = Jump to First Unread

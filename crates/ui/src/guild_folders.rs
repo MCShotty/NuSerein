@@ -628,9 +628,36 @@ impl MessagingUi {
 							ui.separator();
 							let settings = self.server_menu.settings_item(ui, state, id);
 							let notifications = self.server_menu.notifications_item(ui, state, id);
+							self.server_menu.mute_item(ui, state, id);
 							let leave = self.server_menu.leave_item(ui, state, id);
 							if settings || notifications || leave {
 								self.guild = Some(id);
+							}
+							ui.separator();
+						}
+						if let Item::Folder(id) = item {
+							let ids = state
+								.guild_folders
+								.as_ref()
+								.and_then(|settings| {
+									settings.folders.iter().find(|folder| folder.id == Some(id))
+								})
+								.map(|folder| folder.guild_ids.as_slice())
+								.unwrap_or(&[]);
+							if ui
+								.add_enabled(
+									state.can_mark_guilds_read(ids),
+									egui::Button::new(crate::i18n::translate(
+										"server-menu-read-item-mark-as-read",
+									)),
+								)
+								.clicked()
+							{
+								let ids = ids.to_vec();
+								if let Some(command) = state.prepare_mark_guilds_read(&ids) {
+									commands.push(command);
+								}
+								ui.close();
 							}
 							ui.separator();
 						}

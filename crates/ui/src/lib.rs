@@ -1530,6 +1530,33 @@ impl MessagingUi {
 				);
 			});
 	}
+	/// Native alerts retain their exact target and use the normal permission-checked navigation.
+	pub fn open_notification(
+		&mut self,
+		state: &mut State,
+		channel: Id,
+		message: Option<Id>,
+	) -> Option<Command> {
+		if self.server_settings.is_open() {
+			self.toasts.push(
+				design::Level::Info,
+				"Close server settings to open this notification.",
+			);
+			return None;
+		}
+		let guild = state.channel(channel)?.guild;
+		match state.open_chat_link(guild, channel, message) {
+			Ok(command) => {
+				self.settings.open = false;
+				self.guild = guild;
+				command
+			}
+			Err(status) => {
+				state.status = status;
+				None
+			}
+		}
+	}
 	fn navigate_history(&mut self, state: &mut State, commands: &mut Vec<Command>, back: bool) {
 		if self.timeline.video.is_fullscreen()
 			|| self.is_voice_fullscreen()
@@ -4233,6 +4260,52 @@ impl MessagingUi {
 		if back || forward {
 			self.navigate_history(state, &mut commands, back);
 		}
+		if !self.settings.open
+			&& !self.server_settings.is_open()
+			&& !self.ime_active
+			&& self.keybind_capture.is_none()
+			&& !self.timeline.video.is_fullscreen()
+			&& !self.is_voice_fullscreen()
+			&& ui.ctx().memory(|memory| memory.top_modal_layer().is_none())
+			&& !egui::Popup::is_any_open(ui.ctx())
+			&& ui.input(|input| {
+				input.focused
+					&& !input
+						.events
+						.iter()
+						.any(|event| matches!(event, egui::Event::Ime(_)))
+			}) {
+			let action = [
+				model::KeybindAction::NextUnreadConversation,
+				model::KeybindAction::PreviousUnreadConversation,
+				model::KeybindAction::JumpToUnread,
+			]
+			.into_iter()
+			.find(|action| {
+				ui.input_mut(|input| {
+					crate::keybinds::pressed_exact(input, self.keybinds.chord(*action))
+				})
+			});
+			match action {
+				Some(model::KeybindAction::JumpToUnread) => {
+					if let Some(command) = state.open_unread() {
+						commands.push(command);
+					}
+					ui.ctx().request_repaint();
+				}
+				Some(action) => {
+					if let Some(channel) = state.next_unread_channel(
+						action == model::KeybindAction::PreviousUnreadConversation,
+					) {
+						self.guild = state.channel(channel).and_then(|channel| channel.guild);
+						if let Some(command) = state.select(channel) {
+							commands.push(command);
+						}
+					}
+				}
+				None => {}
+			}
+		}
 		// Fullscreen media owns the whole client surface, including during native resizing.
 		if self.show_fullscreen_voice(ui.ctx(), state) {
 			ui.painter()
@@ -4500,6 +4573,44 @@ impl MessagingUi {
 		self.sync_last_channels(state);
 		self.channel_menu
 			.show(&ctx, state, self.guild, &mut self.avatars, &mut commands);
+		if let Some(collapsed) = self.channel_menu.categories_collapsed_requested.take()
+			&& let Some(guild) = self.guild
+		{
+			let categories: Vec<_> = if collapsed {
+				state
+					.channels
+					.iter()
+					.filter(|channel| channel.guild == Some(guild) && channel.kind == 4)
+					.take(model::ChannelPreferences::MAX_ENTRIES + 1)
+					.map(|channel| channel.id)
+					.collect()
+			} else {
+				self.channel_preferences
+					.collapsed_categories
+					.iter()
+					.copied()
+					.filter(|id| {
+						state
+							.channel(*id)
+							.is_some_and(|channel| channel.guild == Some(guild))
+					})
+					.collect()
+			};
+			match self
+				.channel_preferences
+				.set_categories_collapsed(&categories, collapsed)
+			{
+				model::PreferenceEdit::Changed => {
+					self.channel_preferences_changed = true;
+					self.channel_cache.invalidate();
+					ctx.request_repaint();
+				}
+				model::PreferenceEdit::CapacityReached => {
+					self.channel_menu.report_capacity(state.generation)
+				}
+				model::PreferenceEdit::Unchanged => {}
+			}
+		}
 		if let Some((guild, channel)) = self.channel_menu.invite_requested.take() {
 			self.server_menu.open_invite(state, guild, channel);
 		}
@@ -5619,6 +5730,143 @@ mod gif_favorite_tests;
 mod composer_tests {
 	use super::*;
 	use client_core::MAX_CONTENT;
+
+	#[test]
+	fn notification_navigation_targets_the_message_and_updates_the_sidebar_without_acknowledging() {
+		let mut state = test_support::chat_demo_state();
+		let origin = state.selected.unwrap();
+		let target = state.timeline.iter().next().unwrap().id;
+		state
+			.drafts
+			.insert(origin, "Preserve notification draft".into());
+		let mut view = MessagingUi::default();
+		assert!(
+			view.open_notification(&mut state, origin, Some(target))
+				.is_none()
+		);
+		assert_eq!(state.search_target, Some(target));
+		assert_eq!(view.guild, state.channel(origin).unwrap().guild);
+		let direct = state
+			.channels
+			.iter()
+			.find(|channel| channel.kind == 1)
+			.unwrap()
+			.id;
+		let command = view
+			.open_notification(&mut state, direct, Some(target))
+			.unwrap();
+		assert!(
+			matches!(command, Command::History { channel, before: Some(before), .. } if channel == direct && before == Id(target.0 + 1))
+		);
+		assert_eq!(state.selected, Some(direct));
+		assert_eq!(view.guild, None);
+		assert_eq!(state.drafts[&origin], "Preserve notification draft");
+		assert!(
+			view.open_notification(&mut state, Id(0), Some(target))
+				.is_none()
+		);
+		assert_eq!(state.selected, Some(direct));
+	}
+
+	#[test]
+	fn unread_shortcuts_preserve_drafts_and_obey_settings_ime_and_capture() {
+		for blocked in 0..4 {
+			let mut state = test_support::chat_demo_state();
+			let previous = state.selected.unwrap();
+			state.drafts.insert(previous, "Unsent draft".into());
+			let mut channel = state.channels.iter().find(|c| c.kind == 1).unwrap().clone();
+			channel.id = Id(50001);
+			channel.last_message = Some(Id(50005));
+			state.channels.push(channel);
+			state.invalidate_navigation();
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+					entries: Some(
+						state
+							.channels
+							.iter()
+							.filter_map(|c| {
+								c.last_message.map(|latest| {
+									(
+										c.id,
+										Some(if c.id == Id(50001) { Id(50004) } else { latest }),
+										0,
+									)
+								})
+							})
+							.collect(),
+					),
+					version: None,
+					partial: false,
+				}),
+			});
+			let mut view = MessagingUi {
+				guild: state.channel(previous).and_then(|c| c.guild),
+				..Default::default()
+			};
+			if blocked == 1 {
+				view.settings.open = true;
+			}
+			if blocked == 2 {
+				view.ime_active = true;
+			}
+			if blocked == 3 {
+				view.keybind_capture = Some(model::KeybindAction::SwitchConversation);
+			}
+			let mut events = vec![egui::Event::Key {
+				key: egui::Key::ArrowDown,
+				physical_key: None,
+				pressed: true,
+				repeat: false,
+				modifiers: egui::Modifiers {
+					alt: true,
+					shift: true,
+					..Default::default()
+				},
+			}];
+			if blocked == 2 {
+				events.push(egui::Event::Ime(egui::ImeEvent::Preedit {
+					text: "未確定".into(),
+					active_range_chars: None,
+				}));
+			}
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			let mut commands = Vec::new();
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1120.0, 760.0),
+					)),
+					events,
+					focused: true,
+					..Default::default()
+				},
+				|ui| commands.extend(view.show(ui, &mut state)),
+			)
+			.drop_without_applying_deltas();
+			assert_eq!(
+				state.selected,
+				Some(if blocked == 0 { Id(50001) } else { previous })
+			);
+			assert!(
+				state.drafts[&previous].starts_with("Unsent draft"),
+				"IME composition and navigation retain the existing draft"
+			);
+			assert!(
+				!commands.iter().any(|command| matches!(
+					command,
+					Command::MarkRead { .. }
+						| Command::MarkAllRead { .. }
+						| Command::MarkGuildRead { .. }
+						| Command::Voice(_)
+				)),
+				"navigation never acknowledges or opens a call"
+			);
+		}
+	}
 
 	#[test]
 	fn next_message_tray_can_remove_files_while_the_previous_message_uploads() {
@@ -10159,7 +10407,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");

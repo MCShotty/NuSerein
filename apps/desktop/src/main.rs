@@ -5399,11 +5399,14 @@ impl eframe::App for Desktop {
 		if self.state.auth != AuthState::Authenticated && !self.state.demo {
 			self.notifications.clear();
 		}
-		if let Some(channel) = self.notifications.take_activation()
+		if let Some((channel, message)) = self.notifications.take_message_activation()
 			&& self.state.auth == AuthState::Authenticated
 		{
 			self.tray_window.show(ctx);
-			if let Some(command) = self.state.select(channel) {
+			if let Some(command) =
+				self.messaging
+					.open_notification(&mut self.state, channel, message)
+			{
 				self.command(command);
 			}
 		}
@@ -5417,6 +5420,7 @@ impl eframe::App for Desktop {
 			match alert {
 				notification_runtime::Alert::Message {
 					channel,
+					message,
 					title,
 					body,
 					avatar_key,
@@ -5424,7 +5428,7 @@ impl eframe::App for Desktop {
 				} => {
 					if self
 						.notifications
-						.notify_channel(channel, title, body, image_path)
+						.notify_target(channel, message, title, body, image_path)
 						&& let Some(worker) = &self.avatars
 					{
 						worker.request(avatar_key);

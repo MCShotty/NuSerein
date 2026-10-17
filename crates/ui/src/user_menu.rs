@@ -13,10 +13,26 @@ pub enum Action {
 	AddFriend(User),
 	AcceptFriend(model::Id),
 	CloseDm(model::Id),
-	Block { user: model::Id, blocked: bool },
-	Ignore { user: model::Id, ignored: bool },
-	Mute { channel: model::Id, muted: bool },
-	MessageRequest { channel: model::Id, accept: bool },
+	Block {
+		user: model::Id,
+		blocked: bool,
+	},
+	Ignore {
+		user: model::Id,
+		ignored: bool,
+	},
+	Mute {
+		channel: model::Id,
+		muted: bool,
+	},
+	MuteFor {
+		channel: model::Id,
+		mute: client_core::channel_actions::Mute,
+	},
+	MessageRequest {
+		channel: model::Id,
+		accept: bool,
+	},
 	Shortcut(Intent),
 }
 impl std::fmt::Debug for Action {
@@ -39,6 +55,7 @@ pub(super) fn prepare(action: Action, state: &mut State) -> Option<Command> {
 		Action::Block { user, blocked } => state.set_user_blocked(user, blocked),
 		Action::Ignore { user, ignored } => state.set_user_ignored(user, ignored),
 		Action::Mute { channel, muted } => state.set_dm_muted(channel, muted),
+		Action::MuteFor { channel, mute } => state.set_dm_mute(channel, mute),
 		Action::MessageRequest { channel, accept } => {
 			state.resolve_message_request(channel, accept)
 		}
@@ -285,28 +302,37 @@ pub(super) fn contents(
 			}
 		}
 		let muted = state.dm_muted(dm.id) == Some(true);
-		if ui
-			.add_enabled(
-				enabled,
-				egui::Button::new(crate::i18n::translate_if_key(
-					&(if muted {
-						crate::i18n::translate("user-menu-contents-unmute-conversation")
-					} else {
-						crate::i18n::translate("user-menu-contents-mute-conversation")
-					}),
-				)),
-			)
-			.on_hover_text(crate::i18n::translate(
-				"user-menu-contents-mute-this-direct-message-s-notifications-until-you-unmute-it",
-			))
-			.clicked()
-		{
-			*action = Some(Action::Mute {
-				channel: dm.id,
-				muted: !muted,
-			});
-			ui.close();
-		}
+		ui.add_enabled_ui(enabled, |ui| {
+			if muted
+				&& ui
+					.button(crate::i18n::translate(
+						"user-menu-contents-unmute-conversation",
+					))
+					.clicked()
+			{
+				*action = Some(Action::Mute {
+					channel: dm.id,
+					muted: false,
+				});
+				ui.close();
+			}
+			if let Some(mute) =
+				crate::server_notifications::mute_menu(ui, "user-menu-contents-mute-conversation")
+			{
+				*action = Some(if mute == client_core::channel_actions::Mute::Forever {
+					Action::Mute {
+						channel: dm.id,
+						muted: true,
+					}
+				} else {
+					Action::MuteFor {
+						channel: dm.id,
+						mute,
+					}
+				});
+				ui.close();
+			}
+		});
 		if ui
 			.add_enabled(
 				enabled,
@@ -497,6 +523,26 @@ mod tests {
 						&mut profile,
 						&mut action,
 					);
+				}
+				if label == "Mute Conversation" {
+					assert!(action.is_none(), "opening mute choices does not write");
+					let (_, text) = frame(&ctx, &state, user, vec![], &mut profile, &mut action);
+					let pos = text
+						.iter()
+						.find(|(text, _)| text == "Until I Turn It Back On")
+						.unwrap()
+						.1
+						.center();
+					for pressed in [true, false] {
+						frame(
+							&ctx,
+							&state,
+							user,
+							pointer(pos, PointerButton::Primary, pressed),
+							&mut profile,
+							&mut action,
+						);
+					}
 				}
 				match label {
 					"Profile" => assert_eq!(profile.open_user().unwrap().id, user.id),

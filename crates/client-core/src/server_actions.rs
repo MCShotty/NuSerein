@@ -39,16 +39,28 @@ pub enum InviteStatus {
 pub struct NotificationOptions {
 	pub level: Option<u8>,
 	pub muted: Option<bool>,
+	pub mute_until: Option<i64>,
 	pub suppress_everyone: Option<bool>,
 	pub suppress_roles: Option<bool>,
 }
 impl NotificationOptions {
 	pub fn valid(self) -> bool {
 		self.level.is_none_or(|level| level <= 3)
+			&& self
+				.mute_until
+				.is_none_or(|until| self.muted == Some(true) && until > 0)
 			&& (self.level.is_some()
 				|| self.muted.is_some()
 				|| self.suppress_everyone.is_some()
 				|| self.suppress_roles.is_some())
+	}
+	pub fn with_mute(mut self, mute: crate::channel_actions::Mute) -> Option<Self> {
+		if !mute.valid() {
+			return None;
+		}
+		self.muted = Some(mute != crate::channel_actions::Mute::Unmute);
+		self.mute_until = mute.expires_at(State::permission_time());
+		Some(self)
 	}
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +135,13 @@ impl State {
 		}
 		self.request_server_action(Action::Notifications { guild, options })
 	}
+	pub fn set_server_mute(
+		&mut self,
+		guild: Id,
+		mute: crate::channel_actions::Mute,
+	) -> Option<Command> {
+		self.update_server_notifications(guild, NotificationOptions::default().with_mute(mute)?)
+	}
 	pub(crate) fn observe_server_notification_settings(
 		&mut self,
 		entries: &[crate::notifications::Setting],
@@ -138,7 +157,7 @@ impl State {
 						.level
 						.is_none_or(|value| setting.level == Some(value))
 						&& options.muted.is_none_or(|value| {
-							setting.muted == Some(value) && setting.mute_until.is_none()
+							setting.muted == Some(value) && setting.mute_until == options.mute_until
 						}) && options
 						.suppress_everyone
 						.is_none_or(|value| setting.suppress_everyone == Some(value))
@@ -674,6 +693,57 @@ mod tests {
 			generation: state.generation,
 			event,
 		});
+	}
+	#[test]
+	fn timed_server_mutes_preserve_other_settings_and_do_not_replay_after_logout() {
+		use crate::channel_actions::Mute;
+		let mut state = state();
+		state.permissions.guilds.clear();
+		assert!(state.set_server_mute(Id(2), Mute::For(1)).is_none());
+		let command = state.set_server_mute(Id(2), Mute::For(900)).unwrap();
+		let Command::ServerAction {
+			action: Action::Notifications { options, .. },
+			..
+		} = &command
+		else {
+			panic!()
+		};
+		assert_eq!(options.muted, Some(true));
+		assert!(
+			options
+				.mute_until
+				.is_some_and(|until| until > State::permission_time())
+		);
+		assert_eq!(options.level, None);
+		let until = options.mute_until;
+		finish(&mut state, command, Ok(None));
+		assert_eq!(state.server_notification_settings(Id(2)).mute_until, until);
+		let suppress = state
+			.update_server_notifications(
+				Id(2),
+				NotificationOptions {
+					suppress_roles: Some(true),
+					..Default::default()
+				},
+			)
+			.unwrap();
+		finish(&mut state, suppress, Ok(None));
+		assert_eq!(state.server_notification_settings(Id(2)).mute_until, until);
+		let unmute = state.set_server_mute(Id(2), Mute::Unmute).unwrap();
+		finish(&mut state, unmute, Ok(None));
+		assert_eq!(state.server_notification_settings(Id(2)).muted, Some(false));
+		assert_eq!(state.server_notification_settings(Id(2)).mute_until, None);
+		assert_eq!(
+			state.server_notification_settings(Id(2)).suppress_roles,
+			Some(true)
+		);
+		let command = state.set_server_mute(Id(2), Mute::For(900)).unwrap();
+		state.logout();
+		finish(&mut state, command, Ok(None));
+		assert_eq!(
+			state.server_notification_settings(Id(2)),
+			NotificationOptions::default()
+		);
 	}
 	#[test]
 	fn notification_writes_need_membership_not_admin_and_confirm_after_unrelated_events() {

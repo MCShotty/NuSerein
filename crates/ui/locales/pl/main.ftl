@@ -4829,3 +4829,24 @@ search-overlays-no-matching-content-types = Brak pasujących typów treści
 search-overlays-history = Historia
 search-overlays-clear-history = Wyczyść historię wyszukiwania
 main-sign-in-rate-limited-detail = Discord ogranicza to logowanie. Odczekaj, zanim spróbujesz ponownie. Wcześniejsza próba może wydłużyć oczekiwanie.
+
+# Personal notification and navigation controls
+qol-mute-category = Wycisz kategorię
+qol-unmute-category = Wyłącz wyciszenie kategorii
+qol-mute-server = Wycisz serwer
+qol-unmute-server = Wyłącz wyciszenie serwera
+qol-mute-duration = Czas wyciszenia
+qol-current-mute = Zachowaj obecny czas
+qol-notification-overrides = Wyjątki powiadomień
+qol-choose-channel-category = Zmiany tutaj są stosowane natychmiast.
+qol-select-channel = Wybierz kanał lub kategorię
+qol-search-channels = Szukaj kanałów i kategorii
+qol-more-channels = Dostępne są dalsze wyniki; zawęź wyszukiwanie.
+qol-use-inherited = Użyj ustawienia domyślnego
+qol-mute-selection = Wycisz
+qol-unmute-selection = Wyłącz wyciszenie
+qol-collapse-categories = Zwiń wszystkie kategorie
+qol-expand-categories = Rozwiń wszystkie kategorie
+qol-next-unread = Następna nieprzeczytana rozmowa
+qol-previous-unread = Poprzednia nieprzeczytana rozmowa
+qol-jump-unread = Przejdź do pierwszej nieprzeczytanej wiadomości

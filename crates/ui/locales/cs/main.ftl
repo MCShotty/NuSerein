@@ -4913,3 +4913,24 @@ search-overlays-no-matching-content-types = Žádné odpovídající typy obsahu
 search-overlays-history = Historie
 search-overlays-clear-history = Vymazat historii hledání
 main-sign-in-rate-limited-detail = Discord omezuje toto přihlášení. Než to zkusíte znovu, počkejte. Dřívější pokus může čekání prodloužit.
+
+# Personal notification and navigation controls
+qol-mute-category = Ztlumit kategorii
+qol-unmute-category = Zrušit ztlumení kategorie
+qol-mute-server = Ztlumit server
+qol-unmute-server = Zrušit ztlumení serveru
+qol-mute-duration = Doba ztlumení
+qol-current-mute = Zachovat současnou dobu
+qol-notification-overrides = Výjimky oznámení
+qol-choose-channel-category = Změny zde se použijí okamžitě.
+qol-select-channel = Vyberte kanál nebo kategorii
+qol-search-channels = Hledat kanály a kategorie
+qol-more-channels = Existují další výsledky; upřesněte hledání.
+qol-use-inherited = Použít výchozí nastavení
+qol-mute-selection = Ztlumit
+qol-unmute-selection = Zrušit ztlumení
+qol-collapse-categories = Sbalit všechny kategorie
+qol-expand-categories = Rozbalit všechny kategorie
+qol-next-unread = Další nepřečtená konverzace
+qol-previous-unread = Předchozí nepřečtená konverzace
+qol-jump-unread = Přejít na první nepřečtenou zprávu

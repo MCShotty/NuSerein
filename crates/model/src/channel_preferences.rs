@@ -134,6 +134,37 @@ impl ChannelPreferences {
 		}
 		PreferenceEdit::Changed
 	}
+	/// Applies a whole visible category group atomically, preserving other servers' choices.
+	pub fn set_categories_collapsed(
+		&mut self,
+		categories: &[Id],
+		collapsed: bool,
+	) -> PreferenceEdit {
+		if !self.is_valid() || categories.iter().any(|id| id.0 == 0) {
+			return PreferenceEdit::Unchanged;
+		}
+		if categories.len() > Self::MAX_ENTRIES {
+			return PreferenceEdit::CapacityReached;
+		}
+		let mut next = self.collapsed_categories.clone();
+		if collapsed {
+			for category in categories {
+				if !next.contains(category) {
+					next.push(*category);
+				}
+			}
+		} else {
+			next.retain(|id| !categories.contains(id));
+		}
+		if self.favorites.len() + self.pinned.len() + next.len() > Self::MAX_ENTRIES {
+			return PreferenceEdit::CapacityReached;
+		}
+		if next == self.collapsed_categories {
+			return PreferenceEdit::Unchanged;
+		}
+		self.collapsed_categories = next;
+		PreferenceEdit::Changed
+	}
 
 	/// Records the channel a server reopens to; returns whether anything changed.
 	pub fn remember_channel(&mut self, guild: Id, channel: Id) -> bool {
@@ -162,5 +193,38 @@ impl ChannelPreferences {
 		self.collapsed_categories.retain(|id| *id != channel);
 		self.last_channels.retain(|(_, id)| *id != channel);
 		before != count(self)
+	}
+}
+
+#[cfg(test)]
+mod category_tests {
+	use super::*;
+	#[test]
+	fn collapsing_a_group_is_atomic_and_retains_other_servers() {
+		let mut prefs = ChannelPreferences {
+			collapsed_categories: vec![Id(10)],
+			favorites: (100..354).map(Id).collect(),
+			..Default::default()
+		};
+		let before = prefs.clone();
+		assert_eq!(
+			prefs.set_categories_collapsed(&[Id(20), Id(21)], true),
+			PreferenceEdit::CapacityReached
+		);
+		assert_eq!(prefs, before);
+		assert_eq!(
+			prefs.set_categories_collapsed(&[Id(20), Id(20)], true),
+			PreferenceEdit::Changed
+		);
+		assert!(prefs.is_valid());
+		assert_eq!(
+			prefs.set_categories_collapsed(&[Id(20)], false),
+			PreferenceEdit::Changed
+		);
+		assert_eq!(prefs.collapsed_categories, [Id(10)]);
+		assert_eq!(
+			prefs.set_categories_collapsed(&[Id(0)], true),
+			PreferenceEdit::Unchanged
+		);
 	}
 }

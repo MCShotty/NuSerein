@@ -121,6 +121,21 @@ pub enum Mute {
 	For(u32),
 	Forever,
 }
+impl Mute {
+	pub const DURATIONS: [u32; 5] = [900, 3600, 10800, 28800, 86400];
+	pub fn valid(self) -> bool {
+		match self {
+			Self::For(seconds) => Self::DURATIONS.contains(&seconds),
+			_ => true,
+		}
+	}
+	pub fn expires_at(self, now: i64) -> Option<i64> {
+		match self {
+			Self::For(seconds) if self.valid() => now.checked_add(i64::from(seconds)),
+			_ => None,
+		}
+	}
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PostDetails {
 	pub owner: Option<Id>,
@@ -216,7 +231,7 @@ impl Action {
 				valid_name(name) && name.capacity() <= 400 && message.is_none_or(|id| id.0 != 0)
 			}
 			Self::Mute(Mute::For(seconds)) | Self::PostMute(Mute::For(seconds)) => {
-				matches!(seconds, 900 | 3600 | 10800 | 28800 | 86400)
+				Mute::For(*seconds).valid()
 			}
 			Self::Notifications(level) | Self::PostNotifications(level) => *level <= 3,
 			_ => true,

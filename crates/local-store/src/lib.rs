@@ -2355,6 +2355,44 @@ mod tests {
 	}
 
 	#[test]
+	fn old_device_settings_gain_unread_bindings_without_replacing_existing_choices() {
+		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
+		store
+			.0
+			.execute(
+				"INSERT INTO app_preferences VALUES(1,?1)",
+				[r#"{"keybinds":{"search_conversation":{"key":"G","modifiers":1}}}"#],
+			)
+			.unwrap();
+		let preferences = store.app_preferences().unwrap();
+		assert_eq!(
+			preferences.keybinds.search_conversation,
+			model::KeyChord::new("G", model::keybinds::PRIMARY)
+		);
+		assert_eq!(
+			preferences.keybinds.next_unread_conversation,
+			model::KeyChord::new("ArrowDown", model::keybinds::ALT | model::keybinds::SHIFT)
+		);
+		assert_eq!(
+			preferences.keybinds.previous_unread_conversation,
+			model::KeyChord::new("ArrowUp", model::keybinds::ALT | model::keybinds::SHIFT)
+		);
+		assert_eq!(
+			preferences.keybinds.jump_to_unread,
+			model::KeyChord::new("U", model::keybinds::PRIMARY | model::keybinds::SHIFT)
+		);
+		assert!(preferences.keybinds.is_valid());
+		for action in [
+			model::KeybindAction::NextUnreadConversation,
+			model::KeybindAction::PreviousUnreadConversation,
+			model::KeybindAction::JumpToUnread,
+		] {
+			assert!(!action.is_global());
+		}
+		store.save_app_preferences(&preferences).unwrap();
+		assert_eq!(store.app_preferences().unwrap(), preferences);
+	}
+	#[test]
 	fn app_preferences_round_trip_and_reject_invalid_replacement() {
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
 		assert_eq!(store.app_preferences().unwrap(), AppPreferences::default());

@@ -2,7 +2,7 @@ use crate::{
 	State,
 	auth::{AuthState, Failure},
 };
-use model::{Freshness, Id, Patch};
+use model::{Channel, Freshness, Id, Patch};
 use std::collections::BTreeMap;
 
 pub enum Event {
@@ -49,6 +49,28 @@ impl Event {
 			}
 	}
 }
+#[derive(Clone)]
+enum Scope {
+	All,
+	Category(Id),
+	Guilds(Vec<Id>),
+}
+impl Scope {
+	fn includes(&self, state: &State, channel: &Channel) -> bool {
+		match self {
+			Self::All => true,
+			Self::Category(category) => state.channel(*category).is_some_and(|parent| {
+				parent.kind == 4
+					&& parent.guild.is_some()
+					&& channel.guild == parent.guild
+					&& state
+						.notification_path(channel.id)
+						.is_some_and(|path| path.contains(&Some(*category)))
+			}),
+			Self::Guilds(guilds) => channel.guild.is_some_and(|guild| guilds.contains(&guild)),
+		}
+	}
+}
 enum Pending {
 	Channel {
 		channel: Id,
@@ -66,6 +88,7 @@ enum Pending {
 	All {
 		request: u64,
 		channels: Vec<(Id, u64, Id)>,
+		scope: Scope,
 		/// More unread channels remained past `MAX_BULK_ACK`.
 		more: bool,
 	},
@@ -80,7 +103,7 @@ pub struct ReadState {
 	revision: u64,
 	pending: Option<Pending>,
 	/// A successful capped mark-all asks for its next batch.
-	continue_all: bool,
+	continue_all: Option<Scope>,
 	pub(crate) status: Option<(Id, &'static str)>,
 }
 impl ReadState {
@@ -102,7 +125,7 @@ impl ReadState {
 	pub fn cancel(&mut self) {
 		self.activity.clear_notifications();
 		self.pending = None;
-		self.continue_all = false;
+		self.continue_all = None;
 		self.status = None;
 	}
 	pub fn forget(&mut self, channel: Id) {
@@ -115,10 +138,13 @@ impl ReadState {
 			Some(Pending::Channel {
 				channel: pending, ..
 			}) => *pending == channel,
-			Some(Pending::Guild { channels, .. } | Pending::All { channels, .. }) => {
+			Some(Pending::Guild { channels, .. }) => {
 				channels.retain(|(id, ..)| *id != channel);
 				channels.is_empty()
 			}
+			// The worker reports a leading count in the original wire order. Removing one
+			// item here would make a partial result acknowledge a different conversation.
+			Some(Pending::All { channels, .. }) => channels.iter().all(|(id, ..)| *id == channel),
 			None => false,
 		};
 		if cancel {
@@ -127,6 +153,98 @@ impl ReadState {
 	}
 }
 impl State {
+	/// Unread navigation uses loaded metadata only and never opens a call or acknowledges history.
+	pub fn next_unread_channel(&self, previous: bool) -> Option<Id> {
+		if !self.gateway_connected {
+			return None;
+		}
+		let mut channels: Vec<_> = self
+			.channels
+			.iter()
+			.filter(|channel| {
+				self.can_read_history(channel.id)
+					&& channel.kind != 4
+					&& !self.message_request_pending(channel.id)
+					&& !self.spam_direct(channel.id)
+			})
+			.collect();
+		let guilds: std::collections::BTreeMap<_, _> = self
+			.guild_folders
+			.as_ref()
+			.map(|settings| {
+				settings
+					.folders
+					.iter()
+					.flat_map(|folder| &folder.guild_ids)
+					.enumerate()
+					.map(|(rank, id)| (*id, rank))
+					.collect()
+			})
+			.unwrap_or_else(|| {
+				self.guilds
+					.iter()
+					.enumerate()
+					.map(|(rank, guild)| (guild.id, rank))
+					.collect()
+			});
+		channels.sort_by_cached_key(|channel| {
+			if channel.guild.is_none() {
+				(
+					0,
+					0,
+					i32::MIN,
+					std::cmp::Reverse(self.channel_activity(channel)),
+					0,
+					channel.id,
+				)
+			} else {
+				let category = self
+					.notification_path(channel.id)
+					.into_iter()
+					.flatten()
+					.flatten()
+					.filter_map(|id| self.channel(id))
+					.find(|parent| parent.kind == 4);
+				(
+					1,
+					channel
+						.guild
+						.and_then(|id| guilds.get(&id).copied())
+						.unwrap_or(usize::MAX),
+					category.map_or(i32::MIN, |category| category.position),
+					std::cmp::Reverse(Id(0)),
+					channel.position,
+					channel.id,
+				)
+			}
+		});
+		let current = self
+			.selected
+			.and_then(|selected| channels.iter().position(|channel| channel.id == selected));
+		let len = channels.len();
+		for offset in 1..=len {
+			let index = match current {
+				Some(current) if previous => (current + len - offset) % len,
+				Some(current) => (current + offset) % len,
+				None if previous => len - offset,
+				None => offset - 1,
+			};
+			let channel = channels[index];
+			if Some(channel.id) == self.selected {
+				continue;
+			}
+			let ping = self.unread_count(channel.id) > 0;
+			let muted = if channel.guild.is_some() {
+				self.muted_for_guild_rail(channel)
+			} else {
+				self.dm_muted(channel.id) == Some(true)
+			};
+			if ping || (self.channel_unread(channel) == Some(true) && !muted) {
+				return Some(channel.id);
+			}
+		}
+		None
+	}
 	pub fn read_marker(&self, channel: Id) -> Option<Option<Id>> {
 		if !self.gateway_connected
 			|| !self.can_view(channel)
@@ -343,12 +461,18 @@ impl State {
 	}
 	/// Explicit sidebar acknowledgement uses known channel metadata without navigating.
 	pub fn can_mark_channel_read(&self, channel: Id) -> bool {
+		if self.channel(channel).is_some_and(|source| source.kind == 4) {
+			return self.can_mark_scope(&Scope::Category(channel));
+		}
 		self.auth == AuthState::Authenticated
 			&& self.gateway_connected
 			&& self.read_state.pending.is_none()
 			&& self.unread(channel) == Some(true)
 	}
 	pub fn prepare_mark_channel_read(&mut self, channel: Id) -> Option<crate::Command> {
+		if self.channel(channel).is_some_and(|source| source.kind == 4) {
+			return self.prepare_mark_scope(Scope::Category(channel));
+		}
 		if !self.can_mark_channel_read(channel) {
 			return None;
 		}
@@ -535,18 +659,41 @@ impl State {
 			})
 	}
 	pub fn can_mark_all_read(&self) -> bool {
+		self.can_mark_scope(&Scope::All)
+	}
+	fn can_mark_scope(&self, scope: &Scope) -> bool {
 		self.auth == AuthState::Authenticated
 			&& self.gateway_connected
 			&& self.read_state.pending.is_none()
-			&& self.unread_acks(None).next().is_some()
+			&& self
+				.unread_acks(None)
+				.any(|(id, ..)| self.channel(id).is_some_and(|c| scope.includes(self, c)))
+	}
+	pub fn can_mark_guilds_read(&self, guilds: &[Id]) -> bool {
+		!guilds.is_empty()
+			&& guilds.len() <= model::guild_folders::MAX_GUILDS
+			&& guilds.iter().all(|id| id.0 != 0)
+			&& self.can_mark_scope(&Scope::Guilds(guilds.to_vec()))
+	}
+	pub fn prepare_mark_guilds_read(&mut self, guilds: &[Id]) -> Option<crate::Command> {
+		if !self.can_mark_guilds_read(guilds) {
+			return None;
+		}
+		self.prepare_mark_scope(Scope::Guilds(guilds.to_vec()))
 	}
 	/// One bulk acknowledgement for every unread channel; a later choice picks up any overflow.
 	pub fn prepare_mark_all_read(&mut self) -> Option<crate::Command> {
-		if !self.can_mark_all_read() {
+		self.prepare_mark_scope(Scope::All)
+	}
+	fn prepare_mark_scope(&mut self, scope: Scope) -> Option<crate::Command> {
+		if !self.can_mark_scope(&scope) {
 			return None;
 		}
 		let (channels, more) = {
-			let mut unread = self.unread_acks(None);
+			let mut unread = self.unread_acks(None).filter(|(id, ..)| {
+				self.channel(*id)
+					.is_some_and(|channel| scope.includes(self, channel))
+			});
 			let channels = unread
 				.by_ref()
 				.take(crate::MAX_BULK_ACK)
@@ -562,9 +709,10 @@ impl State {
 		self.read_state.pending = Some(Pending::All {
 			request,
 			channels,
+			scope,
 			more,
 		});
-		self.read_state.continue_all = false;
+		self.read_state.continue_all = None;
 		self.read_state.status = None;
 		Some(crate::Command::MarkAllRead {
 			request,
@@ -573,10 +721,8 @@ impl State {
 	}
 	/// Next batch after a capped mark-all succeeded.
 	pub fn continue_mark_all_read(&mut self) -> Option<crate::Command> {
-		if !std::mem::take(&mut self.read_state.continue_all) {
-			return None;
-		}
-		self.prepare_mark_all_read()
+		let scope = self.read_state.continue_all.take()?;
+		self.prepare_mark_scope(scope)
 	}
 	pub fn pending_all_ack(&self, request: u64) -> bool {
 		matches!(
@@ -868,7 +1014,10 @@ impl State {
 					return Ok(());
 				}
 				let Some(Pending::All {
-					mut channels, more, ..
+					mut channels,
+					more,
+					scope,
+					..
 				}) = self.read_state.pending.take()
 				else {
 					return Ok(());
@@ -876,7 +1025,7 @@ impl State {
 				let failed = channels.split_off(acked.min(channels.len()));
 				self.finish_bulk_ack(channels, Ok(()));
 				match result {
-					Ok(()) => self.read_state.continue_all = more,
+					Ok(()) => self.read_state.continue_all = more.then_some(scope),
 					Err(failure) => self.finish_bulk_ack(failed, Err(failure)),
 				}
 			}
@@ -889,6 +1038,9 @@ impl State {
 				self.read_state.revision = self.read_state.revision.wrapping_add(1);
 				let revision = self.read_state.revision;
 				for (channel, epoch, message) in channels {
+					if !self.can_view(channel) {
+						continue;
+					}
 					if !self.read_state.entries.contains_key(&channel)
 						&& self.read_state.entries.len() >= crate::MAX_NAV
 					{

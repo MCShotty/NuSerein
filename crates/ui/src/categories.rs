@@ -208,6 +208,7 @@ fn drop_move(
 pub(super) struct Cache {
 	key: Option<CacheKey>,
 	rows: Vec<CachedRow>,
+	mute_expiry: Option<std::time::SystemTime>,
 }
 impl Cache {
 	pub(super) fn invalidate(&mut self) {
@@ -266,17 +267,27 @@ fn rows<'a>(
 	for group in threads.values_mut() {
 		group.sort_unstable_by_key(|c| state.last_viewed_threads.iter().position(|id| *id == c.id));
 	}
-	let append = |channel: &'a Channel, slot: Slot, hidden: bool, rows: &mut Vec<Row<'a>>| {
-		if hidden {
-			return;
-		}
-		rows.push(Row::Channel(channel, slot, false));
-		rows.extend(
+	let important = |channel: &Channel| {
+		Some(channel.id) == state.selected
+			|| state.unread_count(channel.id) > 0
+			|| (state.channel_unread(channel) == Some(true)
+				&& !state.channel_access(channel.id).muted())
+	};
+	let append = |channel: &'a Channel, slot: Slot, collapsed: bool, rows: &mut Vec<Row<'a>>| {
+		let nested = || {
 			threads
 				.get(&channel.id)
 				.into_iter()
 				.flatten()
 				.take(MAX_VISIBLE_THREADS)
+		};
+		if collapsed && !important(channel) && !nested().any(|c| important(c)) {
+			return;
+		}
+		rows.push(Row::Channel(channel, slot, false));
+		rows.extend(
+			nested()
+				.filter(|c| !collapsed || important(c))
 				.map(|c| Row::Channel(c, slot, true)),
 		);
 	};
@@ -496,6 +507,13 @@ fn kind_label(kind: u8) -> &'static str {
 
 impl MessagingUi {
 	pub(super) fn channel_list(&mut self, ui: &mut egui::Ui, state: &mut State) -> Option<Id> {
+		if self
+			.channel_cache
+			.mute_expiry
+			.is_some_and(|until| until <= std::time::SystemTime::now())
+		{
+			self.channel_cache.invalidate();
+		}
 		let voice_users = crate::profiles::voice_users(state);
 		let language = self.language;
 		let hide_muted = self
@@ -515,6 +533,7 @@ impl MessagingUi {
 			requests_collapsed: self.message_requests_collapsed,
 		};
 		if self.channel_cache.key != Some(key) {
+			self.channel_cache.mute_expiry = state.next_mute_deadline();
 			let categories: BTreeSet<_> = state
 				.channels
 				.iter()
@@ -549,7 +568,9 @@ impl MessagingUi {
 			);
 			if hide_muted {
 				channel_rows.retain(|row| {
-					!matches!(row, Row::Channel(channel, ..) if Some(channel.id) != state.selected && state.guild_channel_muted(channel.id) == Some(true))
+					!matches!(row, Row::Channel(channel, ..) if Some(channel.id) != state.selected
+						&& !state.selected.and_then(|id| state.channel(id)).is_some_and(|selected| selected.parent_id == Some(channel.id))
+						&& state.guild_channel_effectively_muted(channel.id) == Some(true))
 				});
 				let mut index = 0;
 				while index < channel_rows.len() {
@@ -606,6 +627,13 @@ impl MessagingUi {
 				})
 				.collect();
 			self.channel_cache.key = Some(key);
+		}
+		if let Some(until) = self
+			.channel_cache
+			.mute_expiry
+			.and_then(|until| until.duration_since(std::time::SystemTime::now()).ok())
+		{
+			ui.ctx().request_repaint_after(until);
 		}
 		let colors = design::palette(ui);
 		let mut selected = None;
@@ -2196,6 +2224,153 @@ mod tests {
 	}
 
 	#[test]
+	fn collapsed_categories_keep_selected_unread_and_mentioned_channels_visible() {
+		let mut state = test_support::demo_state();
+		let selected = state.selected.unwrap();
+		let category = state.channel(selected).unwrap().parent_id.unwrap();
+		let guild = state.channel(selected).unwrap().guild;
+		let sibling = state
+			.channels
+			.iter_mut()
+			.find(|c| c.guild == guild && c.id != selected && c.kind == 0)
+			.unwrap();
+		sibling.parent_id = Some(category);
+		let sibling = sibling.id;
+		state.invalidate_navigation();
+		state
+			.apply_notification_preferences(client_core::notifications::Event::Settings {
+				entries: vec![client_core::notifications::Setting {
+					guild,
+					muted: Some(false),
+					level: Some(0),
+					overrides_known: true,
+					..Default::default()
+				}],
+				replace: true,
+			})
+			.unwrap();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ReadState(client_core::read_state::Event::Latest(vec![(
+				sibling,
+				model::Patch::Value(Id(90000)),
+			)])),
+		});
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+				entries: Some(vec![(sibling, Some(Id(89999)), 0)]),
+				version: None,
+				partial: true,
+			}),
+		});
+		assert_eq!(state.unread(sibling), Some(true));
+		assert!(!state.channel_access(sibling).muted());
+		let collapsed = BTreeSet::from([category]);
+		let has = |state: &State, target| {
+			rows(
+				state,
+				Scope::Guild(Id(10)),
+				&Roster::default(),
+				&collapsed,
+				false,
+				false,
+			)
+			.iter()
+			.any(|row| matches!(row, Row::Channel(channel, ..) if channel.id == target))
+		};
+		assert!(has(&state, selected));
+		assert!(has(&state, sibling));
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::NotificationPreferences(
+				client_core::notifications::Event::Settings {
+					entries: vec![client_core::notifications::Setting {
+						guild: Some(Id(10)),
+						muted: Some(false),
+						level: Some(0),
+						overrides_known: true,
+						channels: vec![(category, Some(true), Some(3))],
+						..Default::default()
+					}],
+					replace: false,
+				},
+			),
+		});
+		assert!(has(&state, selected));
+		assert!(!has(&state, sibling));
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+				entries: Some(vec![(sibling, Some(Id(89999)), 1)]),
+				version: None,
+				partial: true,
+			}),
+		});
+		assert!(
+			has(&state, sibling),
+			"mentions remain reachable inside collapsed categories"
+		);
+	}
+	#[test]
+	fn timed_mute_expiry_restores_hidden_sidebar_rows_without_an_event() {
+		let mut state = test_support::demo_state();
+		let muted = state
+			.channels
+			.iter()
+			.find(|c| {
+				c.guild == Some(Id(10))
+					&& c.kind == 0 && Some(c.id) != state.selected
+					&& state.can_view(c.id)
+			})
+			.unwrap()
+			.id;
+		let until = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_secs() as i64
+			+ 2;
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::NotificationPreferences(
+				client_core::notifications::Event::Settings {
+					entries: vec![client_core::notifications::Setting {
+						guild: Some(Id(10)),
+						muted: Some(false),
+						level: Some(0),
+						overrides_known: true,
+						hide_muted_channels: Some(true),
+						channels: vec![(muted, Some(true), Some(3))],
+						channel_mute_until: vec![(muted, until)],
+						..Default::default()
+					}],
+					replace: false,
+				},
+			),
+		});
+		let mut view = MessagingUi {
+			guild: Some(Id(10)),
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let has = |view: &mut MessagingUi, state: &mut State| {
+			ctx.run_ui(egui::RawInput::default(), |ui| {
+				view.channel_list(ui, state);
+			})
+			.drop_without_applying_deltas();
+			view.channel_cache.rows.iter().any(
+				|row| matches!(row, CachedRow::Channel(index, ..) if state.channels[*index].id == muted),
+			)
+		};
+		assert!(!has(&mut view, &mut state));
+		let revision = state.channel_list_revision();
+		std::thread::sleep(
+			state.next_mute_expiry().unwrap() + std::time::Duration::from_millis(25),
+		);
+		assert_eq!(state.channel_list_revision(), revision);
+		assert!(has(&mut view, &mut state));
+	}
+	#[test]
 	fn collapsed_categories_follow_service_order_selection_and_buttons() {
 		let channels = vec![
 			channel(8, 0, 2, Some(Id(4))),
@@ -2352,7 +2527,10 @@ mod tests {
 		.drop_without_applying_deltas();
 		assert!(matches!(
 			view.channel_cache.rows.as_slice(),
-			[CachedRow::Category(_, 1)]
+			[
+				CachedRow::Category(_, 1),
+				CachedRow::Channel(_, Slot::Tree, false)
+			]
 		));
 		// Forum containers never request history; opened posts remain keyboard-selectable.
 		state.channels = vec![channel(7, 15, 0, None), channel(8, 11, 0, Some(Id(7)))];

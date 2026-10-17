@@ -4827,3 +4827,24 @@ search-overlays-no-matching-content-types = Nenhum tipo de conteúdo corresponde
 search-overlays-history = Histórico
 search-overlays-clear-history = Limpar histórico de pesquisa
 main-sign-in-rate-limited-detail = O Discord está limitando este login. Aguarde antes de tentar novamente. Outra tentativa antes disso pode aumentar a espera.
+
+# Personal notification and navigation controls
+qol-mute-category = Silenciar categoria
+qol-unmute-category = Reativar categoria
+qol-mute-server = Silenciar servidor
+qol-unmute-server = Reativar servidor
+qol-mute-duration = Duração do silêncio
+qol-current-mute = Manter duração atual
+qol-notification-overrides = Exceções de notificações
+qol-choose-channel-category = As alterações aqui são aplicadas imediatamente.
+qol-select-channel = Selecione um canal ou uma categoria
+qol-search-channels = Buscar canais e categorias
+qol-more-channels = Há mais resultados; refine a busca.
+qol-use-inherited = Usar configuração padrão
+qol-mute-selection = Silenciar
+qol-unmute-selection = Reativar notificações
+qol-collapse-categories = Recolher todas as categorias
+qol-expand-categories = Expandir todas as categorias
+qol-next-unread = Próxima conversa não lida
+qol-previous-unread = Conversa não lida anterior
+qol-jump-unread = Ir para a primeira mensagem não lida
