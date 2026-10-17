@@ -838,7 +838,8 @@ mod tests {
 		assert!(matches!(&commands[0], Command::Search { query, .. } if query == "release"));
 
 		state.demo = true;
-		state.messaging_permissions.snapshot = Some(Default::default());
+		assert!(state.request_messaging_permissions().is_none());
+		assert!(!state.messaging_permissions.reload_required);
 		view.apply_extension_app_action(
 			&mut state,
 			AppAction::SetMessagingSettings {
