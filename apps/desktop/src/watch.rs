@@ -521,7 +521,8 @@ mod tests {
 				status: "",
 				notice: "",
 				texture: Default::default(),
-				..Default::default()
+				output: None,
+				retiring_output: None,
 			};
 			for phase in [
 				voice::Phase::Connected,
