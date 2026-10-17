@@ -175,7 +175,7 @@ pub fn owned_cosmetics(
 			current: Current {
 				user,
 				guild,
-				premium_type: Some(state.premium_type),
+				premium_type: Some(u32::from(state.premium_type)),
 				decoration: None,
 				nameplate: None,
 				profile: Vec::new(),
