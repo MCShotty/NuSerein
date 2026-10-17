@@ -1,9 +1,19 @@
 //! Session-only, bounded consent to display blocked/ignored message bodies.
 use client_core::{State, user_actions::ContentRestriction};
 use model::{Id, Message};
-use std::collections::BTreeMap;
+use std::{
+	collections::BTreeMap,
+	hash::{DefaultHasher, Hash, Hasher},
+};
 
 const MAX_REVEALED: usize = 500;
+
+// Avoid egui ID construction here: its debug registry retains source formatting.
+fn fingerprint(value: impl Hash) -> u64 {
+	let mut hash = DefaultHasher::new();
+	value.hash(&mut hash);
+	hash.finish()
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Key {
@@ -16,7 +26,7 @@ impl Key {
 		Self {
 			id: message.id,
 			author: message.author.id,
-			content: egui::Id::unique((
+			content: fingerprint((
 				&message.content,
 				&message.embeds,
 				&message.attachments,
@@ -40,15 +50,14 @@ impl Key {
 						&interaction.command,
 					)
 				}),
-			))
-			.value(),
+			)),
 		}
 	}
 	pub fn hit(hit: &model::SearchHit) -> Self {
 		Self {
 			id: hit.id,
 			author: hit.author.id,
-			content: egui::Id::unique((&hit.excerpt, &hit.embeds, &hit.attachments)).value(),
+			content: fingerprint((&hit.excerpt, &hit.embeds, &hit.attachments)),
 		}
 	}
 }
