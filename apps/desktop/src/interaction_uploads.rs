@@ -77,6 +77,8 @@ impl Desktop {
 			};
 			self.messaging.set_command_files(vec![], false);
 		}
+		self.messaging
+			.set_command_upload_busy(self.uploads.transfer_active());
 		let allowed = self
 			.interaction_files
 			.scope
@@ -275,6 +277,12 @@ impl Desktop {
 		}
 	}
 	pub(crate) fn interaction_upload(&mut self, command: Command) {
+		if self.uploads.transfer_active() {
+			self.state.command_rejected(command);
+			self.state.interactions.error =
+				Some("Wait for the current upload before sending files");
+			return;
+		}
 		let channel = self.state.selected;
 		let command_form = matches!(&command, Command::Interaction(request) if matches!(request.data, Data::ApplicationCommand {..}));
 		let mut sources = vec![];

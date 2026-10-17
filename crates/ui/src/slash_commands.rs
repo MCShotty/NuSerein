@@ -77,6 +77,7 @@ pub(super) struct Menu {
 	file_remove: Option<String>,
 	files: Vec<(String, usize, String)>,
 	files_busy: bool,
+	upload_slot_busy: bool,
 	submitted: Option<String>,
 }
 
@@ -708,6 +709,7 @@ impl Menu {
 	pub fn can_submit(&self, state: &State, channel: Id) -> bool {
 		self.active.as_ref().is_some_and(|active| {
 			!self.files_busy
+				&& (!self.upload_slot_busy || self.files.is_empty())
 				&& self.submitted.is_none()
 				&& !state.interactions.busy()
 				&& state.interactions.modal.is_none()
@@ -1604,6 +1606,10 @@ impl crate::MessagingUi {
 			.find(|command| command.id == active.id)?;
 		Some((active.id, definition.version, active.path.clone()))
 	}
+	/// A message transfer occupies the connection slot, but never blocks file selection.
+	pub fn set_command_upload_busy(&mut self, busy: bool) {
+		self.slash_commands.upload_slot_busy = busy;
+	}
 	pub fn set_command_files(&mut self, files: Vec<(String, usize, String)>, busy: bool) {
 		let menu = &mut self.slash_commands;
 		if let Some(active) = &mut menu.active {
@@ -1694,7 +1700,9 @@ impl crate::MessagingUi {
 		commands: &mut Vec<Command>,
 	) -> bool {
 		if self.slash_commands.active.is_some()
-			&& (self.slash_commands.submitted.is_some() || self.slash_commands.files_busy)
+			&& (self.slash_commands.submitted.is_some()
+				|| self.slash_commands.files_busy
+				|| (self.slash_commands.upload_slot_busy && !self.slash_commands.files.is_empty()))
 		{
 			state.status = "Wait for the current command or file selection to finish";
 			return true;
@@ -1828,6 +1836,19 @@ mod tests {
 			],
 			false,
 		);
+		view.set_command_upload_busy(true);
+		assert!(!view.slash_commands.can_submit(&state, channel));
+		let mut commands = vec![];
+		assert!(view.send_application_command(&mut state, channel, &mut commands));
+		assert!(commands.is_empty());
+		assert!(state.interactions.pending.is_none());
+		assert_eq!(view.slash_commands.files.len(), 2);
+		assert!(
+			!view.slash_commands.files_busy,
+			"the picker stays available"
+		);
+		view.set_command_upload_busy(false);
+		assert!(view.slash_commands.can_submit(&state, channel));
 		view.set_command_files(vec![("second".into(), 0, "b.txt".into())], true);
 		let values = &view.slash_commands.active.as_ref().unwrap().values;
 		assert!(values.contains(&("text".into(), "Keep this text".into())));
@@ -1835,7 +1856,9 @@ mod tests {
 		assert!(values.contains(&("second".into(), "0".into())));
 		assert!(!view.slash_commands.can_submit(&state, channel));
 		view.set_command_files(vec![], false);
+		view.set_command_upload_busy(true);
 		assert!(view.slash_commands.can_submit(&state, channel));
+		view.set_command_upload_busy(false);
 
 		let ctx = egui::Context::default();
 		design::apply(&ctx);
