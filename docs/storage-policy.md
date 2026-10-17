@@ -1900,3 +1900,11 @@ No new capture files, media cache, driver installer or secrets are persisted.
 Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.
 
 Schema 29 adds a bounded boolean opt-in for double-click reactions, disabled for new and migrated settings. The selected Unicode preset is retained while disabled; Reset chat restores the disabled default.
+
+
+Soundboard playback retains at most 16 decoded clips and ten full-length clips by sample
+budget (about 11.5 MB), 16 waiting play intents and four download/decode tasks. A call mixer
+retains at most eight clips. Call stop/account change cancels the scope and releases cached
+PCM and pending plays; blocking decoders check cancellation between packets. Anonymous CDN
+reads never receive the API session. Playback speed processing has a bounded grain/search
+window and operates on the decoder worker, outside rendering and device callbacks.

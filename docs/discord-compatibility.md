@@ -201,6 +201,41 @@ These are unofficial normal-account interfaces, not Discord's public bot API.
 Normal-account acceptance and cover availability remain unverified; synthetic
 fixtures and offline checks are not service-compatibility evidence.
 
+## Soundboard — October 6, 2026
+
+Server voice channels can list, play and hear soundboard sounds. The catalog uses the
+documented [`GET /soundboard-default-sounds` and `GET /guilds/{guild.id}/soundboard-sounds`](https://docs.discord.com/developers/resources/soundboard)
+routes, and playing uses `POST /channels/{channel.id}/send-soundboard-sound` with `sound_id`
+and, only for another server's sound, `source_guild_id`. Sounds from other participants arrive
+as the documented [Voice Channel Effect Send](https://docs.discord.com/developers/events/gateway-events#voice-channel-effect-send)
+Gateway event (`sound_id`, `sound_volume`); the audio itself is not relayed over voice, so each
+client fetches `https://cdn.discordapp.com/soundboard-sounds/{sound_id}` without credentials
+and plays it locally. Guild Soundboard Sound Create/Update/Delete and Sounds Update only mark
+the cached server catalog stale. Request Soundboard Sounds (opcode 31) is not sent.
+
+Sound identifiers are accepted as snowflake strings or integers, and a `guild_id` of `"0"` is
+treated as a default sound; the integer and zero forms are tolerated defensively and are not
+documented guarantees. The unofficial [user-account reference](https://docs.discord.food/resources/soundboard)
+describes the same routes and adds that the sender must be connected and not server muted,
+deafened or suppressed; [discord.py-self](https://github.com/dolfies/discord.py-self/blob/master/discord/http.py)
+has no soundboard implementation to compare against (checked October 6, 2026). Whether the
+effect event is also delivered to the sender is not documented: Serein ignores effects from
+its own user and plays its own sound when the request succeeds, so a sound should play once
+either way. Normal-account acceptance, delivery of the effect event and audible playback are
+**live-unverified**; no account, call or audio device was used. See
+[workflow and limits](voice.md#soundboard).
+
+Server Settings > Soundboard manages a server's sounds with the documented
+`POST /guilds/{guild.id}/soundboard-sounds` (`name`, a base64 `sound` data URI, `volume`,
+optional `emoji_name`), `PATCH` and `DELETE /guilds/{guild.id}/soundboard-sounds/{sound.id}`.
+The list reads the same catalog route, whose `user` field is present only for members who
+may manage expressions. Slot limits are not part of that response: they come from
+`premium_tier` and the `MORE_SOUNDBOARD` feature of `GET /guilds/{guild.id}`, using Discord's
+published boost perks (8/24/36/48, 96 with the feature), and are omitted when that read
+fails. Trimmed uploads are sent as `audio/ogg` containing Opus; the documentation says
+"MP3 or Ogg" without naming the Ogg codec, so acceptance of Opus is an assumption and
+**live-unverified**. See [management workflow](voice.md#managing-server-sounds).
+
 ## GIF favorite synchronization — October 2, 2026
 
 Opening the GIF picker lazily reads account favorites through the unofficial
@@ -2630,3 +2665,25 @@ the official notice in place of the withheld details, and omits Member Since and
 matching the official client. Roles, mutuals and the message field stay. The service
 withholds the hidden data itself; Serein never infers privacy from missing fields. No live
 private-profile response has been used as validation.
+
+
+### Fork media parity integration — October 17, 2026
+
+This branch depends explicitly on fork #7 (`f3abb03`) for FFmpeg-first video/audio playback.
+It integrates reviewed upstream soundboard #579 and pitch-preserving playback controls
+#662 while keeping that decoding preference and the fork's existing capture/privacy paths.
+The owner comparison build is Discord Stable 641004 (`c9ac31f`), host 1.0.9262 x64 (`94186`).
+Native/live comparison has not been performed here.
+
+Soundboard sounds are local receive/playback only; the participant send action uses the
+service route, never the microphone encoder. CDN reads are credential free, bounded to
+1 MiB each and four active loads. Call stop cancels downloads/CPU decoders, retires waiting
+plays and clears decoded PCM. Running sounds follow later listener mute/block/volume changes.
+Catalog retries and play confirmations carry local request IDs; playback also checks the
+call generation and a three-second deadline. Leaving, takeover and even a coalesced fast
+reconnect cancel a pending send. Uncertain HTTP acceptance is reported without repeating
+the sound. Deafening discards waiting plays, even if their downloads finish after undeafening.
+Existing FFmpeg decode, HDR, GPU selection, codecs and source resolution remain unchanged.
+Historical upstream screenshots/measurements are archive links and are not current-fork evidence.
+Voice recording, separate media output, native provider playback, Stage and adaptive stream
+quality remain separate roadmap gaps until integrated and tested.

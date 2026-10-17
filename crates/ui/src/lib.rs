@@ -116,6 +116,7 @@ mod server_notification_tests;
 mod server_notifications;
 mod server_roles;
 mod server_settings;
+mod server_sounds;
 mod server_stickers;
 mod settings;
 mod shortcuts;
@@ -427,6 +428,8 @@ pub struct MessagingUi {
 	/// Session-only stream playback level; unset is 100%. Mute preserves the level.
 	voice_stream_volume: Option<u16>,
 	voice_stream_muted: bool,
+	/// Session-only soundboard playback level; unset is 100%.
+	voice_soundboard_volume: Option<u16>,
 	/// Enlarged stage tile; cleared when it stops showing video or on Escape.
 	pub voice_focus: Option<voice::StageFocus>,
 	/// Screen share currently owning the client surface, its prior window mode and focus target.
@@ -10159,7 +10162,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");

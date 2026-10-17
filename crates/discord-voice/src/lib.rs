@@ -5,6 +5,7 @@ pub mod camera;
 mod capture;
 mod crypto;
 mod diagnostics;
+mod effects;
 mod jitter;
 mod mixer;
 pub mod screen;
@@ -19,6 +20,7 @@ pub(crate) use platform::video::ffmpeg as video_gpu;
 mod video_receive;
 mod video_sps;
 pub use crypto::Identity;
+pub use effects::{Effects, MAX_CLIP_SAMPLES};
 pub use transport::{
 	DISCONNECTED_BY_DISCORD, run, run_stream, run_with_identity, watch_stream,
 	watch_stream_on_adapter,

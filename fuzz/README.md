@@ -65,3 +65,6 @@ The seeds are replayed during corpus initialization before coverage-guided mutat
 smoke run establishes only that these seeds and generated inputs found no failing oracle during
 that run. Coverage counters are instrumentation feedback, not a whole-repository coverage
 percentage, proof of absent bugs, native UI evidence or live Discord compatibility.
+
+Soundboard catalogs, administration rows and Gateway effects also use synthetic seeds
+(selectors 13 and 14); successful parsing does not establish live soundboard support.

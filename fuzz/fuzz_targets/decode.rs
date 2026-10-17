@@ -25,6 +25,23 @@ fuzz_target!(|data: &[u8]| {
 		assert!(discord_protocol::decode::<MessageDto>(&boundary).is_err());
 		return;
 	}
+	if selector == 13 {
+		let _ = black_box(discord_protocol::soundboard::default_sounds(payload));
+		let _ = black_box(discord_protocol::soundboard::guild_sounds(
+			payload,
+			model::Id(9),
+		));
+		let _ = black_box(discord_protocol::soundboard::admin_sounds(
+			payload,
+			model::Id(9),
+		));
+		return;
+	}
+	if selector == 14 {
+		let _ = black_box(discord_protocol::soundboard::effect(payload));
+		let _ = black_box(discord_protocol::soundboard::changed_guild(payload));
+		return;
+	}
 	// These are the same public decode/normalization boundaries used by the API
 	// and Gateway. A decoded message need not pass the separate timeline policy.
 	match selector % 8 {
