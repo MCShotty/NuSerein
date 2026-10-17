@@ -1900,3 +1900,19 @@ No new capture files, media cache, driver installer or secrets are persisted.
 Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.
 
 Schema 29 adds a bounded boolean opt-in for double-click reactions, disabled for new and migrated settings. The selected Unicode preset is retained while disabled; Reset chat restores the disabled default.
+
+
+## Desktop Inbox (October 17, 2026)
+
+The Inbox is session-only. One recent-mention page holds at most 25 messages / 1 MiB;
+saved messages hold at most 500 entries / 1 MiB, including message bodies and vector
+allocation. The larger item allowance includes service reminders and does not increase
+Discord's bookmark entitlement. Wire responses are capped at 2 MiB. Unread rows refer
+to the existing bounded navigation/read-state snapshot and display at most 100 rows at
+a time; no extra history or directory is fetched. Filters are limited to 128 characters,
+and custom reminder input to 16. No disk schema, account archive or background polling
+is added. Permission/session loss retires snapshots; removed channels lose saved bodies.
+Opening results uses the existing history admission and draft-preserving navigation.
+Saved-message API writes remain explicit, service-authoritative and never automatically
+replayed after an uncertain outcome. Gateway invalidations retire cached pages; refresh
+is deliberate. No service URL, token or message body is written to diagnostic logs.

@@ -4209,6 +4209,15 @@ voice-server-mute = Server mute
 voice-server-unmute = Server unmute
 voice-move-to = Move to
 voice-disconnect-member = Disconnect
+inbox-title = Inbox
+inbox-description = Unread conversations, recent mentions and bookmarks
+inbox-loading = Loading inbox…
+inbox-empty = No matching items.
+inbox-refresh-needed = Refresh to load items.
+inbox-refresh = Refresh
+inbox-retry = Retry
+inbox-older = Older mentions
+inbox-open-message = Open message
 # Context: voice_participant_menu
 voice-voice-participant-menu-silence-this-person-on-this-device-only-nobody-else-is = Silence this person on this device only. Nobody else is affected.
 # Context: voice_participant_menu
@@ -4956,3 +4965,27 @@ profiles-private-notice = { $name }’s profile is private, so some info is hidd
 settings-cosmetics-name-styles = Name styles
 settings-cosmetics-name-styles-description = Nitro display name fonts, colours and effects.
 main-sign-in-rate-limited-detail = Discord is rate limiting this sign-in. Wait before trying again. Another attempt before that can make the wait longer.
+
+# Desktop Inbox
+inbox-unread = Unread
+inbox-mentions = Mentions
+inbox-saved = Bookmarks
+inbox-filter = Filter by conversation or server
+inbox-include-muted = Include muted conversations
+inbox-current-place = Current server or direct messages
+inbox-open-conversation = Open conversation
+inbox-mark-read = Mark as read
+inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
+inbox-dismiss = Dismiss
+inbox-bookmark = Bookmark message
+inbox-unsave = Remove bookmark
+inbox-remind = Remind me
+inbox-in-hour = In 1 hour
+inbox-in-day = In 1 day
+inbox-in-week = In 1 week
+inbox-clear-reminder = Clear reminder
+inbox-message-unavailable = Message unavailable
+inbox-service-availability = Availability depends on your Discord account.
+inbox-spoiler = Spoiler
+inbox-custom-reminder = Custom date and time (UTC)
+inbox-set-reminder = Set reminder

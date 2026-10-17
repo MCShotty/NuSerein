@@ -364,6 +364,7 @@ impl Connection {
 				let mut stream_preview:Option<AbortTask>=None;
                 let mut invite:Option<AbortTask>=None;
                 let mut search:Option<AbortTask>=None;
+                let mut mentions:Option<AbortTask>=None;
                 let mut gifs:Option<AbortTask>=None;
                 let mut gif_favorites:Option<AbortTask>=None;
                 let mut application_commands:Option<AbortTask>=None;
@@ -403,14 +404,14 @@ impl Connection {
                         }
                         changed=voice_availability.changed()=> {
 								if changed.is_err() {break;}
-								if !*voice_availability.borrow_and_update() {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
+								if !*voice_availability.borrow_and_update() {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());drop(mentions.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                         }
                         changed=lifecycle_changed.changed()=> {
                             if changed.is_err() {break;}
                             let latest=*lifecycle_changed.borrow_and_update();
                             let channels=dm_channels.lock().map_err(|_|Failure::Protocol)?;
                             let calls=recipient_call.lock().map_err(|_|Failure::Protocol)?;
-                            if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
+                            if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());drop(mentions.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                         }
                         request=upload_receive.recv()=>{
                             let Some(request)=request else {break;};
@@ -454,6 +455,19 @@ impl Connection {
                             }
                             let Some(command)=command else {break;};
                             if matches!(command,Command::CancelSearch) {drop(search.take());continue;}
+                            if matches!(command,Command::CancelMentions) {drop(mentions.take());continue;}
+                            if matches!(command,Command::Mentions{..}|Command::InboxAction{..}) {
+                                drop(mentions.take());
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                mentions=Some(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(command).await;
+                                    let failure=match &event {Event::Mentions{result:Err(f),..}|Event::InboxAction{result:Err(f),..} if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+                                    let error=emit(event).err().or(failure);
+                                    if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
                             if matches!(command,Command::CancelGifs) {drop(gifs.take());continue;}
                             if matches!(command,Command::GifFavorites{..}) {
                                 drop(gif_favorites.take());

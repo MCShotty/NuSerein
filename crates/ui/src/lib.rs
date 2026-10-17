@@ -68,6 +68,7 @@ mod group_menu;
 mod guild_folders;
 mod highlight;
 pub mod icons;
+mod inbox;
 mod invites;
 pub mod local_time;
 mod markdown;
@@ -239,6 +240,8 @@ pub struct MessagingUi {
 	onboarding: onboarding::OnboardingUi,
 	pub extensions: ExtensionUi,
 	friends: friends::Friends,
+	inbox_open: bool,
+	inbox_controls: inbox::Controls,
 	account_menu: account_menu::AccountMenu,
 	pub own_presence: model::OwnPresence,
 	/// When the custom status clears itself, in milliseconds since the Unix epoch. The
@@ -1987,6 +1990,25 @@ impl MessagingUi {
 			})
 			.show(ui, |ui| {
 				let ctx = ui.ctx().clone();
+				if ui
+					.add_sized(
+						[ui.available_width(), 30.0],
+						egui::Button::new(language.text("inbox-title")),
+					)
+					.clicked()
+				{
+					self.inbox_open = true;
+					commands.push(state.clear_mentions());
+					let command = match self.inbox_controls.tab {
+						inbox::Tab::Unread => None,
+						inbox::Tab::Mentions => state.request_mentions(None),
+						inbox::Tab::Saved => {
+							state.request_inbox_action(client_core::inbox::Action::Saved)
+						}
+					};
+					commands.extend(command);
+				}
+				ui.add_space(6.0);
 				if self.guild.is_none() {
 					// Search and Friends share one row; Friends is the compact glyph beside it.
 					ui.horizontal(|ui| {
@@ -4267,9 +4289,14 @@ impl MessagingUi {
 		}
 		self.keybinds_shortcut(&ctx);
 		self.theme_preview_navigation(ui);
-		let settings_open =
-			self.settings.open || self.server_settings.is_open() || self.channel_menu.is_open();
+		let settings_open = self.settings.open
+			|| self.server_settings.is_open()
+			|| self.channel_menu.is_open()
+			|| self.inbox_open;
 		self.extensions.begin_theme_editor_frame();
+		if self.inbox_open {
+			ui.disable();
+		}
 		if self.settings.open {
 			self.show_settings(&ctx, state, &mut commands);
 			if self.extensions.previewing_theme() {
@@ -5089,6 +5116,14 @@ impl MessagingUi {
 		{
 			commands.push(state.clear_archives());
 		}
+		if let Some((channel, message)) = self.timeline.bookmark_request.take()
+			&& let Some(command) = state.request_inbox_action(client_core::inbox::Action::Save {
+				channel,
+				message,
+				due_at: None,
+			}) {
+			commands.push(command);
+		}
 		if let Some((channel, message, pinned)) = self.timeline.pin_request.take()
 			&& let Some(command) = state.prepare_pin(channel, message, pinned)
 		{
@@ -5217,25 +5252,34 @@ impl MessagingUi {
 			}
 		}
 		if let Some((channel, message)) = self.timeline.leave_read.take()
+			&& !settings_open
+			&& !self.inbox_open
 			&& let Some(command) = state.prepare_mark_left_channel_read(channel, message)
 		{
 			commands.push(command);
 		}
 		if let Some(channel) = self.timeline.mark_channel_read.take() {
 			self.timeline.mark_read = None;
-			if let Some(command) = state.prepare_mark_channel_read(channel) {
+			if !settings_open
+				&& !self.inbox_open
+				&& let Some(command) = state.prepare_mark_channel_read(channel)
+			{
 				commands.push(command);
 			}
 		}
 		if let Some(message) = self.timeline.mark_unread.take() {
 			self.timeline.mark_read = None;
-			if !settings_open && let Some(command) = state.prepare_mark_unread(message) {
+			if !settings_open
+				&& !self.inbox_open
+				&& let Some(command) = state.prepare_mark_unread(message)
+			{
 				self.timeline.browse_away();
 				self.timeline.reset_unread_divider();
 				commands.push(command);
 			}
 		} else if let Some(message) = self.timeline.mark_read.take() {
 			if !settings_open
+				&& !self.inbox_open
 				&& state.search_target.is_none()
 				&& let Some(command) = state.prepare_mark_read(message)
 			{
@@ -5554,6 +5598,7 @@ impl MessagingUi {
 			}
 		}
 		self.show_call_switch(&ctx, state, &mut commands);
+		self.mentions_inbox(&ctx, state, &mut commands);
 		self.apply_ring_request(state, &mut commands);
 		if let Some((guild, channel, user, change)) = self.voice_moderation.take()
 			&& let Some(command) = state.request_server_admin(
@@ -10159,7 +10204,7 @@ pub fn debug_image_sharing(state: &mut State) -> (Vec<model::ImageShare>, String
 				&mut markdown::FormatCache::default(),
 			),
 			view.pending_upload.as_ref(),
-			(&mut None, &mut false),
+			(&mut None, &mut None, &mut false),
 		);
 	});
 	assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Restore to composer")), "sending artwork has no restore button");

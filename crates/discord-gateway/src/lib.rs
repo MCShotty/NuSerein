@@ -1868,6 +1868,7 @@ async fn run_recoverable(
 									"MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" | "MESSAGE_REACTION_REMOVE_ALL" | "MESSAGE_REACTION_REMOVE_EMOJI" => {
 										emit(Event::Reactions(reaction_event(packet.t.as_deref().unwrap_or(""), packet.d.get().as_bytes(), packet.s.is_some())?))?;
 									}
+									"RECENT_MENTION_DELETE" | "SAVED_MESSAGE_CREATE" | "SAVED_MESSAGE_UPDATE" | "SAVED_MESSAGE_DELETE" => { emit(Event::InboxInvalidated)?; }
 									"MESSAGE_DELETE" => { let d: Deleted = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; emit(Event::Delete { channel:d.channel_id, id:d.id })?; }
 									"MESSAGE_DELETE_BULK" => { let d: BulkDeleted = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; if d.ids.len() > 100 { return Err(Failure::Capacity); } emit(Event::DeleteBulk { channel:d.channel_id, ids: d.ids })?; }
 									// Only the auth-session hash changed; revocation arrives as HTTP 401 or close 4004.

@@ -101,6 +101,7 @@ pub struct TimelineView {
 	pub(super) quick_reaction_used: Option<&'static str>,
 	/// Requested pin change: channel, message, pinned.
 	pub(super) pin_request: Option<(Id, Id, bool)>,
+	pub(super) bookmark_request: Option<(Id, Id)>,
 	/// Requested new thread: parent channel and the message that starts it.
 	pub(super) thread_request: Option<(Id, Id)>,
 	/// Channel whose Threads dialog a system row asked to open.
@@ -1369,6 +1370,7 @@ fn message_actions(
 	editing: (&mut Option<(Id, Id, String)>, &mut bool),
 	deleting: &mut Option<(Id, Id)>,
 	pin: (bool, bool, &mut Option<(Id, Id, bool)>),
+	bookmark: (bool, &mut Option<(Id, Id)>),
 	thread: (bool, &mut Option<(Id, Id)>),
 	forward: (bool, &mut Option<Id>),
 	view_reactions: Option<(
@@ -1513,6 +1515,16 @@ fn message_actions(
 			.clicked()
 		{
 			*pin_request = Some((message.channel, message.id, !pinned));
+			ui.close();
+		}
+		if ui
+			.add_enabled(
+				bookmark.0,
+				egui::Button::new(crate::i18n::translate("inbox-bookmark")),
+			)
+			.clicked()
+		{
+			*bookmark.1 = Some((message.channel, message.id));
 			ui.close();
 		}
 		if own || can_delete {
@@ -4216,6 +4228,12 @@ impl TimelineView {
 									&mut self.pin_request,
 								),
 								(
+									!message.ephemeral
+										&& state.can_read_history(message.channel)
+										&& !state.inbox.loading,
+									&mut self.bookmark_request,
+								),
+								(
 									state.can_create_thread(message.channel)
 										&& state.thread_of(message).is_none(),
 									&mut self.thread_request,
@@ -6373,6 +6391,7 @@ mod tests {
 							(&mut editing, &mut edit_started),
 							&mut deleting,
 							(false, false, &mut None),
+							(false, &mut None),
 							(own, &mut thread_request),
 							(false, &mut None),
 							None,

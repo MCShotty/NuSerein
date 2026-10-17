@@ -31,6 +31,8 @@ mod game_mentions;
 mod gpu;
 mod gpu_video;
 mod group_icon;
+#[cfg(feature = "demo")]
+mod inbox_demo;
 mod interaction_uploads;
 mod notification_runtime;
 mod notification_sounds;
@@ -956,6 +958,8 @@ impl SessionEnd {
 	}
 }
 struct Desktop {
+	#[cfg(feature = "demo")]
+	inbox_demo: inbox_demo::Store,
 	proxy_auth: proxy_auth::Authentication,
 	api_proxy: tokio::sync::watch::Sender<Option<discord_api::proxy::ApiProxy>>,
 	extensions: extension_bridge::Bridge,
@@ -2276,6 +2280,8 @@ impl Desktop {
 			.map(|menu| (menu, ui::i18n::Language::System))
 		};
 		Ok(Self {
+			#[cfg(feature = "demo")]
+			inbox_demo: inbox_demo::Store::default(),
 			proxy_auth: proxy_auth::Authentication::default(),
 			api_proxy: tokio::sync::watch::channel(None).0,
 			extensions: extension_bridge::Bridge::default(),
@@ -3179,6 +3185,14 @@ impl Desktop {
 			self.interaction_upload(command);
 			return;
 		}
+		if let Command::InboxAction { request, action } = &command
+			&& (self.state.inbox.request != *request
+				|| self.state.inbox.operation.as_ref() != Some(action)
+				|| !self.state.inbox_action_allowed(action))
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::ServerAdmin {
 			guild,
 			request,
@@ -3665,11 +3679,14 @@ impl Desktop {
 						}
 					})
 				}
-				// The offline fixture has nothing to preload.
 				Command::Voice(_)
 				| Command::CancelProfile
 				| Command::CancelSearch
+				| Command::CancelMentions
 				| Command::Prefetch(_) => return,
+				command @ (Command::InboxAction { .. } | Command::Mentions { .. }) => {
+					self.inbox_demo.execute(&self.state, command)
+				}
 				Command::ThreadStarter {
 					thread,
 					parent,

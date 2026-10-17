@@ -211,6 +211,30 @@ impl State {
 				.selected
 				.is_some_and(|channel| self.read_marker(channel).is_some())
 	}
+	/// Explicit unread navigation may replace a pending targeted page in this channel.
+	/// It never acknowledges messages and preserves the existing safe offline fallback.
+	pub fn open_channel_unread(
+		&mut self,
+		guild: Option<Id>,
+		channel: Id,
+	) -> Result<Option<crate::Command>, &'static str> {
+		let command = self.open_chat_link(guild, channel, None)?;
+		if self.auth != AuthState::Authenticated
+			|| !self.gateway_connected
+			|| !self.can_read_history(channel)
+			|| self.missed(channel) != Some(true)
+		{
+			return Ok(command);
+		}
+		let Some(marker) = self.read_marker(channel) else {
+			return Ok(command);
+		};
+		if self.can_jump_unread() {
+			return Ok(self.open_unread().or(command));
+		}
+		Ok(Some(self.open_after_window(marker.unwrap_or(Id(0)))))
+	}
+
 	/// Scroll to a loaded unread boundary, or request its first bounded page.
 	/// Zero is only a pagination cursor for a known empty marker.
 	pub fn open_unread(&mut self) -> Option<crate::Command> {
@@ -1016,6 +1040,38 @@ mod navigation_tests {
 		state.reply = Some(Reply::to(Id(500)));
 		state
 	}
+	#[test]
+	fn explicit_unread_navigation_replaces_pending_targets_without_ack_or_draft_loss() {
+		let mut state = state(Some(Id(100)));
+		let _ = state.open_after_window(Id(250));
+		let retired = state.request;
+		assert!(!state.can_jump_unread());
+		assert!(state.open_chat_link(None, Id(1), None).unwrap().is_none());
+		assert!(state.open_unread().is_none());
+		let Some(Command::History {
+			after: Some(Id(100)),
+			request,
+			..
+		}) = state.open_channel_unread(None, Id(1)).unwrap()
+		else {
+			panic!("must start at the unread boundary")
+		};
+		assert_ne!(request, retired);
+		assert!(state.read_state.pending.is_none());
+		assert_eq!(state.drafts[&Id(1)], "Preserve draft");
+		apply(
+			&mut state,
+			CoreEvent::History {
+				channel: Id(1),
+				request: retired,
+				older: false,
+				messages: vec![message(300)],
+			},
+		);
+		assert!(state.timeline.get(Id(300)).is_none());
+		assert_eq!(state.read_marker(Id(1)), Some(Some(Id(100))));
+	}
+
 	#[test]
 	fn newest_live_cursor_skips_deleted_tail_payloads_and_placeholders() {
 		for preserve in [false, true] {

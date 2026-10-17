@@ -1,5 +1,82 @@
 # Discord compatibility — checked 2026-09-10
 
+
+## Desktop parity inventory — October 17, 2026
+
+Scope: the full desktop roadmap, including server administration. The implementation
+baseline is fork `f9e39f7`; personal-controls work is separately reviewed in
+[MCShotty/Serein#8](https://github.com/MCShotty/Serein/pull/8), and the FFmpeg media
+follow-up is [#7](https://github.com/MCShotty/Serein/pull/7). Neither open PR is assumed
+merged. This inventory supersedes older scope statements below without rewriting
+historical evidence. **Native implementation and live Discord acceptance are separate.**
+
+The owner supplied the official-client reference: **Stable 641004 (`c9ac31f`), host
+1.0.9262 x64 (`94186`)**, on October 17. The public Stable metadata/download routes
+returned HTTP 403 here; no installed official desktop client or owner-controlled
+session is available in this workspace. The owner-supplied build is recorded, but
+entitlement-specific UI, side-by-side native behavior and Windows/macOS performance
+remain **not verified here**. Public Discord resource/help references establish
+workflow/schema evidence, not a completed client comparison.
+
+| Roadmap workflow | Current implementation / remaining gap | Source or next verification |
+| --- | --- | --- |
+| Unified Inbox | Native unread, recent-mention and bookmark tabs in this branch; bounded filters, explicit dismissal and jumps | `client-core/inbox.rs`, `ui/inbox.rs`; normal-account acceptance unverified |
+| Bookmarks/reminders | Explicit list/save/remove and reminder deadlines; service determines account availability | [Saved-message account routes](https://docs.discord.food/resources/user#list-saved-messages); restricted/unofficial |
+| Mutes, notification inheritance | Channel/server/DM support; timed choices and category inheritance extended in #8 | `client-core/notifications.rs`; cross-client expiry remains owner-gated |
+| Read actions, folders, navigation | Existing per-channel/server/all read actions and folders; category/folder scope and unread shortcuts in #8 | `read_state.rs`, `ui/guild_folders.rs`, `ui/keybinds.rs` |
+| Blocked/ignored users | Native relationship list, block/unblock and ignore/unignore actions; collapsed message presentation needs further work | `user_actions.rs`, `ui/friends.rs`, historical relationship section |
+| Message requests | Native accept/decline/spam request flows | `user_actions.rs`; owner-controlled cross-client reconciliation pending |
+| Search | Native filters, pagination and permission-checked message navigation | `search.rs`, `ui/search_navigation_tests.rs`; indexing/permission races require owner check |
+| Reply/edit/send/uploads | Existing bounded drafts, nonce correlation and explicit uncertain-write handling | `message_actions.rs`, `replies.rs`, `uploads.rs`; interaction audit remains partial |
+| Reactions, polls, pins, forwarding | Native workflows already exist | `reactions.rs`, `polls.rs`, `forwarding.rs`, `message_actions.rs`; official-client comparison pending |
+| Slash command basics | Native schema-driven commands and modal lifecycle | `application_commands.rs`, `interactions.rs` |
+| Command autocomplete/files/context/account install | Gaps: autocomplete, attachment arguments, user/message commands and account-installed discovery | Existing code rejects or excludes these; no completeness claim |
+| Threads/forums | Native archives, participants, creation, tags and management | `threads.rs`, `archives.rs`, `forum.rs`, `channel_actions.rs`; private-thread/permission audit pending |
+| Announcement following/publishing | Existing channel integrations/follow support; publishing audit pending | `server_integrations.rs`, `channel_actions.rs` |
+| Group-DM membership | Native invite/remove/leave and group management | `group_actions.rs`; changed-membership recovery unverified live |
+| Server settings and lifecycle | Native settings and confirmed deletion; permissions and draft checks exist | `server_settings.rs`, `server_actions.rs`; owner/admin/member matrix needs expansion |
+| Roles and hierarchy | Native create/edit/delete, ordering, assignment and hierarchy gates | `server_roles.rs`; no replacement implementation needed |
+| Channel/category organization | Native creation, movement, reordering and permission synchronization | `channel_actions.rs`, `ui/channel_menu.rs` |
+| Member moderation | Native kick/nickname/roles and voice movement/mute; bans/unbans/timeouts/reasons remain gaps | `server_admin.rs`; hierarchy and administrator cases must be tested |
+| Invites/integrations/audit log | Native permission-scoped settings with bounded reads and explicit writes | `server_invites.rs`, `server_integrations.rs`, `server_audit_log.rs` |
+| AutoMod | No native configuration yet | [Official Auto Moderation resource](https://docs.discord.com/developers/resources/auto-moderation); implementation required |
+| Scheduled events | No native browse/create/edit/RSVP/cancel flow yet | [Official scheduled-event resource](https://docs.discord.com/developers/resources/guild-scheduled-event); implementation required |
+| Stage participation/moderation | Unsupported; must never enable microphone transmission for audience joins | `client-core/voice.rs`; implementation and reconnect tests required |
+| Onboarding, Channels & Roles | Native participant answers; administrative configuration incomplete | `onboarding.rs`; role/channel invalidation coverage required |
+| Rules screening / Server Guide | Native participant verification and onboarding answers exist; administrative editing and Server Guide remain gaps | `onboarding.rs`; administrative capability/schema audit and owner-controlled verification required |
+| Encoding/capture/HDR | Existing video work retained; #567 scope and path limit unchanged | `docs/voice.md`, video evidence; physical display/official-client gates remain |
+| Soundboard | Upstream #579 supplies playback, management and trimmed uploads; reviewed for integration | `ViceVerse-cz/Serein#579`, head `aa9c1dc`; not yet present in fork baseline |
+| Voice messages | Native received playback; recording and advanced controls have upstream candidates | Upstream #566 and #662; opt-in capture and lifecycle verification required |
+| Video/audio playback | Existing native playback; FFmpeg preference is separate #7 | `apps/desktop/src/audio.rs`, `video.rs`; media performance unmeasured on Windows/macOS |
+| Embedded video | Partial native cards; upstream #439 is an integration candidate | Keep anonymous bounded media-reader and explicit navigation boundaries |
+| Device routing / screen audio | Existing selected input/output; separate media output upstream #533; screen-audio platform limits remain | `voice.rs`, `audio.rs`, `docs/platform-support.md` |
+| Call layout / adaptation | Native layouts exist; full interaction audit and adaptive stream quality remain gaps | `ui/voice.rs`; no automatic-quality claim |
+| Profiles / server profiles | Native viewing and basic editing; full server-profile editing audit incomplete | `profile.rs`, `profile_edit.rs`, `ui/profiles.rs` |
+| Cosmetics / connections | Native display and some edits; cosmetic editing and service-managed purchasing remain limited | Existing profile sections; entitlements must remain service-authoritative |
+| Presence / account switching | Native presence and saved-account controls | `presence.rs`, desktop credentials worker; failure/reconnect tests exist |
+| Privacy / notification overview | Existing messaging/privacy and device notification settings; content filters/account overview not complete | `messaging_permissions.rs`, `notification_preferences.rs` |
+| Accessibility / desktop layout | Existing focus, IME, scaling, theme/reduced-motion and native menus; full screen-reader/RTL/narrow-window audit pending | `docs/design.md`; native platform evidence required |
+| Activities | Native gap; embedded web applications conflict with current webview boundaries | Separate feasibility decision; no silent general-purpose webview |
+| Overlay / discovery / commerce | Capability assessment required; external handoffs do not count as native parity | No purchase, subscription or overlay support is implied |
+
+Integration candidates were checked against their remote heads on October 17: recent
+mentions #599 (`d253542`), soundboard #579 (`aa9c1dc`), playback controls #662
+(`d2d256c`), recording #566, media routing #533 and embedded video #439. Open upstream
+work remains unverified until integrated and tested with this fork's media/privacy paths.
+The Inbox reuses the original recent-mentions implementation from #599 (`11b5144`),
+with current lifecycle handling retained. Imported code keeps its original attribution.
+A later read-only refresh found parent `main` at `a5e935d` (folder-read actions #672
+and call mention/unread rendering #681). Those updates are recorded as upstream work;
+this feature branch still targets the unchanged fork baseline.
+
+Acceptance gates apply to every remaining implementation: bounded ownership and wire
+input; stale-response/session rejection; current permissions before writes and display;
+no automatic repeat of uncertain writes; preserved drafts; cancellation/reconnect and
+resource release tests. Each feature PR must carry focused/workspace checks, synthetic
+native evidence where available, current-nightly and fork release comparisons, native
+package CI and explicit owner-controlled interoperability limitations. This table is an
+inventory, **not a claim that the remaining gaps are completed**.
+
 ## Game mentions (October 14, 2026)
 
 The native composer offers `@game`, a searchable game catalog and application references
@@ -175,6 +252,19 @@ and [Gateway close codes](https://docs.discord.com/developers/topics/opcodes-and
 Normal-account use remains unofficial. Local WebSocket regressions exercise the
 recovery policy; they do not establish the cause of issue #577's macOS Wi-Fi
 failure or prove live Discord recovery.
+## Mentions inbox — October 8, 2026
+
+Inbox reads one on-demand page from the unofficial
+[List Recent Mentions](https://docs.discord.food/resources/user#list-recent-mentions)
+normal-account route. Requests explicitly include role and everyone/here mentions,
+use a 25-message limit and paginate with `before`. The service documents a seven-day
+window; Serein displays only returned messages in known accessible conversations and
+does not claim an exhaustive historical archive. One page is retained in session memory
+(25 messages, at most 1 MiB; wire replies capped at 2 MiB). Older pages replace the
+current page. Refresh/retry are explicit; there is no background polling or persistence.
+Opening a result uses the existing permission-checked message-history navigation.
+Closing, account changes, disconnects and relevant content/permission invalidation clear
+the snapshot. Source research and local HTTP/UI fixtures do not prove live acceptance.
 
 ## Profile boards — October 7, 2026
 

@@ -1,5 +1,7 @@
 //! Offline native framebuffer capture; no account, filesystem cache, or network adapters.
 use eframe::egui;
+#[path = "../src/inbox_demo.rs"]
+mod inbox_demo;
 #[path = "../src/server_settings_demo.rs"]
 mod server_settings_demo;
 #[allow(dead_code)] // The shared fixture's CLI check is called by the desktop binary.
@@ -16,6 +18,7 @@ use std::{
 };
 
 struct Preview {
+	inbox_demo: inbox_demo::Store,
 	interactive: bool,
 	smoke: bool,
 	messaging: ui::MessagingUi,
@@ -56,6 +59,8 @@ impl eframe::App for Preview {
 		// Only synthetic fixtures execute these commands; no service adapters exist here.
 		for command in self.messaging.show(ui, &mut self.state) {
 			let event = match command {
+				command @ (client_core::Command::Mentions { .. }
+				| client_core::Command::InboxAction { .. }) => self.inbox_demo.execute(&self.state, command),
 				client_core::Command::ApplicationCommands {
 					channel,
 					guild,
@@ -1301,6 +1306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 			}
 			Ok(Box::new(Preview {
+				inbox_demo: inbox_demo::Store::default(),
 				interactive,
 				smoke,
 				messaging,
