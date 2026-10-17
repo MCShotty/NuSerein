@@ -334,6 +334,10 @@ impl MessagingUi {
 	/// Fixture-only entry point for the native offline settings preview.
 	pub fn preview_settings(&mut self, page: &str) {
 		self.settings.open = true;
+		if page == "activity" {
+			self.settings.page = Page::Activity;
+			return;
+		}
 		if page == "profiles-server" {
 			self.settings.page = Page::Profile;
 			self.settings.server_profile = true;
