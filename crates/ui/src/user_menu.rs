@@ -147,6 +147,9 @@ pub(super) fn application_menu(
 	else {
 		return;
 	};
+	if !state.application_target_known(channel, kind, target) {
+		return;
+	}
 	ui.menu_button(crate::i18n::translate("application-menu-title"), |ui| {
 		if state.application_commands.loading {
 			ui.spinner();

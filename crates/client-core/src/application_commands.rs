@@ -234,7 +234,7 @@ impl State {
 		}
 		self.revision = self.revision.wrapping_add(1);
 	}
-	fn application_target_known(&self, channel: Id, kind: u8, target: Id) -> bool {
+	pub fn application_target_known(&self, channel: Id, kind: u8, target: Id) -> bool {
 		if kind == 3 {
 			self.timeline
 				.get(target)
@@ -247,7 +247,7 @@ impl State {
 				|| self
 					.timeline
 					.iter()
-					.any(|message| message.author.id == target)
+					.any(|message| message.channel == channel && message.author.id == target)
 				|| self
 					.members
 					.as_ref()
@@ -583,6 +583,43 @@ mod tests {
 		state.gateway_connected = false;
 		state.expire_autocomplete(std::time::Instant::now());
 		assert!(state.application_commands.completion.query.is_none());
+	}
+
+	#[test]
+	fn context_user_targets_do_not_borrow_evidence_from_another_conversation() {
+		let mut state = bot_state();
+		let mut definition = command();
+		definition.kind = 2;
+		definition.name = "Inspect member".into();
+		definition.description.clear();
+		definition.options.clear();
+		state.application_commands.scope = Some(Id(2));
+		state.application_commands.commands = vec![definition.clone()];
+		let mut foreign = crate::tests::message(100);
+		foreign.channel = Id(99);
+		foreign.author.id = Id(77);
+		state
+			.timeline
+			.insert(foreign.clone(), false, false)
+			.unwrap();
+		assert!(!state.application_target_known(Id(2), 2, Id(77)));
+		assert!(
+			state
+				.prepare_context_command(definition.id, Id(77), 2)
+				.is_err()
+		);
+		foreign.id = Id(101);
+		foreign.channel = Id(2);
+		state.timeline.insert(foreign, false, false).unwrap();
+		let Command::Interaction(request) = state
+			.prepare_context_command(definition.id, Id(77), 2)
+			.unwrap()
+		else {
+			panic!()
+		};
+		assert!(state.application_command_dispatch_allowed(&request));
+		state.timeline.clear_window_preserving_deletions();
+		assert!(!state.application_command_dispatch_allowed(&request));
 	}
 
 	#[test]

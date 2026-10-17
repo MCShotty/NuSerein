@@ -2658,3 +2658,7 @@ provide protocol evidence. Account discovery and autocomplete dispatch are unoff
 account entitlement and live service acceptance remain owner-controlled and unverified.
 Attachment command arguments still require a separate native file-selection integration;
 this branch does not mislabel modal file support as slash-command attachment parity.
+
+Context-menu target evidence is scoped to the active conversation. A cached author
+from another channel cannot make an unrelated Friends/notification contact eligible;
+availability is checked again before dispatch.

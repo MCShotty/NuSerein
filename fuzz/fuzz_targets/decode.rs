@@ -30,7 +30,9 @@ fuzz_target!(|data: &[u8]| {
 		return;
 	}
 	if selector == 12 {
-		let _ = black_box(discord_protocol::application_commands::decode_context(payload, None, 2));
+		let _ = black_box(discord_protocol::application_commands::decode_context(
+			payload, None, 2,
+		));
 		return;
 	}
 	// These are the same public decode/normalization boundaries used by the API
