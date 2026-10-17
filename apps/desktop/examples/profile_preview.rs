@@ -1035,7 +1035,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				);
 			} else if matches!(
 				page.as_str(),
-				"member-tags"
+				"stage"
+					| "member-tags"
 					| "dm-tags" | "dm-intro"
 					| "channel-intro"
 					| "post-intro" | "markdown"
