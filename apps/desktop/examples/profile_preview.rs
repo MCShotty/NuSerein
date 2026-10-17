@@ -992,9 +992,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			} else if matches!(
 				page.as_str(),
 				"stage"
-					| "member-tags"
-					| "dm-tags" | "dm-intro"
-					| "channel-intro"
+					| "member-tags" | "dm-tags"
+					| "dm-intro" | "channel-intro"
 					| "post-intro" | "markdown"
 					| "channel-links"
 					| "channel-link-replies"
