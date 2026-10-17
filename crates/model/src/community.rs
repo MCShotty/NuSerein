@@ -263,6 +263,8 @@ pub enum StageVoiceChange {
 	MoveToAudience(Id),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+// One pending action, already boxed by Command, is bounded to 64 KiB by valid()/bytes().
+#[allow(clippy::large_enum_variant)]
 pub enum Action {
 	ListEvents,
 	EditOccurrence {
@@ -423,6 +425,8 @@ pub struct StageVoiceSnapshot {
 	pub participation: StageParticipation,
 }
 #[derive(Clone, Debug)]
+// The single community result lane accounts for the complete retained payload with bytes().
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome {
 	Events(EventPage),
 	Exception {
@@ -472,6 +476,108 @@ pub fn event_link(value: &str) -> Option<(Id, Id)> {
 	let guild = parts.next()?.parse::<u64>().ok()?;
 	let event = parts.next()?.parse::<u64>().ok()?;
 	(guild != 0 && event != 0 && parts.next().is_none()).then_some((Id(guild), Id(event)))
+}
+
+pub const MAX_EXCEPTIONS: usize = 64;
+pub const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+pub fn occurrence_id(original: i64) -> Option<Id> {
+	let ms = original.checked_mul(1000)?.checked_sub(DISCORD_EPOCH_MS)?;
+	let value = u64::try_from(ms).ok()?;
+	value
+		.checked_shl(22)
+		.filter(|id| *id != 0 && (*id >> 22) == value)
+		.map(Id)
+}
+pub fn occurrence_time(id: Id) -> Option<i64> {
+	i64::try_from(id.0 >> 22)
+		.ok()?
+		.checked_add(DISCORD_EPOCH_MS)
+		.map(|ms| ms / 1000)
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventException {
+	pub event: Id,
+	pub id: Id,
+	pub canceled: bool,
+	pub start: Option<i64>,
+	pub end: Option<i64>,
+}
+impl EventException {
+	pub fn valid(&self) -> bool {
+		self.event.0 != 0
+			&& self.id.0 != 0
+			&& self
+				.start
+				.is_none_or(|s| (1..=253_402_300_799).contains(&s))
+			&& self.end.is_none_or(|e| (1..=253_402_300_799).contains(&e))
+			&& self.start.zip(self.end).is_none_or(|(s, e)| e > s)
+	}
+}
+/// Gregorian calendar date from a UTC day index. Arithmetic stays within the RFC3339 range.
+fn calendar(seconds: i64) -> (u8, u8, u8) {
+	let days = seconds.div_euclid(86400);
+	let z = days + 719468;
+	let era = z.div_euclid(146097);
+	let doe = z - era * 146097;
+	let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	let mp = (5 * doy + 2) / 153;
+	let day = doy - (153 * mp + 2) / 5 + 1;
+	let month = mp + if mp < 10 { 3 } else { -9 };
+	(month as u8, day as u8, (days + 3).rem_euclid(7) as u8)
+}
+impl Recurrence {
+	pub fn matches_occurrence(&self, at: i64) -> bool {
+		if !self.writable()
+			|| at < self.start
+			|| at > 253_402_300_799
+			|| at.rem_euclid(86400) != self.start.rem_euclid(86400)
+		{
+			return false;
+		}
+		let (month, day, weekday) = calendar(at);
+		match self.frequency {
+			0 => self.by_month == [month] && self.by_month_day == [day],
+			1 => {
+				self.by_n_weekday
+					== [NWeekday {
+						n: (day - 1) / 7 + 1,
+						day: weekday,
+					}]
+			}
+			2 => {
+				self.by_weekday == [weekday]
+					&& ((at.div_euclid(86400) - self.start.div_euclid(86400)
+						+ (self.start.div_euclid(86400) + 3).rem_euclid(7))
+						/ 7)
+					.rem_euclid(i64::from(self.interval))
+						== 0
+			}
+			3 => self.by_weekday.is_empty() || self.by_weekday.contains(&weekday),
+			_ => false,
+		}
+	}
+	/// At most sixteen results and ten years of UTC days; never an unbounded RRULE expansion.
+	pub fn upcoming(&self, after: i64, limit: usize) -> Vec<i64> {
+		let limit = limit.min(16);
+		let mut results = Vec::with_capacity(limit);
+		if limit == 0 || after > 253_402_300_799 || !self.writable() {
+			return results;
+		}
+		let first = after.max(self.start).div_euclid(86400) * 86400 + self.start.rem_euclid(86400);
+		for day in 0..3660 {
+			let Some(at) = first.checked_add(day * 86400) else {
+				break;
+			};
+			if at >= after && self.matches_occurrence(at) {
+				results.push(at);
+				if results.len() == limit {
+					break;
+				}
+			}
+		}
+		results
+	}
 }
 
 #[cfg(test)]
@@ -579,107 +685,5 @@ mod tests {
 		] {
 			assert!(event_link(url).is_none());
 		}
-	}
-}
-
-pub const MAX_EXCEPTIONS: usize = 64;
-pub const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
-pub fn occurrence_id(original: i64) -> Option<Id> {
-	let ms = original.checked_mul(1000)?.checked_sub(DISCORD_EPOCH_MS)?;
-	let value = u64::try_from(ms).ok()?;
-	value
-		.checked_shl(22)
-		.filter(|id| *id != 0 && (*id >> 22) == value)
-		.map(Id)
-}
-pub fn occurrence_time(id: Id) -> Option<i64> {
-	i64::try_from(id.0 >> 22)
-		.ok()?
-		.checked_add(DISCORD_EPOCH_MS)
-		.map(|ms| ms / 1000)
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EventException {
-	pub event: Id,
-	pub id: Id,
-	pub canceled: bool,
-	pub start: Option<i64>,
-	pub end: Option<i64>,
-}
-impl EventException {
-	pub fn valid(&self) -> bool {
-		self.event.0 != 0
-			&& self.id.0 != 0
-			&& self
-				.start
-				.is_none_or(|s| (1..=253_402_300_799).contains(&s))
-			&& self.end.is_none_or(|e| (1..=253_402_300_799).contains(&e))
-			&& self.start.zip(self.end).is_none_or(|(s, e)| e > s)
-	}
-}
-/// Gregorian calendar date from a UTC day index. Arithmetic stays within the RFC3339 range.
-fn calendar(seconds: i64) -> (u8, u8, u8) {
-	let days = seconds.div_euclid(86400);
-	let z = days + 719468;
-	let era = z.div_euclid(146097);
-	let doe = z - era * 146097;
-	let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-	let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-	let mp = (5 * doy + 2) / 153;
-	let day = doy - (153 * mp + 2) / 5 + 1;
-	let month = mp + if mp < 10 { 3 } else { -9 };
-	(month as u8, day as u8, (days + 3).rem_euclid(7) as u8)
-}
-impl Recurrence {
-	pub fn matches_occurrence(&self, at: i64) -> bool {
-		if !self.writable()
-			|| at < self.start
-			|| at > 253_402_300_799
-			|| at.rem_euclid(86400) != self.start.rem_euclid(86400)
-		{
-			return false;
-		}
-		let (month, day, weekday) = calendar(at);
-		match self.frequency {
-			0 => self.by_month == [month] && self.by_month_day == [day],
-			1 => {
-				self.by_n_weekday
-					== [NWeekday {
-						n: (day - 1) / 7 + 1,
-						day: weekday,
-					}]
-			}
-			2 => {
-				self.by_weekday == [weekday]
-					&& ((at.div_euclid(86400) - self.start.div_euclid(86400)
-						+ (self.start.div_euclid(86400) + 3).rem_euclid(7))
-						/ 7)
-					.rem_euclid(i64::from(self.interval))
-						== 0
-			}
-			3 => self.by_weekday.is_empty() || self.by_weekday.contains(&weekday),
-			_ => false,
-		}
-	}
-	/// At most sixteen results and ten years of UTC days; never an unbounded RRULE expansion.
-	pub fn upcoming(&self, after: i64, limit: usize) -> Vec<i64> {
-		let limit = limit.min(16);
-		let mut results = Vec::with_capacity(limit);
-		if limit == 0 || after > 253_402_300_799 || !self.writable() {
-			return results;
-		}
-		let first = after.max(self.start).div_euclid(86400) * 86400 + self.start.rem_euclid(86400);
-		for day in 0..3660 {
-			let Some(at) = first.checked_add(day * 86400) else {
-				break;
-			};
-			if at >= after && self.matches_occurrence(at) {
-				results.push(at);
-				if results.len() == limit {
-					break;
-				}
-			}
-		}
-		results
 	}
 }

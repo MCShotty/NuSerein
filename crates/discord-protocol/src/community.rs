@@ -356,6 +356,41 @@ pub fn event_body(after: &EventDraft, before: Option<&EventDraft>) -> Result<Val
 	}
 	Ok(Value::Object(body))
 }
+/// This read never retains session IDs and never grants microphone consent.
+pub fn stage_voice(
+	bytes: &[u8],
+	guild: Id,
+	channel: Id,
+	user: Id,
+) -> Result<StageVoiceSnapshot, &'static str> {
+	if bytes.len() > 8192 {
+		return Err("voice state exceeds wire budget");
+	}
+	let dto =
+		crate::decode::<crate::VoiceStateDto>(bytes).map_err(|_| "invalid stage voice state")?;
+	if dto.user_id != user
+		|| dto.channel_id != Some(channel)
+		|| dto.guild_id.is_some_and(|g| g != guild)
+	{
+		return Err("stage voice scope mismatch");
+	}
+	let participation = dto
+		.suppress
+		.filter(|_| {
+			dto.request_to_speak_timestamp
+				.as_deref()
+				.is_none_or(|value| timestamp(value).is_ok())
+		})
+		.map_or(StageParticipation::Unknown, |s| {
+			StageParticipation::from_wire(s, dto.request_to_speak_timestamp.is_some())
+		});
+	Ok(StageVoiceSnapshot {
+		user,
+		channel,
+		participation,
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -444,39 +479,4 @@ mod tests {
 			assert!(stage_voice(bytes.as_bytes(), Id(10), Id(21), Id(2)).is_err());
 		}
 	}
-}
-
-/// This read never retains session IDs and never grants microphone consent.
-pub fn stage_voice(
-	bytes: &[u8],
-	guild: Id,
-	channel: Id,
-	user: Id,
-) -> Result<StageVoiceSnapshot, &'static str> {
-	if bytes.len() > 8192 {
-		return Err("voice state exceeds wire budget");
-	}
-	let dto =
-		crate::decode::<crate::VoiceStateDto>(bytes).map_err(|_| "invalid stage voice state")?;
-	if dto.user_id != user
-		|| dto.channel_id != Some(channel)
-		|| dto.guild_id.is_some_and(|g| g != guild)
-	{
-		return Err("stage voice scope mismatch");
-	}
-	let participation = dto
-		.suppress
-		.filter(|_| {
-			dto.request_to_speak_timestamp
-				.as_deref()
-				.is_none_or(|value| timestamp(value).is_ok())
-		})
-		.map_or(StageParticipation::Unknown, |s| {
-			StageParticipation::from_wire(s, dto.request_to_speak_timestamp.is_some())
-		});
-	Ok(StageVoiceSnapshot {
-		user,
-		channel,
-		participation,
-	})
 }
