@@ -10,6 +10,8 @@ enum Intent {
 	Read,
 	Write(Action),
 	Edit,
+	Tags,
+	Members,
 	Delete,
 }
 
@@ -19,6 +21,12 @@ struct Editor {
 	delete: bool,
 	submitted: bool,
 }
+struct TagEditor {
+	channel: Id,
+	tags: Vec<Id>,
+	before: Vec<Id>,
+	submitted: Option<u64>,
+}
 
 #[derive(Default)]
 pub(super) struct PostMenu {
@@ -27,6 +35,8 @@ pub(super) struct PostMenu {
 	load: Option<Id>,
 	opened: Option<egui::Id>,
 	editor: Option<Editor>,
+	tags: Option<TagEditor>,
+	members: crate::thread_members::Dialog,
 	feedback: Option<Id>,
 	failure: Option<Id>,
 	generation: u64,
@@ -183,6 +193,15 @@ impl PostMenu {
 					.clicked()
 				{
 					intent = Some(Intent::Edit);
+				}
+				if state.is_forum_post(post.id)
+					&& state.can_edit_post(post.id)
+					&& row(ui, "post-tags-title", ready, false).clicked()
+				{
+					intent = Some(Intent::Tags);
+				}
+				if row(ui, "thread-members-title", ready, false).clicked() {
+					intent = Some(Intent::Members);
 				}
 				if row(ui, "post-menu-context-copy-link", true, false).clicked() {
 					if let Some(guild) = post.guild {
@@ -345,6 +364,8 @@ impl PostMenu {
 			};
 			return;
 		}
+		self.show_tags(ctx, state, guild, commands);
+		self.members.show(ctx, state, commands);
 		if let Some(id) = self.load
 			&& !state.channel_action_pending()
 		{
@@ -362,6 +383,27 @@ impl PostMenu {
 			&& let Some(post) = state.channel(id).filter(|c| c.guild == guild)
 		{
 			match intent {
+				Intent::Tags => {
+					let tags = post
+						.tags
+						.as_ref()
+						.map_or_else(Vec::new, |tags| tags.applied.clone());
+					self.tags = Some(TagEditor {
+						channel: id,
+						before: tags.clone(),
+						tags,
+						submitted: None,
+					});
+					state.clear_channel_action_result(id);
+				}
+				Intent::Members => {
+					if state.selected != Some(id)
+						&& let Some(command) = state.select(id)
+					{
+						commands.push(command);
+					}
+					self.members.open(state, id);
+				}
 				Intent::Read => {
 					if let Some(command) = state.prepare_mark_channel_read(id) {
 						commands.push(command);
@@ -570,6 +612,122 @@ impl PostMenu {
 				self.feedback = Some(editor.channel);
 			}
 			self.editor = None;
+		}
+	}
+	fn show_tags(
+		&mut self,
+		ctx: &egui::Context,
+		state: &mut State,
+		guild: Option<Id>,
+		commands: &mut Vec<Command>,
+	) {
+		let Some(editor) = &mut self.tags else {
+			return;
+		};
+		let Some(post) = state
+			.channel(editor.channel)
+			.filter(|post| post.guild == guild && state.can_view(post.id))
+		else {
+			self.tags = None;
+			return;
+		};
+		let channel = post.id;
+		let Some(parent) = post.parent_id else {
+			self.tags = None;
+			return;
+		};
+		if editor
+			.submitted
+			.is_some_and(|request| state.channel_action_completed(channel, request) == Some(true))
+		{
+			self.tags = None;
+			return;
+		}
+		if editor
+			.submitted
+			.is_some_and(|request| state.channel_action_completed(channel, request) == Some(false))
+		{
+			editor.submitted = None;
+		}
+		let current = post
+			.tags
+			.as_ref()
+			.map(|tags| tags.applied.clone())
+			.unwrap_or_default();
+		let stale = current != editor.before;
+		let busy = state.channel_action_pending() || editor.submitted.is_some();
+		let connected = state.demo
+			|| (state.gateway_connected
+				&& state.auth == client_core::auth::AuthState::Authenticated);
+		let mut close = false;
+		let response = dialog::Dialog::new("post-tags", crate::i18n::translate("post-tags-title"))
+			.width(420.0)
+			.show(ctx, |dialog| {
+				dialog.scroll(160.0, |ui| {
+					if state.post_details(channel).is_none()
+						&& ui
+							.add_enabled(
+								!busy && connected,
+								egui::Button::new(crate::i18n::translate("group-members-refresh")),
+							)
+							.clicked() && let Some(command) =
+						state.request_channel_action(channel, Action::PostLoad)
+					{
+						commands.push(command);
+					}
+					if stale {
+						ui.weak(crate::i18n::translate("post-tags-changed"));
+						if ui
+							.button(crate::i18n::translate("post-tags-reload"))
+							.clicked()
+						{
+							editor.tags = current.to_vec();
+							editor.before = current.to_vec();
+						}
+					}
+					ui.weak(crate::i18n::translate("post-tags-limit"));
+					for tag in state.forum_tags(parent) {
+						let mut checked = editor.tags.contains(&tag.id);
+						let may_change = state.can_apply_tag(parent, tag)
+							&& (!busy && !stale) && (checked || editor.tags.len() < 5);
+						if ui
+							.add_enabled(may_change, egui::Checkbox::new(&mut checked, &tag.name))
+							.changed()
+						{
+							if checked {
+								editor.tags.push(tag.id);
+							} else {
+								editor.tags.retain(|id| *id != tag.id);
+							}
+						}
+					}
+					if let Some(status) = state.channel_action_status(channel) {
+						ui.weak(crate::i18n::translate_if_key(status));
+					}
+				});
+				dialog.footer(|ui| {
+					if ui
+						.add_enabled(
+							!busy
+								&& connected && !stale && editor.tags != editor.before
+								&& state.can_change_post_tags(channel, &editor.tags),
+							egui::Button::new(crate::i18n::translate("post-tags-save")),
+						)
+						.clicked() && let Some(command) =
+						state.request_channel_action(channel, Action::PostTags(editor.tags.clone()))
+					{
+						if let Command::ChannelAction { request, .. } = &command {
+							editor.submitted = Some(*request);
+						}
+						commands.push(command);
+					}
+					close = ui
+						.button(crate::i18n::translate("group-members-cancel"))
+						.clicked();
+				});
+			});
+		if close || response.close {
+			self.tags = None;
 		}
 	}
 }

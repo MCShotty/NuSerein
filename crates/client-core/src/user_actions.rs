@@ -11,6 +11,13 @@ pub const MAX_RELATIONSHIP_BYTES: usize = 128 * 1024;
 pub const MAX_FRIEND_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_RESTRICTED_BYTES: usize = 2 * 1024 * 1024;
 
+/// Account relationship that collapses a person's messages until explicitly revealed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ContentRestriction {
+	Blocked,
+	Ignored,
+}
+
 fn replace_id_set(
 	dest: &mut BTreeSet<Id>,
 	entries: Option<Vec<Id>>,
@@ -726,6 +733,16 @@ impl State {
 		}
 		(self.demo || self.user_actions.restricted_known).then_some(false)
 	}
+	/// A known restriction only; unavailable relationship metadata never invents a block.
+	pub fn user_content_restriction(&self, user: Id) -> Option<ContentRestriction> {
+		if self.user_blocked(user) == Some(true) {
+			Some(ContentRestriction::Blocked)
+		} else if self.user_ignored(user) == Some(true) {
+			Some(ContentRestriction::Ignored)
+		} else {
+			None
+		}
+	}
 	pub(crate) fn pending_dm_muted(&self, channel: Id) -> Option<bool> {
 		match &self.user_actions.pending {
 			Some((
@@ -881,7 +898,7 @@ impl State {
 		self.user_actions.sequence = self.user_actions.sequence.wrapping_add(1);
 		let request = self.user_actions.sequence;
 		self.user_actions.pending = Some((action.clone(), request, false));
-		if matches!(action, Action::Block { .. }) {
+		if matches!(action, Action::Block { .. } | Action::Ignore { .. }) {
 			self.user_actions.bump_view();
 		}
 		self.user_actions.status = None;
@@ -898,7 +915,7 @@ impl State {
 		self.user_actions.opened_dm = None;
 		self.user_actions.challenge = None;
 		if let Some((action, _, _)) = self.user_actions.pending.take() {
-			if matches!(action, Action::Block { .. }) {
+			if matches!(action, Action::Block { .. } | Action::Ignore { .. }) {
 				self.user_actions.bump_view();
 			}
 			self.user_actions.status =
@@ -1492,7 +1509,7 @@ impl State {
 				if matches!(action, Action::OpenDm(_)) {
 					self.user_actions.dm_origin = None;
 				}
-				if matches!(action, Action::Block { .. }) {
+				if matches!(action, Action::Block { .. } | Action::Ignore { .. }) {
 					self.user_actions.bump_view();
 				}
 				if let Err(failure) = result {

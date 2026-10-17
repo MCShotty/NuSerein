@@ -26,6 +26,7 @@ fn date_id(value: &str) -> Result<Option<u64>, ()> {
 
 #[derive(Default)]
 pub struct SearchUi {
+	restricted: crate::restricted::Visibility,
 	pub open: bool,
 	page_input: String,
 	page_request: Option<u64>,
@@ -145,6 +146,7 @@ impl SearchUi {
 			}
 		}
 		if !self.open {
+			self.restricted = Default::default();
 			self.formats.retain(|_| false);
 			self.previews.clear();
 			self.viewing = None;
@@ -174,7 +176,25 @@ impl SearchUi {
 			self.query = filters::display(&self.query, state, &mut self.labels);
 		}
 		self.formats.retain(on_page);
-		self.previews.retain(|id, _| on_page(*id));
+		self.restricted.sync(state, |id| {
+			state
+				.search
+				.as_ref()
+				.and_then(|view| view.page.as_ref())
+				.and_then(|page| page.hits.iter().find(|hit| hit.id == id))
+				.map(crate::restricted::Key::hit)
+		});
+		self.previews.retain(|id, _| {
+			state
+				.search
+				.as_ref()
+				.and_then(|view| view.page.as_ref())
+				.and_then(|page| page.hits.iter().find(|hit| hit.id == *id))
+				.is_some_and(|hit| {
+					self.restricted
+						.allows(state, crate::restricted::Key::hit(hit))
+				})
+		});
 		if self.viewing.is_some_and(|(message, _)| !on_page(message)) {
 			self.viewing = None;
 		}
@@ -1502,18 +1522,33 @@ impl SearchUi {
 		download: &mut crate::attachments::DownloadUi,
 	) {
 		if let Some((message, attachment)) = self.viewing {
-			self.viewing = self.previews.get(&message).and_then(|preview| {
-				crate::attachments::viewer(
-					ui,
-					&preview.attachments,
-					attachment,
-					avatars,
-					download,
-					&mut self.opening,
-					state.demo,
-				)
-				.map(|id| (message, id))
-			});
+			self.viewing = self
+				.previews
+				.get(&message)
+				.filter(|preview| {
+					state.user_content_restriction(preview.author.id).is_none()
+						|| state
+							.search
+							.as_ref()
+							.and_then(|view| view.page.as_ref())
+							.and_then(|page| page.hits.iter().find(|hit| hit.id == message))
+							.is_some_and(|hit| {
+								self.restricted
+									.allows(state, crate::restricted::Key::hit(hit))
+							})
+				})
+				.and_then(|preview| {
+					crate::attachments::viewer(
+						ui,
+						&preview.attachments,
+						attachment,
+						avatars,
+						download,
+						&mut self.opening,
+						state.demo,
+					)
+					.map(|id| (message, id))
+				});
 		}
 	}
 	/// Bounded message shell that lets the chat attachment and embed renderers draw a hit.
@@ -1558,6 +1593,10 @@ impl SearchUi {
 		if preview.content != hit.excerpt {
 			preview.content.clone_from(&hit.excerpt);
 		}
+		preview.author.clone_from(&hit.author);
+		preview.mentions.clone_from(&hit.mentions);
+		preview.attachments.clone_from(&hit.attachments);
+		preview.embeds.clone_from(&hit.embeds);
 	}
 	#[allow(clippy::too_many_arguments)]
 	fn result_card(
@@ -1572,6 +1611,47 @@ impl SearchUi {
 		target: &mut Option<Id>,
 	) {
 		let colors = design::palette(ui);
+		if state.user_content_restriction(hit.author.id).is_some() {
+			let key = crate::restricted::Key::hit(hit);
+			let visible = egui::Frame::new()
+				.fill(colors.base)
+				.corner_radius(8)
+				.inner_margin(egui::Margin::symmetric(12, 8))
+				.show(ui, |ui| self.restricted.show(ui, state, key))
+				.inner;
+			if !visible {
+				self.previews.remove(&hit.id);
+				if self.viewing.is_some_and(|(id, _)| id == hit.id) {
+					self.viewing = None;
+				}
+				if media
+					.audio
+					.active
+					.as_ref()
+					.is_some_and(|(_, id, _)| *id == hit.id)
+				{
+					media.audio.stop();
+				}
+				if media
+					.video
+					.active
+					.as_ref()
+					.is_some_and(|(_, id, _)| *id == hit.id)
+				{
+					media.video.stop();
+				}
+				if ui
+					.add_enabled(
+						state.can_search(),
+						egui::Button::new(crate::i18n::translate("inbox-open-message")),
+					)
+					.clicked()
+				{
+					*target = Some(hit.id);
+				}
+				return;
+			}
+		}
 		// Result text sits a step below the timeline's, as in Discord's narrower results pane.
 		if let Some(font) = ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body) {
 			font.size = (font.size - 1.0).max(12.0);
@@ -2055,6 +2135,108 @@ fn channel_heading(ui: &mut egui::Ui, state: &State, channel: &model::Channel) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn restricted_search_and_pin_cards_never_preload_media_and_close_existing_playback() {
+		for pins in [false, true] {
+			let ctx = egui::Context::default();
+			crate::design::apply(&ctx);
+			let mut state = test_support::demo_state();
+			state.demo = false;
+			let channel = state.selected.unwrap();
+			let mut source = test_support::message(500, channel);
+			source.author.id = Id(900);
+			let attachment = model::Attachment {
+				id: Id(800),
+				filename: "restricted-image.png".into(),
+				description: None,
+				content_type: Some("image/png".into()),
+				size: 128,
+				spoiler: false,
+				duration_ms: None,
+				waveform: vec![],
+				media: model::EmbedMedia {
+					url: Some(
+						"https://cdn.discordapp.com/attachments/10/800/restricted-image.png".into(),
+					),
+					width: 120,
+					height: 80,
+					..Default::default()
+				},
+			};
+			let hit = model::SearchHit {
+				id: source.id,
+				channel,
+				author: source.author.clone(),
+				mentions: vec![],
+				excerpt: "Sensitive result excerpt".into(),
+				attachments: vec![attachment.clone()],
+				embeds: vec![],
+			};
+			let mut view = SearchUi {
+				pins,
+				..Default::default()
+			};
+			view.shell(&hit);
+			view.viewing = Some((hit.id, attachment.id));
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::UserAction(
+					client_core::user_actions::Event::Relationship {
+						user: hit.author.id,
+						blocked: true,
+					},
+				),
+			});
+			let mut avatars = crate::avatars::Avatars::default();
+			let mut download = crate::attachments::DownloadUi::default();
+			let mut audio = crate::audio::AudioUi {
+				active: Some((channel, hit.id, attachment.clone())),
+				..Default::default()
+			};
+			let mut video = crate::video::VideoUi::default();
+			video.active = Some((channel, hit.id, attachment));
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(360.0, 500.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					view.result_card(
+						ui,
+						&state,
+						&hit,
+						"",
+						&mut avatars,
+						&mut MediaUi {
+							download: &mut download,
+							audio: &mut audio,
+							video: &mut video,
+						},
+						&mut crate::profiles::ProfileSession::default(),
+						&mut None,
+					);
+					view.viewer(ui, &state, &mut avatars, &mut download);
+				},
+			);
+			fn sensitive(shape: &egui::Shape) -> bool {
+				match shape {
+					egui::Shape::Text(text) => {
+						text.galley.job.text.contains("Sensitive result excerpt")
+					}
+					egui::Shape::Vec(shapes) => shapes.iter().any(sensitive),
+					_ => false,
+				}
+			}
+			assert!(!output.shapes.iter().any(|shape| sensitive(&shape.shape)));
+			assert!(avatars.take_requests().is_empty());
+			assert!(view.viewing.is_none() && view.previews.is_empty());
+			assert!(audio.active.is_none() && video.active.is_none());
+			output.drop_without_applying_deltas();
+		}
+	}
 
 	#[test]
 	fn conversation_shortcut_prefills_channel_and_focuses_query_without_searching() {

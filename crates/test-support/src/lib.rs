@@ -1250,6 +1250,8 @@ pub fn permission_snapshot(state: &State) -> model::permissions::Snapshot {
 		| p::USE_VAD
 		| p::MANAGE_THREADS
 		| p::CREATE_PUBLIC_THREADS
+		| p::CREATE_PRIVATE_THREADS
+		| p::MANAGE_WEBHOOKS
 		| p::MANAGE_CHANNELS;
 	p::Snapshot {
 		guilds: state

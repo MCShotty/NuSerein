@@ -12,6 +12,7 @@ const MAX_SETTINGS_BYTES: usize = 32 * 1024 * 1024;
 pub struct Notification {
 	pub channel: Id,
 	pub message: Id,
+	author: Id,
 	pub sender: String,
 	pub preview: String,
 	pub avatar_key: String,
@@ -596,7 +597,9 @@ impl State {
 				notification.everyone,
 				&notification.roles,
 			);
-			if self.notification_allowed_for(notification.channel, mention) {
+			if self.user_content_restriction(notification.author).is_none()
+				&& self.notification_allowed_for(notification.channel, mention)
+			{
 				return Some(notification);
 			}
 		}
@@ -625,10 +628,11 @@ impl State {
 			return false;
 		}
 		if channel.guild.is_none()
-			&& (channel
-				.recipients
-				.iter()
-				.any(|user| self.user_blocked(user.id) == Some(true))
+			&& ((channel.kind == 1
+				&& channel
+					.recipients
+					.iter()
+					.any(|user| self.user_content_restriction(user.id).is_some()))
 				|| self.message_request_pending(channel.id)
 				|| self.spam_direct(channel.id)
 				|| self.pending_dm_muted(channel.id) == Some(true))
@@ -764,6 +768,7 @@ impl State {
 	pub(crate) fn counts_toward_mention_badge(&self, message: &Message) -> bool {
 		// Private recipient-remove rows are not mentions. Discord message type 2.
 		if message.kind == 2
+			|| self.user_content_restriction(message.author.id).is_some()
 			|| !model::valid_mention_roles(&message.mention_roles)
 			|| self
 				.user
@@ -911,7 +916,7 @@ impl State {
 		let mention = self.counts_toward_mention_badge(message);
 		// Silent messages still contribute to badges, but never enqueue an OS alert.
 		let allowed = !message.suppress_notifications
-			&& self.user_blocked(message.author.id) != Some(true)
+			&& self.user_content_restriction(message.author.id).is_none()
 			&& self.notification_allowed_for(message.channel, mention);
 		{
 			let activity = &mut self.read_state.activity;
@@ -965,6 +970,7 @@ impl State {
 		let notification = Notification {
 			channel: message.channel,
 			message: message.id,
+			author: message.author.id,
 			sender,
 			preview,
 			avatar_key: message.author.avatar_key(),
@@ -1118,6 +1124,49 @@ mod tests {
 			.apply_notification_preferences(Event::Presence(Some(false)))
 			.unwrap();
 		state
+	}
+	#[test]
+	fn restrictions_recheck_queued_authors_and_do_not_silence_other_group_members() {
+		for ignored in [false, true] {
+			let mut state = notification_state();
+			let incoming = message(100, 20);
+			state.observe_notification(&incoming);
+			if ignored {
+				state
+					.apply_user_action(crate::user_actions::Event::Restriction {
+						user: incoming.author.id,
+						ignored: Some(true),
+						profile: Some((incoming.author.clone(), "synthetic".into())),
+					})
+					.unwrap();
+			} else {
+				state
+					.apply_user_action(crate::user_actions::Event::Relationship {
+						user: incoming.author.id,
+						blocked: true,
+					})
+					.unwrap();
+			}
+			assert!(
+				state.take_notification().is_none(),
+				"queued guild previews must be discarded after a relationship change"
+			);
+			assert!(!state.counts_toward_mention_badge(&incoming));
+			state.channels[0].guild = None;
+			state.channels[0].kind = 3;
+			state.channels[0].recipients = vec![incoming.author.clone()];
+			let mut other = message(101, 20);
+			other.author.id = Id(4);
+			state.observe_notification(&other);
+			assert!(
+				state.take_notification().is_some(),
+				"one restricted recipient must not mute an entire group"
+			);
+			let mut hidden = incoming;
+			hidden.id = Id(102);
+			state.observe_notification(&hidden);
+			assert!(state.take_notification().is_none());
+		}
 	}
 	#[test]
 	fn confirmed_dm_mute_and_block_suppress_notifications() {

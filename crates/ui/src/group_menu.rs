@@ -19,6 +19,7 @@ struct Dialog {
 }
 #[derive(Default)]
 pub(super) struct GroupMenu {
+	members: crate::group_members::Dialog,
 	dialog: Option<Dialog>,
 	generation: u64,
 	revision: u64,
@@ -83,6 +84,10 @@ impl GroupMenu {
 		}
 		ui.separator();
 		ui.add_enabled_ui(enabled, |ui| {
+			if row(ui, "group-members-title", colors.text).clicked() {
+				self.members.open(state, channel.id);
+				ui.close();
+			}
 			if row(ui, "group-menu-menu-edit-group", colors.text).clicked() {
 				self.open(state, channel, true);
 				ui.close();
@@ -186,6 +191,7 @@ impl GroupMenu {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
+		self.members.show(ctx, state, commands);
 		if let Some((channel, muted)) = self.mute.take()
 			&& let Some(command) = state.set_dm_muted(channel, muted)
 		{

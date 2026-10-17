@@ -26,16 +26,16 @@ workflow/schema evidence, not a completed client comparison.
 | Bookmarks/reminders | Explicit list/save/remove and reminder deadlines; service determines account availability | [Saved-message account routes](https://docs.discord.food/resources/user#list-saved-messages); restricted/unofficial |
 | Mutes, notification inheritance | Channel/server/DM support; timed choices and category inheritance extended in #8 | `client-core/notifications.rs`; cross-client expiry remains owner-gated |
 | Read actions, folders, navigation | Existing per-channel/server/all read actions and folders; category/folder scope and unread shortcuts in #8 | `read_state.rs`, `ui/guild_folders.rs`, `ui/keybinds.rs` |
-| Blocked/ignored users | Native relationship list, block/unblock and ignore/unignore actions; collapsed message presentation needs further work | `user_actions.rs`, `ui/friends.rs`, historical relationship section |
+| Blocked/ignored users | Native relationship actions and collapsed timeline, reply, search/pin, Inbox and forward previews; explicit per-message reveal | `user_actions.rs`, `ui/restricted.rs`; current-client comparison remains owner-gated |
 | Message requests | Native accept/decline/spam request flows | `user_actions.rs`; owner-controlled cross-client reconciliation pending |
 | Search | Native filters, pagination and permission-checked message navigation | `search.rs`, `ui/search_navigation_tests.rs`; indexing/permission races require owner check |
 | Reply/edit/send/uploads | Existing bounded drafts, nonce correlation and explicit uncertain-write handling | `message_actions.rs`, `replies.rs`, `uploads.rs`; interaction audit remains partial |
 | Reactions, polls, pins, forwarding | Native workflows already exist | `reactions.rs`, `polls.rs`, `forwarding.rs`, `message_actions.rs`; official-client comparison pending |
 | Slash command basics | Native schema-driven commands and modal lifecycle | `application_commands.rs`, `interactions.rs` |
 | Command autocomplete/files/context/account install | Native autocomplete, user/message context commands and eligible account discovery in [fork #10](https://github.com/MCShotty/Serein/pull/10); attachment arguments remain unsupported | Independent branch under validation; live service acceptance unverified |
-| Threads/forums | Native archives, participants, creation, tags and management | `threads.rs`, `archives.rs`, `forum.rs`, `channel_actions.rs`; private-thread/permission audit pending |
-| Announcement following/publishing | Existing channel integrations/follow support; publishing audit pending | `server_integrations.rs`, `channel_actions.rs` |
-| Group-DM membership | Native invite/remove/leave and group management | `group_actions.rs`; changed-membership recovery unverified live |
+| Threads/forums | Native public/private creation, archives, join/leave, invitations, owner/moderator removals, post tags and management | `channel_actions.rs`, `ui/thread_members.rs`, `post_menu.rs`; service membership and private archive behavior remain live-unverified |
+| Announcement following/publishing | Native confirmation for publishing and explicit destination selection for following; existing integration tools manage/unfollow feeds | `channel_actions.rs`, `ui/announcements.rs`; normal-user acceptance unverified |
+| Group-DM membership | Native group creation, friend invitations, owner transfer, confirmed removals, leave and group editing; explicit refresh after uncertain membership writes | `group_actions.rs`, `ui/group_members.rs`; owner-controlled reconciliation pending |
 | Server settings and lifecycle | Native settings and confirmed deletion; permissions and draft checks exist | `server_settings.rs`, `server_actions.rs`; owner/admin/member matrix needs expansion |
 | Roles and hierarchy | Native create/edit/delete, ordering, assignment and hierarchy gates | `server_roles.rs`; no replacement implementation needed |
 | Channel/category organization | Native creation, movement, reordering and permission synchronization | `channel_actions.rs`, `ui/channel_menu.rs` |
@@ -85,6 +85,74 @@ Inbox Gateway mutation notices mark the retained snapshot stale instead of retir
 REST correlation. Reads cancel on navigation; an accepted Save, Unsave or Dismiss stays
 bounded to one write until its confirmation settles. Closing the view retires its cached
 bodies, so a late confirmation reports its outcome without restoring closed content.
+
+## Desktop messaging follow-up — October 17, 2026
+
+Known blocked and ignored authors now have collapsed bodies in the timeline (including
+thread starters), search and pins, Inbox mentions/bookmarks, and forward previews.
+Loaded replies use a restricted-message label in place of the author's preview. Show/Hide
+is explicit for each body; showing one does not reveal another preview. Hidden rows do
+not call author artwork, markdown, component, embed, attachment or media renderers.
+Changing restrictions, account, source body or view revokes the bounded session-only
+reveal. Lightboxes/fullscreen, active playback and reaction overlays close when their
+source becomes hidden. Forwarding requires revealing the selected source first.
+Known restricted authors cannot enqueue alerts or deliver an already queued preview;
+their new locally observed mentions do not add to the mention badge. Other members of
+a group DM can still notify when a recipient is restricted. Service read counts remain
+authoritative. Existing cached bodies are retained under the existing history limits.
+
+Private-thread creation uses the documented channel thread route, type 12 and explicit
+`invitable`; public/private creation requires View Channel and the corresponding
+Create Threads permission. The creation result records its exact requested/returned ID,
+and a Gateway-first creation cannot replace a newer title with the REST snapshot.
+The native member manager uses documented thread member add/remove routes. Invitations
+accept a friend or an explicitly entered server-member ID; private invitations require
+current membership with `invitable`, or Manage Threads. Removal requires Manage Threads
+or ownership of a private thread, and a current loaded member. Archived threads must be
+reopened explicitly. The existing
+public/private/joined-private archive permission, paging and transient admission paths
+are retained; no archive read joins or reopens a thread.
+
+Existing forum posts now have a native tag editor. At most five known tags may be
+selected; a required tag set cannot be empty, and adding **or removing** a moderated tag
+requires Manage Threads. A changed service tag selection requires explicit reload before
+saving. The editor preserves its draft after a rejected or uncertain write.
+
+Publishing uses documented `POST /channels/{channel}/messages/{message}/crosspost` and
+checks Send Messages (plus Manage Messages for another author's message). Confirmation
+requires the exact channel/message and the published flag; it never replaces newer text.
+Follow selects one known text/announcement destination with current Manage Webhooks,
+then uses documented `POST /channels/{source}/followers` with `webhook_channel_id`.
+Existing destination-server integration tools list and remove the resulting feed.
+
+Group member management reads one bounded owner/recipient snapshot before mutation.
+New Group DM in Friends selects 2–9 known friends and creates one group with
+`POST /users/@me/channels` and a `recipients` array. The reducer validates the exact
+recipient set and owner, admits the returned ID, and leaves selection to the still-current
+dialog. Make Owner confirms the loss of owner controls before sending the observed
+`PATCH /channels/{channel}` field `owner`, then requires the matching owner snapshot.
+Friend-only invitations use `PUT /channels/{channel}/recipients/{user}`; owner-only
+confirmed removals use DELETE on that route. These normal-user writes are **unofficial**:
+Discord's public group-recipient route describes an OAuth flow instead. Wire evidence
+was inspected in the pinned [discord.py-self HTTP adapter](https://github.com/dolfies/discord.py-self/blob/2ba64a9a997e151a9c259984e0a179b1fdf4aff4/discord/http.py)
+(`start_group`, `add_group_recipient`, `remove_group_recipient`, `publish_message`,
+`follow_webhook`) and [GroupChannel.edit](https://github.com/dolfies/discord.py-self/blob/2ba64a9a997e151a9c259984e0a179b1fdf4aff4/discord/channel.py);
+no implementation source was copied. Service recipient/channel events invalidate cached
+ownership and reject stale reads. An uncertain membership write requires an explicit
+refresh before another change. No mutation is repeated automatically, and normal composer
+drafts remain intact. Poll creation now waits for the connected session, like poll votes.
+
+The documented thread member routes, private-creator removal exception, announcement
+follow result's source `channel_id`, and crosspost permissions were checked against
+[Discord's channel resource](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/resources/channel.mdx),
+[message resource](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/resources/message.mdx),
+and [thread permissions](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/topics/threads.mdx).
+Focused reducer, headless egui and local HTTP checks are synthetic/offline evidence.
+They do not verify normal-account Discord acceptance, private-thread visibility across
+accounts, server ownership transfer, account entitlements, or parity with the owner's
+Stable 641004 (`c9ac31f`), host 1.0.9262 x64 (`94186`) client. The broader reply/edit/upload,
+reaction, poll, request, search and navigation audit remains partial; this follow-up does
+not mark all desktop messaging parity complete.
 
 ## Game mentions (October 14, 2026)
 

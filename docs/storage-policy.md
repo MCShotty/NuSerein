@@ -1916,3 +1916,19 @@ Opening results uses the existing history admission and draft-preserving navigat
 Saved-message API writes remain explicit, service-authoritative and never automatically
 replayed after an uncertain outcome. Gateway invalidations retire cached pages; refresh
 is deliberate. No service URL, token or message body is written to diagnostic logs.
+
+Desktop messaging disclosure and membership follow-up: per-view restricted-message
+reveals retain at most 500 IDs, author IDs and content hashes, without copied bodies.
+They expire with the account, relationship revision, retained source or view. The group
+member manager retains one on-demand owner/recipient snapshot, at most nine other
+participants and 32 KiB including allocation; changed membership and connection reset
+retire it. Thread tag drafts retain at most five IDs, and group/thread/follow search
+inputs at most 64 characters. Creation/completion correlation retains one fixed-size
+record. No disk schema, background scan, media preload or automatic mutation retry is
+added. Existing history, member-list, HTTP and media budgets remain in force.
+
+Group creation retains at most nine selected friend IDs (at most 16 allocated slots)
+in the UI and one pending creation snapshot, plus one fixed-size returned ID/request
+record. Its wire response is capped at 32 KiB; channel and owner/recipient projections
+are both charged to the event budget. The offline fixture retains at most 64 fixed-size
+group owner ID pairs, cleared at the session boundary; it is never a live data cache.

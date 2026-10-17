@@ -29,6 +29,7 @@ struct RevealScroll {
 
 #[derive(Default)]
 pub struct TimelineView {
+	restricted: crate::restricted::Visibility,
 	polls: crate::polls::Cards,
 	pub(super) poll_action: Option<(Id, client_core::polls::Action)>,
 	pub(super) forward_request: Option<Id>,
@@ -101,6 +102,7 @@ pub struct TimelineView {
 	pub(super) quick_reaction_used: Option<&'static str>,
 	/// Requested pin change: channel, message, pinned.
 	pub(super) pin_request: Option<(Id, Id, bool)>,
+	pub(super) publish_request: Option<(Id, Id)>,
 	pub(super) bookmark_request: Option<(Id, Id)>,
 	/// Requested new thread: parent channel and the message that starts it.
 	pub(super) thread_request: Option<(Id, Id)>,
@@ -1072,6 +1074,14 @@ fn row_key(
 ) -> u64 {
 	let mut key = DefaultHasher::new();
 	layout_key(message).hash(&mut key);
+	state
+		.user_content_restriction(message.author.id)
+		.hash(&mut key);
+	message
+		.reply_to
+		.and_then(|reply| state.timeline.get(reply))
+		.and_then(|original| state.user_content_restriction(original.author.id))
+		.hash(&mut key);
 	grouped(previous, message, boundary).hash(&mut key);
 	previous
 		.is_none_or(|previous| timestamp(previous.id).date() != timestamp(message.id).date())
@@ -1371,6 +1381,7 @@ fn message_actions(
 	deleting: &mut Option<(Id, Id)>,
 	pin: (bool, bool, &mut Option<(Id, Id, bool)>),
 	bookmark: (bool, &mut Option<(Id, Id)>),
+	publish: (bool, &mut Option<(Id, Id)>),
 	thread: (bool, &mut Option<(Id, Id)>),
 	forward: (bool, &mut Option<Id>),
 	view_reactions: Option<(
@@ -1463,6 +1474,14 @@ fn message_actions(
 				.clicked()
 		{
 			*thread_request = Some((message.channel, message.id));
+			ui.close();
+		}
+		if publish.0
+			&& ui
+				.button(crate::i18n::translate("announcement-publish"))
+				.clicked()
+		{
+			*publish.1 = Some((message.channel, message.id));
 			ui.close();
 		}
 		if let Some((emoji, view)) = view_reactions
@@ -1894,6 +1913,12 @@ fn show_system(
 	}
 }
 impl TimelineView {
+	pub(super) fn message_visible(&self, state: &State, message: Id) -> bool {
+		display_message(state, message).is_some_and(|message| {
+			self.restricted
+				.allows(state, crate::restricted::Key::message(message))
+		})
+	}
 	pub(super) fn show_fullscreen_video(&mut self, ctx: &egui::Context, state: &State) -> bool {
 		if self.video.is_fullscreen() {
 			let current = self
@@ -1913,6 +1938,9 @@ impl TimelineView {
 						})
 						.filter(|message| {
 							state.selected == Some(*channel)
+								&& self
+									.restricted
+									.allows(state, crate::restricted::Key::message(message))
 								&& message.channel == *channel
 								&& message.attachments.contains(attachment)
 								&& (self.component_viewing
@@ -2129,6 +2157,37 @@ impl TimelineView {
 				..Self::default()
 			};
 		}
+		if self.restricted.sync(state, |id| {
+			display_message(state, id)
+				.or_else(|| state.thread_starter().filter(|message| message.id == id))
+				.map(crate::restricted::Key::message)
+		}) {
+			self.heights.clear();
+			self.revision = u64::MAX;
+		}
+		let hidden = |id| {
+			display_message(state, id).is_some_and(|message| {
+				!self
+					.restricted
+					.allows(state, crate::restricted::Key::message(message))
+			})
+		};
+		if self
+			.audio
+			.active
+			.as_ref()
+			.is_some_and(|(_, id, _)| hidden(*id))
+		{
+			self.audio.stop();
+		}
+		if self
+			.video
+			.active
+			.as_ref()
+			.is_some_and(|(_, id, _)| hidden(*id))
+		{
+			self.video.stop();
+		}
 		if !self.initial_read_checked
 			&& state.freshness == model::Freshness::Fresh
 			&& !state.history_pending
@@ -2319,6 +2378,12 @@ impl TimelineView {
 						estimate = (estimate - GROUPED_ROW_SAVINGS).max(24.0);
 					}
 					estimate += reserved_chrome(ui, m, width);
+					if !self
+						.restricted
+						.allows(state, crate::restricted::Key::message(m))
+					{
+						estimate = 36.0;
+					}
 					let height = match self.heights.get(&m.id) {
 						Some((old_key, height)) if *old_key == key => *height,
 						Some(_) => {
@@ -2712,11 +2777,72 @@ impl TimelineView {
 					measurements.push((id, intro_key(intro, state), response.rect.height()));
 					continue;
 				}
+				let source = display_message(state, id)
+					.or_else(|| state.thread_starter().filter(|message| message.id == id));
+				if let Some(message) = source
+					&& !self
+						.restricted
+						.allows(state, crate::restricted::Key::message(message))
+				{
+					let previous = index
+						.checked_sub(1)
+						.and_then(|index| display_message(state, self.rows[index].0));
+					let response =
+						ui.scope_builder(egui::UiBuilder::new().scope_id(row_id), |ui| {
+							if previous.is_none_or(|previous| {
+								timestamp(previous.id).date() != timestamp(id).date()
+							}) {
+								let date = timestamp(id);
+								divider(
+									ui,
+									format!("{} {}, {}", date.month(), date.day(), date.year()),
+									false,
+									self.compact_messages,
+								);
+							}
+							if self.unread_boundary == Some(id) {
+								divider(ui, "New messages".into(), true, self.compact_messages);
+							}
+							egui::Frame::NONE
+								.inner_margin(egui::Margin::symmetric(16, 6))
+								.show(ui, |ui| {
+									if self.restricted.show(
+										ui,
+										state,
+										crate::restricted::Key::message(message),
+									) {
+										self.revision = u64::MAX;
+										self.heights.remove(&id);
+									}
+								});
+						});
+					measurements.push((
+						id,
+						row_height_key(
+							message,
+							previous,
+							self.unread_boundary,
+							state,
+							state.timeline.is_deleted(id),
+						),
+						response.response.rect.height(),
+					));
+					continue;
+				}
 				if Some(id) == self.starter_row
 					&& let Some(starter) = state.thread_starter()
 				{
 					let response = ui
 						.scope_builder(egui::UiBuilder::new().scope_id(row_id), |ui| {
+							if !self.restricted.show(
+								ui,
+								state,
+								crate::restricted::Key::message(starter),
+							) {
+								self.revision = u64::MAX;
+								self.heights.remove(&id);
+								return;
+							}
 							starter_row(ui, starter, state, avatars, width);
 						})
 						.response;
@@ -2797,6 +2923,14 @@ impl TimelineView {
 					}
 					if self.unread_boundary == Some(id) {
 						divider(ui, "New messages".into(), true, self.compact_messages);
+					}
+					if !self
+						.restricted
+						.show(ui, state, crate::restricted::Key::message(message))
+					{
+						self.revision = u64::MAX;
+						self.heights.remove(&id);
+						return;
 					}
 					let colors = crate::design::palette(ui);
 					let background = ui.painter().add(egui::Shape::Noop);
@@ -2901,6 +3035,17 @@ impl TimelineView {
 											.truncate(),
 										);
 										surface.keep(&deleted);
+									} else if let Some(restriction) =
+										state.timeline.get(reply).and_then(|original| {
+											state.user_content_restriction(original.author.id)
+										}) {
+										let response =
+											ui.link(crate::restricted::label(restriction));
+										if response.clicked() && state.can_open_reply_target(reply)
+										{
+											self.request_reply_target(reply);
+										}
+										surface.keep(&response);
 									} else {
 										ui.scope(|ui| {
 											ui.visuals_mut().disabled_alpha = 1.0;
@@ -4235,6 +4380,11 @@ impl TimelineView {
 									&mut self.bookmark_request,
 								),
 								(
+									state.can_publish_message(message.channel, id)
+										&& !state.channel_action_pending(),
+									&mut self.publish_request,
+								),
+								(
 									state.can_create_thread(message.channel)
 										&& state.thread_of(message).is_none(),
 									&mut self.thread_request,
@@ -4688,6 +4838,9 @@ impl TimelineView {
 		self.show_fullscreen_video(ui.ctx(), state);
 		if let Some((message, media)) = self.download.embed_view_request.take()
 			&& let Some(source) = display_message(state, message)
+			&& self
+				.restricted
+				.allows(state, crate::restricted::Key::message(source))
 		{
 			self.viewing = None;
 			self.component_viewing = None;
@@ -4710,7 +4863,9 @@ impl TimelineView {
 		if let Some((message, fingerprint, image)) = &self.embed_viewing {
 			let allowed = !state.timeline.is_deleted(*message)
 				&& display_message(state, *message).is_some_and(|source| {
-					!source.embeds_suppressed
+					self.restricted
+						.allows(state, crate::restricted::Key::message(source))
+						&& !source.embeds_suppressed
 						&& Revealed::fingerprint(source) == *fingerprint
 						&& (!crate::embeds::has_media_spoilers(source)
 							|| self
@@ -4745,6 +4900,12 @@ impl TimelineView {
 						.find(|message| message.id == message_id)
 				})
 				.filter(|m| {
+					if !self
+						.restricted
+						.allows(state, crate::restricted::Key::message(m))
+					{
+						return false;
+					}
 					if let Some(identity) = self.component_viewing {
 						identity
 							== (
@@ -6392,6 +6553,7 @@ mod tests {
 							(&mut editing, &mut edit_started),
 							&mut deleting,
 							(false, false, &mut None),
+							(false, &mut None),
 							(false, &mut None),
 							(own, &mut thread_request),
 							(false, &mut None),

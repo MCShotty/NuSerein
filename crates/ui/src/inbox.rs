@@ -11,6 +11,7 @@ pub(super) enum Tab {
 }
 #[derive(Default)]
 pub(super) struct Controls {
+	restricted: crate::restricted::Visibility,
 	pub tab: Tab,
 	filter: String,
 	include_muted: bool,
@@ -56,7 +57,15 @@ fn custom_reminder(value: &str, now: i128) -> Option<i128> {
 	(at > now && at - now <= 366 * 86400 * 1_000_000_000_i128).then_some(at)
 }
 
-fn preview(ui: &mut egui::Ui, message: &model::Message) {
+fn preview(
+	ui: &mut egui::Ui,
+	state: &State,
+	visibility: &mut crate::restricted::Visibility,
+	message: &model::Message,
+) {
+	if !visibility.show(ui, state, crate::restricted::Key::message(message)) {
+		return;
+	}
 	ui.weak(&message.author.name);
 	if crate::embeds::has_spoilers(message) {
 		ui.label(i18n::translate("inbox-spoiler"));
@@ -76,8 +85,25 @@ impl MessagingUi {
 		commands: &mut Vec<Command>,
 	) {
 		if !self.inbox_open {
+			self.inbox_controls.restricted = Default::default();
 			return;
 		}
+		self.inbox_controls.restricted.sync(state, |id| {
+			state
+				.inbox
+				.messages
+				.iter()
+				.find(|message| message.id == id)
+				.or_else(|| {
+					state
+						.inbox
+						.saved
+						.iter()
+						.filter_map(|saved| saved.body.as_ref())
+						.find(|message| message.id == id)
+				})
+				.map(crate::restricted::Key::message)
+		});
 		if self.inbox_controls.generation != Some(state.generation) {
 			self.inbox_controls = Controls {
 				generation: Some(state.generation),
@@ -198,7 +224,7 @@ impl MessagingUi {
 								};
 								shown += 1;
 								place(ui, state, channel);
-								preview(ui, message);
+								preview(ui, state, &mut self.inbox_controls.restricted, message);
 								ui.horizontal_wrapped(|ui| {
 									ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
 									if ui.button(i18n::translate("inbox-open-message")).clicked() {
@@ -242,7 +268,12 @@ impl MessagingUi {
 									shown += 1;
 									place(ui, state, channel);
 									if let Some(message) = &saved.body {
-										preview(ui, message);
+										preview(
+											ui,
+											state,
+											&mut self.inbox_controls.restricted,
+											message,
+										);
 									} else {
 										ui.weak(i18n::translate("inbox-message-unavailable"));
 									}
@@ -477,6 +508,39 @@ fn place(ui: &mut egui::Ui, state: &State, channel: &model::Channel) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn ignored_inbox_previews_hide_identity_and_body_until_revealed() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::demo_state();
+		let mut message = test_support::message(500, state.selected.unwrap());
+		message.author.id = Id(900);
+		message.author.name = "Hidden inbox author".into();
+		message.content = "Hidden Inbox body".into();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::UserAction(client_core::user_actions::Event::Restriction {
+				user: message.author.id,
+				ignored: Some(true),
+				profile: Some((message.author.clone(), "synthetic".into())),
+			}),
+		});
+		let mut visibility = crate::restricted::Visibility::default();
+		let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+			preview(ui, &state, &mut visibility, &message)
+		});
+		fn hidden(shape: &egui::Shape) -> bool {
+			match shape {
+				egui::Shape::Text(text) => {
+					text.galley.job.text.contains("Hidden inbox author")
+						|| text.galley.job.text.contains("Hidden Inbox body")
+				}
+				egui::Shape::Vec(shapes) => shapes.iter().any(hidden),
+				_ => false,
+			}
+		}
+		assert!(!output.shapes.iter().any(|shape| hidden(&shape.shape)));
+		output.drop_without_applying_deltas();
+	}
 	use model::Id;
 
 	#[test]

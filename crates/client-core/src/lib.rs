@@ -2187,13 +2187,34 @@ impl State {
 			return;
 		}
 		if let Command::GroupAction { action, request } = command {
-			let _ = self.apply_group_action(group_actions::Event::Written {
-				channel: action.channel(),
-				request,
-				result: Err(auth::Failure::ProtocolAt(
-					"Group action was not queued; try again",
-				)),
-			});
+			let event = if matches!(action, group_actions::Action::Create(_)) {
+				group_actions::Event::Created {
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group creation was not queued; try again",
+					)),
+				}
+			} else if matches!(
+				action,
+				group_actions::Action::LoadMembers(_) | group_actions::Action::TransferOwner { .. }
+			) {
+				group_actions::Event::MembersLoaded {
+					channel: action.channel(),
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group member list was not queued; try again",
+					)),
+				}
+			} else {
+				group_actions::Event::Written {
+					channel: action.channel(),
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group action was not queued; try again",
+					)),
+				}
+			};
+			let _ = self.apply_group_action(event);
 			return;
 		}
 		if let Command::SendServerInvite {
@@ -2769,12 +2790,13 @@ impl State {
 			self.observe_dm_reopened(channel.id);
 			self.observe_group_change(channel.id, true);
 		}
-		if let Event::ChannelChanged(patch) = &envelope.event
-			&& (!matches!(patch.name, Patch::Absent)
-				|| !matches!(patch.icon, Patch::Absent)
-				|| !matches!(patch.kind, Patch::Absent))
-		{
+		if let Event::ChannelChanged(patch) = &envelope.event {
 			self.observe_group_change(patch.id, false);
+		}
+		if let Event::RecipientAdded { channel, .. } | Event::RecipientRemoved { channel, .. } =
+			&envelope.event
+		{
+			self.observe_group_change(*channel, true);
 		}
 		self.filter_view_revisions(&envelope.event);
 		if matches!(
@@ -4440,6 +4462,12 @@ impl Event {
 						_ => 0,
 					})
 					.sum(),
+				Self::GroupAction(group_actions::Event::MembersLoaded { result, .. }) => {
+					result.as_ref().map_or(0, group_actions::Members::bytes)
+				}
+				Self::GroupAction(group_actions::Event::Created { result, .. }) => result
+					.as_ref()
+					.map_or(0, |(channel, members)| channel.bytes() + members.bytes()),
 				Self::ChannelAction(channel_actions::Event::Finished { result, .. }) => {
 					result.as_ref().map_or(0, channel_actions::Outcome::bytes)
 				}

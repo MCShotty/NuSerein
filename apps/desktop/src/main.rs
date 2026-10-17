@@ -30,6 +30,8 @@ mod game_activity;
 mod game_mentions;
 mod gpu;
 mod gpu_video;
+#[cfg(feature = "demo")]
+mod group_demo;
 mod group_icon;
 #[cfg(feature = "demo")]
 mod inbox_demo;
@@ -1082,6 +1084,8 @@ struct Desktop {
 	sign_in_height: f32,
 	#[cfg(feature = "demo")]
 	synthetic_id: u64,
+	#[cfg(feature = "demo")]
+	demo_groups: group_demo::Groups,
 	token_input: Zeroizing<String>,
 }
 /// Check only navigation whose effective access can change with this event.
@@ -2409,6 +2413,8 @@ impl Desktop {
 			sign_in_height: 0.0,
 			#[cfg(feature = "demo")]
 			synthetic_id,
+			#[cfg(feature = "demo")]
+			demo_groups: Default::default(),
 			token_input: Zeroizing::new(String::new()),
 		})
 	}
@@ -3540,40 +3546,10 @@ impl Desktop {
 					request,
 					result: Ok(()),
 				}),
-				Command::GroupAction { action, request } => {
-					use client_core::group_actions::{Action, Event as GroupEvent};
-					use model::Patch;
-					let channel = action.channel();
-					let patch = match action {
-						Action::Leave(_) => None,
-						Action::Edit { name, icon, .. } => Some(model::ChannelPatch {
-							id: channel,
-							name: name.map_or(Patch::Absent, Patch::Value),
-							icon: match icon {
-								Patch::Absent => self
-									.state
-									.channel(channel)
-									.and_then(|c| c.icon.clone())
-									.map_or(Patch::Null, Patch::Value),
-								Patch::Null => Patch::Null,
-								Patch::Value(_) => {
-									Patch::Value("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into())
-								}
-							},
-							last_message: Patch::Absent,
-							parent_id: Patch::Absent,
-							position: Patch::Absent,
-							kind: Patch::Absent,
-							message_count: Patch::Absent,
-							tags: Patch::Absent,
-						}),
-					};
-					Event::GroupAction(GroupEvent::Written {
-						channel,
-						request,
-						result: Ok(patch),
-					})
-				}
+				Command::GroupAction { action, request } => Event::GroupAction(
+					self.demo_groups
+						.respond(&self.state, action, request, &mut self.synthetic_id),
+				),
 				Command::MarkRead {
 					channel,
 					message,
