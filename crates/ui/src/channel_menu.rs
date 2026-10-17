@@ -1547,16 +1547,10 @@ mod tests {
 				forum: Default::default(),
 			};
 			let text = frame(&ctx, &mut dialog, &channel, vec![]);
-			assert!(
-				!text
-					.iter()
-					.any(|(text, _)| text == &crate::i18n::translate("channel-menu-overview-topic"))
-			);
-			assert!(
-				text.iter()
-					.any(|(text, _)| text
-						== &crate::i18n::translate("channel-menu-overview-slowmode"))
-			);
+			assert!(!text.iter().any(|(text, _)| text
+				== &crate::i18n::translate("channel-menu-overview-topic").to_uppercase()));
+			assert!(text.iter().any(|(text, _)| text
+				== &crate::i18n::translate("channel-menu-overview-slowmode").to_uppercase()));
 			let switch = text
 				.iter()
 				.find(|(text, _)| {
