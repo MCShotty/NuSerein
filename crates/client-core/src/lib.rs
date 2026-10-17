@@ -3422,9 +3422,9 @@ impl State {
 				unreachable!("presence handled before timeline revision")
 			}
 			Event::InboxInvalidated => {
-				self.clear_mentions();
-				self.inbox.error =
-					Some("Inbox changed on the service; refresh to see current entries");
+				// Gateway echoes can precede or follow REST confirmation. Retain both
+				// its correlation and the visible page; Refresh reconciles other clients.
+				self.inbox.stale = true;
 				Ok(())
 			}
 			Event::InboxAction { request, result } => {
@@ -4278,6 +4278,19 @@ impl State {
 		}
 	}
 	fn fail(&mut self, failure: auth::Failure) {
+		// The connection may have ended while its HTTP write was accepted. Retire
+		// the pending UI state, but never automatically repeat the mutation.
+		if self.inbox.loading
+			&& self
+				.inbox
+				.operation
+				.as_ref()
+				.is_some_and(inbox::Action::write)
+		{
+			self.inbox.operation = None;
+			self.clear_mentions();
+			self.inbox.error = Some("Inbox outcome unknown; refresh before retrying");
+		}
 		self.typing.clear();
 		self.status = failure.label();
 		match failure {
@@ -4311,6 +4324,7 @@ impl State {
 			self.clear_direct_presences();
 			self.clear_cached_history();
 			self.clear_search();
+			self.inbox.operation = None;
 			self.clear_mentions();
 			self.search_target = None;
 			self.read_state.cancel();

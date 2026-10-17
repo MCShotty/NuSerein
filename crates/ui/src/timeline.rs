@@ -4229,7 +4229,8 @@ impl TimelineView {
 								),
 								(
 									!message.ephemeral
-										&& state.can_read_history(message.channel)
+										&& state.can_load_mentions() && state
+										.can_read_history(message.channel)
 										&& !state.inbox.loading,
 									&mut self.bookmark_request,
 								),

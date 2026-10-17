@@ -85,6 +85,18 @@ impl MessagingUi {
 				..Default::default()
 			};
 		}
+		// A closed panel can outlive its accepted write. Load the requested tab once
+		// that write settles; failed reads wait for an explicit retry.
+		if !state.inbox.loading && state.inbox.error.is_none() {
+			let command = match self.inbox_controls.tab {
+				Tab::Mentions if !state.inbox.loaded => state.request_mentions(None),
+				Tab::Saved if !state.inbox.saved_loaded => {
+					state.request_inbox_action(Action::Saved)
+				}
+				_ => None,
+			};
+			commands.extend(command);
+		}
 		let mut load = None;
 		let mut action = None;
 		let mut open = None;
@@ -368,6 +380,9 @@ impl MessagingUi {
 					}
 				});
 				body.footer(|ui| {
+					if state.inbox.stale {
+						ui.weak(i18n::translate("inbox-refresh-needed"));
+					}
 					let enabled = state.can_load_mentions() && !state.inbox.loading;
 					if self.inbox_controls.tab != Tab::Unread
 						&& ui
@@ -636,7 +651,9 @@ mod tests {
 			generation: state.generation,
 			event: client_core::Event::InboxInvalidated,
 		});
-		assert!(state.inbox.saved.is_empty() && state.inbox.error.is_some());
+		assert_eq!(state.inbox.saved.len(), 1);
+		assert!(state.inbox.saved[0].body.is_none());
+		assert!(state.inbox.stale && state.inbox.error.is_none());
 	}
 
 	#[test]
@@ -697,6 +714,82 @@ mod tests {
 			due_at: None
 		}));
 	}
+	#[test]
+	fn service_echoes_and_closing_the_inbox_do_not_retire_accepted_writes() {
+		use client_core::inbox::{Action, Outcome};
+		let mut state = test_support::demo_state();
+		let message = state.timeline.iter().next().unwrap().clone();
+		let saved = model::inbox::SavedMessage {
+			channel: message.channel,
+			message: message.id,
+			guild: state
+				.channel(message.channel)
+				.and_then(|channel| channel.guild),
+			body: Some(message.clone()),
+			due_at: None,
+		};
+		let echo = |state: &mut State| {
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::InboxInvalidated,
+			})
+		};
+		let action = Action::Save {
+			channel: message.channel,
+			message: message.id,
+			due_at: None,
+		};
+		let Some(Command::InboxAction { request, .. }) = state.request_inbox_action(action.clone())
+		else {
+			panic!()
+		};
+		echo(&mut state);
+		assert!(state.inbox.loading && state.inbox.stale);
+		assert_eq!(state.inbox.request, request);
+		state.apply_inbox_action(request, Ok(Outcome::SavedOne(Box::new(saved.clone()))));
+		assert_eq!(state.status, "Inbox updated");
+		echo(&mut state);
+		assert_eq!(state.inbox.saved.len(), 1);
+		assert!(state.inbox.error.is_none());
+		let Some(Command::InboxAction { request, .. }) = state.request_inbox_action(action) else {
+			panic!()
+		};
+		state.clear_mentions();
+		assert!(state.inbox.loading && state.inbox.detached_write);
+		assert!(state.request_mentions(None).is_none());
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = false;
+		state.apply_inbox_action(request, Ok(Outcome::SavedOne(Box::new(saved))));
+		assert!(!state.inbox.loading);
+		assert!(
+			state.inbox.saved.is_empty(),
+			"retired message content stays retired"
+		);
+		assert_eq!(state.status, "Inbox updated");
+		state.demo = true;
+		assert!(state.request_mentions(None).is_some());
+		state.clear_mentions();
+		let Some(Command::InboxAction { request, .. }) = state.request_inbox_action(Action::Save {
+			channel: message.channel,
+			message: message.id,
+			due_at: None,
+		}) else {
+			panic!()
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Failure(client_core::auth::Failure::Network),
+		});
+		assert!(!state.inbox.loading && state.inbox.operation.is_none());
+		assert_eq!(
+			state.inbox.error,
+			Some("Inbox outcome unknown; refresh before retrying")
+		);
+		state.apply_inbox_action(request, Ok(Outcome::Done));
+		assert!(state.inbox.saved.is_empty());
+	}
+
 	#[test]
 	fn saved_bodies_retire_after_deletion_and_a_late_save_cannot_restore_removed_channels() {
 		use client_core::inbox::{Action, Outcome};

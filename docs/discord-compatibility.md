@@ -9,6 +9,8 @@ baseline is fork `f9e39f7`; personal-controls work is separately reviewed in
 follow-up is [#7](https://github.com/MCShotty/Serein/pull/7). Neither open PR is assumed
 merged. This inventory supersedes older scope statements below without rewriting
 historical evidence. **Native implementation and live Discord acceptance are separate.**
+The named sibling branches are separate implementation slices, not changes already merged
+into the fork. Each receives its own checks and PR; #567 and #620 remain untouched.
 
 The owner supplied the official-client reference: **Stable 641004 (`c9ac31f`), host
 1.0.9262 x64 (`94186`)**, on October 17. The public Stable metadata/download routes
@@ -30,23 +32,23 @@ workflow/schema evidence, not a completed client comparison.
 | Reply/edit/send/uploads | Existing bounded drafts, nonce correlation and explicit uncertain-write handling | `message_actions.rs`, `replies.rs`, `uploads.rs`; interaction audit remains partial |
 | Reactions, polls, pins, forwarding | Native workflows already exist | `reactions.rs`, `polls.rs`, `forwarding.rs`, `message_actions.rs`; official-client comparison pending |
 | Slash command basics | Native schema-driven commands and modal lifecycle | `application_commands.rs`, `interactions.rs` |
-| Command autocomplete/files/context/account install | Gaps: autocomplete, attachment arguments, user/message commands and account-installed discovery | Existing code rejects or excludes these; no completeness claim |
+| Command autocomplete/files/context/account install | Native autocomplete, user/message context commands and eligible account discovery on `feat/application-command-parity`; attachment arguments remain unsupported | Independent branch under validation; live service acceptance unverified |
 | Threads/forums | Native archives, participants, creation, tags and management | `threads.rs`, `archives.rs`, `forum.rs`, `channel_actions.rs`; private-thread/permission audit pending |
 | Announcement following/publishing | Existing channel integrations/follow support; publishing audit pending | `server_integrations.rs`, `channel_actions.rs` |
 | Group-DM membership | Native invite/remove/leave and group management | `group_actions.rs`; changed-membership recovery unverified live |
 | Server settings and lifecycle | Native settings and confirmed deletion; permissions and draft checks exist | `server_settings.rs`, `server_actions.rs`; owner/admin/member matrix needs expansion |
 | Roles and hierarchy | Native create/edit/delete, ordering, assignment and hierarchy gates | `server_roles.rs`; no replacement implementation needed |
 | Channel/category organization | Native creation, movement, reordering and permission synchronization | `channel_actions.rs`, `ui/channel_menu.rs` |
-| Member moderation | Native kick/nickname/roles and voice movement/mute; bans/unbans/timeouts/reasons remain gaps | `server_admin.rs`; hierarchy and administrator cases must be tested |
+| Member moderation | Ban/unban/timeout/reason tools on `feat/server-moderation-parity`, extending existing moderation; bans require a current member lookup | Owner/admin/moderator/member and stale-permission regressions; independent branch under validation |
 | Invites/integrations/audit log | Native permission-scoped settings with bounded reads and explicit writes | `server_invites.rs`, `server_integrations.rs`, `server_audit_log.rs` |
-| AutoMod | No native configuration yet | [Official Auto Moderation resource](https://docs.discord.com/developers/resources/auto-moderation); implementation required |
+| AutoMod | Native bounded rule editor on `feat/server-moderation-parity`, with sparse edits and explicit conflict recovery | [Official resource](https://docs.discord.com/developers/resources/auto-moderation); owner-controlled service validation remains |
 | Scheduled events | No native browse/create/edit/RSVP/cancel flow yet | [Official scheduled-event resource](https://docs.discord.com/developers/resources/guild-scheduled-event); implementation required |
 | Stage participation/moderation | Unsupported; must never enable microphone transmission for audience joins | `client-core/voice.rs`; implementation and reconnect tests required |
 | Onboarding, Channels & Roles | Native participant answers; administrative configuration incomplete | `onboarding.rs`; role/channel invalidation coverage required |
 | Rules screening / Server Guide | Native participant verification and onboarding answers exist; administrative editing and Server Guide remain gaps | `onboarding.rs`; administrative capability/schema audit and owner-controlled verification required |
 | Encoding/capture/HDR | Existing video work retained; #567 scope and path limit unchanged | `docs/voice.md`, video evidence; physical display/official-client gates remain |
-| Soundboard | Upstream #579 supplies playback, management and trimmed uploads; reviewed for integration | `ViceVerse-cz/Serein#579`, head `aa9c1dc`; not yet present in fork baseline |
-| Voice messages | Native received playback; recording and advanced controls have upstream candidates | Upstream #566 and #662; opt-in capture and lifecycle verification required |
+| Soundboard | Playback, management and trimmed uploads integrated on `feat/desktop-parity-media` from upstream #579, with bounded cancellation and call-scoped responses | Depends on #7; independent branch under validation; live acceptance unverified |
+| Voice messages | Pitch-preserving speed and volume controls integrated on `feat/desktop-parity-media`; recording remains absent | Playback adapted from #662; recording candidate #566 still requires opt-in capture, SDK and lifecycle review |
 | Video/audio playback | Existing native playback; FFmpeg preference is separate #7 | `apps/desktop/src/audio.rs`, `video.rs`; media performance unmeasured on Windows/macOS |
 | Embedded video | Partial native cards; upstream #439 is an integration candidate | Keep anonymous bounded media-reader and explicit navigation boundaries |
 | Device routing / screen audio | Existing selected input/output; separate media output upstream #533; screen-audio platform limits remain | `voice.rs`, `audio.rs`, `docs/platform-support.md` |
@@ -76,6 +78,13 @@ resource release tests. Each feature PR must carry focused/workspace checks, syn
 native evidence where available, current-nightly and fork release comparisons, native
 package CI and explicit owner-controlled interoperability limitations. This table is an
 inventory, **not a claim that the remaining gaps are completed**.
+
+## Unified Inbox lifecycle
+
+Inbox Gateway mutation notices mark the retained snapshot stale instead of retiring its
+REST correlation. Reads cancel on navigation; an accepted Save, Unsave or Dismiss stays
+bounded to one write until its confirmation settles. Closing the view retires its cached
+bodies, so a late confirmation reports its outcome without restoring closed content.
 
 ## Game mentions (October 14, 2026)
 

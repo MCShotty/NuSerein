@@ -81,6 +81,10 @@ pub struct View {
 	pub saved: Vec<model::inbox::SavedMessage>,
 	pub saved_loaded: bool,
 	pub operation: Option<Action>,
+	/// A service echo marks the snapshot stale without retiring an accepted write.
+	pub stale: bool,
+	/// Closing/navigation retires cached content, but the one pending write can still settle.
+	pub detached_write: bool,
 }
 
 impl State {
@@ -114,6 +118,10 @@ impl State {
 		self.inbox.request = self.inbox.request.wrapping_add(1);
 		self.inbox.loading = true;
 		self.inbox.error = None;
+		self.inbox.detached_write = false;
+		if !action.write() {
+			self.inbox.stale = false;
+		}
 		self.inbox.operation = Some(action.clone());
 		Some(Command::InboxAction {
 			request: self.inbox.request,
@@ -160,19 +168,27 @@ impl State {
 		}
 	}
 	pub fn apply_inbox_action(&mut self, request: u64, result: Result<Outcome, Failure>) {
-		if !self.can_load_mentions() || !self.inbox.loading || self.inbox.request != request {
+		let write = self.inbox.operation.as_ref().is_some_and(Action::write);
+		let may_settle =
+			self.can_load_mentions() || (write && self.auth == AuthState::Authenticated);
+		if !may_settle || !self.inbox.loading || self.inbox.request != request {
 			return;
 		}
 		let Some(action) = self.inbox.operation.take() else {
 			return;
 		};
 		self.inbox.loading = false;
+		let detached = std::mem::take(&mut self.inbox.detached_write);
 		if let Err(failure) = result {
 			self.inbox.error = Some(failure.label());
 			self.status = failure.label();
 			if failure.ends_session() && failure != Failure::Capacity {
 				self.fail(failure);
 			}
+			return;
+		}
+		if detached {
+			self.status = "Inbox updated";
 			return;
 		}
 		match (action, result.unwrap()) {
@@ -244,8 +260,13 @@ impl State {
 		}
 	}
 	pub fn clear_mentions(&mut self) -> Command {
+		let operation = self.inbox.operation.take().filter(Action::write);
+		let pending = self.inbox.loading && operation.is_some();
 		self.inbox = View {
-			request: self.inbox.request.wrapping_add(1),
+			request: self.inbox.request.wrapping_add(u64::from(!pending)),
+			loading: pending,
+			detached_write: pending,
+			operation,
 			..Default::default()
 		};
 		Command::CancelMentions
