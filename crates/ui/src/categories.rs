@@ -2145,7 +2145,7 @@ mod tests {
 				icon: None,
 				emojis: None,
 			}],
-			channels: vec![channel(9, 13, 0, None)],
+			channels: vec![channel(9, 14, 0, None)],
 			demo: true,
 			..State::default()
 		};

@@ -9,6 +9,7 @@ credential-store entry, recording or history cache is added. One community reque
 and one cancellable worker are retained. Event data is capped at 100 events / 768 KiB,
 64 exceptions per event, 400 subscription records and a 1 MiB wire response. Reads
 retire when their view closes; an in-flight write can settle without reopening it.
+Editor undo/focus states have bounded owners and retire with their draft/account.
 Session/access invalidation retires correlation, and an uncertain write requires
 an explicit scoped refresh instead of an automatic repeat. Drafts survive service
 errors and are cleared with their owning account generation. Stage microphone

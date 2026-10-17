@@ -1,4 +1,5 @@
 //! Native event browsing/editing and explicit Stage controls. All drafts stay session-only.
+use crate::extensions_ui::TextInputStates;
 use client_core::{Command, State};
 use model::{Id, community::*};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -23,8 +24,10 @@ pub(super) struct CommunityUi {
 	requested_stage: Option<Id>,
 	audience_page: usize,
 	end_stage_confirm: bool,
+	inputs: Option<TextInputStates>,
 }
 struct Editor {
+	inputs: TextInputStates,
 	guild: Id,
 	before: Option<ScheduledEvent>,
 	name: String,
@@ -39,6 +42,7 @@ struct Editor {
 }
 
 struct OccurrenceEditor {
+	inputs: TextInputStates,
 	before: ScheduledEvent,
 	original: i64,
 	start: String,
@@ -55,6 +59,15 @@ impl OccurrenceEditor {
 			.end
 			.map(|e| original + (e - before.draft.start));
 		Self {
+			inputs: TextInputStates::new(
+				egui::Id::unique((
+					"community-occurrence-editor",
+					before.guild,
+					before.id,
+					original,
+				)),
+				2,
+			),
 			original,
 			start: format_time(exception.and_then(|e| e.start).unwrap_or(original)),
 			end: exception
@@ -107,6 +120,14 @@ impl Editor {
 				recurrence: None,
 			});
 		Self {
+			inputs: TextInputStates::new(
+				egui::Id::unique((
+					"community-event-editor",
+					guild,
+					event.as_ref().map(|e| e.id),
+				)),
+				5,
+			),
 			guild,
 			name: d.name,
 			description: d.description,
@@ -206,6 +227,10 @@ fn parse_time(value: &str) -> Result<i64, &'static str> {
 		.map(|t| t.unix_timestamp())
 		.map_err(|_| "Use YYYY-MM-DDTHH:MM:SS±HH:MM, including the UTC offset")
 }
+fn owned_input(inputs: &mut TextInputStates, response: egui::Response) -> egui::Response {
+	inputs.track(&response);
+	response
+}
 fn format_time(value: i64) -> String {
 	OffsetDateTime::from_unix_timestamp(value)
 		.ok()
@@ -249,6 +274,7 @@ impl CommunityUi {
 		}
 		self.stage_channel = Some(channel);
 		if !self.stage_dirty {
+			self.inputs = None;
 			self.stage_topic = topic;
 			self.stage_event = event;
 			self.stage_draft_channel = Some(channel);
@@ -455,11 +481,13 @@ impl CommunityUi {
 					ui.separator();
 					ui.horizontal_wrapped(|ui| {
 						ui.label("Event link");
-						ui.add(
+						let inputs=self.inputs.get_or_insert_with(||TextInputStates::new(egui::Id::unique("community-inputs"),8));
+						owned_input(inputs,ui.add(
 							egui::TextEdit::singleline(&mut self.link)
+								.id(egui::Id::unique(("community-event-link",self.generation,guild)))
 								.char_limit(128)
 								.hint_text("https://discord.com/events/server/event"),
-						);
+						));
 						if ui
 							.add_enabled(!state.community.pending(), egui::Button::new("Open"))
 							.clicked()
@@ -905,16 +933,34 @@ impl CommunityUi {
 			time_label(editor.original)
 		));
 		ui.label("Start · RFC3339 with UTC offset");
-		ui.add(
-			egui::TextEdit::singleline(&mut editor.start)
-				.char_limit(64)
-				.desired_width(f32::INFINITY),
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::singleline(&mut editor.start)
+					.id(egui::Id::unique((
+						"community-occurrence-start",
+						editor.before.guild,
+						editor.before.id,
+						editor.original,
+					)))
+					.char_limit(64)
+					.desired_width(f32::INFINITY),
+			),
 		);
 		ui.label("End · RFC3339 with UTC offset");
-		ui.add(
-			egui::TextEdit::singleline(&mut editor.end)
-				.char_limit(64)
-				.desired_width(f32::INFINITY),
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::singleline(&mut editor.end)
+					.id(egui::Id::unique((
+						"community-occurrence-end",
+						editor.before.guild,
+						editor.before.id,
+						editor.original,
+					)))
+					.char_limit(64)
+					.desired_width(f32::INFINITY),
+			),
 		);
 		ui.checkbox(&mut editor.canceled, "Cancel this occurrence");
 		if let Some(error) = editor.error {
@@ -972,17 +1018,27 @@ impl CommunityUi {
 			"Create event"
 		});
 		ui.label("Name");
-		ui.add(
-			egui::TextEdit::singleline(&mut editor.name)
-				.char_limit(100)
-				.desired_width(f32::INFINITY),
+		let id = editor.inputs.id("name");
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::singleline(&mut editor.name)
+					.id(id)
+					.char_limit(100)
+					.desired_width(f32::INFINITY),
+			),
 		);
 		ui.label("Description");
-		ui.add(
-			egui::TextEdit::multiline(&mut editor.description)
-				.char_limit(1000)
-				.desired_rows(3)
-				.desired_width(f32::INFINITY),
+		let id = editor.inputs.id("description");
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::multiline(&mut editor.description)
+					.id(id)
+					.char_limit(1000)
+					.desired_rows(3)
+					.desired_width(f32::INFINITY),
+			),
 		);
 		ui.horizontal_wrapped(|ui| {
 			for (kind, label) in [(1, "Stage"), (2, "Voice"), (3, "Somewhere else")] {
@@ -991,10 +1047,15 @@ impl CommunityUi {
 		});
 		if editor.entity_type == 3 {
 			ui.label("Location");
-			ui.add(
-				egui::TextEdit::singleline(&mut editor.location)
-					.char_limit(100)
-					.desired_width(f32::INFINITY),
+			let id = editor.inputs.id("location");
+			owned_input(
+				&mut editor.inputs,
+				ui.add(
+					egui::TextEdit::singleline(&mut editor.location)
+						.id(id)
+						.char_limit(100)
+						.desired_width(f32::INFINITY),
+				),
 			);
 		} else {
 			egui::ComboBox::from_id_salt("event-channel")
@@ -1016,19 +1077,29 @@ impl CommunityUi {
 				});
 		}
 		ui.label("Start · include UTC offset (YYYY-MM-DDTHH:MM:SS+02:00)");
-		ui.add(
-			egui::TextEdit::singleline(&mut editor.start)
-				.char_limit(64)
-				.desired_width(f32::INFINITY),
+		let id = editor.inputs.id("start");
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::singleline(&mut editor.start)
+					.id(id)
+					.char_limit(64)
+					.desired_width(f32::INFINITY),
+			),
 		);
 		if let Ok(start) = parse_time(&editor.start) {
 			ui.small(format!("Your time: {}", time_label(start)));
 		}
 		ui.label("End · required for external events");
-		ui.add(
-			egui::TextEdit::singleline(&mut editor.end)
-				.char_limit(64)
-				.desired_width(f32::INFINITY),
+		let id = editor.inputs.id("end");
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::singleline(&mut editor.end)
+					.id(id)
+					.char_limit(64)
+					.desired_width(f32::INFINITY),
+			),
 		);
 		let names = [
 			"Does not repeat",
@@ -1450,14 +1521,24 @@ impl CommunityUi {
 				}) {
 					ui.label(format!("Scheduled event: {}", event.draft.name));
 				}
-				if ui
-					.add(
+				let inputs = self.inputs.get_or_insert_with(|| {
+					TextInputStates::new(egui::Id::unique("community-inputs"), 8)
+				});
+				if owned_input(
+					inputs,
+					ui.add(
 						egui::TextEdit::multiline(&mut self.stage_topic)
+							.id(egui::Id::unique((
+								"community-topic",
+								self.generation,
+								channel,
+							)))
 							.char_limit(120)
 							.desired_rows(2)
 							.desired_width(f32::INFINITY),
-					)
-					.changed()
+					),
+				)
+				.changed()
 				{
 					self.stage_dirty = true;
 				}
@@ -1546,6 +1627,7 @@ impl CommunityUi {
 						.unwrap_or_default();
 					self.stage_event = None;
 					self.stage_dirty = false;
+					self.inputs = None;
 				}
 				ui.small("Starting a Stage does not enable your microphone or notify @everyone.");
 			});
@@ -1907,5 +1989,46 @@ mod tests {
 			assert!(!state.can_speak(Id(90)));
 			assert!(!state.voice.active.as_ref().unwrap().stage_consent);
 		}
+	}
+	#[test]
+	fn community_editor_undo_state_is_bounded_and_retires_with_draft_and_account() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::community_state(false);
+		let guild = Id(10);
+		let size = egui::vec2(1000.0, 1000.0);
+		let mut view = CommunityUi {
+			generation: state.generation,
+			guild: Some(guild),
+			draft: Some(Editor::new(guild, None)),
+			..Default::default()
+		};
+		for _ in 0..3 {
+			frame(&ctx, &mut view, &mut state, size, vec![]);
+		}
+		let name = view.draft.as_ref().unwrap().inputs.id("name");
+		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_some());
+		assert!(ctx.data(|d| d.count::<egui::text_edit::TextEditState>()) <= 5);
+		drop(view.draft.take());
+		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_none());
+		view.draft = Some(Editor::new(guild, None));
+		for _ in 0..3 {
+			frame(&ctx, &mut view, &mut state, size, vec![]);
+		}
+		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_some());
+		state.generation += 1;
+		frame(&ctx, &mut view, &mut state, size, vec![]);
+		assert!(view.draft.is_none());
+		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_none());
+		view.generation = state.generation;
+		view.stage_channel = Some(Id(90));
+		view.stage_topic = "Private synthetic Stage topic".into();
+		for _ in 0..3 {
+			frame(&ctx, &mut view, &mut state, size, vec![]);
+		}
+		let topic = egui::Id::unique(("community-topic", state.generation, Id(90)));
+		assert!(egui::text_edit::TextEditState::load(&ctx, topic).is_some());
+		drop(view);
+		assert!(egui::text_edit::TextEditState::load(&ctx, topic).is_none());
+		assert_eq!(ctx.data(|d| d.count::<egui::text_edit::TextEditState>()), 0);
 	}
 }
