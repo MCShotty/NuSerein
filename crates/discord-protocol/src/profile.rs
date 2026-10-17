@@ -482,14 +482,13 @@ pub(crate) fn decode_profile_appearance(
 	let guild = match (guild, dto.guild_member) {
 		(Some(guild), Some(mut member)) => {
 			let mut profile = dto.guild_member_profile.unwrap_or_default();
-			if server_appearance {
-				if profile.theme_colors.as_ref().is_some_and(|colors| {
+			if server_appearance
+				&& profile.theme_colors.as_ref().is_some_and(|colors| {
 					!colors.limited
 						&& colors.items.len() == 2
 						&& colors.items.iter().all(|color| *color <= 0xff_ffff)
 				}) {
-					metadata.theme_colors = profile.theme_colors.take();
-				}
+				metadata.theme_colors = profile.theme_colors.take();
 			}
 			// A server profile's own effect or frame replaces the account's in that server.
 			let server =

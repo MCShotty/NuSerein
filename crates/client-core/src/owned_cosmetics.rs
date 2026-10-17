@@ -44,7 +44,14 @@ impl State {
 		}
 	}
 	pub fn load_owned_cosmetics(&mut self, guild: Option<Id>) -> Option<Command> {
-		if self.owned_cosmetics.saving || !self.owned_cosmetics_scope_allowed(guild) {
+		if self.owned_cosmetics.saving {
+			return None;
+		}
+		if !self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected) {
+			self.owned_cosmetics.error = Some("Reconnect and reload owned cosmetics");
+			return None;
+		}
+		if !self.owned_cosmetics_scope_allowed(guild) {
 			return None;
 		}
 		let user = self.user.as_ref()?.id;
@@ -360,5 +367,9 @@ mod tests {
 			kind: Kind::Frame,
 			sku: None
 		}));
+		state.demo = false;
+		state.gateway_connected = false;
+		assert!(state.load_owned_cosmetics(None).is_none());
+		assert!(state.owned_cosmetics.error.is_some());
 	}
 }
