@@ -1,5 +1,8 @@
 //! Offline native framebuffer capture; no account, filesystem cache, or network adapters.
 use eframe::egui;
+#[allow(dead_code)] // The member Guide fixture is used by the full desktop demo.
+#[path = "../src/community_admin_demo.rs"]
+mod community_admin_demo;
 #[path = "../src/community_demo.rs"]
 mod community_demo;
 #[path = "../src/profile_settings_demo.rs"]
