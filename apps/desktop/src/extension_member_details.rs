@@ -87,6 +87,7 @@ pub fn snapshot(state: &State) -> Option<MemberDetailsSnapshot> {
 			.and_then(|p| p.data.as_ref())
 			.filter(|p| p.user.id == member.user.id && !p.limited);
 		let profile = loaded
+			.filter(|profile| !profile.private)
 			.and_then(|p| p.guild.as_ref())
 			.filter(|p| p.guild == guild)
 			.map(|p| MemberProfileSnapshot {
@@ -247,6 +248,23 @@ mod tests {
 				.bio,
 			"Server bio"
 		);
+		state
+			.profile
+			.as_mut()
+			.unwrap()
+			.data
+			.as_mut()
+			.unwrap()
+			.private = true;
+		assert!(snapshot(&state).unwrap().items[0].profile.is_none());
+		state
+			.profile
+			.as_mut()
+			.unwrap()
+			.data
+			.as_mut()
+			.unwrap()
+			.private = false;
 		let package = parse_package(include_bytes!(
 			"../../../examples/extensions/packages/guild-inspector.serein-extension"
 		))

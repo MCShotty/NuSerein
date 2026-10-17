@@ -1,4 +1,5 @@
 //! Discord wire DTOs. JSON values never become application state.
+pub mod account_settings;
 pub mod activity_sessions;
 pub mod activity_sharing;
 pub mod application_commands;
@@ -24,6 +25,7 @@ pub mod pins;
 pub mod polls;
 pub mod presence;
 pub mod profile;
+pub mod profile_cosmetics;
 mod reactions;
 pub mod read_state;
 pub mod ready;
@@ -34,6 +36,7 @@ pub mod server_admin;
 pub mod server_audit_log;
 pub mod server_integrations;
 pub mod server_invites;
+pub mod server_profile;
 pub mod server_roles;
 pub mod server_settings;
 pub mod settings_update;

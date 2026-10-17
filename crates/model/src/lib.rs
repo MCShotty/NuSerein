@@ -1,5 +1,6 @@
 //! UI-neutral session entities. No filesystem or network dependencies.
 pub mod account;
+pub mod account_settings;
 pub mod application_commands;
 mod image_sharing;
 pub mod polls;
@@ -12,6 +13,8 @@ pub mod keybinds;
 pub mod messaging_permissions;
 pub mod notification_preferences;
 pub mod onboarding;
+pub mod privacy_preferences;
+pub mod profile_cosmetics;
 pub mod voice_settings;
 pub use channel_preferences::{ChannelPreferences, PreferenceEdit, Shortcut};
 pub use keybinds::{KeyChord, KeybindAction, Keybinds};
@@ -29,6 +32,7 @@ pub mod server_admin;
 pub mod server_audit_log;
 pub mod server_integrations;
 pub mod server_invites;
+pub mod server_profile;
 pub mod server_roles;
 pub mod server_settings;
 pub mod soundboard;

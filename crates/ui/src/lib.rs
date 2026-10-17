@@ -2,13 +2,17 @@
 //! Native egui views; emits commands without owning transports or session credentials.
 mod account_badge;
 mod account_menu;
+mod account_settings;
 #[cfg(test)]
 mod appearance_transparency_tests;
 mod archives;
 mod audio;
 mod badges;
 mod forwarding;
+mod owned_cosmetics;
+mod privacy_settings;
 mod role_names;
+mod server_profile;
 pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
 pub use video::{MediaView, VideoCommand, VideoState, VideoUi};

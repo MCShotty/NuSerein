@@ -208,6 +208,18 @@ pub enum NameEffect {
 	Gummy,
 }
 impl NameEffect {
+	pub fn id(self) -> u32 {
+		match self {
+			Self::Solid => 1,
+			Self::Gradient => 2,
+			Self::Neon => 3,
+			Self::Toon => 4,
+			Self::Pop => 5,
+			Self::Glow => 6,
+			Self::Prism => 7,
+			Self::Gummy => 8,
+		}
+	}
 	/// The client's effect ID; unknown and test effects draw as a solid colour.
 	pub fn from_id(id: u32) -> Self {
 		match id {

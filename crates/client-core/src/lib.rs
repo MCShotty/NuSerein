@@ -17,6 +17,7 @@ pub use permissions::ChannelAccess;
 #[cfg(test)]
 mod permissions_tests;
 
+pub mod account_settings;
 mod forwarding;
 pub mod interactions;
 pub mod invites;
@@ -24,6 +25,7 @@ pub mod member_search;
 pub mod message_actions;
 pub mod messaging_permissions;
 pub mod notifications;
+pub mod owned_cosmetics;
 pub mod polls;
 pub mod preload;
 pub mod presence;
@@ -31,6 +33,7 @@ pub mod profile;
 pub mod reactions;
 pub mod read_state;
 mod replies;
+pub mod server_profile;
 pub use replies::{HistoryNavigation, ParkedReplies, Reply, ReplyDeletions};
 pub mod group_actions;
 pub mod onboarding;
@@ -255,6 +258,28 @@ pub enum Command {
 		user: Id,
 		request: u64,
 		changes: Option<model::ProfileEdit>,
+	},
+	ServerProfile {
+		user: Id,
+		guild: Id,
+		request: u64,
+		edit: Option<Box<model::server_profile::Edit>>,
+	},
+	AccountOverview {
+		user: Id,
+		request: u64,
+	},
+	AccountConnections {
+		user: Id,
+		request: u64,
+		change: Option<model::account_settings::ConnectionChange>,
+	},
+	OwnedCosmetics {
+		user: Id,
+		guild: Option<Id>,
+		request: u64,
+		change: Option<model::profile_cosmetics::Change>,
+		nitro: bool,
 	},
 	Voice(voice::Command),
 	Members {
@@ -575,6 +600,18 @@ pub enum Event {
 		request: u64,
 		result: Result<Box<UserProfile>, auth::Failure>,
 	},
+	ServerProfile(server_profile::Event),
+	OwnedCosmetics(owned_cosmetics::Event),
+	AccountOverview {
+		user: Id,
+		request: u64,
+		result: Result<Box<model::account_settings::Overview>, auth::Failure>,
+	},
+	AccountConnections {
+		user: Id,
+		request: u64,
+		result: Result<Box<model::account_settings::Connections>, auth::Failure>,
+	},
 	Voice(voice::Event),
 	ChannelCreated(Channel),
 	ChannelRestored(Channel),
@@ -778,6 +815,9 @@ pub struct State {
 	/// Device preference for which profile cosmetics are shown and loaded.
 	pub profile_cosmetics: model::CosmeticPreferences,
 	pub own_profile: profile::OwnProfile,
+	pub own_server_profile: server_profile::Editor,
+	pub account_settings: account_settings::Settings,
+	pub owned_cosmetics: owned_cosmetics::Editor,
 	pub badge_editor: profile::BadgeEditor,
 	pub invites: invites::Cache,
 	pub invite_join: invites::Join,
@@ -1008,6 +1048,9 @@ impl Default for State {
 			profile_cache: Default::default(),
 			profile_cosmetics: Default::default(),
 			own_profile: Default::default(),
+			own_server_profile: Default::default(),
+			account_settings: Default::default(),
+			owned_cosmetics: Default::default(),
 			badge_editor: Default::default(),
 			invites: Default::default(),
 			invite_join: Default::default(),
@@ -2177,6 +2220,60 @@ impl State {
 			self.reject_own_profile(user, request);
 			return;
 		}
+		if let Command::ServerProfile {
+			user,
+			guild,
+			request,
+			..
+		} = command
+		{
+			self.apply_server_profile(server_profile::Event {
+				user,
+				guild,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Server profile request was not queued; reload to continue",
+				)),
+			});
+			return;
+		}
+		if let Command::OwnedCosmetics {
+			user,
+			guild,
+			request,
+			..
+		} = command
+		{
+			self.apply_owned_cosmetics(owned_cosmetics::Event {
+				user,
+				guild,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Owned cosmetic request was not queued; reload to continue",
+				)),
+			});
+			return;
+		}
+		if let Command::AccountOverview { user, request } = command {
+			self.apply_account_overview(
+				user,
+				request,
+				Err(auth::Failure::ProtocolAt(
+					"Account details request was not queued; reload to continue",
+				)),
+			);
+			return;
+		}
+		if let Command::AccountConnections { user, request, .. } = command {
+			self.apply_account_connections(
+				user,
+				request,
+				Err(auth::Failure::ProtocolAt(
+					"Account connections request was not queued; reload to continue",
+				)),
+			);
+			return;
+		}
 		if let Command::BadgeSettings { request, .. } = command {
 			self.apply_badge_settings(
 				request,
@@ -2656,6 +2753,9 @@ impl State {
 			self.local_game_activity = Default::default();
 			self.invalidate_messaging_permissions(None);
 			self.interrupt_own_profile();
+			self.interrupt_server_profile();
+			self.interrupt_account_settings();
+			self.interrupt_owned_cosmetics();
 		}
 		if let Event::Typing(signal) = &envelope.event {
 			self.observe_typing_at(
@@ -3076,6 +3176,30 @@ impl State {
 				result,
 			} => {
 				self.apply_own_profile(user, request, result);
+				Ok(())
+			}
+			Event::ServerProfile(event) => {
+				self.apply_server_profile(event);
+				Ok(())
+			}
+			Event::OwnedCosmetics(event) => {
+				self.apply_owned_cosmetics(event);
+				Ok(())
+			}
+			Event::AccountOverview {
+				user,
+				request,
+				result,
+			} => {
+				self.apply_account_overview(user, request, result);
+				Ok(())
+			}
+			Event::AccountConnections {
+				user,
+				request,
+				result,
+			} => {
+				self.apply_account_connections(user, request, result);
 				Ok(())
 			}
 			Event::Profile {
@@ -3558,6 +3682,9 @@ impl State {
 				self.server_members_shortcuts.clear();
 				self.group_actions.reset();
 				self.clear_own_profile();
+				self.own_server_profile.reset();
+				self.retain_owned_cosmetic_session(user.id);
+				self.retain_account_settings_session(user.id);
 				self.user = Some(user);
 				self.guilds = guilds;
 				self.channels = channels;
@@ -4123,6 +4250,20 @@ impl State {
 		{
 			self.server_settings.reset();
 		}
+		if self
+			.own_server_profile
+			.guild
+			.is_some_and(|guild| !self.can_edit_server_profile(guild))
+		{
+			self.own_server_profile.reset();
+		}
+		if self
+			.owned_cosmetics
+			.guild
+			.is_some_and(|guild| !self.can_edit_server_profile(guild))
+		{
+			self.owned_cosmetics.reset();
+		}
 		if access_changed && !self.server_members_shortcuts.is_empty() {
 			let guilds: BTreeSet<_> = self.guilds.iter().map(|guild| guild.id).collect();
 			self.server_members_shortcuts
@@ -4246,6 +4387,9 @@ impl State {
 			self.interrupt_gif_favorites();
 			self.invalidate_messaging_permissions(Some(failure));
 			self.interrupt_own_profile();
+			self.interrupt_server_profile();
+			self.interrupt_account_settings();
+			self.interrupt_owned_cosmetics();
 			self.interrupt_badge_settings();
 			self.local_game_activity = Default::default();
 			self.cancel_message_actions();
@@ -4532,6 +4676,18 @@ impl Event {
 				}
 				Self::Profile { result, .. } | Self::ProfileEdited { result, .. } => {
 					result.as_ref().map_or(0, |p| p.bytes())
+				}
+				Self::ServerProfile(event) => {
+					event.result.as_ref().map_or(0, |snapshot| snapshot.bytes())
+				}
+				Self::OwnedCosmetics(event) => {
+					event.result.as_ref().map_or(0, |snapshot| snapshot.bytes())
+				}
+				Self::AccountOverview { result, .. } => {
+					result.as_ref().map_or(0, |overview| overview.bytes())
+				}
+				Self::AccountConnections { result, .. } => {
+					result.as_ref().map_or(0, |connections| connections.bytes())
 				}
 				Self::StreamPreview { result, .. } => result.as_ref().map_or(0, String::capacity),
 				Self::BadgeSettings { result, .. } => result

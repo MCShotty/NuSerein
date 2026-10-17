@@ -1,7 +1,6 @@
 //! Account messaging preferences in the existing settings shell.
 use crate::{MessagingUi, design};
 use client_core::{Command, State};
-use egui::RichText;
 use model::{
 	Id,
 	messaging_permissions::{Change, MAX_GUILDS},
@@ -44,8 +43,8 @@ pub(super) struct Navigation {
 	pub active: Tab,
 	pub jump: Option<Tab>,
 	pub requested: bool,
-	generation: u64,
-	guild: Option<Id>,
+	pub(super) generation: u64,
+	pub(super) guild: Option<Id>,
 }
 impl Navigation {
 	fn heading(&mut self, ui: &mut egui::Ui, tab: Tab) {
@@ -71,13 +70,6 @@ fn toggle(ui: &mut egui::Ui, label: &str, detail: Option<&str>, mut value: bool)
 		.changed()
 		.then_some(value)
 }
-fn detail(ui: &mut egui::Ui, text: &str) {
-	ui.label(
-		RichText::new(crate::i18n::translate_if_key(text))
-			.size(13.0)
-			.color(design::palette(ui).muted),
-	);
-}
 impl MessagingUi {
 	pub(super) fn messaging_permissions_settings(
 		&mut self,
@@ -85,25 +77,8 @@ impl MessagingUi {
 		state: &mut State,
 		commands: &mut Vec<Command>,
 	) {
+		self.account_preferences_header(ui, state, commands);
 		let nav = &mut self.settings.messaging_permissions;
-		if nav.generation != state.generation {
-			*nav = Navigation {
-				generation: state.generation,
-				..Default::default()
-			};
-		}
-		if state.messaging_permissions.snapshot.is_none()
-			&& !state.messaging_permissions.pending
-			&& state.messaging_permissions.error.is_none()
-		{
-			nav.requested = false;
-		}
-		if !nav.requested && !state.messaging_permissions.pending {
-			if let Some(command) = state.request_messaging_permissions() {
-				commands.push(command);
-			}
-			nav.requested = true;
-		}
 		if nav
 			.guild
 			.is_some_and(|id| !state.guilds.iter().any(|guild| guild.id == id))
@@ -126,38 +101,11 @@ impl MessagingUi {
 			});
 		}
 		let busy = state.messaging_permissions.pending;
-		if busy {
-			ui.horizontal(|ui| {
-				ui.add(egui::Spinner::new().size(14.0));
-				detail(
-					ui,
-					if state.messaging_permissions.snapshot.is_some() {
-						"messaging-permissions-messaging-permissions-settings-saving"
-					} else {
-						"messaging-permissions-messaging-permissions-settings-loading-your-preferences"
-					},
-				);
-			});
-		}
-		if let Some(error) = state.messaging_permissions.error {
-			design::notice(ui, design::Level::Error, error.label());
-			if !busy
-				&& design::text_action(
-					ui,
-					&crate::i18n::translate(
-						"messaging-permissions-messaging-permissions-settings-try-again",
-					),
-				)
-				.clicked()
-			{
-				nav.requested = false;
-			}
-		}
 		let Some(settings) = state.messaging_permissions.snapshot.as_ref() else {
 			return;
 		};
 		let mut change = None;
-		ui.add_enabled_ui(!busy, |ui| {
+		ui.add_enabled_ui(!busy && !state.messaging_permissions.reload_required, |ui| {
 			nav.heading(ui, Tab::Spam);
 			design::card(ui, |ui| {
 				design::section(

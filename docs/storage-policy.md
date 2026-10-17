@@ -1,5 +1,41 @@
 # Local storage policy and audit
 
+Owned cosmetic editing retains at most 256 inventory items / 128 KiB plus 16 equipped profile
+entries in session RAM. Fresh own-profile/inventory wire responses are capped at 256 KiB / 2 MiB
+and zeroized after typed projection. Unknown equipped IDs remain in replacement writes; no
+purchases, claims, storefront history, images, paths, account identifiers or entitlement cache
+are persisted. Display-name style edits hold at most two RGB colors and known font/effect IDs;
+up to five current colors may be retained for safe read-only preservation. Account/guild/request
+changes retire stale results, and unconfirmed writes require an explicit reload before retry.
+
+## Own server profiles, account overview and privacy preferences (October 17, 2026)
+
+One own-server-profile snapshot is capped at 68 KiB, including the existing bounded
+64-KiB profile projection and its raw override values. One UI draft retains at most
+4 KiB of text plus two existing 256-KiB PNG data-URI limits (avatar and banner).
+Pictures use explicit native selection, bounded 8-MiB input/4096-pixel/64-MiB decoder
+limits outside rendering, and previews at most 512 pixels on either edge. No source
+path, PNG, profile text or preview is written to disk. The editor is account-generation,
+guild and request scoped. Session reset or lost membership retires replies and releases
+private snapshots; failed writes preserve the current-session draft and require reload.
+
+The own-account overview retains at most 4 KiB of identity, email, phone and security
+summary in session RAM. Email and phone are concealed in the UI by default. A connection
+list retains at most 64 items / 64 KiB, with a 256-KiB HTTP body ceiling. It excludes
+third-party access tokens, integrations and arbitrary service metadata. External IDs
+are at most 128 characters / 512 UTF-8 bytes and are escaped as a single route segment.
+One pending mutation and one failed-change draft share the existing serial REST writer;
+there is no polling, new background queue or OAuth token store. Own-account and
+connection HTTP response allocations are zeroized after typed decoding. Disconnect,
+account changes and logout clear private read snapshots; late results cannot repopulate
+them. These private projections are not supplied to extensions.
+
+Privacy/content preferences add only fixed-size enums and optional booleans to the
+existing bounded messaging-settings snapshot. One failed explicit change is retained
+in session memory; no mutation is automatically retried or replayed after reconnect.
+Changed protobuf subtrees retain the existing 128-KiB bounds and preserve unmodified
+fields, including unknown nested fields. No database schema or persistence is added.
+
 ## Per-conversation reply and attachment staging (October 16, 2026)
 
 Leaving a conversation keeps its unsent reply target and staged files in session RAM for

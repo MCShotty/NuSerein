@@ -9,6 +9,49 @@ pub const MAX_PROFILE_EDIT_BYTES: usize = 4096;
 /// Largest PNG data URI accepted for a new profile picture (256 KiB of PNG, base64 encoded).
 pub const MAX_PROFILE_AVATAR_URI: usize = crate::server_settings::MAX_ICON_DATA_URI;
 
+/// A bounded native editor for documented display-name fields. Unknown current styles
+/// remain readable and are never rewritten unless the user explicitly chooses a style.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProfileNameStyle {
+	pub font: u32,
+	pub effect: u32,
+	pub colors: Vec<u32>,
+}
+impl ProfileNameStyle {
+	pub fn valid_data(&self) -> bool {
+		self.colors.capacity() <= 5
+			&& !self.colors.is_empty()
+			&& self.colors.iter().all(|color| *color <= 0xff_ffff)
+	}
+	pub fn valid(&self) -> bool {
+		self.valid_data()
+			&& self.colors.len() <= 2
+			&& matches!(self.font, 3 | 4 | 6 | 7 | 8 | 10..=16)
+			&& (1..=8).contains(&self.effect)
+			&& (matches!(self.effect, 2 | 6 | 7 | 8) || self.colors.len() == 1)
+	}
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>() + self.colors.capacity() * size_of::<u32>()
+	}
+	pub fn from_user(user: &User) -> Option<Self> {
+		user.cosmetics
+			.as_deref()
+			.and_then(|cosmetics| cosmetics.name_style.as_ref())
+			.map(|style| Self {
+				font: style.font,
+				effect: style.effect.id(),
+				colors: style.colors.clone(),
+			})
+	}
+	pub fn into_display(self) -> crate::NameStyle {
+		crate::NameStyle {
+			font: self.font,
+			effect: crate::NameEffect::from_id(self.effect),
+			colors: self.colors,
+		}
+	}
+}
+
 /// Only explicitly changed fields are sent. Nested `None` clears a nullable field.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProfileEdit {
@@ -18,6 +61,10 @@ pub struct ProfileEdit {
 	pub accent_color: Option<Option<u32>>,
 	/// New picture as a PNG data URI; nested `None` removes the current picture.
 	pub avatar: Option<Option<String>>,
+	/// Nitro banner upload; nested None restores the account's banner color.
+	pub banner: Option<Option<String>>,
+	pub theme_colors: Option<Option<[u32; 2]>>,
+	pub name_style: Option<Option<ProfileNameStyle>>,
 }
 impl ProfileEdit {
 	fn text_bytes(&self) -> usize {
@@ -25,9 +72,16 @@ impl ProfileEdit {
 			+ self.global_name.as_ref().map_or(0, bytes)
 			+ bytes(&self.bio)
 			+ bytes(&self.pronouns)
+			+ self
+				.name_style
+				.as_ref()
+				.and_then(Option::as_ref)
+				.map_or(0, ProfileNameStyle::bytes)
 	}
 	pub fn bytes(&self) -> usize {
-		self.text_bytes() + self.avatar.as_ref().map_or(0, bytes)
+		self.text_bytes()
+			+ self.avatar.as_ref().map_or(0, bytes)
+			+ self.banner.as_ref().map_or(0, bytes)
 	}
 	pub fn valid(&self) -> bool {
 		fn text(value: &str, max: usize, multiline: bool) -> bool {
@@ -39,9 +93,18 @@ impl ProfileEdit {
 		}
 		self.text_bytes() <= MAX_PROFILE_EDIT_BYTES
 			&& self
-				.avatar
+				.name_style
 				.as_ref()
-				.is_none_or(|avatar| avatar.as_deref().is_none_or(valid_avatar_uri))
+				.and_then(Option::as_ref)
+				.is_none_or(ProfileNameStyle::valid)
+			&& [&self.avatar, &self.banner].into_iter().all(|value| {
+				value
+					.as_ref()
+					.is_none_or(|image| image.as_deref().is_none_or(valid_avatar_uri))
+			}) && self
+			.theme_colors
+			.flatten()
+			.is_none_or(|colors| colors.iter().all(|color| *color <= 0xff_ffff))
 			&& self.global_name.as_ref().is_none_or(|name| {
 				name.as_ref().is_none_or(|name| {
 					!name.trim().is_empty() && text(name, MAX_PROFILE_NAME_CHARS, false)
@@ -58,6 +121,11 @@ impl ProfileEdit {
 				.accent_color
 				.flatten()
 				.is_none_or(|color| color <= 0xff_ffff)
+	}
+	pub fn needs_nitro(&self) -> bool {
+		matches!(self.banner, Some(Some(_)))
+			|| matches!(self.theme_colors, Some(Some(_)))
+			|| matches!(self.name_style, Some(Some(_)))
 	}
 }
 
@@ -78,6 +146,34 @@ pub fn valid_avatar_uri(uri: &str) -> bool {
 mod edit_tests {
 	use super::*;
 	#[test]
+	fn profile_name_styles_keep_unknown_read_values_and_only_write_supported_choices() {
+		let mut style = ProfileNameStyle {
+			font: 11,
+			effect: 2,
+			colors: vec![0xff0000, 0xff00],
+		};
+		assert!(style.valid());
+		let edit = ProfileEdit {
+			name_style: Some(Some(style.clone())),
+			..Default::default()
+		};
+		assert!(edit.valid() && edit.needs_nitro());
+		style.font = 900;
+		assert!(style.valid_data() && !style.valid());
+		style.font = 11;
+		style.effect = 3;
+		assert!(!style.valid());
+		style.colors.truncate(1);
+		assert!(style.valid());
+		assert!(
+			!ProfileEdit {
+				name_style: Some(None),
+				..Default::default()
+			}
+			.needs_nitro()
+		);
+	}
+	#[test]
 	fn profile_edit_bounds_unicode_clear_values_and_retained_bytes() {
 		let mut edit = ProfileEdit {
 			global_name: Some(Some("🦀".repeat(MAX_PROFILE_NAME_CHARS))),
@@ -85,6 +181,7 @@ mod edit_tests {
 			pronouns: Some("🦀".repeat(MAX_PROFILE_PRONOUNS_CHARS)),
 			accent_color: Some(Some(0xff_ffff)),
 			avatar: Some(Some("data:image/png;base64,iVBORw0KGgo=".into())),
+			..Default::default()
 		};
 		assert!(edit.valid());
 		edit.avatar = Some(Some("data:image/jpeg;base64,/9j/".into()));
