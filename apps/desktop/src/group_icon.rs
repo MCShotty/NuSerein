@@ -47,7 +47,7 @@ impl GroupIcon {
 		self.start_image(scope, runtime, context, parent, title, 512, false)
 	}
 	#[allow(clippy::too_many_arguments)]
-	fn start_image(
+	pub fn start_image(
 		&mut self,
 		scope: Scope,
 		runtime: &tokio::runtime::Handle,
@@ -166,12 +166,8 @@ pub(crate) fn decode_image(
 	square: bool,
 ) -> Result<(String, egui::ColorImage), &'static str> {
 	let (png, preview) = decode_png(bytes, output_edge, square, 256 * 1024)?;
-	let uri = if output_edge > 256 {
-		discord_protocol::profile::image_data_uri(&png)
-	} else {
-		discord_protocol::group_actions::icon_data_uri(&png)
-	}
-	.ok_or("Prepared icon exceeds 256 KB; choose a simpler image")?;
+	let uri = discord_protocol::group_actions::image_data_uri(&png, output_edge.clamp(1, 512))
+		.ok_or("Prepared icon exceeds 256 KB; choose a simpler image")?;
 	Ok((uri, preview))
 }
 
@@ -254,6 +250,11 @@ mod tests {
 		let (uri, preview) = decode(png.get_ref(), 256).unwrap();
 		assert_eq!(preview.size, [256, 256]);
 		assert!(uri.starts_with("data:image/png;base64,"));
+		let (uri, preview) = decode_image(png.get_ref(), 512, false).unwrap();
+		assert_eq!(preview.size, [512, 320]);
+		assert!(discord_protocol::group_actions::valid_image_data_uri(
+			&uri, 512
+		));
 		assert!(decode(b"invalid", 256).is_err());
 		assert!(decode(&vec![0; MAX_INPUT + 1], 256).is_err());
 		png = Cursor::new(Vec::new());

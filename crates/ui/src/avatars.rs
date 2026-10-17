@@ -966,6 +966,48 @@ impl Avatars {
 			.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, ui.is_enabled(), label));
 		response
 	}
+	/// Server Guide welcome artwork uses the same bounded, credential-free image worker.
+	pub fn show_guide_header(
+		&mut self,
+		ui: &mut egui::Ui,
+		guild: model::Id,
+		hash: &str,
+		demo: bool,
+	) {
+		let key = format!("guide-header-{guild}-{hash}");
+		let width = ui.available_width().min(640.0);
+		let (rect, response) =
+			ui.allocate_exact_size(egui::vec2(width, width / 3.0), egui::Sense::hover());
+		if ui.is_rect_visible(rect) {
+			#[cfg(any(test, feature = "demo"))]
+			if demo && !self.textures.contains_key(&key) {
+				let color = crate::design::palette(ui).accent;
+				let mut image = ColorImage::filled([192, 64], color);
+				for y in 0..64 {
+					for x in 0..192 {
+						image.pixels[y * 192 + x] = color
+							.lerp_to_gamma(egui::Color32::WHITE, ((x + y) % 96) as f32 / 192.0);
+					}
+				}
+				self.attempts.insert(key.clone(), (Instant::now(), false));
+				self.accept(ui.ctx(), key.clone(), Some(image));
+			}
+			if !self.paint_fitted(ui, &key, rect, 8, true) {
+				ui.painter()
+					.rect_filled(rect, 8, crate::design::palette(ui).raised);
+				if !demo {
+					self.request(key);
+				}
+			}
+		}
+		response.widget_info(|| {
+			egui::WidgetInfo::labeled(
+				egui::Role::Image,
+				ui.is_enabled(),
+				crate::i18n::translate("community-welcome-sign"),
+			)
+		});
+	}
 	/// Portrait game cover for the profile board, cropped to fill; a rounded tile until loaded.
 	pub fn show_cover(
 		&mut self,

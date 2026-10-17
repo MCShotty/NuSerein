@@ -22,6 +22,69 @@ pub struct Edit {
 	pub overwrites: Vec<model::permissions::Overwrite>,
 	/// Forum and media channel settings; None for every other channel type.
 	pub forum: Option<Box<ForumEdit>>,
+	/// Voice/Stage settings; absent edits preserve them.
+	pub voice: Option<Box<VoiceEdit>>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VoiceRegion {
+	pub id: String,
+	pub name: String,
+	pub deprecated: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VoiceEdit {
+	pub bitrate: u32,
+	pub user_limit: u32,
+	pub region: Option<String>,
+	pub video_quality: u8,
+	pub regions: Vec<VoiceRegion>,
+}
+impl VoiceEdit {
+	pub fn valid(&self) -> bool {
+		(8000..=384000).contains(&self.bitrate)
+			&& self.user_limit <= 10000
+			&& matches!(self.video_quality, 1 | 2)
+			&& self.region.as_ref().is_none_or(|r| {
+				!r.is_empty()
+					&& r.len() <= 64
+					&& r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+			}) && self.regions.len() <= 100
+			&& self
+				.regions
+				.iter()
+				.all(|r| r.id.len() <= 64 && r.name.len() <= 256)
+			&& self.bytes() <= 64 * 1024
+	}
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>()
+			+ self.region.as_ref().map_or(0, String::capacity)
+			+ self.regions.capacity() * size_of::<VoiceRegion>()
+			+ self
+				.regions
+				.iter()
+				.map(|r| r.id.capacity() + r.name.capacity())
+				.sum::<usize>()
+	}
+	pub fn settings_eq(&self, other: &Self) -> bool {
+		self.bitrate == other.bitrate
+			&& self.user_limit == other.user_limit
+			&& self.region == other.region
+			&& self.video_quality == other.video_quality
+	}
+	pub fn conflicts(before: &Self, after: &Self, actual: &Self) -> bool {
+		(before.bitrate != after.bitrate && before.bitrate != actual.bitrate)
+			|| (before.user_limit != after.user_limit && before.user_limit != actual.user_limit)
+			|| (before.region != after.region && before.region != actual.region)
+			|| (before.video_quality != after.video_quality
+				&& before.video_quality != actual.video_quality)
+	}
+	pub fn confirms(before: &Self, after: &Self, actual: &Self) -> bool {
+		(before.bitrate == after.bitrate || after.bitrate == actual.bitrate)
+			&& (before.user_limit == after.user_limit || after.user_limit == actual.user_limit)
+			&& (before.region == after.region || after.region == actual.region)
+			&& (before.video_quality == after.video_quality
+				|| after.video_quality == actual.video_quality)
+	}
 }
 /// Discord's forum tag name limit.
 pub const TAG_NAME_LIMIT: usize = 20;
@@ -87,6 +150,7 @@ pub fn valid_tag_name(name: &str) -> bool {
 impl Edit {
 	pub fn valid(&self) -> bool {
 		self.forum.as_deref().is_none_or(ForumEdit::valid)
+			&& self.voice.as_deref().is_none_or(VoiceEdit::valid)
 			&& valid_name(&self.name)
 			&& self.name.capacity() <= 400
 			&& self.topic.chars().count() <= 4096
@@ -107,6 +171,7 @@ impl Edit {
 			+ self.topic.capacity()
 			+ self.overwrites.capacity() * size_of::<model::permissions::Overwrite>()
 			+ self.forum.as_deref().map_or(0, ForumEdit::bytes)
+			+ self.voice.as_deref().map_or(0, VoiceEdit::bytes)
 	}
 }
 pub fn valid_name(name: &str) -> bool {
@@ -475,11 +540,34 @@ impl State {
 		available & bits == bits
 	}
 	fn channel_edit_allowed(&self, channel: Id, before: &Edit, after: &Edit) -> bool {
+		let kind = self.channel(channel).map(|c| c.kind);
+		if before
+			.voice
+			.as_ref()
+			.zip(after.voice.as_ref())
+			.is_some_and(|(before, after)| !before.settings_eq(after))
+		{
+			let Some(voice) = &after.voice else {
+				return false;
+			};
+			if !matches!(kind, Some(2 | 13))
+				|| (kind == Some(13) && voice.bitrate > 64000)
+				|| (kind == Some(2) && voice.user_limit > 99)
+			{
+				return false;
+			}
+		}
 		let overview = before.name != after.name
 			|| before.topic != after.topic
 			|| before.slowmode != after.slowmode
 			|| before.nsfw != after.nsfw;
-		if before.topic != after.topic && after.topic.chars().count() > 1024 {
+		if before.topic != after.topic
+			&& after.topic.chars().count()
+				> if matches!(kind, Some(15 | 16)) {
+					4096
+				} else {
+					1024
+				} {
 			return false;
 		}
 		if overview && !self.can_manage_channel(channel) {
@@ -490,7 +578,7 @@ impl State {
 			|| before.nsfw != after.nsfw)
 			&& !self
 				.channel(channel)
-				.is_some_and(|c| matches!(c.kind, 0 | 5))
+				.is_some_and(|c| matches!(c.kind, 0 | 5 | 15 | 16))
 		{
 			return false;
 		}
@@ -1882,5 +1970,65 @@ mod tests {
 			.unwrap();
 		assert_eq!(state.guild_channel_muted(Id(3)), Some(true));
 		assert!(!state.notification_allowed(Id(3)));
+	}
+}
+
+#[cfg(test)]
+mod voice_edit_tests {
+	use super::*;
+	#[test]
+	fn voice_and_stage_limits_and_channel_management_are_admitted_locally() {
+		let mut state = crate::community_admin::tests::state(MANAGE_CHANNELS);
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == Id(10))
+			.unwrap()
+			.kind = 2;
+		let before = Edit {
+			name: "Voice".into(),
+			voice: Some(Box::new(VoiceEdit {
+				bitrate: 64000,
+				user_limit: 0,
+				region: None,
+				video_quality: 1,
+				regions: vec![],
+			})),
+			..Default::default()
+		};
+		let mut after = before.clone();
+		after.voice.as_mut().unwrap().user_limit = 99;
+		assert!(state.channel_edit_allowed(Id(10), &before, &after));
+		after.voice.as_mut().unwrap().user_limit = 100;
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == Id(10))
+			.unwrap()
+			.kind = 13;
+		assert!(state.channel_edit_allowed(Id(10), &before, &after));
+		after.voice.as_mut().unwrap().bitrate = 65000;
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+	}
+	#[test]
+	fn forum_guidelines_admit_the_documented_limit_without_allowing_oversize_text_topics() {
+		let mut state = crate::community_admin::tests::state(MANAGE_CHANNELS);
+		let before = Edit {
+			name: "Forum".into(),
+			..Default::default()
+		};
+		let mut after = before.clone();
+		after.topic = "a".repeat(4096);
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == Id(10))
+			.unwrap()
+			.kind = 15;
+		assert!(state.channel_edit_allowed(Id(10), &before, &after));
+		after.topic.push('a');
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
 	}
 }

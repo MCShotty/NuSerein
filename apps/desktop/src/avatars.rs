@@ -94,6 +94,7 @@ fn decode_edge(key: &str) -> u32 {
 		|| key.starts_with("spotify-")
 		|| key.starts_with("banner-")
 		|| key.starts_with("member-banner-")
+		|| key.starts_with("guide-header-")
 	{
 		ui::EMBED_EDGE
 	} else if key.starts_with("badge-art:") {
@@ -644,6 +645,20 @@ fn cdn_url(key: &str) -> Option<String> {
 	}
 	if Cosmetic::parse(key).is_some() {
 		return Cosmetic::url(key);
+	}
+	// Published CDN paths, constructed from typed IDs and hashes; no arbitrary host is accepted.
+	for (prefix, route, edge) in [
+		("guide-header-", "home-headers", 512),
+		("guide-action-", "new-member-actions", 128),
+		("guide-resource-", "resource-channels", 128),
+	] {
+		if let Some(value) = key.strip_prefix(prefix) {
+			let (id, hash) = value.split_once('-')?;
+			let id: Id = id.parse().ok()?;
+			return (id.0 != 0 && model::valid_avatar_hash(hash)).then(|| {
+				format!("https://cdn.discordapp.com/{route}/{id}/{hash}.png?size={edge}")
+			});
+		}
 	}
 	if let Some(value) = key
 		.strip_prefix("anim:sticker-")
@@ -3113,6 +3128,29 @@ mod tests {
 				.is_none()
 			);
 		}
+	}
+	#[test]
+	fn guide_artwork_urls_are_confined_and_headers_use_the_bounded_embed_edge() {
+		let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		for (key, path, edge) in [
+			("guide-header", "home-headers", 512),
+			("guide-action", "new-member-actions", 128),
+			("guide-resource", "resource-channels", 128),
+		] {
+			assert_eq!(
+				super::cdn_url(&format!("{key}-42-{hash}")),
+				Some(format!(
+					"https://cdn.discordapp.com/{path}/42/{hash}.png?size={edge}"
+				))
+			);
+			assert!(super::cdn_url(&format!("{key}-0-{hash}")).is_none());
+			assert!(super::cdn_url(&format!("{key}-42-../../outside")).is_none());
+		}
+		assert_eq!(
+			super::decode_edge(&format!("guide-header-42-{hash}")),
+			ui::EMBED_EDGE
+		);
+		assert_eq!(super::decode_edge(&format!("guide-action-42-{hash}")), 128);
 	}
 
 	#[test]

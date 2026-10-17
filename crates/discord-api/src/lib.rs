@@ -5,6 +5,7 @@ mod archives;
 mod badges;
 mod channel_actions;
 mod collectibles;
+mod community_admin;
 pub mod detectable;
 pub mod external_assets;
 mod forum;
@@ -12,6 +13,7 @@ mod gif_favorites;
 mod group_actions;
 mod guild_folders;
 mod interactions;
+mod member_guide;
 mod message_options;
 mod messaging_permissions;
 mod onboarding;
@@ -29,6 +31,7 @@ mod server_admin;
 mod server_audit_log;
 mod server_integrations;
 mod server_invites;
+mod server_moderation;
 mod server_roles;
 mod server_settings;
 pub mod spotify;
@@ -419,8 +422,45 @@ impl DiscordApi {
 		body: Option<RequestContent>,
 		response: ResponsePolicy<'_>,
 		retry: Option<&client_core::captcha::Retry>,
-		mut challenge: Option<&mut Option<client_core::captcha::Challenge>>,
+		challenge: Option<&mut Option<client_core::captcha::Challenge>>,
 	) -> Result<Vec<u8>, Failure> {
+		self.request_with_reason(method, path, body, response, (retry, challenge), None)
+			.await
+	}
+	async fn request_reason_limited(
+		&self,
+		method: Method,
+		path: &str,
+		body: Option<serde_json::Value>,
+		max_bytes: usize,
+		reason: &str,
+	) -> Result<Vec<u8>, Failure> {
+		if !model::automod::valid_reason(reason) {
+			return Err(Failure::Protocol);
+		}
+		self.request_with_reason(
+			method,
+			path,
+			body.map(RequestContent::Json),
+			ResponsePolicy::required(max_bytes),
+			(None, None),
+			Some(reason),
+		)
+		.await
+	}
+	async fn request_with_reason(
+		&self,
+		method: Method,
+		path: &str,
+		body: Option<RequestContent>,
+		response: ResponsePolicy<'_>,
+		captcha: (
+			Option<&client_core::captcha::Retry>,
+			Option<&mut Option<client_core::captcha::Challenge>>,
+		),
+		reason: Option<&str>,
+	) -> Result<Vec<u8>, Failure> {
+		let (retry, mut challenge) = captcha;
 		let ResponsePolicy { max_bytes, missing } = response;
 		// Only typed adapter methods construct paths. Never accept a URL or route from UI/content.
 		if !path.starts_with('/')
@@ -472,6 +512,12 @@ impl DiscordApi {
 			let mut request = client
 				.request(method.clone(), format!("{base}{path}"))
 				.header(AUTHORIZATION, authorization);
+			if let Some(reason) = reason.filter(|reason| !reason.is_empty()) {
+				let encoded: String = reason.bytes().map(|byte| format!("%{byte:02X}")).collect();
+				let mut value = HeaderValue::from_str(&encoded).map_err(|_| Failure::Protocol)?;
+				value.set_sensitive(true);
+				request = request.header("x-audit-log-reason", value);
+			}
 			if let Some(retry) = retry {
 				if retry.expired() {
 					return Err(Failure::ProtocolAt(
@@ -928,6 +974,12 @@ impl DiscordApi {
 				request,
 				edit,
 			} => Event::ServerSettings(self.server_settings(guild, request, edit).await),
+			Command::MemberGuide {
+				guild,
+				user,
+				request,
+				action,
+			} => Event::MemberGuide(self.member_guide(guild, user, request, action).await),
 			Command::Onboarding {
 				guild,
 				request,

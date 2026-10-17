@@ -18,6 +18,10 @@ pub struct Event {
 
 #[derive(Default)]
 pub struct View {
+	pub community: Option<model::community_admin::Snapshot>,
+	pub automod: Option<model::automod::Snapshot>,
+	pub bans: Option<model::moderation::Bans>,
+	pub moderation_target: Option<model::server_admin::Member>,
 	webhook_url: Option<model::server_integrations::WebhookUrl>,
 	pub audit_log: Option<model::server_audit_log::Page>,
 	pub audit_query: Option<model::server_audit_log::Query>,
@@ -48,6 +52,15 @@ pub struct View {
 	prune_days: Option<u8>,
 }
 impl View {
+	pub(crate) fn invalidate_community(&mut self) {
+		self.permission_revision = self.permission_revision.wrapping_add(1);
+		if matches!(self.action, Some(Action::Community(_))) {
+			self.needs_refresh = true;
+			self.error = Some(
+				"Channels, roles or permissions changed; reload community settings before saving",
+			);
+		}
+	}
 	pub(crate) fn revoke_audit_access(&mut self) {
 		self.audit_log = None;
 		self.audit_query = None;
@@ -79,10 +92,21 @@ impl View {
 			Event::Channel { guild, .. } => {
 				guild.is_none_or(|guild| guild == active)
 					&& (self.integrations.is_some()
-						|| matches!(self.action, Some(Action::Integrations(_))))
+						|| self.automod.is_some()
+						|| self.community.is_some()
+						|| matches!(
+							self.action,
+							Some(
+								Action::Integrations(_) | Action::AutoMod(_) | Action::Community(_)
+							)
+						))
 			}
 		};
 		if relevant {
+			self.automod = None;
+			self.community = None;
+			self.bans = None;
+			self.moderation_target = None;
 			self.webhook_url = None;
 			self.permission_revision = self.permission_revision.wrapping_add(1);
 		}
@@ -280,16 +304,21 @@ impl State {
 	pub fn can_open_member_settings(&self, guild: Id) -> bool {
 		self.can_manage_guild(guild)
 	}
-	fn admin_member(&self, guild: Id, user: Id) -> Option<&model::server_admin::Member> {
+	pub(super) fn admin_member(&self, guild: Id, user: Id) -> Option<&model::server_admin::Member> {
 		(self.server_admin.guild == Some(guild)).then_some(())?;
 		self.server_admin
-			.members
-			.as_ref()?
-			.items
-			.iter()
-			.find(|member| member.user.id == user)
+			.moderation_target
+			.as_ref()
+			.filter(|member| member.user.id == user)
+			.or_else(|| {
+				self.server_admin
+					.members
+					.as_ref()
+					.and_then(|page| page.items.iter().find(|member| member.user.id == user))
+			})
 	}
-	fn above_admin_member(&self, guild: Id, user: Id) -> bool {
+
+	pub(super) fn above_admin_member(&self, guild: Id, user: Id) -> bool {
 		let Some(actor) = self.user.as_ref().map(|user| user.id) else {
 			return false;
 		};
@@ -427,6 +456,9 @@ impl State {
 				channel,
 				change,
 			} => self.can_moderate_voice(guild, *channel, *user, *change),
+			Action::Community(action) => self.community_action_allowed(guild, action),
+			Action::AutoMod(action) => self.automod_action_allowed(guild, action),
+			Action::Moderation(action) => self.moderation_action_allowed(guild, action),
 			Action::AuditLog(query) => self.audit_log_action_allowed(guild, query),
 			Action::Roles(action) => self.role_action_allowed(guild, action),
 			Action::Invites(action) => self.invite_action_allowed(guild, action),
@@ -531,6 +563,12 @@ impl State {
 		if matches!(action, Action::LoadSounds) {
 			self.server_admin.sounds_stale = false;
 		}
+		if matches!(
+			action,
+			Action::Moderation(model::moderation::Action::Member(_))
+		) {
+			self.server_admin.moderation_target = None;
+		}
 		if let Action::AuditLog(query) = &action {
 			if query.before.is_none() {
 				self.server_admin.audit_log = None;
@@ -620,6 +658,11 @@ impl State {
 	pub(crate) fn cancel_server_admin(&mut self) {
 		self.server_admin.webhook_url = None;
 		if self.server_admin.pending {
+			if self.server_admin.saving
+				&& matches!(self.server_admin.action, Some(Action::Community(_)))
+			{
+				self.server_admin.community = None;
+			}
 			self.server_admin.needs_refresh |= self.server_admin.saving;
 			self.server_admin.error = Some(if self.server_admin.saving {
 				"Outcome unknown; reload before retrying"
@@ -645,6 +688,12 @@ impl State {
 		if action.as_ref().is_none_or(|action| {
 			if matches!(action, Action::Voice { .. }) {
 				self.guild(event.guild).is_none()
+			} else if matches!(action, Action::Community(_)) {
+				!self.can_open_community_settings(event.guild)
+			} else if matches!(action, Action::AutoMod(_)) {
+				!self.can_manage_guild(event.guild)
+			} else if matches!(action, Action::Moderation(_)) {
+				!self.can_open_moderation(event.guild)
 			} else if matches!(action, Action::AuditLog(_)) {
 				!self.can_open_audit_log_settings(event.guild)
 			} else if let Action::Integrations(action) = action {
@@ -677,15 +726,33 @@ impl State {
 			self.server_admin.reset();
 			return Ok(());
 		}
+		if matches!(
+			action,
+			Some(Action::AutoMod(_) | Action::Moderation(_) | Action::Community(_))
+		) && self.server_admin.requested_permission_revision
+			!= self.server_admin.permission_revision
+		{
+			self.server_admin.error = Some("Server permissions changed; reload before continuing");
+			self.server_admin.needs_refresh = true;
+			return Ok(());
+		}
 		let result = match event.result {
 			Ok(result) if result.valid() => result,
 			Ok(_) => {
+				if matches!(action, Some(Action::Community(_))) {
+					self.server_admin.community = None;
+				}
 				self.server_admin.error =
 					Some("Server administration response exceeded safe bounds");
 				self.server_admin.needs_refresh = true;
 				return Ok(());
 			}
 			Err(failure) => {
+				if matches!(action, Some(Action::Community(_)))
+					&& matches!(failure, Failure::Forbidden | Failure::Ambiguous)
+				{
+					self.server_admin.community = None;
+				}
 				if matches!(action, Some(Action::Voice { .. })) {
 					self.status = failure.label();
 				}
@@ -752,6 +819,66 @@ impl State {
 				})),
 				Outcome::WebhookUrl(url),
 			) => url.guild == event.guild && url.webhook == *webhook && url.channel == *channel,
+			(Some(Action::Community(action)), Outcome::Community(page)) => {
+				page.guild == event.guild
+					&& action.confirms(page)
+					&& self.community_snapshot_current(page)
+			}
+			(Some(Action::AutoMod(action)), Outcome::AutoMod(page)) => {
+				page.guild == event.guild
+					&& match action {
+						model::automod::Action::Load => true,
+						model::automod::Action::Create { settings, .. } => {
+							page.rules.iter().any(|rule| rule.settings == **settings)
+						}
+						model::automod::Action::Edit {
+							id, before, after, ..
+						} => page
+							.rules
+							.iter()
+							.any(|rule| rule.id == *id && rule.settings.confirms(before, after)),
+						model::automod::Action::Delete { id, .. } => {
+							page.rules.iter().all(|rule| rule.id != *id)
+						}
+					}
+			}
+			(Some(Action::Moderation(action)), Outcome::Moderation(result)) => {
+				match (action, result) {
+					(
+						model::moderation::Action::Bans { .. },
+						model::moderation::Outcome::Bans(page),
+					) => page.guild == event.guild,
+					(
+						model::moderation::Action::Member(user),
+						model::moderation::Outcome::Member(member),
+					) => member.user.id == *user,
+					(
+						model::moderation::Action::Change { user, change, .. },
+						model::moderation::Outcome::Changed {
+							user: actual,
+							member,
+						},
+					) => {
+						user == actual
+							&& match change {
+								model::moderation::Change::Timeout { until } => {
+									member.as_ref().is_some_and(|member| {
+										member.timeout_until == until.map(|at| at / 1_000_000)
+									})
+								}
+								_ => member.is_none(),
+							}
+					}
+					(
+						model::moderation::Action::Unban { user, .. },
+						model::moderation::Outcome::Changed {
+							user: actual,
+							member: None,
+						},
+					) => user == actual,
+					_ => false,
+				}
+			}
 			(Some(Action::AuditLog(query)), Outcome::AuditLog(page)) => {
 				page.guild == event.guild && page.matches_query(query)
 			}
@@ -855,12 +982,73 @@ impl State {
 			_ => false,
 		};
 		if !expected {
+			if matches!(action, Some(Action::Community(_))) {
+				self.server_admin.community = None;
+			}
 			self.server_admin.error =
 				Some("Unexpected server administration response; reload to continue");
 			self.server_admin.needs_refresh = true;
 			return Ok(());
 		}
 		match result {
+			Outcome::AutoMod(page) => self.server_admin.automod = Some(page),
+			Outcome::Moderation(result) => match result {
+				model::moderation::Outcome::Bans(page) => self.server_admin.bans = Some(page),
+				model::moderation::Outcome::Member(member) => {
+					self.server_admin.moderation_target = Some(*member)
+				}
+				model::moderation::Outcome::Changed { user, member } => {
+					let removed = matches!(
+						action,
+						Some(Action::Moderation(model::moderation::Action::Change {
+							change: model::moderation::Change::Kick
+								| model::moderation::Change::Ban { .. },
+							..
+						}))
+					);
+					if let Some(page) = &mut self.server_admin.members {
+						if let Some(updated) = member.as_deref() {
+							if let Some(existing) =
+								page.items.iter_mut().find(|row| row.user.id == user)
+							{
+								*existing = updated.clone();
+							}
+						} else if removed {
+							let old = page.items.len();
+							page.items.retain(|row| row.user.id != user);
+							page.total = page.total.saturating_sub((old - page.items.len()) as u64);
+						}
+					}
+					if member.is_some() {
+						self.server_admin.moderation_target = member.map(|member| *member);
+					} else if removed
+						&& self
+							.server_admin
+							.moderation_target
+							.as_ref()
+							.is_some_and(|member| member.user.id == user)
+					{
+						self.server_admin.moderation_target = None;
+					}
+					if matches!(
+						action,
+						Some(Action::Moderation(model::moderation::Action::Unban { .. }))
+					) {
+						if let Some(page) = &mut self.server_admin.bans {
+							page.items.retain(|row| row.user.id != user);
+						}
+					} else if matches!(
+						action,
+						Some(Action::Moderation(model::moderation::Action::Change {
+							change: model::moderation::Change::Ban { .. },
+							..
+						}))
+					) {
+						self.server_admin.bans = None;
+					}
+				}
+			},
+			Outcome::Community(page) => self.server_admin.community = Some(page),
 			Outcome::WebhookUrl(url) => self.server_admin.webhook_url = Some(url),
 			Outcome::AuditLog(page) => self.apply_audit_log(page),
 			Outcome::Integrations(snapshot) => {
@@ -1039,6 +1227,7 @@ impl State {
 			action,
 			Some(
 				Action::LoadEmojis
+					| Action::Community(model::community_admin::Action::Load(_))
 					| Action::LoadStickers
 					| Action::LoadSounds
 					| Action::Invites(model::server_invites::Action::Load)

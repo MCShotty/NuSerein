@@ -235,3 +235,10 @@ Application context commands use the existing user/message context menu's Apps s
 Command arguments with autocomplete retain text input and add a keyboard-accessible choices
 menu with loading/error/retry states. Suggestions update after a short typing pause and
 never submit the command. The ordinary composer preserves its draft and explicit Run action.
+
+Native server settings include AutoMod and Moderation pages. AutoMod edits use typed trigger
+and action controls, bounded line lists and explicit save/discard/delete confirmation.
+Moderation presents a known-member chooser or explicit lookup, timeout duration, history
+retention and a reason in its final confirmation. Role hierarchy and current permissions
+control availability. Failed writes keep input; refresh and reapply are explicit after an
+unknown outcome. These pages use the existing settings navigation, focus and scrolling.

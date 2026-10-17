@@ -2037,3 +2037,21 @@ Opus reorder slots add only optional RTP timestamps. Decoded-picture scheduling
 holds the already bounded decoder scratch for at most 120 ms, checks cancellation
 within 2 ms and allocates no additional picture queue. Source changes, rekeys,
 watch stop and account teardown revoke old mappings and native decoder lifetimes.
+
+## Moderation and AutoMod session state
+
+Bans retain one page of at most 100 entries/256 KiB; a specific member lookup does not
+create a directory cache. AutoMod retains at most 32 rules/512 KiB, with bounded metadata,
+20 exempt roles and 50 exempt channels per rule. Wire bodies are bounded separately.
+One existing server-administration worker owns reads/writes; its sequence, account generation,
+server scope and permission revision reject retired results. No new local store or telemetry
+is introduced. Rule drafts and audit reasons stay in session RAM and clear on account/server
+change or explicit discard. Failed saves preserve the draft. Uncertain writes require an
+explicit reload before a further mutation; no queued automatic destructive retry exists.
+
+Community configuration and member Server Guide progress stay in bounded session RAM. Each
+active admin/member snapshot is capped at 512 KiB; an administration draft and its baseline are
+independently bounded copies. At most five member completion intents are retained, without a
+message transcript. Guide image preparation uses the existing single-slot cancellable native
+picker and never retains its source file path after preparation. Prepared PNGs are limited to
+256 KiB, and draft artwork is discarded with the settings session. None of this data is persisted.

@@ -75,6 +75,37 @@ connection, profile, credential or microphone has been used for validation. Live
 normal-account interoperability and comparison with the supplied official desktop
 build remain separate owner-controlled evidence gates.
 
+## Native moderation and AutoMod — October 17, 2026
+
+The desktop comparison reference supplied by the owner is Discord Stable 641004
+(`c9ac31f`), host 1.0.9262 x64 (`94186`). No live official-client comparison was run here.
+This feature branch extends fork `f9e39f7`; it does not alter parent #567/#620 or merge
+other parity work. Existing roles, channel/category organization, permission synchronization,
+invites and server lifecycle implementations remain in place.
+
+Server settings now expose bans/unbans, timeouts/removal, kicks, optional audit reasons
+and native AutoMod rules. Moderators can look up a specific member or choose one already
+loaded in the conversation. Ban pages retain at most 100 entries/256 KiB. Self, owner,
+equal/higher role, unknown hierarchy and administrator timeout cases fail closed.
+Current permissions are rechecked before dispatch, and permission changes retire results.
+An uncertain mutation requires a refresh and a deliberate decision; no destructive write
+is automatically repeated. The default ban action deletes no message history.
+
+The documented [moderation and AutoMod resource](https://docs.discord.com/developers/resources/auto-moderation)
+routes use bounded reads and `X-Audit-Log-Reason`. AutoMod supports keyword, spam,
+keyword preset, mention spam and member-profile triggers, with compatible block, alert,
+timeout and member-interaction actions. A catalog retains at most 32 rules/512 KiB.
+The editor keeps rejected drafts and offers explicit reapplication after refreshing.
+Sparse edits preserve unrelated settings, unknown trigger/action metadata and concurrent
+exemption additions. Rule/role/channel IDs are scoped to the current server. User accounts
+do not reliably receive bot-only rule lifecycle dispatches; refresh is explicit.
+
+These are native implementations with synthetic parser/reducer/HTTP/UI checks. Service
+acceptance, entitlement differences and owner-controlled moderation interoperability
+remain unverified. Scheduled events, Stage participation and administrative onboarding
+are separate unfinished roadmap items; these settings do not enable Stage microphone use.
+
+
 ## Game mentions (October 14, 2026)
 
 The native composer offers `@game`, a searchable game catalog and application references
@@ -2895,3 +2926,93 @@ Provider HTML/JavaScript players remain confirmed external links. No general
 webview, provider extraction service, arbitrary-origin fetch or FFmpeg networking
 is introduced. Native visual/decoder tests and owner-controlled playback acceptance
 must be reported separately; historical upstream evidence is not current-fork evidence.
+
+Ban browsing accepts either View Audit Log or Ban Members, matching the documented
+resource permission. Unban/ban writes retain Ban Members, and other moderation writes
+retain their distinct permissions and hierarchy checks.
+
+### Native community setup and Server Guide (2026-10-17)
+
+The community settings pages load and edit onboarding, default channels, join questions,
+Channels & Roles questions (`in_onboarding: false`), rules screening and Server Guide.
+They do not reuse or change the current member's existing participant onboarding answers.
+Onboarding edits require `MANAGE_GUILD` and `MANAGE_ROLES`, including the normal owner and
+administrator bypass. Screening and Guide administration require `MANAGE_GUILD`.
+Role assignments additionally require an unmanaged role below the acting member's highest
+role (owners bypass hierarchy). Deleted channels/roles and permission updates invalidate an
+active administration snapshot and fence outstanding results.
+
+Published schemas checked for this slice:
+
+- **Documented schema:** [Discord API docs at f7416a2](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/resources/guild.mdx),
+  `GET`/`PUT /guilds/{guild.id}/onboarding`, prompt types 0/1, default/advanced criteria and
+  the separate write-only `emoji_id`, `emoji_name`, `emoji_animated` fields. New prompt and
+  option IDs use unique decimal millisecond timestamps, matching the public client creator
+  and serializer in [539916.js](https://github.com/Wumpus-Central/discrapper-canary/blob/1569032f33f7540de90b443ec443c5679df69120/chunks/539916.js)
+  (SHA-256 `0d2b2d82816390da2b5e1be7377c46da51fcec2a504114eeffd7bb1189276ed8`).
+  Existing IDs are retained; responses may assign IDs to new rows. The documented
+  enablement criteria are seven counted channels, five allowing @everyone to view and send.
+  Use with an existing normal account is **unofficial and live-unverified**.
+- **Unofficial normal-account routes:** [discord-userdoccers at 01624d9](https://github.com/discord-userdoccers/discord-userdoccers/blob/01624d9b7a75cd8b1e838e009b434d108d9fcdff/pages/resources/guild.mdx),
+  `GET`/`PATCH /guilds/{guild.id}/member-verification`, `GET`/`PUT
+  /guilds/{guild.id}/new-member-welcome`, `PATCH /guilds/{guild.id}/new-member-actions/{channel.id}`,
+  `PUT /guilds/{guild.id}/resource-channels/{channel.id}`, and guild `home_header` edits.
+  Screening supports bounded terms, short text, paragraph and multiple-choice fields;
+  non-terms fields require the server's manual-approval feature. Disabling a gate carries the
+  administrator's explicit approve/reject choice for pending applications.
+- **Unofficial member Guide:** the same pinned public reference documents `GET
+  /guilds/{guild.id}/new-member-actions` and `POST
+  /guilds/{guild.id}/new-member-action/{channel.id}` with no request body. The native member
+  Guide opens channel/resource links inside Serein. A VIEW step is queued after navigation;
+  a CHAT step is queued only after an own message is confirmed by REST or Gateway. A fresh
+  guide/progress read before completion verifies the task and its action type. Completion
+  responses are guild/user-bound and must include the completed channel.
+- **Observed public client serializer:** current public Canary 641446, datamining commit
+  [1569032](https://github.com/Wumpus-Central/discrapper-canary/tree/1569032f33f7540de90b443ec443c5679df69120)
+  (2026-10-17), [374084.js](https://github.com/Wumpus-Central/discrapper-canary/blob/1569032f33f7540de90b443ec443c5679df69120/chunks/374084.js)
+  serializer `S`/export `Y4`, and its [PUT caller](https://github.com/Wumpus-Central/discrapper-canary/blob/1569032f33f7540de90b443ec443c5679df69120/chunks/199940.js).
+  Both new-member action and resource writes use `title`, not the conflicting `name` in
+  the userdoccers footnotes. Existing icon hashes are carried with collection edits, matching
+  the serializer; actual image data uses the separate artwork routes. The same caller confirms
+  PATCH action icons and PUT resource icons; [225142.js](https://github.com/Wumpus-Central/discrapper-canary/blob/1569032f33f7540de90b443ec443c5679df69120/chunks/225142.js)
+  confirms member completion POST with no body. SHA-256, respectively:
+  `df8d0fafcfd75068e228174fb3e45416571de4fd87400fee394187c60d795ef3`,
+  `8d10606713be3009d98c1b05081017d077a5a4feabf40697d49c709dda101a3c`,
+  `8f7db9c8fc569357887274e2bcffd5daefbc5a61be614c036ccef940fce8a0f7`.
+  [539916.js](https://github.com/Wumpus-Central/discrapper-canary/blob/1569032f33f7540de90b443ec443c5679df69120/chunks/539916.js)
+  generates prompt/option IDs from millisecond timestamps and includes them in onboarding
+  writes (SHA-256 `0d2b2d82816390da2b5e1be7377c46da51fcec2a504114eeffd7bb1189276ed8`).
+  Saved Guide artwork uses the [published CDN paths](https://github.com/discord-userdoccers/discord-userdoccers/blob/01624d9b7a75cd8b1e838e009b434d108d9fcdff/pages/reference.mdx)
+  `home-headers`, `new-member-actions` and `resource-channels`, with validated IDs/hashes and
+  the existing credential-free image worker.
+  This is static unauthenticated reference inspection, with no code execution or owner data;
+  it is newer Canary evidence, not a claim of having inspected the owner's Stable bundle.
+- **Documented channel schema:** [Discord channel docs at f7416a2](https://github.com/discord/discord-api-docs/blob/f7416a2cf165455f72a31f5ea4e671a4f047f2f7/developers/resources/channel.mdx),
+  voice/Stage bitrate, user limit, region override and video quality through channel PATCH;
+  region choices come from `GET /voice/regions`. Stage bitrate is capped at 64000, ordinary
+  voice user limits at 99, and Stage limits at 10000. Discord enforces Boost bitrate limits.
+  The native editor also admits the documented 4096-character forum/media guidelines.
+
+Writes reread configuration and send only changed top-level fields. Replaced collections retain
+fresh opaque row metadata by prompt/option/channel identity or original screening-field index;
+reordered rules retain their automation metadata. A conflicting touched collection is rejected
+before a write. Existing unknown question fields stay read-only. A rejected or uncertain draft
+remains in RAM. Malformed successful writes, failed post-write reconciliation, permission races
+and disconnects require a deliberate reload; no community write is automatically retried.
+
+Admin and member Guide snapshots each cap retained data at 512 KiB. Onboarding permits at most
+50 prompts, 50 options per prompt, 100 channel/role assignments per option and 500 default
+channels; screening has at most 5 fields, 16 rules or 8 choices per field. Guide has a 7–300-character enabled welcome message and at most 5
+steps, 7 resources and 10 authors. One admin request and one independent member request may be
+pending; member completion intents are deduplicated and capped at five. Artwork uses one
+cancellable native picker, at most 8 MiB source input, 4096×4096 decode limits, 64 MiB decoder
+allocation, a maximum 512-pixel prepared edge and a 256 KiB PNG output. Guide icons and the
+welcome sign have explicit image preview/save controls; the welcome sign respects the `BANNER`
+feature. No paths, guide drafts or progress are written to disk.
+
+This is offline implementation and fixture evidence. The owner reference remains Discord Stable
+641004 (`c9ac31f`), Host 1.0.9262 x64 (`94186`). No owner session, live account, Discord mutation,
+message or microphone was used. Current service acceptance, including unofficial Guide artwork
+and screening writes, still requires the owner-controlled live developer-session gate. Native
+screenshots, full checks and package/performance comparisons are coordinated by the parent parity
+integration; synthetic fixtures are not evidence of live Discord behavior.

@@ -348,8 +348,46 @@ fn forum_body(body: &mut Value, before: &ForumEdit, after: &ForumEdit) {
 		body["default_auto_archive_duration"] = after.hide_after.into();
 	}
 }
+fn voice_from_value(value: &Value) -> Result<client_core::channel_actions::VoiceEdit, Failure> {
+	use client_core::channel_actions::VoiceEdit;
+	let bitrate = value["bitrate"]
+		.as_u64()
+		.and_then(|v| u32::try_from(v).ok())
+		.ok_or(Failure::Protocol)?;
+	let user_limit = value
+		.get("user_limit")
+		.map_or(Some(0), Value::as_u64)
+		.and_then(|v| u32::try_from(v).ok())
+		.ok_or(Failure::Protocol)?;
+	let region = match value.get("rtc_region") {
+		None | Some(Value::Null) => None,
+		Some(Value::String(s)) => Some(s.clone()),
+		_ => return Err(Failure::Protocol),
+	};
+	let video_quality = value
+		.get("video_quality_mode")
+		.map_or(Some(1), Value::as_u64)
+		.and_then(|v| u8::try_from(v).ok())
+		.ok_or(Failure::Protocol)?;
+	let voice = VoiceEdit {
+		bitrate,
+		user_limit,
+		region,
+		video_quality,
+		regions: vec![],
+	};
+	if !voice.valid() {
+		return Err(Failure::Protocol);
+	}
+	Ok(voice)
+}
 fn edit_from_value(value: &Value) -> Result<Edit, Failure> {
 	let edit = Edit {
+		voice: if matches!(value["type"].as_u64(), Some(2 | 13)) {
+			Some(Box::new(voice_from_value(value)?))
+		} else {
+			None
+		},
 		forum: if matches!(value["type"].as_u64(), Some(15 | 16)) {
 			Some(Box::new(forum_from_value(value)?))
 		} else {
@@ -525,7 +563,47 @@ impl DiscordApi {
 		let (method, path, body) = match action {
 			Action::Reference => unreachable!("handled before channel settings validation"),
 			Action::Load => {
-				return edit_from_value(&source).map(Outcome::Details);
+				let mut edit = edit_from_value(&source)?;
+				if let Some(voice) = &mut edit.voice {
+					match self
+						.request_limited(Method::GET, "/voice/regions", None, 64 * 1024)
+						.await
+					{
+						Ok(bytes) => {
+							let rows: Value =
+								serde_json::from_slice(&bytes).map_err(|_| Failure::Protocol)?;
+							let rows = rows
+								.as_array()
+								.filter(|r| r.len() <= 100)
+								.ok_or(Failure::Protocol)?;
+							for row in rows {
+								let id = row["id"]
+									.as_str()
+									.filter(|s| s.len() <= 64)
+									.ok_or(Failure::Protocol)?
+									.to_owned();
+								let name = row["name"]
+									.as_str()
+									.filter(|s| s.len() <= 256)
+									.ok_or(Failure::Protocol)?
+									.to_owned();
+								voice
+									.regions
+									.push(client_core::channel_actions::VoiceRegion {
+										id,
+										name,
+										deprecated: row["deprecated"].as_bool().unwrap_or(false),
+									});
+							}
+							if !voice.valid() {
+								return Err(Failure::Protocol);
+							}
+						}
+						Err(failure) if failure.ends_session() => return Err(failure),
+						Err(_) => {}
+					}
+				}
+				return Ok(Outcome::Details(edit));
 			}
 			Action::Edit { before, after } => {
 				let current = edit_from_value(&source)?;
@@ -545,6 +623,20 @@ impl DiscordApi {
 					return Err(Failure::Protocol);
 				}
 				// An edit without forum settings (an extension's, say) leaves them untouched.
+				let voice_changed = before
+					.voice
+					.as_ref()
+					.zip(after.voice.as_ref())
+					.is_some_and(|(b, a)| !b.settings_eq(a));
+				if voice_changed && !matches!(source["type"].as_u64(), Some(2 | 13)) {
+					return Err(Failure::Protocol);
+				}
+				if voice_changed && let Some(voice) = &after.voice {
+					let stage = source["type"] == 13;
+					if (stage && voice.bitrate > 64000) || (!stage && voice.user_limit > 99) {
+						return Err(Failure::Protocol);
+					}
+				}
 				let forum_changed =
 					before.forum.is_some() && after.forum.is_some() && before.forum != after.forum;
 				if forum_changed && !forum {
@@ -557,7 +649,16 @@ impl DiscordApi {
 					|| (before.slowmode != after.slowmode && current.slowmode != before.slowmode)
 					|| (before.nsfw != after.nsfw && current.nsfw != before.nsfw)
 					|| (forum_changed && current.forum != before.forum)
-				{
+					|| (voice_changed
+						&& current
+							.voice
+							.as_ref()
+							.zip(before.voice.as_ref().zip(after.voice.as_ref()))
+							.is_none_or(|(current, (before, after))| {
+								client_core::channel_actions::VoiceEdit::conflicts(
+									before, after, current,
+								)
+							})) {
 					return Err(Failure::ProtocolAt(
 						"Channel settings changed; reopen the editor before saving",
 					));
@@ -566,6 +667,21 @@ impl DiscordApi {
 					body["permission_overwrites"] = Value::Array(after.overwrites.iter().map(|row| {
 						json!({"id":row.id.to_string(),"type":row.kind,"allow":row.allow.to_string(),"deny":row.deny.to_string()})
 					}).collect());
+				}
+				if voice_changed && let (Some(before), Some(after)) = (&before.voice, &after.voice)
+				{
+					if before.bitrate != after.bitrate {
+						body["bitrate"] = after.bitrate.into();
+					}
+					if before.user_limit != after.user_limit {
+						body["user_limit"] = after.user_limit.into();
+					}
+					if before.region != after.region {
+						body["rtc_region"] = json!(after.region);
+					}
+					if before.video_quality != after.video_quality {
+						body["video_quality_mode"] = after.video_quality.into();
+					}
 				}
 				if before.name != after.name {
 					body["name"] = after.name.clone().into();
@@ -644,6 +760,16 @@ impl DiscordApi {
 		if matches!(action, Action::Delete) {
 			channel_value(&bytes, guild, Some(channel)).map_err(write_failure)?;
 			return Ok(Outcome::Deleted);
+		}
+		if let Action::Edit { before, after } = action
+			&& let (Some(before), Some(after)) = (&before.voice, &after.voice)
+			&& !before.settings_eq(after)
+		{
+			let response: Value = serde_json::from_slice(&bytes).map_err(|_| Failure::Ambiguous)?;
+			let actual = voice_from_value(&response).map_err(|_| Failure::Ambiguous)?;
+			if !client_core::channel_actions::VoiceEdit::confirms(before, after, &actual) {
+				return Err(Failure::Ambiguous);
+			}
 		}
 		let expected = matches!(action, Action::Edit { .. }).then_some(channel);
 		let outcome = channel_result(&bytes, guild, expected).map_err(write_failure)?;
@@ -1135,6 +1261,7 @@ mod tests {
 				nsfw: true,
 				overwrites: edit_from_value(&source()).unwrap().overwrites,
 				forum: None,
+				voice: None,
 			},
 			after: Edit {
 				name: "rename".into(),
@@ -1143,6 +1270,7 @@ mod tests {
 				nsfw: true,
 				overwrites: edit_from_value(&source()).unwrap().overwrites,
 				forum: None,
+				voice: None,
 			},
 		};
 		let (result, ()) = tokio::join!(api.channel_action(Id(2), Id(3), &edit), server);
@@ -1281,5 +1409,72 @@ mod tests {
 		}
 		assert!(duplicate_body(&json!({"type":0}), "copy").is_err());
 		assert!(channel_result(&serde_json::to_vec(&json!({"id":"3","guild_id":"2","type":0,"name":"private","permission_overwrites":[{"id":"2","type":0,"allow":"oops","deny":"0"}]})).unwrap(),Id(2),Some(Id(3))).is_err());
+	}
+}
+
+#[cfg(test)]
+mod voice_edit_tests {
+	use super::*;
+	use std::time::Duration;
+	fn source() -> Value {
+		json!({"id":"3","guild_id":"2","name":"Voice","type":2,"bitrate":64000,"user_limit":2,"rtc_region":"us-east","video_quality_mode":1,"permission_overwrites":[]})
+	}
+	#[tokio::test]
+	async fn voice_sparse_edit_preserves_an_unrelated_concurrent_region_override() {
+		tokio::time::timeout(Duration::from_secs(15), async {
+			let before = edit_from_value(&source()).unwrap();
+			let mut after = before.clone();
+			after.voice.as_mut().unwrap().bitrate = 96000;
+			let mut fresh = source();
+			fresh["rtc_region"] = json!("rotterdam");
+			let mut response = fresh.clone();
+			response["bitrate"] = json!(96000);
+			let (api, captured, server) = crate::community_admin::tests::fixture(vec![
+				("200 OK", fresh.to_string()),
+				("200 OK", response.to_string()),
+			])
+			.await;
+			assert!(
+				api.channel_action(Id(2), Id(3), &Action::Edit { before, after })
+					.await
+					.is_ok()
+			);
+			server.await.unwrap();
+			let requests = captured.lock().unwrap();
+			assert_eq!(requests.len(), 2);
+			assert!(requests[1].0.starts_with("PATCH /channels/3 "));
+			assert_eq!(requests[1].1, json!({"bitrate":96000}));
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn voice_conflicts_never_write_and_unconfirmed_success_is_unknown() {
+		tokio::time::timeout(Duration::from_secs(15), async {
+			let before = edit_from_value(&source()).unwrap();
+			let mut after = before.clone();
+			after.voice.as_mut().unwrap().bitrate = 96000;
+			let mut fresh = source();
+			fresh["bitrate"] = json!(80000);
+			let (api, captured, server) = crate::community_admin::tests::fixture(vec![
+				("200 OK", fresh.to_string()),
+				("200 OK", source().to_string()),
+				("200 OK", source().to_string()),
+			])
+			.await;
+			let action = Action::Edit { before, after };
+			assert!(matches!(
+				api.channel_action(Id(2), Id(3), &action).await,
+				Err(Failure::ProtocolAt(_))
+			));
+			assert!(matches!(
+				api.channel_action(Id(2), Id(3), &action).await,
+				Err(Failure::Ambiguous)
+			));
+			server.await.unwrap();
+			assert_eq!(captured.lock().unwrap().len(), 3);
+		})
+		.await
+		.unwrap();
 	}
 }

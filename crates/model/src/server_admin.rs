@@ -107,6 +107,9 @@ pub enum VoiceChange {
 }
 #[derive(Clone)]
 pub enum Action {
+	Community(crate::community_admin::Action),
+	AutoMod(crate::automod::Action),
+	Moderation(crate::moderation::Action),
 	Voice {
 		user: Id,
 		channel: Id,
@@ -189,6 +192,15 @@ pub enum Action {
 }
 impl Action {
 	pub fn write(&self) -> bool {
+		if let Self::Community(action) = self {
+			return action.write();
+		}
+		if let Self::AutoMod(action) = self {
+			return action.write();
+		}
+		if let Self::Moderation(action) = self {
+			return action.write();
+		}
 		if let Self::Integrations(action) = self {
 			return action.write();
 		}
@@ -237,6 +249,9 @@ impl Action {
 	}
 	pub fn valid(&self) -> bool {
 		match self {
+			Self::Community(action) => action.valid(),
+			Self::AutoMod(action) => action.valid(),
+			Self::Moderation(action) => action.valid(),
 			Self::Voice {
 				user,
 				channel,
@@ -351,6 +366,9 @@ impl Action {
 	}
 }
 pub enum Result {
+	Community(crate::community_admin::Snapshot),
+	AutoMod(crate::automod::Snapshot),
+	Moderation(crate::moderation::Outcome),
 	VoiceUpdated(Id),
 	WebhookUrl(crate::server_integrations::WebhookUrl),
 	AuditLog(crate::server_audit_log::Page),
@@ -435,6 +453,9 @@ impl Result {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				Self::Community(page) => page.bytes(),
+				Self::AutoMod(page) => page.bytes(),
+				Self::Moderation(outcome) => outcome.bytes(),
 				Self::AuditLog(page) => page.bytes(),
 				Self::WebhookUrl(url) => url.bytes(),
 				Self::Integrations(snapshot) => snapshot.bytes(),
@@ -481,6 +502,9 @@ impl Result {
 	pub fn valid(&self) -> bool {
 		self.bytes() <= MAX_BYTES
 			&& match self {
+				Self::Community(page) => page.valid(),
+				Self::AutoMod(page) => page.valid(),
+				Self::Moderation(outcome) => outcome.valid(),
 				Self::AuditLog(page) => page.valid_response(),
 				Self::Integrations(snapshot) => snapshot.valid(),
 				Self::Roles(result) => result.valid(),

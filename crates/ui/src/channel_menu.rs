@@ -407,6 +407,7 @@ impl ChannelMenu {
 							nsfw: false,
 							overwrites: vec![],
 							forum: None,
+							voice: None,
 						},
 						loaded: kind != Kind::Edit,
 						before: Edit::default(),
@@ -875,6 +876,65 @@ impl Dialog {
 		.labelled_by(label.id);
 		if name.changed() {
 			self.draft.name.shrink_to_fit();
+		}
+		if self.kind == Kind::Edit
+			&& let Some(voice) = &mut self.draft.voice
+		{
+			ui.add_space(14.0);
+			dialog::label(ui, "channel-voice-bitrate");
+			ui.add(
+				egui::Slider::new(
+					&mut voice.bitrate,
+					8000..=if channel.kind == 13 { 64000 } else { 384000 },
+				)
+				.suffix(" bps")
+				.step_by(1000.0),
+			);
+			dialog::hint(ui, "channel-voice-bitrate-hint");
+			dialog::label(ui, "channel-voice-user-limit");
+			ui.add(egui::Slider::new(
+				&mut voice.user_limit,
+				0..=if channel.kind == 13 { 10000 } else { 99 },
+			));
+			dialog::hint(ui, "channel-voice-unlimited");
+			dialog::label(ui, "channel-voice-region");
+			egui::ComboBox::from_id_salt("voice-region")
+				.selected_text(
+					voice
+						.region
+						.as_ref()
+						.map(|id| {
+							voice
+								.regions
+								.iter()
+								.find(|r| &r.id == id)
+								.map_or_else(|| id.clone(), |r| r.name.clone())
+						})
+						.unwrap_or_else(|| crate::i18n::translate("channel-voice-automatic")),
+				)
+				.show_ui(ui, |ui| {
+					ui.selectable_value(
+						&mut voice.region,
+						None,
+						crate::i18n::translate("channel-voice-automatic"),
+					);
+					for region in &voice.regions {
+						if !region.deprecated {
+							ui.selectable_value(
+								&mut voice.region,
+								Some(region.id.clone()),
+								&region.name,
+							);
+						}
+					}
+				});
+			dialog::label(ui, "channel-voice-video-quality");
+			ui.radio_value(
+				&mut voice.video_quality,
+				1,
+				crate::i18n::translate("channel-voice-automatic"),
+			);
+			ui.radio_value(&mut voice.video_quality, 2, "720p");
 		}
 		if self.kind == Kind::Edit && matches!(channel.kind, 0 | 5) {
 			ui.add_space(14.0);

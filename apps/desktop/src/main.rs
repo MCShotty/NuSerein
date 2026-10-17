@@ -10,6 +10,8 @@ mod captcha;
 mod channel_demo;
 mod clipboard;
 #[cfg(feature = "demo")]
+mod community_admin_demo;
+#[cfg(feature = "demo")]
 mod components_demo;
 mod connection;
 mod credentials;
@@ -992,6 +994,8 @@ struct Desktop {
 	profile_avatar: group_icon::GroupIcon,
 	server_profile_image: group_icon::GroupIcon,
 	server_icon: group_icon::GroupIcon,
+	community_artwork: group_icon::GroupIcon,
+	community_artwork_scope: Option<(u64, model::Id, Option<model::Id>, bool, u64)>,
 	role_icon: group_icon::GroupIcon,
 	role_icon_scope: Option<(u64, model::Id, model::Id, u64)>,
 	emoji_upload: emoji_upload::EmojiUpload,
@@ -2259,6 +2263,23 @@ impl Desktop {
 			state.guilds[0].default_message_notifications = Some(1);
 			messaging.preview_server_notifications(&mut state, guild);
 		}
+		#[cfg(feature = "demo")]
+		if demo
+			&& std::env::args().any(|arg| arg == "--demo-member-guide")
+			&& let Some(guild) = state.guilds.first().map(|g| g.id)
+			&& let Some(Command::MemberGuide {
+				guild,
+				user,
+				request,
+				action,
+			}) = state.open_server_guide(guild)
+		{
+			let event = community_admin_demo::execute_member(&state, guild, user, request, action);
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event,
+			});
+		}
 		let mut hotkeys = platform::hotkeys::Hotkeys::new({
 			let ctx = cc.egui_ctx.clone();
 			move || ctx.request_repaint()
@@ -2339,6 +2360,8 @@ impl Desktop {
 			profile_avatar: group_icon::GroupIcon::default(),
 			server_profile_image: group_icon::GroupIcon::default(),
 			server_icon: group_icon::GroupIcon::default(),
+			community_artwork: group_icon::GroupIcon::default(),
+			community_artwork_scope: None,
 			role_icon: group_icon::GroupIcon::default(),
 			role_icon_scope: None,
 			emoji_upload: emoji_upload::EmojiUpload::default(),
@@ -3239,6 +3262,19 @@ impl Desktop {
 			self.state.command_rejected(command);
 			return;
 		}
+		if let Command::MemberGuide {
+			guild,
+			user,
+			request,
+			..
+		} = &command
+			&& !self
+				.state
+				.member_guide_command_allowed(*guild, *user, *request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::Onboarding { guild, request, .. } = &command
 			&& !self.state.onboarding_command_allowed(*guild, *request)
 		{
@@ -3597,6 +3633,12 @@ impl Desktop {
 					request,
 					edit,
 				} => server_settings_demo::execute(&self.state, guild, request, edit),
+				Command::MemberGuide {
+					guild,
+					user,
+					request,
+					action,
+				} => community_admin_demo::execute_member(&self.state, guild, user, request, action),
 				Command::Onboarding {
 					guild,
 					request,
@@ -5831,6 +5873,17 @@ impl eframe::App for Desktop {
 		if let Some((scope, result)) = self.server_icon.poll_server(&self.state) {
 			self.messaging.accept_server_icon(&ctx, scope, result);
 		}
+		if let Some((_, result)) =
+			self.community_artwork
+				.poll_scoped(self.state.generation, |guild| {
+					self.state.can_open_community_settings(guild)
+						&& self
+							.community_artwork_scope
+							.is_some_and(|scope| self.messaging.community_artwork_active(scope))
+				}) && let Some(scope) = self.community_artwork_scope.take()
+		{
+			self.messaging.accept_community_artwork(&ctx, scope, result);
+		}
 		if let Some((_, result)) = self.role_icon.poll_scoped(self.state.generation, |guild| {
 			self.role_icon_scope.is_some_and(|scope| {
 				scope.1 == guild
@@ -6374,6 +6427,31 @@ impl eframe::App for Desktop {
 				if let Err(error) = result {
 					self.messaging
 						.accept_create_server_icon(&ctx, scope, Err(error));
+				}
+			}
+			if let Some(scope) = self.messaging.take_community_artwork_request() {
+				let result = if scope.0 != self.state.generation
+					|| !self.state.can_edit_community_settings(
+						scope.1,
+						model::community_admin::Section::Guide,
+					) {
+					Err("You can no longer manage this server")
+				} else {
+					self.community_artwork.start_image(
+						(scope.0, scope.1, scope.4),
+						self.runtime.handle(),
+						&ctx,
+						self.window.clone(),
+						"Choose Server Guide artwork",
+						512,
+						scope.2.is_some(),
+					)
+				};
+				match result {
+					Ok(()) => self.community_artwork_scope = Some(scope),
+					Err(error) => self
+						.messaging
+						.accept_community_artwork(&ctx, scope, Err(error)),
 				}
 			}
 			if let Some(scope) = self.messaging.take_server_role_icon_request() {
