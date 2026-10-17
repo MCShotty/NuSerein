@@ -214,25 +214,57 @@ async fn recovery_probes_a_ready_socket_and_resumes_only_when_it_is_silent() {
 			send(&mut socket, ready).await;
 			acknowledge(&mut socket, 41).await;
 			gateway.manual.store(true, Ordering::Relaxed);
-			// A healthy socket acknowledges the probe heartbeat and is kept.
+			// Timer/requested heartbeats and recovery probes have the same wire payload.
+			// Deliberately race a requested heartbeat with the probe and acknowledge both.
+			send(&mut socket, json!({"op":1,"d":null})).await;
+			gateway.reconnect.notify_one();
+			let healthy_until = Instant::now() + PROBE_TIMEOUT * 2;
+			let mut heartbeats = 0;
+			loop {
+				tokio::select! {
+					_ = tokio::time::sleep_until(healthy_until) => break,
+					packet = packet(&mut socket) => {
+						assert_eq!((packet["op"].clone(), packet["d"].clone()), (json!(1), json!(41)));
+						send(&mut socket, json!({"op":11,"d":null})).await;
+						heartbeats += 1;
+					}
+					_ = gateway.initial.accept() => panic!("healthy probe must not reconnect"),
+					_ = gateway.resume.accept() => panic!("healthy probe must not resume"),
+				}
+			}
+			assert!(
+				heartbeats >= 2,
+				"requested and probe heartbeats must both arrive"
+			);
+			// The ordered Pong proves the client consumed every preceding ACK. Otherwise a
+			// delayed ACK can clear the silent probe and leave this test waiting for a resume.
+			let barrier = b"recovery-ack-barrier";
+			socket
+				.send(Frame::Ping(barrier.as_slice().into()))
+				.await
+				.unwrap();
+			loop {
+				match socket.next().await.unwrap().unwrap() {
+					Frame::Pong(data) => {
+						assert_eq!(data.as_ref(), barrier);
+						break;
+					}
+					Frame::Text(text) => {
+						let packet: serde_json::Value = serde_json::from_str(&text).unwrap();
+						assert_eq!(packet["op"], 1);
+					}
+					other => panic!("unexpected frame at recovery ACK barrier: {other:?}"),
+				}
+			}
+			let silent_since = Instant::now();
 			gateway.reconnect.notify_one();
 			let probe = packet(&mut socket).await;
 			assert_eq!(
 				(probe["op"].clone(), probe["d"].clone()),
 				(json!(1), json!(41))
 			);
-			send(&mut socket, json!({"op":11,"d":null})).await;
-			// A silently dead socket is replaced by a resume once the probe goes unanswered. A
-			// signal the client sees before that ack joins the outstanding probe, so signal until
-			// a new probe is sent.
-			let probe = loop {
-				gateway.reconnect.notify_one();
-				if let Ok(probe) = timeout(Duration::from_millis(200), packet(&mut socket)).await {
-					break probe;
-				}
-			};
-			assert_eq!(probe["op"], 1);
 			let next = gateway.socket(true, Some(6)).await;
+			assert!(silent_since.elapsed() >= PROBE_TIMEOUT);
 			drop(socket);
 			gateway.stop(next).await;
 		})
