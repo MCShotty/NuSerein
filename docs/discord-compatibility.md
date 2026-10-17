@@ -3223,7 +3223,9 @@ Published schemas checked for this slice:
   voice/Stage bitrate, user limit, region override and video quality through channel PATCH;
   region choices come from `GET /voice/regions`. Stage bitrate is capped at 64000, ordinary
   voice user limits at 99, and Stage limits at 10000. Discord enforces Boost bitrate limits.
-  The native editor also admits the documented 4096-character forum/media guidelines.
+  Voice and Stage overviews also edit age restrictions and text-chat slowmode (0–21600
+  seconds); topics stay limited to text/announcement/forum/media channels. The native editor
+  admits the documented 4096-character forum/media guidelines.
 
 Writes reread configuration and send only changed top-level fields. Replaced collections retain
 fresh opaque row metadata by prompt/option/channel identity or original screening-field index;
@@ -3241,6 +3243,13 @@ cancellable native picker, at most 8 MiB source input, 4096×4096 decode limits,
 allocation, a maximum 512-pixel prepared edge and a 256 KiB PNG output. Guide icons and the
 welcome sign have explicit image preview/save controls; the welcome sign respects the `BANNER`
 feature. No paths, guide drafts or progress are written to disk.
+
+The member Guide displays welcome authors from the active guild member window, already-loaded
+administration members, the account, recent global profiles or friends. Guild nicknames are
+scoped to the Guide's guild. Unknown authors show a neutral avatar and a labeled placeholder
+with their ID on hover; opening the Guide adds no user/profile/member fetch. Known avatar
+hashes use the existing image worker. Prepared welcome signs are admitted under its existing
+bounded large-image budget.
 
 This is offline implementation and fixture evidence. The owner reference remains Discord Stable
 641004 (`c9ac31f`), Host 1.0.9262 x64 (`94186`). No owner session, live account, Discord mutation,

@@ -692,17 +692,19 @@ impl DiscordApi {
 			Action::Edit { before, after } => {
 				let current = edit_from_value(&source)?;
 				let mut body = json!({});
-				let forum = matches!(source["type"].as_u64(), Some(15 | 16));
+				let kind = source["type"].as_u64();
+				let forum = matches!(kind, Some(15 | 16));
 				// Forum post guidelines allow 4096 characters; a text channel topic 1024.
 				if before.topic != after.topic
 					&& after.topic.chars().count() > if forum { 4096 } else { 1024 }
 				{
 					return Err(Failure::Protocol);
 				}
-				if !matches!(source["type"].as_u64(), Some(0 | 5 | 15 | 16))
-					&& (before.topic != after.topic
-						|| before.slowmode != after.slowmode
-						|| before.nsfw != after.nsfw)
+				if before.topic != after.topic && !matches!(kind, Some(0 | 5 | 15 | 16)) {
+					return Err(Failure::Protocol);
+				}
+				if (before.slowmode != after.slowmode || before.nsfw != after.nsfw)
+					&& !matches!(kind, Some(0 | 2 | 5 | 13 | 15 | 16))
 				{
 					return Err(Failure::Protocol);
 				}
@@ -1671,6 +1673,56 @@ mod voice_edit_tests {
 	use std::time::Duration;
 	fn source() -> Value {
 		json!({"id":"3","guild_id":"2","name":"Voice","type":2,"bitrate":64000,"user_limit":2,"rtc_region":"us-east","video_quality_mode":1,"permission_overwrites":[]})
+	}
+	#[tokio::test]
+	async fn voice_and_stage_message_controls_write_sparsely_without_admitting_topics() {
+		tokio::time::timeout(Duration::from_secs(15), async {
+			for kind in [2, 13] {
+				let mut original = source();
+				original["type"] = json!(kind);
+				let before = edit_from_value(&original).unwrap();
+				let mut after = before.clone();
+				after.nsfw = true;
+				after.slowmode = 10;
+				let mut fresh = original.clone();
+				fresh["rtc_region"] = json!("rotterdam");
+				let mut response = fresh.clone();
+				response["nsfw"] = json!(true);
+				response["rate_limit_per_user"] = json!(10);
+				let (api, captured, server) = crate::community_admin::tests::fixture(vec![
+					("200 OK", fresh.to_string()),
+					("200 OK", response.to_string()),
+					("200 OK", original.to_string()),
+				])
+				.await;
+				assert!(
+					api.channel_action(
+						Id(2),
+						Id(3),
+						&Action::Edit {
+							before: before.clone(),
+							after: after.clone(),
+						}
+					)
+					.await
+					.is_ok()
+				);
+				after.topic = "Text channel topic".into();
+				assert!(matches!(
+					api.channel_action(Id(2), Id(3), &Action::Edit { before, after })
+						.await,
+					Err(Failure::Protocol)
+				));
+				server.await.unwrap();
+				let requests = captured.lock().unwrap();
+				assert_eq!(requests.len(), 3);
+				assert!(requests[1].0.starts_with("PATCH /channels/3 "));
+				assert_eq!(requests[1].1, json!({"nsfw":true,"rate_limit_per_user":10}));
+				assert!(requests[2].0.starts_with("GET /channels/3 "));
+			}
+		})
+		.await
+		.unwrap();
 	}
 	#[tokio::test]
 	async fn voice_sparse_edit_preserves_an_unrelated_concurrent_region_override() {
