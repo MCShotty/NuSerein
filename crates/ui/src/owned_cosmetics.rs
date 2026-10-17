@@ -44,8 +44,8 @@ impl MessagingUi {
 			if state.owned_cosmetics.pending {ui.horizontal(|ui|{ui.add(egui::Spinner::new().size(14.0));ui.label(if state.owned_cosmetics.saving{"Applying cosmetic…"}else{"Loading owned cosmetics…"});});}
 			if let Some(error)=state.owned_cosmetics.error {
 				design::notice(ui,design::Level::Error,error);
-				if !state.owned_cosmetics.pending && design::text_action(ui,"Reload owned cosmetics").clicked() && let Some(command)=state.load_owned_cosmetics(nav.guild) {commands.push(command);}
 			}
+			if !state.owned_cosmetics.pending && design::text_action(ui,"Reload owned cosmetics").clicked() && let Some(command)=state.load_owned_cosmetics(nav.guild) {commands.push(command);}
 			if let Some(draft)=state.owned_cosmetics.draft.filter(|_|!state.owned_cosmetics.pending) {
 				design::notice(ui,design::Level::Warning,"Your previous equip is kept as an unsaved change. Reload to check what Discord applied before trying again.");
 				ui.horizontal_wrapped(|ui|{
