@@ -1395,3 +1395,49 @@ Protection adds temporary passes only for candidate URLs containing `_`, `*`, `~
 or `&`; other messages use an early return. Source remains capped at 8 KiB, each
 pass at 512 events (exhaustion falls back to bounded literal text), and stored
 links at 16. No dependency or retained cache is added.
+
+
+## Desktop Inbox — October 17, 2026
+
+Code revision `2139384fcb259e504535bd9688c9de6cb2e4a727`, based on fork `f9e39f7`.
+The current published upstream nightly was rechecked on October 17:
+`v1.0.0-nightly.20261014.58` (`3a4bf8d`). The owner-supplied Discord Stable build is
+recorded in the compatibility inventory; it is not the performance baseline.
+
+Release reducer comparison: Rust 1.98.1, committed lockfiles and release profiles,
+Linux 6.18.44 x86_64/glibc 2.41, Intel Xeon Platinum 8573C, 16 GiB container memory,
+four-CPU quota. Each binary/workload received one warmup and five rotating measured
+runs, pinned to CPU 0. Task compiler processes were paused during sampling and no
+native preview was running. Values below are medians; ranges expose host variation.
+
+| Workload / elapsed milliseconds | Current nightly | Previous fork | Inbox | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| 100,000-event reducer | 152.105 (146.564–254.134) | 151.199 (139.729–213.125) | 149.063 (139.452–223.483) | −2.0% / −1.4% |
+| Wide channel navigation | 185.019 (156.702–248.175) | 211.192 (195.419–287.684) | 219.871 (206.293–231.027) | +18.8% / +4.1% |
+
+The wide-channel result is slower; its cause has not been isolated. The overlapping,
+wide ranges do not establish a causal improvement or regression from the Inbox alone.
+These are synthetic core workloads, not GUI latency, media throughput or process RSS.
+The final 120-second soak passed 1,457 passes, 46,624 visits and six logout cycles
+in 120.041 seconds, with the existing retained-history budgets unchanged.
+
+`cargo xtask check` passed on the implementation before the final navigation/content
+retirement corrections. Focused navigation and Inbox tests, strict Clippy and native
+preview builds were rerun after those corrections; the final Inbox suite has nine
+passing cases, including dark/light narrow layouts and read-marker isolation.
+The bounded ASan fuzz smoke passed 80,860 decoder inputs and 3,079 state transitions.
+Login-handoff, cached-xtask workspace, license-policy and packaging fixtures passed.
+
+The matched native screenshot pair in `pr-evidence/desktop-inbox` uses the same
+1120 × 760 channel-links fixture, font setup and dark appearance. Before is fork
+`f9e39f7` (with its required demo-only pending-upload tuple repair); after adds the
+new synthetic Inbox state, not live account data. Light/narrow rendering and bookmark
+navigation were inspected separately. The feature branches also remove byte-identical
+duplicate demo helpers so their previews compile; production behavior is unaffected.
+
+Current-head native packages and the Windows/macOS/Linux package comparison are
+pending fork CI. Baseline fork artifacts are pinned to run `39021847864` at `f9e39f7`;
+its native, installer, license and fuzz jobs passed, while security and separate Nix
+checks failed. Native release UI CPU/RSS, frame latency, media throughput and physical
+Windows/macOS/Discord interoperability remain unmeasured here. No debug-preview result
+is represented as a release or official-client performance measurement.
