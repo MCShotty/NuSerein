@@ -464,7 +464,10 @@ impl DiscordApi {
 		reason: Option<&str>,
 	) -> Result<Vec<u8>, Failure> {
 		let (retry, mut challenge) = captcha;
-		let ResponsePolicy { max_bytes, mut missing } = response;
+		let ResponsePolicy {
+			max_bytes,
+			mut missing,
+		} = response;
 		// Only typed adapter methods construct paths. Never accept a URL or route from UI/content.
 		if !path.starts_with('/')
 			|| path.contains("://")

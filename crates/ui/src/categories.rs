@@ -2745,6 +2745,10 @@ mod tests {
 
 		state.voice.active = Some(client_core::voice::Call {
 			channel: Id(25),
+			stage_revision: 0,
+			media_mode: client_core::voice::MediaMode::Dave,
+			stage_consent: false,
+			stage: client_core::voice::StageParticipation::Unknown,
 			guild: Some(Id(10)),
 			connected_at: None,
 			channel_started_at: None,

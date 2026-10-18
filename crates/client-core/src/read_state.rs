@@ -49,28 +49,6 @@ impl Event {
 			}
 	}
 }
-#[derive(Clone)]
-enum Scope {
-	All,
-	Category(Id),
-	Guilds(Vec<Id>),
-}
-impl Scope {
-	fn includes(&self, state: &State, channel: &Channel) -> bool {
-		match self {
-			Self::All => true,
-			Self::Category(category) => state.channel(*category).is_some_and(|parent| {
-				parent.kind == 4
-					&& parent.guild.is_some()
-					&& channel.guild == parent.guild
-					&& state
-						.notification_path(channel.id)
-						.is_some_and(|path| path.contains(&Some(*category)))
-			}),
-			Self::Guilds(guilds) => channel.guild.is_some_and(|guild| guilds.contains(&guild)),
-		}
-	}
-}
 enum Pending {
 	Channel {
 		channel: Id,
@@ -127,7 +105,9 @@ impl Scope {
 						.notification_path(channel.id)
 						.is_some_and(|path| path.contains(&Some(*category)))
 			}),
-			Self::Guilds(guilds) => channel.guild.is_some_and(|guild| guilds.binary_search(&guild).is_ok()),
+			Self::Guilds(guilds) => channel
+				.guild
+				.is_some_and(|guild| guilds.binary_search(&guild).is_ok()),
 		}
 	}
 }
