@@ -2180,3 +2180,67 @@ At final local verification, scoped current-head native checks remain incomplete
 Parent main advanced independently to `611ff7f` during verification (dedicated Windows installer CI jobs removed). The fork baseline remains `f9e39f7`; no upstream synchronization is implied. Parent #567 remains at `1473d408` with 149 paths, and #620 remains draft at `4806c9bb`.
 
 Current-head native/package CI on Windows x64/ARM64, macOS and Linux remains distinct from local Linux evidence. Physical devices, HDR/monitor transitions, audio synchronization, native assistive technology, RTL behavior and normal-account/official-client workflows remain owner-controlled. The supplied reference is Discord Stable 641004 (`c9ac31f`), Host 1.0.9262 x64 (`94186`); that client was not run here. SDK wiki preview pages were generated and checked from pushed media source `631699ad`, but parent wiki write access is unavailable and existing unrelated preview content must be preserved; no publication is claimed. The current parity inventory records supported, partial and handoff-only workflows; games and Activities remain excluded.
+
+## Fork main integration — October 18, 2026
+
+Runtime `d3994ba14179e540e14989c38160dcd2e229ac24` combines parent main
+`d9d87471` and the current #620 conflict fixes with fork PRs #2 and #6–#15.
+The nine feature heads retain their combined implementation and source evidence.
+Historical PR #6 is recorded as merged while keeping the newer encoder/capture/
+HDR/Source implementation, consolidated tests and archived evidence. Its obsolete
+bridge and historical copies are not restored. PR #2's installer workflow now
+requires explicit verified-build inputs and checks every packaged runtime DLL.
+The Nix native recipe skips the default build phase because its Python recipe
+performs the dependency builds during installation.
+
+Pinned Rust 1.98.1 and committed lockfiles: `cargo xtask check` passes
+**1,931 tests, zero failures, 32 ignored**, with formatting, strict Clippy,
+production configuration and policy checks. Login-handoff, cached-xtask/workspace/
+package, both license graphs, license-policy and FFmpeg/Linux/Flatpak/repository/
+mocked-signing fixtures pass. Bounded ASan fuzzing completes 116,372 decode and
+3,094 state runs (31 seconds each, 512 MiB limit), with no finding. Release replay
+and the 120-second soak pass (2,735 passes, 11 logout cycles). Replay ran beside
+compilation; its timing is not a comparable performance sample.
+
+[Runtime CI](https://github.com/MCShotty/Serein/actions/runs/39093273584) passes
+workspace checks on Windows x64/ARM64, macOS and Linux. Linux/macOS packages and
+all three nightly replay comparisons, security, licenses, SDK and fuzz jobs pass.
+At recording time, Windows production packaging is still running. Keep this
+runtime result separate from subsequent main-head CI and native display/live tests.
+The two repaired Windows fixtures retain their mock TCP peers until the expected
+terminal response is consumed; their test deadline is bounded at 45 seconds.
+Production transport deadlines and encryption checks are unchanged.
+
+Package comparison: previous combined package `343e4f87` (its runtime provenance
+is recorded with that evidence), versus `d3994ba1`. Both use Debian 13 x86-64, the
+same task SDK/FFmpeg prefix, Rust 1.98.1, committed release profiles, voice enabled,
+no demo/developer features and two Cargo build jobs. The previous payload was
+rechecked against its recorded archive hash and every installed file. This is an
+integration comparison against the prior combined package, not a nightly package
+or an isolated measurement of one PR. Historical nightly results remain labeled
+with their original revisions above.
+
+| Metric / method | Previous combined | Integration | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 95,345,800 B | 95,419,720 B | +73,920 B (+0.078%) |
+| Installed payload | 140,176,288 B | 140,250,352 B | +74,064 B (+0.053%) |
+| Normalized ZIP | 89,776,426 B | 89,814,051 B | +37,625 B (+0.042%) |
+
+The full normal `cargo xtask package --format dir` command passes into empty
+output, then passes again with caches and a new empty output directory. No manual
+staging repair is used. Both 280-file payloads have identical executable and
+normalized ZIP hashes. Validation checks the current Cargo executable, allowlisted
+payload, private libraries, all 19 font notices, corresponding-source archive
+hashes and absent development RPATHs. A query-only startup succeeds with development
+FFmpeg paths removed; the task SDK still supplies system libraries. No GUI or
+owner account is opened. The comparison ZIP uses sorted paths, fixed timestamps,
+0644 comparison-entry modes and DEFLATE level 9, matching the prior measurement;
+it is a size-comparison archive, not a Linux installer. Directory executable modes
+are verified by the normal payload validator.
+
+Executable SHA-256: `605eed209e446bdb4f40d4f4800a7007b2d8b6a1aa87f710cfbdc39dd2521f15`.
+Normalized ZIP SHA-256: `bbba39486c9f38b566694121a665a7d91241e19a4f2029a5b7e361e1b0c07482`.
+No fresh UI CPU/RSS, frame latency, media throughput, physical-device or live
+Discord measurement is claimed. Existing screenshots retain their original source
+labels. SDK documentation is included in the fork; parent-wiki publication is not
+a gate for this fork integration.
