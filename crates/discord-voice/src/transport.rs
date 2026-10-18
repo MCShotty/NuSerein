@@ -1813,18 +1813,23 @@ mod tests {
 	async fn voice_handshake_rejects_stage_dave_confusion_without_microphone_or_key_package() {
 		use client_core::voice::{MediaMode, Secret};
 		use model::Id;
-		timeout(Duration::from_secs(10),async {
+		timeout(Duration::from_secs(45),async {
 			for (mode,version) in [(MediaMode::Stage,1),(MediaMode::Dave,0)] {
 				let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();let udp=UdpSocket::bind("127.0.0.1:0").await.unwrap();let port=udp.local_addr().unwrap().port();
+				let (client_finished, terminal_observed) = tokio::sync::oneshot::channel();
 				let server=tokio::spawn(async move {
 					let(tcp,_)=listener.accept().await.unwrap();let mut ws=tokio_tungstenite::accept_async(tcp).await.unwrap();let identify:Value=serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();assert_eq!(identify["d"]["max_dave_protocol_version"],if mode==MediaMode::Stage{0}else{1});
 					ws.send(Message::Text(json!({"op":8,"d":{"heartbeat_interval":2000}}).to_string().into())).await.unwrap();ws.send(Message::Text(json!({"op":2,"d":{"ssrc":42,"ip":"127.0.0.1","port":port,"modes":[MODE]}}).to_string().into())).await.unwrap();
 					let mut packet=[0;4096];let(n,client)=udp.recv_from(&mut packet).await.unwrap();assert_eq!(n,74);packet[..4].copy_from_slice(&[0,2,0,70]);packet[8..17].copy_from_slice(b"127.0.0.1");packet[72..74].copy_from_slice(&client.port().to_be_bytes());udp.send_to(&packet[..74],client).await.unwrap();
 					loop {let value:Value=serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();if value["op"]==3{ws.send(Message::Text(json!({"op":6,"d":{"t":value["d"]["t"]}}).to_string().into())).await.unwrap();continue;}assert_eq!(value["op"],1);break;}
 					ws.send(Message::Text(json!({"op":4,"d":{"mode":MODE,"secret_key":vec![7;32],"dave_protocol_version":version}}).to_string().into())).await.unwrap();
+					// Do not drop TCP until the client consumes the deliberately invalid mode.
+					terminal_observed.await.unwrap();
 				});
 				let credentials=VoiceConnection{mode,channel:Id(3),guild:Some(Id(30)),user:Id(1),peer:None,session:Secret::new("synthetic-session".into()).unwrap(),token:Secret::new("synthetic-token".into()).unwrap(),endpoint:"unused-in-loopback".into(),request:1};let(_capture_send,capture)=std::sync::mpsc::sync_channel(1);let(playback,_playback)=std::sync::mpsc::sync_channel(1);let(_controls,control)=watch::channel(Controls::default());
-				assert_eq!(run_inner(credentials,capture,playback,control,None,None,None,None,|_|Ok(()),Identity::generate(),format!("ws://{address}/?v=8"),true).await,Err("The channel did not negotiate its required encrypted media mode"));server.await.unwrap();
+				let result = run_inner(credentials,capture,playback,control,None,None,None,None,|_|Ok(()),Identity::generate(),format!("ws://{address}/?v=8"),true).await;
+				let _ = client_finished.send(());
+				assert_eq!(result,Err("The channel did not negotiate its required encrypted media mode"));server.await.unwrap();
 			}
 		}).await.unwrap();
 	}

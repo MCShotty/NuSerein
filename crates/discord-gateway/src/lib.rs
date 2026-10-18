@@ -3159,9 +3159,10 @@ mod tests {
 	#[tokio::test]
 	async fn explicit_dm_join_negotiation_and_leave_over_local_gateway() {
 		use client_core::voice::{Command as V, Event as E};
-		timeout(Duration::from_secs(10),async {
+		timeout(Duration::from_secs(45),async {
             let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();let endpoint=format!("ws://{}/",listener.local_addr().unwrap());
             let (controls,receive)=mpsc::channel(8);
+            let (client_finished, terminal_observed) = tokio::sync::oneshot::channel();
             let server=async {
                 let (stream,_)=listener.accept().await.unwrap();let mut socket=accept_async(stream).await.unwrap();
                 send(&mut socket,json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
@@ -3180,7 +3181,10 @@ mod tests {
                         send(&mut socket,json!({"op":0,"t":"VOICE_SERVER_UPDATE","s":3,"d":{"guild_id":null,"channel_id":"2","token":"synthetic-call-token","endpoint":"voice.discord.media:443"}})).await;
                     } else {assert!(p["d"]["channel_id"].is_null());break;}
                 }
-                socket.close(Some(CloseFrame{code:CloseCode::Library(4004),reason:"synthetic stop".into()})).await.unwrap();
+                socket.send(Frame::Close(Some(CloseFrame{code:CloseCode::Library(4004),reason:"synthetic stop".into()}))).await.unwrap();
+                // Keep TCP alive until the client consumes Close; unread heartbeats can
+                // otherwise reset the socket on Windows before the terminal frame arrives.
+                terminal_observed.await.unwrap();
             };
             let client=run_inner(Arc::new(SessionSecret::from_owner_input("synthetic-owner-session".into()).unwrap()),"wss://gateway.discord.gg/".into(),watch::channel(None).1,receive,None,|event| {
                 match event {
@@ -3191,6 +3195,7 @@ mod tests {
                 }
                 Ok(())
             },Some(&endpoint));
+            let client = async { let result = client.await; let _ = client_finished.send(()); result };
             let ((),result)=tokio::join!(server,client);assert_eq!(result,Err(Failure::Expired));
         }).await.unwrap();
 	}

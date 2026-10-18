@@ -107,6 +107,8 @@
             ++ lib.optionals (isLinux && stdenv.hostPlatform.isx86_64) [libva];
         dontUseCmakeConfigure = true;
         dontUseMesonConfigure = true;
+        # The shared Python recipe configures and builds each native dependency below.
+        dontBuild = true;
         installPhase = ''
             runHook preInstall
             mkdir sources
