@@ -293,6 +293,39 @@ mod tests {
 	}
 
 	#[test]
+	fn participant_selector_keeps_active_sources_reachable_in_large_rosters() {
+		let mut state = test_support::community_state(true);
+		let template = state.voice.roster[0].clone();
+		state.voice.roster = (2..=256)
+			.map(|user| {
+				let mut entry = template.clone();
+				entry.participant.user = Id(user);
+				entry.member = None;
+				entry
+			})
+			.collect();
+		state.voice.active.as_mut().unwrap().participants = state
+			.voice
+			.roster
+			.iter()
+			.take(client_core::voice::MAX_PARTICIPANTS)
+			.map(|entry| entry.participant)
+			.collect();
+		let mut snapshot = sample(Instant::now(), ConnectionKind::Call);
+		snapshot
+			.participants
+			.push(preview_participant(256, snapshot.at));
+		let options = participant_options(&state, Some(&snapshot));
+		assert!(
+			options.contains(&Id(256)),
+			"an active source must not be displaced by idle listeners"
+		);
+		assert!(options.len() <= client_core::voice::MAX_PARTICIPANTS + 16);
+		assert!(!options.contains(&state.user.as_ref().unwrap().id));
+		assert!(options.windows(2).all(|pair| pair[0] < pair[1]));
+	}
+
+	#[test]
 	fn participant_selector_shows_attributed_media_and_retires_removed_people() {
 		let ctx = egui::Context::default();
 		design::apply(&ctx);
@@ -617,7 +650,15 @@ fn participant_options(state: &State, snapshot: Option<&ConnectionSnapshot>) -> 
 	let Some(call) = state.voice.active.as_ref() else {
 		return Vec::new();
 	};
-	let mut users: Vec<_> = call
+	const LIMIT: usize = client_core::voice::MAX_PARTICIPANTS + 16;
+	// Forwarded sources must remain reachable even in a Stage with many idle listeners.
+	let mut users: Vec<_> = snapshot
+		.into_iter()
+		.flat_map(|s| &s.participants)
+		.map(|p| Id(p.user))
+		.take(LIMIT)
+		.collect();
+	for id in call
 		.participants
 		.iter()
 		.map(|p| p.user)
@@ -630,19 +671,20 @@ fn participant_options(state: &State, snapshot: Option<&ConnectionSnapshot>) -> 
 				.map(|entry| entry.participant.user),
 		)
 		.take(client_core::voice::MAX_PARTICIPANTS * 2)
-		.collect();
-	users.extend(
-		snapshot
-			.into_iter()
-			.flat_map(|s| &s.participants)
-			.map(|p| Id(p.user)),
-	);
+	{
+		if users.len() >= LIMIT {
+			break;
+		}
+		if state.user.as_ref().is_none_or(|own| own.id != id) && !users.contains(&id) {
+			users.push(id);
+		}
+	}
 	users.retain(|id| state.user.as_ref().is_none_or(|own| own.id != *id));
 	users.sort_unstable();
 	users.dedup();
-	users.truncate(client_core::voice::MAX_PARTICIPANTS + 16);
 	users
 }
+
 fn incoming_rows(ui: &mut egui::Ui, packets: IncomingPackets, fresh: bool) {
 	row(
 		ui,
