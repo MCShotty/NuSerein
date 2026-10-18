@@ -1,0 +1,102 @@
+name: Windows installers from verified binaries
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Native CI run containing successful Windows package jobs
+        required: true
+      source_commit:
+        description: Exact source commit of those packages
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installer:
+    if: github.repository == 'MCShotty/Serein'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [X64, ARM64]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_RUN: ${{ inputs.run_id }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      PACKAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Verify package provenance and native job success
+        shell: pwsh
+        run: |
+          if ($env:SOURCE_RUN -notmatch '^\d+$' -or $env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source run or commit' }
+          $run = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SOURCE_COMMIT -or $run.name -ne 'native-client') { throw 'Source run does not match the requested commit' }
+          $jobs = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN/jobs?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify native build jobs' }
+          $wanted = if ($env:PACKAGE_ARCH -eq 'X64') { 'native (windows-latest)' } else { 'native (windows-11-arm)' }
+          $native = @($jobs.jobs | Where-Object { $_.name -eq $wanted })
+          if ($native.Count -ne 1 -or $native[0].conclusion -ne 'success') { throw 'The matching native Windows build must have passed' }
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SOURCE_RUN }}
+          name: serein-Windows-${{ matrix.arch }}-unsigned
+          path: dist
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+      - name: Compile the installer from the matching source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist-installer -Force | Out-Null
+          $compiler = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^\d+\.\d+\.\d+([+-][A-Za-z0-9.-]+)?$') { throw 'Invalid package version' }
+          & $compiler -V2 -NOCD "-DVERSION=$version" '-DDIST_DIR=dist' '-DOUTPUT_DIR=dist-installer' packaging/windows/installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          $name = "serein-$version-$($env:SOURCE_COMMIT.Substring(0,7))-Windows-${env:PACKAGE_ARCH}-Setup.exe"
+          Move-Item "dist-installer/serein-$version-setup.exe" "dist-installer/$name"
+          Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
+      - name: Install the real payload silently and compare every packaged file
+        shell: pwsh
+        run: |
+          $install = Join-Path $env:RUNNER_TEMP "Serein installer smoke $env:PACKAGE_ARCH"
+          $setup = Get-ChildItem dist-installer/*-Setup.exe
+          $process = Start-Process -FilePath $setup.FullName -ArgumentList "/S /D=$install" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Silent installation failed: $($process.ExitCode)" }
+          $env:INSTALLED_PAYLOAD = $install
+          @'
+          import hashlib, os, struct
+          from pathlib import Path
+          source, installed = Path('dist'), Path(os.environ['INSTALLED_PAYLOAD'])
+          expected = 0x8664 if os.environ['PACKAGE_ARCH'] == 'X64' else 0xaa64
+          assert (source / 'serein.exe').is_file()
+          binaries = [source / 'serein.exe', *sorted(source.rglob('*.dll'))]
+          for binary in binaries:
+              name = binary.relative_to(source).as_posix()
+              data = binary.read_bytes()
+              offset = struct.unpack_from('<I', data, 0x3c)[0]
+              assert data[:2] == b'MZ' and data[offset:offset+4] == b'PE\0\0'
+              assert struct.unpack_from('<H', data, offset+4)[0] == expected, name
+          count = 0
+          for path in source.rglob('*'):
+              if path.is_file() and path.name not in ('setup.ps1', 'install-notifications.ps1'):
+                  actual = installed / path.relative_to(source)
+                  assert actual.is_file(), str(actual)
+                  assert hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(actual.read_bytes()).digest(), str(actual)
+                  count += 1
+          assert (installed / 'uninstall.exe').is_file()
+          print(f'Native installer smoke passed: {count} matching payload files, correct PE architecture; application never launched')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'Installed payload validation failed' }
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: serein-Windows-${{ matrix.arch }}-installer
+          path: dist-installer/
+          if-no-files-found: error
+          retention-days: 30
