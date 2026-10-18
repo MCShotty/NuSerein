@@ -1,9 +1,13 @@
 // Origin-fixed REST adapter. No cookies, redirects, logging, persistence or bot SDK.
+mod account_settings;
 mod activity_sharing;
 mod archives;
 mod badges;
 mod channel_actions;
 mod collectibles;
+mod community_admin;
+
+mod community;
 pub mod detectable;
 pub mod external_assets;
 mod forum;
@@ -11,12 +15,16 @@ mod gif_favorites;
 mod group_actions;
 mod guild_folders;
 mod interactions;
+mod member_guide;
 mod message_options;
 mod messaging_permissions;
 mod onboarding;
+mod owned_cosmetics;
 mod profile_edit;
+mod server_profile;
 #[cfg(debug_assertions)]
 pub use profile_edit::debug_profile_board_request_check;
+mod inbox;
 pub mod proxy;
 #[cfg(test)]
 mod proxy_tests;
@@ -26,6 +34,7 @@ mod server_admin;
 mod server_audit_log;
 mod server_integrations;
 mod server_invites;
+mod server_moderation;
 mod server_roles;
 mod server_settings;
 pub mod spotify;
@@ -416,12 +425,46 @@ impl DiscordApi {
 		body: Option<RequestContent>,
 		response: ResponsePolicy<'_>,
 		retry: Option<&client_core::captcha::Retry>,
-		mut challenge: Option<&mut Option<client_core::captcha::Challenge>>,
+		challenge: Option<&mut Option<client_core::captcha::Challenge>>,
 	) -> Result<Vec<u8>, Failure> {
-		let ResponsePolicy {
-			max_bytes,
-			mut missing,
-		} = response;
+		self.request_with_reason(method, path, body, response, (retry, challenge), None)
+			.await
+	}
+	async fn request_reason_limited(
+		&self,
+		method: Method,
+		path: &str,
+		body: Option<serde_json::Value>,
+		max_bytes: usize,
+		reason: &str,
+	) -> Result<Vec<u8>, Failure> {
+		if !model::automod::valid_reason(reason) {
+			return Err(Failure::Protocol);
+		}
+		self.request_with_reason(
+			method,
+			path,
+			body.map(RequestContent::Json),
+			ResponsePolicy::required(max_bytes),
+			(None, None),
+			Some(reason),
+		)
+		.await
+	}
+	async fn request_with_reason(
+		&self,
+		method: Method,
+		path: &str,
+		body: Option<RequestContent>,
+		response: ResponsePolicy<'_>,
+		captcha: (
+			Option<&client_core::captcha::Retry>,
+			Option<&mut Option<client_core::captcha::Challenge>>,
+		),
+		reason: Option<&str>,
+	) -> Result<Vec<u8>, Failure> {
+		let (retry, mut challenge) = captcha;
+		let ResponsePolicy { max_bytes, mut missing } = response;
 		// Only typed adapter methods construct paths. Never accept a URL or route from UI/content.
 		if !path.starts_with('/')
 			|| path.contains("://")
@@ -472,6 +515,12 @@ impl DiscordApi {
 			let mut request = client
 				.request(method.clone(), format!("{base}{path}"))
 				.header(AUTHORIZATION, authorization);
+			if let Some(reason) = reason.filter(|reason| !reason.is_empty()) {
+				let encoded: String = reason.bytes().map(|byte| format!("%{byte:02X}")).collect();
+				let mut value = HeaderValue::from_str(&encoded).map_err(|_| Failure::Protocol)?;
+				value.set_sensitive(true);
+				request = request.header("x-audit-log-reason", value);
+			}
 			if let Some(retry) = retry {
 				if retry.expired() {
 					return Err(Failure::ProtocolAt(
@@ -886,14 +935,36 @@ impl DiscordApi {
 	}
 	pub async fn execute(&self, command: Command) -> Event {
 		match command {
+			Command::CancelAutocomplete => Event::Autocomplete(
+				client_core::application_commands::CompletionEvent::Submitted {
+					nonce: String::new(),
+					result: Ok(()),
+				},
+			),
+			Command::Autocomplete(request) => Event::Autocomplete(
+				client_core::application_commands::CompletionEvent::Submitted {
+					result: self.interaction(&request, None).await,
+					nonce: request.nonce,
+				},
+			),
+
+			Command::InboxAction { request, action } => Event::InboxAction {
+				request,
+				result: self.inbox_action(&action).await,
+			},
+			Command::Mentions { before, request } => Event::Mentions {
+				request,
+				result: self.mentions(before).await,
+			},
 			Command::ApplicationCommands {
 				channel,
 				guild,
+				context,
 				request,
 			} => Event::ApplicationCommands {
 				channel,
 				request,
-				result: self.application_commands(channel, guild).await,
+				result: self.application_commands(channel, guild, context).await,
 			},
 			Command::Interaction(request) => {
 				Event::Interaction(client_core::interactions::Event::Submitted {
@@ -905,6 +976,13 @@ impl DiscordApi {
 				request,
 				result: self.account_messaging_permissions(change).await,
 			},
+			Command::Community {
+				guild,
+				user,
+				request,
+				action,
+				..
+			} => Event::Community(self.community(guild, user, request, &action).await),
 			Command::ServerAdmin {
 				guild,
 				request,
@@ -915,6 +993,12 @@ impl DiscordApi {
 				request,
 				edit,
 			} => Event::ServerSettings(self.server_settings(guild, request, edit).await),
+			Command::MemberGuide {
+				guild,
+				user,
+				request,
+				action,
+			} => Event::MemberGuide(self.member_guide(guild, user, request, action).await),
 			Command::Onboarding {
 				guild,
 				request,
@@ -936,6 +1020,27 @@ impl DiscordApi {
 					.map(Box::new),
 			}),
 			Command::GroupAction { action, request } => {
+				if let client_core::group_actions::Action::Create(users) = action {
+					return Event::GroupAction(client_core::group_actions::Event::Created {
+						request,
+						result: self.create_group(users).await,
+					});
+				}
+				if let client_core::group_actions::Action::TransferOwner { channel, user } = action
+				{
+					return Event::GroupAction(client_core::group_actions::Event::MembersLoaded {
+						channel,
+						request,
+						result: self.transfer_group_owner(channel, user).await,
+					});
+				}
+				if let client_core::group_actions::Action::LoadMembers(channel) = action {
+					return Event::GroupAction(client_core::group_actions::Event::MembersLoaded {
+						channel,
+						request,
+						result: self.group_members(channel).await,
+					});
+				}
 				Event::GroupAction(client_core::group_actions::Event::Written {
 					channel: action.channel(),
 					request,
@@ -1145,7 +1250,7 @@ impl DiscordApi {
 					result,
 				}
 			}
-			Command::CancelSearch => Event::Failure(Failure::Protocol),
+			Command::CancelSearch | Command::CancelMentions => Event::Failure(Failure::Protocol),
 			Command::Gifs { query, request } => Event::Gifs {
 				request,
 				result: self.gifs(query.as_deref()).await,
@@ -1482,6 +1587,47 @@ impl DiscordApi {
 				request,
 				result: self.edit_profile(user, changes).await,
 			},
+			Command::AccountOverview { user, request } => Event::AccountOverview {
+				user,
+				request,
+				result: self.account_overview(user).await,
+			},
+			Command::OwnedCosmetics {
+				user,
+				guild,
+				request,
+				change,
+				nitro,
+			} => Event::OwnedCosmetics(client_core::owned_cosmetics::Event {
+				user,
+				guild,
+				request,
+				result: self.owned_cosmetics(user, guild, change, nitro).await,
+			}),
+			Command::AccountConnections {
+				user,
+				request,
+				change,
+			} => Event::AccountConnections {
+				user,
+				request,
+				result: if user.0 == 0 {
+					Err(Failure::Protocol)
+				} else {
+					self.account_connections(change).await
+				},
+			},
+			Command::ServerProfile {
+				user,
+				guild,
+				request,
+				edit,
+			} => Event::ServerProfile(client_core::server_profile::Event {
+				user,
+				guild,
+				request,
+				result: self.own_server_profile(user, guild, edit).await,
+			}),
 			Command::CancelProfile => Event::Failure(Failure::Protocol),
 			Command::MemberSearch(_) | Command::Voice(_) | Command::Members { .. } => {
 				Event::Failure(Failure::Protocol)
@@ -1496,6 +1642,90 @@ impl DiscordApi {
 			// a cooldown it fails with Capacity at once, and a click that adopted it sends its own.
 			Command::Prefetch(command) => {
 				Box::pin(SPECULATIVE.scope((), self.execute(*command))).await
+			}
+			Command::Soundboard(command) => {
+				use client_core::soundboard::{Event as E, MAX_WIRE_BYTES, Request as R};
+				Event::Soundboard(match command {
+					R::Default { request } => E::Default {
+						request,
+						result: self
+							.request_limited(
+								Method::GET,
+								"/soundboard-default-sounds",
+								None,
+								MAX_WIRE_BYTES,
+							)
+							.await
+							.and_then(|bytes| {
+								discord_protocol::soundboard::default_sounds(&bytes)
+									.map_err(|_| Failure::Protocol)
+							}),
+					},
+					R::Guild { guild, request } => E::Guild {
+						request,
+						guild,
+						result: if guild.0 == 0 {
+							Err(Failure::Protocol)
+						} else {
+							self.request_limited(
+								Method::GET,
+								&format!("/guilds/{guild}/soundboard-sounds"),
+								None,
+								MAX_WIRE_BYTES,
+							)
+							.await
+							.and_then(|bytes| {
+								discord_protocol::soundboard::guild_sounds(&bytes, guild)
+									.map_err(|_| Failure::Protocol)
+							})
+						},
+					},
+					R::Send {
+						request,
+						channel,
+						sound,
+						source_guild,
+						..
+					} => E::Sent {
+						request,
+						channel,
+						sound,
+						result: if channel.0 == 0
+							|| sound.0 == 0 || source_guild.is_some_and(|id| id.0 == 0)
+						{
+							Err(Failure::Protocol)
+						} else {
+							let mut body = serde_json::json!({"sound_id": sound});
+							if let Some(guild) = source_guild {
+								body["source_guild_id"] = serde_json::json!(guild);
+							}
+							self.request_limited(
+								Method::POST,
+								&format!("/channels/{channel}/send-soundboard-sound"),
+								Some(body),
+								4096,
+							)
+							.await
+							.map_err(|failure| {
+								if matches!(
+									failure,
+									Failure::Network | Failure::Protocol | Failure::Capacity
+								) {
+									Failure::Ambiguous
+								} else {
+									failure
+								}
+							})
+							.and_then(|body| {
+								if body.is_empty() {
+									Ok(())
+								} else {
+									Err(Failure::Ambiguous)
+								}
+							})
+						},
+					},
+				})
 			}
 			Command::StickerPacks => Event::StickerPacks(
 				self.request_limited(
@@ -3365,6 +3595,187 @@ mod tests {
 		}).await.unwrap();
 	}
 
+	#[tokio::test]
+	async fn soundboard_reads_bounded_catalogs_and_sends_one_documented_request() {
+		use client_core::soundboard::{Event as E, Request as R};
+		tokio::time::timeout(Duration::from_secs(5), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_SOUNDBOARD_TOKEN".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let server = tokio::spawn(async move {
+				for (line, expected, reply) in [
+					(
+						"GET /soundboard-default-sounds HTTP/1.1",
+						None,
+						r#"[{"name":"quack","sound_id":"1","volume":1.0,"guild_id":"0"}]"#,
+					),
+					(
+						"GET /guilds/9/soundboard-sounds HTTP/1.1",
+						None,
+						r#"{"items":[{"name":"Yay","sound_id":"30","volume":0.5,"guild_id":"9"}]}"#,
+					),
+					(
+						"POST /channels/2/send-soundboard-sound HTTP/1.1",
+						Some(serde_json::json!({"sound_id":"30","source_guild_id":"8"})),
+						"",
+					),
+					(
+						"POST /channels/2/send-soundboard-sound HTTP/1.1",
+						Some(serde_json::json!({"sound_id":"31"})),
+						"DROP_RESPONSE",
+					),
+				] {
+					let (mut socket, _) = listener.accept().await.unwrap();
+					let mut request = Vec::new();
+					loop {
+						let mut bytes = [0; 1024];
+						let n = socket.read(&mut bytes).await.unwrap();
+						assert!(n > 0);
+						request.extend_from_slice(&bytes[..n]);
+						assert!(request.len() < 4096);
+						let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+							continue;
+						};
+						let headers = String::from_utf8_lossy(&request[..end]).into_owned();
+						assert!(headers.starts_with(line), "{headers}");
+						let Some(expected) = &expected else {
+							break;
+						};
+						let length: usize = headers
+							.lines()
+							.find_map(|line| {
+								line.to_ascii_lowercase()
+									.strip_prefix("content-length: ")
+									.map(str::to_owned)
+							})
+							.unwrap()
+							.parse()
+							.unwrap();
+						if request.len() >= end + 4 + length {
+							let body: serde_json::Value =
+								serde_json::from_slice(&request[end + 4..]).unwrap();
+							assert_eq!(&body, expected);
+							break;
+						}
+					}
+					if reply == "DROP_RESPONSE" {
+						drop(socket);
+						continue;
+					}
+					let status = if reply.is_empty() {
+						"204 No Content"
+					} else {
+						"200 OK"
+					};
+					socket
+						.write_all(
+							format!(
+								"HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+								reply.len()
+							)
+							.as_bytes(),
+						)
+						.await
+						.unwrap();
+				}
+				assert!(
+					tokio::time::timeout(Duration::from_millis(150), listener.accept())
+						.await
+						.is_err(),
+					"an uncertain sound must not be repeated"
+				);
+			});
+			let Event::Soundboard(E::Default {
+				request: 1,
+				result: Ok(sounds),
+			}) = api.execute(Command::Soundboard(R::Default { request: 1 }))
+				.await
+			else {
+				panic!("default sounds must decode");
+			};
+			assert_eq!((sounds[0].id, sounds[0].guild), (model::Id(1), None));
+			let Event::Soundboard(E::Guild {
+				request: 2,
+				guild,
+				result: Ok(sounds),
+			}) = api.execute(Command::Soundboard(R::Guild {
+				guild: model::Id(9),
+				request: 2,
+			}))
+			.await
+			else {
+				panic!("server sounds must decode");
+			};
+			assert_eq!(guild, model::Id(9));
+			assert_eq!(
+				(sounds[0].id, sounds[0].guild, sounds[0].volume),
+				(model::Id(30), Some(model::Id(9)), 0.5)
+			);
+			assert!(matches!(
+				api.execute(Command::Soundboard(R::Send {
+					call: 7,
+					request: 3,
+					channel: model::Id(2),
+					sound: model::Id(30),
+					source_guild: Some(model::Id(8)),
+				}))
+				.await,
+				Event::Soundboard(E::Sent {
+					request: 3,
+					channel: model::Id(2),
+					sound: model::Id(30),
+					result: Ok(()),
+				})
+			));
+			assert!(matches!(
+				api.execute(Command::Soundboard(R::Send {
+					call: 7,
+					request: 5,
+					channel: model::Id(2),
+					sound: model::Id(31),
+					source_guild: None,
+				}))
+				.await,
+				Event::Soundboard(E::Sent {
+					request: 5,
+					result: Err(Failure::Ambiguous),
+					..
+				})
+			));
+			server.await.unwrap();
+			// Zero identifiers never reach the network.
+			assert!(matches!(
+				api.execute(Command::Soundboard(R::Send {
+					call: 7,
+					request: 3,
+					channel: model::Id(0),
+					sound: model::Id(30),
+					source_guild: None,
+				}))
+				.await,
+				Event::Soundboard(E::Sent {
+					result: Err(Failure::Protocol),
+					..
+				})
+			));
+			assert!(matches!(
+				api.execute(Command::Soundboard(R::Guild {
+					guild: model::Id(0),
+					request: 4
+				}))
+				.await,
+				Event::Soundboard(E::Guild {
+					result: Err(Failure::Protocol),
+					..
+				})
+			));
+		})
+		.await
+		.unwrap();
+	}
 	#[tokio::test]
 	async fn profiles_are_scoped_capped_and_do_not_block_message_writes() {
 		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

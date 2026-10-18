@@ -3247,6 +3247,8 @@ server-settings-page-profile = 伺服器資料
 server-settings-page-roles = 身分組
 # Context: label
 server-settings-page-stickers = 貼圖
+# Context: label
+server-settings-page-soundboard = 音效板
 # Context: preview
 server-settings-preview-established = 已建立連線
 # Context: preview
@@ -3302,6 +3304,84 @@ server-settings-show-people = 成員
 # Context: timeout_picker
 server-settings-timeout-picker-minutes = 分鐘
 
+# Context: server_sounds
+server-sounds-title = 音效板
+# Context: server_sounds
+server-sounds-upload-title = 上傳音效
+# Context: server_sounds
+server-sounds-preview = 預覽
+# Context: server_sounds
+server-sounds-trim-hint = 拖曳控點以選擇最多 5.2 秒。按住控點不動即可放大。
+# Context: server_sounds
+server-sounds-never-mind = 算了
+# Context: server_sounds
+server-sounds-play-preview = 播放所選片段
+# Context: server_sounds
+server-sounds-stop-preview = 停止預覽
+# Context: server_sounds
+server-sounds-description = 上傳此伺服器中任何人都可以使用的自訂音效。
+# Context: server_sounds
+server-sounds-upload-sound = 上傳音效
+# Context: server_sounds
+server-sounds-reload = 重新載入
+# Context: server_sounds
+server-sounds-saving = 正在儲存變更…
+# Context: server_sounds
+server-sounds-loading = 正在載入音效…
+# Context: server_sounds
+server-sounds-hint = MP3、Ogg 或 WAV 音訊。音效最長 5.2 秒、最大 512 KB；較長的檔案可以裁剪。
+# Context: server_sounds
+server-sounds-preparing = 正在準備音效…
+# Context: server_sounds
+server-sounds-name = 名稱
+# Context: server_sounds
+server-sounds-emoji = 相關表情符號（選填）
+# Context: server_sounds
+server-sounds-volume = 音量
+# Context: server_sounds
+server-sounds-upload = 上傳
+# Context: server_sounds
+server-sounds-cancel = 取消
+# Context: server_sounds
+server-sounds-invalid = 請使用 2–32 個字元的名稱，且最多一個表情符號。
+# Context: server_sounds
+server-sounds-section = 音效
+# Context: server_sounds
+server-sounds-count = { $count } 個音效
+# Context: server_sounds
+server-sounds-slots = 剩餘 { $count } / { $limit } 個欄位
+# Context: server_sounds
+server-sounds-empty = 尚無自訂音效
+# Context: server_sounds
+server-sounds-empty-detail = 上傳一個音效即可開始。
+# Context: server_sounds
+server-sounds-column-emoji = 表情符號
+# Context: server_sounds
+server-sounds-column-name = 名稱
+# Context: server_sounds
+server-sounds-column-uploaded-by = 上傳者
+# Context: server_sounds
+server-sounds-unknown = 未知
+# Context: server_sounds
+server-sounds-unavailable = 無法使用
+# Context: server_sounds
+server-sounds-actions = 音效操作
+# Context: server_sounds
+server-sounds-edit = 編輯
+# Context: server_sounds
+server-sounds-delete = 刪除音效
+# Context: server_sounds
+server-sounds-edit-title = 編輯音效
+# Context: server_sounds
+server-sounds-edit-subtitle = 更新音效的名稱、表情符號和音量。
+# Context: server_sounds
+server-sounds-delete-title = 刪除音效？
+# Context: server_sounds
+server-sounds-delete-subtitle = 移除 { $name } 後無法復原。
+# Context: server_sounds
+server-sounds-save = 儲存
+# Context: server_sounds
+server-sounds-custom-emoji-kept = 此音效使用自訂表情符號。留空即可保留。
 ## crates/ui/src/server_stickers.rs
 # Context: dialog
 server-stickers-dialog-cancel = 取消
@@ -4172,6 +4252,26 @@ voice-mute-toggle-unmute = 取消靜音
 voice-mute-toggle-with-settings-input-settings = 輸入設定
 # Context: mute_toggle_with_settings
 voice-mute-toggle-with-settings-output-settings = 輸出設定
+# Context: soundboard_panel
+voice-soundboard-title = 音效板
+# Context: soundboard_panel
+voice-soundboard-open = 在此語音頻道播放音效
+# Context: soundboard_panel
+voice-soundboard-server-only = 音效板可在伺服器語音頻道中使用
+# Context: soundboard_panel
+voice-soundboard-server-sounds = 伺服器音效
+# Context: soundboard_panel
+voice-soundboard-default-sounds = 預設音效
+# Context: soundboard_panel
+voice-soundboard-loading = 正在載入音效…
+# Context: soundboard_panel
+voice-soundboard-empty = 這裡沒有可用的音效。
+# Context: soundboard_panel
+voice-soundboard-retry = 重試
+# Context: soundboard_panel
+voice-soundboard-volume = 音效板音量
+# Context: soundboard_panel
+voice-soundboard-sound-unavailable = 此音效無法使用
 # Context: stream_audio_controls
 voice-stream-audio-controls-mute-stream-audio = 靜音串流音訊
 # Context: stream_audio_controls
@@ -4925,3 +5025,162 @@ search-overlays-no-matching-content-types = 沒有符合的內容類型
 search-overlays-history = 歷史紀錄
 search-overlays-clear-history = 清除搜尋紀錄
 main-sign-in-rate-limited-detail = Discord 正在限制此次登入。請稍候再試。過早重試可能會延長等待時間。
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.
+
+# Personal notification and navigation controls
+qol-mute-category = 將類別靜音
+qol-unmute-category = 取消類別靜音
+qol-mute-server = 將伺服器靜音
+qol-unmute-server = 取消伺服器靜音
+qol-mute-duration = 靜音時間
+qol-current-mute = 保留目前的時間
+qol-notification-overrides = 通知個別設定
+qol-choose-channel-category = 此處的變更會立即生效。
+qol-select-channel = 選擇頻道或類別
+qol-search-channels = 搜尋頻道和類別
+qol-more-channels = 還有更多結果，請縮小搜尋範圍。
+qol-use-inherited = 使用預設設定
+qol-mute-selection = 靜音
+qol-unmute-selection = 取消靜音
+qol-collapse-categories = 收合所有類別
+qol-expand-categories = 展開所有類別
+qol-next-unread = 下一個未讀對話
+qol-previous-unread = 上一個未讀對話
+qol-jump-unread = 跳至第一則未讀訊息
+
+audio-playback-speed = 播放速度
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection
+
+# Server moderation and AutoMod
+automod-title = AutoMod
+automod-description = Manage automatic filters and the actions Discord takes when they match.
+automod-name = Rule name
+automod-enabled = Enable rule
+automod-keywords = Keywords — one per line
+automod-regex = Regular expressions — one per line
+automod-profanity = Profanity
+automod-sexual = Sexual content
+automod-slurs = Slurs
+automod-allow = Allow list — one per line
+automod-mention-limit = Allowed unique mentions
+automod-raid = Detect mention raids
+automod-actions = Actions
+automod-block-interaction = Block member interactions
+automod-block-message = Block message
+automod-alert = Send an alert
+automod-timeout = Time out member
+automod-block-explanation = Explanation shown to the member
+automod-select-channel = Choose an alert channel
+automod-timeout-seconds = Timeout duration (seconds)
+automod-exempt-roles = Exempt roles
+automod-exempt-channels = Exempt channels
+automod-clear-unavailable-roles = Remove unavailable roles
+automod-clear-unavailable-channels = Remove unavailable channels
+automod-save = Save rule
+automod-cancel = Cancel
+automod-invalid = Check the rule limits, permissions and available channels. Refresh if server settings changed.
+automod-refresh = Refresh rules
+automod-create = Create rule
+automod-empty = No automatic moderation rules.
+automod-enabled-state = Enabled
+automod-disabled-state = Disabled
+automod-edit = Edit
+automod-delete = Delete rule
+automod-delete-confirm = Delete this AutoMod rule?
+automod-keyword = Custom keywords
+automod-spam = Spam detection
+automod-presets = Commonly flagged words
+automod-mentions = Mention spam
+automod-profile = Member profile keywords
+automod-concurrent = This rule changed while you were editing. Review and reapply your changes to its latest settings.
+automod-reapply = Reapply my changes
+moderation-title = Moderation
+moderation-reason = Reason (optional; recorded in the server audit log)
+moderation-member = Member name or ID
+moderation-choose-member = Choose a loaded member
+moderation-lookup = Find member
+moderation-lookup-help = Choose a member from this conversation or enter their user ID.
+moderation-timeout-until = Timed out until
+moderation-timeout = Time out
+moderation-remove-timeout = Remove timeout
+moderation-keep-messages = Keep messages
+moderation-ban = Ban
+moderation-kick = Kick
+moderation-bans = Banned members
+moderation-refresh-bans = Refresh bans
+moderation-no-bans = No banned members on this page.
+moderation-unban = Unban
+moderation-next-bans = Next page
+moderation-confirm-unban = Unban this member?
+moderation-confirm-kick = Kick this member?
+moderation-confirm-ban = Ban this member?
+moderation-confirm-timeout = Change this member’s timeout?
+moderation-confirm-description = Review this action and its reason before applying it to the selected member.
+moderation-confirm = Confirm
+moderation-days = days
+moderation-hours = hours
+moderation-minutes = minutes
+server-roles-permissions-ban-members = Ban members
+
+# Desktop Inbox
+inbox-title = Inbox
+inbox-description = Unread conversations, recent mentions and bookmarks
+inbox-loading = Loading inbox…
+inbox-empty = No matching items.
+inbox-refresh-needed = Refresh to load items.
+inbox-refresh = Refresh
+inbox-retry = Retry
+inbox-older = Older mentions
+inbox-open-message = Open message
+inbox-unread = Unread
+inbox-mentions = Mentions
+inbox-saved = Bookmarks
+inbox-filter = Filter by conversation or server
+inbox-include-muted = Include muted conversations
+inbox-current-place = Current server or direct messages
+inbox-open-conversation = Open conversation
+inbox-mark-read = Mark as read
+inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
+inbox-dismiss = Dismiss
+inbox-bookmark = Bookmark message
+inbox-unsave = Remove bookmark
+inbox-remind = Remind me
+inbox-in-hour = In 1 hour
+inbox-in-day = In 1 day
+inbox-in-week = In 1 week
+inbox-clear-reminder = Clear reminder
+inbox-message-unavailable = Message unavailable
+inbox-service-availability = Availability depends on your Discord account.
+inbox-spoiler = Spoiler
+inbox-custom-reminder = Custom date and time (UTC)
+inbox-set-reminder = Set reminder

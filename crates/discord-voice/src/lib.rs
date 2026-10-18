@@ -1,14 +1,17 @@
-//! Discord DM and guild voice media. No bot manager, relay, recording, or key persistence.
+//! Discord DM and guild voice media. No bot manager, relay, or key persistence.
 mod activity;
 pub mod audio;
+pub use audio::recording;
 pub mod camera;
 mod capture;
 mod crypto;
 mod diagnostics;
+mod effects;
 mod jitter;
 mod mixer;
 pub mod screen;
 mod stream_playout;
+mod stream_sync;
 mod timer;
 mod transport;
 mod video;
@@ -19,6 +22,7 @@ pub(crate) use platform::video::ffmpeg as video_gpu;
 mod video_receive;
 mod video_sps;
 pub use crypto::Identity;
+pub use effects::{Effects, MAX_CLIP_SAMPLES};
 pub use transport::{
 	DISCONNECTED_BY_DISCORD, run, run_stream, run_with_identity, watch_stream,
 	watch_stream_on_adapter,
@@ -36,6 +40,8 @@ pub struct CapturedFrame {
 #[derive(Clone, Copy)]
 pub struct Controls {
 	pub muted: bool,
+	/// Separate from mute: only a current, explicitly accepted Stage speaker can send PCM.
+	pub stage_speaker: bool,
 	/// Current Audio::capture_generation(); rejects PCM queued before a privacy transition.
 	pub capture_generation: u64,
 	/// Local indicator threshold; independent of received participants.
@@ -56,6 +62,7 @@ impl Default for Controls {
 	fn default() -> Self {
 		Self {
 			muted: false,
+			stage_speaker: false,
 			capture_generation: 0,
 			activity_threshold_db: -45,
 			camera: 0,

@@ -38,6 +38,53 @@ and clicking the action against a folder containing unread guilds remain outside
 A later revision of the PR replaced the per-guild queue with the home tile's bulk acknowledgement
 scoped to the folder's servers; it was not re-measured.
 
+## Personal notification and navigation controls — October 17, 2026
+
+Compared current upstream nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`),
+fork baseline `f9e39f7`, and implementation `8205c36d931b`. Each release replay
+was built with Rust 1.98.1, the committed lockfile, default replay features, fat
+LTO and one codegen unit, using a separate source/target directory. Linux 6.18.44
+x86-64/glibc 2.41 container, Xeon Platinum 8573C, five visible CPUs and
+18,440,136 KiB visible RAM. Builds and tests were idle during sampling. One warmup
+and five measured direct-binary runs per revision/workload, rotating revision order,
+with the measurement process and its children pinned to CPU 0; elapsed times are
+reported by the workload's `Instant` timer. No account, network, storage or audio device.
+
+| Release workload / median | Current nightly | Fork baseline | After | After vs nightly | After vs fork |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Reducer, 100,000 events | 108.718 ms | 124.482 ms | 122.868 ms | +13.0% | −1.3% |
+| Wide-channel reducer, 10,000 messages / 20,001 channels | 166.945 ms | 196.989 ms | 174.953 ms | +4.8% | −11.2% |
+| Steady retained timeline estimates, 500 records | 393,492–393,977 B | 401,492–401,977 B | 401,492–401,977 B | +8,000 B | unchanged |
+
+Scheduling variation is substantial: reducer ranges were 104.234–218.455 ms
+(nightly), 110.811–216.428 ms (fork), and 112.729–185.926 ms (after); wide-channel
+ranges were 146.976–175.158, 169.186–227.320, and 162.341–221.322 ms respectively.
+An initial unpinned trial gave +5.2% / +33.2% against nightly, with a noisy
+106.586–406.827 ms nightly wide-channel range, prompting the affinity-controlled
+comparison above. No speedup is claimed. The nightly comparison includes earlier
+video, reliability and upstream changes already in the fork; it does not isolate
+this milestone. The feature's retained timeline estimates match its fork baseline.
+
+The 120-second release lifecycle soak completed 1,444 passes / 46,208 channel
+visits / 27,724,800 live inserts and six logout cycles in 120.896 seconds, with
+its shipping row/byte assertions passing. This measures synthetic core pressure;
+native UI CPU/RSS, frame latency and live synchronization remain unmeasured.
+
+Current-nightly package baselines were downloaded from the immutable release tag
+and checked against its published SHA256SUMS. Payload bytes sum regular archive
+entries; Linux uses the Debian data archive, Windows its portable ZIP, and macOS
+the complete ZIP including the app bundle and notices.
+
+| Nightly package | Executable bytes | Full payload bytes | Published archive bytes |
+| --- | ---: | ---: | ---: |
+| Ubuntu 26.04 x64 DEB | 87,746,736 | 92,280,770 | 44,864,244 |
+| Windows x64 ZIP | 86,937,600 | 91,130,889 | 51,171,600 |
+| macOS ARM64 ZIP | 69,149,632 | 75,120,529 | 48,274,698 |
+
+Current-head native application/package checks and matching after-package
+measurements are tracked in the PR. No local production package, native Windows/macOS
+UI performance comparison or live OS-notification check is claimed here.
+
 ## Name styles and bundled name fonts - October 15, 2026
 
 Compared baseline `5f83077e` (`main`) with the name-styles branch on Linux (CachyOS, x86_64),
@@ -484,6 +531,40 @@ allocation limit) instead of up to the 500 MB upload limit plus a second copy.
 
 Standard no-default-features macOS packages built from both revisions: executable 68,509,584 B in
 both, installed app 74,547,919 B in both, `ditto` ZIP 48,179,547 vs 48,179,867 B (+320 B).
+
+
+## Soundboard — historical upstream evidence, October 7, 2026
+
+The following measurements were recorded by upstream #579, archived at `aa9c1dca`.
+They do **not** measure this fork integration. The original synthetic screenshots remain
+in the [immutable upstream evidence directory](https://github.com/ViceVerse-cz/Serein/tree/aa9c1dca6d24920ea7ef7d3a5c0836d54a43eabd/docs/pr-evidence).
+
+Baseline `884fb73f` plus the one-line lockfile correction that lets it build on Windows,
+compared with the soundboard playback, panel and server management changes. Windows 11 Pro
+10.0.26200, AMD Ryzen 7 7800X3D, 32 GB RAM, Radeon RX 9070 XT, pinned Rust 1.98.1, locked
+dependencies. Both revisions were built in separate target directories.
+
+| Metric / method | Baseline | After | Delta |
+| --- | --- | --- | --- |
+| `serein.exe`, `cargo xtask package` | 85,350,400 B | 85,810,688 B | +460,288 B (+0.54%) |
+| Installed `dist/` tree | 89,524,013 B | 89,984,421 B | +460,408 B (+0.51%) |
+| `dist/` as one deflate-9 zip | 49,631,916 B | 49,767,265 B | +135,349 B (+0.27%) |
+| Idle CPU, median of 3 | 1.25% of one core | 1.30% of one core | within run-to-run noise |
+| Working set after sampling, median of 3 | 122.2 MB | 122.6 MB | within run-to-run noise |
+| Private bytes after sampling, median of 3 | 152.2 MB | 148.3 MB | within run-to-run noise |
+
+The process rows sample a release build with the `demo` feature running
+`--demo --demo-voice` with no input: 15 seconds of warmup, then 30 one-second samples of
+total processor time, working set and private bytes. Individual runs ranged over 1.15-1.41%
+CPU and 147.9-156.1 MB private bytes across both builds, so no difference is claimed. The
+zip is a local measurement of the package directory, not a published artifact.
+
+Not measured: playback mixing cost in a live call, download and decode time of a real
+sound, waveform rendering frame time and trim encoding time. None of those paths run in the
+idle demo; the mixer and the Ogg Opus encoder have device-free tests but no timing
+workload. Bounded additions: up to eight overlapping clips of at most six seconds in the
+call mixer, a session cache of at most sixteen decoded clips (about 11.5 MB), and, only
+while the upload review is open, up to 57.6 MB of decoded audio plus 30 KB of peaks.
 
 ## Voice default-device polling — October 7, 2026
 
@@ -1488,3 +1569,614 @@ or macOS package measurement is claimed. Native display and live Discord checks
 remain unverified. Parent native/security/license/fuzz CI jobs exclude draft PRs;
 #620 retains its draft status at the owner's request. Mocked signing and local
 Linux SDK closure do not establish native macOS or global Linux installation.
+
+
+## Application-command follow-up — October 17, 2026
+
+Based on fork `f9e39f7`. Focused command schema, discovery, API loopback, autocomplete
+correlation and composer regressions pass. Separate replay and 120-second soak runs
+passed (1,024 passes). The bounded ASan decoder/state smoke passed; dependencies and
+lockfiles are unchanged. The final full-form stale-suggestion guard has focused Core
+and UI coverage. Full workspace/native demo checks are recorded in the PR.
+
+`scripts/compare-replay.py` compares the reviewed commit, the current published upstream
+nightly and the previous fork on independent Windows/macOS/Linux CI workers. It uses
+matching Rust 1.98.1 release overrides, separate worktrees/targets, one warmup and five
+rotated samples per workload. Artifacts retain revisions, environment and sample ranges.
+These synthetic reducer results are not UI latency or media throughput measurements.
+Current-head executable, installed-payload and compressed-package comparisons await
+native CI; UI CPU/RSS and live command performance remain unmeasured.
+
+
+### Command review and native evidence at `564d8dd1` plus the field-style correction
+
+The complete local `cargo xtask check` passed 1,676 tests (32 ignored), policy
+checks and the minimal application build at `564d8dd1`. The later autocomplete
+field correction only matches the existing proportional 14-point scalar-field
+font, alignment and text color. Its existing composer regression, strict native
+UI all-target/demo Clippy, formatting and native `profile_preview` rebuild pass.
+
+The native before/after pair in `pr-evidence/application-commands` uses the same
+1120 × 760, scale-1 dark X11 window and synthetic `/weather` form with `Pra`.
+Before is fork `f9e39f7`; after is `564d8dd1` plus that three-line style fix.
+The before build has two demo-only compilation repairs: remove duplicated avatar
+helpers and supply the missing optional error argument to `pending::show`.
+Neither changes the displayed feature. After opens the new synthetic suggestions
+popup; this is feature-absence evidence, not live service data. Native light-mode
+layout at the supported minimum 760 × 520 was also inspected; those extra captures
+are not bundled. Capture uses explicit `--demo --interactive`, Xvfb, software
+rendering and ImageMagick's application-window capture, with process-liveness checks.
+These debug preview pictures do not establish release CPU/RSS or frame latency.
+
+A submitted command's later HTTP failure still requires form re-entry. Only local
+validation failures preserve that form; this limitation remains in the inventory.
+
+
+### Cross-platform command replay at `564d8dd1`
+
+[Run 39056323878](https://github.com/MCShotty/Serein/actions/runs/39056323878)
+compares nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), fork `f9e39f7`
+and command code `564d8dd1`. The later field-style correction does not change
+this core workload. Five rotated measured runs follow one warmup per build;
+Rust 1.98.1, opt-level 3, thin LTO, one codegen unit and panic=abort match.
+Linux/Windows pin one allowed logical CPU; macOS uses its platform scheduler.
+Raw CI JSON records each worker's OS/CPU, full revisions, settings and ranges.
+Values are milliseconds; each entry is median (minimum–maximum).
+
+| Platform / workload | Nightly | Previous fork | Commands | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 80.517 (79.993–80.916) | 79.284 (78.504–80.101) | 79.093 (79.018–82.000) | -1.8% / -0.2% |
+| Linux-X64 / wide channels | 226.205 (221.134–229.776) | 230.142 (224.395–234.305) | 226.427 (221.166–231.768) | +0.1% / -1.6% |
+| Windows-X64 / reducer | 78.035 (77.959–101.676) | 79.240 (79.080–106.378) | 78.814 (78.539–79.393) | +1.0% / -0.5% |
+| Windows-X64 / wide channels | 48.810 (48.105–49.212) | 69.543 (68.001–74.627) | 68.152 (67.905–68.479) | +39.6% / -2.0% |
+| macOS-ARM64 / reducer | 55.292 (55.175–55.410) | 55.624 (55.409–56.302) | 55.943 (55.716–56.636) | +1.2% / +0.6% |
+| macOS-ARM64 / wide channels | 83.693 (83.187–84.001) | 83.590 (83.116–84.013) | 82.957 (82.794–83.901) | -0.9% / -0.8% |
+
+The Windows wide-channel result is 39.6% slower than nightly; the previous fork
+is already slower. Its cause is unisolated. These are core reducer measurements,
+not autocomplete, UI latency, media throughput or a causal improvement claim.
+
+
+### Native package snapshot at `564d8dd1`
+
+## Moderation and AutoMod — October 17, 2026
+
+Based on fork `f9e39f7`. Focused permission/hierarchy, sparse rule preservation, bounded
+parsing, loopback HTTP and native UI-state regressions pass, including whitespace
+preservation on unrelated rule edits. Replay and the 120-second soak passed (1,531
+passes). Login-handoff, cached-xtask workspace and license-policy fixtures pass; the
+locked graph is unchanged. After sequencing builds, bounded ASan decoder/state smoke
+passed at `91c95fdd` (112,105 and 3,638 runs, 31 seconds per target). The earlier compiler
+OOM did not produce a fuzz result. Native application checks are recorded separately in the PR.
+
+`scripts/compare-replay.py` compares the reviewed commit, the current published upstream
+nightly and the previous fork on independent Windows/macOS/Linux CI workers. Matching
+Rust 1.98.1 release overrides, separate worktrees/targets, one warmup and five rotated
+samples produce revision-labelled JSON artifacts including sample ranges. Native
+packages must separately establish executable, installed-payload and distribution
+sizes. Native UI CPU/RSS, moderation latency and live service behavior remain unmeasured.
+
+
+### Moderation release comparison at `91c95fdd`
+
+[Native CI run 39056325676](https://github.com/MCShotty/Serein/actions/runs/39056325676)
+compares published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), previous fork
+`f9e39f7` and moderation code `91c95fdd`. Rust 1.98.1, opt-level 3, thin LTO, one
+codegen unit, stripped symbols and panic=abort match across each worker's builds.
+One warmup precedes five rotated samples of each bounded workload. Linux/Windows
+pin one allowed logical CPU; macOS uses its platform scheduler. The run's per-OS JSON
+artifacts include the exact OS/CPU, full revisions, settings and raw samples. These
+are separate GitHub-hosted x64 Linux/Windows and ARM64 macOS workers; elapsed values
+are milliseconds, with minimum–maximum ranges below.
+
+| Platform / workload | Nightly median (range) | Previous fork | Moderation | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 48.866 (47.986–49.167) | 47.722 (47.084–48.275) | 47.769 (47.428–48.763) | -2.2% / +0.1% |
+| Linux-X64 / wide channels | 61.633 (60.952–68.746) | 61.370 (60.250–66.805) | 62.140 (60.508–63.802) | +0.8% / +1.3% |
+| Windows-X64 / reducer | 97.703 (95.286–130.104) | 97.112 (93.646–113.227) | 96.023 (94.101–144.464) | -1.7% / -1.1% |
+| Windows-X64 / wide channels | 94.748 (81.093–118.035) | 116.428 (107.706–146.935) | 112.896 (109.315–161.461) | +19.2% / -3.0% |
+| macOS-ARM64 / reducer | 79.794 (73.478–90.337) | 80.099 (61.130–91.886) | 80.526 (70.608–92.206) | +0.9% / +0.5% |
+| macOS-ARM64 / wide channels | 137.806 (112.357–141.365) | 125.894 (113.885–155.284) | 130.810 (107.787–215.842) | -5.1% / +3.9% |
+
+The Windows wide-channel result is slower than nightly; its cause is unisolated.
+The workloads exercise core state, not moderation latency, native UI or media throughput.
+No causal performance improvement or official-client equivalence is claimed.
+
+
+### Native package snapshot at `91c95fdd`
+
+Standard voice-inclusive native CI packages, compared with published nightly
+`3a4bf8d` and previous fork `f9e39f7`. Installed size sums regular-file bytes;
+distribution normalizes those files with Python 3.12 ZIP DEFLATE level 6 and
+fixed metadata, excluding outer CI archives and installers. One artifact per
+revision/platform; MiB = 1,048,576 bytes. Other native platforms remain pending.
+
+| Platform / metric | Nightly | Previous fork | This code | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / executable | 83.682 | 87.900 | 88.037 | +0.137 (+0.16%) |
+| Linux-X64 / installed payload | 88.006 | 130.657 | 130.795 | +0.137 (+0.11%) |
+| Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.614 | +0.061 (+0.07%) |
+
+## FFmpeg media playback — October 17, 2026
+
+The audio/preview change starts from fork main `f9e39f7`. A native component
+comparison uses that revision's Cargo-built libopus static library versus the
+new `serein_audio_open/decode/close` wrapper and the existing pinned FFmpeg build.
+Both consume the same 151 packets from the original three-second mono Opus
+fixture at 48 kHz, recreating the decoder 200 times per sample. The temporary C
+harness uses GCC `-O3 -DNDEBUG`; the shared Linux worker has a Xeon Platinum
+8573C, five available CPUs and a 16 GiB memory limit. One warmup precedes five
+alternating measured runs per backend; elapsed time uses `CLOCK_MONOTONIC`.
+Other workspace compilation was running, so these are indicative component
+measurements, not isolated native application benchmarks.
+
+| Metric / method | `f9e39f7` libopus path | FFmpeg packet path | Delta |
+| --- | ---: | ---: | ---: |
+| Median elapsed per 200 full decodes | 1.5084 s | 0.8771 s | −0.6313 s (−41.9%) |
+| Decoded mono samples, before demuxer trim | 28,992,000 | 28,992,000 | 0 |
+| Release executable / installed payload / compressed package | Unmeasured | Unmeasured | Unavailable |
+
+The component comparison excludes demuxing, Rust allocation, HTTP, output devices,
+GUI rendering and the playback queue. Separate production-path regressions compare
+trimmed duration, channel count and RMS level for WAV, MP3, Opus and Vorbis, and
+check cancellation, SDR/HDR posters, rotation and bounded embedded-clip playback.
+A full-clip regression also covers FFmpeg growing its input buffer: larger native
+requests receive bounded 64 KiB reads instead of failing partway through playback.
+No application CPU/RSS, startup, video throughput or physical display performance
+claim follows from these results.
+The shared audio wrapper also completed 200 decoder lifecycles with AddressSanitizer
+and UndefinedBehaviorSanitizer; linked codec libraries were not instrumented.
+
+Full local release packaging was not repeated: earlier production fat-LTO links
+exceeded this worker's memory limit, and remaining disk space cannot support a
+fresh matching package pair. Current native packages remain CI checks. No new
+runtime library, codec recipe or license dependency is introduced by this change.
+
+
+## Soundboard and playback integration — October 17, 2026
+
+This feature builds on fork media PR #7 (`f3abb03`), not a merged fork dependency.
+Focused soundboard model/protocol, request/call correlation and API loopback tests pass,
+including a dropped POST response that is not retried. Separate synthetic replay and
+120-second soak runs passed (1,168 passes), before the final read-only spinner guard.
+Login-handoff, cached-xtask and license-policy fixtures pass; the dependency graph and
+FFmpeg recipe are unchanged. Full native/UI/decoder checks and ASan results are
+reported separately in the PR; earlier upstream measurements are historical evidence. Bounded ASan
+decoder/state smoke subsequently passed (93,615 and 2,469 runs, 31 seconds each) on the
+reviewed media implementation. The subsequent Windows-only test-argument correction
+changes no fuzzed parser/reducer code.
+
+The branch's release comparison jobs use the current published upstream nightly,
+previous fork and reviewed commit on Windows/macOS/Linux. Matching Rust 1.98.1
+release overrides, separate targets, one warmup and five rotated samples are recorded
+in JSON with exact revisions, environment and sample ranges. Core reducer timing does
+not measure audio stretching, media decode, native UI latency or CPU/RSS. Those media
+measurements remain unavailable here. Current-head standard native packages provide
+the executable, installed payload and compressed distribution comparisons.
+
+
+### Current media release comparison at `a94983ab`
+
+[Run 39058677973](https://github.com/MCShotty/Serein/actions/runs/39058677973)
+compares published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), previous
+fork `f9e39f7` and media code `a94983ab` on separate Windows x64, Linux x64 and
+macOS ARM64 workers. Rust 1.98.1, opt-level 3, thin LTO, one codegen unit and
+panic=abort match; one warmup precedes five rotated measured runs. Linux/Windows
+pin one allowed CPU, while macOS uses the platform scheduler. Raw CI JSON records
+OS/CPU, exact revisions, settings and ranges. Values are milliseconds, median
+(minimum–maximum). This core-only workload does not exercise audio decoding,
+stretching, soundboard mixing or GUI rendering.
+
+| Platform / workload | Nightly | Previous fork | Media | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 63.295 (61.608–64.248) | 63.491 (61.648–64.701) | 64.237 (60.519–65.560) | +1.5% / +1.2% |
+| Linux-X64 / wide channels | 112.988 (94.424–117.141) | 119.903 (116.312–121.558) | 121.310 (116.398–122.577) | +7.4% / +1.2% |
+| Windows-X64 / reducer | 58.066 (57.603–60.780) | 58.144 (57.711–60.494) | 56.240 (55.600–57.943) | -3.1% / -3.3% |
+| Windows-X64 / wide channels | 69.075 (64.426–84.789) | 64.319 (62.407–66.892) | 64.566 (63.838–68.376) | -6.5% / +0.4% |
+| macOS-ARM64 / reducer | 67.099 (66.357–70.469) | 68.648 (66.939–70.439) | 68.725 (67.667–70.565) | +2.4% / +0.1% |
+| macOS-ARM64 / wide channels | 100.793 (97.166–103.192) | 105.346 (103.715–108.621) | 100.973 (99.229–106.693) | +0.2% / -4.2% |
+
+Linux wide-channel replay is 7.4% slower than nightly and 1.2% slower than the
+previous fork; the cause is unisolated. No causal speed improvement is claimed.
+The inherited FFmpeg-first decoder changes in prerequisite #7 are included here;
+these comparisons do not isolate soundboard cost. Standard native package sizes
+are recorded below; release media throughput, idle CPU, RSS and frame latency remain
+unmeasured. This is not proof of official-client interoperability.
+
+
+### Current media focused native checks
+
+At `a94983ab`, strict native `ui`/`serein` all-target/demo Clippy and
+formatting pass. Focused native checks pass four sound-editor UI cases, eight
+audio/UI cases, twelve sound/worker/upload cases, one Ogg Opus round-trip and
+two pitch-preserving speed cases. They cover bounded clips, stale-call worker
+cancellation, deafen, released cached PCM, trim encoding, damaged audio, keyboard
+controls, narrow cards and preserved unknown/custom emoji on unrelated edits.
+These are offline fixtures, not a microphone or live-call test.
+
+Native CI run 39058677973 passes all four application/package gates (Linux x64,
+Windows x64/ARM64 and macOS ARM64), all three release replay comparisons,
+x64/ARM64 installer fixtures, SDK, licenses and ASan fuzz.
+Inherited security and separate Nix failures remain visible in the PR. The
+Windows-only missing optional-effects test argument was corrected at `a94983ab`.
+
+### Linux media package snapshot at `a94983ab`
+
+Standard release including voice, compared with nightly `3a4bf8d` and previous
+fork `f9e39f7`. Installed values sum regular-file bytes; distribution recompresses
+the payload using Python 3.12 ZIP DEFLATE level 6 and fixed metadata, excluding
+the outer CI archive/installers. One artifact per revision; MiB = 1,048,576 bytes.
+
+| Metric | Nightly | Previous fork | Media | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| executable | 83.682 | 87.900 | 88.282 | +0.382 (+0.43%) |
+| installed payload | 88.006 | 130.657 | 131.039 | +0.382 (+0.29%) |
+| normalized distribution | 51.211 | 84.553 | 84.700 | +0.147 (+0.17%) |
+
+This includes prerequisite #7 and does not isolate the soundboard contribution. Windows/macOS package snapshots follow below.
+
+
+### Current media native screenshots
+
+The matched native pair in `pr-evidence/desktop-media` uses the synthetic server
+settings fixture at 1120 × 760, scale 1, dark mode. Before is fork `f9e39f7`
+with only the two demo-build repairs (duplicate avatar helpers and the missing
+`pending::show` optional-error argument). Prerequisite #7 has no changes to these
+UI/settings/preview paths, verified against `f3abb039`; the baseline represents
+feature absence. After is media code `a94983ab`, not an upstream screenshot.
+The supported minimum 760 × 520 light-mode soundboard layout was inspected too.
+
+The native preview build passes. Captures launch explicitly with
+`--demo --interactive` on Xvfb/software rendering, check process liveness and
+capture only the app window with ImageMagick. No account, microphone, speaker
+playback or service was used. Only one small current pair is committed. Debug
+preview captures are not release CPU/RSS, frame latency or live acceptance evidence.
+
+
+### Windows and macOS media package snapshots at `a94983ab`
+
+Same standard voice-inclusive package and normalization method as Linux above.
+One artifact per revision/platform; MiB = 1,048,576 bytes. Baselines are nightly
+`3a4bf8d` and previous fork `f9e39f7`. CI checkout `d03ae140` has the exact Git
+tree of source `a94983ab`, verified before these measurements were recorded.
+
+| Platform / metric | Nightly | Previous fork | Media | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Windows-X64 / executable | 82.910 | 87.505 | 87.982 | +0.477 (+0.54%) |
+| Windows-X64 / installed payload | 86.909 | 135.216 | 135.693 | +0.477 (+0.35%) |
+| Windows-X64 / normalized distribution | 47.986 | 80.844 | 81.015 | +0.170 (+0.21%) |
+| macOS-ARM64 / executable | 65.946 | 69.884 | 70.198 | +0.314 (+0.45%) |
+| macOS-ARM64 / installed payload | 71.641 | 95.216 | 95.530 | +0.314 (+0.33%) |
+| macOS-ARM64 / normalized distribution | 46.027 | 63.548 | 63.677 | +0.129 (+0.20%) |
+
+Windows x64/ARM64 both pass clean and cached normal packaging from empty job-owned
+output directories, archive validation and a bounded packaged driver-query launch
+without development FFmpeg paths. No manual staging repair was used. The x64 ZIPs
+are both 86,052,573 bytes with metadata-dependent hashes; bit-for-bit reproducibility
+is not claimed. The query helper exits before account/UI/audio initialization,
+so these checks do not establish an interactive launch or hardware encoding.
+macOS nightly is signed and the CI bundle is unsigned. These are observed package
+deltas, not isolated soundboard cost or release media/UI performance claims.
+
+revision/platform; MiB = 1,048,576 bytes. The Windows x64 snapshot below completes this three-platform comparison.
+
+| Platform / metric | Nightly | Previous fork | This code | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / executable | 83.682 | 87.900 | 88.186 | +0.286 (+0.33%) |
+| Linux-X64 / installed payload | 88.006 | 130.657 | 130.944 | +0.287 (+0.22%) |
+| Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.678 | +0.124 (+0.15%) |
+| macOS-ARM64 / executable | 65.946 | 69.884 | 70.135 | +0.251 (+0.36%) |
+| macOS-ARM64 / installed payload | 71.641 | 95.216 | 95.467 | +0.251 (+0.26%) |
+| macOS-ARM64 / normalized distribution | 46.027 | 63.548 | 63.659 | +0.111 (+0.17%) |
+
+macOS nightly is signed while CI is unsigned; these are observed package deltas, not an isolated feature cost.
+
+
+### Current moderation native evidence
+
+Code `91c95fdd` passes the local strict native `ui`/`serein` all-target/demo
+Clippy run, three AutoMod UI regressions and the moderation cancellation UI
+regression. The native preview rebuild also passes. These checks follow the
+read-only ban-view permission correction and whitespace-preservation fix.
+Native CI run 39056325676 passes the full application/package gate on Linux x64,
+Windows x64/ARM64 and macOS ARM64, plus SDK, licenses, ASan fuzz, installer
+fixtures and all three release replay comparisons. Inherited security/Nix
+failures are reported separately; an earlier local resource-limited full-gate
+attempt is not claimed as passed.
+
+`pr-evidence/server-moderation` contains an actual native X11 window pair at
+1120 × 760, scale 1, dark mode. The same synthetic server settings fixture shows
+feature absence at fork `f9e39f7` and the AutoMod page at `91c95fdd`. The baseline
+has only the two documented demo-build repairs (duplicate avatar helpers and
+missing `pending::show` optional-error argument); its feature UI is unchanged.
+The supported minimum 760 × 520 light-mode moderation layout was also inspected.
+Captures use explicit `--demo --interactive`, Xvfb/software rendering, bounded
+process-liveness checks and ImageMagick application-window capture. They do not
+establish live moderation, release UI performance or a side-by-side official
+client comparison. Only one small current pair is committed.
+
+
+### Windows moderation package snapshot at `91c95fdd`
+
+Same standard package and normalization method as the Linux/macOS snapshot above.
+One artifact per revision; MiB = 1,048,576 bytes. Baseline nightly `3a4bf8d`,
+previous fork `f9e39f7`, after `91c95fdd`.
+
+| Metric | Nightly | Previous fork | Moderation | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| executable | 82.910 | 87.505 | 87.870 | +0.365 (+0.42%) |
+| installed payload | 86.909 | 135.216 | 135.581 | +0.365 (+0.27%) |
+| normalized distribution | 47.986 | 80.844 | 80.979 | +0.135 (+0.17%) |
+
+Windows x64/ARM64 CI validates both clean and cached normal packages from empty
+output directories. The bounded packaged driver-query helper launches with the
+development FFmpeg prefix removed from PATH; no manual staging repair was used.
+This check stops before UI/account/audio initialization and is not a full
+interactive launch or hardware-encoding result. Archive metadata may change hashes.
+
+## Desktop Inbox — October 17, 2026
+
+Code revision `2139384fcb259e504535bd9688c9de6cb2e4a727`, based on fork `f9e39f7`.
+The current published upstream nightly was rechecked on October 17:
+`v1.0.0-nightly.20261014.58` (`3a4bf8d`). The owner-supplied Discord Stable build is
+recorded in the compatibility inventory; it is not the performance baseline.
+
+Release reducer comparison: Rust 1.98.1, committed lockfiles and release profiles,
+Linux 6.18.44 x86_64/glibc 2.41, Intel Xeon Platinum 8573C, 16 GiB container memory,
+four-CPU quota. Each binary/workload received one warmup and five rotating measured
+runs, pinned to CPU 0. Task compiler processes were paused during sampling and no
+native preview was running. Values below are medians; ranges expose host variation.
+
+| Workload / elapsed milliseconds | Current nightly | Previous fork | Inbox | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| 100,000-event reducer | 152.105 (146.564–254.134) | 151.199 (139.729–213.125) | 149.063 (139.452–223.483) | −2.0% / −1.4% |
+| Wide channel navigation | 185.019 (156.702–248.175) | 211.192 (195.419–287.684) | 219.871 (206.293–231.027) | +18.8% / +4.1% |
+
+The wide-channel result is slower; its cause has not been isolated. The overlapping,
+wide ranges do not establish a causal improvement or regression from the Inbox alone.
+These are synthetic core workloads, not GUI latency, media throughput or process RSS.
+The final 120-second soak passed 1,457 passes, 46,624 visits and six logout cycles
+in 120.041 seconds, with the existing retained-history budgets unchanged.
+
+`cargo xtask check` passed on the implementation before the final navigation/content
+retirement corrections. Focused navigation and Inbox tests, strict Clippy and native
+preview builds were rerun after those corrections; the initial follow-up Inbox suite has nine
+passing cases, including dark/light narrow layouts and read-marker isolation.
+The bounded ASan fuzz smoke passed 80,860 decoder inputs and 3,079 state transitions.
+Login-handoff, cached-xtask workspace, license-policy and packaging fixtures passed.
+
+The matched native screenshot pair in `pr-evidence/desktop-inbox` uses the same
+1120 × 760 channel-links fixture, font setup and dark appearance. Before is fork
+`f9e39f7` (with its required demo-only pending-upload tuple repair); after adds the
+new synthetic Inbox state, not live account data. Light/narrow rendering and bookmark
+navigation were inspected separately. The feature branches also remove byte-identical
+duplicate demo helpers so their previews compile; production behavior is unaffected.
+
+The initial native/package results are recorded below; subsequent review fixes require
+their own current-head CI. Baseline fork artifacts are pinned to run `39021847864` at `f9e39f7`;
+its native, installer, license and fuzz jobs passed, while security and separate Nix
+checks failed. Native release UI CPU/RSS, frame latency, media throughput and physical
+Windows/macOS/Discord interoperability remain unmeasured here. No debug-preview result
+is represented as a release or official-client performance measurement.
+
+### Initial Inbox package comparison
+
+These are the initial feature packages at PR head `f19c412`, built by native CI
+run [39048221415](https://github.com/MCShotty/Serein/actions/runs/39048221415).
+GitHub checked out merge `37cd8be`; both revisions have the same Git tree
+`f291a249939b99466b9ff42c68ee0620a3a243a2`. Later review corrections are not included
+in these measurements; their current-head checks/results are reported in the PR.
+
+Baselines are published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`) and previous
+fork `f9e39f7`. All are standard release packages including voice. Installed values
+sum regular-file payload bytes; distribution values recompress that payload with
+Python 3.12 ZIP DEFLATE level 6 and fixed metadata, excluding outer CI archives and
+installers. Debian payloads are read without installation. Values below are MiB
+(1,048,576 bytes); deltas are against the previous fork. One artifact per build/platform.
+
+| Platform | Metric | Nightly | Previous fork | Initial Inbox | Delta vs fork |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Linux-X64 | Executable | 83.682 | 87.900 | 88.274 | +0.374 (+0.43%) |
+| Linux-X64 | Installed payload | 88.006 | 130.657 | 131.031 | +0.374 (+0.29%) |
+| Linux-X64 | Normalized distribution | 51.211 | 84.553 | 84.710 | +0.157 (+0.19%) |
+| Windows-X64 | Executable | 82.910 | 87.505 | 87.968 | +0.462 (+0.53%) |
+| Windows-X64 | Installed payload | 86.909 | 135.216 | 135.678 | +0.462 (+0.34%) |
+| Windows-X64 | Normalized distribution | 47.986 | 80.844 | 81.007 | +0.162 (+0.20%) |
+| macOS-ARM64 | Executable | 65.946 | 69.884 | 70.198 | +0.314 (+0.45%) |
+| macOS-ARM64 | Installed payload | 71.641 | 95.216 | 95.529 | +0.314 (+0.33%) |
+| macOS-ARM64 | Normalized distribution | 46.027 | 63.548 | 63.683 | +0.135 (+0.21%) |
+
+Windows x64 and ARM64 CI completed clean and cached packages from empty output
+directories and validated their archives. The packaged driver-query helper exited
+successfully with the development FFmpeg prefix removed from PATH. This is a bounded
+load/query check before UI, account, capture or audio initialization; it is not a full
+interactive application launch or a hardware encoding result. No staging repair was used.
+A separate local release build was interrupted before staging for review corrections;
+no completed local clean/cached package is claimed. Native playback throughput, UI
+CPU/RSS and physical display/Discord checks remain unmeasured.
+
+The sibling feature branches add `scripts/compare-replay.py` and three isolated CI jobs.
+Each records the current published nightly, previous fork and reviewed head, Rust 1.98.1,
+matching release overrides, OS/CPU, one warmup and five rotated samples per workload.
+Linux/Windows sampling uses one allowed logical CPU when available; macOS reports the
+platform scheduler. Raw results include ranges and are uploaded per OS/architecture.
+These are synthetic core measurements, not UI/media performance or a parity claim.
+
+### Inbox review corrections
+
+The subsequent lifecycle review adds ten passing Inbox regressions, including service
+echoes before/after REST confirmation, closing/reopening during accepted writes,
+transient Gateway outages and a stopped connection retiring an unknown outcome.
+Rust 1.98.1 formatting and native/demo all-target strict Clippy passed after these fixes.
+The earlier full workspace, fuzz, replay and package results above retain their original
+revision scope; they are not measurements of these corrections. The native connection
+cancellation test awaits CI because its local code-generation run was deferred for the
+workspace memory budget. Current revision results are linked in the PR.
+
+
+### Current Inbox application and package verification at `3d20f9bb`
+
+[Run 39054844003](https://github.com/MCShotty/Serein/actions/runs/39054844003)
+passed all four native application/package jobs (Linux x64, Windows x64/ARM64,
+macOS ARM64), installer fixtures, SDK, licenses, ASan fuzz and all three release
+replay comparisons. Its merge checkout `071e456b` has the exact Git tree of
+`3d20f9bb`. The connection-cancellation test is included in the current native
+workspace gate; its formerly deferred local run is not claimed separately.
+Security and separate Nix failures remain inherited.
+
+The initial package measurements above remain historical. Current standard
+voice-inclusive packages use the same regular-file installed-payload and fixed
+ZIP DEFLATE-6 normalization method. Baselines remain published nightly
+`3a4bf8d` and previous fork `f9e39f7`; one artifact per revision/platform.
+No installer or outer CI archive is included in the normalized distribution.
+Values are MiB (1,048,576 bytes), with absolute/percentage deltas versus the fork.
+
+| Platform / metric | Nightly | Previous fork | Current Inbox | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / executable | 83.682 | 87.900 | 88.273 | +0.373 (+0.42%) |
+| Linux-X64 / installed payload | 88.006 | 130.657 | 131.031 | +0.373 (+0.29%) |
+| Linux-X64 / normalized distribution | 51.211 | 84.553 | 84.712 | +0.158 (+0.19%) |
+| Windows-X64 / executable | 82.910 | 87.505 | 87.970 | +0.465 (+0.53%) |
+| Windows-X64 / installed payload | 86.909 | 135.216 | 135.681 | +0.465 (+0.34%) |
+| Windows-X64 / normalized distribution | 47.986 | 80.844 | 81.007 | +0.163 (+0.20%) |
+| macOS-ARM64 / executable | 65.946 | 69.884 | 70.198 | +0.314 (+0.45%) |
+| macOS-ARM64 / installed payload | 71.641 | 95.216 | 95.530 | +0.314 (+0.33%) |
+| macOS-ARM64 / normalized distribution | 46.027 | 63.548 | 63.686 | +0.138 (+0.22%) |
+
+Windows x64 and ARM64 clean/cached packages both pass archive validation and the
+bounded driver-query launch without the development FFmpeg prefix in PATH.
+The x64 clean/cached ZIPs are both 86,047,535 bytes; ARM64 is 69,104,411 bytes.
+Their metadata-dependent hashes differ, so bit-for-bit reproducibility is not
+claimed. The helper exits before UI/account/audio initialization: these are not
+interactive application launches or hardware-encoding acceptance tests. No manual
+staging repair was used. macOS nightly is signed while the CI bundle is unsigned;
+all package figures are observed build deltas, not an isolated feature cost.
+Current artifacts and clean/cached JSON evidence are retained by that run.
+Release UI CPU/RSS, media throughput and physical display checks remain unmeasured.
+
+
+### Current Inbox cross-platform release replay at `3d20f9bb`
+
+[Run 39054844003](https://github.com/MCShotty/Serein/actions/runs/39054844003)
+compares published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8d`), previous
+fork `f9e39f7` and Inbox code `3d20f9bb`. The same release settings and sampling
+method above apply: one warmup, five rotated samples, one allowed logical CPU
+on Linux/Windows and platform scheduling on macOS. Per-OS artifacts record exact
+revisions, OS/CPU, settings and raw samples. Values are milliseconds, median
+(minimum–maximum). They measure core state, not native UI/media performance.
+
+| Platform / workload | Nightly | Previous fork | Inbox | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux-X64 / reducer | 56.668 (55.112–57.319) | 57.320 (55.984–60.732) | 56.592 (55.781–56.929) | -0.1% / -1.3% |
+| Linux-X64 / wide channels | 100.255 (89.555–102.417) | 109.163 (107.814–110.290) | 95.278 (93.712–96.481) | -5.0% / -12.7% |
+| Windows-X64 / reducer | 110.119 (103.805–124.310) | 107.383 (106.629–108.035) | 106.993 (106.750–109.522) | -2.8% / -0.4% |
+| Windows-X64 / wide channels | 228.188 (222.732–231.541) | 227.009 (224.482–233.393) | 224.888 (222.317–228.622) | -1.4% / -0.9% |
+| macOS-ARM64 / reducer | 65.531 (64.239–70.252) | 70.053 (60.927–79.586) | 66.613 (62.559–79.989) | +1.7% / -4.9% |
+| macOS-ARM64 / wide channels | 100.838 (94.759–111.089) | 94.479 (91.853–99.470) | 98.590 (90.037–116.093) | -2.2% / +4.4% |
+
+Ranges overlap and no causal improvement is claimed. Earlier local slower measurements above remain historical and unisolated.
+
+
+### Final Inbox native evidence and footer correction
+
+The final pair replaces the initial feature screenshots with fresh native captures
+of fork `f9e39f7` and Inbox code `3d20f9bb` plus the footer-only correction.
+Both use the same synthetic channel-links scenario, 1120 × 760 dark window and
+scale 1. The baseline has the two documented demo-only build repairs (duplicate
+avatar helpers and the missing optional error argument to `pending::show`),
+with its displayed feature UI unchanged. The new frame opens the Unread tab;
+no live account or service is used. Light mode at the supported minimum 760 × 520
+was also inspected. Only one small current pair is committed.
+
+The final native capture exposed an empty action strip on a fresh Unread page.
+The footer now draws when another tab has controls or an existing stale-status
+message needs it. The ten Inbox regressions, pinned formatting and strict native
+UI all-target/demo Clippy pass after this conditional-rendering correction.
+The native preview is rebuilt for the final captures. Capture uses explicit
+`--demo --interactive`, Xvfb/software rendering, process-liveness checks and
+ImageMagick's application-window capture; no image editing is used.
+
+Full native application/package CI above is for `3d20f9bb`, before the footer
+correction. Core release replay and package snapshots retain that revision label;
+the footer does not change the measured core workload. The final UI/code-and-evidence
+head receives its own CI. Release UI CPU/RSS, media throughput, physical displays
+and owner-controlled Discord acceptance remain unmeasured or unverified here.
+
+## Combined desktop parity — October 17, 2026
+
+The combined validation branch is `integration/desktop-parity-20261017`. Its feature work remains in fork PRs [#7](https://github.com/MCShotty/Serein/pull/7)–[#15](https://github.com/MCShotty/Serein/pull/15); neither main nor parent #567/#620 is modified by this work. The final feature merges preserve the verified runtime source and only add current native evidence.
+
+### Release reducer comparison
+
+Compared combined code `eee7fd755bd6ed3d94a7d983040bb1564843a9a8` with current published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8df2136945d51bd16a1acd9c4033d88feb5`) and fork `f9e39f792b2fe0af02f2c1e791e1516147084824`. Rust 1.98.1, locked graph, Linux 6.18.55/glibc 2.41, five logical CPUs and about 17 GiB RAM. Each revision has a separate build directory: opt-level 3, thin LTO, one codegen unit, line tables, stripped symbols and panic abort. One warmup and five rotated measured samples per workload. The sampler uses CPU 0; other native build threads were restricted to CPUs 1–4. Those builds still share the memory system.
+
+| Workload / elapsed median (range), ms | Nightly | Previous fork | Combined | Delta vs nightly / fork |
+| --- | ---: | ---: | ---: | ---: |
+| 100,000-event reducer | 71.035 (70.452–75.244) | 74.009 (72.001–77.601) | 78.581 (77.600–79.799) | +10.6% / +6.2% |
+| 10,000-event wide-channel reducer | 117.102 (100.668–127.305) | 124.630 (119.000–157.747) | 128.122 (107.561–155.779) | +9.4% / +2.8% |
+
+The reducer is slower than both baselines; the cause is unisolated. Wide-channel ranges overlap. These are combined feature measurements, not attribution to an individual PR, process RSS, UI latency, frame delivery or media throughput. The earlier run under unconstrained concurrent builds had substantially wider ranges and is excluded from the headline comparison. No speed improvement is claimed.
+
+Raw elapsed samples in milliseconds:
+
+```text
+reducer/nightly: 71.035405, 75.243870, 70.567324, 70.452204, 73.810681
+reducer/previous_fork: 75.435199, 74.008517, 77.601141, 72.086003, 72.000906
+reducer/after: 77.937841, 77.600340, 78.580850, 79.180244, 79.798562
+wide_channels/nightly: 117.102036, 111.678245, 100.667822, 127.304744, 126.957419
+wide_channels/previous_fork: 125.465557, 119.000406, 124.630067, 120.726529, 157.747206
+wide_channels/after: 128.121680, 107.561215, 119.048428, 129.088519, 155.779327
+```
+
+Reproduce with `python3 scripts/compare-replay.py --fork-base f9e39f792b2fe0af02f2c1e791e1516147084824 --output target/parity-replay.json`. Windows/macOS/Linux scoped CI runs the same comparison against the nightly selected at each run. Historical per-OS results above retain their original source revisions and regressions.
+
+### Verification and native UI
+
+`cargo xtask check` at `0e7c26e3` passes 1,919 tests with zero failures and 32 tests/examples ignored, formatting, strict workspace Clippy, the minimal application check and policy checks. Later changes to the verified runtime are demo-only. Demo all-target Clippy and the native preview build pass. Login-handoff, cached-xtask workspace, both license graphs, six license-policy fixtures, packaging fixtures, release replay and the 120-second soak pass. The soak completed 61,568 visits, 36,940,800 live inserts and eight logout cycles in 120.015 seconds within the core budgets. ASan fuzz smoke completed 128,905 decoder and 4,340 state-transition runs without a finding. None of these runs used Discord credentials, a live call, microphone, speaker or capture device.
+
+Current unedited native screenshot pairs are in `docs/pr-evidence/`: application commands, desktop Inbox/messaging, desktop media, profile settings, community onboarding and community events. The baseline is the verified commands revision `1d47c3d`, not the nightly; after captures use combined code `80350d0f`, with the Stage/messaging follow-up at `92d5c311`. The new community fixtures and the pending synthetic block proposal are described beside their images. Native light/compact layouts, scrolling, explicit disclosure and keyboard settings interaction were inspected. Screenshots do not establish media throughput, frame latency, physical accessibility or official-client interoperability.
+
+### Current scoped CI comparisons
+
+The following completed jobs compare the exact pushed feature heads with the same nightly `3a4bf8d` and previous fork `f9e39f7`. They use the committed comparison script and matching release settings, one warmup and five rotated samples per workload. These are separate workers and scopes; do not compare absolute times between rows. Remaining current-head jobs are pending. Ranges overlap in most rows; no causal performance improvement is claimed.
+
+| PR / revision / worker | Workload | Nightly / fork median, ms | Feature median (range), ms | Delta vs nightly / fork |
+| --- | --- | ---: | ---: | ---: |
+| [#10](https://github.com/MCShotty/Serein/actions/runs/39078123597/job/117529404730) / `1f87c10c` / macOS arm64 | reducer | 82.270 / 93.790 | 83.025 (68.906–102.941) | +0.9% / -11.5% |
+| [#10](https://github.com/MCShotty/Serein/actions/runs/39078123597/job/117529404730) / `1f87c10c` / macOS arm64 | wide_channels | 114.380 / 108.980 | 116.055 (108.913–161.802) | +1.5% / +6.5% |
+| [#14](https://github.com/MCShotty/Serein/actions/runs/39077843579/job/117528589940) / `17dd6ea6` / Linux x64 | reducer | 66.267 / 66.012 | 67.190 (66.914–68.239) | +1.4% / +1.8% |
+| [#14](https://github.com/MCShotty/Serein/actions/runs/39077843579/job/117528589940) / `17dd6ea6` / Linux x64 | wide_channels | 53.462 / 75.568 | 53.429 (52.148–55.652) | -0.1% / -29.3% |
+| [#9](https://github.com/MCShotty/Serein/actions/runs/39077840306/job/117528650041) / `2d7ad3ff` / Windows x64 | reducer | 57.631 / 58.102 | 57.794 (57.649–59.047) | +0.3% / -0.5% |
+| [#9](https://github.com/MCShotty/Serein/actions/runs/39077840306/job/117528650041) / `2d7ad3ff` / Windows x64 | wide_channels | 61.728 / 61.415 | 65.329 (60.783–70.728) | +5.8% / +6.4% |
+| [#9](https://github.com/MCShotty/Serein/actions/runs/39077840306/job/117528650153) / `2d7ad3ff` / macOS arm64 | reducer | 62.666 / 65.128 | 67.349 (63.345–76.996) | +7.5% / +3.4% |
+| [#9](https://github.com/MCShotty/Serein/actions/runs/39077840306/job/117528650153) / `2d7ad3ff` / macOS arm64 | wide_channels | 96.200 / 101.236 | 98.480 (96.132–102.579) | +2.4% / -2.7% |
+| [#12](https://github.com/MCShotty/Serein/actions/runs/39077838059/job/117528631664) / `df0bc231` / Linux x64 | reducer | 80.851 / 78.743 | 80.172 (79.051–81.817) | -0.8% / +1.8% |
+| [#12](https://github.com/MCShotty/Serein/actions/runs/39077838059/job/117528631664) / `df0bc231` / Linux x64 | wide_channels | 163.075 / 163.410 | 163.266 (146.565–167.507) | +0.1% / -0.1% |
+
+Raw samples, compiler/settings, OS and affinity are retained in each linked job’s `parity-replay` artifact. This is core reducer evidence; package size, UI/media performance and interoperability are separate measurements.
+
+### Standard package comparison
+
+The normal `cargo xtask package --format dir` completed from an empty output directory with the standard fat-LTO release profile, committed lockfile, voice enabled and one build job. Runtime code matches the verified combined tree; subsequent merges add evidence only. The package was not repaired or manually staged. All six private runtime libraries, corresponding-source archives and licenses passed validation. Packaged source archives match the recipe hashes. Dynamic RPATHs contain no development prefix, and the installed binary's bounded driver-query launch succeeds with both FFmpeg development directories removed from the runtime search path. This launch exits before credentials, UI, clients or capture initialize.
+
+The comparison uses the official published nightly Ubuntu 26.04 x86_64 Debian payload (SHA-256 `ac36677a300133379f4fc4060a724bde4f4afc0261d757e1957b7f511f118d04`) versus the local Debian 13 x86_64 installation tree. Both are standard packages with voice. Normalized ZIPs use sorted regular files, fixed timestamps/modes and Python DEFLATE level 9. These whole-fork inventories include the existing FFmpeg/video work and corresponding source; they do not isolate parity changes or establish an application runtime comparison across the two build environments. The previous fork package was not rebuilt for this comparison.
+
+| Metric / bytes | Published nightly | Combined clean package | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 87,746,736 | 95,345,800 | +7,599,064 / +8.7% |
+| Installed payload | 92,280,770 | 140,176,288 | +47,895,518 / +51.9% |
+| Normalized distribution ZIP | 53,552,488 | 89,776,426 | +36,223,938 / +67.6% |
+
+Clean executable SHA-256: `eabce23a31d8ae290b95c9fea4c5fc60b9843bc36fd286d35b7380ddbc92cecf`. Clean normalized ZIP SHA-256: `db1693d48960579e45565fa04d802a95b5368aefc988fb23a89ef44d0c87c74f`. Native UI CPU/RSS, interaction/frame latency and media throughput are unmeasured. Windows/macOS package-size deltas remain unmeasured; their native checks and release reducer comparisons run in CI.
+
+Two further normal package invocations used the same dependency cache and an empty output directory each time. The first cached run rebuilt the desktop crate after the final evidence merges touched its source timestamps; Cargo reported 15m 38s for that release build. The unchanged warm repeat reused the executable and reported 1.27s for the release build. These are Cargo build durations, not complete packaging or launch timings.
+
+Both repeats passed the same library, RPATH, source-hash, license and development-path-free launch checks (exit 0). Clean, cached and warm outputs have identical executable and normalized ZIP hashes, installed byte counts and 280-file inventories. All runs used the ordinary packaging command, without a staging repair or modified cache fingerprints.
+
+At final local verification, scoped current-head native checks remain incomplete. Commands PR #10's Windows x64 job timed out in the unchanged local-Gateway voice join/leave fixture, outside its added autocomplete dispatch path; the earlier native checks passed. GitHub rejected a rerun while the workflow was still running. Inherited `zip` advisories, Nix builds and openSUSE dependency setup failures are separate from the passing local gate. The combined branch receives fresh Windows x64/ARM64, macOS and Linux application/package checks on push; pending jobs are not reported as passes.
+
+### Remaining gates
+
+Parent main advanced independently to `611ff7f` during verification (dedicated Windows installer CI jobs removed). The fork baseline remains `f9e39f7`; no upstream synchronization is implied. Parent #567 remains at `1473d408` with 149 paths, and #620 remains draft at `4806c9bb`.
+
+Current-head native/package CI on Windows x64/ARM64, macOS and Linux remains distinct from local Linux evidence. Physical devices, HDR/monitor transitions, audio synchronization, native assistive technology, RTL behavior and normal-account/official-client workflows remain owner-controlled. The supplied reference is Discord Stable 641004 (`c9ac31f`), Host 1.0.9262 x64 (`94186`); that client was not run here. SDK wiki preview pages were generated and checked from pushed media source `631699ad`, but parent wiki write access is unavailable and existing unrelated preview content must be preserved; no publication is claimed. The current parity inventory records supported, partial and handoff-only workflows; games and Activities remain excluded.

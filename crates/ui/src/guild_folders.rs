@@ -628,6 +628,7 @@ impl MessagingUi {
 							ui.separator();
 							let settings = self.server_menu.settings_item(ui, state, id);
 							let notifications = self.server_menu.notifications_item(ui, state, id);
+							self.server_menu.mute_item(ui, state, id);
 							let leave = self.server_menu.leave_item(ui, state, id);
 							if settings || notifications || leave {
 								self.guild = Some(id);

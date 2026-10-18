@@ -20,10 +20,14 @@ impl Dialog {
 
 #[derive(Default)]
 pub(super) struct ServerMenu {
+	pub guide_requested: Option<Id>,
 	pub settings_requested: Option<Id>,
+	pub events_requested: Option<Id>,
 	pub mark_read_requested: Option<Id>,
 	pub mark_all_read_requested: bool,
 	pub mark_read_folder_requested: Option<Vec<Id>>,
+
+	mute_requested: Option<(u64, Id, client_core::channel_actions::Mute)>,
 	dialog: Option<Dialog>,
 	generation: u64,
 	invite: InviteDialog,
@@ -31,6 +35,22 @@ pub(super) struct ServerMenu {
 }
 
 impl ServerMenu {
+	pub fn guide_item(&mut self, ui: &mut egui::Ui, state: &State, guild: Id) -> bool {
+		if state.guild(guild).is_some()
+			&& menu_row(
+				ui,
+				icons::Icon::Check,
+				"community-guide",
+				design::palette(ui).text,
+			)
+			.clicked()
+		{
+			self.guide_requested = Some(guild);
+			ui.close();
+			return true;
+		}
+		false
+	}
 	pub fn open_notifications(&mut self, state: &mut State, guild: Id) {
 		state.clear_server_action_result(guild);
 		self.dialog = Some(Dialog::Notifications(guild));
@@ -89,6 +109,30 @@ impl ServerMenu {
 			ui.close();
 		}
 	}
+	pub fn mute_item(&mut self, ui: &mut egui::Ui, state: &State, guild: Id) {
+		ui.add_enabled_ui(state.can_update_server_notifications(guild), |ui| {
+			if state.server_notification_settings(guild).muted == Some(true)
+				&& menu_row(
+					ui,
+					icons::Icon::Bell,
+					"qol-unmute-server",
+					design::palette(ui).text,
+				)
+				.clicked()
+			{
+				self.mute_requested = Some((
+					state.generation,
+					guild,
+					client_core::channel_actions::Mute::Unmute,
+				));
+				ui.close();
+			}
+			if let Some(mute) = crate::server_notifications::mute_menu(ui, "qol-mute-server") {
+				self.mute_requested = Some((state.generation, guild, mute));
+				ui.close();
+			}
+		});
+	}
 	/// Every server and direct message, from the home tile.
 	pub fn all_read_item(&mut self, ui: &mut egui::Ui, state: &State) {
 		if ui
@@ -113,7 +157,8 @@ impl ServerMenu {
 			|| state.can_open_emoji_settings(guild)
 			|| state.can_open_integration_settings(guild)
 			|| state.can_open_audit_log_settings(guild)
-			|| state.can_open_member_settings(guild))
+			|| state.can_open_member_settings(guild)
+			|| state.can_open_moderation(guild))
 			&& menu_row(
 				ui,
 				icons::Icon::Gear,
@@ -247,8 +292,15 @@ impl ServerMenu {
 						&& (state.demo || state.gateway_connected);
 					self.read_item(ui, state, guild);
 					ui.separator();
+					self.guide_item(ui, state, guild);
+
+					if ui.button("Server events").clicked() {
+						self.events_requested = Some(guild);
+						ui.close();
+					}
 					self.settings_item(ui, state, guild);
 					self.notifications_item(ui, state, guild);
+					self.mute_item(ui, state, guild);
 					if ui
 						.add_enabled_ui(available, |ui| {
 							menu_row(
@@ -295,6 +347,12 @@ impl ServerMenu {
 		commands: &mut Vec<Command>,
 		avatars: &mut Avatars,
 	) {
+		if let Some((generation, guild, mute)) = self.mute_requested.take()
+			&& generation == state.generation
+			&& let Some(command) = state.set_server_mute(guild, mute)
+		{
+			commands.push(command);
+		}
 		let Some(mut dialog) = self.dialog else {
 			return;
 		};

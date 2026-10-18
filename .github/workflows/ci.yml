@@ -1,7 +1,7 @@
 name: native-client
 on:
   push:
-    branches: [main, comparison/ffmpeg-video-and-reliability]
+    branches: [main, comparison/ffmpeg-video-and-reliability, integration/desktop-parity-20261017]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 concurrency:
@@ -10,6 +10,38 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  replay-comparison:
+    name: replay comparison (${{ matrix.os }})
+    if: github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Compare current nightly and previous fork (offline workload)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/integration/desktop-parity-20261017' && 'f9e39f792b2fe0af02f2c1e791e1516147084824') || github.event.before }}
+        run: python scripts/compare-replay.py --fork-base "$env:SEREIN_REPLAY_BASE" --output target/parity-replay.json
+        if: runner.os == 'Windows'
+      - name: Compare current nightly and previous fork (offline workload)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/integration/desktop-parity-20261017' && 'f9e39f792b2fe0af02f2c1e791e1516147084824') || github.event.before }}
+        run: python3 scripts/compare-replay.py --fork-base "$SEREIN_REPLAY_BASE" --output target/parity-replay.json
+        if: runner.os != 'Windows'
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: parity-replay-${{ runner.os }}-${{ runner.arch }}
+          path: target/parity-replay.json
+          if-no-files-found: error
+          retention-days: 30
   native:
     # Drafts need real native builds too; synthetic installer fixtures cannot
     # validate the compiler, codec DLLs or platform-specific Rust paths.

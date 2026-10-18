@@ -7,8 +7,20 @@ const NAVIGATION: &[KeybindAction] = &[
 	KeybindAction::ShowShortcuts,
 	KeybindAction::SwitchConversation,
 	KeybindAction::SearchConversation,
+	KeybindAction::NextUnreadConversation,
+	KeybindAction::PreviousUnreadConversation,
+	KeybindAction::JumpToUnread,
 	KeybindAction::CloseOverlay,
 ];
+
+fn action_label(action: KeybindAction) -> String {
+	crate::i18n::translate_if_key(match action {
+		KeybindAction::NextUnreadConversation => "qol-next-unread",
+		KeybindAction::PreviousUnreadConversation => "qol-previous-unread",
+		KeybindAction::JumpToUnread => "qol-jump-unread",
+		_ => action.label(),
+	})
+}
 const MESSAGES: &[KeybindAction] = &[
 	KeybindAction::SendMessage,
 	KeybindAction::InsertNewLine,
@@ -270,7 +282,7 @@ fn row(
 			}
 			conflict_text = Some(format!(
 				"Already bound to {}.",
-				n.conflicting_action.label()
+				action_label(n.conflicting_action)
 			));
 		}
 	}
@@ -281,7 +293,7 @@ fn row(
 			egui::vec2((ui.available_width() - 210.0).max(0.0), 46.0),
 			egui::Layout::left_to_right(egui::Align::Center),
 			|ui| {
-				ui.label(action.label());
+				ui.label(action_label(action));
 				if action.is_global() && bindings.global_enabled {
 					ui.label(
 						RichText::new(crate::i18n::translate("keybinds-row-global"))

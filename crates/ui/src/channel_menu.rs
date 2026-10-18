@@ -51,6 +51,7 @@ pub(super) struct ChannelMenu {
 	posts: crate::post_menu::PostMenu,
 	pub invite_requested: Option<(Id, Id)>,
 	pub shortcut_requested: Option<crate::shortcuts::Intent>,
+	pub categories_collapsed_requested: Option<bool>,
 	requested: Option<(Id, Intent)>,
 	dialog: Option<Dialog>,
 	feedback: Option<Id>,
@@ -175,36 +176,30 @@ impl ChannelMenu {
 			ui.separator();
 			ui.add_enabled_ui(available, |ui| {
 				if state.guild_channel_muted(channel.id) == Some(true)
-					&& row(ui, "channel-menu-context-unmute-channel", true, false).clicked()
+					&& row(
+						ui,
+						if channel.kind == 4 {
+							"qol-unmute-category"
+						} else {
+							"channel-menu-context-unmute-channel"
+						},
+						true,
+						false,
+					)
+					.clicked()
 				{
 					intent = Some(Intent::Write(Action::Mute(Mute::Unmute)));
 				}
-				ui.menu_button(
-					crate::i18n::translate("channel-menu-context-mute-channel"),
-					|ui| {
-						for (label, seconds) in [
-							("channel-menu-report-capacity-for-15-minutes", 900),
-							("channel-menu-report-capacity-for-1-hour", 3600),
-							("channel-menu-report-capacity-for-3-hours", 10800),
-							("channel-menu-report-capacity-for-8-hours", 28800),
-							("channel-menu-report-capacity-for-24-hours", 86400),
-						] {
-							if row(ui, label, true, false).clicked() {
-								intent = Some(Intent::Write(Action::Mute(Mute::For(seconds))));
-							}
-						}
-						if row(
-							ui,
-							"channel-menu-context-until-i-turn-it-back-on",
-							true,
-							false,
-						)
-						.clicked()
-						{
-							intent = Some(Intent::Write(Action::Mute(Mute::Forever)));
-						}
+				if let Some(mute) = crate::server_notifications::mute_menu(
+					ui,
+					if channel.kind == 4 {
+						"qol-mute-category"
+					} else {
+						"channel-menu-context-mute-channel"
 					},
-				);
+				) {
+					intent = Some(Intent::Write(Action::Mute(mute)));
+				}
 				ui.menu_button(
 					crate::i18n::translate("channel-menu-context-notification-settings"),
 					|ui| {
@@ -213,7 +208,7 @@ impl ChannelMenu {
 							(0, "channel-menu-report-capacity-all-messages"),
 							(1, "channel-menu-report-capacity-only-mentions"),
 							(2, "channel-menu-report-capacity-nothing"),
-							(3, "channel-menu-report-capacity-use-server-default"),
+							(3, "qol-use-inherited"),
 						] {
 							if ui
 								.selectable_label(
@@ -319,6 +314,16 @@ impl ChannelMenu {
 			let anchor = state.channels.iter().find(|channel| {
 				channel.guild == Some(guild) && state.can_manage_channel(channel.id)
 			});
+			for (collapsed, label) in [
+				(true, "qol-collapse-categories"),
+				(false, "qol-expand-categories"),
+			] {
+				if row(ui, label, true, false).clicked() {
+					self.categories_collapsed_requested = Some(collapsed);
+					self.generation = state.generation;
+					ui.close();
+				}
+			}
 			if let Some(anchor) = anchor {
 				for (label, kind) in [
 					("channel-menu-context-create-channel", Kind::Create),
@@ -402,6 +407,7 @@ impl ChannelMenu {
 							nsfw: false,
 							overwrites: vec![],
 							forum: None,
+							voice: None,
 						},
 						loaded: kind != Kind::Edit,
 						before: Edit::default(),
@@ -871,6 +877,65 @@ impl Dialog {
 		if name.changed() {
 			self.draft.name.shrink_to_fit();
 		}
+		if self.kind == Kind::Edit
+			&& let Some(voice) = &mut self.draft.voice
+		{
+			ui.add_space(14.0);
+			dialog::label(ui, "channel-voice-bitrate");
+			ui.add(
+				egui::Slider::new(
+					&mut voice.bitrate,
+					8000..=if channel.kind == 13 { 64000 } else { 384000 },
+				)
+				.suffix(" bps")
+				.step_by(1000.0),
+			);
+			dialog::hint(ui, "channel-voice-bitrate-hint");
+			dialog::label(ui, "channel-voice-user-limit");
+			ui.add(egui::Slider::new(
+				&mut voice.user_limit,
+				0..=if channel.kind == 13 { 10000 } else { 99 },
+			));
+			dialog::hint(ui, "channel-voice-unlimited");
+			dialog::label(ui, "channel-voice-region");
+			egui::ComboBox::from_id_salt("voice-region")
+				.selected_text(
+					voice
+						.region
+						.as_ref()
+						.map(|id| {
+							voice
+								.regions
+								.iter()
+								.find(|r| &r.id == id)
+								.map_or_else(|| id.clone(), |r| r.name.clone())
+						})
+						.unwrap_or_else(|| crate::i18n::translate("channel-voice-automatic")),
+				)
+				.show_ui(ui, |ui| {
+					ui.selectable_value(
+						&mut voice.region,
+						None,
+						crate::i18n::translate("channel-voice-automatic"),
+					);
+					for region in &voice.regions {
+						if !region.deprecated {
+							ui.selectable_value(
+								&mut voice.region,
+								Some(region.id.clone()),
+								&region.name,
+							);
+						}
+					}
+				});
+			dialog::label(ui, "channel-voice-video-quality");
+			ui.radio_value(
+				&mut voice.video_quality,
+				1,
+				crate::i18n::translate("channel-voice-automatic"),
+			);
+			ui.radio_value(&mut voice.video_quality, 2, "720p");
+		}
 		if self.kind == Kind::Edit && matches!(channel.kind, 0 | 5) {
 			ui.add_space(14.0);
 			let label = dialog::label(ui, "channel-menu-overview-topic");
@@ -887,6 +952,8 @@ impl Dialog {
 			if topic.changed() {
 				self.draft.topic.shrink_to_fit();
 			}
+		}
+		if self.kind == Kind::Edit && matches!(channel.kind, 0 | 2 | 5 | 13) {
 			ui.add_space(14.0);
 			dialog::label(ui, "channel-menu-overview-slowmode");
 			crate::forum_settings::slowmode(ui, "slowmode", &mut self.draft.slowmode);
@@ -1426,6 +1493,127 @@ mod tests {
 			for pressed in [true, false] {
 				self.frame(ctx, pointer(pos, button, pressed));
 			}
+		}
+	}
+	#[test]
+	fn voice_and_stage_overviews_edit_message_controls_without_a_topic() {
+		fn frame(
+			ctx: &egui::Context,
+			dialog: &mut Dialog,
+			channel: &Channel,
+			events: Vec<Event>,
+		) -> Vec<(String, Rect)> {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 1000.0))),
+					events,
+					..Default::default()
+				},
+				|ui| dialog.overview(ui, channel),
+			);
+			let mut text = vec![];
+			for shape in &output.shapes {
+				labels(&shape.shape, &mut text);
+			}
+			output.drop_without_applying_deltas();
+			text
+		}
+		for kind in [2, 13] {
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			let state = test_support::chat_demo_state();
+			let mut channel = state.channel(Id(20)).unwrap().clone();
+			channel.kind = kind;
+			let before = Edit {
+				name: "Voice".into(),
+				voice: Some(Box::new(client_core::channel_actions::VoiceEdit {
+					bitrate: 64000,
+					user_limit: 0,
+					region: None,
+					video_quality: 1,
+					regions: vec![],
+				})),
+				..Default::default()
+			};
+			let mut dialog = Dialog {
+				channel: channel.id,
+				guild: Id(10),
+				kind: Kind::Edit,
+				create_kind: CreateKind::Text,
+				draft: before.clone(),
+				before,
+				loaded: true,
+				submitted: false,
+				page: Page::Overview,
+				integrations: crate::server_integrations::IntegrationsUi::for_channel(channel.id),
+				integrations_opened: false,
+				discard: false,
+				permissions: Default::default(),
+				forum: Default::default(),
+			};
+			let text = frame(&ctx, &mut dialog, &channel, vec![]);
+			assert!(!text.iter().any(|(text, _)| text
+				== &crate::i18n::translate("channel-menu-overview-topic").to_uppercase()));
+			assert!(text.iter().any(|(text, _)| text
+				== &crate::i18n::translate("channel-menu-overview-slowmode").to_uppercase()));
+			let switch = text
+				.iter()
+				.find(|(text, _)| {
+					text == &crate::i18n::translate("channel-menu-overview-age-restricted-channel")
+				})
+				.unwrap()
+				.1
+				.center();
+			for pressed in [true, false] {
+				frame(
+					&ctx,
+					&mut dialog,
+					&channel,
+					pointer(switch, PointerButton::Primary, pressed),
+				);
+			}
+			assert!(dialog.draft.nsfw);
+			let text = frame(&ctx, &mut dialog, &channel, vec![]);
+			let combo = text
+				.iter()
+				.find(|(text, _)| text == &crate::i18n::translate("forum-settings-module-off"))
+				.unwrap()
+				.1
+				.center();
+			for pressed in [true, false] {
+				frame(
+					&ctx,
+					&mut dialog,
+					&channel,
+					pointer(combo, PointerButton::Primary, pressed),
+				);
+			}
+			let text = frame(&ctx, &mut dialog, &channel, vec![]);
+			let step = text
+				.iter()
+				.find(|(text, _)| {
+					text == &crate::i18n::translate("forum-settings-module-10-seconds")
+				})
+				.unwrap()
+				.1
+				.center();
+			for pressed in [true, false] {
+				frame(
+					&ctx,
+					&mut dialog,
+					&channel,
+					pointer(step, PointerButton::Primary, pressed),
+				);
+			}
+			assert_eq!(dialog.draft.slowmode, 10);
+			assert!(dialog.draft.topic.is_empty());
+			assert!(
+				Action::Edit {
+					before: dialog.before,
+					after: dialog.draft
+				}
+				.valid()
+			);
 		}
 	}
 	#[test]

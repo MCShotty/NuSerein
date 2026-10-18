@@ -1,11 +1,16 @@
 //! Discord wire DTOs. JSON values never become application state.
+pub mod account_settings;
 pub mod activity_sessions;
 pub mod activity_sharing;
 pub mod application_commands;
 pub mod archives;
 mod attachments;
+pub mod automod;
 pub mod badges;
 pub mod collectibles;
+pub mod community_admin;
+
+pub mod community;
 mod diagnostics;
 mod embeds;
 mod extra_content;
@@ -14,9 +19,12 @@ pub mod gif_favorites;
 pub mod gifs;
 pub mod group_actions;
 pub mod guild_folders;
+pub mod inbox;
 pub mod invites;
 mod lossy;
+pub mod member_guide;
 pub mod messaging_permissions;
+pub mod moderation;
 pub mod notifications;
 pub mod onboarding;
 pub mod permissions;
@@ -24,6 +32,7 @@ pub mod pins;
 pub mod polls;
 pub mod presence;
 pub mod profile;
+pub mod profile_cosmetics;
 mod reactions;
 pub mod read_state;
 pub mod ready;
@@ -34,9 +43,11 @@ pub mod server_admin;
 pub mod server_audit_log;
 pub mod server_integrations;
 pub mod server_invites;
+pub mod server_profile;
 pub mod server_roles;
 pub mod server_settings;
 pub mod settings_update;
+pub mod soundboard;
 pub mod spotify;
 pub mod stickers;
 pub mod stream;
@@ -774,6 +785,10 @@ fn mention_roles<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Id>, D::E
 	}
 	d.deserialize_seq(Roles)
 }
+#[derive(Deserialize)]
+pub struct RecentMentions(
+	#[serde(deserialize_with = "search::list::<_,_,25>")] pub Vec<MessageDto>,
+);
 #[derive(Deserialize)]
 pub struct MessageDto {
 	#[serde(default)]
@@ -2181,8 +2196,10 @@ pub struct VoiceStateDto {
 	pub mute: bool,
 	#[serde(default, deserialize_with = "lossy::null_default")]
 	pub deaf: bool,
-	#[serde(default, deserialize_with = "lossy::null_default")]
-	pub suppress: bool,
+	#[serde(default)]
+	pub suppress: Option<bool>,
+	#[serde(default)]
+	pub request_to_speak_timestamp: Option<String>,
 	#[serde(default, deserialize_with = "lossy::null_default")]
 	pub self_video: bool,
 	#[serde(default, deserialize_with = "lossy::null_default")]

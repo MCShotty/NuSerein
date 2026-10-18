@@ -16,10 +16,11 @@ struct NotificationHandle {
 
 #[derive(Clone)]
 struct Activation {
-	send: SyncSender<(u64, model::Id)>,
+	send: SyncSender<(u64, model::Id, Option<model::Id>)>,
 	current: Arc<AtomicU64>,
 	generation: u64,
 	channel: Option<model::Id>,
+	message: Option<model::Id>,
 	wake: Arc<dyn Fn() + Send + Sync>,
 	restore: Arc<dyn Fn() + Send + Sync>,
 }
@@ -29,7 +30,10 @@ impl Activation {
 			return;
 		}
 		if let Some(channel) = self.channel
-			&& self.send.try_send((self.generation, channel)).is_ok()
+			&& self
+				.send
+				.try_send((self.generation, channel, self.message))
+				.is_ok()
 		{
 			(self.restore)();
 			(self.wake)();
@@ -92,13 +96,14 @@ struct Alert {
 struct Command {
 	generation: u64,
 	channel: Option<model::Id>,
+	message: Option<model::Id>,
 	alert: Option<Alert>,
 }
 
 /// Created without OS calls or a thread. The worker starts only when the device setting is enabled.
 pub struct Notifications {
-	activated: Receiver<(u64, model::Id)>,
-	activation_send: SyncSender<(u64, model::Id)>,
+	activated: Receiver<(u64, model::Id, Option<model::Id>)>,
+	activation_send: SyncSender<(u64, model::Id, Option<model::Id>)>,
 	send: Option<SyncSender<Command>>,
 	generation: Arc<AtomicU64>,
 	status: Arc<AtomicU64>,
@@ -165,6 +170,7 @@ impl Notifications {
 			let _ = send.try_send(Command {
 				generation,
 				channel: None,
+				message: None,
 				alert: None,
 			});
 		}
@@ -189,6 +195,7 @@ impl Notifications {
 			let _ = send.try_send(Command {
 				generation,
 				channel: None,
+				message: None,
 				alert: None,
 			});
 		}
@@ -203,7 +210,7 @@ impl Notifications {
 		})
 	}
 	pub fn notify_message(&self, title: String, body: String, image_path: Option<String>) -> bool {
-		self.message(None, title, body, image_path)
+		self.message(None, None, title, body, image_path)
 	}
 	pub fn notify_channel(
 		&self,
@@ -212,17 +219,36 @@ impl Notifications {
 		body: String,
 		image_path: Option<String>,
 	) -> bool {
-		self.message(Some(channel), title, body, image_path)
+		self.message(Some(channel), None, title, body, image_path)
+	}
+	pub fn notify_target(
+		&self,
+		channel: model::Id,
+		message: model::Id,
+		title: String,
+		body: String,
+		image_path: Option<String>,
+	) -> bool {
+		if channel.0 == 0 || message.0 == 0 {
+			return false;
+		}
+		self.message(Some(channel), Some(message), title, body, image_path)
 	}
 	pub fn take_activation(&self) -> Option<model::Id> {
+		self.take_message_activation().map(|(channel, _)| channel)
+	}
+	pub fn take_message_activation(&self) -> Option<(model::Id, Option<model::Id>)> {
 		let current = self.generation.load(Ordering::Acquire);
-		self.activated.try_iter().find_map(|(generation, channel)| {
-			(current & 1 != 0 && current == generation).then_some(channel)
-		})
+		self.activated
+			.try_iter()
+			.find_map(|(generation, channel, message)| {
+				(current & 1 != 0 && current == generation).then_some((channel, message))
+			})
 	}
 	fn message(
 		&self,
 		channel: Option<model::Id>,
+		message: Option<model::Id>,
 		title: String,
 		body: String,
 		image_path: Option<String>,
@@ -242,12 +268,18 @@ impl Notifications {
 				image_path: image_path.map(String::into_boxed_str),
 			},
 			channel,
+			message,
 		)
 	}
 	fn enqueue(&self, alert: Alert) -> bool {
-		self.enqueue_channel(alert, None)
+		self.enqueue_channel(alert, None, None)
 	}
-	fn enqueue_channel(&self, alert: Alert, channel: Option<model::Id>) -> bool {
+	fn enqueue_channel(
+		&self,
+		alert: Alert,
+		channel: Option<model::Id>,
+		message: Option<model::Id>,
+	) -> bool {
 		if !matches!(self.status(), Status::Ready | Status::QueueFull) {
 			return false;
 		}
@@ -256,6 +288,7 @@ impl Notifications {
 		match send.try_send(Command {
 			generation,
 			channel,
+			message,
 			alert: Some(alert),
 		}) {
 			Ok(()) => true,
@@ -309,7 +342,7 @@ fn worker(
 	status: Arc<AtomicU64>,
 	wake: Arc<dyn Fn() + Send + Sync>,
 	restore: Arc<dyn Fn() + Send + Sync>,
-	activated: SyncSender<(u64, model::Id)>,
+	activated: SyncSender<(u64, model::Id, Option<model::Id>)>,
 ) {
 	let mut generation = 0;
 	let mut outcome = Status::Disabled;
@@ -372,6 +405,7 @@ fn worker(
 			current: current.clone(),
 			generation,
 			channel: command.channel,
+			message: command.message,
 			wake: Arc::clone(&wake),
 			restore: Arc::clone(&restore),
 		};
@@ -564,6 +598,7 @@ pub fn debug_activation_check(channel: model::Id) -> model::Id {
 		current: notifications.generation.clone(),
 		generation: 1,
 		channel: Some(channel),
+		message: None,
 		wake: Arc::clone(&notifications.wake),
 		restore: Arc::clone(&notifications.restore),
 	};
@@ -609,11 +644,15 @@ mod tests {
 			current: notifications.generation.clone(),
 			generation: 1,
 			channel: Some(model::Id(7)),
+			message: Some(model::Id(42)),
 			wake: notifications.wake.clone(),
 			restore: notifications.restore.clone(),
 		};
 		click.clicked();
-		assert_eq!(notifications.take_activation(), Some(model::Id(7)));
+		assert_eq!(
+			notifications.take_message_activation(),
+			Some((model::Id(7), Some(model::Id(42))))
+		);
 		assert_eq!(restores.load(Ordering::Relaxed), 1);
 		assert_eq!(wakes.load(Ordering::Relaxed), 1);
 		notifications.dismiss();

@@ -144,6 +144,18 @@ impl Harness {
 		let point = self.point(label);
 		self.click_at(point, egui::PointerButton::Primary);
 	}
+	fn key(&mut self, key: egui::Key) {
+		for pressed in [true, false] {
+			self.frame(vec![egui::Event::Key {
+				key,
+				physical_key: None,
+				pressed,
+				repeat: false,
+				modifiers: egui::Modifiers::NONE,
+			}]);
+		}
+		self.settle();
+	}
 
 	fn open(&mut self) {
 		self.view
@@ -265,6 +277,69 @@ fn closing_or_changing_context_discards_unsaved_notification_edits() {
 }
 
 #[test]
+fn ordinary_member_can_choose_timed_mute_and_save_without_changing_other_fields() {
+	for keyboard in [false, true] {
+		let mut h = Harness::new(800.0, 850.0, false);
+		h.open();
+		h.click("Mute server");
+		h.click("Until I Turn It Back On");
+		if keyboard {
+			h.key(egui::Key::ArrowDown);
+			h.key(egui::Key::Enter);
+		} else {
+			h.click("For 15 Minutes");
+		}
+		assert!(!egui::Popup::is_any_open(&h.ctx));
+		h.click("Save changes");
+		let [
+			Command::ServerAction {
+				action: Action::Notifications { guild, options },
+				..
+			},
+		] = h.commands.as_slice()
+		else {
+			panic!("one explicit timed mute write")
+		};
+		assert_eq!(*guild, Id(10));
+		assert_eq!(options.muted, Some(true));
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_secs() as i64;
+		assert!(
+			options
+				.mute_until
+				.is_some_and(|until| (now + 895..=now + 900).contains(&until))
+		);
+		assert_eq!(options.level, None);
+		assert_eq!(options.suppress_everyone, None);
+		assert!(!h.state.can_manage_guild(Id(10)));
+	}
+}
+
+#[test]
+fn notification_modal_can_edit_channel_overrides_without_management_permissions() {
+	let mut h = Harness::new(800.0, 850.0, false);
+	h.open();
+	h.click("Select a channel or category");
+	h.click("getting-started");
+	assert!(!egui::Popup::is_any_open(&h.ctx));
+	assert!(h.commands.is_empty(), "selecting a channel never writes");
+	h.click("Nothing");
+	assert!(matches!(
+		h.commands.as_slice(),
+		[Command::ChannelAction {
+			guild: Id(10),
+			channel: Id(20),
+			action: client_core::channel_actions::Action::Notifications(2),
+			..
+		}]
+	));
+	assert!(!h.state.can_manage_channel(Id(20)));
+	assert!(h.shown());
+}
+
+#[test]
 fn narrow_notification_dialog_keeps_footer_visible_and_scrolls_controls() {
 	for light in [false, true] {
 		let mut h = Harness::new(320.0, 550.0, light);
@@ -311,7 +386,8 @@ fn narrow_notification_dialog_keeps_footer_visible_and_scrolls_controls() {
 						suppress_roles: Some(_),
 						level: None,
 						muted: None,
-						suppress_everyone: None
+						suppress_everyone: None,
+						mute_until: None
 					},
 					..
 				},

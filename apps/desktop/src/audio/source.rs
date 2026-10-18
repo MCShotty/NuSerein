@@ -19,7 +19,12 @@ pub(super) fn source(
 	wake: Arc<Notify>,
 	runtime: Handle,
 ) -> Result<Box<dyn MediaSource>, &'static str> {
-	let raw = if let Some(url) = &request.url {
+	let raw = if let Some(bytes) = &request.bytes {
+		if bytes.is_empty() || bytes.len() > discord_voice::recording::MAX_BYTES {
+			return Err(INVALID);
+		}
+		Raw::shared(bytes.clone())
+	} else if let Some(url) = &request.url {
 		if request.expected == 0 {
 			return Err(INVALID);
 		}
@@ -67,9 +72,18 @@ pub(super) fn source(
 		})
 }
 
+/// A complete, already bounded download behind the same metadata limits as streamed media.
+pub(super) fn memory(bytes: Vec<u8>) -> Result<Box<dyn MediaSource>, &'static str> {
+	if bytes.is_empty() {
+		return Err(INVALID);
+	}
+	Sanitized::new(Raw::memory(bytes))
+		.map(|source| Box::new(source) as Box<dyn MediaSource>)
+		.map_err(|_| INVALID)
+}
+
 enum Input {
-	#[cfg(feature = "demo")]
-	Memory(Vec<u8>),
+	Memory(Arc<[u8]>),
 	Http {
 		client: reqwest::Client,
 		url: url::Url,
@@ -92,8 +106,10 @@ fn invalid() -> io::Error {
 	io::Error::new(io::ErrorKind::InvalidData, INVALID)
 }
 impl Raw {
-	#[cfg(feature = "demo")]
 	fn memory(bytes: Vec<u8>) -> Self {
+		Self::shared(bytes.into())
+	}
+	fn shared(bytes: Arc<[u8]>) -> Self {
 		Self {
 			len: bytes.len(),
 			input: Input::Memory(bytes),
@@ -117,7 +133,6 @@ impl Read for Raw {
 			return Ok(0);
 		}
 		match &mut self.input {
-			#[cfg(feature = "demo")]
 			Input::Memory(bytes) => {
 				output[..count].copy_from_slice(&bytes[self.position..self.position + count])
 			}
@@ -638,9 +653,11 @@ pub(super) fn debug_check() {
 		resume_wake.notify_one();
 	});
 	let request = Request {
+		output: None,
 		duration: Duration::ZERO,
 		generation: 0,
 		url: Some(url),
+		bytes: None,
 		expected,
 		voice_message: false,
 	};

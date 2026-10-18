@@ -3217,6 +3217,8 @@ server-settings-page-profile = Sunucu Profili
 server-settings-page-roles = Roller
 # Context: label
 server-settings-page-stickers = Çıkartmalar
+# Context: label
+server-settings-page-soundboard = Ses Paneli
 # Context: preview
 server-settings-preview-established = Kurulmuş
 # Context: preview
@@ -3272,6 +3274,84 @@ server-settings-show-people = İNSANLAR
 # Context: timeout_picker
 server-settings-timeout-picker-minutes = dakika
 
+# Context: server_sounds
+server-sounds-title = Ses Paneli
+# Context: server_sounds
+server-sounds-upload-title = Ses Yükle
+# Context: server_sounds
+server-sounds-preview = Önizleme
+# Context: server_sounds
+server-sounds-trim-hint = En fazla 5,2 saniye seçmek için tutamaçları sürükleyin. Yakınlaştırmak için bir tutamacı sabit tutun.
+# Context: server_sounds
+server-sounds-never-mind = Boş ver
+# Context: server_sounds
+server-sounds-play-preview = Seçimi oynat
+# Context: server_sounds
+server-sounds-stop-preview = Önizlemeyi durdur
+# Context: server_sounds
+server-sounds-description = Bu sunucudaki herkesin kullanabileceği özel ses tepkileri yükleyin.
+# Context: server_sounds
+server-sounds-upload-sound = Ses Yükle
+# Context: server_sounds
+server-sounds-reload = Yeniden yükle
+# Context: server_sounds
+server-sounds-saving = Değişiklikler kaydediliyor…
+# Context: server_sounds
+server-sounds-loading = Sesler yükleniyor…
+# Context: server_sounds
+server-sounds-hint = MP3, Ogg veya WAV ses. Sesler en fazla 5,2 saniye ve 512 KB olabilir; daha uzun dosyalar kırpılabilir.
+# Context: server_sounds
+server-sounds-preparing = Ses hazırlanıyor…
+# Context: server_sounds
+server-sounds-name = Ad
+# Context: server_sounds
+server-sounds-emoji = İlgili emoji (isteğe bağlı)
+# Context: server_sounds
+server-sounds-volume = Ses düzeyi
+# Context: server_sounds
+server-sounds-upload = Yükle
+# Context: server_sounds
+server-sounds-cancel = İptal
+# Context: server_sounds
+server-sounds-invalid = 2–32 karakterlik bir ad ve en fazla bir emoji kullanın.
+# Context: server_sounds
+server-sounds-section = Sesler
+# Context: server_sounds
+server-sounds-count = { $count } ses
+# Context: server_sounds
+server-sounds-slots = { $limit } yuvadan { $count } tanesi boş
+# Context: server_sounds
+server-sounds-empty = Henüz özel ses yok
+# Context: server_sounds
+server-sounds-empty-detail = Başlamak için bir ses yükleyin.
+# Context: server_sounds
+server-sounds-column-emoji = Emoji
+# Context: server_sounds
+server-sounds-column-name = Ad
+# Context: server_sounds
+server-sounds-column-uploaded-by = Yükleyen
+# Context: server_sounds
+server-sounds-unknown = Bilinmiyor
+# Context: server_sounds
+server-sounds-unavailable = Kullanılamıyor
+# Context: server_sounds
+server-sounds-actions = Ses işlemleri
+# Context: server_sounds
+server-sounds-edit = Düzenle
+# Context: server_sounds
+server-sounds-delete = Sesi sil
+# Context: server_sounds
+server-sounds-edit-title = Sesi düzenle
+# Context: server_sounds
+server-sounds-edit-subtitle = Sesin adını, emojisini ve ses düzeyini güncelleyin.
+# Context: server_sounds
+server-sounds-delete-title = Ses silinsin mi?
+# Context: server_sounds
+server-sounds-delete-subtitle = { $name } kaldırıldıktan sonra geri alınamaz.
+# Context: server_sounds
+server-sounds-save = Kaydet
+# Context: server_sounds
+server-sounds-custom-emoji-kept = Bu ses özel bir emoji kullanıyor. Korumak için alanı boş bırakın.
 ## crates/ui/src/server_stickers.rs
 # Context: dialog
 server-stickers-dialog-cancel = İptal etmek
@@ -4134,6 +4214,26 @@ voice-mute-toggle-unmute = Sesi aç
 voice-mute-toggle-with-settings-input-settings = Giriş ayarları
 # Context: mute_toggle_with_settings
 voice-mute-toggle-with-settings-output-settings = Çıkış ayarları
+# Context: soundboard_panel
+voice-soundboard-title = Ses Paneli
+# Context: soundboard_panel
+voice-soundboard-open = Bu ses kanalında bir ses çal
+# Context: soundboard_panel
+voice-soundboard-server-only = Ses paneli sunucu ses kanallarında kullanılabilir
+# Context: soundboard_panel
+voice-soundboard-server-sounds = Sunucu sesleri
+# Context: soundboard_panel
+voice-soundboard-default-sounds = Varsayılan sesler
+# Context: soundboard_panel
+voice-soundboard-loading = Sesler yükleniyor…
+# Context: soundboard_panel
+voice-soundboard-empty = Burada kullanılabilir ses yok.
+# Context: soundboard_panel
+voice-soundboard-retry = Tekrar dene
+# Context: soundboard_panel
+voice-soundboard-volume = Ses paneli ses düzeyi
+# Context: soundboard_panel
+voice-soundboard-sound-unavailable = Bu ses kullanılamıyor
 # Context: stream_audio_controls
 voice-stream-audio-controls-mute-stream-audio = Akış sesini kapat
 # Context: stream_audio_controls
@@ -4456,6 +4556,8 @@ voice-recipient-not-in-call = Aramada değil
 
 reconnect-now = Şimdi yeniden bağlan
 
+voice-media-output = Medya çıkışı
+voice-media-output-hint = Yeni ses/video oynatımlarına ve izlenen yayınlara uygulanır.
 voice-call-moved-to-another-client = Bu cihazın arama oturumu değiştirildi
 
 server-settings-page-safety = Güvenlik Kurulumu
@@ -4813,3 +4915,162 @@ search-overlays-no-matching-content-types = Eşleşen içerik türü yok
 search-overlays-history = Geçmiş
 search-overlays-clear-history = Arama geçmişini temizle
 main-sign-in-rate-limited-detail = Discord bu oturum açmayı sınırlıyor. Tekrar denemeden önce bekle. Daha erken bir deneme bekleme süresini uzatabilir.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.
+
+# Personal notification and navigation controls
+qol-mute-category = Kategoriyi sessize al
+qol-unmute-category = Kategorinin sesini aç
+qol-mute-server = Sunucuyu sessize al
+qol-unmute-server = Sunucunun sesini aç
+qol-mute-duration = Sessize alma süresi
+qol-current-mute = Geçerli süreyi koru
+qol-notification-overrides = Bildirim istisnaları
+qol-choose-channel-category = Buradaki değişiklikler hemen uygulanır.
+qol-select-channel = Bir kanal veya kategori seçin
+qol-search-channels = Kanallarda ve kategorilerde ara
+qol-more-channels = Daha fazla sonuç var; aramayı daraltın.
+qol-use-inherited = Varsayılan ayarı kullan
+qol-mute-selection = Sessize al
+qol-unmute-selection = Sesi aç
+qol-collapse-categories = Tüm kategorileri daralt
+qol-expand-categories = Tüm kategorileri genişlet
+qol-next-unread = Sonraki okunmamış konuşma
+qol-previous-unread = Önceki okunmamış konuşma
+qol-jump-unread = İlk okunmamış mesaja git
+
+audio-playback-speed = Oynatma hızı
+
+# Voice recorder preview: English fallback until translated.
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection
+
+# Server moderation and AutoMod
+automod-title = AutoMod
+automod-description = Manage automatic filters and the actions Discord takes when they match.
+automod-name = Rule name
+automod-enabled = Enable rule
+automod-keywords = Keywords — one per line
+automod-regex = Regular expressions — one per line
+automod-profanity = Profanity
+automod-sexual = Sexual content
+automod-slurs = Slurs
+automod-allow = Allow list — one per line
+automod-mention-limit = Allowed unique mentions
+automod-raid = Detect mention raids
+automod-actions = Actions
+automod-block-interaction = Block member interactions
+automod-block-message = Block message
+automod-alert = Send an alert
+automod-timeout = Time out member
+automod-block-explanation = Explanation shown to the member
+automod-select-channel = Choose an alert channel
+automod-timeout-seconds = Timeout duration (seconds)
+automod-exempt-roles = Exempt roles
+automod-exempt-channels = Exempt channels
+automod-clear-unavailable-roles = Remove unavailable roles
+automod-clear-unavailable-channels = Remove unavailable channels
+automod-save = Save rule
+automod-cancel = Cancel
+automod-invalid = Check the rule limits, permissions and available channels. Refresh if server settings changed.
+automod-refresh = Refresh rules
+automod-create = Create rule
+automod-empty = No automatic moderation rules.
+automod-enabled-state = Enabled
+automod-disabled-state = Disabled
+automod-edit = Edit
+automod-delete = Delete rule
+automod-delete-confirm = Delete this AutoMod rule?
+automod-keyword = Custom keywords
+automod-spam = Spam detection
+automod-presets = Commonly flagged words
+automod-mentions = Mention spam
+automod-profile = Member profile keywords
+automod-concurrent = This rule changed while you were editing. Review and reapply your changes to its latest settings.
+automod-reapply = Reapply my changes
+moderation-title = Moderation
+moderation-reason = Reason (optional; recorded in the server audit log)
+moderation-member = Member name or ID
+moderation-choose-member = Choose a loaded member
+moderation-lookup = Find member
+moderation-lookup-help = Choose a member from this conversation or enter their user ID.
+moderation-timeout-until = Timed out until
+moderation-timeout = Time out
+moderation-remove-timeout = Remove timeout
+moderation-keep-messages = Keep messages
+moderation-ban = Ban
+moderation-kick = Kick
+moderation-bans = Banned members
+moderation-refresh-bans = Refresh bans
+moderation-no-bans = No banned members on this page.
+moderation-unban = Unban
+moderation-next-bans = Next page
+moderation-confirm-unban = Unban this member?
+moderation-confirm-kick = Kick this member?
+moderation-confirm-ban = Ban this member?
+moderation-confirm-timeout = Change this member’s timeout?
+moderation-confirm-description = Review this action and its reason before applying it to the selected member.
+moderation-confirm = Confirm
+moderation-days = days
+moderation-hours = hours
+moderation-minutes = minutes
+server-roles-permissions-ban-members = Ban members
+
+# Desktop Inbox
+inbox-title = Inbox
+inbox-description = Unread conversations, recent mentions and bookmarks
+inbox-loading = Loading inbox…
+inbox-empty = No matching items.
+inbox-refresh-needed = Refresh to load items.
+inbox-refresh = Refresh
+inbox-retry = Retry
+inbox-older = Older mentions
+inbox-open-message = Open message
+inbox-unread = Unread
+inbox-mentions = Mentions
+inbox-saved = Bookmarks
+inbox-filter = Filter by conversation or server
+inbox-include-muted = Include muted conversations
+inbox-current-place = Current server or direct messages
+inbox-open-conversation = Open conversation
+inbox-mark-read = Mark as read
+inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
+inbox-dismiss = Dismiss
+inbox-bookmark = Bookmark message
+inbox-unsave = Remove bookmark
+inbox-remind = Remind me
+inbox-in-hour = In 1 hour
+inbox-in-day = In 1 day
+inbox-in-week = In 1 week
+inbox-clear-reminder = Clear reminder
+inbox-message-unavailable = Message unavailable
+inbox-service-availability = Availability depends on your Discord account.
+inbox-spoiler = Spoiler
+inbox-custom-reminder = Custom date and time (UTC)
+inbox-set-reminder = Set reminder

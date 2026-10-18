@@ -32,6 +32,7 @@ pub enum ExtensionKind {
 pub enum Capability {
 	ApiProxy,
 	RichPresence,
+	VoiceMessages,
 	RelationshipControl,
 	AccountControl,
 	AudioSettings,

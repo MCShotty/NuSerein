@@ -5,6 +5,12 @@ use model::{Shortcut, User};
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Action {
+	RefreshCommands,
+	ApplicationCommand {
+		command: model::Id,
+		target: model::Id,
+		kind: u8,
+	},
 	Note(User),
 	Nickname(User),
 	Mention(User),
@@ -13,10 +19,27 @@ pub enum Action {
 	AddFriend(User),
 	AcceptFriend(model::Id),
 	CloseDm(model::Id),
-	Block { user: model::Id, blocked: bool },
-	Ignore { user: model::Id, ignored: bool },
-	Mute { channel: model::Id, muted: bool },
-	MessageRequest { channel: model::Id, accept: bool },
+	Block {
+		user: model::Id,
+		blocked: bool,
+	},
+	Ignore {
+		user: model::Id,
+		ignored: bool,
+	},
+	Mute {
+		channel: model::Id,
+		muted: bool,
+	},
+
+	MuteFor {
+		channel: model::Id,
+		mute: client_core::channel_actions::Mute,
+	},
+	MessageRequest {
+		channel: model::Id,
+		accept: bool,
+	},
 	Shortcut(Intent),
 }
 impl std::fmt::Debug for Action {
@@ -27,6 +50,18 @@ impl std::fmt::Debug for Action {
 
 pub(super) fn prepare(action: Action, state: &mut State) -> Option<Command> {
 	match action {
+		Action::RefreshCommands => state.request_application_commands(state.selected?, true),
+		Action::ApplicationCommand {
+			command,
+			target,
+			kind,
+		} => match state.prepare_context_command(command, target, kind) {
+			Ok(command) => Some(command),
+			Err(error) => {
+				state.status = error;
+				None
+			}
+		},
 		Action::Note(_)
 		| Action::Nickname(_)
 		| Action::Shortcut(_)
@@ -39,6 +74,7 @@ pub(super) fn prepare(action: Action, state: &mut State) -> Option<Command> {
 		Action::Block { user, blocked } => state.set_user_blocked(user, blocked),
 		Action::Ignore { user, ignored } => state.set_user_ignored(user, ignored),
 		Action::Mute { channel, muted } => state.set_dm_muted(channel, muted),
+		Action::MuteFor { channel, mute } => state.set_dm_mute(channel, mute),
 		Action::MessageRequest { channel, accept } => {
 			state.resolve_message_request(channel, accept)
 		}
@@ -104,6 +140,73 @@ pub(super) fn show_with_pin(
 		.show(|ui| contents(ui, state, user, profile, action, view));
 }
 
+pub(super) fn application_menu(
+	ui: &mut egui::Ui,
+	state: &State,
+	kind: u8,
+	target: model::Id,
+	action: &mut Option<Action>,
+) {
+	let Some(channel) = state
+		.selected
+		.filter(|id| state.can_request_application_commands(*id))
+	else {
+		return;
+	};
+	if !state.application_target_known(channel, kind, target) {
+		return;
+	}
+	ui.menu_button(crate::i18n::translate("application-menu-title"), |ui| {
+		if state.application_commands.loading {
+			ui.spinner();
+		}
+		if let Some(error) = state.application_commands.error {
+			ui.weak(error);
+		}
+		let mut found = false;
+		if state.application_commands_cover(channel)
+			&& !state.application_commands.loading
+			&& state.application_commands.error.is_none()
+		{
+			for command in state
+				.application_commands
+				.commands
+				.iter()
+				.filter(|command| {
+					command.kind == kind && state.can_use_application_command(channel, command)
+				})
+				.take(64)
+			{
+				found = true;
+				if ui
+					.button(format!("{} · {}", command.application_name, command.name))
+					.clicked()
+				{
+					*action = Some(Action::ApplicationCommand {
+						command: command.id,
+						target,
+						kind,
+					});
+					ui.close();
+				}
+			}
+			if !found {
+				ui.weak(crate::i18n::translate("application-menu-empty"));
+			}
+		}
+		if ui
+			.add_enabled(
+				!state.application_commands.loading,
+				egui::Button::new(crate::i18n::translate("application-menu-refresh")),
+			)
+			.clicked()
+		{
+			*action = Some(Action::RefreshCommands);
+			ui.close();
+		}
+	});
+}
+
 const VOICE_AVAILABLE: &str = "user-menu-voice-available";
 
 /// Publishes this frame's voice availability so every menu caller reflects it without threading it.
@@ -125,6 +228,9 @@ pub(super) fn contents(
 ) {
 	let colors = crate::design::palette(ui);
 	ui.set_min_width(200.0);
+	if !user.webhook {
+		application_menu(ui, state, 2, user.id, action);
+	}
 	ui.spacing_mut().button_padding = egui::vec2(8.0, 6.0);
 	if ui
 		.button(crate::i18n::translate("user-menu-contents-profile"))
@@ -285,28 +391,37 @@ pub(super) fn contents(
 			}
 		}
 		let muted = state.dm_muted(dm.id) == Some(true);
-		if ui
-			.add_enabled(
-				enabled,
-				egui::Button::new(crate::i18n::translate_if_key(
-					&(if muted {
-						crate::i18n::translate("user-menu-contents-unmute-conversation")
-					} else {
-						crate::i18n::translate("user-menu-contents-mute-conversation")
-					}),
-				)),
-			)
-			.on_hover_text(crate::i18n::translate(
-				"user-menu-contents-mute-this-direct-message-s-notifications-until-you-unmute-it",
-			))
-			.clicked()
-		{
-			*action = Some(Action::Mute {
-				channel: dm.id,
-				muted: !muted,
-			});
-			ui.close();
-		}
+		ui.add_enabled_ui(enabled, |ui| {
+			if muted
+				&& ui
+					.button(crate::i18n::translate(
+						"user-menu-contents-unmute-conversation",
+					))
+					.clicked()
+			{
+				*action = Some(Action::Mute {
+					channel: dm.id,
+					muted: false,
+				});
+				ui.close();
+			}
+			if let Some(mute) =
+				crate::server_notifications::mute_menu(ui, "user-menu-contents-mute-conversation")
+			{
+				*action = Some(if mute == client_core::channel_actions::Mute::Forever {
+					Action::Mute {
+						channel: dm.id,
+						muted: true,
+					}
+				} else {
+					Action::MuteFor {
+						channel: dm.id,
+						mute,
+					}
+				});
+				ui.close();
+			}
+		});
 		if ui
 			.add_enabled(
 				enabled,
@@ -497,6 +612,26 @@ mod tests {
 						&mut profile,
 						&mut action,
 					);
+				}
+				if label == "Mute Conversation" {
+					assert!(action.is_none(), "opening mute choices does not write");
+					let (_, text) = frame(&ctx, &state, user, vec![], &mut profile, &mut action);
+					let pos = text
+						.iter()
+						.find(|(text, _)| text == "Until I Turn It Back On")
+						.unwrap()
+						.1
+						.center();
+					for pressed in [true, false] {
+						frame(
+							&ctx,
+							&state,
+							user,
+							pointer(pos, PointerButton::Primary, pressed),
+							&mut profile,
+							&mut action,
+						);
+					}
 				}
 				match label {
 					"Profile" => assert_eq!(profile.open_user().unwrap().id, user.id),
@@ -731,9 +866,13 @@ mod tests {
 					channel: model::Id(99002),
 					guild: None,
 					connected_at: None,
+					stage_revision: 0,
+					media_mode: Default::default(),
+					stage_consent: false,
 					channel_started_at: None,
 					server_muted: false,
 					server_deafened: false,
+					stage: Default::default(),
 					request: 1,
 					phase: Phase::Connected,
 					muted: true,

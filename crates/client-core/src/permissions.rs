@@ -716,7 +716,7 @@ impl State {
 		}
 		ChannelAccess {
 			hidden,
-			muted: self.guild_channel_muted(channel) == Some(true),
+			muted: self.guild_channel_effectively_muted(channel) == Some(true),
 			limited: self.everyone_view(channel) == Some(false),
 		}
 	}
@@ -753,11 +753,24 @@ impl State {
 			&& self.can_send(channel)
 			&& self.permission(channel, p::ATTACH_FILES) == Some(true)
 	}
+	pub fn can_send_voice_message(&self, channel: Id) -> bool {
+		self.can_attach(channel)
+			&& self.freshness == Freshness::Fresh
+			&& self.permission(channel, p::SEND_VOICE_MESSAGES) == Some(true)
+	}
 	pub fn can_speak(&self, channel: Id) -> bool {
-		self.permission(channel, p::VIEW_CHANNEL | p::CONNECT | p::SPEAK) == Some(true)
+		(!self.is_stage(channel)
+			|| (self.gateway_connected
+				&& self.voice.active.as_ref().is_some_and(|c| {
+					c.channel == channel
+						&& c.media_mode == crate::voice::MediaMode::Stage
+						&& c.stage == model::community::StageParticipation::Speaker
+						&& c.stage_consent
+				}))) && self.permission(channel, p::VIEW_CHANNEL | p::CONNECT | p::SPEAK) == Some(true)
 	}
 	pub fn can_stream(&self, channel: Id) -> bool {
-		self.can_call(channel)
+		(!self.is_stage(channel) || self.can_speak(channel))
+			&& self.can_call(channel)
 			&& self.permission(channel, p::VIEW_CHANNEL | p::CONNECT | p::STREAM) == Some(true)
 	}
 	/// Resolve provenance from the bounded catalogs already received for this account.

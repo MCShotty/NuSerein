@@ -13,6 +13,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 pub struct UploadRequest {
 	pub command: Command,
 	pub source: Vec<Source>,
+	pub voice_message: Option<discord_api::upload::VoiceMessage>,
 	pub progress: watch::Sender<Status>,
 	pub cancel: watch::Sender<bool>,
 }
@@ -1074,6 +1075,9 @@ impl Uploads {
 	}
 	pub fn busy(&self) -> bool {
 		!self.choosing.is_empty() || self.uploading.is_some() || self.external.is_some()
+	}
+	pub(crate) fn transfer_active(&self) -> bool {
+		self.uploading.is_some()
 	}
 	/// Whether composer files may be selected or removed. An open native picker reserves
 	/// capacity until its count is known. Known loading selections and the previous

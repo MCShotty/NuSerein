@@ -3,6 +3,7 @@
 use crate::diagnostics::{Metrics, Scope, Stage};
 use crate::{CapturedFrame, Frame};
 mod echo;
+pub mod recording;
 use model::voice_settings::{NoiseSuppression, Processing, VoiceProcessing};
 #[cfg(target_os = "macos")]
 mod permission_macos;
@@ -13,6 +14,24 @@ use std::sync::{
 	mpsc,
 };
 use std::time::{Duration, Instant};
+
+// One native microphone owner across calls, local previews and voice clips.
+// Held by the worker until its actual device teardown, including failed opens.
+static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+struct CaptureLease;
+impl CaptureLease {
+	fn acquire() -> Result<Self, &'static str> {
+		CAPTURE_ACTIVE
+			.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+			.map(|_| Self)
+			.map_err(|_| "Microphone is in use or previous audio is still closing")
+	}
+}
+impl Drop for CaptureLease {
+	fn drop(&mut self) {
+		CAPTURE_ACTIVE.store(false, Ordering::Release);
+	}
+}
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Devices {
@@ -68,6 +87,7 @@ pub struct Gate {
 	/// Bumped when the speaker gate changes; only playback drops queued audio.
 	playback_generation: AtomicU64,
 	input_enabled: AtomicBool,
+	stage_revision: AtomicU64,
 	input_gain: AtomicU16,
 	output_gain: AtomicU16,
 	echo_reset: AtomicBool,
@@ -90,6 +110,7 @@ impl Default for Gate {
 			capture_generation: AtomicU64::new(0),
 			playback_generation: AtomicU64::new(0),
 			input_enabled: AtomicBool::new(true),
+			stage_revision: AtomicU64::new(0),
 			input_gain: AtomicU16::new(100),
 			output_gain: AtomicU16::new(100),
 			echo_reset: AtomicBool::new(false),
@@ -202,6 +223,7 @@ impl Audio {
 		emit: impl Fn(Result<(), &'static str>) + Send + 'static,
 		preview: bool,
 	) -> Result<Self, &'static str> {
+		let lease = CaptureLease::acquire()?;
 		let gate = Arc::new(Gate::default());
 		let worker_gate = gate.clone();
 		let (settings, mut selected) = tokio::sync::watch::channel(settings);
@@ -450,6 +472,7 @@ impl Audio {
 				}
 				worker_gate.stopped.store(true, Ordering::Release);
 				drop(streams);
+				drop(lease);
 				let _ = finished.send(());
 			})
 			.map_err(|_| "Could not start audio device worker")?;
@@ -501,6 +524,14 @@ impl Audio {
 			self.gate.revision.fetch_add(1, Ordering::AcqRel);
 			self.thread.unpark();
 		}
+	}
+	/// Stage audience/invitation transitions retire queued PCM even when transitions coalesce.
+	pub fn set_stage_authorization(&self, revision: u64, enabled: bool) {
+		if self.gate.stage_revision.swap(revision, Ordering::AcqRel) != revision {
+			self.gate.capture_generation.fetch_add(1, Ordering::AcqRel);
+			self.gate.echo_reset.store(true, Ordering::Release);
+		}
+		self.set_input_enabled(enabled);
 	}
 	/// True only after streams for the current device/security revision have opened.
 	pub fn is_ready(&self) -> bool {
@@ -1203,6 +1234,20 @@ pub fn debug_processing_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn native_capture_lease_survives_until_the_worker_releases_it() {
+		let lease = CaptureLease::acquire().unwrap();
+		assert!(CaptureLease::acquire().is_err());
+		let (release, wait) = mpsc::sync_channel(1);
+		let worker = std::thread::spawn(move || {
+			wait.recv().unwrap();
+			drop(lease);
+		});
+		assert!(CaptureLease::acquire().is_err());
+		release.send(()).unwrap();
+		worker.join().unwrap();
+		assert!(CaptureLease::acquire().is_ok());
+	}
 	fn audio_without_devices() -> Audio {
 		let (settings, _) = tokio::sync::watch::channel(Devices::default());
 		let (processing, _) =
@@ -1433,6 +1478,38 @@ mod tests {
 		assert!(audio.gate.capture() && audio.gate.playback());
 	}
 
+	#[test]
+	fn stage_audience_never_opens_input_and_coalesced_role_changes_retire_pcm() {
+		let audio = audio_without_devices();
+		audio.set_stage_authorization(0, false);
+		audio.set_ready(true);
+		let revision = audio.gate.revision.load(Ordering::Acquire);
+		assert!(audio.gate.acknowledge(revision));
+		assert!(audio.gate.check_input_open(revision).is_err());
+		assert!(!audio.gate.capture());
+		let (send, mut received) = rtrb::RingBuffer::new(8);
+		Capture::new(48_000, send).process(&[0.5_f32; 961], 1, &audio.gate);
+		assert!(received.pop().is_err());
+		audio.set_stage_authorization(1, true);
+		assert!(
+			audio
+				.gate
+				.acknowledge(audio.gate.revision.load(Ordering::Acquire))
+		);
+		let captured_generation = audio.capture_generation();
+		assert!(audio.gate.capture_in_generation(captured_generation));
+		// A speaker -> audience -> speaker sequence can be consumed in one UI frame.
+		audio.set_stage_authorization(3, true);
+		assert!(!audio.gate.capture_in_generation(captured_generation));
+		audio.set_stage_authorization(4, false);
+		assert!(
+			audio
+				.gate
+				.check_input_open(audio.gate.revision.load(Ordering::Acquire))
+				.is_err()
+		);
+		assert!(!audio.gate.capture());
+	}
 	#[test]
 	fn callback_gain_defaults_clamps_and_sanitizes_without_devices() {
 		let audio = audio_without_devices();

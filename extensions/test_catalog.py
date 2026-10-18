@@ -27,6 +27,8 @@ for field in ("capabilities", "actions"):
         omitted = json.loads(theme)
     omitted["manifest"].pop(field, None)
     catalog.validate(json.dumps(omitted).encode())
+voice = (catalog.ROOT / "plugins/packages/voice-messages.serein-extension").read_bytes()
+assert catalog.validate(voice)["capabilities"] == ["voice_messages", "storage"]
 for data, mutate in (
     (proxy, lambda p: p["manifest"].update(capabilities=["api_proxy", "composer"])),
     (proxy, lambda p: p["manifest"]["actions"][0].update(surface="message")),

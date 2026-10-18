@@ -345,7 +345,7 @@ impl MessagingUi {
 									.show(ui, |ui| {
 										for target in state.channels.iter().filter(|target| {
 											target.guild == Some(guild)
-												&& target.kind == 2 && target.id != channel
+												&& matches!(target.kind, 2 | 13) && target.id != channel
 										}) {
 											let change = VoiceChange::Move(Some(target.id));
 											if state.can_view(target.id)
@@ -931,6 +931,18 @@ impl MessagingUi {
 		);
 		// A short stage clips notices and tiles instead of drawing them over the call bar.
 		body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
+		if state.is_stage(channel) {
+			body_ui.scope(|ui| {
+				*ui.visuals_mut() = egui::Visuals::dark();
+				egui::ScrollArea::vertical()
+					.id_salt("stage-community-controls")
+					.max_height((body.height() * 0.55).max(80.0))
+					.show(ui, |ui| {
+						self.community_ui
+							.stage_controls(ui, state, channel, commands);
+					});
+			});
+		}
 		stage_notices(&mut body_ui, &notices);
 		call_failure(
 			&mut body_ui,
@@ -1120,27 +1132,41 @@ impl MessagingUi {
 			);
 			toggle = self.tile(ui, state, channel, &tiles[index], main, false, true);
 			if strip > 0.0 {
-				// Narrow stages show as many square-or-wider tiles as fit, never clipped ones.
-				let fits = ((area.width() + TILE_GAP) / (strip + TILE_GAP)).floor() as usize;
-				let shown = (tiles.len() - 1).min(fits.max(1));
-				let width = ((area.width() - TILE_GAP * (shown as f32 - 1.0)) / shown as f32)
-					.min(strip * 16.0 / 9.0);
-				let size = egui::vec2(width, strip);
-				let row = size.x * shown as f32 + TILE_GAP * (shown as f32 - 1.0);
-				let mut x = area.center().x - row * 0.5;
-				let top = main.bottom() + TILE_GAP;
-				for (_, tile) in tiles
-					.iter()
-					.enumerate()
-					.filter(|(position, _)| *position != index)
-					.take(shown)
-				{
-					let rect = egui::Rect::from_min_size(egui::pos2(x, top), size);
-					x += size.x + TILE_GAP;
-					if let Some(focus) = self.tile(ui, state, channel, tile, rect, false, false) {
-						toggle = Some(focus);
-					}
-				}
+				let strip_rect = egui::Rect::from_min_size(
+					egui::pos2(area.left(), main.bottom() + TILE_GAP),
+					egui::vec2(area.width(), strip),
+				);
+				let mut strip_ui = ui.new_child(egui::UiBuilder::new().max_rect(strip_rect));
+				strip_ui.set_clip_rect(strip_rect.intersect(ui.clip_rect()));
+				let height = (strip - 18.0).max(24.0);
+				let size = egui::vec2((height * 16.0 / 9.0).min(area.width()), height);
+				let count = tiles.len() - 1;
+				let width = size.x * count as f32 + TILE_GAP * count.saturating_sub(1) as f32;
+				// All participants remain reachable when the focused strip is narrower than
+				// the roster. Its scroll state and tile count stay bounded by this call.
+				egui::ScrollArea::horizontal()
+					.id_salt(("voice-focus-strip", channel))
+					.auto_shrink([false, false])
+					.max_height(strip)
+					.show(&mut strip_ui, |ui| {
+						ui.spacing_mut().item_spacing.x = TILE_GAP;
+						ui.horizontal(|ui| {
+							ui.add_space(((area.width() - width) * 0.5).max(0.0));
+							for (_, tile) in tiles
+								.iter()
+								.enumerate()
+								.filter(|(position, _)| *position != index)
+							{
+								let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+								if ui.is_rect_visible(rect)
+									&& let Some(focus) =
+										self.tile(ui, state, channel, tile, rect, false, false)
+								{
+									toggle = Some(focus);
+								}
+							}
+						});
+					});
 			}
 		} else {
 			// Pick the column count that makes the tiles largest inside the stage, so two
@@ -1829,6 +1855,12 @@ impl MessagingUi {
 				if !status.is_empty() {
 					notices.push((status.into(), false));
 				}
+				if self.screen.adapting {
+					notices.push((
+						crate::i18n::translate("screen-adaptive-quality-active"),
+						false,
+					));
+				}
 			}
 			if !self.voice_camera_status.is_empty() {
 				notices.push((self.voice_camera_status.into(), false));
@@ -1917,6 +1949,7 @@ impl MessagingUi {
 			member: None,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			request: None,
 			channel: None,
 			user: peer,
@@ -2146,8 +2179,10 @@ impl MessagingUi {
 		let guild = state
 			.channels
 			.iter()
-			.any(|c| c.id == channel && c.kind == 2);
-		let label = if guild {
+			.any(|c| c.id == channel && matches!(c.kind, 2 | 13));
+		let label = if state.is_stage(channel) {
+			"Join audience"
+		} else if guild {
 			"Join Voice"
 		} else if incoming {
 			"Answer call"
@@ -2398,7 +2433,7 @@ impl MessagingUi {
 			);
 		}
 		if active
-			&& !input && let Some(code) = &self.voice_privacy_code
+			&& !input && let Some(code) = self.voice_privacy_code.as_ref().filter(|c| !c.is_empty())
 		{
 			egui::CollapsingHeader::new(crate::i18n::translate(
 				"voice-voice-popup-content-voice-privacy-code",
@@ -2557,7 +2592,7 @@ impl MessagingUi {
 			&crate::i18n::translate("voice-voice-settings-content-camera"),
 			|ui| self.camera_settings_content(ui, demo),
 		);
-		if active && let Some(code) = &self.voice_privacy_code {
+		if active && let Some(code) = self.voice_privacy_code.as_ref().filter(|c| !c.is_empty()) {
 			egui::CollapsingHeader::new(crate::i18n::translate(
 				"voice-voice-settings-content-voice-privacy-code",
 			))
@@ -3072,6 +3107,18 @@ impl MessagingUi {
 			device(ui, true);
 			device(ui, false);
 		}
+		let media_label = ui.label(crate::i18n::translate("voice-media-output"));
+		device_combo(
+			ui,
+			"media-output",
+			&self.voice_outputs,
+			&mut self.media_output,
+		)
+		.labelled_by(media_label.id);
+		ui.label(
+			design::medium(ui, crate::i18n::translate("voice-media-output-hint"), 12.0)
+				.color(colors.muted),
+		);
 		gain_controls(ui, &mut self.voice_gain);
 		ui.horizontal(|ui| {
 			ui.spacing_mut().item_spacing.x = 4.0;
@@ -3483,8 +3530,8 @@ impl MessagingUi {
 		};
 		let bar = ui.max_rect();
 		// A narrow stage sheds secondary controls (view toggles, device chevrons, then
-		// share/more) before anything overlaps; mute, camera and hang-up always stay.
-		let actions = 2.0 * 48.0;
+		// share/soundboard/more) before anything overlaps; mute, camera and hang-up always stay.
+		let actions = 3.0 * 48.0;
 		let essential = 2.0 * 48.0 + BAR_GAP + HANG_UP;
 		let side = [watched.is_some(), focused, screen_focused]
 			.iter()
@@ -3607,6 +3654,29 @@ impl MessagingUi {
 		if actions_shown {
 			pill(&mut row, actions, |ui| {
 				self.screen_share_control(ui, state);
+				let soundboard = state.soundboard_channel().is_some();
+				let board = control(
+					ui,
+					crate::icons::Icon::Soundboard,
+					48.0,
+					soundboard,
+					STAGE_TEXT,
+					"voice-soundboard-title",
+					if soundboard {
+						"voice-soundboard-open"
+					} else {
+						"voice-soundboard-server-only"
+					},
+				);
+				egui::Popup::menu(&board)
+					.width(332.0)
+					.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+					.frame(
+						egui::Frame::popup(&board.ctx.style_of(board.ctx.theme()))
+							.inner_margin(16)
+							.corner_radius(12),
+					)
+					.show(|ui| self.soundboard_panel(ui, state, commands));
 				let more = control(
 					ui,
 					crate::icons::Icon::More,
@@ -3761,6 +3831,112 @@ impl MessagingUi {
 			}
 		}
 		if leave && let Some(command) = state.leave_call() {
+			commands.push(command);
+		}
+	}
+
+	/// Session-only soundboard playback level; unset is 100%.
+	pub fn voice_soundboard_volume(&self) -> u16 {
+		self.voice_soundboard_volume.unwrap_or(100).min(100)
+	}
+
+	/// Sounds of the connected server voice channel plus Discord's defaults. Loading starts
+	/// only once this panel is shown; playing sends one explicit request per click.
+	fn soundboard_panel(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		commands: &mut Vec<Command>,
+	) {
+		let colors = design::palette(ui);
+		ui.set_width(300.0);
+		ui.spacing_mut().item_spacing.y = 8.0;
+		commands.extend(state.request_soundboard().into_iter().flatten());
+		ui.label(
+			design::semibold(ui, crate::i18n::translate("voice-soundboard-title"), 15.0)
+				.color(colors.text_strong),
+		);
+		if let Some(reason) = state.soundboard_unavailable() {
+			design::hint(ui, &crate::i18n::translate_if_key(reason));
+		}
+		let board = &state.soundboard;
+		let guild = board.guild.as_ref().map(|(_, catalog)| catalog);
+		let loading = board.default.loading || guild.is_some_and(|catalog| catalog.loading);
+		let error = board
+			.error
+			.or(board.default.error)
+			.or(guild.and_then(|catalog| catalog.error));
+		let groups = [
+			(
+				"voice-soundboard-server-sounds",
+				guild.map_or(&[][..], |catalog| &catalog.sounds[..]),
+			),
+			("voice-soundboard-default-sounds", &board.default.sounds[..]),
+		];
+		let mut play = None;
+		egui::ScrollArea::vertical()
+			.max_height(264.0)
+			.auto_shrink([false, true])
+			.show(ui, |ui| {
+				for (title, sounds) in groups {
+					if sounds.is_empty() {
+						continue;
+					}
+					ui.label(
+						RichText::new(crate::i18n::translate(title))
+							.size(12.0)
+							.color(colors.muted),
+					);
+					ui.horizontal_wrapped(|ui| {
+						ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+						for sound in sounds {
+							let sending = state.soundboard_sending(sound.id);
+							if sound_button(ui, sound, state.can_play_sound(sound), sending)
+								.clicked()
+							{
+								play = Some(sound.clone());
+							}
+						}
+					});
+				}
+			});
+		if loading {
+			design::hint(ui, &crate::i18n::translate("voice-soundboard-loading"));
+		} else if error.is_none() && groups.iter().all(|(_, sounds)| sounds.is_empty()) {
+			design::hint(ui, &crate::i18n::translate("voice-soundboard-empty"));
+		}
+		let mut retry = false;
+		if let Some(error) = error {
+			ui.label(
+				RichText::new(crate::i18n::translate_if_key(error))
+					.size(13.0)
+					.color(colors.danger),
+			);
+			retry = design::secondary_button(ui, &crate::i18n::translate("voice-soundboard-retry"))
+				.clicked();
+		}
+		ui.separator();
+		ui.scope(|ui| {
+			ui.spacing_mut().item_spacing.y = 4.0;
+			let label = ui.label(
+				RichText::new(crate::i18n::translate("voice-soundboard-volume"))
+					.size(13.0)
+					.color(colors.muted),
+			);
+			design::slider(
+				ui,
+				self.voice_soundboard_volume.get_or_insert(100),
+				0..=100,
+				"%",
+			)
+			.labelled_by(label.id);
+		});
+		if retry {
+			state.retry_soundboard();
+		}
+		if let Some(sound) = play
+			&& let Some(command) = state.play_sound(&sound)
+		{
 			commands.push(command);
 		}
 	}
@@ -4739,6 +4915,71 @@ fn pill<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) 
 	add(&mut inner)
 }
 
+/// One soundboard entry: its Unicode emoji (or a generic glyph) and an elided name.
+fn sound_button(
+	ui: &mut egui::Ui,
+	sound: &model::soundboard::Sound,
+	enabled: bool,
+	sending: bool,
+) -> egui::Response {
+	let colors = design::palette(ui);
+	let (rect, response) = ui.allocate_exact_size(
+		egui::vec2(146.0, 36.0),
+		if enabled {
+			egui::Sense::click()
+		} else {
+			egui::Sense::hover()
+		},
+	);
+	let fill = if sending {
+		colors.accent.gamma_multiply(0.45)
+	} else if enabled && (response.hovered() || response.has_focus()) {
+		colors.muted.gamma_multiply(0.4)
+	} else {
+		colors.muted.gamma_multiply(0.18)
+	};
+	ui.painter().rect_filled(rect, 8, fill);
+	let glyph = egui::Rect::from_center_size(
+		egui::pos2(rect.left() + 19.0, rect.center().y),
+		egui::Vec2::splat(18.0),
+	);
+	let text = if enabled || sending {
+		colors.text_strong
+	} else {
+		colors.muted
+	};
+	// Custom emoji artwork is not loaded here; those sounds use the generic glyph.
+	match sound
+		.emoji_name
+		.as_deref()
+		.filter(|_| sound.emoji_id.is_none())
+		.and_then(|name| crate::emoji::image(ui.ctx(), name, glyph.width()))
+	{
+		Some(image) => {
+			image.paint_at(ui, glyph);
+		}
+		None => crate::icons::paint(ui.painter(), crate::icons::Icon::Soundboard, glyph, text),
+	}
+	let mut job = egui::text::LayoutJob::simple_singleline(
+		sound.name.clone(),
+		egui::FontId::proportional(13.0),
+		text,
+	);
+	job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 46.0);
+	let galley = ui.painter().layout_job(job);
+	ui.painter().galley(
+		egui::pos2(rect.left() + 36.0, rect.center().y - galley.size().y / 2.0),
+		galley,
+		text,
+	);
+	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, &sound.name));
+	if sound.available {
+		response.on_hover_text(&sound.name)
+	} else {
+		response.on_hover_text(crate::i18n::translate("voice-soundboard-sound-unavailable"))
+	}
+}
+
 /// One control inside a pill; disabled controls stay visible but inert, like Discord's.
 fn control(
 	ui: &mut egui::Ui,
@@ -4853,7 +5094,12 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 			.voice
 			.roster
 			.iter()
-			.filter(|entry| entry.channel == channel)
+			.filter(|entry| {
+				entry.channel == channel
+					&& (!state.is_stage(channel)
+						|| entry.participant.stage == model::community::StageParticipation::Speaker)
+			})
+			.take(client_core::voice::MAX_PARTICIPANTS)
 			.cloned()
 			.collect()
 	};
@@ -4881,6 +5127,7 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 						deafened: false,
 						server_muted: false,
 						server_deafened: false,
+						stage: Default::default(),
 						video: false,
 						streaming: false,
 					},
@@ -4888,8 +5135,11 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 			}
 		}
 	}
-	if let Some(call) = call.filter(|call| call.phase != Phase::Failed)
-		&& let Some(user) = &state.user
+	if let Some(call) = call.filter(|call| {
+		call.phase != Phase::Failed
+			&& (!state.is_stage(channel)
+				|| call.stage_role() == model::community::StageParticipation::Speaker)
+	}) && let Some(user) = &state.user
 	{
 		if let Some(index) = entries
 			.iter()
@@ -4908,6 +5158,7 @@ fn stage_participants(state: &State, channel: Id) -> Vec<RosterEntry> {
 						deafened: call.deafened,
 						server_muted: call.server_muted,
 						server_deafened: call.server_deafened,
+						stage: call.stage,
 						video: call.camera,
 						streaming: false,
 					},
@@ -4937,6 +5188,7 @@ fn shown_participant(state: &State, entry: &RosterEntry) -> Participant {
 		participant.muted = call.self_muted();
 		participant.server_muted |= call.server_muted;
 		participant.server_deafened |= call.server_deafened;
+		participant.stage = call.stage_role();
 	}
 	participant
 }
@@ -5859,6 +6111,92 @@ mod tests {
 			let avatar = tile_avatar(size, true);
 			assert!(avatar <= size.x && avatar <= size.y.max(12.0));
 		}
+	}
+	#[test]
+	fn focused_call_strip_scrolls_to_participants_beyond_the_first_visible_row() {
+		let mut state = test_support::voice_demo_state();
+		let template = state.voice.roster[1].clone();
+		let entries: Vec<_> = (1..=32)
+			.map(|id| {
+				let mut entry = template.clone();
+				entry.participant.user = Id(id);
+				entry.participant.streaming = false;
+				if let Some(member) = &mut entry.member {
+					member.user.id = Id(id);
+					member.user.name = format!("Strip {id:02}");
+				}
+				entry
+			})
+			.collect();
+		state.voice.roster.clone_from(&entries);
+		let call = state.voice.active.as_mut().unwrap();
+		call.participants = entries.iter().map(|entry| entry.participant).collect();
+		let (channel, request) = (call.channel, call.request);
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi {
+			voice_focus: Some(StageFocus::LocalScreen),
+			voice_focus_participants: true,
+			..Default::default()
+		};
+		view.screen.context = Some((state.generation, channel, request));
+		view.screen.busy = true;
+		view.screen.preview = Some(ctx.load_texture(
+			"strip-test",
+			egui::ColorImage::filled([1, 1], egui::Color32::BLACK),
+			egui::TextureOptions::LINEAR,
+		));
+		let mut seen_last = false;
+		for index in 0..40 {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(480.0, 400.0),
+					)),
+					time: Some(f64::from(index) / 60.0),
+					events: if index == 2 {
+						vec![
+							egui::Event::PointerMoved(egui::pos2(240.0, 365.0)),
+							egui::Event::MouseWheel {
+								phase: egui::TouchPhase::Move,
+								source: egui::MouseWheelSource::Unknown,
+								unit: egui::MouseWheelUnit::Point,
+								delta: egui::vec2(-10_000.0, 0.0),
+								modifiers: egui::Modifiers::NONE,
+							},
+						]
+					} else {
+						vec![]
+					},
+					..Default::default()
+				},
+				|ui| view.participant_tiles(ui, &state, channel, &entries, false),
+			);
+			fn last_avatar(shape: &egui::Shape, last: egui::TextureId) -> bool {
+				match shape {
+					egui::Shape::Mesh(mesh) => mesh.texture_id == last,
+					egui::Shape::Rect(rect) => rect.fill_texture_id() == last,
+					egui::Shape::Vec(shapes) => shapes.iter().any(|shape| last_avatar(shape, last)),
+					_ => false,
+				}
+			}
+			let visible = view.avatars.texture_id("preview-32").is_some_and(|last| {
+				output
+					.shapes
+					.iter()
+					.any(|shape| last_avatar(&shape.shape, last))
+			});
+			if index < 2 {
+				assert!(!visible);
+			}
+			seen_last |= visible;
+			output.drop_without_applying_deltas();
+		}
+		assert!(
+			seen_last,
+			"later participants were unreachable from the focused strip"
+		);
+		assert_eq!(view.voice_focus, Some(StageFocus::LocalScreen));
 	}
 
 	#[test]
@@ -7181,6 +7519,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: true,
 			},
@@ -7418,5 +7757,158 @@ mod tests {
 		);
 		messaging.voice_available = true;
 		assert!(messaging.call_unavailable(&state, Id(1)).is_none());
+	}
+	#[test]
+	fn soundboard_panel_plays_one_available_sound_per_click_and_respects_gates() {
+		fn labels(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+			match shape {
+				egui::Shape::Text(text) => out.push((
+					text.galley.job.text.clone(),
+					text.galley.rect.translate(text.pos.to_vec2()),
+				)),
+				egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| labels(shape, out)),
+				_ => {}
+			}
+		}
+		fn frame(
+			ctx: &egui::Context,
+			messaging: &mut MessagingUi,
+			state: &mut State,
+			commands: &mut Vec<Command>,
+			events: Vec<egui::Event>,
+		) -> Vec<(String, egui::Rect)> {
+			let mut output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(800.0, 800.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| messaging.soundboard_panel(ui, state, commands),
+			);
+			output.textures_delta.clear();
+			let mut text = vec![];
+			for shape in output.shapes {
+				labels(&shape.shape, &mut text);
+			}
+			text
+		}
+		fn click(
+			ctx: &egui::Context,
+			messaging: &mut MessagingUi,
+			state: &mut State,
+			commands: &mut Vec<Command>,
+			label: &str,
+		) {
+			let text = frame(ctx, messaging, state, commands, vec![]);
+			let pos = text
+				.iter()
+				.find(|(value, _)| value == label)
+				.unwrap_or_else(|| panic!("Missing visible sound: {label}"))
+				.1
+				.center();
+			for pressed in [true, false] {
+				frame(
+					ctx,
+					messaging,
+					state,
+					commands,
+					vec![
+						egui::Event::PointerMoved(pos),
+						egui::Event::PointerButton {
+							pos,
+							button: egui::PointerButton::Primary,
+							pressed,
+							modifiers: egui::Modifiers::NONE,
+						},
+					],
+				);
+			}
+		}
+		use client_core::soundboard::{Event, Request};
+		let mut state = test_support::voice_demo_state();
+		assert!(state.soundboard_unavailable().is_none());
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi::default();
+		let mut commands = vec![];
+		let text = frame(&ctx, &mut messaging, &mut state, &mut commands, vec![]);
+		for label in ["Soundboard", "Server sounds", "Default sounds", "quack"] {
+			assert!(
+				text.iter().any(|(value, _)| value == label),
+				"Missing {label}"
+			);
+		}
+		// The seeded preview catalogs are already loaded: showing the panel reads nothing.
+		assert!(commands.is_empty());
+
+		click(
+			&ctx,
+			&mut messaging,
+			&mut state,
+			&mut commands,
+			"Unavailable sound",
+		);
+		assert!(commands.is_empty());
+		click(&ctx, &mut messaging, &mut state, &mut commands, "quack");
+		assert!(matches!(
+			commands.as_slice(),
+			[Command::Soundboard(Request::Send {
+				channel: Id(25),
+				sound: Id(9200),
+				source_guild: None,
+				..
+			})]
+		));
+		// One request at a time: another click waits for the outcome.
+		click(&ctx, &mut messaging, &mut state, &mut commands, "airhorn");
+		assert_eq!(commands.len(), 1);
+		let Some(Command::Soundboard(Request::Send { request, .. })) = commands.first() else {
+			panic!()
+		};
+		let request = *request;
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Soundboard(Event::Sent {
+				request,
+				channel: Id(25),
+				sound: Id(9200),
+				result: Err(client_core::auth::Failure::Forbidden),
+			}),
+		});
+		let text = frame(&ctx, &mut messaging, &mut state, &mut commands, vec![]);
+		assert!(
+			text.iter()
+				.any(|(value, _)| value.contains("did not allow this sound")),
+			"A rejected sound must be reported"
+		);
+		click(
+			&ctx,
+			&mut messaging,
+			&mut state,
+			&mut commands,
+			"Synthetic fanfare",
+		);
+		assert!(matches!(
+			commands.as_slice(),
+			[
+				_,
+				Command::Soundboard(Request::Send {
+					sound: Id(9100),
+					source_guild: None,
+					..
+				})
+			]
+		));
+
+		// Deafened listeners cannot play, and the panel says why.
+		state.soundboard.sending = None;
+		state.voice.active.as_mut().unwrap().deafened = true;
+		click(&ctx, &mut messaging, &mut state, &mut commands, "airhorn");
+		assert_eq!(commands.len(), 2);
+		let text = frame(&ctx, &mut messaging, &mut state, &mut commands, vec![]);
+		assert!(text.iter().any(|(value, _)| value.contains("Undeafen")));
+		assert_eq!(messaging.voice_soundboard_volume(), 100);
 	}
 }

@@ -4,6 +4,7 @@ use crate::Id;
 pub const MAX_GUILDS: usize = 4096;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
+	pub privacy: crate::privacy_preferences::Settings,
 	/// Service enum: 0 defaults to non-friends, 1 disabled, 2 non-friends, 3 all.
 	pub spam_filter: u32,
 	pub default_allow_dms: bool,
@@ -19,6 +20,7 @@ pub struct Snapshot {
 impl Default for Snapshot {
 	fn default() -> Self {
 		Self {
+			privacy: crate::privacy_preferences::Settings::default(),
 			spam_filter: 0,
 			default_allow_dms: true,
 			restricted_guilds: Vec::new(),
@@ -60,6 +62,7 @@ impl Snapshot {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
+	Privacy(crate::privacy_preferences::Change),
 	AllowAllDms { guilds: Vec<Id>, enabled: bool },
 	FilterAllRequests { guilds: Vec<Id>, enabled: bool },
 	SpamFilter(u32),
@@ -86,6 +89,7 @@ impl Change {
 	}
 	pub fn valid(&self) -> bool {
 		match self {
+			Self::Privacy(change) => change.valid(),
 			Self::AllowAllDms { guilds, .. } | Self::FilterAllRequests { guilds, .. } => {
 				guilds.capacity() <= MAX_GUILDS && guilds.iter().all(|id| id.0 != 0)
 			}
@@ -96,6 +100,7 @@ impl Change {
 	}
 	pub fn apply(&self, value: &mut Snapshot) {
 		match self {
+			Self::Privacy(change) => change.apply(&mut value.privacy),
 			Self::AllowAllDms { guilds, enabled } | Self::FilterAllRequests { guilds, enabled } => {
 				let ids = if matches!(self, Self::AllowAllDms { .. }) {
 					value.default_allow_dms = *enabled;

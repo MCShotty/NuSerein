@@ -16,6 +16,22 @@ use std::{
 use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
 use zeroize::Zeroizing;
 
+/// Listener gain for a soundboard sound played by `user`: the session soundboard volume and,
+/// for other participants, their local volume or mute. Blocked participants are silent.
+fn soundboard_gain(state: &State, ui: &ui::MessagingUi, me: Id, user: Id) -> f32 {
+	let listener = if user == me {
+		100
+	} else if state.user_blocked(user) == Some(true) {
+		0
+	} else {
+		ui.voice_user_volumes()
+			.iter()
+			.find(|(id, _)| *id == user.0)
+			.map_or(100, |(_, percent)| (*percent).min(200))
+	};
+	f32::from(ui.voice_soundboard_volume()) / 100.0 * f32::from(listener) / 100.0
+}
+
 fn permission_mutes_microphone(
 	state: &State,
 	channel: Id,
@@ -68,6 +84,7 @@ fn device_wait(
 }
 
 struct Pending {
+	mode: voice::MediaMode,
 	video_settings: model::voice_settings::VideoSettings,
 	generation: u64,
 	channel: Id,
@@ -189,6 +206,8 @@ struct Live {
 	remote_hdr: Arc<std::sync::Mutex<RemoteHdrPictures>>,
 	/// Decoded audio of a watched stream, mixed into this call's playback.
 	stream_audio: mpsc::SyncSender<discord_voice::Frame>,
+	/// Soundboard clips mixed into this call's playback; never transmitted.
+	effects: discord_voice::Effects,
 }
 
 #[derive(Default)]
@@ -374,6 +393,7 @@ pub struct Voice {
 	pending: Option<Pending>,
 	live: Option<Live>,
 	retiring: Option<mpsc::Receiver<()>>,
+	soundboard: crate::soundboard::Soundboard,
 	device_scan: Option<mpsc::Receiver<Result<discord_voice::audio::DeviceList, &'static str>>>,
 	camera_scan: Option<mpsc::Receiver<Result<discord_voice::camera::DeviceList, &'static str>>>,
 	/// Remote camera textures behind `ui.voice_remote_video`, by user.
@@ -394,6 +414,7 @@ impl Voice {
 	}
 
 	pub fn stop(&mut self) {
+		self.soundboard.clear();
 		self.video_capabilities.cancel();
 		self.camera_test = None;
 		self.stop_mic_preview();
@@ -405,6 +426,7 @@ impl Voice {
 		self.pending = None;
 		self.stop_camera();
 		if let Some(live) = self.live.take() {
+			live.effects.clear();
 			live.audio.set_ready(false);
 			live.task.abort();
 			self.retire_audio(live.audio);
@@ -489,6 +511,7 @@ impl Voice {
 			return Err("The DM recipient is unavailable");
 		}
 		self.pending = Some(Pending {
+			mode: call.media_mode,
 			video_settings,
 			generation: state.generation,
 			channel: call.channel,
@@ -504,6 +527,62 @@ impl Voice {
 			failed_candidate: false,
 		});
 		Ok(())
+	}
+	/// Play a soundboard clip into the connected call's local playback. The sender hears its
+	/// own sound once the service accepted it; other participants' sounds arrive as effects.
+	pub fn soundboard(
+		&mut self,
+		runtime: &Runtime,
+		state: &State,
+		ui: &ui::MessagingUi,
+		context: &egui::Context,
+		event: &client_core::soundboard::Event,
+	) {
+		use client_core::soundboard::Event as E;
+		let Some(live) = &self.live else {
+			return;
+		};
+		if state.demo
+			|| live.generation != state.generation
+			|| !state.soundboard_playback_current(event)
+		{
+			return;
+		}
+		let (channel, user, sound, volume) = match event {
+			E::Effect {
+				channel,
+				user,
+				sound,
+				volume,
+			} if *user != live.user => (*channel, *user, *sound, *volume),
+			E::Sent {
+				channel,
+				sound,
+				result: Ok(()),
+				..
+			} => (
+				*channel,
+				live.user,
+				*sound,
+				state
+					.soundboard
+					.sound(*sound)
+					.map_or(1.0, |sound| sound.volume),
+			),
+			_ => return,
+		};
+		if channel != live.channel
+			|| !state.voice.active.as_ref().is_some_and(|call| {
+				call.channel == channel
+					&& !call.deafened
+					&& matches!(call.phase, Phase::Connected | Phase::Waiting)
+			}) || (user != live.user && state.user_blocked(user) == Some(true))
+		{
+			return;
+		}
+		let gain = soundboard_gain(state, ui, live.user, user);
+		self.soundboard
+			.play(runtime, context, &live.effects, sound, user, volume, gain);
 	}
 	/// Take negotiation secrets before reducing the UI event. Nothing is persisted.
 	pub fn observe(&mut self, state: &State, event: &mut Event) -> Option<&'static str> {
@@ -710,6 +789,14 @@ impl Voice {
 		});
 		Some(command)
 	}
+	pub fn microphone_busy(&self) -> bool {
+		self.rejoin.is_some()
+			|| self.live.is_some()
+			|| self.camera_test.is_some()
+			|| self.pending.is_some()
+			|| self.retiring.is_some()
+			|| self.mic_preview.is_some()
+	}
 	/// Media for the active call failed. A call this device had joined rejoins automatically
 	/// within the attempt budget; anything else fails as before.
 	pub fn fail_or_rejoin(&mut self, state: &mut State, message: &'static str) -> Option<Command> {
@@ -841,6 +928,12 @@ impl Voice {
 			ui.notification_preview = Some(Sound::UserLeave);
 			ctx.request_repaint();
 		}
+		self.poll_camera_test(state, ui, ctx);
+		if ui.voice_messages.capture_busy {
+			ui.voice_preview_requested = false;
+			ctx.request_repaint_after(Duration::from_millis(50));
+			return None;
+		}
 		if let Some(command) = self.poll_rejoin(state, ui, ctx) {
 			return Some(command);
 		}
@@ -849,7 +942,6 @@ impl Voice {
 		if self.retiring.is_some() {
 			ctx.request_repaint_after(Duration::from_millis(50));
 		}
-		self.poll_camera_test(state, ui, ctx);
 		ui.voice_speaking.clear();
 		ui.voice_microphone_unavailable = false;
 		self.poll_camera_devices(state.demo, ui, ctx);
@@ -1006,19 +1098,39 @@ impl Voice {
 				|| ui.voice_ptm_active;
 			live.audio.set_controls(muted, deafened);
 			live.audio.set_processing(ui.voice_processing.effective());
-			live.audio.set_input_enabled(state.can_speak(call.channel));
+			live.audio
+				.set_stage_authorization(call.stage_revision, state.can_speak(call.channel));
 			live.audio
 				.set_gain(ui.voice_gain.input_percent, ui.voice_gain.output_percent);
 			let user_volumes = ui.voice_user_volumes();
-			let stream_volume = ui.voice_stream_volume();
+			let stream_volume = if ui.media_output.is_some() {
+				0
+			} else {
+				ui.voice_stream_volume()
+			};
 			let activity_threshold_db = ui
 				.voice_processing
 				.effective()
 				.sensitivity_db
 				.unwrap_or(-70);
 			let capture_generation = live.audio.capture_generation();
+			// Sounds already playing or still downloading follow later mutes, blocks and
+			// volume changes; transport clears them on deafen.
+			let me = live.user;
+			if deafened {
+				live.effects.clear();
+				self.soundboard.discard_waiting();
+			} else {
+				live.effects
+					.retune(|source| soundboard_gain(state, ui, me, Id(source)));
+				self.soundboard
+					.flush(|source| soundboard_gain(state, ui, me, source));
+			}
 			live.controls.send_if_modified(|control| {
 				if control.muted == muted
+					&& control.stage_speaker
+						== (call.media_mode == voice::MediaMode::Stage
+							&& state.can_speak(call.channel))
 					&& control.capture_generation == capture_generation
 					&& control.deafened == deafened
 					&& control.user_volumes == user_volumes
@@ -1028,6 +1140,8 @@ impl Voice {
 					false
 				} else {
 					control.muted = muted;
+					control.stage_speaker =
+						call.media_mode == voice::MediaMode::Stage && state.can_speak(call.channel);
 					control.capture_generation = capture_generation;
 					control.deafened = deafened;
 					control.user_volumes = user_volumes;
@@ -1191,7 +1305,11 @@ impl Voice {
 					ready,
 					state.gateway_connected,
 					live.user,
-					&call.participants,
+					if call.media_mode == voice::MediaMode::Stage {
+						&[]
+					} else {
+						&call.participants
+					},
 				) && ui.notification_options.allows(cue)
 				{
 					ui.notification_preview = Some(cue);
@@ -1354,6 +1472,7 @@ impl Voice {
 	}
 	fn poll_mic_preview(&mut self, state: &State, ui: &mut ui::MessagingUi, ctx: &egui::Context) {
 		if state.demo
+			|| ui.voice_messages.capture_busy
 			|| !ui.voice_available
 			|| !ui.voice_settings_open()
 			|| state.voice.active.is_some()
@@ -1460,6 +1579,7 @@ impl Voice {
 
 	fn poll_camera_test(&mut self, state: &State, ui: &mut ui::MessagingUi, ctx: &egui::Context) {
 		ui.camera_test_available = !state.demo
+			&& !ui.voice_messages.capture_busy
 			&& ui.voice_available
 			&& discord_voice::camera::SUPPORTED
 			&& state.voice.active.is_none()
@@ -1756,13 +1876,18 @@ impl Voice {
 				.sensitivity_db
 				.unwrap_or(-70),
 			muted: listen_only || ui.voice_push_to_talk,
+			stage_speaker: pending.mode == voice::MediaMode::Stage && input_enabled,
 			capture_generation: audio.capture_generation(),
 			camera: 0,
 			video: pending.video_settings,
 			video_adapter: self.video_adapter,
 			deafened: false,
 			user_volumes: ui.voice_user_volumes(),
-			stream_volume: ui.voice_stream_volume(),
+			stream_volume: if ui.media_output.is_some() {
+				0
+			} else {
+				ui.voice_stream_volume()
+			},
 		});
 		let remote_video: Arc<std::sync::Mutex<RemotePictures>> =
 			Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1817,6 +1942,7 @@ impl Voice {
 		let token = Secret::new(token.expose().to_owned()).map_err(|_| "Invalid voice token")?;
 		let endpoint = endpoint.clone();
 		let credentials = voice::VoiceConnection {
+			mode: pending.mode,
 			channel: pending.channel,
 			request: pending.request,
 			user: pending.user,
@@ -1828,6 +1954,8 @@ impl Voice {
 		};
 		let identity = discord_voice::Identity::generate();
 		let media_identity = identity.clone();
+		let effects = discord_voice::Effects::default();
+		let transport_effects = effects.clone();
 		let transport_failure = failure.clone();
 		let wake = ctx.clone();
 		let task = runtime.spawn(async move {
@@ -1845,6 +1973,7 @@ impl Voice {
 				},
 				Some(sink),
 				Some(stream_audio_receive),
+				Some(transport_effects),
 				move |event| {
 					let notice = match event {
 						Status::TransportReady => Notice::TransportReady(negotiation_revision),
@@ -1908,6 +2037,7 @@ impl Voice {
 			remote_video,
 			remote_hdr,
 			stream_audio,
+			effects,
 			negotiation: Some(pending),
 		});
 		Ok(())
@@ -2016,6 +2146,7 @@ pub fn debug_call_cues_check() {
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		video: false,
 		streaming: false,
 	};
@@ -3027,6 +3158,7 @@ mod tests {
 			remote_video: Arc::new(std::sync::Mutex::new(Vec::new())),
 			remote_hdr: Arc::new(std::sync::Mutex::new(Vec::new())),
 			stream_audio,
+			effects: Default::default(),
 		});
 		let failure = |revision| {
 			Event::Voice(voice::Event::SessionConfirmationFailed {
@@ -3084,6 +3216,7 @@ mod tests {
 					member: None,
 					server_muted: false,
 					server_deafened: false,
+					stage: Default::default(),
 					channel: Some(Id(22)),
 					user: Id(1),
 					session: Some(Secret::new(id.into()).unwrap()),
@@ -3257,6 +3390,7 @@ mod tests {
 				member: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				channel: Some(Id(22)),
 				user: Id(user),
 				session: Some(Secret::new(id.into()).unwrap()),

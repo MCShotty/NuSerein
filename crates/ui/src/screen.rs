@@ -21,6 +21,7 @@ pub struct ScreenUi {
 	pub busy: bool,
 	pub status: &'static str,
 	pub capture_status: Option<&'static str>,
+	pub adapting: bool,
 	pub supported: bool,
 	pub preview: Option<egui::TextureHandle>,
 	resolution: Resolution,
@@ -40,6 +41,7 @@ impl Default for ScreenUi {
 			busy: false,
 			status: "",
 			capture_status: None,
+			adapting: false,
 			supported: false,
 			preview: None,
 			resolution: Resolution::Preset(if cfg!(target_os = "linux") {
@@ -297,6 +299,7 @@ impl ScreenUi {
 			.wrap(),
 		);
 		ui.add_space(10.0);
+		crate::design::hint(ui, "screen-adaptive-quality-hint");
 		ui.add(
 			egui::Label::new(
 				egui::RichText::new(crate::i18n::translate("screen-body-resolution-description"))

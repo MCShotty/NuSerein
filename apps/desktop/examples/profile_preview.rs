@@ -1,5 +1,15 @@
 //! Offline native framebuffer capture; no account, filesystem cache, or network adapters.
 use eframe::egui;
+#[allow(dead_code)] // The member Guide fixture is used by the full desktop demo.
+#[path = "../src/community_admin_demo.rs"]
+mod community_admin_demo;
+#[path = "../src/community_demo.rs"]
+mod community_demo;
+#[path = "../src/profile_settings_demo.rs"]
+mod profile_settings_demo;
+
+#[path = "../src/inbox_demo.rs"]
+mod inbox_demo;
 #[path = "../src/server_settings_demo.rs"]
 mod server_settings_demo;
 #[allow(dead_code)] // The shared fixture's CLI check is called by the desktop binary.
@@ -16,6 +26,7 @@ use std::{
 };
 
 struct Preview {
+	inbox_demo: inbox_demo::Store,
 	interactive: bool,
 	smoke: bool,
 	messaging: ui::MessagingUi,
@@ -56,15 +67,44 @@ impl eframe::App for Preview {
 		// Only synthetic fixtures execute these commands; no service adapters exist here.
 		for command in self.messaging.show(ui, &mut self.state) {
 			let event = match command {
+				client_core::Command::EditProfile {
+					user,
+					request,
+					changes,
+				} => profile_settings_demo::global_profile(&self.state, user, request, changes),
+				client_core::Command::ServerProfile {
+					user,
+					guild,
+					request,
+					edit,
+				} => profile_settings_demo::execute(&self.state, user, guild, request, edit),
+				client_core::Command::OwnedCosmetics {
+					user,
+					guild,
+					request,
+					change,
+					..
+				} => profile_settings_demo::owned_cosmetics(
+					&self.state,
+					user,
+					guild,
+					request,
+					change,
+				),
+
+				command @ (client_core::Command::Mentions { .. }
+				| client_core::Command::InboxAction { .. }) => self.inbox_demo.execute(&self.state, command),
 				client_core::Command::ApplicationCommands {
 					channel,
 					guild,
 					request,
+					..
 				} => client_core::Event::ApplicationCommands {
 					channel,
 					request,
 					result: Ok(slash_demo::catalog(guild)),
 				},
+				client_core::Command::Autocomplete(request) => slash_demo::autocomplete(request),
 				client_core::Command::Interaction(request) => {
 					slash_demo::respond(&mut self.state, request);
 					continue;
@@ -75,6 +115,12 @@ impl eframe::App for Preview {
 						result: Ok(settings),
 					}
 				}
+				client_core::Command::Community {
+					guild,
+					request,
+					action,
+					..
+				} => community_demo::execute(&mut self.state, guild, request, *action),
 				client_core::Command::ServerAdmin {
 					guild,
 					request,
@@ -642,7 +688,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -655,7 +701,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	if !matches!(
 		page.as_str(),
 		"profile"
-			| "stickers"
+			| "events"
+			| "event-detail"
+			| "event-edit"
+			| "stage" | "stickers"
 			| "slash-commands"
 			| "slash-command-search"
 			| "slash-command-options"
@@ -687,13 +736,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "server-invites"
 			| "server-integrations"
 			| "server-audit-log"
+			| "server-soundboard"
+			| "server-automod"
+			| "server-moderation"
 			| "forum" | "forum-post"
 			| "forum-gallery"
 			| "forum-settings"
 			| "friends"
 			| "screen-share"
 	) {
-		return Err("Page must be profile, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log or screen-share".into());
+		return Err("Page must be events, event-detail, event-edit, stage, profile, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation or screen-share".into());
 	}
 	let slash_command = value("--command=").unwrap_or("help").to_owned();
 	if !matches!(slash_command.as_str(), "help" | "weather") {
@@ -772,6 +824,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				"slash-commands" | "slash-command-search" | "slash-command-options"
 			) {
 				slash_demo::preview()
+			} else if matches!(
+				page.as_str(),
+				"events" | "event-detail" | "event-edit" | "stage"
+			) {
+				test_support::community_state(page == "stage")
 			} else if page == "friends" {
 				test_support::friends_demo_state()
 			} else if page == "screen-share" {
@@ -781,6 +838,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			};
 			if activities {
 				prime_activities(&mut state);
+			}
+			if args.iter().any(|arg| arg == "--nitro") {
+				state.premium_type = 2;
 			}
 			if page == "embeds" {
 				let channel = state.selected.expect("synthetic embed conversation");
@@ -949,7 +1009,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			messaging.startup_available = platform::startup::available();
 			messaging.startup_enabled = args.iter().any(|arg| arg == "--startup-enabled");
 			messaging.startup_minimized = args.iter().any(|arg| arg == "--startup-minimized");
-			if page == "friends" {
+			if matches!(page.as_str(), "events" | "event-detail" | "event-edit") {
+				messaging.preview_community(
+					&mut state,
+					model::Id(10),
+					page == "event-detail",
+					page == "event-edit",
+				);
+			} else if page == "friends" {
 				messaging.preview_friends_tab(&friends_tab);
 			} else if page == "forum" {
 				messaging.preview_forum(model::Id(26), &forum_tags, None);
@@ -968,9 +1035,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				);
 			} else if matches!(
 				page.as_str(),
-				"member-tags"
-					| "dm-tags" | "dm-intro"
-					| "channel-intro"
+				"stage"
+					| "member-tags" | "dm-tags"
+					| "dm-intro" | "channel-intro"
 					| "post-intro" | "markdown"
 					| "channel-links"
 					| "channel-link-replies"
@@ -1301,6 +1368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 			}
 			Ok(Box::new(Preview {
+				inbox_demo: inbox_demo::Store::default(),
 				interactive,
 				smoke,
 				messaging,

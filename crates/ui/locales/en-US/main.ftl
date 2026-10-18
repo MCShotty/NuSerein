@@ -3231,6 +3231,8 @@ server-settings-page-profile = Server Profile
 server-settings-page-roles = Roles
 # Context: label
 server-settings-page-stickers = Stickers
+# Context: label
+server-settings-page-soundboard = Soundboard
 # Context: preview
 server-settings-preview-established = Established
 # Context: preview
@@ -3286,6 +3288,88 @@ server-settings-show-people = PEOPLE
 # Context: timeout_picker
 server-settings-timeout-picker-minutes = minutes
 
+# Context: server_sounds
+server-sounds-title = Soundboard
+# Context: server_sounds
+server-sounds-upload-title = Upload a Sound
+# Context: server_sounds
+server-sounds-preview = Preview
+# Context: server_sounds
+server-sounds-trim-hint = Drag the handles to choose up to 5.2 seconds. Hold a handle still to zoom in.
+# Context: server_sounds
+server-sounds-never-mind = Never mind
+# Context: server_sounds
+server-sounds-play-preview = Play selection
+# Context: server_sounds
+server-sounds-stop-preview = Stop preview
+# Context: server_sounds
+server-sounds-description = Upload custom sound reactions that anyone in this server can use.
+# Context: server_sounds
+server-sounds-upload-sound = Upload Sound
+# Context: server_sounds
+server-sounds-reload = Reload
+# Context: server_sounds
+server-sounds-saving = Saving changes…
+# Context: server_sounds
+server-sounds-loading = Loading sounds…
+# Context: server_sounds
+server-sounds-hint = MP3, Ogg or WAV audio. Sounds are at most 5.2 seconds and 512 KB; longer files can be trimmed.
+# Context: server_sounds
+server-sounds-preparing = Preparing sound…
+# Context: server_sounds
+server-sounds-name = Name
+# Context: server_sounds
+server-sounds-emoji = Related emoji (optional)
+# Context: server_sounds
+server-sounds-volume = Volume
+# Context: server_sounds
+server-sounds-upload = Upload
+# Context: server_sounds
+server-sounds-cancel = Cancel
+# Context: server_sounds
+server-sounds-invalid = Use a 2–32 character name and at most one emoji.
+# Context: server_sounds
+server-sounds-section = Sounds
+# Context: server_sounds
+server-sounds-count =
+    { $count ->
+        [one] { $count } sound
+       *[other] { $count } sounds
+    }
+# Context: server_sounds
+server-sounds-slots = { $count } of { $limit } slots available
+# Context: server_sounds
+server-sounds-empty = No custom sounds yet
+# Context: server_sounds
+server-sounds-empty-detail = Upload a sound to get started.
+# Context: server_sounds
+server-sounds-column-emoji = Emoji
+# Context: server_sounds
+server-sounds-column-name = Name
+# Context: server_sounds
+server-sounds-column-uploaded-by = Uploaded by
+# Context: server_sounds
+server-sounds-unknown = Unknown
+# Context: server_sounds
+server-sounds-unavailable = Unavailable
+# Context: server_sounds
+server-sounds-actions = Sound actions
+# Context: server_sounds
+server-sounds-edit = Edit
+# Context: server_sounds
+server-sounds-delete = Delete sound
+# Context: server_sounds
+server-sounds-edit-title = Edit sound
+# Context: server_sounds
+server-sounds-edit-subtitle = Update the sound's name, emoji and volume.
+# Context: server_sounds
+server-sounds-delete-title = Delete sound?
+# Context: server_sounds
+server-sounds-delete-subtitle = Removing { $name } cannot be undone.
+# Context: server_sounds
+server-sounds-save = Save
+# Context: server_sounds
+server-sounds-custom-emoji-kept = This sound uses a custom emoji. Leave the field empty to keep it.
 ## crates/ui/src/server_stickers.rs
 # Context: dialog
 server-stickers-dialog-cancel = Cancel
@@ -4158,6 +4242,26 @@ voice-mute-toggle-unmute = Unmute
 voice-mute-toggle-with-settings-input-settings = Input settings
 # Context: mute_toggle_with_settings
 voice-mute-toggle-with-settings-output-settings = Output settings
+# Context: soundboard_panel
+voice-soundboard-title = Soundboard
+# Context: soundboard_panel
+voice-soundboard-open = Play a sound in this voice channel
+# Context: soundboard_panel
+voice-soundboard-server-only = Soundboard is available in server voice channels
+# Context: soundboard_panel
+voice-soundboard-server-sounds = Server sounds
+# Context: soundboard_panel
+voice-soundboard-default-sounds = Default sounds
+# Context: soundboard_panel
+voice-soundboard-loading = Loading sounds…
+# Context: soundboard_panel
+voice-soundboard-empty = No sounds are available here.
+# Context: soundboard_panel
+voice-soundboard-retry = Try again
+# Context: soundboard_panel
+voice-soundboard-volume = Soundboard volume
+# Context: soundboard_panel
+voice-soundboard-sound-unavailable = This sound is unavailable
 # Context: stream_audio_controls
 voice-stream-audio-controls-mute-stream-audio = Mute stream audio
 # Context: stream_audio_controls
@@ -4212,6 +4316,15 @@ voice-server-mute = Server mute
 voice-server-unmute = Server unmute
 voice-move-to = Move to
 voice-disconnect-member = Disconnect
+inbox-title = Inbox
+inbox-description = Unread conversations, recent mentions and bookmarks
+inbox-loading = Loading inbox…
+inbox-empty = No matching items.
+inbox-refresh-needed = Refresh to load items.
+inbox-refresh = Refresh
+inbox-retry = Retry
+inbox-older = Older mentions
+inbox-open-message = Open message
 # Context: voice_participant_menu
 voice-voice-participant-menu-silence-this-person-on-this-device-only-nobody-else-is = Silence this person on this device only. Nobody else is affected.
 # Context: voice_participant_menu
@@ -4506,6 +4619,9 @@ voice-recipient-ringing = Ringing…
 voice-recipient-not-in-call = Not in call
 reconnect-now = Reconnect now
 
+voice-media-output = Media output
+voice-media-output-hint = Applies to new audio/video playback and watched streams.
+
 # Explicit public attachment hosting
 public-upload-host-file = Share link instead…
 public-upload-heading = Share with a public link
@@ -4677,6 +4793,26 @@ voice-video-encoder-test-checking = Testing…
 voice-video-encoder-test-not-tested = Not tested
 voice-video-encoder-test-incomplete = Test incomplete — try again
 voice-video-encoder-test-no-success = No hardware encoder passed this test
+
+# Native voice-message recorder
+voice-message-title = Voice message
+voice-message-menu = Record a voice message
+voice-message-offline = Offline preview · synthetic audio, no microphone or upload
+voice-message-ready = Choose Record to use your microphone.
+voice-message-starting = Opening microphone…
+voice-message-recording = Recording
+voice-message-muted = Microphone muted · release mute or hold push-to-talk to record sound.
+voice-message-finalizing = Finishing voice clip…
+voice-message-review = Ready to send. Your text draft will be sent separately.
+voice-message-sending = Uploading voice message…
+voice-message-retry = Record a new clip to try again.
+voice-message-record = Record
+voice-message-stop = Stop recording
+voice-message-send = Send voice message
+voice-message-discard = Discard
+voice-message-private = Audio stays in memory until you send or discard it.
+voice-message-cancel-send = Cancel stops this upload; a message already accepted by Discord cannot be recalled.
+
 settings-chat-box = Chat Box
 settings-convert-emoticons = Automatically convert emoticons in your messages to emoji
 settings-convert-emoticons-description = Convert standalone emoticons such as :) to 🙂 when sending or editing messages. Code and links stay unchanged.
@@ -4959,3 +5095,297 @@ profiles-private-notice = { $name }’s profile is private, so some info is hidd
 settings-cosmetics-name-styles = Name styles
 settings-cosmetics-name-styles-description = Nitro display name fonts, colours and effects.
 main-sign-in-rate-limited-detail = Discord is rate limiting this sign-in. Wait before trying again. Another attempt before that can make the wait longer.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.
+
+slash-commands-sending = Sending command…
+slash-commands-choose-file = Choose file…
+slash-commands-remove-file = Remove file
+slash-commands-file-help = Choose one file for this option.
+
+# Personal notification and navigation controls
+qol-mute-category = Mute Category
+qol-unmute-category = Unmute Category
+qol-mute-server = Mute Server
+qol-unmute-server = Unmute Server
+qol-mute-duration = Mute duration
+qol-current-mute = Keep current duration
+qol-notification-overrides = Notification overrides
+qol-choose-channel-category = Changes here apply immediately.
+qol-select-channel = Select a channel or category
+qol-search-channels = Search channels and categories
+qol-more-channels = More matches; narrow your search.
+qol-use-inherited = Use default
+qol-mute-selection = Mute
+qol-unmute-selection = Unmute
+qol-collapse-categories = Collapse All Categories
+qol-expand-categories = Expand All Categories
+qol-next-unread = Next Unread Conversation
+qol-previous-unread = Previous Unread Conversation
+qol-jump-unread = Jump to First Unread
+
+audio-playback-speed = Playback speed
+
+voice-message-listen = Listen before sending
+voice-message-stop-listening = Stop listening
+
+screen-adaptive-quality-hint = Stream quality adapts automatically to your connection.
+screen-adaptive-quality-active = Adjusting stream quality to your connection
+
+page-privacy = Profile Privacy
+page-content-filters = Content Filters
+page-connections = Connections
+page-accessibility = Accessibility
+description-privacy = Choose who can see your profile details and manage privacy preferences.
+description-content-filters = Manage the content filters Discord supports for your account.
+description-connections = Manage accounts connected to your Discord profile.
+description-accessibility = Adjust text, motion and scrolling for comfortable reading.
+
+# Server moderation and AutoMod
+automod-title = AutoMod
+automod-description = Manage automatic filters and the actions Discord takes when they match.
+automod-name = Rule name
+automod-enabled = Enable rule
+automod-keywords = Keywords — one per line
+automod-regex = Regular expressions — one per line
+automod-profanity = Profanity
+automod-sexual = Sexual content
+automod-slurs = Slurs
+automod-allow = Allow list — one per line
+automod-mention-limit = Allowed unique mentions
+automod-raid = Detect mention raids
+automod-actions = Actions
+automod-block-interaction = Block member interactions
+automod-block-message = Block message
+automod-alert = Send an alert
+automod-timeout = Time out member
+automod-block-explanation = Explanation shown to the member
+automod-select-channel = Choose an alert channel
+automod-timeout-seconds = Timeout duration (seconds)
+automod-exempt-roles = Exempt roles
+automod-exempt-channels = Exempt channels
+automod-clear-unavailable-roles = Remove unavailable roles
+automod-clear-unavailable-channels = Remove unavailable channels
+automod-save = Save rule
+automod-cancel = Cancel
+automod-invalid = Check the rule limits, permissions and available channels. Refresh if server settings changed.
+automod-refresh = Refresh rules
+automod-create = Create rule
+automod-empty = No automatic moderation rules.
+automod-enabled-state = Enabled
+automod-disabled-state = Disabled
+automod-edit = Edit
+automod-delete = Delete rule
+automod-delete-confirm = Delete this AutoMod rule?
+automod-keyword = Custom keywords
+automod-spam = Spam detection
+automod-presets = Commonly flagged words
+automod-mentions = Mention spam
+automod-profile = Member profile keywords
+automod-concurrent = This rule changed while you were editing. Review and reapply your changes to its latest settings.
+automod-reapply = Reapply my changes
+moderation-title = Moderation
+moderation-reason = Reason (optional; recorded in the server audit log)
+moderation-member = Member name or ID
+moderation-choose-member = Choose a loaded member
+moderation-lookup = Find member
+moderation-lookup-help = Choose a member from this conversation or enter their user ID.
+moderation-timeout-until = Timed out until
+moderation-timeout = Time out
+moderation-remove-timeout = Remove timeout
+moderation-keep-messages = Keep messages
+moderation-ban = Ban
+moderation-kick = Kick
+moderation-bans = Banned members
+moderation-refresh-bans = Refresh bans
+moderation-no-bans = No banned members on this page.
+moderation-unban = Unban
+moderation-next-bans = Next page
+moderation-confirm-unban = Unban this member?
+moderation-confirm-kick = Kick this member?
+moderation-confirm-ban = Ban this member?
+moderation-confirm-timeout = Change this member’s timeout?
+moderation-confirm-description = Review this action and its reason before applying it to the selected member.
+moderation-confirm = Confirm
+moderation-days = days
+moderation-hours = hours
+moderation-minutes = minutes
+server-roles-permissions-ban-members = Ban members
+
+## Native community administration
+community-onboarding = Onboarding
+community-channels-roles = Channels & Roles
+community-screening = Rules Screening
+community-guide = Server Guide
+community-onboarding-description = Choose the channels, questions and roles that welcome members into your community.
+community-screening-description = Ask new members to accept your rules before they can participate.
+community-guide-description = Give new members a welcome message, first steps and useful resources.
+community-loading = Loading community settings…
+community-reload = Reload settings
+community-refresh-required = Reload before saving again. Your draft stays here.
+community-manage-roles-required = Managing onboarding also requires the Manage Roles permission.
+community-saving = Saving community settings…
+community-onboarding-enabled = Enable onboarding
+community-mode-default = Default: count default channels
+community-mode-advanced = Advanced: count default channels and questions
+community-onboarding-requirements = Enabling requires at least 7 channels, with 5 that @everyone can view and send messages in. Advanced mode also counts channels assigned by join questions.
+community-below-requirements = Discord reports that this configuration is below its onboarding requirements.
+community-default-channels = Default channels
+community-default-description = Members automatically see these channels when they join.
+community-custom-questions = Channels & Roles questions
+community-join-questions = Questions shown when joining
+community-new-question = Untitled question
+community-move-up = Move up
+community-move-down = Move down
+community-remove = Remove
+community-add-question = Add question
+community-question-title = Question
+community-dropdown = Dropdown
+community-multiple-choice = Multiple choice
+community-single-select = Allow only one answer
+community-required = Required
+community-show-on-join = Show before joining
+community-new-answer = Untitled answer
+community-answer-title = Answer
+community-answer-description = Description
+community-answer-channels = Channels shown for this answer
+community-answer-roles = Roles assigned for this answer
+community-remove-answer = Remove answer
+community-add-answer = Add answer
+community-unknown-prompt = This server has a question type Serein cannot edit. Other settings are preserved.
+community-screening-enabled = Require members to complete screening
+community-disable-screening-warning = Disabling screening also resolves pending applications. Choose what happens to them before saving.
+community-approve-pending = Approve pending applications
+community-reject-pending = Reject pending applications
+community-server-description = About this server
+community-field-label = Question or rules heading
+community-field-description = Additional information
+community-field-placeholder = Answer placeholder
+community-add-rule = Add rule
+community-add-choice = Add choice
+community-unknown-field = This question type is read-only. Its original metadata is preserved.
+community-add-rules = Add rules
+community-add-short-answer = Add short answer
+community-add-paragraph = Add paragraph
+community-add-multiple-choice = Add multiple choice
+community-manual-approval-required = Text and multiple-choice applications require Discord's manual approval feature for this server.
+community-preview = Member preview
+community-agree-preview = I have read and agree to the rules
+community-guide-enabled = Enable Server Guide
+community-welcome-message = Welcome message
+community-welcome-placeholder = Use [@username] to include the new member's name.
+community-welcome-authors = Welcome message authors
+community-add-me = Add me as an author
+community-find-author = Find a member by name
+community-search = Search
+community-guide-requirements = Enabling requires a welcome message of 7–300 characters and 3–5 first steps. All guide channels must be visible to @everyone; chat steps must also allow sending messages. Choose up to 10 authors with Manage Server or Manage Roles.
+community-new-member-actions = New member first steps
+community-resource-channels = Resource channels
+community-guide-channel-title = Title
+community-guide-channel-description = Description
+community-action-chat = Send a message
+community-action-view = View the channel
+community-add-action = Add first step
+community-add-resource = Add resource
+community-choose-channel = Choose a channel
+community-select-channels = Select channels
+community-filter-channels = Filter channels
+community-unavailable-channel = Unavailable channel
+community-unavailable-role = Unavailable role
+community-emoji = Emoji
+community-server-emoji = Server emoji
+community-clear = Clear
+community-guide-artwork = Guide artwork
+community-guide-artwork-hint = Save changes to your guide before changing its artwork. Choose an image up to 8 MB; Serein shows a preview before you save it.
+community-welcome-sign = Welcome sign
+community-choose-artwork = Choose image
+community-remove-artwork = Remove image
+community-save-artwork = Save artwork
+community-discard-artwork = Discard image
+member-guide-unavailable = This server has no guide available to you.
+member-guide-chat = Go to channel and say hello
+member-guide-view = Open channel
+member-guide-welcomed-by = Welcomed by
+member-guide-unknown-author = Welcome author
+channel-voice-bitrate = Voice bitrate
+channel-voice-bitrate-hint = Higher bitrates require more bandwidth. Discord applies this server's Boost limit.
+channel-voice-user-limit = User limit
+channel-voice-unlimited = 0 allows an unlimited number of users.
+channel-voice-region = Region override
+channel-voice-automatic = Automatic
+channel-voice-video-quality = Video quality
+
+# Desktop Inbox
+inbox-unread = Unread
+inbox-mentions = Mentions
+inbox-saved = Bookmarks
+inbox-filter = Filter by conversation or server
+inbox-include-muted = Include muted conversations
+inbox-current-place = Current server or direct messages
+inbox-open-conversation = Open conversation
+inbox-mark-read = Mark as read
+inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
+inbox-dismiss = Dismiss
+inbox-bookmark = Bookmark message
+inbox-unsave = Remove bookmark
+inbox-remind = Remind me
+inbox-in-hour = In 1 hour
+inbox-in-day = In 1 day
+inbox-in-week = In 1 week
+inbox-clear-reminder = Clear reminder
+inbox-message-unavailable = Message unavailable
+inbox-service-availability = Availability depends on your Discord account.
+inbox-spoiler = Spoiler
+inbox-custom-reminder = Custom date and time (UTC)
+inbox-set-reminder = Set reminder
+restricted-blocked-message = Blocked message
+restricted-ignored-message = Ignored message
+restricted-show-message = Show message
+restricted-hide-message = Hide message
+announcement-publish = Publish
+announcement-publish-title = Publish announcement?
+announcement-publish-detail = This sends the announcement to servers that follow this channel. If a previous attempt was not confirmed, check its publication status before publishing again.
+group-members-title = Manage Members
+group-members-refresh = Refresh Members
+group-members-refresh-help = Refresh to check current group ownership and available places before changing members.
+group-members-count = { $count } / 10 members, including you
+group-members-owner = Group owner
+group-members-transfer = Make Owner
+group-members-transfer-confirm = Make { $name } the group owner? You will lose the ability to remove members or choose another owner.
+group-create-title = New Group DM
+group-create-detail = Choose 2–9 friends. Your current conversation and draft remain available.
+group-create-count = { $count } / 9 friends selected
+group-members-add-heading = Add a friend
+group-members-search = Search friends
+group-members-add = Add
+group-members-remove = Remove
+group-members-remove-confirm = Remove { $name } from this group? They will need an invitation to rejoin.
+group-members-cancel = Cancel
+group-members-done = Done
+group-members-no-friends = No matching friends can be added. Groups allow up to 10 members.
+thread-create-private-detail = Only invited members and server members with Manage Threads can see this private thread.
+thread-create-public = Public thread
+thread-create-private = Private thread
+thread-create-invitable = Let members invite others
+post-tags-title = Edit Tags
+post-tags-changed = Tags changed while this editor was open. Reload before saving.
+post-tags-reload = Reload Tags
+post-tags-limit = Choose up to 5 tags. Moderated tags require Manage Threads to add or remove.
+post-tags-save = Save Tags
+thread-members-title = Thread Members
+thread-members-search = Search members and friends
+thread-members-empty = No matching members are loaded. Refresh to check the current member list.
+thread-members-invite-help = Invite a friend, or enter a server member's user ID. Private threads must allow invitations unless you can manage threads.
+thread-members-user-id = Server member user ID
+thread-members-invite = Invite
+thread-members-remove-confirm = Remove user { $user } from this thread? They will need to join or be invited again.
+announcement-follow = Follow
+announcement-follow-title = Follow Announcement Channel
+announcement-follow-detail = Published announcements will be delivered to the channel you choose. You need Manage Webhooks there. Manage or unfollow this feed in that server's Integrations settings.
+announcement-follow-search = Search servers and channels
+announcement-follow-no-targets = No matching destinations are available with your current permissions.

@@ -15,18 +15,31 @@ enum Page {
 	Safety,
 	Emoji,
 	Stickers,
+	Soundboard,
 	Members,
 	Roles,
 	Invites,
 	Integrations,
 	AuditLog,
+	AutoMod,
+	Moderation,
+	Onboarding,
+	ChannelsRoles,
+	Screening,
+	Guide,
 }
 impl Page {
 	fn allowed(self, state: &State, guild: Id) -> bool {
 		match self {
+			Self::Onboarding | Self::ChannelsRoles | Self::Screening | Self::Guide => {
+				state.can_open_community_settings(guild)
+			}
+			Self::AutoMod => state.can_manage_guild(guild),
+			Self::Moderation => state.can_open_moderation(guild),
 			Self::Profile | Self::Engagement | Self::Safety => state.can_manage_guild(guild),
 			Self::Emoji => state.can_open_emoji_settings(guild),
 			Self::Stickers => state.can_open_sticker_settings(guild),
+			Self::Soundboard => state.can_open_sound_settings(guild),
 			Self::Members => state.can_open_member_settings(guild),
 			Self::Roles => state.can_open_role_settings(guild),
 			Self::Invites => state.can_open_invite_settings(guild),
@@ -36,11 +49,18 @@ impl Page {
 	}
 	fn label(self) -> &'static str {
 		match self {
+			Self::Onboarding => "community-onboarding",
+			Self::ChannelsRoles => "community-channels-roles",
+			Self::Screening => "community-screening",
+			Self::Guide => "community-guide",
+			Self::AutoMod => "automod-title",
+			Self::Moderation => "moderation-title",
 			Self::Profile => "server-settings-page-profile",
 			Self::Engagement => "server-settings-page-engagement",
 			Self::Safety => "server-settings-page-safety",
 			Self::Emoji => "server-settings-page-emoji",
 			Self::Stickers => "server-settings-page-stickers",
+			Self::Soundboard => "server-settings-page-soundboard",
 			Self::Members => "server-settings-page-members",
 			Self::Roles => "server-settings-page-roles",
 			Self::Invites => "server-settings-page-invites",
@@ -52,6 +72,9 @@ impl Page {
 
 #[derive(Default)]
 pub(super) struct Editor {
+	community: crate::community_admin::CommunityUi,
+	automod: crate::server_automod::AutoModUi,
+	moderation: crate::server_moderation::ModerationUi,
 	scope: Option<(u64, Id)>,
 	page: Page,
 	draft: Option<Settings>,
@@ -71,6 +94,7 @@ pub(super) struct Editor {
 	emoji_picker: crate::emoji_picker::Picker,
 	pub(super) admin: crate::server_admin::Admin,
 	stickers: crate::server_stickers::StickersUi,
+	sounds: crate::server_sounds::SoundsUi,
 	roles: crate::server_roles::RolesUi,
 	invites: crate::server_invites::InvitesUi,
 	integrations: crate::server_integrations::IntegrationsUi,
@@ -78,6 +102,72 @@ pub(super) struct Editor {
 }
 
 impl MessagingUi {
+	pub fn take_community_artwork_request(&mut self) -> Option<(u64, Id, Option<Id>, bool, u64)> {
+		let (generation, guild) = self.server_settings.scope?;
+		let (channel, resource, request) = self.server_settings.community.take_artwork_request()?;
+		Some((generation, guild, channel, resource, request))
+	}
+	pub fn community_artwork_active(&self, scope: (u64, Id, Option<Id>, bool, u64)) -> bool {
+		self.server_settings.scope == Some((scope.0, scope.1))
+			&& self
+				.server_settings
+				.community
+				.artwork_active((scope.2, scope.3, scope.4))
+	}
+	pub fn accept_community_artwork(
+		&mut self,
+		ctx: &egui::Context,
+		scope: (u64, Id, Option<Id>, bool, u64),
+		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
+	) {
+		if self.server_settings.scope == Some((scope.0, scope.1)) {
+			self.server_settings
+				.community
+				.accept_artwork(ctx, (scope.2, scope.3, scope.4), result);
+		}
+	}
+	pub fn preview_server_moderation(
+		&mut self,
+		state: &mut State,
+		guild: Id,
+		user: Option<Id>,
+	) -> Option<Command> {
+		if !state.can_open_moderation(guild) {
+			return None;
+		}
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::Moderation,
+			..Default::default()
+		};
+		if let Some(user) = user {
+			self.server_settings
+				.moderation
+				.select(state.generation, guild, user);
+			state.request_server_admin(
+				guild,
+				model::server_admin::Action::Moderation(model::moderation::Action::Member(user)),
+			)
+		} else {
+			None
+		}
+	}
+	pub fn preview_server_automod(&mut self, state: &mut State, guild: Id) -> Option<Command> {
+		if !state.can_manage_guild(guild) {
+			return None;
+		}
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::AutoMod,
+			..Default::default()
+		};
+		state.request_server_admin(
+			guild,
+			model::server_admin::Action::AutoMod(model::automod::Action::Load),
+		)
+	}
 	/// Select the engagement page in the offline preview harness.
 	pub fn preview_server_engagement(&mut self) {
 		self.server_settings.page = Page::Engagement;
@@ -138,9 +228,23 @@ impl MessagingUi {
 			}
 			return command;
 		}
+		if page == "automod" {
+			return self.preview_server_automod(state, guild);
+		}
+		if page == "moderation" {
+			return self.preview_server_moderation(state, guild, None);
+		}
 		let webhooks = page == "webhooks";
 		let expand_audit = page == "audit-log-expanded";
-		let page = if matches!(page, "audit-log" | "audit-log-expanded") {
+		let page = if page == "onboarding" {
+			Page::Onboarding
+		} else if page == "channels-roles" {
+			Page::ChannelsRoles
+		} else if page == "screening" {
+			Page::Screening
+		} else if page == "guide" {
+			Page::Guide
+		} else if matches!(page, "audit-log" | "audit-log-expanded") {
 			Page::AuditLog
 		} else if matches!(page, "integrations" | "webhooks") {
 			Page::Integrations
@@ -150,6 +254,8 @@ impl MessagingUi {
 			Page::Members
 		} else if page == "stickers" {
 			Page::Stickers
+		} else if page == "soundboard" {
+			Page::Soundboard
 		} else {
 			Page::Emoji
 		};
@@ -162,7 +268,21 @@ impl MessagingUi {
 			page,
 			..Editor::default()
 		};
-		if page == Page::AuditLog {
+		if matches!(
+			page,
+			Page::Onboarding | Page::ChannelsRoles | Page::Screening | Page::Guide
+		) {
+			state.request_server_admin(
+				guild,
+				model::server_admin::Action::Community(model::community_admin::Action::Load(
+					match page {
+						Page::Screening => model::community_admin::Section::Screening,
+						Page::Guide => model::community_admin::Section::Guide,
+						_ => model::community_admin::Section::Onboarding,
+					},
+				)),
+			)
+		} else if page == Page::AuditLog {
 			self.server_settings.audit_log.preview(expand_audit);
 			self.server_settings.audit_log.load(state, guild)
 		} else if page == Page::Integrations {
@@ -172,6 +292,8 @@ impl MessagingUi {
 			self.server_settings.invites.load(state, guild)
 		} else if page == Page::Stickers {
 			self.server_settings.stickers.load(state, guild)
+		} else if page == Page::Soundboard {
+			self.server_settings.sounds.load(state, guild)
 		} else {
 			self.server_settings
 				.admin
@@ -202,6 +324,72 @@ impl MessagingUi {
 			self.server_settings.stickers.accept(ctx, result);
 		}
 	}
+	pub fn take_server_sound_request(&mut self) -> Option<(u64, Id, u64)> {
+		let (generation, guild) = self.server_settings.scope?;
+		if !self.server_settings.sounds.take_request() {
+			return None;
+		}
+		self.server_sticker_sequence = self.server_sticker_sequence.wrapping_add(1);
+		self.server_settings.sounds.request = self.server_sticker_sequence;
+		Some((generation, guild, self.server_sticker_sequence))
+	}
+	pub fn accept_server_sound(
+		&mut self,
+		scope: (u64, Id, u64),
+		result: Result<Option<crate::server_sounds::PreparedSound>, &'static str>,
+	) {
+		if self.server_settings.scope == Some((scope.0, scope.1))
+			&& self.server_settings.sounds.request == scope.2
+		{
+			self.server_settings.sounds.accept(result);
+		}
+	}
+	/// The reviewed sound's scope while its dialog is open.
+	fn server_sound_scope(&self) -> Option<(u64, Id, u64)> {
+		let (generation, guild) = self.server_settings.scope?;
+		Some((generation, guild, self.server_settings.sounds.request))
+	}
+	/// A selection of the reviewed sound to encode for upload.
+	pub fn take_server_sound_trim(&mut self) -> Option<((u64, Id, u64), u32, u32)> {
+		let scope = self.server_sound_scope()?;
+		let (start, end) = self.server_settings.sounds.take_trim()?;
+		Some((scope, start, end))
+	}
+	pub fn accept_server_sound_trim(
+		&mut self,
+		scope: (u64, Id, u64),
+		result: Result<Vec<u8>, &'static str>,
+	) {
+		if self.server_sound_scope() == Some(scope) {
+			self.server_settings.sounds.accept_trim(result);
+		}
+	}
+	/// A request to play (`Some`) or stop (`None`) the reviewed selection locally.
+	#[allow(clippy::type_complexity)]
+	pub fn take_server_sound_preview(
+		&mut self,
+	) -> Option<((u64, Id, u64), Option<(u32, u32, u8)>)> {
+		let scope = self.server_sound_scope()?;
+		Some((scope, self.server_settings.sounds.take_preview()?))
+	}
+	/// The scope of the sound being chosen or reviewed. Decoded audio for any other scope,
+	/// including a review that was reset without closing, can be released.
+	pub fn server_sound_review(&self) -> Option<(u64, Id, u64)> {
+		self.server_settings
+			.sounds
+			.reviewing()
+			.then(|| self.server_sound_scope())
+			.flatten()
+	}
+	/// True once after the sound review closed; its decoded audio can be released.
+	pub fn take_server_sound_closed(&mut self) -> bool {
+		self.server_settings.sounds.take_closed()
+	}
+	/// Offline preview: open the upload review with a synthetic sound.
+	#[cfg(feature = "demo")]
+	pub fn preview_server_sound_upload(&mut self, prepared: crate::server_sounds::PreparedSound) {
+		self.server_settings.sounds.preview_upload(prepared);
+	}
 	pub fn queue_server_emoji_drop(&mut self, paths: Vec<std::path::PathBuf>) {
 		if self.accepts_server_emoji_drops() {
 			self.server_settings.admin.queue_files(paths);
@@ -231,8 +419,12 @@ impl MessagingUi {
 			&& (self.server_settings.dirty()
 				|| self.server_settings.submitted
 				|| self.server_settings.icon_pending)
+			|| self.server_settings.community.has_changes()
+			|| self.server_settings.automod.has_changes()
+			|| self.server_settings.moderation.has_changes()
 			|| self.server_settings.admin.has_changes()
 			|| self.server_settings.stickers.has_changes()
+			|| self.server_settings.sounds.has_changes()
 			|| self.server_settings.roles.has_changes()
 			|| self.server_settings.invites.busy()
 			|| self.server_settings.integrations.has_changes()
@@ -240,6 +432,9 @@ impl MessagingUi {
 	/// Opens the same permission-checked editor used by the server menu.
 	pub fn preview_server_settings(&mut self, state: &mut State, guild: Id) -> Option<Command> {
 		if !state.can_manage_guild(guild) {
+			if state.can_open_moderation(guild) {
+				return self.preview_server_moderation(state, guild, None);
+			}
 			if state.can_open_role_settings(guild) {
 				return self.preview_server_roles(state, guild, None);
 			}
@@ -324,10 +519,15 @@ impl Editor {
 		if !self.is_open() {
 			return true;
 		}
-		if self.integrations.has_changes()
+		if self.community.has_changes()
+			|| self.automod.has_changes()
+			|| self.moderation.has_changes()
+			|| self.integrations.has_changes()
 			|| self.roles.has_changes()
 			|| self.invites.busy()
 			|| self.dirty()
+			|| self.automod.has_changes()
+			|| self.moderation.has_changes()
 			|| self.admin.has_changes()
 			|| state.server_admin.saving
 			|| state.server_settings.saving
@@ -373,7 +573,8 @@ impl Editor {
 				|| state.can_open_member_settings(guild)
 				|| state.can_open_role_settings(guild)
 				|| state.can_open_integration_settings(guild)
-				|| state.can_open_audit_log_settings(guild))
+				|| state.can_open_audit_log_settings(guild)
+				|| state.can_open_moderation(guild))
 			|| !state.guilds.iter().any(|known| known.id == guild)
 		{
 			*self = Self::default();
@@ -398,6 +599,8 @@ impl Editor {
 				Page::Emoji
 			} else if state.can_open_sticker_settings(guild) {
 				Page::Stickers
+			} else if state.can_open_moderation(guild) {
+				Page::Moderation
 			} else if state.can_open_member_settings(guild) {
 				Page::Members
 			} else if state.can_open_integration_settings(guild) {
@@ -405,8 +608,12 @@ impl Editor {
 			} else {
 				Page::AuditLog
 			};
+			self.community = crate::community_admin::CommunityUi::default();
+			self.automod = crate::server_automod::AutoModUi::default();
+			self.moderation = crate::server_moderation::ModerationUi::default();
 			self.admin = crate::server_admin::Admin::default();
 			self.stickers = crate::server_stickers::StickersUi::default();
+			self.sounds = crate::server_sounds::SoundsUi::default();
 			self.roles = crate::server_roles::RolesUi::default();
 			self.invites = crate::server_invites::InvitesUi::default();
 			self.integrations = crate::server_integrations::IntegrationsUi::default();
@@ -442,6 +649,11 @@ impl Editor {
 		}
 		if self.page == Page::Stickers
 			&& let Some(command) = self.stickers.load(state, guild)
+		{
+			commands.push(command);
+		}
+		if self.page == Page::Soundboard
+			&& let Some(command) = self.sounds.load(state, guild)
 		{
 			commands.push(command);
 		}
@@ -515,8 +727,12 @@ impl Editor {
 		if !invite_overlay && close {
 			if self.dirty()
 				|| state.server_settings.saving
+				|| self.community.has_changes()
+				|| self.automod.has_changes()
+				|| self.moderation.has_changes()
 				|| self.admin.has_changes()
 				|| self.stickers.has_changes()
+				|| self.sounds.has_changes()
 				|| self.roles.has_changes()
 				|| self.integrations.has_changes()
 				|| self.invites.busy()
@@ -525,8 +741,12 @@ impl Editor {
 				self.discard = true;
 			} else {
 				self.scope = None;
+				self.community = crate::community_admin::CommunityUi::default();
+				self.automod = crate::server_automod::AutoModUi::default();
+				self.moderation = crate::server_moderation::ModerationUi::default();
 				self.roles = crate::server_roles::RolesUi::default();
 				self.stickers = crate::server_stickers::StickersUi::default();
+				self.sounds = crate::server_sounds::SoundsUi::default();
 				self.invites = crate::server_invites::InvitesUi::default();
 				self.integrations = crate::server_integrations::IntegrationsUi::default();
 				self.audit_log = crate::server_audit_log::AuditLogUi::default();
@@ -577,16 +797,23 @@ impl Editor {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
-		const PAGES: [Page; 10] = [
+		const PAGES: [Page; 17] = [
 			Page::Profile,
 			Page::Engagement,
 			Page::Safety,
+			Page::Onboarding,
+			Page::ChannelsRoles,
+			Page::Screening,
+			Page::Guide,
 			Page::Emoji,
 			Page::Stickers,
+			Page::Soundboard,
 			Page::Members,
 			Page::Roles,
 			Page::Invites,
 			Page::Integrations,
+			Page::AutoMod,
+			Page::Moderation,
 			Page::AuditLog,
 		];
 		let colors = design::palette(ui);
@@ -627,7 +854,7 @@ impl Editor {
 							"server-settings-show-moderation"
 						} else if page == Page::Integrations {
 							"server-settings-show-apps"
-						} else if matches!(page, Page::Emoji | Page::Stickers) {
+						} else if matches!(page, Page::Emoji | Page::Stickers | Page::Soundboard) {
 							"server-settings-show-expression"
 						} else {
 							"server-settings-show-people"
@@ -823,6 +1050,32 @@ impl Editor {
 		commands: &mut Vec<Command>,
 	) {
 		match self.page {
+			Page::Onboarding | Page::ChannelsRoles | Page::Screening | Page::Guide => {
+				self.community.show(
+					ui,
+					state,
+					guild,
+					(
+						match self.page {
+							Page::Screening => model::community_admin::Section::Screening,
+							Page::Guide => model::community_admin::Section::Guide,
+							_ => model::community_admin::Section::Onboarding,
+						},
+						self.page == Page::ChannelsRoles,
+					),
+					avatars,
+					commands,
+				);
+				return;
+			}
+			Page::AutoMod => {
+				self.automod.show(ui, state, guild, commands);
+				return;
+			}
+			Page::Moderation => {
+				self.moderation.show(ui, state, guild, commands);
+				return;
+			}
 			Page::AuditLog => {
 				self.audit_log.show(ui, state, guild, avatars, commands);
 				return;
@@ -841,6 +1094,10 @@ impl Editor {
 			}
 			Page::Stickers => {
 				self.stickers.show(ui, state, guild, avatars, commands);
+				return;
+			}
+			Page::Soundboard => {
+				self.sounds.show(ui, state, guild, avatars, commands);
 				return;
 			}
 			Page::Emoji | Page::Members => {

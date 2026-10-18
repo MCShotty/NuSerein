@@ -2,7 +2,7 @@ use crate::{
 	State,
 	auth::{AuthState, Failure},
 };
-use model::{Freshness, Id, Patch};
+use model::{Channel, Freshness, Id, Patch};
 use std::collections::BTreeMap;
 
 pub enum Event {
@@ -49,6 +49,28 @@ impl Event {
 			}
 	}
 }
+#[derive(Clone)]
+enum Scope {
+	All,
+	Category(Id),
+	Guilds(Vec<Id>),
+}
+impl Scope {
+	fn includes(&self, state: &State, channel: &Channel) -> bool {
+		match self {
+			Self::All => true,
+			Self::Category(category) => state.channel(*category).is_some_and(|parent| {
+				parent.kind == 4
+					&& parent.guild.is_some()
+					&& channel.guild == parent.guild
+					&& state
+						.notification_path(channel.id)
+						.is_some_and(|path| path.contains(&Some(*category)))
+			}),
+			Self::Guilds(guilds) => channel.guild.is_some_and(|guild| guilds.contains(&guild)),
+		}
+	}
+}
 enum Pending {
 	Channel {
 		channel: Id,
@@ -78,6 +100,8 @@ enum Pending {
 enum Scope {
 	/// Every server channel and direct message.
 	All,
+	/// Accessible children and threads within one category.
+	Category(Id),
 	/// Channels of these servers, sorted and bounded by the folder guild limit.
 	Guilds(Box<[Id]>),
 }
@@ -92,10 +116,18 @@ impl Scope {
 		guilds.dedup();
 		Self::Guilds(guilds.into())
 	}
-	fn covers(&self, guild: Option<Id>) -> bool {
+	fn includes(&self, state: &State, channel: &Channel) -> bool {
 		match self {
 			Self::All => true,
-			Self::Guilds(guilds) => guild.is_some_and(|guild| guilds.binary_search(&guild).is_ok()),
+			Self::Category(category) => state.channel(*category).is_some_and(|parent| {
+				parent.kind == 4
+					&& parent.guild.is_some()
+					&& channel.guild == parent.guild
+					&& state
+						.notification_path(channel.id)
+						.is_some_and(|path| path.contains(&Some(*category)))
+			}),
+			Self::Guilds(guilds) => channel.guild.is_some_and(|guild| guilds.binary_search(&guild).is_ok()),
 		}
 	}
 }
@@ -166,6 +198,98 @@ impl ReadState {
 	}
 }
 impl State {
+	/// Unread navigation uses loaded metadata only and never opens a call or acknowledges history.
+	pub fn next_unread_channel(&self, previous: bool) -> Option<Id> {
+		if !self.gateway_connected {
+			return None;
+		}
+		let mut channels: Vec<_> = self
+			.channels
+			.iter()
+			.filter(|channel| {
+				self.can_read_history(channel.id)
+					&& channel.kind != 4
+					&& !self.message_request_pending(channel.id)
+					&& !self.spam_direct(channel.id)
+			})
+			.collect();
+		let guilds: std::collections::BTreeMap<_, _> = self
+			.guild_folders
+			.as_ref()
+			.map(|settings| {
+				settings
+					.folders
+					.iter()
+					.flat_map(|folder| &folder.guild_ids)
+					.enumerate()
+					.map(|(rank, id)| (*id, rank))
+					.collect()
+			})
+			.unwrap_or_else(|| {
+				self.guilds
+					.iter()
+					.enumerate()
+					.map(|(rank, guild)| (guild.id, rank))
+					.collect()
+			});
+		channels.sort_by_cached_key(|channel| {
+			if channel.guild.is_none() {
+				(
+					0,
+					0,
+					i32::MIN,
+					std::cmp::Reverse(self.channel_activity(channel)),
+					0,
+					channel.id,
+				)
+			} else {
+				let category = self
+					.notification_path(channel.id)
+					.into_iter()
+					.flatten()
+					.flatten()
+					.filter_map(|id| self.channel(id))
+					.find(|parent| parent.kind == 4);
+				(
+					1,
+					channel
+						.guild
+						.and_then(|id| guilds.get(&id).copied())
+						.unwrap_or(usize::MAX),
+					category.map_or(i32::MIN, |category| category.position),
+					std::cmp::Reverse(Id(0)),
+					channel.position,
+					channel.id,
+				)
+			}
+		});
+		let current = self
+			.selected
+			.and_then(|selected| channels.iter().position(|channel| channel.id == selected));
+		let len = channels.len();
+		for offset in 1..=len {
+			let index = match current {
+				Some(current) if previous => (current + len - offset) % len,
+				Some(current) => (current + offset) % len,
+				None if previous => len - offset,
+				None => offset - 1,
+			};
+			let channel = channels[index];
+			if Some(channel.id) == self.selected {
+				continue;
+			}
+			let ping = self.unread_count(channel.id) > 0;
+			let muted = if channel.guild.is_some() {
+				self.muted_for_guild_rail(channel)
+			} else {
+				self.dm_muted(channel.id) == Some(true)
+			};
+			if ping || (self.channel_unread(channel) == Some(true) && !muted) {
+				return Some(channel.id);
+			}
+		}
+		None
+	}
 	pub fn read_marker(&self, channel: Id) -> Option<Option<Id>> {
 		if !self.gateway_connected
 			|| !self.can_view(channel)
@@ -250,6 +374,30 @@ impl State {
 				.selected
 				.is_some_and(|channel| self.read_marker(channel).is_some())
 	}
+	/// Explicit unread navigation may replace a pending targeted page in this channel.
+	/// It never acknowledges messages and preserves the existing safe offline fallback.
+	pub fn open_channel_unread(
+		&mut self,
+		guild: Option<Id>,
+		channel: Id,
+	) -> Result<Option<crate::Command>, &'static str> {
+		let command = self.open_chat_link(guild, channel, None)?;
+		if self.auth != AuthState::Authenticated
+			|| !self.gateway_connected
+			|| !self.can_read_history(channel)
+			|| self.missed(channel) != Some(true)
+		{
+			return Ok(command);
+		}
+		let Some(marker) = self.read_marker(channel) else {
+			return Ok(command);
+		};
+		if self.can_jump_unread() {
+			return Ok(self.open_unread().or(command));
+		}
+		Ok(Some(self.open_after_window(marker.unwrap_or(Id(0)))))
+	}
+
 	/// Scroll to a loaded unread boundary, or request its first bounded page.
 	/// Zero is only a pagination cursor for a known empty marker.
 	pub fn open_unread(&mut self) -> Option<crate::Command> {
@@ -382,12 +530,18 @@ impl State {
 	}
 	/// Explicit sidebar acknowledgement uses known channel metadata without navigating.
 	pub fn can_mark_channel_read(&self, channel: Id) -> bool {
+		if self.channel(channel).is_some_and(|source| source.kind == 4) {
+			return self.can_bulk_ack(&Scope::Category(channel));
+		}
 		self.auth == AuthState::Authenticated
 			&& self.gateway_connected
 			&& self.read_state.pending.is_none()
 			&& self.unread(channel) == Some(true)
 	}
 	pub fn prepare_mark_channel_read(&mut self, channel: Id) -> Option<crate::Command> {
+		if self.channel(channel).is_some_and(|source| source.kind == 4) {
+			return self.prepare_bulk_ack(Scope::Category(channel));
+		}
 		if !self.can_mark_channel_read(channel) {
 			return None;
 		}
@@ -560,7 +714,7 @@ impl State {
 		self.channels
 			.iter()
 			.filter(move |channel| {
-				scope.covers(channel.guild) && self.unread(channel.id) == Some(true)
+				scope.includes(self, channel) && self.unread(channel.id) == Some(true)
 			})
 			.filter_map(|channel| {
 				let message = channel.last_message?;
@@ -953,6 +1107,9 @@ impl State {
 				self.read_state.revision = self.read_state.revision.wrapping_add(1);
 				let revision = self.read_state.revision;
 				for (channel, epoch, message) in channels {
+					if !self.can_view(channel) {
+						continue;
+					}
 					if !self.read_state.entries.contains_key(&channel)
 						&& self.read_state.entries.len() >= crate::MAX_NAV
 					{
@@ -1080,6 +1237,38 @@ mod navigation_tests {
 		state.reply = Some(Reply::to(Id(500)));
 		state
 	}
+	#[test]
+	fn explicit_unread_navigation_replaces_pending_targets_without_ack_or_draft_loss() {
+		let mut state = state(Some(Id(100)));
+		let _ = state.open_after_window(Id(250));
+		let retired = state.request;
+		assert!(!state.can_jump_unread());
+		assert!(state.open_chat_link(None, Id(1), None).unwrap().is_none());
+		assert!(state.open_unread().is_none());
+		let Some(Command::History {
+			after: Some(Id(100)),
+			request,
+			..
+		}) = state.open_channel_unread(None, Id(1)).unwrap()
+		else {
+			panic!("must start at the unread boundary")
+		};
+		assert_ne!(request, retired);
+		assert!(state.read_state.pending.is_none());
+		assert_eq!(state.drafts[&Id(1)], "Preserve draft");
+		apply(
+			&mut state,
+			CoreEvent::History {
+				channel: Id(1),
+				request: retired,
+				older: false,
+				messages: vec![message(300)],
+			},
+		);
+		assert!(state.timeline.get(Id(300)).is_none());
+		assert_eq!(state.read_marker(Id(1)), Some(Some(Id(100))));
+	}
+
 	#[test]
 	fn newest_live_cursor_skips_deleted_tail_payloads_and_placeholders() {
 		for preserve in [false, true] {

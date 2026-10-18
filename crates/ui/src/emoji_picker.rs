@@ -651,6 +651,12 @@ impl Picker {
 		self.query.clear();
 		self.filter();
 	}
+	pub(crate) fn reaction_message(&self) -> Option<Id> {
+		self.reaction.and_then(|(target, _, _)| match target {
+			Target::React(message) if self.open => Some(message),
+			_ => None,
+		})
+	}
 
 	pub(crate) fn show_reaction(
 		&mut self,

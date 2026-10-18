@@ -28,6 +28,7 @@ pub struct Command {
 	#[serde(rename = "type", default = "chat_input")]
 	pub kind: u8,
 	pub name: String,
+	#[serde(default)]
 	pub description: String,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub options: Vec<CommandOption>,
@@ -149,6 +150,7 @@ pub struct Argument {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invocation {
+	pub target: Option<Id>,
 	pub command: Command,
 	pub options: Vec<Argument>,
 }
@@ -220,6 +222,7 @@ impl CommandOption {
 			(4, Value::Integer(n)) => (-SAFE_INTEGER..=SAFE_INTEGER).contains(n),
 			(5, Value::Boolean(_)) => true,
 			(6..=9, Value::String(s)) => s.parse::<Id>().is_ok(),
+			(11, Value::String(s)) => s.parse::<u8>().is_ok_and(|i| i < 10 && i.to_string() == *s),
 			(10, Value::Integer(_) | Value::Number(_)) => value
 				.number()
 				.is_some_and(|n| n.is_finite() && n.abs() <= SAFE_INTEGER as f64),
@@ -253,7 +256,7 @@ impl CommandOption {
 			}
 		}
 		let value = match self.kind {
-			3 | 6..=9 => Value::String(text.to_owned()),
+			3 | 6..=9 | 11 => Value::String(text.to_owned()),
 			4 => match text.parse::<i64>() {
 				Ok(n) => Value::Integer(n),
 				Err(_) => return Some("Enter a whole number".into()),
@@ -266,7 +269,6 @@ impl CommandOption {
 				Ok(n) if n.is_finite() => Value::Number(n),
 				_ => return Some("Enter a number".into()),
 			},
-			11 => return Some("Attachment options are not supported yet".into()),
 			_ => return Some("This option is unsupported".into()),
 		};
 		if matches!(self.kind, 6..=9) && text.parse::<Id>().is_err() {
@@ -315,7 +317,7 @@ impl CommandOption {
 			4 => Value::Integer(text.parse().map_err(|_| "Enter a whole number")?),
 			5 => Value::Boolean(text.parse().map_err(|_| "Choose true or false")?),
 			10 => Value::Number(text.parse().map_err(|_| "Enter a finite number")?),
-			11 => return Err("Attachment command options are not supported yet"),
+			11 => Value::String(text.to_owned()),
 			_ => return Err("This command option is unsupported"),
 		};
 		if !self.value_valid(&value) {
@@ -430,10 +432,16 @@ impl Command {
 			&& self.version.0 != 0
 			&& self.application_id.0 != 0
 			&& self.guild_id.is_none_or(|id| id.0 != 0)
-			&& self.kind == 1
-			&& name(&self.name)
-			&& description(&self.description)
-			&& self.application_name.len() <= 400
+			&& (1..=3).contains(&self.kind)
+			&& (if self.kind == 1 {
+				name(&self.name) && description(&self.description)
+			} else {
+				!self.name.trim().is_empty()
+					&& self.name.chars().count() <= 32
+					&& !self.name.chars().any(char::is_control)
+					&& self.description.is_empty()
+					&& self.options.is_empty()
+			}) && self.application_name.len() <= 400
 			&& !self.application_name.chars().any(char::is_control)
 			&& self
 				.application_icon
@@ -469,7 +477,7 @@ impl Command {
 		path: &[String],
 		values: &[(String, String)],
 	) -> Result<Invocation, &'static str> {
-		if !self.valid() || values.len() > 25 {
+		if self.kind != 1 || !self.valid() || values.len() > 25 {
 			return Err("Invalid command schema or too many values");
 		}
 		let schema = self.options_at(path)?;
@@ -484,9 +492,6 @@ impl Command {
 			let value = values
 				.iter()
 				.find(|(name, value)| *name == option.name && !value.is_empty());
-			if option.kind == 11 && (option.required || value.is_some()) {
-				return Err("Attachment command options are not supported yet");
-			}
 			let Some((_, value)) = value else {
 				if option.required {
 					return Err("Complete every required command option");
@@ -514,6 +519,7 @@ impl Command {
 			}];
 		}
 		let invocation = Invocation {
+			target: None,
 			command: self.clone(),
 			options,
 		};
@@ -561,9 +567,43 @@ impl Argument {
 	}
 }
 impl Invocation {
+	/// Dense, unique upload indexes, shared by native selection and the final wire request.
+	pub fn attachment_count(&self) -> Option<usize> {
+		fn collect(arguments: &[Argument], depth: usize, seen: &mut BTreeSet<usize>) -> Option<()> {
+			if depth > 2 || arguments.len() > 25 {
+				return None;
+			}
+			for argument in arguments {
+				if argument.kind == 11 {
+					let Value::String(value) = argument.value.as_ref()? else {
+						return None;
+					};
+					let index = value.parse::<usize>().ok()?;
+					if index >= 10 || index.to_string() != *value || !seen.insert(index) {
+						return None;
+					}
+				}
+				if !argument.options.is_empty() {
+					collect(&argument.options, depth + 1, seen)?;
+				}
+			}
+			Some(())
+		}
+		let mut seen = BTreeSet::new();
+		collect(&self.options, 0, &mut seen)?;
+		(0..seen.len())
+			.all(|index| seen.contains(&index))
+			.then_some(seen.len())
+	}
+
 	pub fn valid(&self) -> bool {
 		self.command.valid()
-			&& arguments_valid(&self.command.options, &self.options)
+			&& self.attachment_count().is_some()
+			&& (if self.command.kind == 1 {
+				self.target.is_none()
+			} else {
+				self.target.is_some_and(|id| id.0 != 0) && self.options.is_empty()
+			}) && arguments_valid(&self.command.options, &self.options)
 			&& self.command.wire_bytes()
 				+ self.options.iter().map(Argument::wire_bytes).sum::<usize>()
 				+ 1024 <= MAX_SUBMISSION_BYTES
@@ -580,4 +620,192 @@ pub fn valid_catalog(commands: &[Command]) -> bool {
 			.iter()
 			.all(|command| command.valid() && ids.insert(command.id))
 		&& catalog_bytes(commands) <= MAX_CATALOG_BYTES
+}
+
+/// A partial command form requesting choices, never a command execution.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Completion {
+	pub command: Command,
+	pub path: Vec<String>,
+	pub values: Vec<(String, String)>,
+	pub focused: String,
+}
+impl Completion {
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>()
+			+ self.command.bytes()
+			+ self.path.capacity() * size_of::<String>()
+			+ self.path.iter().map(String::capacity).sum::<usize>()
+			+ self.focused.capacity()
+			+ self.values.capacity() * size_of::<(String, String)>()
+			+ self
+				.values
+				.iter()
+				.map(|(name, value)| name.capacity() + value.capacity())
+				.sum::<usize>()
+	}
+	pub fn options(&self) -> Result<Vec<Argument>, &'static str> {
+		if self.command.kind != 1
+			|| !self.command.valid()
+			|| self.path.len() > 2
+			|| self.values.len() > 25
+			|| self.bytes() > MAX_SUBMISSION_BYTES
+		{
+			return Err("Autocomplete form exceeds its limits");
+		}
+		let schema = self.command.options_at(&self.path)?;
+		let focus = schema
+			.iter()
+			.find(|option| {
+				option.name == self.focused
+					&& option.autocomplete
+					&& matches!(option.kind, 3 | 4 | 10)
+			})
+			.ok_or("This option does not support autocomplete")?;
+		let mut seen = BTreeSet::new();
+		let mut options = Vec::new();
+		for (name, value) in &self.values {
+			if !seen.insert(name) {
+				return Err("Repeated autocomplete field");
+			}
+			let option = schema
+				.iter()
+				.find(|option| option.name == *name)
+				.ok_or("Unknown autocomplete field")?;
+			if option.name == focus.name {
+				if value.len() > 400 || value.chars().count() > 100 {
+					return Err("Autocomplete input is too long");
+				}
+				options.push(Argument {
+					kind: option.kind,
+					name: name.clone(),
+					value: Some(Value::String(value.clone())),
+					options: Vec::new(),
+				});
+			} else if !value.is_empty() && option.kind != 11 {
+				options.push(Argument {
+					kind: option.kind,
+					name: name.clone(),
+					value: Some(option.parse(value)?),
+					options: Vec::new(),
+				});
+			}
+		}
+		if !seen.contains(&self.focused) {
+			return Err("No autocomplete field selected");
+		}
+		for depth in (0..self.path.len()).rev() {
+			let mut branch = &self.command.options;
+			for part in &self.path[..depth] {
+				branch = &branch
+					.iter()
+					.find(|option| option.name == *part)
+					.unwrap()
+					.options;
+			}
+			let selected = branch
+				.iter()
+				.find(|option| option.name == self.path[depth])
+				.unwrap();
+			options = vec![Argument {
+				kind: selected.kind,
+				name: selected.name.clone(),
+				value: None,
+				options,
+			}];
+		}
+		if self.command.wire_bytes()
+			+ options.iter().map(Argument::wire_bytes).sum::<usize>()
+			+ 1024 > MAX_SUBMISSION_BYTES
+		{
+			return Err("Autocomplete request is too large");
+		}
+		Ok(options)
+	}
+	pub fn valid_choices(&self, choices: &[Choice]) -> bool {
+		let Ok(options) = self.command.options_at(&self.path) else {
+			return false;
+		};
+		let Some(option) = options.iter().find(|option| option.name == self.focused) else {
+			return false;
+		};
+		choices.len() <= 25
+			&& choices.iter().all(|choice| {
+				description(&choice.name)
+					&& choice.name.capacity() <= 400
+					&& choice.value.heap_bytes() <= 400
+					&& option.value_valid(&choice.value)
+			})
+	}
+}
+
+#[cfg(test)]
+mod attachment_tests {
+	use super::*;
+	#[test]
+	fn nested_attachments_require_unique_dense_indexes_and_preserve_types() {
+		let command = Command {
+			id: Id(10),
+			version: Id(11),
+			application_id: Id(12),
+			guild_id: None,
+			kind: 1,
+			name: "files".into(),
+			description: "Files".into(),
+			contexts: None,
+			integration_types: None,
+			application_name: String::new(),
+			application_icon: None,
+			default_member_permissions: None,
+			permissions: Default::default(),
+			application_permissions: Default::default(),
+			options: vec![CommandOption {
+				kind: 2,
+				name: "group".into(),
+				description: "Group".into(),
+				options: vec![CommandOption {
+					kind: 1,
+					name: "post".into(),
+					description: "Post".into(),
+					options: ["left", "right"]
+						.into_iter()
+						.map(|name| CommandOption {
+							kind: 11,
+							name: name.into(),
+							description: name.into(),
+							required: true,
+							..Default::default()
+						})
+						.collect(),
+					..Default::default()
+				}],
+				..Default::default()
+			}],
+		};
+		let path = vec!["group".into(), "post".into()];
+		let values = vec![("right".into(), "1".into()), ("left".into(), "0".into())];
+		let invocation = command.invocation(&path, &values).unwrap();
+		assert_eq!(invocation.attachment_count(), Some(2));
+		assert_eq!(invocation.options[0].options[0].options[0].kind, 11);
+		assert_eq!(
+			invocation.options[0].options[0].options[0].value,
+			Some(Value::String("0".into()))
+		);
+		for bad in ["0", "2", "10", "00", "-1", "x", ""] {
+			let values = vec![("left".into(), "0".into()), ("right".into(), bad.into())];
+			assert!(
+				command.invocation(&path, &values).is_err(),
+				"invalid attachment index {bad:?}"
+			);
+		}
+		let mut optional = command.clone();
+		optional.options[0].options[0]
+			.options
+			.iter_mut()
+			.for_each(|o| o.required = false);
+		assert_eq!(
+			optional.invocation(&path, &[]).unwrap().attachment_count(),
+			Some(0)
+		);
+	}
 }

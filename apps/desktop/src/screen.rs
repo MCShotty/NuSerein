@@ -227,6 +227,7 @@ impl Screen {
 			ui.screen.supported = false;
 			ui.screen.preview = None;
 			ui.screen.capture_status = None;
+			ui.screen.adapting = false;
 			return None;
 		}
 		ui.screen.supported = discord_voice::screen::supported();
@@ -458,6 +459,10 @@ impl Screen {
 			.live
 			.as_ref()
 			.and_then(|live| live.worker.capture_status());
+		ui.screen.adapting = self
+			.live
+			.as_ref()
+			.is_some_and(|live| live.worker.adapting());
 		self.command.take()
 	}
 	fn finish_start(&mut self, runtime: &Runtime, ctx: &egui::Context) {
@@ -479,6 +484,7 @@ impl Screen {
 		let session = voice::Secret::new(pending.session.to_string())
 			.map_err(|_| "Invalid screen voice session")?;
 		let credentials = voice::VoiceConnection {
+			mode: Default::default(),
 			channel: rtc_channel,
 			guild: Some(rtc_server),
 			user: pending.user,
@@ -716,9 +722,13 @@ mod tests {
 			channel: Id(20),
 			guild: Some(Id(10)),
 			connected_at: Some(Instant::now()),
+			stage_revision: 0,
+			media_mode: Default::default(),
+			stage_consent: false,
 			channel_started_at: None,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			request: 7,
 			phase: voice::Phase::Connected,
 			muted: false,

@@ -3,9 +3,14 @@
 use crate::Id;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub const REQUEST_TO_SPEAK: u128 = 1 << 32;
+pub const MANAGE_EVENTS: u128 = 1 << 33;
+pub const CREATE_EVENTS: u128 = 1 << 44;
 pub const SEND_POLLS: u128 = 1 << 49;
+pub const SEND_VOICE_MESSAGES: u128 = 1 << 46;
 pub const ADMINISTRATOR: u128 = 1 << 3;
 pub const KICK_MEMBERS: u128 = 1 << 1;
+pub const BAN_MEMBERS: u128 = 1 << 2;
 pub const MANAGE_GUILD_EXPRESSIONS: u128 = 1 << 30;
 pub const USE_APPLICATION_COMMANDS: u128 = 1 << 31;
 pub const CREATE_GUILD_EXPRESSIONS: u128 = 1 << 43;
@@ -39,6 +44,8 @@ pub const CREATE_PRIVATE_THREADS: u128 = 1 << 36;
 pub const USE_EXTERNAL_STICKERS: u128 = 1 << 37;
 pub const SEND_MESSAGES_IN_THREADS: u128 = 1 << 38;
 pub const MODERATE_MEMBERS: u128 = 1 << 40;
+pub const USE_SOUNDBOARD: u128 = 1 << 42;
+pub const USE_EXTERNAL_SOUNDS: u128 = 1 << 45;
 pub const PIN_MESSAGES: u128 = 1 << 51;
 
 pub const MAX_ROLES: usize = 512;

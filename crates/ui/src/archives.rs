@@ -35,7 +35,7 @@ impl ArchivesUi {
 		let mut create = false;
 		let filter = self.filter.trim().to_lowercase();
 		let matches = |name: &str| filter.is_empty() || name.to_lowercase().contains(&filter);
-		let can_create = state.can_create_thread(parent);
+		let can_create = state.can_create_thread(parent) || state.can_create_private_thread(parent);
 		let action_pending = state.channel_action_pending();
 		let response = crate::dialog::Dialog::new(
 			"archived-threads",

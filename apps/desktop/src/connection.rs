@@ -101,6 +101,29 @@ impl Drop for AbortTask {
 	}
 }
 
+// Reads belong to the open Inbox view. Accepted writes belong to this connection,
+// so closing/switching a tab cannot discard their confirmation or start a duplicate.
+#[derive(Default)]
+struct InboxTasks {
+	read: Option<AbortTask>,
+	write: Option<AbortTask>,
+}
+impl InboxTasks {
+	fn cancel_read(&mut self) {
+		drop(self.read.take());
+	}
+	fn can_start(&self, write: bool) -> bool {
+		!write || self.write.as_ref().is_none_or(|task| task.0.is_finished())
+	}
+	fn track(&mut self, write: bool, task: JoinHandle<()>) {
+		if write {
+			self.write = Some(AbortTask(task));
+		} else {
+			self.read = Some(AbortTask(task));
+		}
+	}
+}
+
 // Separate revisions retain interruptions even when a fast Resume coalesces the online watch.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct VoiceLifecycle {
@@ -157,6 +180,34 @@ async fn wait_for_voice_interruption(
 		if lifecycle.changed().await.is_err() {
 			return;
 		}
+	}
+}
+
+async fn wait_for_soundboard_owner(
+	mut owner: watch::Receiver<Option<(model::Id, u64)>>,
+	expected: (model::Id, u64),
+) {
+	loop {
+		if *owner.borrow_and_update() != Some(expected) {
+			return;
+		}
+		if owner.changed().await.is_err() {
+			return;
+		}
+	}
+}
+async fn scoped_soundboard_event(
+	operation: impl std::future::Future<Output = Event>,
+	owner: watch::Receiver<Option<(model::Id, u64)>>,
+	expected: (model::Id, u64),
+	lifecycle: watch::Receiver<VoiceLifecycle>,
+	revision: u64,
+) -> Option<Event> {
+	tokio::select! {
+		biased;
+		_ = wait_for_soundboard_owner(owner, expected) => None,
+		_ = wait_for_voice_interruption(lifecycle, revision) => None,
+		event = operation => Some(event),
 	}
 }
 
@@ -247,8 +298,13 @@ impl Connection {
 		let gateway_reconnect = reconnect.clone();
 		let status_changed = Arc::new(tokio::sync::Notify::new());
 		let status_refresh = status_changed.clone();
+		let (community_fence, community_scope) = watch::channel(0u64);
 		let task=runtime.spawn(async move {
             let emit=move |event:Event| -> Result<(),Failure> {
+                if event.changes_access() || matches!(&event,Event::Disconnected|Event::Resumed|Event::Voice(client_core::voice::Event::TakenOver{..})) {
+                    community_fence.send_modify(|r|*r=r.wrapping_add(1));
+                    emit_event(&send,&typing_send,Envelope{generation,event:Event::CommunityFence(*community_fence.borrow())},&ctx)?;
+                }
                 if let Event::AccountSettings { status: true, .. } = &event { status_changed.notify_one(); }
                 if let Event::Typing(signal) = &event {
                     let active = active_typing.load(Ordering::Relaxed);
@@ -350,7 +406,7 @@ impl Connection {
                 let mut writes=AbortTask(tokio::spawn(async move {
                     while let Some(command)=write_receive.recv().await {
                         let event=write_api.execute_write(command,|nonce|{let _=write_emit(Event::SendThrottled{nonce:nonce.to_owned()});write_wake.request_repaint();}).await;
-                        let failure=match &event {Event::Interaction(client_core::interactions::Event::Submitted{result:Err(f),..})=>Some(*f),Event::MessagingPermissions{result:Err(f),..}=>Some(*f),Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})=>Some(*f),Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})=>Some(*f),Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})=>Some(*f),Event::Onboarding(client_core::onboarding::Event::Loaded{result:Err(f),..}|client_core::onboarding::Event::Submitted{result:Err(f),..})=>Some(*f),Event::Failure(f)=>Some(*f),Event::ProfileEdited{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::Edited{result:Err(f),..}|Event::Pinned{result:Err(f),..}=>Some(*f),Event::GuildFolders(Err(f))=>Some(*f),Event::JoinInvite{result:Err(f),..}|Event::GuildCreated{result:Err(f),..}=>Some(*f),Event::SendResult{result:Err(f),..}=>Some(*f),Event::UserAction(client_core::user_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::UserAction(client_core::user_actions::Event::DmOpened{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::InviteSent{result:Err(f),..})=>Some(*f),Event::GroupAction(client_core::group_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::Reactions(client_core::reactions::Event::Written{result:Err(f),..})=>Some(*f),Event::ReadState(client_core::read_state::Event::Result{result:Err(f),..})=>Some(*f),_=>None};
+                        let failure=match &event {Event::MemberGuide(client_core::member_guide::Event{result:Err(f),..})=>Some(*f),Event::Interaction(client_core::interactions::Event::Submitted{result:Err(f),..})=>Some(*f),Event::MessagingPermissions{result:Err(f),..}=>Some(*f),Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})=>Some(*f),Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})=>Some(*f),Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})=>Some(*f),Event::Onboarding(client_core::onboarding::Event::Loaded{result:Err(f),..}|client_core::onboarding::Event::Submitted{result:Err(f),..})=>Some(*f),Event::Failure(f)=>Some(*f),Event::ProfileEdited{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::OwnedCosmetics(client_core::owned_cosmetics::Event{result:Err(f),..})|Event::ServerProfile(client_core::server_profile::Event{result:Err(f),..})|Event::AccountOverview{result:Err(f),..}|Event::AccountConnections{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::Edited{result:Err(f),..}|Event::Pinned{result:Err(f),..}=>Some(*f),Event::GuildFolders(Err(f))=>Some(*f),Event::JoinInvite{result:Err(f),..}|Event::GuildCreated{result:Err(f),..}=>Some(*f),Event::SendResult{result:Err(f),..}=>Some(*f),Event::UserAction(client_core::user_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::UserAction(client_core::user_actions::Event::DmOpened{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::InviteSent{result:Err(f),..})=>Some(*f),Event::GroupAction(client_core::group_actions::Event::Written{result:Err(f),..}|client_core::group_actions::Event::MembersLoaded{result:Err(f),..}|client_core::group_actions::Event::Created{result:Err(f),..})=>Some(*f),Event::Reactions(client_core::reactions::Event::Written{result:Err(f),..})=>Some(*f),Event::ReadState(client_core::read_state::Event::Result{result:Err(f),..})=>Some(*f),_=>None};
                         let error=write_emit(event).err().or(failure.filter(|f|f.ends_session()));
                         if let Some(error)=error {write_api.stop();let _=write_finished.send(Some(error));write_wake.request_repaint();break;}
                     }
@@ -359,26 +415,35 @@ impl Connection {
                 // Preloads never cancel the open conversation's reads or each other; each kind
                 // keeps at most one in flight, so this list stays tiny.
                 let mut prefetches:Vec<AbortTask>=Vec::new();
+                let mut community_job:Option<AbortTask>=None;
+                let mut community_call:Option<(model::Id,u64,model::Id,u64)>=None;
                 let mut profile:Option<AbortTask>=None;
                 let mut profile_note:Option<AbortTask>=None;
 				let mut stream_preview:Option<AbortTask>=None;
                 let mut invite:Option<AbortTask>=None;
                 let mut search:Option<AbortTask>=None;
+                let mut inbox=InboxTasks::default();
                 let mut gifs:Option<AbortTask>=None;
                 let mut gif_favorites:Option<AbortTask>=None;
                 let mut application_commands:Option<AbortTask>=None;
+                let mut autocomplete:Option<AbortTask>=None;
                 let mut sticker_packs:Option<AbortTask>=None;
                 let mut sticker_detail:Option<AbortTask>=None;
+                // Default catalog, server catalog and the one unanswered play request.
+                let mut soundboard:[Option<AbortTask>;3]=[None,None,None];
                 let mut reaction_read:Option<AbortTask>=None;
                 let mut ringing:Option<AbortTask>=None;
                 let mut recipient_ringing:Option<(client_core::voice::Command,AbortTask)>=None;
                 let mut upload:Option<AbortTask>=None;
                 let mut upload_cancel:Option<watch::Sender<bool>>=None;
-                let mut voice_request=None;
+                let mut voice_request:Option<(model::Id,u64,bool)>=None;
+				let (soundboard_owner,soundboard_owner_changed)=watch::channel(None);
                 let mut current_lifecycle=VoiceLifecycle::default();
                 // One local release may wait for queue space; later joins cannot overtake it.
                 let mut pending_abandonment=None;
                 loop {
+					let owner=voice_request.map(|(channel,request,_)|(channel,request));
+					soundboard_owner.send_if_modified(|current| {if *current==owner {false} else {*current=owner;true}});
                     tokio::select! {
                         _=&mut gateway_task.0=>{break;}
                         _=&mut writes.0=>{break;}
@@ -403,14 +468,14 @@ impl Connection {
                         }
                         changed=voice_availability.changed()=> {
 								if changed.is_err() {break;}
-								if !*voice_availability.borrow_and_update() {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
+								if !*voice_availability.borrow_and_update() {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());inbox.cancel_read();if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                         }
                         changed=lifecycle_changed.changed()=> {
                             if changed.is_err() {break;}
                             let latest=*lifecycle_changed.borrow_and_update();
                             let channels=dm_channels.lock().map_err(|_|Failure::Protocol)?;
                             let calls=recipient_call.lock().map_err(|_|Failure::Protocol)?;
-                            if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
+                            if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());inbox.cancel_read();if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                         }
                         request=upload_receive.recv()=>{
                             let Some(request)=request else {break;};
@@ -428,7 +493,13 @@ impl Connection {
                             let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
                             upload=Some(AbortTask(tokio::spawn(async move {
                                 let mut updates=request.progress.subscribe();
-                                let operation=api.upload_messages(request.command,request.source,request.progress,request.cancel.subscribe());
+                                let operation=async {
+                                    if let Some(voice)=request.voice_message {
+                                        api.upload_voice_message(request.command,voice,request.progress,request.cancel.subscribe()).await
+                                    } else {
+                                        api.upload_messages(request.command,request.source,request.progress,request.cancel.subscribe()).await
+                                    }
+                                };
                                 tokio::pin!(operation);
                                 let mut observing=true;
                                 let event=loop {
@@ -453,7 +524,49 @@ impl Connection {
                                 if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                             }
                             let Some(command)=command else {break;};
+                            if let Command::Community {guild,request,fence,action,..} = &command {
+                                let (guild,request,fence)=(*guild,*request,*fence);
+                                let call=match action.as_ref(){model::community::Action::StageVoice{channel,call_request,..}|model::community::Action::GetStage{channel,call_request:Some(call_request)}=>Some((*channel,*call_request)),_=>None};
+                                if call.is_some_and(|call|voice_request.map(|(c,r,_)|(c,r))!=Some(call)) || *community_scope.borrow()!=fence || community_job.as_ref().is_some_and(|job|!job.0.is_finished()) {
+                                    emit(Event::Community(client_core::community::Event {guild,request,result:Err(Failure::ProtocolAt("Community action expired or is already pending; refresh to continue"))}))?;continue;
+                                }
+                                drop(community_job.take());
+                                community_call=call.map(|(c,r)|(guild,request,c,r));
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();let mut scope=community_scope.clone();
+                                community_job=Some(AbortTask(tokio::spawn(async move {
+                                    let event=tokio::select! {
+                                        biased;
+                                        _=async {loop {
+                                        if *scope.borrow_and_update()!=fence {break;}
+                                        if scope.changed().await.is_err(){break;}
+                                    }}=>return,
+                                        event=api.execute(command)=>event,
+                                    };
+                                    let failure=match &event {Event::Community(client_core::community::Event{result:Err(f),..}) if f.ends_session()=>Some(*f),_=>None};
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
                             if matches!(command,Command::CancelSearch) {drop(search.take());continue;}
+                            if matches!(command,Command::CancelMentions) {inbox.cancel_read();continue;}
+                            if matches!(command,Command::Mentions{..}|Command::InboxAction{..}) {
+                                let write=matches!(&command,Command::InboxAction{action,..} if action.write());
+                                if !inbox.can_start(write) {
+                                    if let Command::InboxAction{request,..}=command {emit(Event::InboxAction{request,result:Err(Failure::ProtocolAt("An Inbox change is still pending; refresh after it finishes"))})?;}
+                                    continue;
+                                }
+                                if !write {inbox.cancel_read();}
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                inbox.track(write,tokio::spawn(async move {
+                                    let event=api.execute(command).await;
+                                    let failure=match &event {Event::Mentions{result:Err(f),..}|Event::InboxAction{result:Err(f),..} if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+                                    let error=emit(event).err().or(failure);
+                                    if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                }));
+                                continue;
+                            }
                             if matches!(command,Command::CancelGifs) {drop(gifs.take());continue;}
                             if matches!(command,Command::GifFavorites{..}) {
                                 drop(gif_favorites.take());
@@ -461,6 +574,19 @@ impl Connection {
                                 gif_favorites=Some(AbortTask(tokio::spawn(async move {
                                     let event=api.execute(command).await;
                                     let failure=match &event {Event::GifFavorites{result:Err(f),..} if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+                                    let error=emit(event).err().or(failure);
+                                    if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
+                            if matches!(command,Command::CancelAutocomplete) {drop(autocomplete.take());continue;}
+                            if matches!(command,Command::Autocomplete(_)) {
+                                drop(autocomplete.take());
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                autocomplete=Some(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(command).await;
+                                    let failure=match &event {Event::Autocomplete(client_core::application_commands::CompletionEvent::Submitted{result:Err(f),..}) if f.ends_session()=>Some(*f),_=>None};
                                     let error=emit(event).err().or(failure);
                                     if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
                                     wake.request_repaint();
@@ -486,6 +612,28 @@ impl Connection {
                                 *task=Some(AbortTask(tokio::spawn(async move {
                                     let event=api.execute(command).await;
                                     let failure=match &event {Event::StickerPacks(Err(f))|Event::Sticker{result:Err(f),..} if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+                                    let error=emit(event).err().or(failure);
+                                    if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
+                            if let Command::Soundboard(request)=&command {
+                                use client_core::soundboard::{Event as E,Request as R};
+								let scope=match request {R::Send {request,call,channel,sound,..}=>Some((*request,*channel,*sound,*call)),_=>None};
+								if let Some((request,channel,sound,call))=scope && *soundboard_owner.borrow()!=Some((channel,call)) {
+									emit(Event::Soundboard(E::Sent {request,channel,sound,result:Err(Failure::ProtocolAt("Call changed; the sound was not sent"))}))?;
+									continue;
+								}
+                                let task=&mut soundboard[match request {R::Default{..}=>0,R::Guild{..}=>1,R::Send{..}=>2}];
+                                drop(task.take());
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+								let owner=soundboard_owner_changed.clone();let lifecycle=lifecycle_changed.clone();let revision=current_lifecycle.interruption;
+                                *task=Some(AbortTask(tokio::spawn(async move {
+									let event=if let Some((request,channel,sound,call))=scope {
+										scoped_soundboard_event(api.execute(command),owner,(channel,call),lifecycle,revision).await.unwrap_or(Event::Soundboard(E::Sent {request,channel,sound,result:Err(Failure::Ambiguous)}))
+									} else {api.execute(command).await};
+                                    let failure=match &event {Event::Soundboard(E::Default{result:Err(f),..}|E::Guild{result:Err(f),..}|E::Sent{result:Err(f),..}) if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
                                     let error=emit(event).err().or(failure);
                                     if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
                                     wake.request_repaint();
@@ -608,6 +756,10 @@ impl Connection {
                             }
 							if let Command::Voice(control)=command {
                                 use client_core::voice::{Command as V,Event as E};
+                                if matches!(control,V::Join{..}|V::Leave{..}|V::AbandonSession{..}) && let Some((guild,request,_,_))=community_call.take() {
+                                    drop(community_job.take());
+                                    emit(Event::Community(client_core::community::Event{guild,request,result:Err(Failure::Ambiguous)}))?;
+                                }
                                 let (channel,request)=match control {V::AbandonSession{channel,request}|V::ConfirmSession{channel,request,..}|V::Join{channel,request,..}|V::Ring{channel,request}|V::Leave{channel,request}|V::SetMute{channel,request,..}|V::SetCamera{channel,request,..}=>(channel,request),V::Decline{channel}=>(channel,0),V::RingRecipient{..}|V::Sync{..}|V::StartStream{..}|V::StopStream{..}|V::WatchStream{..}|V::StopWatching{..}=>unreachable!("sync and stream actions routed above")};
                                 if let V::AbandonSession{channel,request}=control {
                                     let owner=voice_request.map(|(channel,request,_)|(channel,request));
@@ -1815,6 +1967,134 @@ fn scope_history_failure(event: Event, channel: model::Id, request: u64) -> Even
 
 #[cfg(test)]
 mod tests {
+	#[tokio::test]
+	async fn soundboard_scope_cancels_unpolled_and_inflight_operations() {
+		use std::sync::{
+			Arc,
+			atomic::{AtomicBool, Ordering},
+		};
+		let (owner, updates) = watch::channel(None);
+		let (lifecycle, epochs) = watch::channel(VoiceLifecycle::default());
+		let contacted = Arc::new(AtomicBool::new(false));
+		let started = contacted.clone();
+		let result = scoped_soundboard_event(
+			async move {
+				started.store(true, Ordering::SeqCst);
+				Event::Failure(Failure::Forbidden)
+			},
+			updates.clone(),
+			(model::Id(2), 7),
+			epochs.clone(),
+			0,
+		)
+		.await;
+		assert!(result.is_none() && !contacted.load(Ordering::SeqCst));
+		owner.send_replace(Some((model::Id(2), 7)));
+		lifecycle.send_modify(|state| {
+			state.observe(&Event::Disconnected);
+			state.observe(&Event::Resumed);
+		});
+		let started = contacted.clone();
+		assert!(
+			scoped_soundboard_event(
+				async move {
+					started.store(true, Ordering::SeqCst);
+					Event::Failure(Failure::Forbidden)
+				},
+				updates.clone(),
+				(model::Id(2), 7),
+				epochs.clone(),
+				0
+			)
+			.await
+			.is_none()
+		);
+		assert!(
+			!contacted.load(Ordering::SeqCst),
+			"a fast resume must not revive an old operation"
+		);
+		let revision = lifecycle.borrow().interruption;
+		struct Released(Arc<AtomicBool>);
+		impl Drop for Released {
+			fn drop(&mut self) {
+				self.0.store(true, Ordering::SeqCst);
+			}
+		}
+		let released = Arc::new(AtomicBool::new(false));
+		let signal = released.clone();
+		let (entered, waiting) = tokio::sync::oneshot::channel();
+		let task = tokio::spawn(scoped_soundboard_event(
+			async move {
+				let _resource = Released(signal);
+				let _ = entered.send(());
+				std::future::pending::<Event>().await
+			},
+			updates,
+			(model::Id(2), 7),
+			epochs,
+			revision,
+		));
+		tokio::time::timeout(Duration::from_secs(1), waiting)
+			.await
+			.unwrap()
+			.unwrap();
+		owner.send_replace(Some((model::Id(2), 8)));
+		assert!(
+			tokio::time::timeout(Duration::from_secs(1), task)
+				.await
+				.unwrap()
+				.unwrap()
+				.is_none()
+		);
+		assert!(
+			released.load(Ordering::SeqCst),
+			"cancelled operations must release their resources"
+		);
+	}
+
+	#[tokio::test]
+	async fn inbox_cancellation_retires_reads_but_preserves_accepted_writes() {
+		let mut tasks = InboxTasks::default();
+		let (read, mut read_cancelled) = tokio::sync::oneshot::channel::<()>();
+		tasks.track(
+			false,
+			tokio::spawn(async move {
+				let _read = read;
+				std::future::pending::<()>().await;
+			}),
+		);
+		let (accepted, wait) = tokio::sync::oneshot::channel();
+		let (result, received) = tokio::sync::oneshot::channel();
+		tasks.track(
+			true,
+			tokio::spawn(async move {
+				wait.await.unwrap();
+				let _ = result.send(Event::InboxAction {
+					request: 7,
+					result: Ok(client_core::inbox::Outcome::Done),
+				});
+			}),
+		);
+		assert!(!tasks.can_start(true));
+		tasks.cancel_read();
+		tokio::time::timeout(Duration::from_secs(1), &mut read_cancelled)
+			.await
+			.unwrap()
+			.unwrap_err();
+		accepted.send(()).unwrap();
+		assert!(matches!(
+			tokio::time::timeout(Duration::from_secs(1), received)
+				.await
+				.unwrap()
+				.unwrap(),
+			Event::InboxAction {
+				request: 7,
+				result: Ok(_)
+			}
+		));
+		(&mut tasks.write.as_mut().unwrap().0).await.unwrap();
+		assert!(tasks.can_start(true));
+	}
 	#[tokio::test]
 	async fn full_prefetch_pool_rejects_new_reads_without_aborting_accepted_work() {
 		let mut tasks: Vec<_> = (0..PREFETCHES)
@@ -3082,6 +3362,7 @@ mod tests {
 			negotiation_revision: None,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			muted: false,
 			deafened: false,
 			video: false,
@@ -3159,6 +3440,7 @@ mod tests {
 				negotiation_revision: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted,
 				deafened: muted,
 				video,
@@ -3450,6 +3732,7 @@ mod tests {
 				negotiation_revision: Some(1),
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted: false,
 				deafened: false,
 				video: false,
@@ -3571,6 +3854,7 @@ mod tests {
 				negotiation_revision: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted: false,
 				deafened: false,
 				video: false,
@@ -3766,6 +4050,7 @@ mod tests {
 				negotiation_revision: None,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				muted,
 				deafened: muted,
 				video,
@@ -3799,6 +4084,7 @@ mod tests {
 			negotiation_revision: None,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			muted: false,
 			deafened: false,
 			video: false,

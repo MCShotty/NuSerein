@@ -10,6 +10,11 @@ mod captcha;
 mod channel_demo;
 mod clipboard;
 #[cfg(feature = "demo")]
+mod community_admin_demo;
+
+#[cfg(feature = "demo")]
+mod community_demo;
+#[cfg(feature = "demo")]
 mod components_demo;
 mod connection;
 mod credentials;
@@ -30,10 +35,16 @@ mod game_activity;
 mod game_mentions;
 mod gpu;
 mod gpu_video;
+#[cfg(feature = "demo")]
+mod group_demo;
 mod group_icon;
+#[cfg(feature = "demo")]
+mod inbox_demo;
 mod interaction_uploads;
+mod media_output;
 mod notification_runtime;
 mod notification_sounds;
+mod ogg_opus;
 #[cfg(feature = "demo")]
 mod onboarding_demo;
 mod pointer;
@@ -41,6 +52,8 @@ mod pointer;
 mod polls_demo;
 #[cfg(feature = "demo")]
 mod post_menu_demo;
+#[cfg(feature = "demo")]
+mod profile_settings_demo;
 mod proxy_auth;
 mod reading_settings;
 mod registered_games;
@@ -52,6 +65,8 @@ mod server_settings_demo;
 mod sign_in;
 #[cfg(feature = "demo")]
 mod slash_demo;
+mod sound_upload;
+mod soundboard;
 mod spotify;
 mod startup;
 mod sticker_upload;
@@ -62,6 +77,7 @@ mod uploads;
 mod video;
 mod video_capabilities;
 mod voice;
+mod voice_messages;
 mod watch;
 use client_core::{
 	Command, Envelope, Event, State,
@@ -956,6 +972,8 @@ impl SessionEnd {
 	}
 }
 struct Desktop {
+	#[cfg(feature = "demo")]
+	inbox_demo: inbox_demo::Store,
 	proxy_auth: proxy_auth::Authentication,
 	api_proxy: tokio::sync::watch::Sender<Option<discord_api::proxy::ApiProxy>>,
 	extensions: extension_bridge::Bridge,
@@ -978,15 +996,20 @@ struct Desktop {
 	notifications: platform::notifications::Notifications,
 	notification_runtime: notification_runtime::Runtime,
 	uploads: uploads::Uploads,
+	voice_messages: voice_messages::VoiceMessages,
 	interaction_files: interaction_uploads::Files,
 	group_icon: group_icon::GroupIcon,
 	create_server_icon: group_icon::GroupIcon,
 	profile_avatar: group_icon::GroupIcon,
+	server_profile_image: group_icon::GroupIcon,
 	server_icon: group_icon::GroupIcon,
+	community_artwork: group_icon::GroupIcon,
+	community_artwork_scope: Option<(u64, model::Id, Option<model::Id>, bool, u64)>,
 	role_icon: group_icon::GroupIcon,
 	role_icon_scope: Option<(u64, model::Id, model::Id, u64)>,
 	emoji_upload: emoji_upload::EmojiUpload,
 	sticker_upload: sticker_upload::StickerUpload,
+	sound_upload: sound_upload::SoundUpload,
 	clipboard: Option<clipboard::Paste>,
 	download_close_pending: bool,
 	window: Arc<winit::window::Window>,
@@ -1085,6 +1108,8 @@ struct Desktop {
 	sign_in_height: f32,
 	#[cfg(feature = "demo")]
 	synthetic_id: u64,
+	#[cfg(feature = "demo")]
+	demo_groups: group_demo::Groups,
 	token_input: Zeroizing<String>,
 }
 /// Check only navigation whose effective access can change with this event.
@@ -2240,6 +2265,21 @@ impl Desktop {
 		if demo && std::env::args().any(|arg| arg == "--demo-server-settings") {
 			server_settings_demo::open(&mut state, &mut messaging);
 		}
+		// With `--demo-server-settings --demo-server-page=soundboard`, `--demo-sound-upload`
+		// adds the upload review with a synthetic 77.8-second waveform. No file or audio
+		// device is used.
+		#[cfg(feature = "demo")]
+		if demo && std::env::args().any(|arg| arg == "--demo-sound-upload") {
+			let peaks = (0..7780u32)
+				.map(|n| {
+					let t = n as f32 / 7780.0;
+					let envelope = 0.35 + 0.65 * (t * 9.0).sin().abs();
+					let detail = 0.55 + 0.45 * ((n as f32 * 0.37).sin() * (n as f32 * 0.11).cos());
+					(envelope * detail * 235.0).clamp(12.0, 255.0) as u8
+				})
+				.collect();
+			messaging.preview_server_sound_upload(("Synthetic song".into(), 77_800, peaks, None));
+		}
 		#[cfg(feature = "demo")]
 		if demo
 			&& std::env::args().any(|arg| arg == "--demo-server-notifications")
@@ -2248,6 +2288,23 @@ impl Desktop {
 			// The new editor fixture includes a known server default: mentions only.
 			state.guilds[0].default_message_notifications = Some(1);
 			messaging.preview_server_notifications(&mut state, guild);
+		}
+		#[cfg(feature = "demo")]
+		if demo
+			&& std::env::args().any(|arg| arg == "--demo-member-guide")
+			&& let Some(guild) = state.guilds.first().map(|g| g.id)
+			&& let Some(Command::MemberGuide {
+				guild,
+				user,
+				request,
+				action,
+			}) = state.open_server_guide(guild)
+		{
+			let event = community_admin_demo::execute_member(&state, guild, user, request, action);
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event,
+			});
 		}
 		let mut hotkeys = platform::hotkeys::Hotkeys::new({
 			let ctx = cc.egui_ctx.clone();
@@ -2291,6 +2348,8 @@ impl Desktop {
 			.map(|menu| (menu, ui::i18n::Language::System))
 		};
 		Ok(Self {
+			#[cfg(feature = "demo")]
+			inbox_demo: inbox_demo::Store::default(),
 			proxy_auth: proxy_auth::Authentication::default(),
 			api_proxy: tokio::sync::watch::channel(None).0,
 			extensions: extension_bridge::Bridge::default(),
@@ -2322,15 +2381,20 @@ impl Desktop {
 				)
 			},
 			uploads: uploads::Uploads::default(),
+			voice_messages: voice_messages::VoiceMessages::default(),
 			interaction_files: Default::default(),
 			group_icon: group_icon::GroupIcon::default(),
 			create_server_icon: group_icon::GroupIcon::default(),
 			profile_avatar: group_icon::GroupIcon::default(),
+			server_profile_image: group_icon::GroupIcon::default(),
 			server_icon: group_icon::GroupIcon::default(),
+			community_artwork: group_icon::GroupIcon::default(),
+			community_artwork_scope: None,
 			role_icon: group_icon::GroupIcon::default(),
 			role_icon_scope: None,
 			emoji_upload: emoji_upload::EmojiUpload::default(),
 			sticker_upload: sticker_upload::StickerUpload::default(),
+			sound_upload: sound_upload::SoundUpload::default(),
 			clipboard: None,
 			download_close_pending: false,
 			window_blur: transparency_available
@@ -2421,6 +2485,8 @@ impl Desktop {
 			sign_in_height: 0.0,
 			#[cfg(feature = "demo")]
 			synthetic_id,
+			#[cfg(feature = "demo")]
+			demo_groups: Default::default(),
 			token_input: Zeroizing::new(String::new()),
 		})
 	}
@@ -3219,6 +3285,12 @@ impl Desktop {
 	}
 	/// Dispatches one queued command to the demo or live transport.
 	fn command(&mut self, command: Command) {
+		if let Command::Soundboard(request) = &command
+			&& !self.state.soundboard_command_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if !self.state.gateway_connected
 			&& self.state.auth == AuthState::Authenticated
 			&& matches!(command, Command::Send { .. })
@@ -3226,9 +3298,45 @@ impl Desktop {
 		{
 			connection.recover_send();
 		}
-		if matches!(&command, Command::Interaction(client_core::interactions::Request {data:client_core::interactions::Data::Modal{components,..},..}) if interaction_uploads::has_files(components))
+		if let Command::Autocomplete(request) = &command
+			&& !self.state.autocomplete_dispatch_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+
+		if let Command::Interaction(request) = &command
+			&& !self.state.application_command_dispatch_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if matches!(&command, Command::Interaction(request) if interaction_uploads::request_has_files(request))
 		{
 			self.interaction_upload(command);
+			return;
+		}
+
+		if let Command::Community {
+			guild,
+			request,
+			action,
+			..
+		} = &command
+			&& !self.state.demo
+			&& !self
+				.state
+				.community_command_allowed(*guild, *request, action)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::InboxAction { request, action } = &command
+			&& (self.state.inbox.request != *request
+				|| self.state.inbox.operation.as_ref() != Some(action)
+				|| !self.state.inbox_action_allowed(action))
+		{
+			self.state.command_rejected(command);
 			return;
 		}
 		if let Command::ServerAdmin {
@@ -3239,6 +3347,19 @@ impl Desktop {
 			&& !self
 				.state
 				.server_admin_command_allowed(*guild, *request, action)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::MemberGuide {
+			guild,
+			user,
+			request,
+			..
+		} = &command
+			&& !self
+				.state
+				.member_guide_command_allowed(*guild, *user, *request)
 		{
 			self.state.command_rejected(command);
 			return;
@@ -3257,6 +3378,57 @@ impl Desktop {
 			&& !self
 				.state
 				.server_settings_command_allowed(*guild, *request, edit)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::EditProfile {
+			user,
+			request,
+			changes,
+		} = &command
+			&& !self
+				.state
+				.own_profile_command_allowed(*user, *request, changes)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::ServerProfile {
+			user,
+			guild,
+			request,
+			edit,
+		} = &command
+			&& !self
+				.state
+				.server_profile_command_allowed(*user, *guild, *request, edit)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::AccountConnections {
+			user,
+			request,
+			change,
+		} = &command
+			&& !self
+				.state
+				.account_connections_command_allowed(*user, *request, change)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::OwnedCosmetics {
+			user,
+			guild,
+			request,
+			change,
+			nitro,
+		} = &command
+			&& !self
+				.state
+				.owned_cosmetics_command_allowed(*user, *guild, *request, *change, *nitro)
 		{
 			self.state.command_rejected(command);
 			return;
@@ -3282,6 +3454,7 @@ impl Desktop {
 					let request = uploads::UploadRequest {
 						command,
 						source,
+						voice_message: None,
 						progress,
 						cancel,
 					};
@@ -3336,6 +3509,7 @@ impl Desktop {
 					let request = uploads::UploadRequest {
 						command,
 						source,
+						voice_message: None,
 						progress,
 						cancel,
 					};
@@ -3386,6 +3560,9 @@ impl Desktop {
 				self.state.status = "Voice calls are unavailable in the offline preview";
 				return;
 			}
+			self.voice_messages.cancel();
+			self.messaging.voice_messages.close();
+			self.messaging.voice_messages.capture_busy = self.voice_messages.capture_busy();
 			if let client_core::voice::Command::Join {
 				channel,
 				request,
@@ -3413,6 +3590,7 @@ impl Desktop {
 				self.messaging.voice_camera_preview = None;
 			}
 			if matches!(control, client_core::voice::Command::Leave { .. }) {
+				self.voice_messages.cancel();
 				self.voice.stop();
 				self.messaging.camera_test_requested = false;
 				self.messaging.camera_test_texture = None;
@@ -3440,11 +3618,13 @@ impl Desktop {
 					channel,
 					guild,
 					request,
+					..
 				} => Event::ApplicationCommands {
 					channel,
 					request,
 					result: Ok(slash_demo::catalog(guild)),
 				},
+				Command::Autocomplete(request) => slash_demo::autocomplete(request),
 				Command::Interaction(request) => {
 					if matches!(
 						&request.data,
@@ -3499,6 +3679,26 @@ impl Desktop {
 
 				// Demo preference changes are applied synchronously by client-core.
 				Command::MessagingPermissions { .. } => return,
+				Command::AccountOverview { .. } | Command::AccountConnections { .. } => return,
+				Command::ServerProfile {
+					user,
+					guild,
+					request,
+					edit,
+				} => profile_settings_demo::execute(&self.state, user, guild, request, edit),
+				Command::OwnedCosmetics {
+					user,
+					guild,
+					request,
+					change,
+					..
+				} => profile_settings_demo::owned_cosmetics(
+					&self.state,
+					user,
+					guild,
+					request,
+					change,
+				),
 				Command::ChannelAction {
 					guild,
 					channel,
@@ -3512,6 +3712,12 @@ impl Desktop {
 					action,
 					&mut self.synthetic_id,
 				),
+				Command::Community {
+					guild,
+					request,
+					action,
+					..
+				} => community_demo::execute(&mut self.state, guild, request, *action),
 				Command::ServerAdmin {
 					guild,
 					request,
@@ -3522,6 +3728,12 @@ impl Desktop {
 					request,
 					edit,
 				} => server_settings_demo::execute(&self.state, guild, request, edit),
+				Command::MemberGuide {
+					guild,
+					user,
+					request,
+					action,
+				} => community_admin_demo::execute_member(&self.state, guild, user, request, action),
 				Command::Onboarding {
 					guild,
 					request,
@@ -3578,40 +3790,10 @@ impl Desktop {
 					request,
 					result: Ok(()),
 				}),
-				Command::GroupAction { action, request } => {
-					use client_core::group_actions::{Action, Event as GroupEvent};
-					use model::Patch;
-					let channel = action.channel();
-					let patch = match action {
-						Action::Leave(_) => None,
-						Action::Edit { name, icon, .. } => Some(model::ChannelPatch {
-							id: channel,
-							name: name.map_or(Patch::Absent, Patch::Value),
-							icon: match icon {
-								Patch::Absent => self
-									.state
-									.channel(channel)
-									.and_then(|c| c.icon.clone())
-									.map_or(Patch::Null, Patch::Value),
-								Patch::Null => Patch::Null,
-								Patch::Value(_) => {
-									Patch::Value("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into())
-								}
-							},
-							last_message: Patch::Absent,
-							parent_id: Patch::Absent,
-							position: Patch::Absent,
-							kind: Patch::Absent,
-							message_count: Patch::Absent,
-							tags: Patch::Absent,
-						}),
-					};
-					Event::GroupAction(GroupEvent::Written {
-						channel,
-						request,
-						result: Ok(patch),
-					})
-				}
+				Command::GroupAction { action, request } => Event::GroupAction(
+					self.demo_groups
+						.respond(&self.state, action, request, &mut self.synthetic_id),
+				),
 				Command::MarkRead {
 					channel,
 					message,
@@ -3640,6 +3822,19 @@ impl Desktop {
 				Command::Polls(request) => {
 					polls_demo::respond(&self.state, request, &mut self.synthetic_id)
 				}
+				// The offline preview answers a play request without any audio or network use.
+				Command::Soundboard(client_core::soundboard::Request::Send {
+					request,
+					channel,
+					sound,
+					..
+				}) => Event::Soundboard(client_core::soundboard::Event::Sent {
+					request,
+					channel,
+					sound,
+					result: Ok(()),
+				}),
+				Command::Soundboard(_) => return,
 				Command::Reactions(command) => {
 					use client_core::reactions::{Command as R, Event as E};
 					Event::Reactions(match command {
@@ -3717,11 +3912,15 @@ impl Desktop {
 						}
 					})
 				}
-				// The offline fixture has nothing to preload.
 				Command::Voice(_)
 				| Command::CancelProfile
 				| Command::CancelSearch
+				| Command::CancelAutocomplete
+				| Command::CancelMentions
 				| Command::Prefetch(_) => return,
+				command @ (Command::InboxAction { .. } | Command::Mentions { .. }) => {
+					self.inbox_demo.execute(&self.state, command)
+				}
 				Command::ThreadStarter {
 					thread,
 					parent,
@@ -4037,52 +4236,7 @@ impl Desktop {
 					user,
 					request,
 					changes,
-				} => {
-					let result = self
-						.state
-						.user
-						.as_ref()
-						.filter(|own| own.id == user)
-						.map(|own| {
-							let mut profile = self
-								.state
-								.own_profile
-								.data
-								.clone()
-								.unwrap_or_else(|| ui::synthetic_own_profile(own));
-							if let Some(changes) = changes {
-								if !changes.valid() {
-									return Err(Failure::Capacity);
-								}
-								if let Some(name) = changes.global_name {
-									profile.user.name =
-										name.clone().unwrap_or_else(|| profile.username.clone());
-									profile.global_name = name;
-								}
-								if let Some(bio) = changes.bio {
-									profile.bio = bio;
-								}
-								if let Some(pronouns) = changes.pronouns {
-									profile.pronouns = pronouns;
-								}
-								if let Some(color) = changes.accent_color {
-									profile.accent_color = color;
-								}
-								if let Some(avatar) = changes.avatar {
-									// Synthetic hash: the fixture never uploads or fetches images.
-									profile.user.avatar = avatar
-										.map(|_| "0123456789abcdef0123456789abcdef".to_owned());
-								}
-							}
-							Ok(Box::new(profile))
-						})
-						.unwrap_or(Err(Failure::Protocol));
-					Event::ProfileEdited {
-						user,
-						request,
-						result,
-					}
-				}
+				} => profile_settings_demo::global_profile(&self.state, user, request, changes),
 				Command::Members {
 					guild,
 					channel,
@@ -4380,6 +4534,31 @@ impl Desktop {
 				}
 			}
 		}
+	}
+	fn poll_voice_messages(&mut self, ctx: &egui::Context) {
+		let demo = self.state.demo && std::env::args().any(|arg| arg == "--demo-recorder");
+		let config = if demo {
+			Some(::extensions::VoiceMessagesConfig::default())
+		} else {
+			self.extensions.voice_messages()
+		};
+		let blocked = self.tray_window.hidden
+			|| ctx.input(|input| {
+				input.viewport().minimized == Some(true) || input.viewport().close_requested()
+			}) || self.state.voice.active.is_some()
+			|| self.voice.microphone_busy()
+			|| self.uploads.busy()
+			|| self.messaging.has_edit_in(self.state.selected)
+			|| self.messaging.attachment.is_some();
+		self.voice_messages.poll(
+			&mut self.state,
+			&mut self.messaging,
+			ctx,
+			self.runtime.handle(),
+			config,
+			blocked,
+			self.fixture_only,
+		);
 	}
 	fn poll_voice(&mut self, ctx: &egui::Context) {
 		if let Some(command) =
@@ -4836,6 +5015,12 @@ impl Desktop {
 			}
 			let takeover_notice = voice::takeover_notice(&self.state, &event.event);
 			let voice_failure = self.voice.observe(&self.state, &mut event.event);
+			if event.generation == self.state.generation
+				&& let Event::Soundboard(effect) = &event.event
+			{
+				self.voice
+					.soundboard(&self.runtime, &self.state, &self.messaging, ctx, effect);
+			}
 			let ready = event.event.ready_navigation().is_some();
 			let resumed = matches!(event.event, Event::Resumed);
 			if (ready || resumed)
@@ -5079,6 +5264,7 @@ impl Desktop {
 			self.pending_save = None;
 			self.current_login = None;
 			self.pending_account_save = None;
+			self.voice_messages.cancel();
 			self.voice.stop();
 			self.messaging.camera_test_requested = false;
 			self.messaging.camera_test_texture = None;
@@ -5351,11 +5537,11 @@ impl eframe::App for Desktop {
 			// Installing needs a real exit, so this close must not stop at the tray.
 			self.tray_window.quit(ctx);
 		}
+		self.poll_interaction_files(ctx);
 		self.state.expire_interaction(std::time::Instant::now());
 		if self.state.interactions.busy() {
 			ctx.request_repaint_after(Duration::from_millis(250));
 		}
-		self.poll_interaction_files(ctx);
 		self.state.expire_verification();
 		if self.state.verification().is_some() {
 			ctx.request_repaint_after(Duration::from_secs(1));
@@ -5477,6 +5663,7 @@ impl eframe::App for Desktop {
 		}
 		self.video.poll(self.messaging.video(), ctx);
 		let audio = self.audio.poll();
+		self.audio.output.clone_from(&self.messaging.media_output);
 		let player = self.messaging.audio();
 		player.position = audio.position.as_secs_f64();
 		player.duration = audio.duration.as_secs_f64();
@@ -5491,11 +5678,14 @@ impl eframe::App for Desktop {
 		if self.state.auth != AuthState::Authenticated && !self.state.demo {
 			self.notifications.clear();
 		}
-		if let Some(channel) = self.notifications.take_activation()
+		if let Some((channel, message)) = self.notifications.take_message_activation()
 			&& self.state.auth == AuthState::Authenticated
 		{
 			self.tray_window.show(ctx);
-			if let Some(command) = self.state.select(channel) {
+			if let Some(command) =
+				self.messaging
+					.open_notification(&mut self.state, channel, message)
+			{
 				self.command(command);
 			}
 		}
@@ -5509,6 +5699,7 @@ impl eframe::App for Desktop {
 			match alert {
 				notification_runtime::Alert::Message {
 					channel,
+					message,
 					title,
 					body,
 					avatar_key,
@@ -5516,7 +5707,7 @@ impl eframe::App for Desktop {
 				} => {
 					if self
 						.notifications
-						.notify_channel(channel, title, body, image_path)
+						.notify_target(channel, message, title, body, image_path)
 						&& let Some(worker) = &self.avatars
 					{
 						worker.request(avatar_key);
@@ -5525,13 +5716,19 @@ impl eframe::App for Desktop {
 			}
 		}
 		self.messaging.voice_ptt_active = self.messaging.voice_push_to_talk
-			&& self.state.voice.active.is_some()
+			&& (self.state.voice.active.is_some()
+				|| self.messaging.voice_messages.scope.is_some()
+				|| self.voice_messages.capture_busy())
 			&& (self.messaging.push_to_talk_down(ctx) || self.hotkeys.push_to_talk_down());
-		self.messaging.voice_ptm_active = self.state.voice.active.is_some()
+		self.messaging.voice_ptm_active = (self.state.voice.active.is_some()
+			|| self.messaging.voice_messages.scope.is_some()
+			|| self.voice_messages.capture_busy())
 			&& (self.messaging.push_to_mute_down(ctx) || self.hotkeys.push_to_mute_down());
+		self.poll_voice_messages(ctx);
 		if self.state.auth == AuthState::Authenticated || self.state.demo {
 			self.poll_voice(ctx);
 		} else {
+			self.voice_messages.cancel();
 			self.voice.stop();
 		}
 		self.sync_tray(ctx);
@@ -5772,8 +5969,28 @@ impl eframe::App for Desktop {
 			}) {
 			self.messaging.accept_profile_picture(&ctx, scope, result);
 		}
+		if let Some((scope, result)) =
+			self.server_profile_image
+				.poll_scoped(self.state.generation, |guild| {
+					self.state.own_server_profile.guild == Some(guild)
+						&& self.state.can_edit_server_profile(guild)
+				}) {
+			self.messaging
+				.accept_server_profile_image(&ctx, scope, result);
+		}
 		if let Some((scope, result)) = self.server_icon.poll_server(&self.state) {
 			self.messaging.accept_server_icon(&ctx, scope, result);
+		}
+		if let Some((_, result)) =
+			self.community_artwork
+				.poll_scoped(self.state.generation, |guild| {
+					self.state.can_open_community_settings(guild)
+						&& self
+							.community_artwork_scope
+							.is_some_and(|scope| self.messaging.community_artwork_active(scope))
+				}) && let Some(scope) = self.community_artwork_scope.take()
+		{
+			self.messaging.accept_community_artwork(&ctx, scope, result);
 		}
 		if let Some((_, result)) = self.role_icon.poll_scoped(self.state.generation, |guild| {
 			self.role_icon_scope.is_some_and(|scope| {
@@ -5797,6 +6014,14 @@ impl eframe::App for Desktop {
 		}) {
 			self.messaging.accept_server_sticker(&ctx, scope, result);
 		}
+		if let Some((scope, result)) = self.sound_upload.poll(self.state.generation, |guild| {
+			self.state.server_admin.guild == Some(guild) && self.state.can_create_guild_sound(guild)
+		}) {
+			self.messaging.accept_server_sound(scope, result);
+		}
+		if let Some((scope, result)) = self.sound_upload.poll_trim() {
+			self.messaging.accept_server_sound_trim(scope, result);
+		}
 		self.messaging.voice_available = true;
 		if close_requested
 			&& !self.close_approved
@@ -5811,6 +6036,7 @@ impl eframe::App for Desktop {
 				|| self.messaging.extensions.theme_editor_dirty()
 				|| self.state.server_settings.pending
 				|| self.state.server_admin.pending
+				|| self.voice_messages.has_unsent()
 				|| self.uploads.has_unsent()
 				|| self.messaging.external_upload.has_unsent()
 				|| self.credential_cleanup_pending()
@@ -5941,6 +6167,12 @@ impl eframe::App for Desktop {
 				match command {
 					ui::AudioCommand::Play(attachment) => {
 						self.audio.volume(player.volume);
+						// Speed applies to voice messages only, like Discord's control.
+						self.audio.speed(if attachment.is_voice_message() {
+							player.speed
+						} else {
+							1.0
+						});
 						if let Err(error) = self.audio.start(
 							attachment,
 							self.runtime.handle(),
@@ -5955,9 +6187,11 @@ impl eframe::App for Desktop {
 						self.audio.seek(Duration::from_secs_f64(seconds))
 					}
 					ui::AudioCommand::Volume(volume) => self.audio.volume(volume),
+					ui::AudioCommand::Speed(speed) => self.audio.speed(speed),
 					ui::AudioCommand::Stop => self.audio.stop(),
 				}
 			}
+			self.video.output.clone_from(&self.messaging.media_output);
 			let player = self.messaging.video();
 			if self.state.demo
 				&& let Some(pause) = self.demo_video_autoplay
@@ -6013,6 +6247,30 @@ impl eframe::App for Desktop {
 				&& self.messaging.notification_test_available
 			{
 				self.notifications.notify();
+			}
+			self.poll_voice_messages(&ctx);
+			if let Some(request) = self
+				.voice_messages
+				.take_send(&mut self.state, &mut self.messaging.voice_messages)
+			{
+				if let Some(connection) = &self.connection {
+					if let Err(error) = connection.uploads.try_send(request) {
+						let request = error.into_inner();
+						request
+							.progress
+							.send_replace(discord_api::upload::Status::Failed(
+								"Upload queue full; record again",
+							));
+						self.state.command_rejected(request.command);
+					}
+				} else {
+					request
+						.progress
+						.send_replace(discord_api::upload::Status::Failed(
+							"Connection unavailable; record again",
+						));
+					self.state.command_rejected(request.command);
+				}
 			}
 			// Park or restore staged files after navigation without polling workers again.
 			let state = &self.state;
@@ -6191,18 +6449,56 @@ impl eframe::App for Desktop {
 				{
 					Err("Sign in before changing your profile picture")
 				} else {
-					self.profile_avatar.start(
+					if self.messaging.profile_picture_is_banner() {
+						self.profile_avatar.start_banner(
+							scope,
+							self.runtime.handle(),
+							&ctx,
+							self.window.clone(),
+							"Choose profile banner",
+						)
+					} else {
+						self.profile_avatar.start(
+							scope,
+							self.runtime.handle(),
+							&ctx,
+							self.window.clone(),
+							"Choose profile picture",
+							256,
+						)
+					}
+				};
+				if let Err(error) = result {
+					self.messaging
+						.accept_profile_picture(&ctx, scope, Err(error));
+				}
+			}
+			if let Some((scope, banner)) = self.messaging.take_server_profile_image_request() {
+				let result = if scope.0 != self.state.generation
+					|| !self.state.can_edit_server_profile(scope.1)
+				{
+					Err("This server is no longer available")
+				} else if banner {
+					self.server_profile_image.start_banner(
 						scope,
 						self.runtime.handle(),
 						&ctx,
 						self.window.clone(),
-						"Choose profile picture",
+						"Choose server profile banner",
+					)
+				} else {
+					self.server_profile_image.start(
+						scope,
+						self.runtime.handle(),
+						&ctx,
+						self.window.clone(),
+						"Choose server profile picture",
 						256,
 					)
 				};
 				if let Err(error) = result {
 					self.messaging
-						.accept_profile_picture(&ctx, scope, Err(error));
+						.accept_server_profile_image(&ctx, scope, Err(error));
 				}
 			}
 			if let Some(scope) = self.messaging.take_group_icon_request() {
@@ -6239,6 +6535,31 @@ impl eframe::App for Desktop {
 				if let Err(error) = result {
 					self.messaging
 						.accept_create_server_icon(&ctx, scope, Err(error));
+				}
+			}
+			if let Some(scope) = self.messaging.take_community_artwork_request() {
+				let result = if scope.0 != self.state.generation
+					|| !self.state.can_edit_community_settings(
+						scope.1,
+						model::community_admin::Section::Guide,
+					) {
+					Err("You can no longer manage this server")
+				} else {
+					self.community_artwork.start_image(
+						(scope.0, scope.1, scope.4),
+						self.runtime.handle(),
+						&ctx,
+						self.window.clone(),
+						"Choose Server Guide artwork",
+						512,
+						scope.2.is_some(),
+					)
+				};
+				match result {
+					Ok(()) => self.community_artwork_scope = Some(scope),
+					Err(error) => self
+						.messaging
+						.accept_community_artwork(&ctx, scope, Err(error)),
 				}
 			}
 			if let Some(scope) = self.messaging.take_server_role_icon_request() {
@@ -6322,6 +6643,42 @@ impl eframe::App for Desktop {
 						.accept_server_sticker(&ctx, scope, Err(error));
 				}
 			}
+			if let Some((generation, guild, request)) = self.messaging.take_server_sound_request() {
+				let scope = (generation, guild, request);
+				let result = if generation != self.state.generation
+					|| !self.state.can_create_guild_sound(guild)
+				{
+					Err("You can no longer upload sounds to this server")
+				} else {
+					self.sound_upload
+						.start(scope, self.runtime.handle(), &ctx, self.window.clone())
+				};
+				if let Err(error) = result {
+					self.messaging.accept_server_sound(scope, Err(error));
+				}
+			}
+			if let Some((scope, start, end)) = self.messaging.take_server_sound_trim() {
+				self.sound_upload.trim(scope, start, end, &ctx);
+			}
+			if let Some((scope, selection)) = self.messaging.take_server_sound_preview() {
+				// The offline preview never opens an audio device.
+				if !self.state.demo {
+					self.sound_upload.preview(scope, selection, &ctx);
+				}
+			}
+			if self.messaging.take_server_sound_closed() {
+				self.sound_upload.clear();
+			}
+			// A review reset by a permission change, a scope change or sign-out never reports
+			// closing; its decoded audio is released here instead.
+			let review = self
+				.messaging
+				.server_sound_review()
+				.filter(|(generation, guild, _)| {
+					*generation == self.state.generation
+						&& self.state.can_create_guild_sound(*guild)
+				});
+			self.sound_upload.retain(review);
 			for key in self.messaging.take_avatar_requests() {
 				if !self
 					.avatars

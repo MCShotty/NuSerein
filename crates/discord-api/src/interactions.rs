@@ -60,10 +60,19 @@ pub(crate) fn valid_uploads(request: &Request, count: usize) -> bool {
 	}
 	let mut seen = std::collections::BTreeSet::new();
 	match &request.data {
+		Data::ApplicationCommand { invocation } => invocation.attachment_count() == Some(count),
 		Data::Modal { components, .. } => {
 			components.iter().all(|c| walk(c, count, &mut seen)) && seen.len() == count
 		}
 		_ => count == 0,
+	}
+}
+
+fn catalog_failure(failure: Failure) -> Failure {
+	if failure == Failure::Capacity {
+		Failure::ProtocolAt("Application commands exceed the catalog limit")
+	} else {
+		failure
 	}
 }
 
@@ -72,32 +81,81 @@ impl DiscordApi {
 		&self,
 		channel: model::Id,
 		guild: Option<model::Id>,
+		context: u8,
 	) -> Result<Vec<model::application_commands::Command>, Failure> {
 		if channel.0 == 0 || guild.is_some_and(|id| id.0 == 0) {
 			return Err(Failure::Protocol);
 		}
-		let path = guild.map_or_else(
-			|| format!("/channels/{channel}/application-command-index"),
-			|guild| format!("/guilds/{guild}/application-command-index"),
-		);
-		let bytes = self
-			.request_limited(
-				reqwest::Method::GET,
-				&path,
-				None,
+		if context > 2 || (guild.is_some() != (context == 0)) {
+			return Err(Failure::Protocol);
+		}
+		let mut commands = Vec::new();
+		if context != 2 {
+			let path = guild.map_or_else(
+				|| format!("/channels/{channel}/application-command-index"),
+				|guild| format!("/guilds/{guild}/application-command-index"),
+			);
+			let bytes = self
+				.request_limited(
+					reqwest::Method::GET,
+					&path,
+					None,
+					discord_protocol::MAX_WIRE,
+				)
+				.await
+				.map_err(catalog_failure)?;
+			commands =
+				discord_protocol::application_commands::decode_context(&bytes, guild, context)
+					.map_err(|_| {
+						Failure::ProtocolAt(
+							"Application commands are unsupported or exceed the catalog limit",
+						)
+					})?;
+		}
+		let user_index = self
+			.request_optional_limited(
+				"/users/@me/application-command-index",
 				discord_protocol::MAX_WIRE,
 			)
-			.await
-			.map_err(|failure| match failure {
-				Failure::Capacity => {
-					Failure::ProtocolAt("Application commands exceed the catalog limit")
+			.await;
+		let bytes = match user_index {
+			Ok(bytes) => bytes,
+			Err(Failure::Forbidden) if !commands.is_empty() => None,
+			Err(failure) => return Err(catalog_failure(failure)),
+		};
+		if let Some(bytes) = bytes {
+			let installed =
+				discord_protocol::application_commands::decode_context(&bytes, guild, context)
+					.map_err(|_| {
+						Failure::ProtocolAt("Account command list is invalid or exceeds its limits")
+					})?;
+			for command in installed.into_iter().filter(|command| {
+				command.guild_id.is_none()
+					&& command
+						.integration_types
+						.as_ref()
+						.is_some_and(|kinds| kinds.contains(&1))
+			}) {
+				if let Some(existing) = commands.iter().find(|existing| existing.id == command.id) {
+					if existing.version != command.version {
+						return Err(Failure::ProtocolAt(
+							"Command version changed; refresh the command list",
+						));
+					}
+					continue;
 				}
-				failure => failure,
-			})?;
-		discord_protocol::application_commands::decode(&bytes, guild).map_err(|_| {
-			Failure::ProtocolAt("Application commands are unsupported or exceed the catalog limit")
-		})
+				commands.push(command);
+				if !model::application_commands::valid_catalog(&commands) {
+					return Err(Failure::ProtocolAt(
+						"Application commands exceed the catalog limit",
+					));
+				}
+			}
+		}
+		commands.shrink_to_fit();
+		Ok(commands)
 	}
+
 	pub fn interaction_session(
 		&self,
 		session: Option<zeroize::Zeroizing<String>>,
@@ -125,11 +183,37 @@ impl DiscordApi {
 				"Interaction unavailable while reconnecting",
 			))?;
 		let (kind, mut data) = match &request.data {
+			Data::Autocomplete { query } => {
+				let mut options =
+					serde_json::to_value(query.options().map_err(|_| Failure::Protocol)?)
+						.map_err(|_| Failure::Protocol)?;
+				let mut selected = &mut options;
+				for _ in &query.path {
+					selected = &mut selected[0]["options"];
+				}
+				let focused = selected
+					.as_array_mut()
+					.ok_or(Failure::Protocol)?
+					.iter_mut()
+					.find(|option| option["name"] == query.focused)
+					.ok_or(Failure::Protocol)?;
+				focused["focused"] = json!(true);
+				let command = &query.command;
+				let mut data = json!({"type":1,"id":command.id,"version":command.version,"name":command.name,"application_command":command,"options":options,"attachments":[]});
+				if let Some(guild) = command.guild_id {
+					data["guild_id"] = json!(guild);
+				}
+				(4, data)
+			}
+
 			Data::ApplicationCommand { invocation } => {
 				let command = &invocation.command;
-				let mut data = json!({"type":1,"id":command.id,"version":command.version,
+				let mut data = json!({"type":command.kind,"id":command.id,"version":command.version,
 					"name":command.name,"application_command":command,"options":invocation.options,
 					"attachments":[]});
+				if let Some(target) = invocation.target {
+					data["target_id"] = json!(target);
+				}
 				if let Some(guild) = command.guild_id {
 					data["guild_id"] = json!(guild);
 				}
@@ -163,7 +247,7 @@ impl DiscordApi {
 			}
 		};
 		if let Some(attachments) = attachments {
-			if kind != 5 {
+			if !matches!(kind, 2 | 5) {
 				return Err(Failure::Protocol);
 			}
 			data["attachments"] = attachments.into();
@@ -192,6 +276,13 @@ impl DiscordApi {
 		)
 		.await
 		.map(|_| ())
+		.map_err(|failure| {
+			if kind != 4 && failure == Failure::Network {
+				Failure::Ambiguous
+			} else {
+				failure
+			}
+		})
 	}
 }
 
@@ -211,6 +302,9 @@ pub(crate) fn valid_file_types(request: &Request, sources: &[crate::upload::Sour
 			.all(|c| valid(c, sources))
 	}
 	match &request.data {
+		Data::ApplicationCommand { invocation } => {
+			invocation.attachment_count() == Some(sources.len())
+		}
 		Data::Modal { components, .. } => components.iter().all(|c| valid(c, sources)),
 		_ => sources.is_empty(),
 	}
@@ -242,7 +336,7 @@ mod tests {
 						{"type":5,"name":"private","description":"Private"},
 						{"type":6,"name":"user","description":"User"}]}]}]});
 			let index =
-				json!({"application_commands":[definition,{"type":2},{"type":1,"nsfw":true},
+				json!({"application_commands":[definition,{"type":0},{"type":1,"nsfw":true},
 				{"type":1,"contexts":[1]}, {"type":1,"guild_id":"99"}],
 				"applications":[{"id":"12","name":"Synthetic App","icon":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 					"permissions":{"user":false,"roles":{"20":true},"channels":{"19":true}}}]})
@@ -257,7 +351,7 @@ mod tests {
 				.unwrap();
 			let server =
 				tokio::spawn(async move {
-					for step in 0..3 {
+					for step in 0..4 {
 						let (mut socket, _) = listener.accept().await.unwrap();
 						let mut bytes = Vec::new();
 						let (header_end, length) = loop {
@@ -283,7 +377,7 @@ mod tests {
 						};
 						let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
 						assert!(headers.contains("SYNTHETIC_SLASH_TOKEN"));
-						if step == 2 {
+						if step == 3 {
 							assert!(headers.starts_with(
 								"GET /guilds/20/application-command-index HTTP/1.1\r\n"
 							));
@@ -304,6 +398,11 @@ mod tests {
 								"GET /guilds/20/application-command-index HTTP/1.1\r\n"
 							));
 							("200 OK", index.as_str())
+						} else if step == 1 {
+							assert!(headers.starts_with(
+								"GET /users/@me/application-command-index HTTP/1.1\r\n"
+							));
+							("200 OK", "{\"application_commands\":[]}")
 						} else {
 							assert!(headers.starts_with("POST /interactions HTTP/1.1\r\n"));
 							let body: Value =
@@ -366,6 +465,7 @@ mod tests {
 				request: 7,
 				result: Ok(mut commands),
 			} = api.execute(Command::ApplicationCommands {
+				context: 0,
 				channel: Id(21),
 				guild: Some(Id(20)),
 				request: 7,
@@ -407,6 +507,7 @@ mod tests {
 				options: vec![],
 			};
 			let invocation = Invocation {
+				target: None,
 				command,
 				options: vec![Argument {
 					kind: 2,
@@ -438,7 +539,7 @@ mod tests {
 			};
 			assert!(api.interaction(&request, None).await.is_ok());
 			assert!(matches!(
-				api.application_commands(Id(21), Some(Id(20))).await,
+				api.application_commands(Id(21), Some(Id(20)), 0).await,
 				Err(Failure::ProtocolAt(
 					"Application commands exceed the catalog limit"
 				))
@@ -574,5 +675,50 @@ mod tests {
 			)
 			.is_err()
 		);
+	}
+}
+
+#[cfg(test)]
+mod parity_tests {
+	use super::*;
+	use model::{Id, application_commands as a};
+	#[tokio::test]
+	async fn account_context_and_autocomplete_use_distinct_typed_requests() {
+		use client_core::auth::SessionSecret;
+		use std::{sync::Arc, time::Duration};
+		use tokio::{
+			io::{AsyncReadExt, AsyncWriteExt},
+			net::TcpListener,
+		};
+		tokio::time::timeout(Duration::from_secs(10),async {
+			let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api=DiscordApi::new(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_COMMAND_PARITY_TOKEN".into()).unwrap())).unwrap();
+			api.base=format!("http://{}",listener.local_addr().unwrap());api.interaction_session(Some(zeroize::Zeroizing::new("synthetic-session".into()))).unwrap();
+			let server=tokio::spawn(async move {
+				for step in 0..5 {
+					let (mut socket,_)=listener.accept().await.unwrap();let mut bytes=Vec::new();
+					let (end,length)=loop {let mut chunk=[0;1024];let n=socket.read(&mut chunk).await.unwrap();assert!(n>0);bytes.extend_from_slice(&chunk[..n]);assert!(bytes.len()<=32*1024);
+						if let Some(end)=bytes.windows(4).position(|w|w==b"\r\n\r\n") {let header=std::str::from_utf8(&bytes[..end]).unwrap();let length=header.lines().find_map(|line|{let(key,value)=line.split_once(':')?;key.eq_ignore_ascii_case("content-length").then(||value.trim().parse::<usize>().unwrap())}).unwrap_or(0);if bytes.len()>=end+4+length {break(end+4,length);}}
+					};
+					let headers=std::str::from_utf8(&bytes[..end]).unwrap();
+					if step==4 {assert!(headers.starts_with("POST /interactions "));drop(socket);assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err(),"an uncertain command must never be repeated");continue;}
+					let response=if step==0 {assert!(headers.starts_with("GET /users/@me/application-command-index "));json!({"application_commands":[{"type":2,"id":"20","version":"21","application_id":"12","name":"Inspect member","contexts":[2],"integration_types":[1]}]}).to_string()} else {
+						assert!(headers.starts_with("POST /interactions "));let body:Value=serde_json::from_slice(&bytes[end..end+length]).unwrap();assert!(body.get("guild_id").is_none());assert_eq!(body["channel_id"],"2");
+						if step==1 || step==2 {assert_eq!(body["type"],2);assert_eq!(body["data"]["type"],if step==1 {2} else {3});assert_eq!(body["data"]["target_id"],if step==1 {"7"} else {"8"});assert!(body.get("message_id").is_none());}
+						else {assert_eq!(body["type"],4);assert_eq!(body["data"]["type"],1);assert_eq!(body["data"]["options"][0]["value"],"2x");assert_eq!(body["data"]["options"][0]["focused"],true);assert!(body["data"].get("target_id").is_none());}String::new()
+					};
+					let status=if response.is_empty(){"204 No Content"}else{"200 OK"};socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.unwrap();
+				}
+			});
+			let mut commands=api.application_commands(Id(2),None,2).await.unwrap();let mut command=commands.remove(0);assert!(command.valid());
+			let request=Request {request:1,nonce:"123".into(),application_id:Id(12),channel_id:Id(2),guild_id:None,message_id:None,message_flags:0,data:Data::ApplicationCommand {invocation:Box::new(a::Invocation {command:command.clone(),options:Vec::new(),target:Some(Id(7))})}};
+			assert!(api.interaction(&request,None).await.is_ok());
+			command.kind=3;command.name="Inspect message".into();
+			let message_request=Request {data:Data::ApplicationCommand {invocation:Box::new(a::Invocation {command:command.clone(),options:Vec::new(),target:Some(Id(8))})},nonce:"125".into(),..request};
+			assert!(api.interaction(&message_request,None).await.is_ok());
+			command.kind=1;command.name="count".into();command.description="Count".into();command.options=vec![a::CommandOption {kind:4,name:"count".into(),description:"Count".into(),autocomplete:true,..Default::default()}];
+			let request=Request {request:2,nonce:"124".into(),application_id:Id(12),channel_id:Id(2),guild_id:None,message_id:None,message_flags:0,data:Data::Autocomplete {query:Box::new(a::Completion {command,path:Vec::new(),values:vec![("count".into(),"2x".into())],focused:"count".into()})}};
+			assert!(api.interaction(&request,None).await.is_ok());assert_eq!(api.interaction(&message_request,None).await,Err(Failure::Ambiguous));server.await.unwrap();
+		}).await.unwrap();
 	}
 }

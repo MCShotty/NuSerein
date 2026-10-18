@@ -48,6 +48,24 @@ impl MessageActions {
 	}
 }
 impl State {
+	pub(crate) fn confirm_message_published(&mut self, channel: Id, message: Id) {
+		self.resident.remove(channel);
+		if !self.can_view(channel) {
+			return;
+		}
+		if let Some(source) = self
+			.timeline
+			.get(message)
+			.filter(|source| source.channel == channel)
+		{
+			let flags = source.flags | 1;
+			let mut patch = content_patch(channel, message, String::new());
+			patch.content = Patch::Absent;
+			patch.flags = Patch::Value(flags);
+			let _ = self.timeline.patch(patch);
+			self.revision = self.revision.wrapping_add(1);
+		}
+	}
 	pub(crate) fn cancel_message_actions(&mut self) {
 		self.polls.reset();
 		for ((channel, message), edit) in std::mem::take(&mut self.message_actions.edits) {

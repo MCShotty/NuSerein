@@ -1,5 +1,60 @@
 # Local storage policy and audit
 
+Owned cosmetic editing retains at most 256 inventory items / 128 KiB plus 16 equipped profile
+entries in session RAM. Fresh own-profile/inventory wire responses are capped at 256 KiB / 2 MiB
+and zeroized after typed projection. Unknown equipped IDs remain in replacement writes; no
+purchases, claims, storefront history, images, paths, account identifiers or entitlement cache
+are persisted. Display-name style edits hold at most two RGB colors and known font/effect IDs;
+up to five current colors may be retained for safe read-only preservation. Account/guild/request
+changes retire stale results, and unconfirmed writes require an explicit reload before retry.
+
+## Own server profiles, account overview and privacy preferences (October 17, 2026)
+
+One own-server-profile snapshot is capped at 68 KiB, including the existing bounded
+64-KiB profile projection and its raw override values. One UI draft retains at most
+4 KiB of text plus two existing 256-KiB PNG data-URI limits (avatar and banner).
+Pictures use explicit native selection, bounded 8-MiB input/4096-pixel/64-MiB decoder
+limits outside rendering, and previews at most 512 pixels on either edge. No source
+path, PNG, profile text or preview is written to disk. The editor is account-generation,
+guild and request scoped. Session reset or lost membership retires replies and releases
+private snapshots; failed writes preserve the current-session draft and require reload.
+
+The own-account overview retains at most 4 KiB of identity, email, phone and security
+summary in session RAM. Email and phone are concealed in the UI by default. A connection
+list retains at most 64 items / 64 KiB, with a 256-KiB HTTP body ceiling. It excludes
+third-party access tokens, integrations and arbitrary service metadata. External IDs
+are at most 128 characters / 512 UTF-8 bytes and are escaped as a single route segment.
+One pending mutation and one failed-change draft share the existing serial REST writer;
+there is no polling, new background queue or OAuth token store. Own-account and
+connection HTTP response allocations are zeroized after typed decoding. Disconnect,
+account changes and logout clear private read snapshots; late results cannot repopulate
+them. These private projections are not supplied to extensions.
+
+Privacy/content preferences add only fixed-size enums and optional booleans to the
+existing bounded messaging-settings snapshot. One failed explicit change is retained
+in session memory; no mutation is automatically retried or replayed after reconnect.
+Changed protobuf subtrees retain the existing 128-KiB bounds and preserve unmodified
+fields, including unknown nested fields. No database schema or persistence is added.
+
+
+## Scheduled events and Stage session state (October 17, 2026)
+
+Event lists, subscriptions, recurrence exceptions, Stage topics, audience roles and
+unfinished event/occurrence/topic drafts stay in session RAM; no SQLite schema,
+credential-store entry, recording or history cache is added. One community request
+and one cancellable worker are retained. Event data is capped at 100 events / 768 KiB,
+64 exceptions per event, 400 subscription records and a 1 MiB wire response. Reads
+retire when their view closes; an in-flight write can settle without reopening it.
+Editor undo/focus states have bounded owners and retire with their draft/account.
+Session/access invalidation retires correlation, and an uncertain write requires
+an explicit scoped refresh instead of an automatic repeat. Drafts survive service
+errors and are cleared with their owning account generation. Stage microphone
+consent is session/call scoped and never persisted. Its authorization revision
+fences queued PCM across demotion, permission loss/return and reconnect. The existing
+4,096-entry / 1 MiB guild roster holds Stage audience metadata; only up to 63 remote
+audio sources allocate decoder/jitter/PCM working sets. No live filesystem/audio
+driver tracing was performed for this addition.
+
 ## Per-conversation reply and attachment staging (October 16, 2026)
 
 Leaving a conversation keeps its unsent reply target and staged files in session RAM for
@@ -705,7 +760,9 @@ suppression boolean to Custom with RNNoise/Off, AEC on, and no AGC/sensitivity g
 The selected profile and retained Custom settings are saved together; suppression strength
 is bounded to 0–3 and sensitivity to −80..=0 dBFS or disabled. Active processing settings
 replace one fixed-size watch snapshot. Existing eight-frame PCM queue limits are unchanged;
-processing has no downloaded model, recording, or persistent audio data.
+processing has no downloaded model or persistent audio data. Only the explicit
+voice-message recorder described below retains a bounded microphone clip; calls
+and microphone preview do not retain recordings.
 
 Recently visited conversations now keep at most eight dormant RAM timelines in the current
 account session, moved rather than cloned; the shared row/byte budget below usually evicts sooner.
@@ -821,7 +878,8 @@ The owner explicitly withdrew the no-storage policy on 2026-09-09. Local files, 
 | Reading/layout | One application-wide SQLite row with bounded scalar fields, including the double-click reaction opt-in and Unicode preset | Reset reading and layout removes only this override; retained across account logout |
 | Theme preset | One application-wide SQLite row (`theme_variant`, ≤32-byte key such as `onyx`); absent means Default | Select Default to remove it; unknown keys are ignored; retained across account logout |
 | SQLite working files | DELETE journal mode, in-memory temporary tables, 2 MiB page cache; transaction journal may temporarily add disk usage | SQLite transaction completion; normal SQLite crash recovery |
-| Voice credentials, DAVE identities/keys and PCM/Opus audio | Session memory only; one call, bounded media queues; no recording or audio cache | Hangup, failure, logout and application teardown; no forensic-erasure claim |
+| Voice credentials, DAVE identities/keys and call PCM/Opus audio | Session memory only; one call, bounded media queues; no call recording or audio cache | Hangup, failure, logout and application teardown; no forensic-erasure claim |
+| Explicit voice-message microphone clip | One session-only Ogg/Opus clip, at most 120 seconds / 8 MiB; no audio file, SQLite blob or saved audio draft | Send completion, discard/close, navigation, plugin disable, permission/session loss, logout and teardown; cancellation after submission cannot retract a remotely accepted message |
 | Audio devices, input profile/custom processing, push-to-talk and gain | Device-wide `app_preferences` SQLite singleton, bounded to 16 KiB; device names ≤1,024 bytes each | Retained across restart/logout; demo changes remain in memory |
 | Automatic emoticon conversion | Boolean in the existing device-wide `app_preferences` singleton; defaults off, including older saved preferences | Retained across restart/logout; converts standalone emoticons on message send/edit; demo changes remain in memory |
 | Preload on hover | Boolean in the existing device-wide `app_preferences` singleton; defaults on, including older saved preferences | Retained across restart/logout; off stops conversation, profile and GIF picker preloads; demo never preloads conversations or profiles |
@@ -943,7 +1001,7 @@ the UI copies it for GPU colour conversion. No live media was used to establish 
 
 Service-confirmed DM ringing retains at most 64 calls × 64 recipient IDs (32 KiB ID storage plus bounded vector metadata), alongside the existing call roster. It is session-only and clears on call deletion, access loss, fresh resync and disconnect. Targeted ringing adds one fixed-size pending UI action and one cancellable HTTP task, with no retries or persisted history. The dispatcher reuses a navigation-limited private-channel map, retaining at most 63 recipient IDs and 512 allocated ID bytes per channel for membership checks; no directory fetch is added. A coalesced revision invalidates pending actions when membership changes.
 
-Voice introduces no application audio files, recordings or voice-key store. Device preferences are saved locally as described above. Voice tokens/session IDs use redacted, zeroizing buffers and never enter SQLite or diagnostics; DAVE identities are regenerated for a new call. Eight-frame PCM queues, bounded Opus packets and one bounded decoder/jitter/PCM working set per remote speaker (up to 63) are transient media allocations, not disk caches. Guild voice rosters are session-only with 4,096-entry and 1 MiB budgets; they are never persisted. Upstream cryptographic tracing is compiled out. Audio-device shutdown is fenced before another device session starts. Synthetic crypto, transport and device-free capture-gate tests passed; actual audio-driver/permission artifacts and process writes during a physical call have not been traced. OS microphone permissions and driver behavior are outside Serein's cache-clearing guarantee.
+Calls introduce no application audio files, recordings or voice-key store. The separate explicit voice-message recorder retains one bounded microphone clip in RAM, as described below. Device preferences are saved locally as described above. Voice tokens/session IDs use redacted, zeroizing buffers and never enter SQLite or diagnostics; DAVE identities are regenerated for a new call. Eight-frame PCM queues, bounded Opus packets and one bounded decoder/jitter/PCM working set per remote speaker (up to 63) are transient media allocations, not disk caches. Guild voice rosters are session-only with 4,096-entry and 1 MiB budgets; they are never persisted. Upstream cryptographic tracing is compiled out. Audio-device shutdown is fenced before another device session starts. Synthetic crypto, transport and device-free capture-gate tests passed; actual audio-driver/permission artifacts and process writes during a physical call have not been traced. OS microphone permissions and driver behavior are outside Serein's cache-clearing guarantee.
 
 The optional READY voice-user lookup and per-snapshot/passive-update member lookup each admit
 at most 4,096 unique nonzero users / 1 MiB of estimated model storage, checking before insertion.
@@ -1229,6 +1287,40 @@ the conversation changes, the window is minimized/occluded, or the session ends.
 An atomic generation gate mutes obsolete output; the single worker releases its
 stream/buffers on cancellation. Pausing retains only bounded buffered audio;
 seeking replays decoding from the start instead of retaining the file.
+
+## Explicit microphone voice-message storage (October 17, 2026)
+
+One explicitly started recorder owns one microphone stream and an eight-frame
+48 kHz mono f32 PCM ring: 30,720 sample bytes, plus current-frame/callback scratch.
+It reuses native permission/device selection and rejects PCM behind the initial
+and live mute/deafen/PTT gates. A single worker performs DSP and mono Opus encoding
+at a 32 kbit/s target, then writes Ogg pages into one Vec whose requested capacity
+is capped at 8 MiB. Duration is at most 120 seconds / 6,000 encoded 20 ms frames;
+waveform accumulation is at most 6,000 amplitude bytes. The UI receives a latest-value
+fixed snapshot with a timer, state and 64 waveform bytes; no sample/packet event
+queue enters rendering. Codec/DSP and OS/driver allocations remain additional.
+
+The completed clip moves through one result slot into one session-only review
+slot and, on explicit Send, the existing single attachment-upload worker. The review
+player and upload share the encoded Arc; review uses the existing one-second PCM
+ring and decoded-byte/duration limits. Conversion
+from the recording Vec to the shared encoded buffer can transiently overlap two
+encoded allocations of at most 8 MiB each. HTTP/TLS and bounded existing upload
+buffers are additional; this is not a whole-process RAM cap. Attachment duration,
+base64 waveform and filename use ordinary message metadata; raw audio never enters
+SQLite, diagnostics, text drafts, a temporary file or an application recording cache.
+The plugin stores only its bounded settings using the existing granted extension
+storage and receives no audio or capture/device API.
+
+Stop gates callbacks immediately and closes the native microphone before final
+encoder flush. Discard/close, navigation, disabling the plugin, lost access or
+session, logout and call teardown cancel capture/review/upload and release unsent
+bytes. One process-wide microphone lease and completion fences prevent overlapping
+recorders, calls and microphone tests; desktop admission also fences camera previews.
+A stalled native driver can delay worker retirement. Accepted remote uploads/messages
+cannot be erased by local cancellation, and ambiguous sends are never retried.
+Physical permission/driver cleanup and live Discord acceptance remain unverified;
+ordinary tests and synthetic demo never open a microphone.
 
 ## Screen sharing
 
@@ -1743,13 +1835,22 @@ packet. Each decoded row is captured once as raw JSON for per-row isolation and 
 the packet. A connection remembers at most 8 recently left list IDs (up to 32 bytes each, no
 row data) so late replies are not mistaken for the open list. No new persistence.
 
-Per-server notification editing (September 29): one modal holds four optional
-scalar edits in session RAM. Saves reuse the existing serial server-action write
+Per-server notification editing (September 29; personal controls extended October 17): one modal holds five optional
+preference fields and a mute-duration choice in session RAM. Saves reuse the existing serial server-action write
 path, with one pending request; no new queue, cache or persistence is added.
 Guild notification defaults and mute deadlines add fixed-size scalar metadata
 to existing bounded navigation/settings records. Channel overrides stay in the
 existing count/byte budgets. Logout and session invalidation clear the editor's
 scope and discard pending results from old generations.
+The override chooser retains one channel ID and at most 100 query characters,
+and displays at most 50 matching loaded channels. Timed DM/group-DM mutes reuse
+the existing bounded account notification settings; no mute timer is written to
+SQLite. Collapse all / Expand all updates the existing account-local 256-ID
+channel-preference budget atomically. Unread keybindings use the existing
+device-wide keybinding record; older records receive defaults for the new actions
+without replacing customized shortcuts. Native notification activation retains
+one optional message ID per entry in the existing eight-item, generation-scoped
+RAM queue. No schema migration, additional disk cache or credential access is added.
 
 ## Connection-scoped API proxy plugin (preview)
 
@@ -1934,3 +2035,110 @@ No new capture files, media cache, driver installer or secrets are persisted.
 Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.
 
 Schema 29 adds a bounded boolean opt-in for double-click reactions, disabled for new and migrated settings. The selected Unicode preset is retained while disabled; Reset chat restores the disabled default.
+
+
+Application command autocomplete owns one partial form (at most the 256 KiB submission
+budget), one replaceable read worker and at most 25 bounded choices. It has its own nonce
+and ten-second response deadline, sharing identity generation with ordinary interactions.
+No typed form, choices or interaction response is persisted. Closing a form, account/session
+change or lost access retires the state; uncertain command submissions are never repeated
+by the suggestions path. Account-installed discovery merges into the existing 2,000-command /
+4 MiB catalog; no new unbounded per-account catalog is retained.
+
+Command attachments retain at most ten source descriptors / 500 MB total, one per option,
+in the active channel/account generation and command version/path. They reuse the bounded
+native upload/preview workers; form values contain only numeric attachment indexes.
+Failed submissions keep descriptors for an explicit retry and validate their sources again;
+accepted, replaced or retired forms release them. Files, filenames and form values are not
+persisted or logged. One matching submission outcome is retained, without an event history.
+Each of the two member-lookup slots can retain one prior label window of at most 100 members /
+128 KiB alongside its current bounded result page. Current loaded member metadata wins over
+retained labels, including nickname removal. Navigation, access/session invalidation and
+account changes clear the lookup state.
+
+Soundboard playback retains at most 16 decoded clips and ten full-length clips by sample
+budget (about 11.5 MB), 16 waiting play intents and four download/decode tasks. A call mixer
+retains at most eight clips. Call stop/account change cancels the scope and releases cached
+PCM and pending plays; blocking decoders check cancellation between packets. Anonymous CDN
+reads never receive the API session. Playback speed processing has a bounded grain/search
+window and operates on the decoder worker, outside rendering and device callbacks.
+
+## Independent media output (October 17, 2026)
+
+The optional media output device ID joins device-local application preferences,
+bounded to 1,024 bytes and the existing 16 KiB preference record. It survives logout
+and restart; demo changes remain in memory. Attachment audio/video workers take
+one selected ID per playback request. A watched-stream routing worker retains at
+most eight mono 20 ms frames (30,720 bytes), one stereo output ring of at most
+2,880 sample pairs (23,040 bytes), and one frame being processed (3,840 bytes).
+The media callback and native driver buffers are additional. There is one worker
+per explicit watched stream, replaced and stopped with its owning watch context.
+A retiring worker must finish native output teardown before the next worker starts;
+rapid watch switches cannot accumulate output workers. Each drain pass examines
+at most eight frames even if incoming packets continue refilling the channel.
+Mute/deafen, device changes and stop clear the pending PCM; nothing is persisted,
+recorded, logged or sent anywhere beyond existing Discord transports.
+
+### Watched-stream synchronization metadata (October 17, 2026)
+
+The authenticated RTCP parser admits at most eight sender reports per compound
+packet. A watched RTC session retains at most 16 current user clock entries, with
+one audio report, one video report and one RTP/software-playout anchor each. Reports
+expire after 15 seconds; the audio anchor expires after 250 ms. No wall-clock,
+identifiers, samples or reports are persisted or logged. Each speaker's eight existing
+Opus reorder slots add only optional RTP timestamps. Decoded-picture scheduling
+holds the already bounded decoder scratch for at most 120 ms, checks cancellation
+within 2 ms and allocates no additional picture queue. Source changes, rekeys,
+watch stop and account teardown revoke old mappings and native decoder lifetimes.
+
+## Moderation and AutoMod session state
+
+Bans retain one page of at most 100 entries/256 KiB; a specific member lookup does not
+create a directory cache. AutoMod retains at most 32 rules/512 KiB, with bounded metadata,
+20 exempt roles and 50 exempt channels per rule. Wire bodies are bounded separately.
+One existing server-administration worker owns reads/writes; its sequence, account generation,
+server scope and permission revision reject retired results. No new local store or telemetry
+is introduced. Rule drafts and audit reasons stay in session RAM and clear on account/server
+change or explicit discard. Failed saves preserve the draft. Uncertain writes require an
+explicit reload before a further mutation; no queued automatic destructive retry exists.
+
+Community configuration and member Server Guide progress stay in bounded session RAM. Each
+active admin/member snapshot is capped at 512 KiB; an administration draft and its baseline are
+independently bounded copies. At most five member completion intents are retained, without a
+message transcript. Guide image preparation uses the existing single-slot cancellable native
+picker and never retains its source file path after preparation. Prepared PNGs are limited to
+256 KiB, and draft artwork is discarded with the settings session. None of this data is persisted.
+Welcome-author display borrows existing bounded member, profile and friend state and adds no
+author cache or user lookup worker. Unknown authors remain ID-backed placeholders.
+
+
+## Desktop Inbox (October 17, 2026)
+
+The Inbox is session-only. One recent-mention page holds at most 25 messages / 1 MiB;
+saved messages hold at most 500 entries / 1 MiB, including message bodies and vector
+allocation. The larger item allowance includes service reminders and does not increase
+Discord's bookmark entitlement. Wire responses are capped at 2 MiB. Unread rows refer
+to the existing bounded navigation/read-state snapshot and display at most 100 rows at
+a time; no extra history or directory is fetched. Filters are limited to 128 characters,
+and custom reminder input to 16. No disk schema, account archive or background polling
+is added. Permission/session loss retires snapshots; removed channels lose saved bodies.
+Opening results uses the existing history admission and draft-preserving navigation.
+Saved-message API writes remain explicit, service-authoritative and never automatically
+replayed after an uncertain outcome. Gateway invalidations retire cached pages; refresh
+is deliberate. No service URL, token or message body is written to diagnostic logs.
+
+Desktop messaging disclosure and membership follow-up: per-view restricted-message
+reveals retain at most 500 IDs, author IDs and content hashes, without copied bodies.
+They expire with the account, relationship revision, retained source or view. The group
+member manager retains one on-demand owner/recipient snapshot, at most nine other
+participants and 32 KiB including allocation; changed membership and connection reset
+retire it. Thread tag drafts retain at most five IDs, and group/thread/follow search
+inputs at most 64 characters. Creation/completion correlation retains one fixed-size
+record. No disk schema, background scan, media preload or automatic mutation retry is
+added. Existing history, member-list, HTTP and media budgets remain in force.
+
+Group creation retains at most nine selected friend IDs (at most 16 allocated slots)
+in the UI and one pending creation snapshot, plus one fixed-size returned ID/request
+record. Its wire response is capped at 32 KiB; channel and owner/recipient projections
+are both charged to the event budget. The offline fixture retains at most 64 fixed-size
+group owner ID pairs, cleared at the session boundary; it is never a live data cache.

@@ -84,6 +84,26 @@ viewport when the start of a tall message scrolls away, without changing its cac
 
 ## Layout
 
+The sidebar's Inbox button opens one native dialog with Unread, Mentions and Bookmarks
+tabs. Filters apply to known accessible conversations and can include muted conversations
+or restrict results to the current server/direct-message area. Opening the dialog alone
+never acknowledges messages. Read, dismiss, save and reminder changes are explicit;
+Write errors preserve the current page unless access or service updates invalidate it;
+no write retries happen automatically. Spoiler text
+stays concealed, message jumps retain drafts, and Escape releases the session-only page.
+Standard reminder intervals and a bounded custom UTC date/time are available where the
+account's service accepts saved messages. This is not a local reminder scheduler.
+
+Blocked and ignored message bodies use a native Show/Hide control before the author,
+text and media. The same rule applies to thread starters, search/pins, Inbox and forward
+previews; loaded reply previews name the restriction. Revealing a body is local to that
+view and expires when the content or relationship changes. Friends exposes New Group
+DM; group management exposes member refresh, invitations, confirmed owner transfers
+and owner-only removals. Threads provide
+public/private creation and a member manager; existing forum posts provide a bounded
+tag editor. Announcement channels expose Follow with destination selection, and eligible
+messages expose confirmed Publish. All of these keep the ordinary conversation draft.
+
 - 36px title strip (`base`): hidden native title bar on macOS with traffic lights inline, centred
   context title, session status text and an OFFLINE PREVIEW / EXPERIMENTAL pill. Eframe centres the
   native macOS buttons in the active title strip every frame, including after resizing or zooming;
@@ -162,6 +182,8 @@ and a red hang-up button, a green "In a call" badge in the header, mute/deafen t
 account card, and a "Voice Connected" panel above it while connected. Camera and screen
 sharing depend on native capture and negotiated codec support; offline previews keep
 capture inert. Activities and soundboard remain disabled where unsupported.
+The soundboard pill opens a popup of bounded sound buttons and a volume slider; it is
+disabled outside server voice channels.
 
 ## Verification notes
 
@@ -182,9 +204,35 @@ and pressing Enter, which replaced the welcome with the synthetic message.
 Server Notification Settings are available from the server dropdown and server
 icon context menu, independently of administrative Server Settings. The shared
 modal uses four radio choices, mute and mention-suppression switches, and an
-explicit Save changes action. The content scrolls in short/narrow viewports while
+explicit Save changes action. Muting offers the standard 15-minute, 1-hour,
+3-hour, 8-hour, 24-hour and indefinite durations. A searchable channel/category
+chooser exposes notification overrides without requiring administrative permissions;
+choosing a source alone never changes its settings. Override choices apply explicitly,
+while the server-level draft uses Save changes. The content scrolls in short/narrow viewports while
 the footer remains accessible. `--demo --demo-chat --demo-server-notifications`
 with `--features demo` opens the synthetic editor without contacting Discord.
+
+Server, category, channel, DM and group-DM menus share the mute-duration choices.
+Category mutes apply to descendant channels and threads; timed expiry refreshes
+hidden channels and unread indicators even without another Gateway event. Collapsed
+categories retain the selected conversation, unmuted unread channels and mentions.
+Collapse all / Expand all affects only the current server. Category and folder
+Mark as Read actions acknowledge their own readable conversations without navigating.
+Alt+Shift+Down/Up moves between unread conversations, skipping muted conversations
+unless they contain mentions; Ctrl+Shift+U (Command+Shift+U on macOS) opens the
+current unread boundary. These shortcuts are rebindable and respect modal, IME
+and key-capture input. Notification clicks open the referenced message through the
+normal permission checks and retain existing composer drafts.
+
+The personal notification controls were inspected in the native Linux `profile_preview`
+fixture (`--demo --interactive --page=channel-links`), with the installed Inter fonts
+and WGPU on an isolated Xvfb display at 1× scale. The matched dark pair in
+`docs/pr-evidence/user-controls-qol/` uses 1120×760; the before image is `f9e39f7`
+with the demo-only pending-upload tuple repair required to build that fixture.
+Native inspection also covered duration selection with Arrow Down/Enter, picker
+closure, and scrolling with the footer visible at 760×520 in light and dark mode.
+The fixture has no service adapters. Synthetic UI/HTTP regressions cover writes;
+live synchronization and OS notification activation on Windows, macOS and Linux remain unverified.
 
 Poll cards follow the desktop layout shown in Discord's
 [Polls FAQ](https://support.discord.com/hc/en-us/articles/22163184112407-Polls-FAQ):
@@ -201,3 +249,16 @@ and Post controls. Its content scrolls while the footer remains available. Escap
 the close icon and a backdrop click dismiss an idle editor; a pending submission
 keeps it open. Unknown results and expired but unfinalized polls retain explicit
 status text. `--features demo -- --demo --demo-polls` previews the fixture offline.
+
+
+Application context commands use the existing user/message context menu's Apps submenu.
+Command arguments with autocomplete retain text input and add a keyboard-accessible choices
+menu with loading/error/retry states. Suggestions update after a short typing pause and
+never submit the command. The ordinary composer preserves its draft and explicit Run action.
+
+Native server settings include AutoMod and Moderation pages. AutoMod edits use typed trigger
+and action controls, bounded line lists and explicit save/discard/delete confirmation.
+Moderation presents a known-member chooser or explicit lookup, timeout duration, history
+retention and a reason in its final confirmation. Role hierarchy and current permissions
+control availability. Failed writes keep input; refresh and reapply are explicit after an
+unknown outcome. These pages use the existing settings navigation, focus and scrolling.

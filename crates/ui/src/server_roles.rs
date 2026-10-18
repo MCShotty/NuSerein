@@ -1501,6 +1501,7 @@ fn permissions(
 					"server-roles-permissions-manage-nicknames",
 				),
 				(p::KICK_MEMBERS, "server-roles-permissions-kick-members"),
+				(p::BAN_MEMBERS, "server-roles-permissions-ban-members"),
 				(
 					p::MODERATE_MEMBERS,
 					"server-roles-permissions-timeout-members",

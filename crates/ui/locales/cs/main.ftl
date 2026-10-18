@@ -3229,6 +3229,8 @@ server-settings-page-profile = Profil serveru
 server-settings-page-roles = Role
 # Context: label
 server-settings-page-stickers = Samolepky
+# Context: label
+server-settings-page-soundboard = Soundboard
 # Context: preview
 server-settings-preview-established = Založeno
 # Context: preview
@@ -3284,6 +3286,84 @@ server-settings-show-people = LIDÉ
 # Context: timeout_picker
 server-settings-timeout-picker-minutes = zápis
 
+# Context: server_sounds
+server-sounds-title = Soundboard
+# Context: server_sounds
+server-sounds-upload-title = Nahrát zvuk
+# Context: server_sounds
+server-sounds-preview = Náhled
+# Context: server_sounds
+server-sounds-trim-hint = Tažením úchytů vyberte až 5,2 sekundy. Podržením úchytu na místě zobrazení přiblížíte.
+# Context: server_sounds
+server-sounds-never-mind = Zrušit
+# Context: server_sounds
+server-sounds-play-preview = Přehrát výběr
+# Context: server_sounds
+server-sounds-stop-preview = Zastavit náhled
+# Context: server_sounds
+server-sounds-description = Nahrajte vlastní zvukové reakce, které může použít kdokoli na tomto serveru.
+# Context: server_sounds
+server-sounds-upload-sound = Nahrát zvuk
+# Context: server_sounds
+server-sounds-reload = Načíst znovu
+# Context: server_sounds
+server-sounds-saving = Ukládání změn…
+# Context: server_sounds
+server-sounds-loading = Načítání zvuků…
+# Context: server_sounds
+server-sounds-hint = Zvuk MP3, Ogg nebo WAV. Zvuky mají nejvýše 5,2 sekundy a 512 KB; delší soubory lze oříznout.
+# Context: server_sounds
+server-sounds-preparing = Příprava zvuku…
+# Context: server_sounds
+server-sounds-name = Název
+# Context: server_sounds
+server-sounds-emoji = Související emoji (volitelné)
+# Context: server_sounds
+server-sounds-volume = Hlasitost
+# Context: server_sounds
+server-sounds-upload = Nahrát
+# Context: server_sounds
+server-sounds-cancel = Zrušit
+# Context: server_sounds
+server-sounds-invalid = Použijte název o 2–32 znacích a nejvýše jedno emoji.
+# Context: server_sounds
+server-sounds-section = Zvuky
+# Context: server_sounds
+server-sounds-count = Zvuky: { $count }
+# Context: server_sounds
+server-sounds-slots = Volné sloty: { $count } z { $limit }
+# Context: server_sounds
+server-sounds-empty = Zatím žádné vlastní zvuky
+# Context: server_sounds
+server-sounds-empty-detail = Začněte nahráním zvuku.
+# Context: server_sounds
+server-sounds-column-emoji = Emoji
+# Context: server_sounds
+server-sounds-column-name = Název
+# Context: server_sounds
+server-sounds-column-uploaded-by = Nahrál
+# Context: server_sounds
+server-sounds-unknown = Neznámý
+# Context: server_sounds
+server-sounds-unavailable = Nedostupný
+# Context: server_sounds
+server-sounds-actions = Akce zvuku
+# Context: server_sounds
+server-sounds-edit = Upravit
+# Context: server_sounds
+server-sounds-delete = Smazat zvuk
+# Context: server_sounds
+server-sounds-edit-title = Upravit zvuk
+# Context: server_sounds
+server-sounds-edit-subtitle = Upravte název, emoji a hlasitost zvuku.
+# Context: server_sounds
+server-sounds-delete-title = Smazat zvuk?
+# Context: server_sounds
+server-sounds-delete-subtitle = Odebrání zvuku { $name } nelze vrátit zpět.
+# Context: server_sounds
+server-sounds-save = Uložit
+# Context: server_sounds
+server-sounds-custom-emoji-kept = Tento zvuk používá vlastní emoji. Pole nechte prázdné, chcete-li ho zachovat.
 ## crates/ui/src/server_stickers.rs
 # Context: dialog
 server-stickers-dialog-cancel = Zrušit
@@ -4158,6 +4238,26 @@ voice-mute-toggle-unmute = Zrušit ztlumení
 voice-mute-toggle-with-settings-input-settings = Nastavení vstupu
 # Context: mute_toggle_with_settings
 voice-mute-toggle-with-settings-output-settings = Nastavení výstupu
+# Context: soundboard_panel
+voice-soundboard-title = Soundboard
+# Context: soundboard_panel
+voice-soundboard-open = Přehrát zvuk v tomto hlasovém kanálu
+# Context: soundboard_panel
+voice-soundboard-server-only = Soundboard je dostupný v hlasových kanálech serveru
+# Context: soundboard_panel
+voice-soundboard-server-sounds = Zvuky serveru
+# Context: soundboard_panel
+voice-soundboard-default-sounds = Výchozí zvuky
+# Context: soundboard_panel
+voice-soundboard-loading = Načítání zvuků…
+# Context: soundboard_panel
+voice-soundboard-empty = Nejsou zde dostupné žádné zvuky.
+# Context: soundboard_panel
+voice-soundboard-retry = Zkusit znovu
+# Context: soundboard_panel
+voice-soundboard-volume = Hlasitost soundboardu
+# Context: soundboard_panel
+voice-soundboard-sound-unavailable = Tento zvuk není dostupný
 # Context: stream_audio_controls
 voice-stream-audio-controls-mute-stream-audio = Ztlumit streamovaný zvuk
 # Context: stream_audio_controls
@@ -4212,6 +4312,15 @@ voice-server-mute = Ztlumit na serveru
 voice-server-unmute = Zrušit ztlumení na serveru
 voice-move-to = Přesunout do
 voice-disconnect-member = Odpojit
+inbox-title = Doručené
+inbox-description = Nepřečtené konverzace, nedávné zmínky a záložky
+inbox-loading = Načítání zmínek…
+inbox-empty = V dostupných konverzacích nejsou žádné nedávné zmínky.
+inbox-refresh-needed = Obnovte seznam pro načtení nedávných zmínek.
+inbox-refresh = Obnovit
+inbox-retry = Zkusit znovu
+inbox-older = Starší zmínky
+inbox-open-message = Otevřít zprávu
 # Context: voice_participant_menu
 voice-voice-participant-menu-silence-this-person-on-this-device-only-nobody-else-is = Ztišit tuto osobu pouze na tomto zařízení. Nikdo jiný není ovlivněn.
 # Context: voice_participant_menu
@@ -4508,6 +4617,9 @@ voice-recipient-ringing = Vyzvání…
 voice-recipient-not-in-call = Není v hovoru
 reconnect-now = Znovu připojit
 
+voice-media-output = Výstup médií
+voice-media-output-hint = Platí pro nově spuštěné audio/video a sledované streamy.
+
 # Explicit public attachment hosting
 public-upload-host-file = Sdílet odkazem…
 public-upload-heading = Sdílet veřejným odkazem
@@ -4642,6 +4754,26 @@ screen-macos-system-picker = Vybrat systémovým dialogem macOS
 screen-macos-system-picker-kind = Systémový výběr obsahu
 
 member-in-voice = V hlasovém chatu
+
+# Native voice-message recorder
+voice-message-title = Hlasová zpráva
+voice-message-menu = Nahrát hlasovou zprávu
+voice-message-offline = Offline náhled · syntetický zvuk, bez mikrofonu a odesílání
+voice-message-ready = Tlačítkem Nahrát zapnete mikrofon.
+voice-message-starting = Otevírání mikrofonu…
+voice-message-recording = Nahrávání
+voice-message-muted = Mikrofon je ztlumený · zapněte jej nebo podržte push-to-talk.
+voice-message-finalizing = Dokončování nahrávky…
+voice-message-review = Připraveno k odeslání. Textový koncept se odešle samostatně.
+voice-message-sending = Odesílání hlasové zprávy…
+voice-message-retry = Zkuste nahrát nový klip.
+voice-message-record = Nahrát
+voice-message-stop = Zastavit nahrávání
+voice-message-send = Odeslat hlasovou zprávu
+voice-message-discard = Zahodit
+voice-message-private = Zvuk zůstává v paměti do odeslání nebo zahození.
+voice-message-cancel-send = Zrušení zastaví nahrávání; zprávu přijatou Discordem již nelze odvolat.
+
 settings-chat-box = Psaní zpráv
 settings-convert-emoticons = Automaticky převádět emotikony ve zprávách na emoji
 settings-convert-emoticons-description = Při odesílání nebo úpravě zpráv převést samostatné emotikony jako :) na 🙂. Kód a odkazy zůstanou beze změny.
@@ -4916,3 +5048,139 @@ search-overlays-no-matching-content-types = Žádné odpovídající typy obsahu
 search-overlays-history = Historie
 search-overlays-clear-history = Vymazat historii hledání
 main-sign-in-rate-limited-detail = Discord omezuje toto přihlášení. Než to zkusíte znovu, počkejte. Dřívější pokus může čekání prodloužit.
+
+application-menu-title = Apps
+application-menu-empty = No commands available here.
+application-menu-refresh = Refresh commands
+
+application-menu-retry-suggestions = Retry suggestions
+application-menu-type-suggestions = Type to load suggestions.
+
+slash-commands-sending = Odesílání příkazu…
+slash-commands-choose-file = Vybrat soubor…
+slash-commands-remove-file = Odebrat soubor
+slash-commands-file-help = Vyberte jeden soubor pro tuto možnost.
+
+# Personal notification and navigation controls
+qol-mute-category = Ztlumit kategorii
+qol-unmute-category = Zrušit ztlumení kategorie
+qol-mute-server = Ztlumit server
+qol-unmute-server = Zrušit ztlumení serveru
+qol-mute-duration = Doba ztlumení
+qol-current-mute = Zachovat současnou dobu
+qol-notification-overrides = Výjimky oznámení
+qol-choose-channel-category = Změny zde se použijí okamžitě.
+qol-select-channel = Vyberte kanál nebo kategorii
+qol-search-channels = Hledat kanály a kategorie
+qol-more-channels = Existují další výsledky; upřesněte hledání.
+qol-use-inherited = Použít výchozí nastavení
+qol-mute-selection = Ztlumit
+qol-unmute-selection = Zrušit ztlumení
+qol-collapse-categories = Sbalit všechny kategorie
+qol-expand-categories = Rozbalit všechny kategorie
+qol-next-unread = Další nepřečtená konverzace
+qol-previous-unread = Předchozí nepřečtená konverzace
+qol-jump-unread = Přejít na první nepřečtenou zprávu
+
+audio-playback-speed = Rychlost přehrávání
+
+voice-message-listen = Poslechnout před odesláním
+voice-message-stop-listening = Zastavit poslech
+
+screen-adaptive-quality-hint = Kvalita streamu se automaticky přizpůsobuje připojení.
+screen-adaptive-quality-active = Přizpůsobování kvality streamu připojení
+
+# Server moderation and AutoMod
+automod-title = AutoMod
+automod-description = Manage automatic filters and the actions Discord takes when they match.
+automod-name = Rule name
+automod-enabled = Enable rule
+automod-keywords = Keywords — one per line
+automod-regex = Regular expressions — one per line
+automod-profanity = Profanity
+automod-sexual = Sexual content
+automod-slurs = Slurs
+automod-allow = Allow list — one per line
+automod-mention-limit = Allowed unique mentions
+automod-raid = Detect mention raids
+automod-actions = Actions
+automod-block-interaction = Block member interactions
+automod-block-message = Block message
+automod-alert = Send an alert
+automod-timeout = Time out member
+automod-block-explanation = Explanation shown to the member
+automod-select-channel = Choose an alert channel
+automod-timeout-seconds = Timeout duration (seconds)
+automod-exempt-roles = Exempt roles
+automod-exempt-channels = Exempt channels
+automod-clear-unavailable-roles = Remove unavailable roles
+automod-clear-unavailable-channels = Remove unavailable channels
+automod-save = Save rule
+automod-cancel = Cancel
+automod-invalid = Check the rule limits, permissions and available channels. Refresh if server settings changed.
+automod-refresh = Refresh rules
+automod-create = Create rule
+automod-empty = No automatic moderation rules.
+automod-enabled-state = Enabled
+automod-disabled-state = Disabled
+automod-edit = Edit
+automod-delete = Delete rule
+automod-delete-confirm = Delete this AutoMod rule?
+automod-keyword = Custom keywords
+automod-spam = Spam detection
+automod-presets = Commonly flagged words
+automod-mentions = Mention spam
+automod-profile = Member profile keywords
+automod-concurrent = This rule changed while you were editing. Review and reapply your changes to its latest settings.
+automod-reapply = Reapply my changes
+moderation-title = Moderation
+moderation-reason = Reason (optional; recorded in the server audit log)
+moderation-member = Member name or ID
+moderation-choose-member = Choose a loaded member
+moderation-lookup = Find member
+moderation-lookup-help = Choose a member from this conversation or enter their user ID.
+moderation-timeout-until = Timed out until
+moderation-timeout = Time out
+moderation-remove-timeout = Remove timeout
+moderation-keep-messages = Keep messages
+moderation-ban = Ban
+moderation-kick = Kick
+moderation-bans = Banned members
+moderation-refresh-bans = Refresh bans
+moderation-no-bans = No banned members on this page.
+moderation-unban = Unban
+moderation-next-bans = Next page
+moderation-confirm-unban = Unban this member?
+moderation-confirm-kick = Kick this member?
+moderation-confirm-ban = Ban this member?
+moderation-confirm-timeout = Change this member’s timeout?
+moderation-confirm-description = Review this action and its reason before applying it to the selected member.
+moderation-confirm = Confirm
+moderation-days = days
+moderation-hours = hours
+moderation-minutes = minutes
+server-roles-permissions-ban-members = Ban members
+
+# Desktop Inbox
+inbox-unread = Unread
+inbox-mentions = Mentions
+inbox-saved = Bookmarks
+inbox-filter = Filter by conversation or server
+inbox-include-muted = Include muted conversations
+inbox-current-place = Current server or direct messages
+inbox-open-conversation = Open conversation
+inbox-mark-read = Mark as read
+inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
+inbox-dismiss = Dismiss
+inbox-bookmark = Bookmark message
+inbox-unsave = Remove bookmark
+inbox-remind = Remind me
+inbox-in-hour = In 1 hour
+inbox-in-day = In 1 day
+inbox-in-week = In 1 week
+inbox-clear-reminder = Clear reminder
+inbox-message-unavailable = Message unavailable
+inbox-service-availability = Availability depends on your Discord account.
+inbox-spoiler = Spoiler
+inbox-custom-reminder = Custom date and time (UTC)
+inbox-set-reminder = Set reminder

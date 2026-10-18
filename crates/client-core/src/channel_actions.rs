@@ -22,6 +22,69 @@ pub struct Edit {
 	pub overwrites: Vec<model::permissions::Overwrite>,
 	/// Forum and media channel settings; None for every other channel type.
 	pub forum: Option<Box<ForumEdit>>,
+	/// Voice/Stage settings; absent edits preserve them.
+	pub voice: Option<Box<VoiceEdit>>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VoiceRegion {
+	pub id: String,
+	pub name: String,
+	pub deprecated: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VoiceEdit {
+	pub bitrate: u32,
+	pub user_limit: u32,
+	pub region: Option<String>,
+	pub video_quality: u8,
+	pub regions: Vec<VoiceRegion>,
+}
+impl VoiceEdit {
+	pub fn valid(&self) -> bool {
+		(8000..=384000).contains(&self.bitrate)
+			&& self.user_limit <= 10000
+			&& matches!(self.video_quality, 1 | 2)
+			&& self.region.as_ref().is_none_or(|r| {
+				!r.is_empty()
+					&& r.len() <= 64
+					&& r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+			}) && self.regions.len() <= 100
+			&& self
+				.regions
+				.iter()
+				.all(|r| r.id.len() <= 64 && r.name.len() <= 256)
+			&& self.bytes() <= 64 * 1024
+	}
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>()
+			+ self.region.as_ref().map_or(0, String::capacity)
+			+ self.regions.capacity() * size_of::<VoiceRegion>()
+			+ self
+				.regions
+				.iter()
+				.map(|r| r.id.capacity() + r.name.capacity())
+				.sum::<usize>()
+	}
+	pub fn settings_eq(&self, other: &Self) -> bool {
+		self.bitrate == other.bitrate
+			&& self.user_limit == other.user_limit
+			&& self.region == other.region
+			&& self.video_quality == other.video_quality
+	}
+	pub fn conflicts(before: &Self, after: &Self, actual: &Self) -> bool {
+		(before.bitrate != after.bitrate && before.bitrate != actual.bitrate)
+			|| (before.user_limit != after.user_limit && before.user_limit != actual.user_limit)
+			|| (before.region != after.region && before.region != actual.region)
+			|| (before.video_quality != after.video_quality
+				&& before.video_quality != actual.video_quality)
+	}
+	pub fn confirms(before: &Self, after: &Self, actual: &Self) -> bool {
+		(before.bitrate == after.bitrate || after.bitrate == actual.bitrate)
+			&& (before.user_limit == after.user_limit || after.user_limit == actual.user_limit)
+			&& (before.region == after.region || after.region == actual.region)
+			&& (before.video_quality == after.video_quality
+				|| after.video_quality == actual.video_quality)
+	}
 }
 /// Discord's forum tag name limit.
 pub const TAG_NAME_LIMIT: usize = 20;
@@ -87,6 +150,7 @@ pub fn valid_tag_name(name: &str) -> bool {
 impl Edit {
 	pub fn valid(&self) -> bool {
 		self.forum.as_deref().is_none_or(ForumEdit::valid)
+			&& self.voice.as_deref().is_none_or(VoiceEdit::valid)
 			&& valid_name(&self.name)
 			&& self.name.capacity() <= 400
 			&& self.topic.chars().count() <= 4096
@@ -107,6 +171,7 @@ impl Edit {
 			+ self.topic.capacity()
 			+ self.overwrites.capacity() * size_of::<model::permissions::Overwrite>()
 			+ self.forum.as_deref().map_or(0, ForumEdit::bytes)
+			+ self.voice.as_deref().map_or(0, VoiceEdit::bytes)
 	}
 }
 pub fn valid_name(name: &str) -> bool {
@@ -121,6 +186,21 @@ pub enum Mute {
 	For(u32),
 	Forever,
 }
+impl Mute {
+	pub const DURATIONS: [u32; 5] = [900, 3600, 10800, 28800, 86400];
+	pub fn valid(self) -> bool {
+		match self {
+			Self::For(seconds) => Self::DURATIONS.contains(&seconds),
+			_ => true,
+		}
+	}
+	pub fn expires_at(self, now: i64) -> Option<i64> {
+		match self {
+			Self::For(seconds) if self.valid() => now.checked_add(i64::from(seconds)),
+			_ => None,
+		}
+	}
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PostDetails {
 	pub owner: Option<Id>,
@@ -128,6 +208,7 @@ pub struct PostDetails {
 	pub locked: bool,
 	pub pinned: bool,
 	pub followed: bool,
+	pub invitable: bool,
 	pub muted: bool,
 	pub level: u8,
 	pub mute_until: Option<i64>,
@@ -153,12 +234,17 @@ impl CreateKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
 	Reference,
+	Publish(Id),
+	FollowAnnouncement(Id),
 	Load,
 	PostLoad,
 	PostFollow(bool),
 	PostArchive(bool),
 	PostLock(bool),
 	PostRename(String),
+	PostTags(Vec<Id>),
+	PostAddMember(Id),
+	PostRemoveMember(Id),
 	PostPin(bool),
 	PostMute(Mute),
 	PostNotifications(u8),
@@ -178,6 +264,10 @@ pub enum Action {
 		name: String,
 		message: Option<Id>,
 	},
+	CreatePrivateThread {
+		name: String,
+		invitable: bool,
+	},
 	CreateCategory {
 		name: String,
 	},
@@ -195,6 +285,16 @@ pub enum Action {
 impl Action {
 	pub fn valid(&self) -> bool {
 		match self {
+			Self::Publish(message) | Self::FollowAnnouncement(message) => message.0 != 0,
+			Self::PostAddMember(user) | Self::PostRemoveMember(user) => user.0 != 0,
+			Self::PostTags(tags) => {
+				tags.len() <= 5
+					&& tags.capacity() <= 8
+					&& tags
+						.iter()
+						.enumerate()
+						.all(|(index, tag)| tag.0 != 0 && !tags[..index].contains(tag))
+			}
 			Self::Edit { before, after } => before.valid() && after.valid(),
 			Self::Move {
 				parent,
@@ -209,6 +309,7 @@ impl Action {
 					&& shifts.iter().all(|(id, pos)| id.0 != 0 && *pos >= 0)
 			}
 			Self::PostRename(name)
+			| Self::CreatePrivateThread { name, .. }
 			| Self::Duplicate { name }
 			| Self::Create { name, .. }
 			| Self::CreateCategory { name } => valid_name(name) && name.capacity() <= 400,
@@ -216,7 +317,7 @@ impl Action {
 				valid_name(name) && name.capacity() <= 400 && message.is_none_or(|id| id.0 != 0)
 			}
 			Self::Mute(Mute::For(seconds)) | Self::PostMute(Mute::For(seconds)) => {
-				matches!(seconds, 900 | 3600 | 10800 | 28800 | 86400)
+				Mute::For(*seconds).valid()
 			}
 			Self::Notifications(level) | Self::PostNotifications(level) => *level <= 3,
 			_ => true,
@@ -224,6 +325,11 @@ impl Action {
 	}
 }
 pub enum Outcome {
+	Published(Id),
+	AnnouncementFollowed {
+		destination: Id,
+		webhook: Id,
+	},
 	Post {
 		channel: Box<model::Channel>,
 		details: PostDetails,
@@ -282,16 +388,62 @@ pub struct Actions {
 	post_owner: Option<(Id, Id)>,
 	status: Option<(Id, &'static str, bool)>,
 	reference_names: Vec<(Id, Box<str>)>,
+	created_thread: Option<(Id, Id, u64)>,
+	completed: Option<(Id, u64, bool)>,
 }
 impl Actions {
 	pub(crate) fn reset(&mut self) {
 		*self = Self {
 			sequence: self.sequence,
+			completed: self.completed,
+			status: self.status,
 			..Self::default()
 		};
 	}
 }
 impl State {
+	pub fn can_follow_announcement(&self, source: Id, destination: Id) -> bool {
+		source != destination
+			&& self
+				.channel(source)
+				.is_some_and(|channel| channel.guild.is_some() && channel.kind == 5)
+			&& self.can_view(source)
+			&& self
+				.channel(destination)
+				.is_some_and(|channel| channel.guild.is_some() && matches!(channel.kind, 0 | 5))
+			&& self.permission(
+				destination,
+				VIEW_CHANNEL | model::permissions::MANAGE_WEBHOOKS,
+			) == Some(true)
+	}
+	/// Publishing requires Send Messages; publishing another author's announcement also
+	/// requires Manage Messages. Current channel, session and loaded message are rechecked.
+	pub fn can_publish_message(&self, channel: Id, message: Id) -> bool {
+		(self.demo || (self.auth == AuthState::Authenticated && self.gateway_connected))
+			&& self.selected == Some(channel)
+			&& self.freshness == model::Freshness::Fresh
+			&& self
+				.channel(channel)
+				.is_some_and(|entry| entry.kind == 5 && entry.guild.is_some())
+			&& self.permission(
+				channel,
+				model::permissions::VIEW_CHANNEL | model::permissions::SEND_MESSAGES,
+			) == Some(true)
+			&& self.timeline.get(message).is_some_and(|entry| {
+				entry.channel == channel
+					&& matches!(entry.kind, 0 | 19)
+					&& !entry.ephemeral
+					&& !entry.unsupported
+					&& entry.flags & 3 == 0
+					&& !self.timeline.is_deleted(message)
+					&& (self
+						.user
+						.as_ref()
+						.is_some_and(|user| user.id == entry.author.id)
+						|| self.permission(channel, model::permissions::MANAGE_MESSAGES)
+							== Some(true))
+			})
+	}
 	pub fn is_forum_post(&self, channel: Id) -> bool {
 		self.channel(channel).is_some_and(|c| {
 			c.kind == 11
@@ -346,6 +498,97 @@ impl State {
 		self.channel(channel)
 			.is_some_and(|c| c.guild.is_some() && matches!(c.kind, 0 | 5))
 			&& self.permission(channel, VIEW_CHANNEL | CREATE_PUBLIC_THREADS) == Some(true)
+	}
+	pub fn can_create_private_thread(&self, channel: Id) -> bool {
+		self.channel(channel)
+			.is_some_and(|entry| entry.guild.is_some() && entry.kind == 0)
+			&& self.permission(
+				channel,
+				VIEW_CHANNEL | model::permissions::CREATE_PRIVATE_THREADS,
+			) == Some(true)
+	}
+	pub fn created_thread(&self, parent: Id, request: u64) -> Option<Id> {
+		self.channel_actions
+			.created_thread
+			.filter(|(source, id, sequence)| {
+				*source == parent && *sequence == request && self.channel(*id).is_some()
+			})
+			.map(|(_, id, _)| id)
+	}
+	pub fn can_change_post_tags(&self, channel: Id, tags: &[Id]) -> bool {
+		let Some(post) = self
+			.channel(channel)
+			.filter(|_| self.is_forum_post(channel) && self.can_edit_post(channel))
+		else {
+			return false;
+		};
+		let Some(parent) = post.parent_id else {
+			return false;
+		};
+		let Some(current) = post.tags.as_ref() else {
+			return false;
+		};
+		self.post_details(channel)
+			.is_some_and(|details| !details.archived)
+			&& tags.len() <= 5
+			&& (!self.forum_requires_tag(parent) || !tags.is_empty())
+			&& tags.iter().enumerate().all(|(index, tag)| {
+				!tags[..index].contains(tag)
+					&& self.forum_tags(parent).iter().any(|known| {
+						known.id == *tag
+							&& (current.applied.contains(tag) || self.can_apply_tag(parent, known))
+					})
+			}) && current
+			.applied
+			.iter()
+			.filter(|tag| !tags.contains(tag))
+			.all(|tag| {
+				self.forum_tags(parent)
+					.iter()
+					.find(|known| known.id == *tag)
+					.is_some_and(|known| self.can_apply_tag(parent, known))
+			})
+	}
+	pub fn can_add_thread_member(&self, channel: Id, user: Id) -> bool {
+		user.0 != 0
+			&& self.user.as_ref().is_some_and(|owner| owner.id != user)
+			&& self.user_blocked(user) != Some(true)
+			&& !self.members.as_ref().is_some_and(|members| {
+				members.channel == channel
+					&& members.freshness == model::Freshness::Fresh
+					&& members.slots.iter().flatten().any(
+						|slot| matches!(slot, model::MemberSlot::Person(member) if member.user.id == user),
+					)
+			}) && self.permission(
+			channel,
+			VIEW_CHANNEL | model::permissions::SEND_MESSAGES_IN_THREADS,
+		) == Some(true)
+			&& self.post_details(channel).is_some_and(|details| {
+				!details.archived
+					&& (self
+						.channel(channel)
+						.is_some_and(|thread| thread.kind != 12)
+						|| self.can_manage_post(channel)
+						|| (details.followed && details.invitable))
+			})
+	}
+	pub fn can_remove_thread_member(&self, channel: Id, user: Id) -> bool {
+		(self.can_manage_post(channel)
+			|| (self
+				.channel(channel)
+				.is_some_and(|thread| thread.kind == 12)
+				&& self.can_edit_post(channel)))
+			&& self.user.as_ref().is_some_and(|owner| owner.id != user)
+			&& self
+				.post_details(channel)
+				.is_some_and(|details| !details.archived)
+			&& self.members.as_ref().is_some_and(|members| {
+				members.channel == channel
+					&& members.freshness == model::Freshness::Fresh
+					&& members.slots.iter().flatten().any(
+						|slot| matches!(slot, model::MemberSlot::Person(member) if member.user.id == user),
+					)
+			})
 	}
 	pub fn can_manage_channel(&self, channel: Id) -> bool {
 		self.channel(channel)
@@ -460,22 +703,44 @@ impl State {
 		available & bits == bits
 	}
 	fn channel_edit_allowed(&self, channel: Id, before: &Edit, after: &Edit) -> bool {
+		let kind = self.channel(channel).map(|c| c.kind);
+		if before
+			.voice
+			.as_ref()
+			.zip(after.voice.as_ref())
+			.is_some_and(|(before, after)| !before.settings_eq(after))
+		{
+			let Some(voice) = &after.voice else {
+				return false;
+			};
+			if !matches!(kind, Some(2 | 13))
+				|| (kind == Some(13) && voice.bitrate > 64000)
+				|| (kind == Some(2) && voice.user_limit > 99)
+			{
+				return false;
+			}
+		}
 		let overview = before.name != after.name
 			|| before.topic != after.topic
 			|| before.slowmode != after.slowmode
 			|| before.nsfw != after.nsfw;
-		if before.topic != after.topic && after.topic.chars().count() > 1024 {
+		if before.topic != after.topic
+			&& after.topic.chars().count()
+				> if matches!(kind, Some(15 | 16)) {
+					4096
+				} else {
+					1024
+				} {
 			return false;
 		}
 		if overview && !self.can_manage_channel(channel) {
 			return false;
 		}
-		if (before.topic != after.topic
-			|| before.slowmode != after.slowmode
-			|| before.nsfw != after.nsfw)
-			&& !self
-				.channel(channel)
-				.is_some_and(|c| matches!(c.kind, 0 | 5))
+		if before.topic != after.topic && !matches!(kind, Some(0 | 5 | 15 | 16)) {
+			return false;
+		}
+		if (before.slowmode != after.slowmode || before.nsfw != after.nsfw)
+			&& !matches!(kind, Some(0 | 2 | 5 | 13 | 15 | 16))
 		{
 			return false;
 		}
@@ -522,6 +787,12 @@ impl State {
 			.status
 			.is_some_and(|(id, _, success)| id == channel && success)
 	}
+	pub fn channel_action_completed(&self, channel: Id, request: u64) -> Option<bool> {
+		self.channel_actions
+			.completed
+			.filter(|(target, sequence, _)| *target == channel && *sequence == request)
+			.map(|(_, _, success)| success)
+	}
 	pub fn clear_channel_action_result(&mut self, channel: Id) {
 		if self
 			.channel_actions
@@ -547,6 +818,10 @@ impl State {
 			|| (!personal
 				&& !match &action {
 					Action::Reference => false,
+					Action::Publish(message) => self.can_publish_message(channel, *message),
+					Action::FollowAnnouncement(destination) => {
+						self.can_follow_announcement(channel, *destination)
+					}
 					Action::Load => self.can_open_channel_settings(channel),
 					Action::PostLoad => self.is_thread_channel(channel),
 					Action::PostFollow(_) => {
@@ -559,6 +834,10 @@ impl State {
 							})
 					}
 					Action::PostRename(_) => self.can_edit_post(channel),
+					Action::PostTags(tags) => self.can_change_post_tags(channel, tags),
+					Action::PostAddMember(user) => self.can_add_thread_member(channel, *user),
+					Action::PostRemoveMember(user) => self.can_remove_thread_member(channel, *user),
+					Action::CreatePrivateThread { .. } => self.can_create_private_thread(channel),
 					Action::CreateThread { message, .. } => {
 						self.can_create_thread(channel)
 							&& message.is_none_or(|id| {
@@ -709,7 +988,8 @@ impl State {
 			.retain(|(known, _)| *known != id);
 	}
 	pub(crate) fn cancel_channel_action(&mut self) {
-		if let Some((_, channel, _, action, _)) = self.channel_actions.pending.take() {
+		if let Some((_, channel, request, action, _)) = self.channel_actions.pending.take() {
+			self.channel_actions.completed = Some((channel, request, false));
 			self.channel_actions.status = Some((
 				channel,
 				if matches!(action, Action::Reference | Action::Load | Action::PostLoad) {
@@ -793,6 +1073,7 @@ impl State {
 			return Ok(());
 		}
 		let (_, _, _, action, observed) = self.channel_actions.pending.take().unwrap();
+		self.channel_actions.completed = Some((channel, request, false));
 		let result = result.and_then(|outcome| {
 			let valid = match (&action, &outcome) {
 				(
@@ -816,6 +1097,9 @@ impl State {
 					| Action::PostArchive(_)
 					| Action::PostLock(_)
 					| Action::PostRename(_)
+					| Action::PostTags(_)
+					| Action::PostAddMember(_)
+					| Action::PostRemoveMember(_)
 					| Action::PostPin(_)
 					| Action::PostMute(_)
 					| Action::PostNotifications(_),
@@ -839,12 +1123,24 @@ impl State {
 							Action::PostLock(value) => details.locked == *value,
 							Action::PostPin(value) => details.pinned == *value,
 							Action::PostRename(value) => target.name == *value,
+							Action::PostTags(value) => target.tags.as_ref().is_some_and(|tags| {
+								tags.applied.len() == value.len()
+									&& tags.applied.iter().all(|tag| value.contains(tag))
+							}),
 							Action::PostMute(value) => details.muted == (*value != Mute::Unmute),
 							Action::PostNotifications(value) => details.level == *value,
 							_ => true,
 						}
 				}
 				(Action::Load, Outcome::Details(edit)) => edit.valid(),
+				(Action::Publish(message), Outcome::Published(actual)) => message == actual,
+				(
+					Action::FollowAnnouncement(target),
+					Outcome::AnnouncementFollowed {
+						destination,
+						webhook,
+					},
+				) => target == destination && webhook.0 != 0,
 				(Action::Edit { .. }, Outcome::Channel { channel: c, .. }) => {
 					c.id == channel && c.guild == Some(guild)
 				}
@@ -854,14 +1150,28 @@ impl State {
 					| Action::CreateCategory { .. }
 					| Action::CreateThread { .. },
 					Outcome::Channel { channel: c, .. },
-				) => {
+				)
+				| (Action::CreatePrivateThread { .. }, Outcome::Channel { channel: c, .. }) => {
 					c.id.0 != 0
 						&& c.id != channel && c.guild == Some(guild)
 						&& match &action {
 							Action::Create { kind, .. } => c.kind == kind.wire_kind(),
 							Action::CreateCategory { .. } => c.kind == 4,
-							Action::CreateThread { name, .. } => {
-								matches!(c.kind, 10..=12)
+							Action::CreateThread { name, message } => {
+								c.kind
+									== if self
+										.channel(channel)
+										.is_some_and(|parent| parent.kind == 5)
+									{
+										10
+									} else {
+										11
+									} && c.parent_id == Some(channel)
+									&& c.name.trim() == name.trim()
+									&& message.is_none_or(|message| c.id == message)
+							}
+							Action::CreatePrivateThread { name, .. } => {
+								c.kind == 12
 									&& c.parent_id == Some(channel)
 									&& c.name.trim() == name.trim()
 							}
@@ -887,6 +1197,25 @@ impl State {
 		});
 		let status = match result {
 			Err(failure) => {
+				if matches!(
+					action,
+					Action::PostTags(_) | Action::PostAddMember(_) | Action::PostRemoveMember(_)
+				) {
+					// A failed readback can follow a successful write. Require an explicit
+					// current-details read before enabling another membership/tag change.
+					self.channel_actions.post = None;
+					if matches!(
+						action,
+						Action::PostAddMember(_) | Action::PostRemoveMember(_)
+					) && self
+						.members
+						.as_ref()
+						.is_some_and(|members| members.channel == channel)
+					{
+						self.invalidate_members();
+						self.members = None;
+					}
+				}
 				if let Action::HideMuted(hide) = &action
 					&& !observed
 				{
@@ -898,6 +1227,13 @@ impl State {
 				self.channel_actions.status = Some((channel, failure.label(), false));
 				self.status = failure.label();
 				return Ok(());
+			}
+			Ok(Outcome::Published(message)) => {
+				self.confirm_message_published(channel, message);
+				"Announcement published"
+			}
+			Ok(Outcome::AnnouncementFollowed { .. }) => {
+				"Announcement channel followed; manage it in the destination server's integrations"
 			}
 			Ok(Outcome::Post {
 				channel: updated,
@@ -916,7 +1252,7 @@ impl State {
 				} else if self.is_thread_channel(channel) && self.can_view(channel) && !observed {
 					if self
 						.channel(channel)
-						.is_some_and(|c| c.name != updated.name)
+						.is_some_and(|c| c.name != updated.name || c.tags != updated.tags)
 					{
 						self.apply(crate::Envelope {
 							generation: self.generation,
@@ -929,7 +1265,7 @@ impl State {
 								position: Patch::Absent,
 								kind: Patch::Absent,
 								message_count: Patch::Absent,
-								tags: Patch::Absent,
+								tags: updated.tags.clone().map_or(Patch::Null, Patch::Value),
 							}),
 						});
 					}
@@ -981,11 +1317,23 @@ impl State {
 						Some((channel, "Post changed; reopen the menu to refresh", false));
 					return Ok(());
 				}
+				if matches!(
+					action,
+					Action::PostAddMember(_) | Action::PostRemoveMember(_)
+				) && self
+					.members
+					.as_ref()
+					.is_some_and(|members| members.channel == channel)
+				{
+					self.invalidate_members();
+					self.members = None;
+				}
 				"Post updated"
 			}
 			Ok(Outcome::Details(edit)) => {
 				if self.can_open_channel_settings(channel) && !observed {
 					self.channel_actions.details = Some((channel, edit));
+					self.channel_actions.completed = Some((channel, request, true));
 				} else {
 					self.channel_actions.status = Some((
 						channel,
@@ -1006,18 +1354,35 @@ impl State {
 						| Action::Create { .. }
 						| Action::CreateCategory { .. }
 						| Action::CreateThread { .. }
+						| Action::CreatePrivateThread { .. }
 				);
+				let existing_created_thread =
+					matches!(
+						action,
+						Action::CreateThread { .. } | Action::CreatePrivateThread { .. }
+					) && self.channel(updated.id).is_some_and(|current| {
+						current.guild == updated.guild
+							&& current.parent_id == updated.parent_id
+							&& current.kind == updated.kind
+					});
 				if self.guild(guild).is_some()
 					&& (if reference {
 						true
-					} else if matches!(action, Action::CreateThread { .. }) {
-						self.can_create_thread(channel)
+					} else if matches!(
+						action,
+						Action::CreateThread { .. } | Action::CreatePrivateThread { .. }
+					) {
+						if matches!(action, Action::CreatePrivateThread { .. }) {
+							self.can_create_private_thread(channel)
+						} else {
+							self.can_create_thread(channel)
+						}
 					} else if creating {
 						self.can_manage_channel(channel)
 					} else {
 						self.can_open_channel_settings(channel)
 					}) && (if creating {
-					self.channel(updated.id).is_none()
+					self.channel(updated.id).is_none() || existing_created_thread
 				} else {
 					!observed
 				}) {
@@ -1025,10 +1390,19 @@ impl State {
 					if reference {
 						self.remember_channel_reference_name(&updated);
 					}
-					self.apply(crate::Envelope {
-						generation: self.generation,
-						event: crate::Event::ChannelCreated(*updated),
-					});
+					if !existing_created_thread {
+						self.apply(crate::Envelope {
+							generation: self.generation,
+							event: crate::Event::ChannelCreated(*updated),
+						});
+					}
+					if matches!(
+						action,
+						Action::CreateThread { .. } | Action::CreatePrivateThread { .. }
+					) && self.channel(target).is_some()
+					{
+						self.channel_actions.created_thread = Some((channel, target, request));
+					}
 					if reference {
 						if self.channel(target).is_none() {
 							self.forget_channel_reference_name(target);
@@ -1151,6 +1525,7 @@ impl State {
 			}
 		};
 		self.channel_actions.status = Some((channel, status, true));
+		self.channel_actions.completed = Some((channel, request, true));
 		self.status = status;
 		Ok(())
 	}
@@ -1234,6 +1609,393 @@ mod tests {
 				result,
 			}),
 		});
+	}
+	fn member_permissions(state: &mut State, bits: u128) {
+		let guild = state.permissions.guilds.get_mut(&Id(2)).unwrap();
+		guild.owner = Some(Id(99));
+		guild.roles = Some(vec![model::permissions::Role {
+			id: Id(2),
+			bits,
+			name: String::new(),
+			color: 0,
+			secondary_color: None,
+			tertiary_color: None,
+			position: 0,
+			hoist: false,
+		}]);
+		guild.member = Some(model::permissions::Member {
+			roles: vec![],
+			timeout_until: None,
+		});
+		state.permissions.clear_cache();
+	}
+	fn announcement(author: model::User) -> model::Message {
+		model::Message {
+			id: Id(50),
+			channel: Id(3),
+			author,
+			content: "Synthetic announcement".into(),
+			poll: None,
+			sticker_items: vec![],
+			flags: 0,
+			ephemeral: false,
+			components: vec![],
+			application_id: None,
+			reactions: Some(vec![]),
+			author_roles: vec![],
+			author_nick: None,
+			mentions: vec![],
+			mention_roles: vec![],
+			mention_everyone: false,
+			suppress_notifications: false,
+			edited: false,
+			edited_at: None,
+			revision: 0,
+			nonce: None,
+			reply_to: None,
+			kind: 0,
+			reply_deleted: false,
+			forwarded: false,
+			interaction: None,
+			unsupported: false,
+			extra_content: Default::default(),
+			embeds: vec![],
+			embeds_suppressed: false,
+			attachments: vec![],
+		}
+	}
+	#[test]
+	fn publishing_and_following_recheck_scope_permissions_exact_outcomes_and_newer_content() {
+		use model::permissions::{MANAGE_MESSAGES, MANAGE_WEBHOOKS, SEND_MESSAGES};
+		let mut state = state();
+		state.selected = Some(Id(3));
+		state.freshness = model::Freshness::Fresh;
+		state.channels[0].kind = 5;
+		member_permissions(&mut state, VIEW_CHANNEL | SEND_MESSAGES);
+		let message = announcement(state.user.clone().unwrap());
+		state.timeline.seed_cache(vec![message.clone()]).unwrap();
+		assert!(state.can_publish_message(Id(3), Id(50)));
+		let mut other = message.clone();
+		other.author.id = Id(7);
+		state.timeline.seed_cache(vec![other]).unwrap();
+		assert!(!state.can_publish_message(Id(3), Id(50)));
+		member_permissions(&mut state, VIEW_CHANNEL | SEND_MESSAGES | MANAGE_MESSAGES);
+		let publish = state
+			.request_channel_action(Id(3), Action::Publish(Id(50)))
+			.unwrap();
+		assert!(
+			state
+				.request_channel_action(Id(3), Action::Publish(Id(50)))
+				.is_none()
+		);
+		let mut newer = message;
+		newer.content = "Newer content must survive publication".into();
+		newer.flags = 4096;
+		state.timeline.seed_cache(vec![newer]).unwrap();
+		finish(&mut state, publish, Ok(Outcome::Published(Id(50))));
+		assert_eq!(
+			state.timeline.get(Id(50)).unwrap().content,
+			"Newer content must survive publication"
+		);
+		assert_eq!(state.timeline.get(Id(50)).unwrap().flags, 4097);
+		assert!(
+			!state.can_publish_message(Id(3), Id(50)),
+			"confirmed announcements cannot be published again"
+		);
+		let mut destination = state.channels[0].clone();
+		destination.id = Id(4);
+		destination.kind = 0;
+		state.channels.push(destination);
+		state.permissions.channels.insert(
+			Id(4),
+			model::permissions::Channel {
+				id: Id(4),
+				guild: Id(2),
+				overwrites: Some(vec![]),
+			},
+		);
+		member_permissions(&mut state, VIEW_CHANNEL | SEND_MESSAGES);
+		assert!(!state.can_follow_announcement(Id(3), Id(4)));
+		member_permissions(&mut state, VIEW_CHANNEL | SEND_MESSAGES | MANAGE_WEBHOOKS);
+		assert!(state.can_follow_announcement(Id(3), Id(4)));
+		assert!(!state.can_follow_announcement(Id(3), Id(3)));
+		let follow = state
+			.request_channel_action(Id(3), Action::FollowAnnouncement(Id(4)))
+			.unwrap();
+		finish(
+			&mut state,
+			follow,
+			Ok(Outcome::AnnouncementFollowed {
+				destination: Id(99),
+				webhook: Id(100),
+			}),
+		);
+		assert!(!state.channel_action_succeeded(Id(3)));
+	}
+	#[test]
+	fn private_threads_tags_and_invitations_follow_current_permissions_and_exact_creation() {
+		use model::permissions::{CREATE_PRIVATE_THREADS, SEND_MESSAGES_IN_THREADS};
+		let mut state = state();
+		member_permissions(&mut state, VIEW_CHANNEL);
+		assert!(
+			!state.can_create_private_thread(Id(3)),
+			"private creation requires its own permission"
+		);
+		member_permissions(
+			&mut state,
+			VIEW_CHANNEL | CREATE_PRIVATE_THREADS | SEND_MESSAGES_IN_THREADS,
+		);
+		assert!(state.can_create_private_thread(Id(3)));
+		let command = state
+			.request_channel_action(
+				Id(3),
+				Action::CreatePrivateThread {
+					name: "Private".into(),
+					invitable: false,
+				},
+			)
+			.unwrap();
+		let mut thread = state.channels[0].clone();
+		thread.id = Id(4);
+		thread.kind = 12;
+		thread.parent_id = Some(Id(3));
+		thread.name = "Private".into();
+		finish(
+			&mut state,
+			command,
+			Ok(Outcome::Channel {
+				channel: Box::new(thread.clone()),
+				permissions: None,
+			}),
+		);
+		assert_eq!(
+			state.created_thread(Id(3), state.channel_actions.completed.unwrap().1),
+			Some(Id(4))
+		);
+		state.channel_actions.post = Some((
+			Id(4),
+			PostDetails {
+				owner: Some(Id(1)),
+				followed: true,
+				..Default::default()
+			},
+		));
+		assert!(
+			!state.can_add_thread_member(Id(4), Id(7)),
+			"non-invitable private threads require Manage Threads"
+		);
+		state.channel_actions.post.as_mut().unwrap().1.invitable = true;
+		assert!(state.can_add_thread_member(Id(4), Id(7)));
+		let mut member = state.user.clone().unwrap();
+		member.id = Id(7);
+		state.members = Some(model::MemberList {
+			guild: Some(Id(2)),
+			channel: Id(4),
+			request: 1,
+			start: 0,
+			slots: vec![Some(model::MemberSlot::Person(model::Member {
+				user: member,
+				roles: vec![],
+				nick: None,
+				status: None,
+				custom_status: None,
+				activities: vec![],
+				clients: Default::default(),
+			}))],
+			total: 1,
+			lazy: false,
+			freshness: model::Freshness::Fresh,
+			groups: vec![],
+			ranges: vec![],
+		});
+		assert!(
+			state.can_remove_thread_member(Id(4), Id(7)),
+			"private thread creators may remove a member without Manage Threads"
+		);
+		state.channel_actions.post.as_mut().unwrap().1.owner = Some(Id(9));
+		assert!(!state.can_remove_thread_member(Id(4), Id(7)));
+		state.channel_actions.post.as_mut().unwrap().1.owner = Some(Id(1));
+		state.members.as_mut().unwrap().freshness = model::Freshness::Stale;
+		assert!(!state.can_remove_thread_member(Id(4), Id(7)));
+		state.members.as_mut().unwrap().freshness = model::Freshness::Fresh;
+		state.channel_actions.post.as_mut().unwrap().1.archived = true;
+		assert!(!state.can_add_thread_member(Id(4), Id(7)));
+		state.channel_actions.post.as_mut().unwrap().1.archived = false;
+		state.channels[0].kind = 15;
+		state.channels[0].tags = Some(Box::new(model::forum::Tags {
+			required: true,
+			available: vec![
+				model::forum::Tag {
+					id: Id(100),
+					name: "Help".into(),
+					moderated: false,
+					emoji_id: None,
+					emoji_name: None,
+				},
+				model::forum::Tag {
+					id: Id(101),
+					name: "Resolved".into(),
+					moderated: true,
+					emoji_id: None,
+					emoji_name: None,
+				},
+			],
+			..Default::default()
+		}));
+		state.channels[1].kind = 11;
+		state.channels[1].tags = Some(Box::new(model::forum::Tags {
+			applied: vec![Id(100)],
+			..Default::default()
+		}));
+		assert!(state.can_change_post_tags(Id(4), &[Id(100)]));
+		assert!(!state.can_change_post_tags(Id(4), &[]));
+		assert!(!state.can_change_post_tags(Id(4), &[Id(101)]));
+		assert!(!state.can_change_post_tags(Id(4), &[Id(999)]));
+		member_permissions(
+			&mut state,
+			VIEW_CHANNEL | SEND_MESSAGES_IN_THREADS | MANAGE_THREADS,
+		);
+		assert!(state.can_change_post_tags(Id(4), &[Id(101)]));
+		member_permissions(&mut state, VIEW_CHANNEL | SEND_MESSAGES_IN_THREADS);
+		state.channels[1].tags.as_mut().unwrap().applied = vec![Id(101)];
+		assert!(
+			!state.can_change_post_tags(Id(4), &[Id(100)]),
+			"removing a moderated tag also requires permission"
+		);
+	}
+	#[test]
+	fn message_thread_creation_requires_the_source_message_id() {
+		for response in [Id(50), Id(51)] {
+			let mut state = state();
+			let message = announcement(state.user.clone().unwrap());
+			state.timeline.seed_cache(vec![message]).unwrap();
+			let command = state
+				.request_channel_action(
+					Id(3),
+					Action::CreateThread {
+						name: "Discussion".into(),
+						message: Some(Id(50)),
+					},
+				)
+				.unwrap();
+			let mut thread = state.channels[0].clone();
+			thread.id = response;
+			thread.kind = 11;
+			thread.parent_id = Some(Id(3));
+			thread.name = "Discussion".into();
+			finish(
+				&mut state,
+				command,
+				Ok(Outcome::Channel {
+					channel: Box::new(thread),
+					permissions: None,
+				}),
+			);
+			assert_eq!(state.channel(response).is_some(), response == Id(50));
+		}
+	}
+	#[test]
+	fn thread_creation_uses_correlated_id_preserves_gateway_edits_and_cancels_on_reset() {
+		let mut state = state();
+		let action = Action::CreatePrivateThread {
+			name: "Private".into(),
+			invitable: true,
+		};
+		let command = state.request_channel_action(Id(3), action.clone()).unwrap();
+		let Command::ChannelAction { request, .. } = &command else {
+			panic!();
+		};
+		let request = *request;
+		let mut response = state.channels[0].clone();
+		response.id = Id(4);
+		response.kind = 12;
+		response.parent_id = Some(Id(3));
+		response.name = "Private".into();
+		let mut live = response.clone();
+		live.name = "Newer gateway name".into();
+		state.apply(Envelope {
+			generation: state.generation,
+			event: CoreEvent::ChannelCreated(live),
+		});
+		finish(
+			&mut state,
+			command,
+			Ok(Outcome::Channel {
+				channel: Box::new(response.clone()),
+				permissions: None,
+			}),
+		);
+		assert_eq!(state.created_thread(Id(3), request), Some(Id(4)));
+		assert_eq!(state.channel_action_completed(Id(3), request), Some(true));
+		assert_eq!(state.channel(Id(4)).unwrap().name, "Newer gateway name");
+		assert_eq!(state.created_thread(Id(3), request + 1), None);
+		let command = state.request_channel_action(Id(3), action).unwrap();
+		let Command::ChannelAction { request, .. } = &command else {
+			panic!();
+		};
+		let request = *request;
+		state.cancel_channel_action();
+		state.channel_actions.reset();
+		assert_eq!(state.channel_action_completed(Id(3), request), Some(false));
+		response.id = Id(5);
+		finish(
+			&mut state,
+			command,
+			Ok(Outcome::Channel {
+				channel: Box::new(response),
+				permissions: None,
+			}),
+		);
+		assert!(state.channel(Id(5)).is_none());
+	}
+	#[test]
+	fn uncertain_thread_member_write_requires_explicit_refresh_and_keeps_draft() {
+		let mut state = state();
+		let mut thread = state.channels[0].clone();
+		thread.id = Id(4);
+		thread.kind = 12;
+		thread.parent_id = Some(Id(3));
+		state.channels.push(thread);
+		state.selected = Some(Id(4));
+		state.drafts.insert(Id(4), "Keep private draft".into());
+		state.members = Some(model::MemberList {
+			guild: Some(Id(2)),
+			channel: Id(4),
+			request: 1,
+			start: 0,
+			slots: vec![],
+			total: 0,
+			lazy: false,
+			freshness: model::Freshness::Fresh,
+			groups: vec![],
+			ranges: vec![],
+		});
+		state.channel_actions.post = Some((
+			Id(4),
+			PostDetails {
+				owner: Some(Id(1)),
+				followed: true,
+				invitable: true,
+				..Default::default()
+			},
+		));
+		let command = state
+			.request_channel_action(Id(4), Action::PostAddMember(Id(7)))
+			.unwrap();
+		finish(&mut state, command, Err(Failure::Ambiguous));
+		assert!(state.post_details(Id(4)).is_none());
+		assert!(state.members.is_none());
+		assert!(
+			state
+				.request_channel_action(Id(4), Action::PostAddMember(Id(7)))
+				.is_none()
+		);
+		assert!(
+			state
+				.request_channel_action(Id(4), Action::PostLoad)
+				.is_some()
+		);
+		assert_eq!(state.drafts[&Id(4)], "Keep private draft");
 	}
 	#[test]
 	fn creation_checks_kind_name_and_permissions() {
@@ -1867,5 +2629,102 @@ mod tests {
 			.unwrap();
 		assert_eq!(state.guild_channel_muted(Id(3)), Some(true));
 		assert!(!state.notification_allowed(Id(3)));
+	}
+}
+
+#[cfg(test)]
+mod voice_edit_tests {
+	use super::*;
+	#[test]
+	fn voice_and_stage_message_controls_require_management_and_keep_topics_text_only() {
+		for kind in [2, 13] {
+			for bits in [0, MANAGE_CHANNELS] {
+				let mut state = crate::community_admin::tests::state(bits);
+				state
+					.channels
+					.iter_mut()
+					.find(|c| c.id == Id(10))
+					.unwrap()
+					.kind = kind;
+				let before = Edit {
+					name: "Voice".into(),
+					..Default::default()
+				};
+				let mut after = before.clone();
+				after.nsfw = true;
+				after.slowmode = 21600;
+				assert_eq!(
+					state.channel_edit_allowed(Id(10), &before, &after),
+					bits != 0
+				);
+				assert!(
+					Action::Edit {
+						before: before.clone(),
+						after: after.clone()
+					}
+					.valid()
+				);
+				after.topic = "Text channel topic".into();
+				assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+				after.topic.clear();
+				after.slowmode = 21601;
+				assert!(!Action::Edit { before, after }.valid());
+			}
+		}
+	}
+	#[test]
+	fn voice_and_stage_limits_and_channel_management_are_admitted_locally() {
+		let mut state = crate::community_admin::tests::state(MANAGE_CHANNELS);
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == Id(10))
+			.unwrap()
+			.kind = 2;
+		let before = Edit {
+			name: "Voice".into(),
+			voice: Some(Box::new(VoiceEdit {
+				bitrate: 64000,
+				user_limit: 0,
+				region: None,
+				video_quality: 1,
+				regions: vec![],
+			})),
+			..Default::default()
+		};
+		let mut after = before.clone();
+		after.voice.as_mut().unwrap().user_limit = 99;
+		assert!(state.channel_edit_allowed(Id(10), &before, &after));
+		after.voice.as_mut().unwrap().user_limit = 100;
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == Id(10))
+			.unwrap()
+			.kind = 13;
+		assert!(state.channel_edit_allowed(Id(10), &before, &after));
+		after.voice.as_mut().unwrap().bitrate = 65000;
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+	}
+	#[test]
+	fn forum_guidelines_admit_the_documented_limit_without_allowing_oversize_text_topics() {
+		let mut state = crate::community_admin::tests::state(MANAGE_CHANNELS);
+		let before = Edit {
+			name: "Forum".into(),
+			..Default::default()
+		};
+		let mut after = before.clone();
+		after.topic = "a".repeat(4096);
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == Id(10))
+			.unwrap()
+			.kind = 15;
+		assert!(state.channel_edit_allowed(Id(10), &before, &after));
+		after.topic.push('a');
+		assert!(!state.channel_edit_allowed(Id(10), &before, &after));
 	}
 }

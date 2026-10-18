@@ -11,6 +11,13 @@ pub const MAX_RELATIONSHIP_BYTES: usize = 128 * 1024;
 pub const MAX_FRIEND_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_RESTRICTED_BYTES: usize = 2 * 1024 * 1024;
 
+/// Account relationship that collapses a person's messages until explicitly revealed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ContentRestriction {
+	Blocked,
+	Ignored,
+}
+
 fn replace_id_set(
 	dest: &mut BTreeSet<Id>,
 	entries: Option<Vec<Id>>,
@@ -45,17 +52,48 @@ fn replace_id_set(
 #[derive(Clone, PartialEq, Eq)]
 pub enum Action {
 	LoadNote(Id),
-	Note { user: Id, text: String },
-	Nickname { user: Id, text: String },
-	AddFriend { username: String },
-	ResolveFriend { user: Id, accept: bool },
-	ProfileFriend { user: Id, friend: bool },
+	Note {
+		user: Id,
+		text: String,
+	},
+	Nickname {
+		user: Id,
+		text: String,
+	},
+	AddFriend {
+		username: String,
+	},
+	ResolveFriend {
+		user: Id,
+		accept: bool,
+	},
+	ProfileFriend {
+		user: Id,
+		friend: bool,
+	},
 	OpenDm(Id),
 	CloseDm(Id),
-	Block { user: Id, blocked: bool },
-	Ignore { user: Id, ignored: bool },
-	Mute { channel: Id, muted: bool },
-	MessageRequest { channel: Id, accept: bool },
+	Block {
+		user: Id,
+		blocked: bool,
+	},
+	Ignore {
+		user: Id,
+		ignored: bool,
+	},
+	Mute {
+		channel: Id,
+		muted: bool,
+	},
+	MuteFor {
+		channel: Id,
+		seconds: u32,
+		until: i64,
+	},
+	MessageRequest {
+		channel: Id,
+		accept: bool,
+	},
 }
 impl std::fmt::Debug for Action {
 	/// Redacted debug output; never prints note, nickname or username text.
@@ -86,6 +124,7 @@ impl Action {
 				"Conversation notifications muted until you turn them back on"
 			}
 			Self::Mute { muted: false, .. } => "Conversation notifications unmuted",
+			Self::MuteFor { .. } => "Conversation notifications muted temporarily",
 			Self::MessageRequest { accept: true, .. } => "Message request accepted",
 			Self::MessageRequest { accept: false, .. } => "Message request ignored",
 		}
@@ -726,8 +765,27 @@ impl State {
 		}
 		(self.demo || self.user_actions.restricted_known).then_some(false)
 	}
+	/// A known restriction only; unavailable relationship metadata never invents a block.
+	pub fn user_content_restriction(&self, user: Id) -> Option<ContentRestriction> {
+		if self.user_blocked(user) == Some(true) {
+			Some(ContentRestriction::Blocked)
+		} else if self.user_ignored(user) == Some(true) {
+			Some(ContentRestriction::Ignored)
+		} else {
+			None
+		}
+	}
 	pub(crate) fn pending_dm_muted(&self, channel: Id) -> Option<bool> {
 		match &self.user_actions.pending {
+			Some((
+				Action::MuteFor {
+					channel: target,
+					until,
+					..
+				},
+				_,
+				false,
+			)) if *target == channel => Some(*until > Self::permission_time()),
 			Some((
 				Action::Mute {
 					channel: target,
@@ -864,6 +922,25 @@ impl State {
 		}
 		self.request_user_action(Action::Mute { channel, muted })
 	}
+	pub fn set_dm_mute(
+		&mut self,
+		channel: Id,
+		mute: crate::channel_actions::Mute,
+	) -> Option<Command> {
+		if !mute.valid() || (!self.is_one_to_one_dm(channel) && !self.is_group_dm(channel)) {
+			return None;
+		}
+		if let crate::channel_actions::Mute::For(seconds) = mute {
+			let until = mute.expires_at(Self::permission_time())?;
+			self.request_user_action(Action::MuteFor {
+				channel,
+				seconds,
+				until,
+			})
+		} else {
+			self.set_dm_muted(channel, mute != crate::channel_actions::Mute::Unmute)
+		}
+	}
 	fn is_one_to_one_dm(&self, channel: Id) -> bool {
 		self.channel(channel)
 			.is_some_and(|c| c.guild.is_none() && c.kind == 1 && c.recipients.len() == 1)
@@ -881,7 +958,7 @@ impl State {
 		self.user_actions.sequence = self.user_actions.sequence.wrapping_add(1);
 		let request = self.user_actions.sequence;
 		self.user_actions.pending = Some((action.clone(), request, false));
-		if matches!(action, Action::Block { .. }) {
+		if matches!(action, Action::Block { .. } | Action::Ignore { .. }) {
 			self.user_actions.bump_view();
 		}
 		self.user_actions.status = None;
@@ -898,7 +975,7 @@ impl State {
 		self.user_actions.opened_dm = None;
 		self.user_actions.challenge = None;
 		if let Some((action, _, _)) = self.user_actions.pending.take() {
-			if matches!(action, Action::Block { .. }) {
+			if matches!(action, Action::Block { .. } | Action::Ignore { .. }) {
 				self.user_actions.bump_view();
 			}
 			self.user_actions.status =
@@ -913,7 +990,9 @@ impl State {
 		}
 	}
 	pub(crate) fn observe_dm_settings(&mut self, event: &crate::notifications::Event) {
-		if let Some((Action::Mute { .. }, _, observed)) = &mut self.user_actions.pending {
+		if let Some((Action::Mute { .. } | Action::MuteFor { .. }, _, observed)) =
+			&mut self.user_actions.pending
+		{
 			*observed |= match event {
 				crate::notifications::Event::Invalidate => true,
 				crate::notifications::Event::Settings { entries, replace } => {
@@ -1492,7 +1571,7 @@ impl State {
 				if matches!(action, Action::OpenDm(_)) {
 					self.user_actions.dm_origin = None;
 				}
-				if matches!(action, Action::Block { .. }) {
+				if matches!(action, Action::Block { .. } | Action::Ignore { .. }) {
 					self.user_actions.bump_view();
 				}
 				if let Err(failure) = result {
@@ -1575,6 +1654,9 @@ impl State {
 							})?;
 						}
 						Action::Mute { channel, muted } => self.confirm_dm_muted(channel, muted)?,
+						Action::MuteFor { channel, until, .. } => {
+							self.confirm_dm_timed_mute(channel, until)?
+						}
 						Action::MessageRequest { channel, accept } => {
 							self.set_message_request(channel, false)?;
 							if !accept {

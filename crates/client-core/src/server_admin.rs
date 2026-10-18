@@ -5,7 +5,9 @@ use crate::{
 };
 use model::{
 	Id, permissions as p,
-	server_admin::{Action, Emojis, Members, Query, Result as Outcome, Stickers, VoiceChange},
+	server_admin::{
+		Action, Emojis, Members, Query, Result as Outcome, Sounds, Stickers, VoiceChange,
+	},
 };
 
 pub struct Event {
@@ -16,6 +18,10 @@ pub struct Event {
 
 #[derive(Default)]
 pub struct View {
+	pub community: Option<model::community_admin::Snapshot>,
+	pub automod: Option<model::automod::Snapshot>,
+	pub bans: Option<model::moderation::Bans>,
+	pub moderation_target: Option<model::server_admin::Member>,
 	webhook_url: Option<model::server_integrations::WebhookUrl>,
 	pub audit_log: Option<model::server_audit_log::Page>,
 	pub audit_query: Option<model::server_audit_log::Query>,
@@ -28,6 +34,9 @@ pub struct View {
 	pub guild: Option<Id>,
 	pub emojis: Option<Emojis>,
 	pub stickers: Option<Stickers>,
+	pub sounds: Option<Sounds>,
+	/// Another client changed this server's sounds since `sounds` was read.
+	pub sounds_stale: bool,
 	pub members: Option<Members>,
 	pub query: Query,
 	pub pending: bool,
@@ -43,6 +52,15 @@ pub struct View {
 	prune_days: Option<u8>,
 }
 impl View {
+	pub(crate) fn invalidate_community(&mut self) {
+		self.permission_revision = self.permission_revision.wrapping_add(1);
+		if matches!(self.action, Some(Action::Community(_))) {
+			self.needs_refresh = true;
+			self.error = Some(
+				"Channels, roles or permissions changed; reload community settings before saving",
+			);
+		}
+	}
 	pub(crate) fn revoke_audit_access(&mut self) {
 		self.audit_log = None;
 		self.audit_query = None;
@@ -74,10 +92,21 @@ impl View {
 			Event::Channel { guild, .. } => {
 				guild.is_none_or(|guild| guild == active)
 					&& (self.integrations.is_some()
-						|| matches!(self.action, Some(Action::Integrations(_))))
+						|| self.automod.is_some()
+						|| self.community.is_some()
+						|| matches!(
+							self.action,
+							Some(
+								Action::Integrations(_) | Action::AutoMod(_) | Action::Community(_)
+							)
+						))
 			}
 		};
 		if relevant {
+			self.automod = None;
+			self.community = None;
+			self.bans = None;
+			self.moderation_target = None;
 			self.webhook_url = None;
 			self.permission_revision = self.permission_revision.wrapping_add(1);
 		}
@@ -103,7 +132,7 @@ impl State {
 				entry.guild == guild && entry.channel == channel && entry.participant.user == user
 			}) || !self
 			.channel(channel)
-			.is_some_and(|source| source.guild == Some(guild) && source.kind == 2)
+			.is_some_and(|source| source.guild == Some(guild) && matches!(source.kind, 2 | 13))
 			|| !self.can_view(channel)
 		{
 			return false;
@@ -116,10 +145,9 @@ impl State {
 			&& match change {
 				VoiceChange::Move(Some(to)) => {
 					to != channel
-						&& self
-							.channel(to)
-							.is_some_and(|target| target.guild == Some(guild) && target.kind == 2)
-						&& self.can_view(to)
+						&& self.channel(to).is_some_and(|target| {
+							target.guild == Some(guild) && matches!(target.kind, 2 | 13)
+						}) && self.can_view(to)
 						&& self.permission(to, p::CONNECT) == Some(true)
 				}
 				_ => true,
@@ -234,19 +262,62 @@ impl State {
 					.zip(self.user.as_ref())
 					.is_some_and(|(uploader, user)| uploader.id == user.id))
 	}
+	pub fn can_open_sound_settings(&self, guild: Id) -> bool {
+		self.guild_permission(guild, p::MANAGE_GUILD_EXPRESSIONS)
+			|| self.guild_permission(guild, p::CREATE_GUILD_EXPRESSIONS)
+	}
+	pub fn can_create_guild_sound(&self, guild: Id) -> bool {
+		self.guild_permission(guild, p::CREATE_GUILD_EXPRESSIONS)
+	}
+	/// Managers edit any sound; creators only the sounds they uploaded.
+	pub fn can_edit_guild_sound(&self, guild: Id, id: Id) -> bool {
+		if self.server_admin.guild != Some(guild) {
+			return false;
+		}
+		let Some(row) = self
+			.server_admin
+			.sounds
+			.as_ref()
+			.and_then(|page| page.items.iter().find(|row| row.sound.id == id))
+		else {
+			return false;
+		};
+		self.guild_permission(guild, p::MANAGE_GUILD_EXPRESSIONS)
+			|| (self.can_create_guild_sound(guild)
+				&& row
+					.uploader
+					.as_ref()
+					.zip(self.user.as_ref())
+					.is_some_and(|(uploader, user)| uploader.id == user.id))
+	}
+	fn sound_action_allowed(&self, guild: Id, action: &Action) -> bool {
+		match action {
+			Action::LoadSounds => self.can_open_sound_settings(guild),
+			Action::CreateSound { .. } => self.can_create_guild_sound(guild),
+			Action::EditSound { id, .. } | Action::DeleteSound { id } => {
+				self.can_edit_guild_sound(guild, *id)
+			}
+			_ => false,
+		}
+	}
 	pub fn can_open_member_settings(&self, guild: Id) -> bool {
 		self.can_manage_guild(guild)
 	}
-	fn admin_member(&self, guild: Id, user: Id) -> Option<&model::server_admin::Member> {
+	pub(super) fn admin_member(&self, guild: Id, user: Id) -> Option<&model::server_admin::Member> {
 		(self.server_admin.guild == Some(guild)).then_some(())?;
 		self.server_admin
-			.members
-			.as_ref()?
-			.items
-			.iter()
-			.find(|member| member.user.id == user)
+			.moderation_target
+			.as_ref()
+			.filter(|member| member.user.id == user)
+			.or_else(|| {
+				self.server_admin
+					.members
+					.as_ref()
+					.and_then(|page| page.items.iter().find(|member| member.user.id == user))
+			})
 	}
-	fn above_admin_member(&self, guild: Id, user: Id) -> bool {
+
+	pub(super) fn above_admin_member(&self, guild: Id, user: Id) -> bool {
 		let Some(actor) = self.user.as_ref().map(|user| user.id) else {
 			return false;
 		};
@@ -384,6 +455,9 @@ impl State {
 				channel,
 				change,
 			} => self.can_moderate_voice(guild, *channel, *user, *change),
+			Action::Community(action) => self.community_admin_action_allowed(guild, action),
+			Action::AutoMod(action) => self.automod_action_allowed(guild, action),
+			Action::Moderation(action) => self.moderation_action_allowed(guild, action),
 			Action::AuditLog(query) => self.audit_log_action_allowed(guild, query),
 			Action::Roles(action) => self.role_action_allowed(guild, action),
 			Action::Invites(action) => self.invite_action_allowed(guild, action),
@@ -398,6 +472,10 @@ impl State {
 			Action::EditSticker { id, .. } | Action::DeleteSticker { id } => {
 				self.can_edit_guild_sticker(guild, *id)
 			}
+			Action::LoadSounds
+			| Action::CreateSound { .. }
+			| Action::EditSound { .. }
+			| Action::DeleteSound { .. } => self.sound_action_allowed(guild, action),
 			Action::LoadMembers(_) => self.can_open_member_settings(guild),
 			Action::SetRole { user, role, .. } => self.can_edit_member_role(guild, *user, *role),
 			Action::SetNickname { user, .. } => self.can_edit_guild_nickname(guild, *user),
@@ -448,6 +526,24 @@ impl State {
 				description.shrink_to_fit();
 				tags.shrink_to_fit();
 			}
+			Action::CreateSound {
+				name,
+				emoji,
+				content_type,
+				file,
+				..
+			} => {
+				name.shrink_to_fit();
+				emoji.shrink_to_fit();
+				content_type.shrink_to_fit();
+				file.shrink_to_fit();
+			}
+			Action::EditSound { name, emoji, .. } => {
+				name.shrink_to_fit();
+				if let model::Patch::Value(emoji) = emoji {
+					emoji.shrink_to_fit();
+				}
+			}
 			_ => {}
 		}
 		if self.server_admin.pending
@@ -462,6 +558,15 @@ impl State {
 		}
 		if self.server_admin.guild != Some(guild) {
 			self.server_admin.reset();
+		}
+		if matches!(action, Action::LoadSounds) {
+			self.server_admin.sounds_stale = false;
+		}
+		if matches!(
+			action,
+			Action::Moderation(model::moderation::Action::Member(_))
+		) {
+			self.server_admin.moderation_target = None;
 		}
 		if let Action::AuditLog(query) = &action {
 			if query.before.is_none() {
@@ -488,7 +593,9 @@ impl State {
 		let mut retained = action.clone();
 		if let Action::CreateEmoji { image, .. } = &mut retained {
 			*image = String::new();
-		} else if let Action::CreateSticker { file, .. } = &mut retained {
+		} else if let Action::CreateSticker { file, .. } | Action::CreateSound { file, .. } =
+			&mut retained
+		{
 			file.clear();
 			file.shrink_to_fit();
 		} else if let Action::Roles(
@@ -550,6 +657,11 @@ impl State {
 	pub(crate) fn cancel_server_admin(&mut self) {
 		self.server_admin.webhook_url = None;
 		if self.server_admin.pending {
+			if self.server_admin.saving
+				&& matches!(self.server_admin.action, Some(Action::Community(_)))
+			{
+				self.server_admin.community = None;
+			}
 			self.server_admin.needs_refresh |= self.server_admin.saving;
 			self.server_admin.error = Some(if self.server_admin.saving {
 				"Outcome unknown; reload before retrying"
@@ -575,6 +687,12 @@ impl State {
 		if action.as_ref().is_none_or(|action| {
 			if matches!(action, Action::Voice { .. }) {
 				self.guild(event.guild).is_none()
+			} else if matches!(action, Action::Community(_)) {
+				!self.can_open_community_settings(event.guild)
+			} else if matches!(action, Action::AutoMod(_)) {
+				!self.can_manage_guild(event.guild)
+			} else if matches!(action, Action::Moderation(_)) {
+				!self.can_open_moderation(event.guild)
 			} else if matches!(action, Action::AuditLog(_)) {
 				!self.can_open_audit_log_settings(event.guild)
 			} else if let Action::Integrations(action) = action {
@@ -598,6 +716,8 @@ impl State {
 					}
 					_ => false,
 				}
+			} else if action.sound() {
+				!self.sound_action_allowed(event.guild, action)
 			} else {
 				!self.can_open_member_settings(event.guild)
 			}
@@ -605,15 +725,33 @@ impl State {
 			self.server_admin.reset();
 			return Ok(());
 		}
+		if matches!(
+			action,
+			Some(Action::AutoMod(_) | Action::Moderation(_) | Action::Community(_))
+		) && self.server_admin.requested_permission_revision
+			!= self.server_admin.permission_revision
+		{
+			self.server_admin.error = Some("Server permissions changed; reload before continuing");
+			self.server_admin.needs_refresh = true;
+			return Ok(());
+		}
 		let result = match event.result {
 			Ok(result) if result.valid() => result,
 			Ok(_) => {
+				if matches!(action, Some(Action::Community(_))) {
+					self.server_admin.community = None;
+				}
 				self.server_admin.error =
 					Some("Server administration response exceeded safe bounds");
 				self.server_admin.needs_refresh = true;
 				return Ok(());
 			}
 			Err(failure) => {
+				if matches!(action, Some(Action::Community(_)))
+					&& matches!(failure, Failure::Forbidden | Failure::Ambiguous)
+				{
+					self.server_admin.community = None;
+				}
 				if matches!(action, Some(Action::Voice { .. })) {
 					self.status = failure.label();
 				}
@@ -680,6 +818,66 @@ impl State {
 				})),
 				Outcome::WebhookUrl(url),
 			) => url.guild == event.guild && url.webhook == *webhook && url.channel == *channel,
+			(Some(Action::Community(action)), Outcome::Community(page)) => {
+				page.guild == event.guild
+					&& action.confirms(page)
+					&& self.community_snapshot_current(page)
+			}
+			(Some(Action::AutoMod(action)), Outcome::AutoMod(page)) => {
+				page.guild == event.guild
+					&& match action {
+						model::automod::Action::Load => true,
+						model::automod::Action::Create { settings, .. } => {
+							page.rules.iter().any(|rule| rule.settings == **settings)
+						}
+						model::automod::Action::Edit {
+							id, before, after, ..
+						} => page
+							.rules
+							.iter()
+							.any(|rule| rule.id == *id && rule.settings.confirms(before, after)),
+						model::automod::Action::Delete { id, .. } => {
+							page.rules.iter().all(|rule| rule.id != *id)
+						}
+					}
+			}
+			(Some(Action::Moderation(action)), Outcome::Moderation(result)) => {
+				match (action, result) {
+					(
+						model::moderation::Action::Bans { .. },
+						model::moderation::Outcome::Bans(page),
+					) => page.guild == event.guild,
+					(
+						model::moderation::Action::Member(user),
+						model::moderation::Outcome::Member(member),
+					) => member.user.id == *user,
+					(
+						model::moderation::Action::Change { user, change, .. },
+						model::moderation::Outcome::Changed {
+							user: actual,
+							member,
+						},
+					) => {
+						user == actual
+							&& match change {
+								model::moderation::Change::Timeout { until } => {
+									member.as_ref().is_some_and(|member| {
+										member.timeout_until == until.map(|at| at / 1_000_000)
+									})
+								}
+								_ => member.is_none(),
+							}
+					}
+					(
+						model::moderation::Action::Unban { user, .. },
+						model::moderation::Outcome::Changed {
+							user: actual,
+							member: None,
+						},
+					) => user == actual,
+					_ => false,
+				}
+			}
 			(Some(Action::AuditLog(query)), Outcome::AuditLog(page)) => {
 				page.guild == event.guild && page.matches_query(query)
 			}
@@ -761,15 +959,95 @@ impl State {
 						_ => false,
 					}
 			}
+			(Some(action), Outcome::Sounds(page)) if action.sound() => {
+				page.items
+					.iter()
+					.all(|row| row.sound.guild == Some(event.guild))
+					&& match action {
+						Action::LoadSounds => true,
+						Action::CreateSound { name, .. } => {
+							page.items.iter().any(|row| row.sound.name == *name)
+						}
+						Action::EditSound { id, name, .. } => page
+							.items
+							.iter()
+							.any(|row| row.sound.id == *id && row.sound.name == *name),
+						Action::DeleteSound { id } => {
+							page.items.iter().all(|row| row.sound.id != *id)
+						}
+						_ => false,
+					}
+			}
 			_ => false,
 		};
 		if !expected {
+			if matches!(action, Some(Action::Community(_))) {
+				self.server_admin.community = None;
+			}
 			self.server_admin.error =
 				Some("Unexpected server administration response; reload to continue");
 			self.server_admin.needs_refresh = true;
 			return Ok(());
 		}
 		match result {
+			Outcome::AutoMod(page) => self.server_admin.automod = Some(page),
+			Outcome::Moderation(result) => match result {
+				model::moderation::Outcome::Bans(page) => self.server_admin.bans = Some(page),
+				model::moderation::Outcome::Member(member) => {
+					self.server_admin.moderation_target = Some(*member)
+				}
+				model::moderation::Outcome::Changed { user, member } => {
+					let removed = matches!(
+						action,
+						Some(Action::Moderation(model::moderation::Action::Change {
+							change: model::moderation::Change::Kick
+								| model::moderation::Change::Ban { .. },
+							..
+						}))
+					);
+					if let Some(page) = &mut self.server_admin.members {
+						if let Some(updated) = member.as_deref() {
+							if let Some(existing) =
+								page.items.iter_mut().find(|row| row.user.id == user)
+							{
+								*existing = updated.clone();
+							}
+						} else if removed {
+							let old = page.items.len();
+							page.items.retain(|row| row.user.id != user);
+							page.total = page.total.saturating_sub((old - page.items.len()) as u64);
+						}
+					}
+					if member.is_some() {
+						self.server_admin.moderation_target = member.map(|member| *member);
+					} else if removed
+						&& self
+							.server_admin
+							.moderation_target
+							.as_ref()
+							.is_some_and(|member| member.user.id == user)
+					{
+						self.server_admin.moderation_target = None;
+					}
+					if matches!(
+						action,
+						Some(Action::Moderation(model::moderation::Action::Unban { .. }))
+					) {
+						if let Some(page) = &mut self.server_admin.bans {
+							page.items.retain(|row| row.user.id != user);
+						}
+					} else if matches!(
+						action,
+						Some(Action::Moderation(model::moderation::Action::Change {
+							change: model::moderation::Change::Ban { .. },
+							..
+						}))
+					) {
+						self.server_admin.bans = None;
+					}
+				}
+			},
+			Outcome::Community(page) => self.server_admin.community = Some(page),
 			Outcome::WebhookUrl(url) => self.server_admin.webhook_url = Some(url),
 			Outcome::AuditLog(page) => self.apply_audit_log(page),
 			Outcome::Integrations(snapshot) => {
@@ -806,6 +1084,13 @@ impl State {
 					},
 				});
 				self.server_admin.stickers = Some(page);
+			}
+			Outcome::Sounds(page) => {
+				// The call panel's copy of this server's sounds reloads when next shown.
+				// Only the load request clears the management marker: a change that arrived
+				// while this list was being read still needs another read.
+				self.call_sounds_changed(event.guild);
+				self.server_admin.sounds = Some(page);
 			}
 			Outcome::Members(page) => {
 				if let Some(enabled) = page.show_in_channel_list {
@@ -899,6 +1184,7 @@ impl State {
 							_ => participant.server_muted,
 						},
 						server_deafened: participant.server_deafened,
+						stage: participant.stage,
 						muted: participant.muted,
 						deafened: participant.deafened,
 						video: participant.video,
@@ -941,7 +1227,9 @@ impl State {
 			action,
 			Some(
 				Action::LoadEmojis
+					| Action::Community(model::community_admin::Action::Load(_))
 					| Action::LoadStickers
+					| Action::LoadSounds
 					| Action::Invites(model::server_invites::Action::Load)
 					| Action::Integrations(model::server_integrations::Action::Load { .. })
 					| Action::LoadMembers(_)
@@ -1280,5 +1568,349 @@ mod sticker_tests {
 				Id(6)
 			);
 		}
+	}
+}
+
+#[cfg(test)]
+mod sound_tests {
+	use super::*;
+
+	fn user(id: u64) -> model::User {
+		model::User {
+			primary_guild: None,
+			cosmetics: None,
+			id: Id(id),
+			name: "Synthetic".into(),
+			avatar: None,
+			discriminator: 0,
+			kind: Default::default(),
+			webhook: false,
+		}
+	}
+	fn row(id: u64, name: &str, uploader: u64) -> model::server_admin::Sound {
+		model::server_admin::Sound {
+			sound: model::soundboard::Sound {
+				id: Id(id),
+				name: name.into(),
+				volume: 1.0,
+				emoji_id: None,
+				emoji_name: None,
+				guild: Some(Id(2)),
+				available: true,
+			},
+			uploader: Some(user(uploader)),
+		}
+	}
+	fn state(bits: u128) -> State {
+		let mut state = State {
+			auth: AuthState::Authenticated,
+			gateway_connected: true,
+			user: Some(user(1)),
+			guilds: vec![model::Guild {
+				default_message_notifications: None,
+				id: Id(2),
+				name: "Synthetic".into(),
+				icon: None,
+				emojis: None,
+				stickers: None,
+			}],
+			..Default::default()
+		};
+		state.permissions.guilds.insert(
+			Id(2),
+			p::Guild {
+				id: Id(2),
+				owner: Some(Id(99)),
+				member: Some(p::Member {
+					roles: vec![],
+					timeout_until: None,
+				}),
+				roles: Some(vec![p::Role {
+					id: Id(2),
+					name: "@everyone".into(),
+					bits,
+					color: 0,
+					secondary_color: None,
+					tertiary_color: None,
+					position: 0,
+					hoist: false,
+				}]),
+			},
+		);
+		state.server_admin.guild = Some(Id(2));
+		state.server_admin.sounds = Some(Sounds {
+			items: vec![row(4, "Mine", 1), row(5, "Other", 7)],
+			limit: Some(8),
+		});
+		state
+	}
+	fn create() -> Action {
+		Action::CreateSound {
+			name: "Air horn".into(),
+			emoji: String::new(),
+			volume: 80,
+			content_type: "audio/ogg".into(),
+			file: b"OggS".to_vec(),
+		}
+	}
+
+	#[test]
+	fn sound_permissions_follow_creator_and_manager_rules() {
+		let mut state = state(p::CREATE_GUILD_EXPRESSIONS);
+		assert!(state.can_open_sound_settings(Id(2)));
+		assert!(state.can_create_guild_sound(Id(2)));
+		assert!(state.can_edit_guild_sound(Id(2), Id(4)));
+		assert!(!state.can_edit_guild_sound(Id(2), Id(5)));
+		assert!(!state.can_edit_guild_sound(Id(3), Id(4)));
+		assert!(
+			state
+				.request_server_admin(Id(2), Action::DeleteSound { id: Id(5) })
+				.is_none()
+		);
+		state
+			.permissions
+			.guilds
+			.get_mut(&Id(2))
+			.unwrap()
+			.roles
+			.as_mut()
+			.unwrap()[0]
+			.bits = p::MANAGE_GUILD_EXPRESSIONS;
+		state.permissions.clear_cache();
+		assert!(!state.can_create_guild_sound(Id(2)));
+		assert!(state.can_edit_guild_sound(Id(2), Id(5)));
+		assert!(state.request_server_admin(Id(2), create()).is_none());
+
+		let mut outsider = self::state(0);
+		assert!(!outsider.can_open_sound_settings(Id(2)));
+		assert!(
+			outsider
+				.request_server_admin(Id(2), Action::LoadSounds)
+				.is_none()
+		);
+		// Malformed uploads and edits never become a request.
+		let mut state = self::state(p::CREATE_GUILD_EXPRESSIONS);
+		for action in [
+			Action::CreateSound {
+				name: "x".into(),
+				emoji: String::new(),
+				volume: 80,
+				content_type: "audio/ogg".into(),
+				file: b"OggS".to_vec(),
+			},
+			Action::CreateSound {
+				name: "Air horn".into(),
+				emoji: String::new(),
+				volume: 101,
+				content_type: "audio/ogg".into(),
+				file: b"OggS".to_vec(),
+			},
+			Action::CreateSound {
+				name: "Air horn".into(),
+				emoji: String::new(),
+				volume: 80,
+				content_type: "audio/wav".into(),
+				file: b"RIFF".to_vec(),
+			},
+			Action::CreateSound {
+				name: "Air horn".into(),
+				emoji: String::new(),
+				volume: 80,
+				content_type: "audio/ogg".into(),
+				file: Vec::new(),
+			},
+			Action::EditSound {
+				id: Id(4),
+				name: "Mine".into(),
+				emoji: model::Patch::Value("two words".into()),
+				volume: 80,
+			},
+		] {
+			assert!(state.request_server_admin(Id(2), action).is_none());
+		}
+	}
+
+	#[test]
+	fn sound_writes_drop_the_retained_file_and_require_the_expected_catalog() {
+		let mut state = state(p::CREATE_GUILD_EXPRESSIONS);
+		let Command::ServerAdmin {
+			request, action, ..
+		} = state.request_server_admin(Id(2), create()).unwrap()
+		else {
+			panic!()
+		};
+		assert!(matches!(*action, Action::CreateSound { ref file, .. } if file == b"OggS"));
+		assert!(
+			matches!(state.server_admin.action, Some(Action::CreateSound { ref file, .. }) if file.is_empty())
+		);
+		assert!(state.server_admin.saving);
+		// One request at a time.
+		assert!(
+			state
+				.request_server_admin(Id(2), Action::LoadSounds)
+				.is_none()
+		);
+		// A catalog without the created sound is not accepted as its outcome.
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![row(4, "Mine", 1)],
+					limit: Some(8),
+				})),
+			})
+			.unwrap();
+		assert!(state.server_admin.error.is_some() && state.server_admin.needs_refresh);
+		assert_eq!(state.server_admin.sounds.as_ref().unwrap().items.len(), 2);
+		assert!(state.request_server_admin(Id(2), create()).is_none());
+
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::LoadSounds)
+			.unwrap()
+		else {
+			panic!()
+		};
+		// Another server's sounds never enter this catalog.
+		let mut foreign = row(6, "Air horn", 1);
+		foreign.sound.guild = Some(Id(3));
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![foreign],
+					limit: None,
+				})),
+			})
+			.unwrap();
+		assert!(state.server_admin.error.is_some());
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::LoadSounds)
+			.unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![row(4, "Mine", 1), row(6, "Air horn", 1)],
+					limit: Some(8),
+				})),
+			})
+			.unwrap();
+		assert!(state.server_admin.error.is_none() && !state.server_admin.needs_refresh);
+
+		// A change made by another client marks the open catalog stale until it is read again.
+		state.apply_soundboard(crate::soundboard::Event::Changed(Id(2)));
+		assert!(state.server_admin.sounds_stale);
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::LoadSounds)
+			.unwrap()
+		else {
+			panic!()
+		};
+		assert!(!state.server_admin.sounds_stale);
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![row(4, "Mine", 1), row(6, "Air horn", 1)],
+					limit: Some(8),
+				})),
+			})
+			.unwrap();
+		assert!(!state.server_admin.sounds_stale);
+
+		// A change that arrives while the list is being read survives that response, so the
+		// possibly older list is read again.
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::LoadSounds)
+			.unwrap()
+		else {
+			panic!()
+		};
+		state.apply_soundboard(crate::soundboard::Event::Changed(Id(2)));
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![row(4, "Mine", 1), row(6, "Air horn", 1)],
+					limit: Some(8),
+				})),
+			})
+			.unwrap();
+		assert!(state.server_admin.sounds_stale);
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::LoadSounds)
+			.unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![row(4, "Mine", 1), row(6, "Air horn", 1)],
+					limit: Some(8),
+				})),
+			})
+			.unwrap();
+		assert!(!state.server_admin.sounds_stale);
+
+		// The call panel's copy of this server's sounds is marked stale by a management reload.
+		state.soundboard.guild = Some((
+			Id(2),
+			crate::soundboard::Catalog {
+				loaded: true,
+				..Default::default()
+			},
+		));
+		let edit = Action::EditSound {
+			id: Id(6),
+			name: "Louder horn".into(),
+			emoji: model::Patch::Null,
+			volume: 100,
+		};
+		let Command::ServerAdmin { request, .. } = state.request_server_admin(Id(2), edit).unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![row(4, "Mine", 1), row(6, "Louder horn", 1)],
+					limit: Some(8),
+				})),
+			})
+			.unwrap();
+		assert!(state.server_admin.error.is_none());
+		assert!(!state.soundboard.guild.as_ref().unwrap().1.loaded);
+
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::DeleteSound { id: Id(6) })
+			.unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Sounds(Sounds {
+					items: vec![row(4, "Mine", 1)],
+					limit: Some(8),
+				})),
+			})
+			.unwrap();
+		assert!(state.server_admin.error.is_none());
+		assert_eq!(state.server_admin.sounds.as_ref().unwrap().items.len(), 1);
 	}
 }

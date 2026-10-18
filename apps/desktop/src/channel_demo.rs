@@ -36,10 +36,35 @@ pub fn execute(
 		.channel(channel)
 		.ok_or(Failure::Forbidden)
 		.map(|source| match action {
+			Action::Publish(message) => Outcome::Published(message),
+			Action::FollowAnnouncement(destination) => Outcome::AnnouncementFollowed {
+				destination,
+				webhook: Id(999),
+			},
 			Action::Move { .. } => Outcome::Moved,
 			Action::Load => {
 				Outcome::Details(state.channel_details(channel).cloned().unwrap_or_else(|| {
 					Edit {
+						voice: matches!(source.kind, 2 | 13).then(|| {
+							Box::new(client_core::channel_actions::VoiceEdit {
+								bitrate: 64000,
+								user_limit: 0,
+								region: None,
+								video_quality: 1,
+								regions: vec![
+									client_core::channel_actions::VoiceRegion {
+										id: "us-east".into(),
+										name: "US East".into(),
+										deprecated: false,
+									},
+									client_core::channel_actions::VoiceRegion {
+										id: "rotterdam".into(),
+										name: "Rotterdam".into(),
+										deprecated: false,
+									},
+								],
+							})
+						}),
 						name: source.name.clone(),
 						overwrites: state
 							.permissions
@@ -57,11 +82,15 @@ pub fn execute(
 			| Action::PostArchive(_)
 			| Action::PostLock(_)
 			| Action::PostRename(_)
+			| Action::PostTags(_)
+			| Action::PostAddMember(_)
+			| Action::PostRemoveMember(_)
 			| Action::PostPin(_)
 			| Action::PostMute(_)
 			| Action::PostNotifications(_)) => {
 				let mut details = state.post_details(channel).copied().unwrap_or(PostDetails {
 					owner: state.user.as_ref().map(|u| u.id),
+					invitable: true,
 					level: 3,
 					..PostDetails::default()
 				});
@@ -71,6 +100,9 @@ pub fn execute(
 					Action::PostArchive(value) => details.archived = value,
 					Action::PostLock(value) => details.locked = value,
 					Action::PostRename(value) => updated.name = value,
+					Action::PostTags(value) => {
+						updated.tags.get_or_insert_with(Default::default).applied = value
+					}
 					Action::PostPin(value) => details.pinned = value,
 					Action::PostNotifications(value) => details.level = value,
 					Action::PostMute(value) => {
@@ -94,11 +126,26 @@ pub fn execute(
 				}
 			}
 			Action::Delete => Outcome::Deleted,
-			Action::CreateThread { name, .. } => {
+			Action::CreateThread { name, message } => {
+				*next_id += 1;
+				let mut thread = source.clone();
+				thread.id = message.unwrap_or(Id(*next_id));
+				thread.kind = if source.kind == 5 { 10 } else { 11 };
+				thread.parent_id = Some(source.id);
+				thread.name = name;
+				thread.last_message = None;
+				thread.message_count = Some(0);
+				thread.icon = None;
+				Outcome::Channel {
+					channel: Box::new(thread),
+					permissions: None,
+				}
+			}
+			Action::CreatePrivateThread { name, .. } => {
 				*next_id += 1;
 				let mut thread = source.clone();
 				thread.id = Id(*next_id);
-				thread.kind = 11;
+				thread.kind = 12;
 				thread.parent_id = Some(source.id);
 				thread.name = name;
 				thread.last_message = None;
@@ -328,7 +375,7 @@ mod tests {
 			generation: state.generation,
 			event,
 		});
-		let thread = Id(next_id);
+		let thread = starter;
 		let created = state.channel(thread).expect("the thread joined navigation");
 		assert_eq!(created.parent_id, Some(parent));
 		assert_eq!(created.kind, 11);

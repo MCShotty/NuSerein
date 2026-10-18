@@ -14,6 +14,24 @@ use serde::{
 
 pub const MAX_PROFILE_WIRE: usize = 256 * 1024;
 
+/// Native profile banners keep their aspect ratio and may be wider than group icons.
+pub fn image_data_uri(png: &[u8]) -> Option<String> {
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	(png.len() >= 33
+		&& png.len() <= 256 * 1024
+		&& png.starts_with(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR")
+		&& [16, 20].into_iter().all(|offset| {
+			(1..=512).contains(&u32::from_be_bytes(
+				png[offset..offset + 4].try_into().unwrap(),
+			))
+		}))
+	.then(|| {
+		let mut uri = format!("data:image/png;base64,{}", STANDARD.encode(png));
+		uri.shrink_to_fit();
+		uri
+	})
+}
+
 /// Unofficial current-user PATCH fields; omit untouched fields, retain explicit nulls.
 pub fn encode_edit(changes: &model::ProfileEdit) -> Result<serde_json::Value, DecodeError> {
 	if !changes.valid() {
@@ -35,7 +53,34 @@ pub fn encode_edit(changes: &model::ProfileEdit) -> Result<serde_json::Value, De
 	if let Some(avatar) = &changes.avatar {
 		fields.insert("avatar".into(), serde_json::json!(avatar));
 	}
+	if let Some(banner) = &changes.banner {
+		fields.insert("banner".into(), serde_json::json!(banner));
+	}
+	if let Some(colors) = changes.theme_colors {
+		fields.insert("theme_colors".into(), serde_json::json!(colors));
+	}
+	if let Some(style) = &changes.name_style {
+		encode_name_style(&mut fields, style.as_ref());
+	}
 	Ok(serde_json::Value::Object(fields))
+}
+
+pub(crate) fn encode_name_style(
+	fields: &mut serde_json::Map<String, serde_json::Value>,
+	style: Option<&model::ProfileNameStyle>,
+) {
+	fields.insert(
+		"display_name_font_id".into(),
+		serde_json::json!(style.map(|style| style.font)),
+	);
+	fields.insert(
+		"display_name_effect_id".into(),
+		serde_json::json!(style.map(|style| style.effect)),
+	);
+	fields.insert(
+		"display_name_colors".into(),
+		serde_json::json!(style.map(|style| &style.colors)),
+	);
 }
 #[derive(Deserialize)]
 struct ProfileDto {
@@ -327,6 +372,14 @@ pub fn decode_profile(
 	guild: Option<Id>,
 	with_mutuals: bool,
 ) -> Result<UserProfile, DecodeError> {
+	decode_profile_appearance(bytes, guild, with_mutuals, true)
+}
+pub(crate) fn decode_profile_appearance(
+	bytes: &[u8],
+	guild: Option<Id>,
+	with_mutuals: bool,
+	server_appearance: bool,
+) -> Result<UserProfile, DecodeError> {
 	if bytes.len() > MAX_PROFILE_WIRE {
 		return Err(DecodeError);
 	}
@@ -429,6 +482,14 @@ pub fn decode_profile(
 	let guild = match (guild, dto.guild_member) {
 		(Some(guild), Some(mut member)) => {
 			let mut profile = dto.guild_member_profile.unwrap_or_default();
+			if server_appearance
+				&& profile.theme_colors.as_ref().is_some_and(|colors| {
+					!colors.limited
+						&& colors.items.len() == 2
+						&& colors.items.iter().all(|color| *color <= 0xff_ffff)
+				}) {
+				metadata.theme_colors = profile.theme_colors.take();
+			}
 			// A server profile's own effect or frame replaces the account's in that server.
 			let server =
 				Equipped::parse(profile.collectibles.take(), profile.profile_effect.take());
@@ -476,7 +537,9 @@ pub fn decode_profile(
 			(top <= 0xff_ffff && bottom <= 0xff_ffff).then_some([top, bottom])
 		});
 	let mut user = dto.user.user.into_model();
-	if let Some((decoration, nameplate, style)) = member_cosmetics {
+	if let Some((decoration, nameplate, style)) = member_cosmetics
+		&& server_appearance
+	{
 		collectibles::apply_member(&mut user, decoration, nameplate);
 		collectibles::apply_member_style(&mut user, style);
 	}
@@ -564,6 +627,17 @@ pub fn decode_profile(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn profile_banner_uri_accepts_512px_but_rejects_oversized_or_invalid_png() {
+		let mut png =
+			b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x02\0\0\0\0\x80\0\0\0\0\0\0\0\0\0".to_vec();
+		assert!(image_data_uri(&png).is_some());
+		assert!(crate::group_actions::icon_data_uri(&png).is_none());
+		png[19] = 1;
+		assert!(image_data_uri(&png).is_none());
+		assert!(image_data_uri(&vec![0; 256 * 1024 + 1]).is_none());
+		assert!(image_data_uri(b"not png").is_none());
+	}
 	use serde_json::json;
 	#[test]
 	fn partial_profiles_preserve_identity_and_reject_malformed_lists() {

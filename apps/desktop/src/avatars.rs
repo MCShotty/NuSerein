@@ -94,6 +94,7 @@ fn decode_edge(key: &str) -> u32 {
 		|| key.starts_with("spotify-")
 		|| key.starts_with("banner-")
 		|| key.starts_with("member-banner-")
+		|| key.starts_with("guide-header-")
 	{
 		ui::EMBED_EDGE
 	} else if key.starts_with("badge-art:") {
@@ -644,6 +645,20 @@ fn cdn_url(key: &str) -> Option<String> {
 	}
 	if Cosmetic::parse(key).is_some() {
 		return Cosmetic::url(key);
+	}
+	// Published CDN paths, constructed from typed IDs and hashes; no arbitrary host is accepted.
+	for (prefix, route, edge) in [
+		("guide-header-", "home-headers", 512),
+		("guide-action-", "new-member-actions", 128),
+		("guide-resource-", "resource-channels", 128),
+	] {
+		if let Some(value) = key.strip_prefix(prefix) {
+			let (id, hash) = value.split_once('-')?;
+			let id: Id = id.parse().ok()?;
+			return (id.0 != 0 && model::valid_avatar_hash(hash)).then(|| {
+				format!("https://cdn.discordapp.com/{route}/{id}/{hash}.png?size={edge}")
+			});
+		}
 	}
 	if let Some(value) = key
 		.strip_prefix("anim:sticker-")
@@ -1819,6 +1834,7 @@ fn resize_to(image: image::RgbaImage, fit: u32) -> image::RgbaImage {
 /// The opening picture of a clip: the still for provider video Discord cannot proxy, and for a
 /// clip too long to decode whole.
 fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
+	use platform::video::ffmpeg::Sample;
 	let started = Instant::now();
 	let bytes: Arc<[u8]> = bytes.into();
 	let mut decoder = open_preview_decoder(bytes, started)?;
@@ -1828,15 +1844,10 @@ fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
 				let _ = decoder.poll_audio();
 				std::thread::sleep(Duration::from_millis(2));
 			}
-			Ok(std::task::Poll::Ready(Some(platform::video::Sample::Video {
-				picture, ..
-			}))) => {
-				let (width, height, rgba) = picture.to_rgba()?;
-				let pixels = (width as usize).checked_mul(height as usize)?;
-				if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
-					return None;
-				}
-				let image = resize_to(image::RgbaImage::from_raw(width, height, rgba)?, fit);
+			Ok(std::task::Poll::Ready(Some(
+				sample @ (Sample::Video { .. } | Sample::Picture { .. }),
+			))) => {
+				let (_, image) = preview_image(sample, fit)?;
 				return Some(egui::ColorImage::from_rgba_unmultiplied(
 					[image.width() as usize, image.height() as usize],
 					image.as_raw(),
@@ -1849,15 +1860,68 @@ fn first_video_frame(bytes: &[u8], fit: u32) -> Option<egui::ColorImage> {
 	None
 }
 
-fn open_preview_decoder(bytes: Arc<[u8]>, started: Instant) -> Option<platform::video::Decoder> {
-	let source = Box::new(Cursor::new(bytes));
-	#[cfg(target_os = "linux")]
-	let decoder = platform::video::Decoder::open_until(source, started + Duration::from_secs(3));
-	#[cfg(not(target_os = "linux"))]
-	let decoder = platform::video::Decoder::open(source);
-	decoder
-		.ok()
-		.filter(|_| started.elapsed() < Duration::from_secs(3))
+fn open_preview_decoder(
+	bytes: Arc<[u8]>,
+	started: Instant,
+) -> Option<platform::video::ffmpeg::AttachmentDecoder> {
+	let deadline = started + Duration::from_secs(3);
+	let source = Box::new(PreviewSource {
+		bytes: Cursor::new(bytes),
+		deadline,
+	});
+	platform::video::ffmpeg::AttachmentDecoder::open_until(source, deadline).ok()
+}
+
+/// Stop native probing and packet reads when the preview's existing work deadline expires.
+struct PreviewSource {
+	bytes: Cursor<Arc<[u8]>>,
+	deadline: Instant,
+}
+impl PreviewSource {
+	fn check_deadline(&self) -> io::Result<()> {
+		if Instant::now() >= self.deadline {
+			Err(io::ErrorKind::TimedOut.into())
+		} else {
+			Ok(())
+		}
+	}
+}
+impl Read for PreviewSource {
+	fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+		self.check_deadline()?;
+		self.bytes.read(output)
+	}
+}
+impl io::Seek for PreviewSource {
+	fn seek(&mut self, position: io::SeekFrom) -> io::Result<u64> {
+		self.check_deadline()?;
+		self.bytes.seek(position)
+	}
+}
+
+fn preview_image(
+	sample: platform::video::ffmpeg::Sample,
+	fit: u32,
+) -> Option<(f64, image::RgbaImage)> {
+	use platform::video::ffmpeg::Sample;
+	match sample {
+		Sample::Picture { pts, frame } => {
+			let (width, height, rgba) = frame.thumbnail(fit).ok()?;
+			Some((pts, image::RgbaImage::from_raw(width, height, rgba)?))
+		}
+		Sample::Video { pts, picture } => {
+			let (width, height, rgba) = picture.to_rgba()?;
+			let pixels = (width as usize).checked_mul(height as usize)?;
+			if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
+				return None;
+			}
+			Some((
+				pts,
+				resize_to(image::RgbaImage::from_raw(width, height, rgba)?, fit),
+			))
+		}
+		Sample::Audio { .. } => None,
+	}
 }
 
 fn decode_motion_video(
@@ -1865,6 +1929,7 @@ fn decode_motion_video(
 	budget: &FrameBudget,
 	first: impl Fn(&egui::ColorImage),
 ) -> Option<ui::GifFrames> {
+	use platform::video::ffmpeg::Sample;
 	let started = Instant::now();
 	let mut fit = budget.fit;
 	let mut shrinks = budget.shrinks;
@@ -1888,22 +1953,15 @@ fn decode_motion_video(
 					let _ = decoder.poll_audio();
 					std::thread::sleep(Duration::from_millis(2));
 				}
-				Ok(std::task::Poll::Ready(Some(platform::video::Sample::Video {
-					pts,
-					picture,
-				}))) => {
-					// Clip frames are resized and cached once, so the CPU conversion stays.
-					let (width, height, rgba) = picture.to_rgba()?;
-					let pixels = (width as usize).checked_mul(height as usize)?;
-					if width == 0 || height == 0 || rgba.len() != pixels.checked_mul(4)? {
-						return None;
-					}
+				Ok(std::task::Poll::Ready(Some(
+					sample @ (Sample::Video { .. } | Sample::Picture { .. }),
+				))) => {
 					if !index.is_multiple_of(stride) {
 						index += 1;
 						continue;
 					}
-					let image = image::RgbaImage::from_raw(width, height, rgba)?;
-					let image = resize_to(image, fit);
+					// Clip frames are resized and cached once, so the CPU conversion stays.
+					let (pts, image) = preview_image(sample, fit)?;
 					let frame_bytes = image.width() as usize * image.height() as usize * 4;
 					// accept_frames also keeps one playback texture the size of this frame.
 					if total + 2 * frame_bytes > budget.bytes && shrinks > 0 {
@@ -3071,6 +3129,89 @@ mod tests {
 			);
 		}
 	}
+	#[test]
+	fn guide_artwork_urls_are_confined_and_headers_use_the_bounded_embed_edge() {
+		let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		for (key, path, edge) in [
+			("guide-header", "home-headers", 512),
+			("guide-action", "new-member-actions", 128),
+			("guide-resource", "resource-channels", 128),
+		] {
+			assert_eq!(
+				super::cdn_url(&format!("{key}-42-{hash}")),
+				Some(format!(
+					"https://cdn.discordapp.com/{path}/42/{hash}.png?size={edge}"
+				))
+			);
+			assert!(super::cdn_url(&format!("{key}-0-{hash}")).is_none());
+			assert!(super::cdn_url(&format!("{key}-42-../../outside")).is_none());
+		}
+		assert_eq!(
+			super::decode_edge(&format!("guide-header-42-{hash}")),
+			ui::EMBED_EDGE
+		);
+		assert_eq!(super::decode_edge(&format!("guide-action-42-{hash}")), 128);
+	}
+
+	#[test]
+	fn video_previews_use_ffmpeg_with_bounded_frames_and_deadlines() {
+		let bytes = include_bytes!("../tests/fixtures/video.mov").as_slice();
+		assert!(matches!(
+			open_preview_decoder(Arc::from(bytes), Instant::now()).unwrap(),
+			platform::video::ffmpeg::AttachmentDecoder::Ffmpeg(_)
+		));
+		let image = first_video_frame(bytes, 64).expect("video poster");
+		assert!(image.size.into_iter().all(|side| (1..=64).contains(&side)));
+		let budget = FrameBudget {
+			fit: 64,
+			count: 10,
+			..FrameBudget::legacy(64)
+		};
+		let posted = std::sync::atomic::AtomicUsize::new(0);
+		let frames = decode_animation(bytes, &budget, |_| {
+			posted.fetch_add(1, Ordering::Relaxed);
+		})
+		.expect("looping video preview");
+		assert_eq!(posted.load(Ordering::Relaxed), 1);
+		assert!((2..=budget.count).contains(&frames.len()));
+		assert!(frames.iter().all(|(delay, image)| {
+			!delay.is_zero() && image.size.into_iter().all(|side| (1..=64).contains(&side))
+		}));
+		assert!(
+			frames
+				.iter()
+				.map(|(_, image)| image.pixels.len() * 4)
+				.sum::<usize>()
+				<= budget.bytes
+		);
+		assert!(
+			(frames
+				.iter()
+				.map(|(delay, _)| delay.as_secs_f64())
+				.sum::<f64>()
+				- 3.0)
+				.abs() < 0.1
+		);
+		assert!(
+			open_preview_decoder(Arc::from(bytes), Instant::now() - Duration::from_secs(4))
+				.is_none()
+		);
+		assert!(first_video_frame(b"broken video", 64).is_none());
+		let mut expired = PreviewSource {
+			bytes: Cursor::new(Arc::from(bytes)),
+			deadline: Instant::now(),
+		};
+		assert_eq!(
+			expired.read(&mut [0; 1]).unwrap_err().kind(),
+			io::ErrorKind::TimedOut
+		);
+		assert_eq!(
+			io::Seek::seek(&mut expired, io::SeekFrom::Start(0))
+				.unwrap_err()
+				.kind(),
+			io::ErrorKind::TimedOut
+		);
+	}
 
 	#[test]
 	fn gif_animation_decodes_full_size_and_partial_frames() {
@@ -3725,135 +3866,6 @@ mod tests {
 		);
 		assert_eq!(cooldown, retry_at);
 	}
-}
-
-#[cfg(all(debug_assertions, feature = "demo"))]
-pub(crate) fn debug_heic_check() {
-	ui::debug_heic_layout_check();
-	let suffixless = Rendition::parse(
-		"media:is:e512:https://media.discordapp.net/attachments/1/2/Attachment?ex=abc&hm=def",
-	)
-	.unwrap();
-	assert_eq!(
-		media_urls(&suffixless).unwrap().fallback.as_deref(),
-		Some("https://cdn.discordapp.com/attachments/1/2/Attachment?ex=abc&hm=def")
-	);
-	let external = Rendition::parse(
-		"media:is:e512:https://images-ext-1.discordapp.net/external/abcdefghijklmnop/https/example.com/photo.png",
-	)
-	.unwrap();
-	assert!(media_urls(&external).unwrap().fallback.is_none());
-
-	for (filename, content_type, image) in [
-		("shelf-christmas-decoration.heic", None, true),
-		("photo.HEIC", Some("application/octet-stream"), true),
-		("photo.heif", Some("image/heif"), true),
-		("Attachment", Some("image/heic"), true),
-		("photo.heic.exe", Some("application/octet-stream"), false),
-		("photo.heic", Some("audio/wav"), false),
-		("photo.heic", Some("video/mp4"), false),
-	] {
-		let message = serde_json::json!({
-			"id": "1", "channel_id": "2", "author": {"id": "3", "username": "Synthetic"},
-			"attachments": [{"id": "4", "filename": filename, "content_type": content_type,
-				"size": 1380000, "url": "https://cdn.discordapp.com/attachments/2/4/photo.heic"}]
-		});
-		let message = discord_protocol::decode::<discord_protocol::MessageDto>(
-			message.to_string().as_bytes(),
-		)
-		.unwrap()
-		.into_model();
-		assert_eq!(
-			message.attachments[0].is_image(),
-			image,
-			"{filename} / {content_type:?}"
-		);
-		assert_eq!(message.attachments[0].media.width, 0);
-		assert_eq!(message.attachments[0].media.height, 0);
-	}
-	let heic = b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00heicmif1";
-	assert!(platform::heic::is_heic(heic));
-	for len in 0..heic.len() {
-		assert!(!platform::heic::is_heic(&heic[..len]));
-	}
-	assert!(!platform::heic::is_heic(
-		b"\x00\x00\x00\x10ftypavif\x00\x00\x00\x00"
-	));
-	assert!(decode(heic, &Budget::legacy(256)).is_none());
-	let rendition = Rendition::parse(
-		"media:is:e512:https://cdn.discordapp.com/attachments/1/2/photo.HEIC?ex=abc&hm=def",
-	)
-	.unwrap();
-	let urls = media_urls(&rendition).unwrap();
-	assert_eq!(budget(&rendition.key()).canvas, 8192);
-	#[cfg(target_os = "windows")]
-	{
-		let viewer = Rendition {
-			lane: Lane::Viewer,
-			..rendition.clone()
-		};
-		let urls = media_urls(&viewer).unwrap();
-		assert!(urls.primary.contains("cdn.discordapp.com") && !urls.primary.contains("format="));
-		assert!(urls.fallback.unwrap().contains("format=webp"));
-	}
-
-	assert!(urls.primary.contains("format=webp"));
-	assert_eq!(
-		urls.fallback.as_deref(),
-		Some("https://cdn.discordapp.com/attachments/1/2/photo.HEIC?ex=abc&hm=def")
-	);
-}
-
-#[cfg(all(debug_assertions, feature = "demo"))]
-pub(crate) fn debug_profile_resolution_check() {
-	let cover = cdn_url(
-		"game:https://images-ext-1.discordapp.net/external/aaaaaaaaaaaaaaaa/https/example.com/cover.jpg",
-	)
-	.unwrap();
-	assert!(cover.starts_with("https://images-ext-1.discordapp.net/external/"));
-	assert!(cover.contains("width=256"));
-	assert!(
-		disk_key(
-			"game:https://images-ext-1.discordapp.net/external/aaaaaaaaaaaaaaaa/https/example.com/cover.jpg"
-		)
-		.unwrap()
-		.starts_with("embed-")
-	);
-	for key in [
-		"game:http://127.0.0.1/cover.jpg",
-		"game:https://images-ext-1.discordapp.net.evil.test/external/a/https/b/c",
-	] {
-		assert!(cdn_url(key).is_none());
-	}
-	println!("Profile game artwork uses the bounded credential-free media worker.");
-	for path in [
-		"avatars/1/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-		"banners/1/a_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.gif",
-		"guilds/2/users/1/avatars/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-		"guilds/2/users/1/banners/a_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.gif",
-	] {
-		for motion in ['s', 'a'] {
-			let key = format!("media:v{motion}:1440x720:https://cdn.discordapp.com/{path}");
-			let rendition = Rendition::parse(&key).unwrap();
-			let url = media_urls(&rendition).unwrap().primary;
-			let url = url::Url::parse(&url).unwrap();
-			assert_eq!(
-				url.query_pairs().find(|(key, _)| key == "size").unwrap().1,
-				"2048"
-			);
-			assert!(disk_key(&key).is_some());
-		}
-	}
-	let attachment = Rendition::parse(
-		"media:vs:1024x512:https://cdn.discordapp.com/attachments/1/2/image.png?ex=abc&hm=def",
-	)
-	.unwrap();
-	let url = media_urls(&attachment).unwrap().primary;
-	assert!(!url.contains("size="));
-	assert!(url.contains("ex=abc&hm=def"));
-	println!(
-		"Profile avatar/banner renditions request source resolution; attachment signatures preserved."
-	);
 }
 
 #[test]

@@ -362,6 +362,7 @@ pub fn snapshot(
 			.filter(|profile| {
 				profile.user.id == current.id
 					&& !profile.limited
+					&& !profile.private
 					&& !state.own_profile.loading
 					&& !state.own_profile.reload_required
 					&& state.own_profile.error.is_none()
@@ -915,8 +916,16 @@ pub fn query_snapshot(state: &State, manifest: &Manifest) -> Option<Box<QuerySna
 		data: view.data.as_ref().map(|profile| ProfileQueryData {
 			user: user(&profile.user),
 			display_name: profile.global_name.as_ref().map(|value| text(value, 256)),
-			bio: text(&profile.bio, 4096),
-			pronouns: text(&profile.pronouns, 256),
+			bio: if profile.private {
+				String::new()
+			} else {
+				text(&profile.bio, 4096)
+			},
+			pronouns: if profile.private {
+				String::new()
+			} else {
+				text(&profile.pronouns, 256)
+			},
 			nickname: profile
 				.guild
 				.as_ref()
@@ -1622,6 +1631,44 @@ mod tests {
 		let account = app.account_profile.as_ref().unwrap();
 		assert_eq!(account.user.id, current.id.0.to_string());
 		assert_eq!(account.profile.as_ref().unwrap().bio.len(), 2048);
+		state.own_profile.data.as_mut().unwrap().private = true;
+		assert!(
+			snapshot(&state, &messaging, &caps)
+				.unwrap()
+				.account_profile
+				.unwrap()
+				.profile
+				.is_none()
+		);
+		state.own_profile.data.as_mut().unwrap().private = false;
+		let mut private_profile = state.own_profile.data.clone().unwrap();
+		private_profile.private = true;
+		private_profile.bio = "PRIVATE_PROFILE_BIO".into();
+		private_profile.pronouns = "PRIVATE_PROFILE_PRONOUNS".into();
+		state.profile = Some(client_core::profile::ProfileView {
+			user: private_profile.user.id,
+			guild: None,
+			request: state.profile_request,
+			loading: false,
+			error: None,
+			data: Some(private_profile),
+		});
+		let private_query =
+			query_snapshot(&state, &manifest(vec![Capability::DataQueries])).unwrap();
+		let private_data = private_query
+			.profile
+			.as_ref()
+			.unwrap()
+			.data
+			.as_ref()
+			.unwrap();
+		assert!(private_data.bio.is_empty() && private_data.pronouns.is_empty());
+		assert!(
+			!serde_json::to_string(&private_query)
+				.unwrap()
+				.contains("PRIVATE_PROFILE_")
+		);
+		state.profile = None;
 		assert!(app.guilds.as_ref().unwrap().truncated);
 		assert!(app.guilds.as_ref().unwrap().items.len() <= MAX_APP_GUILDS);
 		let details = app.channel_details.as_ref().unwrap();
@@ -1806,6 +1853,7 @@ mod tests {
 					nsfw: false,
 					overwrites: vec![],
 					forum: None,
+					voice: None,
 				})),
 			}),
 		});

@@ -19,7 +19,7 @@ REPOSITORY = "ViceVerse-cz/Serein"
 PACKAGE_DIRS = ("themes", "plugins/packages")
 # Keep this authoring schema aligned with Manifest::validate in crates/extensions/src/lib.rs.
 CAPABILITIES = {
-    "api_proxy", "rich_presence", "relationship_control", "account_control", "audio_settings",
+    "voice_messages", "api_proxy", "rich_presence", "relationship_control", "account_control", "audio_settings",
     "voice_connect", "camera_control", "message_send", "message_manage", "reactions_control",
     "read_state_control", "threads_control", "channel_control", "server_control", "role_control",
     "moderation_control", "media_control", "action_feedback", "data_queries", "messaging_settings",

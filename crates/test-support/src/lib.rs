@@ -1,6 +1,8 @@
 //! Handcrafted synthetic data. No network imports; never evidence of live compatibility.
 use client_core::{Envelope, Event, State};
 use model::*;
+mod community;
+pub use community::community_state;
 mod message_links;
 pub use message_links::{load_message_link_page, message_links_demo_state};
 /// Synthetic Tenor-shaped results. Previews under `/synthetic/` are painted locally; no request.
@@ -786,6 +788,7 @@ pub fn voice_demo_state() -> State {
 			deafened,
 			server_muted: false,
 			server_deafened: false,
+			stage: Default::default(),
 			video: false,
 			streaming: false,
 		},
@@ -819,11 +822,15 @@ pub fn voice_demo_state() -> State {
 		request: 0,
 		phase: Phase::Connected,
 		connected_at: Some(Instant::now() - Duration::from_secs(3663)),
+		stage_revision: 0,
+		media_mode: Default::default(),
+		stage_consent: false,
 		channel_started_at: Some(Instant::now() - Duration::from_secs(3663)),
 		muted: false,
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		participants: state
 			.voice
 			.roster
@@ -833,10 +840,59 @@ pub fn voice_demo_state() -> State {
 		error: None,
 		reconnecting: None,
 	});
+	seed_soundboard(&mut state, Id(10));
 	state.select(Id(25));
 	load_page(&mut state, None);
 	state.status = "Offline voice fixture · no microphone or network access";
 	state
+}
+/// Synthetic soundboard catalogs; no sound file exists for these IDs and none is fetched.
+pub fn seed_soundboard(state: &mut State, guild: Id) {
+	use client_core::soundboard::Catalog;
+	let catalog = |first: u64, guild: Option<Id>, names: &[(&str, Option<&str>, bool)]| Catalog {
+		request: 0,
+		sounds: names
+			.iter()
+			.zip(first..)
+			.map(|((name, emoji, available), id)| model::soundboard::Sound {
+				id: Id(id),
+				name: (*name).into(),
+				volume: 1.0,
+				emoji_id: None,
+				emoji_name: emoji.map(str::to_owned),
+				guild,
+				available: *available,
+			})
+			.collect(),
+		loading: false,
+		loaded: true,
+		stale: false,
+		error: None,
+	};
+	state.soundboard.guild = Some((
+		guild,
+		catalog(
+			9100,
+			Some(guild),
+			&[
+				("Synthetic fanfare", Some("\u{1f3ba}"), true),
+				("A deliberately long sound name that elides", None, true),
+				("Unavailable sound", Some("\u{1f507}"), false),
+			],
+		),
+	));
+	state.soundboard.default = catalog(
+		9200,
+		None,
+		&[
+			("quack", Some("\u{1f986}"), true),
+			("airhorn", Some("\u{1f4e2}"), true),
+			("cricket", Some("\u{1f997}"), true),
+			("golf clap", Some("\u{1f44f}"), true),
+			("sad horn", Some("\u{1f3b7}"), true),
+			("ba dum tss", Some("\u{1f941}"), true),
+		],
+	);
 }
 /// Synthetic direct-message call: two participants, connected for a while. Never live audio.
 pub fn call_demo_state() -> State {
@@ -851,6 +907,7 @@ pub fn call_demo_state() -> State {
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		video: false,
 		streaming: false,
 	};
@@ -862,11 +919,15 @@ pub fn call_demo_state() -> State {
 		request: 0,
 		phase: Phase::Connected,
 		connected_at: Some(Instant::now() - Duration::from_secs(754)),
+		stage_revision: 0,
+		media_mode: Default::default(),
+		stage_consent: false,
 		channel_started_at: None,
 		muted: false,
 		deafened: false,
 		server_muted: false,
 		server_deafened: false,
+		stage: Default::default(),
 		participants: vec![participant(1, false), participant(2, true)],
 		error: None,
 		reconnecting: None,
@@ -1248,8 +1309,11 @@ pub fn permission_snapshot(state: &State) -> model::permissions::Snapshot {
 		| p::CONNECT
 		| p::SPEAK
 		| p::USE_VAD
+		| p::USE_SOUNDBOARD
 		| p::MANAGE_THREADS
 		| p::CREATE_PUBLIC_THREADS
+		| p::CREATE_PRIVATE_THREADS
+		| p::MANAGE_WEBHOOKS
 		| p::MANAGE_CHANNELS;
 	p::Snapshot {
 		guilds: state

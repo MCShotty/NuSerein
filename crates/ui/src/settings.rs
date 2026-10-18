@@ -11,6 +11,11 @@ pub(super) struct Settings {
 	query: String,
 	language_time_format: Option<(model::TimeFormat, Language)>,
 	pub(super) editor: crate::profile_edit::Editor,
+	pub(super) server_editor: crate::server_profile::Editor,
+	pub(super) account: crate::account_settings::AccountUi,
+	pub(super) owned_cosmetics: crate::owned_cosmetics::Navigation,
+	server_profile: bool,
+	ime_active: bool,
 	pub(super) notifications: crate::notification_settings::Navigation,
 	pub(super) messaging_permissions: crate::messaging_permissions::Navigation,
 	pub(super) games: crate::registered_games::Page,
@@ -25,6 +30,10 @@ enum Page {
 	Appearance,
 	Chat,
 	MessagingPermissions,
+	Privacy,
+	ContentFilters,
+	Connections,
+	Accessibility,
 	Notifications,
 	/// Discord's Registered Games: activity sharing, the current game and Added Games.
 	Activity,
@@ -39,10 +48,14 @@ enum Page {
 }
 impl Page {
 	/// Every page in sidebar order; the narrow-window page picker lists them the same way.
-	const ALL: [Self; 15] = [
+	const ALL: [Self; 19] = [
 		Self::Account,
 		Self::Profile,
 		Self::MessagingPermissions,
+		Self::Privacy,
+		Self::ContentFilters,
+		Self::Connections,
+		Self::Accessibility,
 		Self::Storage,
 		Self::Appearance,
 		Self::Chat,
@@ -65,6 +78,9 @@ impl Page {
 				Self::Account,
 				Self::Profile,
 				Self::MessagingPermissions,
+				Self::Privacy,
+				Self::ContentFilters,
+				Self::Connections,
 				Self::Storage,
 			],
 		),
@@ -76,6 +92,7 @@ impl Page {
 				Self::Notifications,
 				Self::Voice,
 				Self::Keybinds,
+				Self::Accessibility,
 				Self::Activity,
 				Self::LanguageTime,
 				Self::General,
@@ -93,6 +110,10 @@ impl Page {
 			Self::Appearance => "page-appearance",
 			Self::Chat => "page-chat",
 			Self::MessagingPermissions => "page-messaging-permissions",
+			Self::Privacy => "page-privacy",
+			Self::ContentFilters => "page-content-filters",
+			Self::Connections => "page-connections",
+			Self::Accessibility => "page-accessibility",
 			Self::Notifications => "page-notifications",
 			Self::Activity => "page-registered-games",
 			Self::Voice => "page-voice",
@@ -115,6 +136,10 @@ impl Page {
 			Self::Appearance => "description-appearance",
 			Self::Chat => "description-chat",
 			Self::MessagingPermissions => "description-messaging-permissions",
+			Self::Privacy => "description-privacy",
+			Self::ContentFilters => "description-content-filters",
+			Self::Connections => "description-connections",
+			Self::Accessibility => "description-accessibility",
 			Self::Notifications => "description-notifications",
 			Self::Activity => "description-registered-games",
 			Self::Voice => "description-voice",
@@ -130,8 +155,24 @@ impl Page {
 	}
 	fn matches(self, query: &str, language: Language) -> bool {
 		let keywords = match self {
-			Self::Account => "my account profile logout",
-			Self::Profile => "profile edit display name about me bio pronouns color colour",
+			Self::Account => {
+				"my account username email phone mfa security subscription billing profile logout"
+			}
+			Self::Privacy => {
+				"profile privacy audience friends local time data safety warnings training"
+			}
+			Self::ContentFilters => {
+				"content filters sensitive graphic gore self harm blur block profanity slurs sexual"
+			}
+			Self::Connections => {
+				"connections connected accounts spotify github twitch oauth display profile sync activity disconnect"
+			}
+			Self::Accessibility => {
+				"accessibility keyboard reading zoom compact motion animations smooth scrolling"
+			}
+			Self::Profile => {
+				"profile edit server nickname avatar banner theme display name about me bio pronouns color colour cosmetics owned equip decoration effect nameplate frame"
+			}
 			Self::General => {
 				"general windows macos linux login menu bar startup autostart automatically open minimized minimize close tray background title bar caption window buttons decorations borderless tiling graphics gpu adapter render discrete integrated hardware acceleration performance battery"
 			}
@@ -293,6 +334,15 @@ impl MessagingUi {
 	/// Fixture-only entry point for the native offline settings preview.
 	pub fn preview_settings(&mut self, page: &str) {
 		self.settings.open = true;
+		if page == "activity" {
+			self.settings.page = Page::Activity;
+			return;
+		}
+		if page == "profiles-server" {
+			self.settings.page = Page::Profile;
+			self.settings.server_profile = true;
+			return;
+		}
 		// A label wins; keywords still reach pages that were merged or renamed ("activity").
 		if let Some(page) = Page::ALL
 			.into_iter()
@@ -316,6 +366,26 @@ impl MessagingUi {
 		state: &mut State,
 		commands: &mut Vec<client_core::Command>,
 	) {
+		let ime_this_frame = ctx.input(|input| {
+			if !input.focused {
+				self.settings.ime_active = false;
+			}
+			let mut changed = false;
+			for event in &input.events {
+				if let egui::Event::Ime(ime) = event {
+					changed = true;
+					match ime {
+						egui::ImeEvent::Preedit { text, .. } => {
+							self.settings.ime_active = !text.is_empty()
+						}
+						egui::ImeEvent::Commit(_) => self.settings.ime_active = false,
+						_ => {}
+					}
+				}
+			}
+			changed
+		});
+		let composing = self.settings.ime_active || ime_this_frame;
 		let colors = design::palette_for(ctx);
 		let size = ctx.content_rect().size() - egui::vec2(32.0, 40.0);
 		let width = size.x.clamp(280.0, 1100.0);
@@ -445,13 +515,18 @@ impl MessagingUi {
 								match self.settings.page {
 									Page::General => self.general_settings(ui, state.demo),
 									Page::LanguageTime => self.language_time_settings(ui),
-									Page::Account => self.account_page(ui, state),
-									Page::Profile => self.settings.editor.show(
-										ui,
-										state,
-										&mut self.avatars,
-										commands,
-									),
+									Page::Account => self.account_page(ui, state, commands),
+									Page::Privacy => {
+										self.privacy_settings(ui, state, commands, false)
+									}
+									Page::ContentFilters => {
+										self.privacy_settings(ui, state, commands, true)
+									}
+									Page::Connections => {
+										self.connection_settings(ui, state, commands)
+									}
+									Page::Accessibility => self.accessibility_settings(ui),
+									Page::Profile => self.profile_settings(ui, state, commands),
 									Page::Appearance => self.appearance_settings(ui, state.demo),
 									Page::Chat => self.chat_settings(ui, state.demo),
 									Page::MessagingPermissions => {
@@ -489,10 +564,16 @@ impl MessagingUi {
 							});
 					});
 			});
-		if modal.should_close() {
+		if modal.backdrop_response.clicked()
+			|| modal.response.should_close()
+			|| (!composing && modal.should_close())
+		{
 			self.settings.open = false;
 		}
 		if self.keybind_capture.is_none()
+			&& !composing
+			&& modal.is_top_modal
+			&& !modal.any_popup_open
 			&& ctx.input_mut(|input| {
 				crate::keybinds::pressed_exact(
 					input,
@@ -503,6 +584,50 @@ impl MessagingUi {
 		}
 		if !self.settings.open {
 			self.settings.messaging_permissions.requested = false;
+			self.settings.ime_active = false;
+		}
+		if !self.settings.open || self.settings.page != Page::Account {
+			self.settings.account.conceal();
+		}
+	}
+
+	fn profile_settings(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		commands: &mut Vec<client_core::Command>,
+	) {
+		ui.horizontal_wrapped(|ui| {
+			ui.selectable_value(&mut self.settings.server_profile, false, "User Profile");
+			ui.selectable_value(&mut self.settings.server_profile, true, "Server Profiles");
+		});
+		ui.add_space(8.0);
+		if self.settings.server_profile {
+			self.settings
+				.server_editor
+				.show(ui, state, &mut self.avatars, commands);
+		} else {
+			self.settings
+				.editor
+				.show(ui, state, &mut self.avatars, commands);
+		}
+		ui.add_space(16.0);
+		self.owned_cosmetic_settings(ui, state, commands);
+	}
+	pub fn profile_picture_is_banner(&self) -> bool {
+		self.settings.editor.banner_picker
+	}
+	pub fn take_server_profile_image_request(&mut self) -> Option<((u64, model::Id, u64), bool)> {
+		self.settings.server_editor.image_request.take()
+	}
+	pub fn accept_server_profile_image(
+		&mut self,
+		ctx: &egui::Context,
+		scope: (u64, model::Id, u64),
+		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
+	) {
+		if let Err(error) = self.settings.server_editor.accept_image(ctx, scope, result) {
+			self.toasts.push(design::Level::Error, error);
 		}
 	}
 
@@ -659,7 +784,12 @@ impl MessagingUi {
 		}
 	}
 
-	fn account_page(&mut self, ui: &mut egui::Ui, state: &State) {
+	fn account_page(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		commands: &mut Vec<client_core::Command>,
+	) {
 		let colors = design::palette(ui);
 		let name = state
 			.user
@@ -727,12 +857,6 @@ impl MessagingUi {
 								ui.set_width(ui.available_width());
 								ui.spacing_mut().item_spacing.y = 10.0;
 								account_row(ui, "settings-account-page-display-name", &name);
-								ui.separator();
-								account_row(
-									ui,
-									"settings-account-page-email-password-and-security",
-									"Managed in Discord",
-								);
 							});
 						ui.add_space(12.0);
 						ui.horizontal(|ui| {
@@ -771,6 +895,7 @@ impl MessagingUi {
 					}
 				});
 			});
+		self.account_overview_details(ui, state, commands);
 		let label = if state.demo {
 			"Exit preview"
 		} else {
@@ -1827,6 +1952,76 @@ fn theme_preference_cards(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod keybind_tests {
 	use super::*;
+	#[test]
+	fn profile_settings_escape_keeps_ime_composition_and_new_pages_work_narrow() {
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		let mut state = test_support::demo_state();
+		view.settings.open = true;
+		view.settings.page = Page::Accessibility;
+		let escape = egui::Event::Key {
+			key: egui::Key::Escape,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::NONE,
+		};
+		let frames = [
+			vec![
+				egui::Event::Ime(egui::ImeEvent::Preedit {
+					text: "編集中".into(),
+					active_range_chars: None,
+				}),
+				escape.clone(),
+			],
+			vec![escape.clone()],
+			vec![
+				egui::Event::Ime(egui::ImeEvent::Commit("編集中".into())),
+				escape.clone(),
+			],
+			vec![escape],
+		];
+		for (index, events) in frames.into_iter().enumerate() {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(360.0, 640.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| view.show_settings(ui.ctx(), &mut state, &mut Vec::new()),
+			);
+			output.drop_without_applying_deltas();
+			assert_eq!(view.settings.open, index != 3, "frame {index}");
+		}
+		for page in [
+			Page::Privacy,
+			Page::ContentFilters,
+			Page::Connections,
+			Page::Accessibility,
+		] {
+			view.settings.open = true;
+			view.settings.page = page;
+			for theme in [egui::Theme::Light, egui::Theme::Dark] {
+				ctx.set_theme(theme);
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(360.0, 640.0),
+						)),
+						..Default::default()
+					},
+					|ui| view.show_settings(ui.ctx(), &mut state, &mut Vec::new()),
+				);
+				assert!(!output.shapes.is_empty());
+				output.drop_without_applying_deltas();
+				assert!(view.settings.open);
+			}
+		}
+	}
 
 	#[test]
 	fn long_page_headers_wrap_without_displacing_the_close_control() {

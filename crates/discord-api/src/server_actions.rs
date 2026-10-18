@@ -51,9 +51,24 @@ impl DiscordApi {
 					}
 				}
 				if options.muted.is_some() {
+					let end = options
+						.mute_until
+						.map(|until| {
+							discord_protocol::pins::format_cursor(i128::from(until) * 1_000_000_000)
+						})
+						.transpose()
+						.map_err(|_| Failure::Protocol)?;
+					let seconds = options.mute_until.map(|until| {
+						let now = std::time::SystemTime::now()
+							.duration_since(std::time::UNIX_EPOCH)
+							.unwrap_or_default()
+							.as_secs()
+							.min(i64::MAX as u64) as i64;
+						until.saturating_sub(now).max(0)
+					});
 					body.insert(
 						"mute_config".into(),
-						serde_json::json!({"end_time":null,"selected_time_window":-1}),
+						serde_json::json!({"end_time":end,"selected_time_window":seconds.unwrap_or(-1)}),
 					);
 				}
 				let bytes = self
@@ -85,7 +100,7 @@ impl DiscordApi {
 							.mute_config
 							.as_ref()
 							.and_then(|config| config.until())
-							.is_some())
+							!= options.mute_until)
 				{
 					return Err(Failure::Ambiguous);
 				}
@@ -299,7 +314,33 @@ mod tests {
 				..Default::default()
 			},
 		};
+		let timed = Action::Notifications {
+			guild: Id(2),
+			options: client_core::server_actions::NotificationOptions {
+				muted: Some(true),
+				mute_until: Some(2_000_000_000),
+				..Default::default()
+			},
+		};
 		for (action, status, body, expected) in [
+			(
+				timed,
+				200,
+				r#"{"guild_id":"2","muted":true,"mute_config":{"end_time":"2033-05-18T03:33:20Z"}}"#,
+				Ok(None),
+			),
+			(
+				timed,
+				200,
+				r#"{"guild_id":"2","muted":true}"#,
+				Err(Failure::Ambiguous),
+			),
+			(
+				timed,
+				200,
+				r#"{"guild_id":"2","muted":true,"mute_config":{"end_time":"2033-05-18T03:33:21Z"}}"#,
+				Err(Failure::Ambiguous),
+			),
 			(
 				defaults,
 				200,
@@ -414,15 +455,36 @@ mod tests {
 									headers
 										.starts_with("PATCH /users/@me/guilds/2/settings HTTP/1.1")
 								);
-								assert_eq!(
-									serde_json::from_slice::<serde_json::Value>(&bytes[end + 4..])
+								if let Some(until) = options.mute_until {
+									let body: serde_json::Value =
+										serde_json::from_slice(&bytes[end + 4..]).unwrap();
+									assert_eq!(body.as_object().unwrap().len(), 2);
+									assert_eq!(body["muted"], true);
+									assert_eq!(
+										body["mute_config"]["end_time"],
+										"2033-05-18T03:33:20Z"
+									);
+									let now = std::time::SystemTime::now()
+										.duration_since(std::time::UNIX_EPOCH)
+										.unwrap()
+										.as_secs() as i64;
+									let seconds = body["mute_config"]["selected_time_window"]
+										.as_i64()
+										.unwrap();
+									assert!((until - now..=until - now + 2).contains(&seconds));
+								} else {
+									assert_eq!(
+										serde_json::from_slice::<serde_json::Value>(
+											&bytes[end + 4..]
+										)
 										.unwrap(),
-									if options.muted.is_some() {
-										serde_json::json!({"message_notifications":3,"muted":false,"mute_config":{"end_time":null,"selected_time_window":-1}})
-									} else {
-										serde_json::json!({"message_notifications":1,"suppress_roles":true})
-									}
-								);
+										if options.muted.is_some() {
+											serde_json::json!({"message_notifications":3,"muted":false,"mute_config":{"end_time":null,"selected_time_window":-1}})
+										} else {
+											serde_json::json!({"message_notifications":1,"suppress_roles":true})
+										}
+									);
+								}
 							}
 							Action::CreateInvite { .. } => {
 								assert!(headers.starts_with("POST /channels/3/invites HTTP/1.1"));

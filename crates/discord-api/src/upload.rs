@@ -1,6 +1,8 @@
 //! User-selected files, staged to Discord's signed storage target before message creation.
 //! Paths, signed URLs and file bytes are never serialized into diagnostics or retained as drafts.
 pub mod external;
+mod voice;
+pub use voice::VoiceMessage;
 
 use crate::{DiscordApi, Failure};
 use client_core::{Command, Event};
@@ -270,14 +272,18 @@ impl DiscordApi {
 				if !request.valid()
 					|| !crate::interactions::valid_uploads(&request, sources.len())
 					|| !crate::interactions::valid_file_types(&request, &sources)
-					|| !matches!(&request.data, client_core::interactions::Data::Modal { .. })
-				{
-					progress
-						.send_replace(Status::Failed("Invalid modal upload; reselect the files"));
+					|| !matches!(
+						&request.data,
+						client_core::interactions::Data::Modal { .. }
+							| client_core::interactions::Data::ApplicationCommand { .. }
+					) {
+					progress.send_replace(Status::Failed(
+						"Invalid interaction upload; reselect the files",
+					));
 					return Event::Interaction(client_core::interactions::Event::Submitted {
 						nonce: request.nonce,
 						result: Err(Failure::ProtocolAt(
-							"Invalid modal upload; reselect the files",
+							"Invalid interaction upload; reselect the files",
 						)),
 					});
 				}
@@ -817,6 +823,189 @@ mod tests {
 		};
 		assert_eq!(nonce, "synthetic-upload");
 		failure
+	}
+
+	#[tokio::test]
+	async fn command_attachments_use_signed_uploads_and_never_repeat_uncertain_execution() {
+		use client_core::interactions::{Data, Request};
+		use model::{Id, application_commands::Command as Definition};
+		for ambiguous in [false, true] {
+			tokio::time::timeout(Duration::from_secs(10), async {
+                let fixture=Fixture::new(b"synthetic command attachment").await;
+                let source=Source::inspect(fixture.0.clone()).await.unwrap();
+                let filename=source.filename().to_owned();
+                let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let storage=TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let mut api=api();
+                api.base=format!("http://{}",listener.local_addr().unwrap());
+                api.upload_origin=Some(storage.local_addr().unwrap());
+                api.interaction_session(Some(zeroize::Zeroizing::new("synthetic-session".into()))).unwrap();
+                let upload_url=format!("http://{}/signed",storage.local_addr().unwrap());
+                let server=tokio::spawn(async move {
+                    let (mut socket,_)=listener.accept().await.unwrap();
+                    let (head,_)=request(&mut socket).await;
+                    assert!(head.starts_with("POST /channels/1/attachments "));
+                    respond(&mut socket,"200 OK",&serde_json::json!({"attachments":[{"id":0,"upload_url":upload_url,"upload_filename":"synthetic/command"}]}).to_string()).await;
+                    let (mut socket,_)=storage.accept().await.unwrap();
+                    let (head,bytes)=request(&mut socket).await;
+                    assert!(head.starts_with("PUT /signed "));
+                    assert!(!head.to_ascii_lowercase().contains("authorization"));
+                    assert!(!head.to_ascii_lowercase().contains("cookie"));
+                    assert!(!head.contains("SYNTHETIC_UPLOAD_TOKEN"));
+                    assert_eq!(bytes,b"synthetic command attachment");
+                    respond(&mut socket,"200 OK","").await;
+                    let (mut socket,_)=listener.accept().await.unwrap();
+                    let (head,bytes)=request(&mut socket).await;
+                    assert!(head.starts_with("POST /interactions "));
+                    let body:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(body["type"],2);
+                    assert_eq!(body["data"]["options"][0]["options"][0]["value"],"0");
+                    assert_eq!(body["data"]["attachments"],serde_json::json!([{"id":"0","filename":filename,"uploaded_filename":"synthetic/command"}]));
+                    if ambiguous { drop(socket); } else { respond(&mut socket,"204 No Content","").await; }
+                    assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err());
+                });
+                let definition:Definition=serde_json::from_value(serde_json::json!({
+                    "id":"10","version":"11","application_id":"12","name":"upload","description":"Upload",
+                    "options":[{"type":1,"name":"post","description":"Post","options":[{"type":11,"name":"file","description":"File","required":true}]}]
+                })).unwrap();
+                let invocation=definition.invocation(&["post".into()],&[("file".into(),"0".into())]).unwrap();
+                let request=Request {request:1,nonce:"1234".into(),application_id:Id(12),channel_id:Id(1),guild_id:None,message_id:None,message_flags:0,data:Data::ApplicationCommand {invocation:Box::new(invocation)}};
+                assert!(request.valid());
+                assert!(!crate::interactions::valid_uploads(&request,0));
+                assert!(crate::interactions::valid_uploads(&request,1));
+                assert!(!crate::interactions::valid_uploads(&request,2));
+                let (progress,_)=watch::channel(Status::Preparing);
+                let (_cancel,cancelled)=watch::channel(false);
+                let Event::Interaction(client_core::interactions::Event::Submitted {result,..})=api.upload_messages(Command::Interaction(request),vec![source],progress,cancelled).await else {panic!("command submission outcome")};
+                assert_eq!(result,if ambiguous {Err(Failure::Ambiguous)} else {Ok(())});
+                server.await.unwrap();
+            }).await.unwrap();
+		}
+	}
+
+	#[tokio::test]
+	async fn voice_upload_preserves_one_audio_attachment_and_never_retries_message() {
+		for accepted in [true, false] {
+			tokio::time::timeout(Duration::from_secs(10), async {
+				let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+				let storage = TcpListener::bind("127.0.0.1:0").await.unwrap();
+				let mut api = api();
+				api.base = format!("http://{}", api_listener.local_addr().unwrap());
+				api.upload_origin = Some(storage.local_addr().unwrap());
+				let upload_url = format!("http://{}/signed", storage.local_addr().unwrap());
+				// Transport-only synthetic bytes; this fixture does not prove Ogg/Opus decoding.
+				let recording: Arc<[u8]> = b"synthetic native encoded audio".as_slice().into();
+				let voice = VoiceMessage::new(recording.clone(), 1.25, vec![0, 127, 255]).unwrap();
+				let server = tokio::spawn(async move {
+					let (mut socket, _) = api_listener.accept().await.unwrap();
+					let (head, bytes) = request(&mut socket).await;
+					assert!(head.starts_with("POST /channels/1/attachments HTTP/1.1"));
+					assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(), serde_json::json!({
+						"files":[{"id":"0","filename":"voice-message.ogg","file_size":recording.len(),"is_clip":false}]
+					}));
+					respond(&mut socket, "200 OK", &serde_json::json!({"attachments":[{
+						"id":"0","upload_url":upload_url,"upload_filename":"synthetic/voice-message.ogg"
+					}]}).to_string()).await;
+					let (mut socket, _) = storage.accept().await.unwrap();
+					let (head, bytes) = request(&mut socket).await;
+					assert!(head.starts_with("PUT /signed HTTP/1.1"));
+					let head = head.to_ascii_lowercase();
+					assert!(head.contains("content-type: audio/ogg"));
+					for forbidden in ["authorization", "cookie", "x-super-properties", "synthetic_upload_token"] {
+						assert!(!head.contains(forbidden));
+					}
+					assert_eq!(bytes, recording.as_ref());
+					respond(&mut socket, "200 OK", "").await;
+					let (mut socket, _) = api_listener.accept().await.unwrap();
+					let (head, bytes) = request(&mut socket).await;
+					assert!(head.starts_with("POST /channels/1/messages HTTP/1.1"));
+					let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+					assert_eq!(body, serde_json::json!({
+						"content":"","nonce":"synthetic-upload","flags":8192,
+						"allowed_mentions":{"parse":[],"users":[],"roles":[],"replied_user":true},
+						"message_reference":{"message_id":"2","channel_id":"1"},
+						"attachments":[{"id":"0","filename":"voice-message.ogg","uploaded_filename":"synthetic/voice-message.ogg",
+							"duration_secs":1.25,"waveform":"AH//"}]
+					}));
+					respond(&mut socket, "200 OK", if accepted {
+						r#"{"id":"3","channel_id":"1","author":{"id":"4","username":"Synthetic"},"nonce":"synthetic-upload"}"#
+					} else { r#"{"unsupported":true}"# }).await;
+					assert!(tokio::time::timeout(Duration::from_millis(100), api_listener.accept()).await.is_err());
+				});
+				let (progress, status) = watch::channel(Status::Preparing);
+				let (_cancel, cancel) = watch::channel(false);
+				let Event::SendResult { result, .. } = api.upload_voice_message(command(), voice, progress, cancel).await else {
+					panic!("expected voice send result");
+				};
+				if accepted {
+					assert_eq!(result.unwrap().id, model::Id(3));
+					assert_eq!(*status.borrow(), Status::Finished);
+				} else {
+					assert!(matches!(result, Err(Failure::Ambiguous)));
+					assert_eq!(*status.borrow(), Status::Failed(Failure::Ambiguous.label()));
+				}
+				server.await.unwrap();
+			}).await.unwrap();
+		}
+	}
+
+	#[tokio::test]
+	async fn voice_invalid_send_or_precancelled_recording_never_contacts_service() {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let mut api = api();
+		api.base = format!("http://{}", listener.local_addr().unwrap());
+		for (content, sticker, cancelled) in [
+			("caption", None, false),
+			("@silent", None, false),
+			("", Some(model::Id(9)), false),
+			("", None, true),
+		] {
+			let Command::Send {
+				channel,
+				nonce,
+				reply,
+				..
+			} = command()
+			else {
+				unreachable!()
+			};
+			let command = Command::Send {
+				channel,
+				nonce,
+				reply,
+				content: content.into(),
+				sticker,
+			};
+			let voice = VoiceMessage::new(Arc::from([1u8]), 0.1, vec![0]).unwrap();
+			let (progress, _) = watch::channel(Status::Preparing);
+			let (_cancel, cancel) = watch::channel(cancelled);
+			assert!(matches!(
+				api.upload_voice_message(command, voice, progress, cancel)
+					.await,
+				Event::SendResult {
+					result: Err(Failure::ProtocolAt(_)),
+					..
+				}
+			));
+		}
+		assert!(
+			tokio::time::timeout(Duration::from_millis(100), listener.accept())
+				.await
+				.is_err()
+		);
+	}
+
+	#[test]
+	fn voice_metadata_is_byte_and_duration_bounded() {
+		for duration in [0.0, -1.0, 120.001, f64::NAN, f64::INFINITY] {
+			assert!(VoiceMessage::new(Arc::from([1u8]), duration, vec![0]).is_err());
+		}
+		for waveform in [vec![], vec![0; 257]] {
+			assert!(VoiceMessage::new(Arc::from([1u8]), 1.0, waveform).is_err());
+		}
+		assert!(VoiceMessage::new(Arc::from([]), 1.0, vec![0]).is_err());
+		assert!(VoiceMessage::new(vec![0; voice::MAX_BYTES + 1].into(), 1.0, vec![0]).is_err());
+		assert!(VoiceMessage::new(vec![0; voice::MAX_BYTES].into(), 120.0, vec![0; 256]).is_ok());
 	}
 
 	#[tokio::test]

@@ -53,6 +53,13 @@ pub(crate) struct Feedback {
 	pub nacks: Vec<u16>,
 	pub loss: Option<u8>,
 	pub bitrate: Option<u32>,
+	pub sender_reports: Vec<SenderReport>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SenderReport {
+	pub ssrc: u32,
+	pub ntp: u64,
+	pub timestamp: u32,
 }
 impl Encryption {
 	pub fn new(key: &[u8; 32]) -> Self {
@@ -121,8 +128,7 @@ impl Encryption {
 	/// Parse authenticated RFC 3550 reports, RFC 4585 PLI/NACK, and WebRTC REMB.
 	/// Invalid trailing packets discard all preceding feedback; NACKs are bounded to 128.
 	pub fn feedback(&self, packet: &[u8], video_ssrc: u32) -> Option<Feedback> {
-		if video_ssrc == 0
-			|| !(28..=MAX_PACKET).contains(&packet.len())
+		if !(28..=MAX_PACKET).contains(&packet.len())
 			|| packet[0] >> 6 != 2
 			|| !(192..=223).contains(&packet[1])
 		{
@@ -169,8 +175,21 @@ impl Encryption {
 					if content.len() < end || !content.len().is_multiple_of(4) {
 						return None;
 					}
+					if content[1] == 200 {
+						if feedback.sender_reports.len() == 8 {
+							return None;
+						}
+						let ssrc = u32::from_be_bytes(content[4..8].try_into().ok()?);
+						if ssrc != 0 {
+							feedback.sender_reports.push(SenderReport {
+								ssrc,
+								ntp: u64::from_be_bytes(content[8..16].try_into().ok()?),
+								timestamp: u32::from_be_bytes(content[16..20].try_into().ok()?),
+							});
+						}
+					}
 					for report in content[start..end].as_chunks::<24>().0 {
-						if report[..4] == video_ssrc.to_be_bytes() {
+						if video_ssrc != 0 && report[..4] == video_ssrc.to_be_bytes() {
 							feedback.loss =
 								Some(feedback.loss.map_or(report[4], |loss| loss.max(report[4])));
 						}
@@ -180,7 +199,7 @@ impl Encryption {
 					if content.len() < 12 || !content.len().is_multiple_of(4) {
 						return None;
 					}
-					let matching = content[8..12] == video_ssrc.to_be_bytes();
+					let matching = video_ssrc != 0 && content[8..12] == video_ssrc.to_be_bytes();
 					match (content[1], count) {
 						(206, 1) => {
 							if content.len() != 12 {
@@ -227,11 +246,12 @@ impl Encryption {
 								}
 								mantissa << exponent
 							};
-							if content[20..]
-								.as_chunks::<4>()
-								.0
-								.iter()
-								.any(|ssrc| *ssrc == video_ssrc.to_be_bytes())
+							if video_ssrc != 0
+								&& content[20..]
+									.as_chunks::<4>()
+									.0
+									.iter()
+									.any(|ssrc| *ssrc == video_ssrc.to_be_bytes())
 							{
 								feedback.bitrate =
 									Some(feedback.bitrate.map_or(bitrate, |old| old.min(bitrate)));
@@ -750,6 +770,40 @@ mod tests {
 		padded[15] = 13; // Padding may not consume the RTCP header.
 		let packet = sealed(&mut crypto, &padded);
 		assert!(!crypto.requests_keyframe(&packet, 42));
+	}
+	#[test]
+	fn stream_sender_reports_require_authentication_complete_compounds_and_item_bounds() {
+		let mut crypto = Encryption::new(&[7; 32]);
+		let mut clear = vec![0x80, 200, 0, 6];
+		clear.extend_from_slice(&11u32.to_be_bytes());
+		clear.extend_from_slice(&(123u64 << 32).to_be_bytes());
+		clear.extend_from_slice(&u32::MAX.to_be_bytes());
+		clear.extend_from_slice(&[0; 8]);
+		let wire = crypto
+			.seal_rtcp(clear[..8].try_into().unwrap(), &clear[8..])
+			.unwrap();
+		let feedback = crypto.feedback(&wire, 0).unwrap();
+		assert_eq!(
+			feedback.sender_reports,
+			[SenderReport {
+				ssrc: 11,
+				ntp: 123u64 << 32,
+				timestamp: u32::MAX
+			}]
+		);
+		assert!(feedback.loss.is_none() && !feedback.keyframe);
+		let mut tampered = wire;
+		tampered[10] ^= 1;
+		assert!(crypto.feedback(&tampered, 0).is_none());
+		for compound in [
+			clear.repeat(9),
+			[clear.clone(), vec![0x80, 200, 0, 6]].concat(),
+		] {
+			let wire = crypto
+				.seal_rtcp(compound[..8].try_into().unwrap(), &compound[8..])
+				.unwrap();
+			assert!(crypto.feedback(&wire, 0).is_none());
+		}
 	}
 	#[test]
 	fn compound_feedback_authenticates_targets_bounds_and_validates_the_entire_packet() {

@@ -4,18 +4,22 @@ pub mod archives;
 pub mod auth;
 pub mod captcha;
 pub mod channel_actions;
+pub mod community;
 pub mod fingerprint;
 pub mod forum;
 pub mod game_mentions;
 pub mod gifs;
 pub mod guild_creation;
 pub mod guild_folders;
+pub mod inbox;
 pub mod permissions;
+pub mod soundboard;
 pub mod stickers;
 pub use permissions::ChannelAccess;
 #[cfg(test)]
 mod permissions_tests;
 
+pub mod account_settings;
 mod forwarding;
 pub mod interactions;
 pub mod invites;
@@ -23,6 +27,7 @@ pub mod member_search;
 pub mod message_actions;
 pub mod messaging_permissions;
 pub mod notifications;
+pub mod owned_cosmetics;
 pub mod polls;
 pub mod preload;
 pub mod presence;
@@ -30,8 +35,11 @@ pub mod profile;
 pub mod reactions;
 pub mod read_state;
 mod replies;
+pub mod server_profile;
 pub use replies::{HistoryNavigation, ParkedReplies, Reply, ReplyDeletions};
+pub mod community_admin;
 pub mod group_actions;
+pub mod member_guide;
 pub mod onboarding;
 pub mod resident;
 pub mod screen;
@@ -40,6 +48,7 @@ pub mod server_actions;
 pub mod server_admin;
 pub mod server_audit_log;
 pub mod server_integrations;
+mod server_moderation;
 pub mod server_roles;
 pub mod server_settings;
 mod thread_starter;
@@ -73,13 +82,34 @@ pub const EVENT_SLOTS: usize = 8; // UI drain batch; reliable events share a 32 
 pub const COMMAND_SLOTS: usize = 16; // ordinary commands <=16 KiB; bulk DM settings <=33 KiB; channel edit <=128 KiB; group icon <=350 KiB
 
 pub enum Command {
+	Autocomplete(interactions::Request),
+	CancelAutocomplete,
+
+	Community {
+		guild: Id,
+		user: Id,
+		fence: u64,
+		request: u64,
+		action: Box<model::community::Action>,
+	},
+	Mentions {
+		before: Option<Id>,
+		request: u64,
+	},
+	CancelMentions,
+	InboxAction {
+		request: u64,
+		action: inbox::Action,
+	},
 	Polls(polls::Request),
+	Soundboard(soundboard::Request),
 	StickerPacks,
 	Sticker(Id),
 	Interaction(interactions::Request),
 	ApplicationCommands {
 		channel: Id,
 		guild: Option<Id>,
+		context: u8,
 		request: u64,
 	},
 	MemberSearch(member_search::Request),
@@ -102,6 +132,12 @@ pub enum Command {
 		guild: Id,
 		request: u64,
 		edit: Option<Box<model::server_settings::Edit>>,
+	},
+	MemberGuide {
+		guild: Id,
+		user: Id,
+		request: u64,
+		action: model::member_guide::Action,
 	},
 	Onboarding {
 		guild: Id,
@@ -250,6 +286,28 @@ pub enum Command {
 		user: Id,
 		request: u64,
 		changes: Option<model::ProfileEdit>,
+	},
+	ServerProfile {
+		user: Id,
+		guild: Id,
+		request: u64,
+		edit: Option<Box<model::server_profile::Edit>>,
+	},
+	AccountOverview {
+		user: Id,
+		request: u64,
+	},
+	AccountConnections {
+		user: Id,
+		request: u64,
+		change: Option<model::account_settings::ConnectionChange>,
+	},
+	OwnedCosmetics {
+		user: Id,
+		guild: Option<Id>,
+		request: u64,
+		change: Option<model::profile_cosmetics::Change>,
+		nitro: bool,
 	},
 	Voice(voice::Command),
 	Members {
@@ -441,7 +499,17 @@ fn prepare_navigation(
 	Ok(permission_state)
 }
 pub enum Event {
+	Autocomplete(application_commands::CompletionEvent),
+
+	Community(community::Event),
+	CommunityChanged {
+		guild: Id,
+		channel: Option<Id>,
+		stage_ended: bool,
+	},
+	CommunityFence(u64),
 	Polls(polls::Event),
+	Soundboard(soundboard::Event),
 	StickerEntitlement {
 		user: Id,
 		premium_type: Patch<u8>,
@@ -480,6 +548,7 @@ pub enum Event {
 	ChannelAction(channel_actions::Event),
 	ServerAdmin(server_admin::Event),
 	ServerSettings(server_settings::Event),
+	MemberGuide(member_guide::Event),
 	Onboarding(onboarding::Event),
 	JoinInvite {
 		request: u64,
@@ -535,6 +604,15 @@ pub enum Event {
 		request: u64,
 		result: Result<search::Outcome, auth::Failure>,
 	},
+	Mentions {
+		request: u64,
+		result: Result<Vec<Message>, auth::Failure>,
+	},
+	InboxAction {
+		request: u64,
+		result: Result<inbox::Outcome, auth::Failure>,
+	},
+	InboxInvalidated,
 	Gifs {
 		request: u64,
 		result: Result<model::GifPage, auth::Failure>,
@@ -567,6 +645,18 @@ pub enum Event {
 		user: Id,
 		request: u64,
 		result: Result<Box<UserProfile>, auth::Failure>,
+	},
+	ServerProfile(server_profile::Event),
+	OwnedCosmetics(owned_cosmetics::Event),
+	AccountOverview {
+		user: Id,
+		request: u64,
+		result: Result<Box<model::account_settings::Overview>, auth::Failure>,
+	},
+	AccountConnections {
+		user: Id,
+		request: u64,
+		result: Result<Box<model::account_settings::Connections>, auth::Failure>,
 	},
 	Voice(voice::Event),
 	ChannelCreated(Channel),
@@ -715,9 +805,11 @@ pub struct ReadingCursor {
 }
 
 pub struct State {
+	pub community: community::Community,
 	/// The signed-in account's Discord `premium_type`; 0 until READY reports one.
 	pub premium_type: u8,
 	pub stickers: stickers::Stickers,
+	pub soundboard: soundboard::Soundboard,
 	pub interactions: interactions::Interactions,
 	pub application_commands: application_commands::Catalog,
 	pub game_mentions: game_mentions::Catalog,
@@ -731,6 +823,7 @@ pub struct State {
 	pub server_actions: server_actions::Actions,
 	pub channel_actions: channel_actions::Actions,
 	pub server_settings: server_settings::Editor,
+	pub member_guide: member_guide::View,
 	pub onboarding: onboarding::Onboarding,
 	pub server_admin: server_admin::View,
 	pub server_members_shortcuts: BTreeMap<Id, bool>,
@@ -743,6 +836,7 @@ pub struct State {
 	pub archived_thread: Option<Id>,
 	pub thread_starter: thread_starter::Starter,
 	pub search: Option<search::SearchView>,
+	pub inbox: inbox::View,
 	pub search_request: u64,
 	pub gifs: gifs::Gifs,
 	/// A pin changed in this channel; the pins view should be reloaded once.
@@ -770,6 +864,9 @@ pub struct State {
 	/// Device preference for which profile cosmetics are shown and loaded.
 	pub profile_cosmetics: model::CosmeticPreferences,
 	pub own_profile: profile::OwnProfile,
+	pub own_server_profile: server_profile::Editor,
+	pub account_settings: account_settings::Settings,
+	pub owned_cosmetics: owned_cosmetics::Editor,
 	pub badge_editor: profile::BadgeEditor,
 	pub invites: invites::Cache,
 	pub invite_join: invites::Join,
@@ -945,6 +1042,8 @@ pub struct NavStep {
 	pub command: Option<Command>,
 }
 
+// Navigation carries one bounded command; keep this short-lived result allocation-free.
+#[allow(clippy::large_enum_variant)]
 enum Apply {
 	Opened(Option<Command>),
 	AlreadyHere,
@@ -954,8 +1053,10 @@ enum Apply {
 impl Default for State {
 	fn default() -> Self {
 		Self {
+			community: Default::default(),
 			premium_type: 0,
 			stickers: Default::default(),
+			soundboard: Default::default(),
 			interactions: Default::default(),
 			application_commands: Default::default(),
 			messaging_permissions: Default::default(),
@@ -967,6 +1068,7 @@ impl Default for State {
 			server_actions: server_actions::Actions::default(),
 			channel_actions: channel_actions::Actions::default(),
 			server_settings: server_settings::Editor::default(),
+			member_guide: member_guide::View::default(),
 			onboarding: onboarding::Onboarding::default(),
 			server_admin: server_admin::View::default(),
 			server_members_shortcuts: BTreeMap::new(),
@@ -979,6 +1081,7 @@ impl Default for State {
 			archived_thread: None,
 			thread_starter: Default::default(),
 			search: None,
+			inbox: Default::default(),
 			search_request: 0,
 			gifs: gifs::Gifs::default(),
 			pins_changed: None,
@@ -999,6 +1102,9 @@ impl Default for State {
 			profile_cache: Default::default(),
 			profile_cosmetics: Default::default(),
 			own_profile: Default::default(),
+			own_server_profile: Default::default(),
+			account_settings: Default::default(),
+			owned_cosmetics: Default::default(),
 			badge_editor: Default::default(),
 			invites: Default::default(),
 			invite_join: Default::default(),
@@ -1058,7 +1164,7 @@ impl Default for State {
 /// Channels the conversation pane can present: text, voice, and forum containers.
 fn navigable(channel: &Channel) -> bool {
 	channel.supports_text()
-		|| channel.kind == 2
+		|| matches!(channel.kind, 2 | 13)
 		|| (channel.guild.is_some() && matches!(channel.kind, 15 | 16))
 }
 impl State {
@@ -1882,6 +1988,14 @@ impl State {
 	pub fn prepare_image_send(&mut self, filenames: &[&str]) -> Option<Command> {
 		self.prepare_message(filenames, None, true)
 	}
+	/// A voice clip is sent alone; the text draft stays available for a separate send.
+	pub fn prepare_voice_message(&mut self) -> Option<Command> {
+		if !self.can_send_voice_message(self.selected?) {
+			self.status = "Voice messages are unavailable with the current permissions";
+			return None;
+		}
+		self.prepare_image_send(&["voice-message.ogg"])
+	}
 	pub(crate) fn prepare_message(
 		&mut self,
 		filenames: &[&str],
@@ -2060,6 +2174,10 @@ impl State {
 			});
 			return;
 		}
+		if let Command::Soundboard(request) = &command {
+			self.soundboard_rejected(request);
+			return;
+		}
 		match &command {
 			Command::ApplicationCommands {
 				channel, request, ..
@@ -2085,6 +2203,12 @@ impl State {
 			}
 			_ => {}
 		}
+		if let Command::Autocomplete(request) = &command {
+			self.apply_autocomplete(application_commands::CompletionEvent::Submitted {
+				nonce: request.nonce.clone(),
+				result: Err(auth::Failure::Network),
+			});
+		}
 		if let Command::Interaction(request) = command {
 			let _ = self.apply_interaction(interactions::Event::Submitted {
 				nonce: request.nonce,
@@ -2108,12 +2232,39 @@ impl State {
 			);
 			return;
 		}
+		if let Command::Community { guild, request, .. } = command {
+			let _ = self.apply_community(community::Event {
+				guild,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Community action was not queued; try again",
+				)),
+			});
+			return;
+		}
 		if let Command::ServerAdmin { guild, request, .. } = command {
 			let _ = self.apply_server_admin(server_admin::Event {
 				guild,
 				request,
 				result: Err(auth::Failure::ProtocolAt(
 					"Server administration was not queued; try again",
+				)),
+			});
+			return;
+		}
+		if let Command::MemberGuide {
+			guild,
+			user,
+			request,
+			..
+		} = command
+		{
+			let _ = self.apply_member_guide(member_guide::Event {
+				guild,
+				user,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Server Guide was not queued; try again",
 				)),
 			});
 			return;
@@ -2150,6 +2301,60 @@ impl State {
 			self.reject_own_profile(user, request);
 			return;
 		}
+		if let Command::ServerProfile {
+			user,
+			guild,
+			request,
+			..
+		} = command
+		{
+			self.apply_server_profile(server_profile::Event {
+				user,
+				guild,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Server profile request was not queued; reload to continue",
+				)),
+			});
+			return;
+		}
+		if let Command::OwnedCosmetics {
+			user,
+			guild,
+			request,
+			..
+		} = command
+		{
+			self.apply_owned_cosmetics(owned_cosmetics::Event {
+				user,
+				guild,
+				request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Owned cosmetic request was not queued; reload to continue",
+				)),
+			});
+			return;
+		}
+		if let Command::AccountOverview { user, request } = command {
+			self.apply_account_overview(
+				user,
+				request,
+				Err(auth::Failure::ProtocolAt(
+					"Account details request was not queued; reload to continue",
+				)),
+			);
+			return;
+		}
+		if let Command::AccountConnections { user, request, .. } = command {
+			self.apply_account_connections(
+				user,
+				request,
+				Err(auth::Failure::ProtocolAt(
+					"Account connections request was not queued; reload to continue",
+				)),
+			);
+			return;
+		}
 		if let Command::BadgeSettings { request, .. } = command {
 			self.apply_badge_settings(
 				request,
@@ -2166,13 +2371,34 @@ impl State {
 			return;
 		}
 		if let Command::GroupAction { action, request } = command {
-			let _ = self.apply_group_action(group_actions::Event::Written {
-				channel: action.channel(),
-				request,
-				result: Err(auth::Failure::ProtocolAt(
-					"Group action was not queued; try again",
-				)),
-			});
+			let event = if matches!(action, group_actions::Action::Create(_)) {
+				group_actions::Event::Created {
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group creation was not queued; try again",
+					)),
+				}
+			} else if matches!(
+				action,
+				group_actions::Action::LoadMembers(_) | group_actions::Action::TransferOwner { .. }
+			) {
+				group_actions::Event::MembersLoaded {
+					channel: action.channel(),
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group member list was not queued; try again",
+					)),
+				}
+			} else {
+				group_actions::Event::Written {
+					channel: action.channel(),
+					request,
+					result: Err(auth::Failure::ProtocolAt(
+						"Group action was not queued; try again",
+					)),
+				}
+			};
+			let _ = self.apply_group_action(event);
 			return;
 		}
 		if let Command::SendServerInvite {
@@ -2280,7 +2506,18 @@ impl State {
 			self.apply_search(channel, request, Err(auth::Failure::Capacity));
 			return;
 		}
-		if matches!(command, Command::CancelSearch | Command::CancelGifs) {
+		if let Command::InboxAction { request, .. } = command {
+			self.apply_inbox_action(request, Err(auth::Failure::Capacity));
+			return;
+		}
+		if let Command::Mentions { request, .. } = command {
+			self.apply_mentions(request, Err(auth::Failure::Capacity));
+			return;
+		}
+		if matches!(
+			command,
+			Command::CancelSearch | Command::CancelGifs | Command::CancelMentions
+		) {
 			return;
 		}
 		if let Command::Gifs { request, .. } = command {
@@ -2551,6 +2788,11 @@ impl State {
 		if envelope.generation != self.generation {
 			return;
 		}
+		if envelope.event.changes_access()
+			|| matches!(&envelope.event, Event::Disconnected | Event::Resumed)
+		{
+			self.community.invalidate();
+		}
 		if self.handle_private_message_event(&envelope.event) {
 			return;
 		}
@@ -2622,12 +2864,16 @@ impl State {
 			}
 			self.interrupt_preloads();
 			self.interrupt_stickers();
+			self.interrupt_soundboard();
 			self.posts.clear_summaries();
 			self.interactions.reset();
 			self.application_commands.clear();
 			self.local_game_activity = Default::default();
 			self.invalidate_messaging_permissions(None);
 			self.interrupt_own_profile();
+			self.interrupt_server_profile();
+			self.interrupt_account_settings();
+			self.interrupt_owned_cosmetics();
 		}
 		if let Event::Typing(signal) = &envelope.event {
 			self.observe_typing_at(
@@ -2733,18 +2979,50 @@ impl State {
 		self.invalidate_resident_event(&envelope.event);
 		self.observe_thread_starter_event(&envelope.event);
 		self.observe_channel_action(&envelope.event);
+		self.observe_community_event(&envelope.event);
+		self.observe_member_guide_event(&envelope.event);
 		if let Event::ChannelCreated(channel) = &envelope.event {
 			self.observe_dm_reopened(channel.id);
 			self.observe_group_change(channel.id, true);
 		}
-		if let Event::ChannelChanged(patch) = &envelope.event
-			&& (!matches!(patch.name, Patch::Absent)
-				|| !matches!(patch.icon, Patch::Absent)
-				|| !matches!(patch.kind, Patch::Absent))
-		{
+		if let Event::ChannelChanged(patch) = &envelope.event {
 			self.observe_group_change(patch.id, false);
 		}
+		if let Event::RecipientAdded { channel, .. } | Event::RecipientRemoved { channel, .. } =
+			&envelope.event
+		{
+			self.observe_group_change(*channel, true);
+		}
 		self.filter_view_revisions(&envelope.event);
+		if matches!(
+			&envelope.event,
+			Event::Disconnected
+				| Event::Resync
+				| Event::PermissionsChanged
+				| Event::Ready { .. }
+				| Event::Permissions(_)
+				| Event::Unavailable(_)
+		) || self
+			.inbox
+			.messages
+			.iter()
+			.map(|message| (message.channel, message.id))
+			.chain(
+				self.inbox
+					.saved
+					.iter()
+					.map(|saved| (saved.channel, saved.message)),
+			)
+			.any(|(message_channel, message_id)| match &envelope.event {
+				Event::Patch(patch) => patch.channel == message_channel && patch.id == message_id,
+				Event::Delete { channel, id } => *channel == message_channel && *id == message_id,
+				Event::DeleteBulk { channel, ids } => {
+					*channel == message_channel && ids.contains(&message_id)
+				}
+				_ => false,
+			}) {
+			self.clear_mentions();
+		}
 		self.revision += 1;
 		if matches!(
 			&envelope.event,
@@ -2968,7 +3246,32 @@ impl State {
 			Event::ServerAction(event) => self.apply_server_action(event),
 			Event::ChannelAction(event) => self.apply_channel_action(event),
 			Event::ServerSettings(event) => self.apply_server_settings(event),
+			Event::MemberGuide(event) => self.apply_member_guide(event),
 			Event::Onboarding(event) => self.apply_onboarding(event),
+			Event::Community(event) => self.apply_community(event),
+			Event::CommunityFence(revision) => {
+				// Concurrent transports can enqueue an older notice after a newer revision.
+				let advance = revision.wrapping_sub(self.community.fence);
+				if advance != 0 && advance < (1u64 << 63) {
+					self.community.invalidate();
+					self.community.fence = revision;
+				}
+				Ok(())
+			}
+			Event::CommunityChanged {
+				guild,
+				channel,
+				stage_ended,
+			} => {
+				self.community.invalidate_metadata(guild, channel);
+				if stage_ended && let Some(channel) = channel {
+					self.stop_stage_participation(channel);
+					if self.community.stage_channel == Some(channel) {
+						self.community.stage = None;
+					}
+				}
+				Ok(())
+			}
 			Event::ServerAdmin(event) => self.apply_server_admin(event),
 			Event::GroupAction(event) => self.apply_group_action(event),
 			Event::ThreadsSync {
@@ -2978,6 +3281,10 @@ impl State {
 				removed,
 			} => self.apply_threads_sync(guild, parents, threads, removed),
 			Event::Interaction(event) => self.apply_interaction(event),
+			Event::Autocomplete(event) => {
+				self.apply_autocomplete(event);
+				Ok(())
+			}
 			Event::ApplicationCommands {
 				channel,
 				request,
@@ -2987,6 +3294,10 @@ impl State {
 				Ok(())
 			}
 			Event::Polls(event) => self.apply_poll(event),
+			Event::Soundboard(event) => {
+				self.apply_soundboard(event);
+				Ok(())
+			}
 			Event::Reactions(event) => self.apply_reactions(event),
 			Event::InviteChallenge { request, challenge } => {
 				self.apply_invite_challenge(request, *challenge);
@@ -3040,6 +3351,30 @@ impl State {
 				result,
 			} => {
 				self.apply_own_profile(user, request, result);
+				Ok(())
+			}
+			Event::ServerProfile(event) => {
+				self.apply_server_profile(event);
+				Ok(())
+			}
+			Event::OwnedCosmetics(event) => {
+				self.apply_owned_cosmetics(event);
+				Ok(())
+			}
+			Event::AccountOverview {
+				user,
+				request,
+				result,
+			} => {
+				self.apply_account_overview(user, request, result);
+				Ok(())
+			}
+			Event::AccountConnections {
+				user,
+				request,
+				result,
+			} => {
+				self.apply_account_connections(user, request, result);
 				Ok(())
 			}
 			Event::Profile {
@@ -3360,6 +3695,20 @@ impl State {
 			Event::MemberPresence { .. } | Event::DirectPresence(_) => {
 				unreachable!("presence handled before timeline revision")
 			}
+			Event::InboxInvalidated => {
+				// Gateway echoes can precede or follow REST confirmation. Retain both
+				// its correlation and the visible page; Refresh reconciles other clients.
+				self.inbox.stale = true;
+				Ok(())
+			}
+			Event::InboxAction { request, result } => {
+				self.apply_inbox_action(request, result);
+				Ok(())
+			}
+			Event::Mentions { request, result } => {
+				self.apply_mentions(request, result);
+				Ok(())
+			}
 			Event::MemberSearch { request, result } => {
 				self.searched_members(request, result);
 				Ok(())
@@ -3509,6 +3858,7 @@ impl State {
 				self.cancel_channel_action();
 				self.cancel_server_settings();
 				self.cancel_onboarding();
+				self.cancel_member_guide();
 				self.cancel_server_admin();
 				self.cancel_group_action();
 				self.cancel_invite_join();
@@ -3518,10 +3868,14 @@ impl State {
 				self.channel_actions.reset();
 				self.server_settings.reset();
 				self.reset_onboarding();
+				self.member_guide.reset();
 				self.server_admin.reset();
 				self.server_members_shortcuts.clear();
 				self.group_actions.reset();
 				self.clear_own_profile();
+				self.own_server_profile.reset();
+				self.retain_owned_cosmetic_session(user.id);
+				self.retain_account_settings_session(user.id);
 				self.user = Some(user);
 				self.guilds = guilds;
 				self.channels = channels;
@@ -3953,6 +4307,7 @@ impl State {
 				self.cancel_channel_action();
 				self.cancel_server_settings();
 				self.cancel_onboarding();
+				self.cancel_member_guide();
 				self.cancel_server_admin();
 				self.cancel_group_action();
 				self.cancel_invite_join();
@@ -3985,6 +4340,7 @@ impl State {
 				self.cancel_channel_action();
 				self.cancel_server_settings();
 				self.cancel_onboarding();
+				self.cancel_member_guide();
 				self.cancel_server_admin();
 				self.cancel_group_action();
 				self.cancel_invite_join();
@@ -4052,6 +4408,7 @@ impl State {
 		}
 		if access_changed {
 			self.reconcile_permissions(previous_access);
+			self.prune_community();
 			if let Some(previous) = previous_member_list {
 				let current = self
 					.selected
@@ -4087,6 +4444,20 @@ impl State {
 		{
 			self.server_settings.reset();
 		}
+		if self
+			.own_server_profile
+			.guild
+			.is_some_and(|guild| !self.can_edit_server_profile(guild))
+		{
+			self.own_server_profile.reset();
+		}
+		if self
+			.owned_cosmetics
+			.guild
+			.is_some_and(|guild| !self.can_edit_server_profile(guild))
+		{
+			self.owned_cosmetics.reset();
+		}
 		if access_changed && !self.server_members_shortcuts.is_empty() {
 			let guilds: BTreeSet<_> = self.guilds.iter().map(|guild| guild.id).collect();
 			self.server_members_shortcuts
@@ -4094,6 +4465,9 @@ impl State {
 		}
 		if let Some(guild) = self.server_admin.guild {
 			self.prune_integration_access(guild);
+			if !self.can_open_community_settings(guild) {
+				self.server_admin.community = None;
+			}
 			if !self.can_open_audit_log_settings(guild) {
 				self.server_admin.revoke_audit_access();
 			}
@@ -4119,6 +4493,7 @@ impl State {
 				}
 			}
 		}
+		self.reconcile_member_guide_access();
 		self.enforce_resident_budget();
 	}
 	fn invalidate_members(&mut self) {
@@ -4159,6 +4534,14 @@ impl State {
 		}
 		self.channels.retain(|c| !removed.contains(&c.id));
 		self.parked_replies.forget_channels(removed);
+		self.inbox
+			.messages
+			.retain(|message| !removed.contains(&message.channel));
+		for item in &mut self.inbox.saved {
+			if removed.contains(&item.channel) {
+				item.body = None;
+			}
+		}
 		self.permissions.forget_channels(removed);
 		for id in removed {
 			self.permissions.channels.remove(id);
@@ -4195,6 +4578,19 @@ impl State {
 		}
 	}
 	fn fail(&mut self, failure: auth::Failure) {
+		// The connection may have ended while its HTTP write was accepted. Retire
+		// the pending UI state, but never automatically repeat the mutation.
+		if self.inbox.loading
+			&& self
+				.inbox
+				.operation
+				.as_ref()
+				.is_some_and(inbox::Action::write)
+		{
+			self.inbox.operation = None;
+			self.clear_mentions();
+			self.inbox.error = Some("Inbox outcome unknown; refresh before retrying");
+		}
 		self.typing.clear();
 		self.status = failure.label();
 		match failure {
@@ -4203,12 +4599,17 @@ impl State {
 			_ => {}
 		}
 		if failure.ends_session() {
+			self.community = Default::default();
 			self.reset_thread_starter();
 			self.application_commands.clear();
 			self.interrupt_stickers();
+			self.interrupt_soundboard();
 			self.interrupt_gif_favorites();
 			self.invalidate_messaging_permissions(Some(failure));
 			self.interrupt_own_profile();
+			self.interrupt_server_profile();
+			self.interrupt_account_settings();
+			self.interrupt_owned_cosmetics();
 			self.interrupt_badge_settings();
 			self.local_game_activity = Default::default();
 			self.cancel_message_actions();
@@ -4221,6 +4622,7 @@ impl State {
 			self.cancel_channel_action();
 			self.cancel_server_settings();
 			self.cancel_onboarding();
+			self.cancel_member_guide();
 			self.cancel_server_admin();
 			self.cancel_group_action();
 			self.cancel_invite_join();
@@ -4228,6 +4630,8 @@ impl State {
 			self.clear_direct_presences();
 			self.clear_cached_history();
 			self.clear_search();
+			self.inbox.operation = None;
+			self.clear_mentions();
 			self.search_target = None;
 			self.read_state.cancel();
 			self.clear_profile();
@@ -4318,6 +4722,7 @@ impl Event {
 		size_of::<Self>()
 			+ match self {
 				Self::Interaction(event) => event.bytes(),
+				Self::Autocomplete(event) => event.bytes(),
 				Self::ApplicationCommands { result, .. } => result.as_ref().map_or(0, |commands| {
 					commands.capacity() * size_of::<model::application_commands::Command>()
 						+ commands
@@ -4342,6 +4747,12 @@ impl Event {
 						_ => 0,
 					})
 					.sum(),
+				Self::GroupAction(group_actions::Event::MembersLoaded { result, .. }) => {
+					result.as_ref().map_or(0, group_actions::Members::bytes)
+				}
+				Self::GroupAction(group_actions::Event::Created { result, .. }) => result
+					.as_ref()
+					.map_or(0, |(channel, members)| channel.bytes() + members.bytes()),
 				Self::ChannelAction(channel_actions::Event::Finished { result, .. }) => {
 					result.as_ref().map_or(0, channel_actions::Outcome::bytes)
 				}
@@ -4353,7 +4764,15 @@ impl Event {
 						size_of::<model::server_settings::Settings>() + value.heap_bytes()
 					})
 				}
+				Self::MemberGuide(event) => event
+					.result
+					.as_ref()
+					.map_or(0, model::member_guide::Snapshot::bytes),
 				Self::Onboarding(event) => event.bytes(),
+				Self::Community(event) => event
+					.result
+					.as_ref()
+					.map_or(0, model::community::Outcome::bytes),
 				Self::ServerAdmin(event) => event
 					.result
 					.as_ref()
@@ -4455,6 +4874,17 @@ impl Event {
 					result.as_ref().map_or(0, model::forum::Page::bytes)
 				}
 				Self::PostCreated { result, .. } => result.as_ref().map_or(0, Channel::bytes),
+				Self::InboxAction {
+					result: Ok(outcome),
+					..
+				} => outcome.bytes(),
+				Self::Mentions {
+					result: Ok(messages),
+					..
+				} => {
+					messages.capacity() * size_of::<Message>()
+						+ messages.iter().map(Message::bytes).sum::<usize>()
+				}
 				Self::Search {
 					result: Ok(search::Outcome::Page(page) | search::Outcome::Pins(page)),
 					..
@@ -4495,6 +4925,18 @@ impl Event {
 				Self::Profile { result, .. } | Self::ProfileEdited { result, .. } => {
 					result.as_ref().map_or(0, |p| p.bytes())
 				}
+				Self::ServerProfile(event) => {
+					event.result.as_ref().map_or(0, |snapshot| snapshot.bytes())
+				}
+				Self::OwnedCosmetics(event) => {
+					event.result.as_ref().map_or(0, |snapshot| snapshot.bytes())
+				}
+				Self::AccountOverview { result, .. } => {
+					result.as_ref().map_or(0, |overview| overview.bytes())
+				}
+				Self::AccountConnections { result, .. } => {
+					result.as_ref().map_or(0, |connections| connections.bytes())
+				}
 				Self::StreamPreview { result, .. } => result.as_ref().map_or(0, String::capacity),
 				Self::BadgeSettings { result, .. } => result
 					.as_ref()
@@ -4503,6 +4945,7 @@ impl Event {
 				Self::Permissions(event) => event.bytes(),
 				Self::GuildEmojis { emojis, .. } => custom_emoji_bytes(emojis),
 				Self::GuildStickers { stickers, .. } => sticker_bytes(stickers),
+				Self::Soundboard(event) => event.bytes(),
 				Self::StickerPacks(result) => result.as_ref().map_or(0, stickers::pack_bytes),
 				Self::Sticker { result, .. } => result.as_ref().map_or(0, Sticker::heap_bytes),
 				Self::GuildChanged(patch) => [&patch.name, &patch.icon]
@@ -4949,6 +5392,51 @@ mod tests {
 		state.discard_pending(&nonce);
 		assert_eq!(state.pending.len(), 1);
 	}
+	#[test]
+	fn voice_message_send_preserves_draft_and_requires_fresh_attachment_admission() {
+		let mut state = State {
+			channels: vec![Channel {
+				id: Id(1),
+				guild: None,
+				parent_id: None,
+				kind: 1,
+				name: "Synthetic DM".into(),
+				position: 0,
+				recipients: vec![],
+				last_message: None,
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			}],
+			selected: Some(Id(1)),
+			auth: auth::AuthState::Authenticated,
+			freshness: Freshness::Fresh,
+			gateway_connected: true,
+			..State::default()
+		};
+		state
+			.drafts
+			.insert(Id(1), "@silent text stays separate".into());
+		state.reply = Some(Reply::to(Id(7)));
+		let command = state.prepare_voice_message().unwrap();
+		assert!(
+			matches!(command, Command::Send { content, reply: Some(reply), sticker: None, .. } if content.is_empty() && reply.target() == Id(7))
+		);
+		assert_eq!(state.drafts[&Id(1)], "@silent text stays separate");
+		assert_eq!(state.pending[0].attachments, ["voice-message.ogg"]);
+		assert!(state.reply.is_none());
+		state.gateway_connected = false;
+		assert!(state.prepare_voice_message().is_none());
+		state.gateway_connected = true;
+		state.freshness = Freshness::Stale;
+		assert!(state.prepare_voice_message().is_none());
+		state.freshness = Freshness::Fresh;
+		state.auth = auth::AuthState::Expired;
+		assert!(state.prepare_voice_message().is_none());
+		assert_eq!(state.pending.len(), 1);
+	}
+
 	#[test]
 	fn attachment_only_sends_are_bounded_and_keep_existing_confirmation() {
 		let mut state = State {
@@ -6446,6 +6934,7 @@ mod tests {
 				deafened: false,
 				server_muted: false,
 				server_deafened: false,
+				stage: Default::default(),
 				video: false,
 				streaming: false,
 			},

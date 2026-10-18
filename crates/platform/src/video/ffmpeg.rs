@@ -547,6 +547,99 @@ mod tests {
 	}
 
 	#[test]
+	fn media_reads_bound_large_native_requests_without_truncating_input() {
+		let bytes = vec![7; 115018];
+		let mut reader = Reader {
+			length: bytes.len() as u64,
+			source: Box::new(std::io::Cursor::new(bytes)),
+		};
+		let mut output = vec![0; 79784];
+		let mut read = || {
+			// SAFETY: Both buffers remain live and the native request fits output.
+			unsafe {
+				media_read(
+					(&mut reader as *mut Reader).cast(),
+					output.as_mut_ptr(),
+					output.len() as i32,
+				)
+			}
+		};
+		assert_eq!(read(), 65536);
+		assert_eq!(read(), 115018 - 65536);
+		assert_eq!(read(), -541478725);
+		assert!(output[..65536].iter().all(|byte| *byte == 7));
+		assert!(output[65536..].iter().all(|byte| *byte == 0));
+	}
+
+	#[test]
+	fn thumbnail_retains_rotation_bounds_and_hdr_levels() {
+		let data = vec![255, 0, 0, 255, 0, 255, 0, 255];
+		for (rotation, dimensions) in [(0, (2, 1)), (90, (1, 2)), (180, (2, 1)), (270, (1, 2))] {
+			let frame = Frame::new(
+				Picture {
+					rotation,
+					..Picture::sdr(2, 1)
+				},
+				data.clone(),
+			)
+			.unwrap();
+			let (w, h, pixels) = frame.thumbnail(320).unwrap();
+			assert_eq!((w, h), dimensions);
+			let expected = if matches!(rotation, 180 | 270) {
+				[0, 255, 0, 255, 255, 0, 0, 255]
+			} else {
+				[255, 0, 0, 255, 0, 255, 0, 255]
+			};
+			assert_eq!(pixels, expected);
+		}
+		for transfer in [16, 18] {
+			for full_range in [0, 1] {
+				let levels = if full_range == 1 {
+					[0u16, 512, 768, 1023]
+				} else {
+					[64u16, 502, 721, 940]
+				};
+				let mut data = levels
+					.into_iter()
+					.chain([512; 4])
+					.flat_map(|v| (v << 6).to_le_bytes())
+					.collect::<Vec<_>>();
+				let p = Picture {
+					width: 4,
+					height: 1,
+					format: 1,
+					primaries: 9,
+					transfer,
+					matrix: 9,
+					full_range,
+					depth: 10,
+					peak_nits: 1000.0,
+					bytes: data.len(),
+					..Picture::default()
+				};
+				let frame = Frame::new(p, std::mem::take(&mut data)).unwrap();
+				let (w, h, pixels) = frame.thumbnail(320).unwrap();
+				assert_eq!((w, h, pixels.len()), (4, 1, 16));
+				assert_eq!(&pixels[..4], &[0, 0, 0, 255]);
+				assert!(
+					pixels
+						.as_chunks::<4>()
+						.0
+						.windows(2)
+						.all(|pair| pair[0][0] <= pair[1][0])
+				);
+				assert!(pixels[12] >= 250);
+				assert!(frame.thumbnail(0).is_err());
+				assert!(frame.thumbnail(4097).is_err());
+			}
+		}
+		let frame = Frame::new(Picture::sdr(6144, 2560), vec![128; 6144 * 2560 * 4]).unwrap();
+		let (w, h, pixels) = frame.thumbnail(320).unwrap();
+		assert_eq!((w, h, pixels.len()), (320, 133, 320 * 133 * 4));
+		assert!(pixels.iter().all(|byte| *byte == 128));
+	}
+
+	#[test]
 	fn hdr_files_decode_seek_drain_audio_and_cancel_bounded_reads() {
 		use std::{
 			io::{Cursor, Read, Seek},
@@ -618,6 +711,11 @@ mod tests {
 									(1, transfer, 10)
 								);
 								video.push(pts);
+								let (width, height, rgba) = frame.thumbnail(16).unwrap();
+								assert_eq!((width, height, rgba.len()), (16, 8, 16 * 8 * 4));
+								assert!(
+									rgba.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255)
+								);
 							}
 							Poll::Ready(None) => ended[0] = true,
 							Poll::Pending => {}
@@ -680,6 +778,79 @@ impl Frame {
 	pub fn picture(&self) -> Picture {
 		self.picture
 	}
+	/// SDR preview, including rotation and PQ/HLG tone mapping. Allocate only the
+	/// requested thumbnail (up to a 4096-pixel edge), not a full-resolution HDR copy.
+	pub fn thumbnail(&self, edge: u32) -> Result<(u32, u32, Vec<u8>), &'static str> {
+		if !(1..=4096).contains(&edge) {
+			return Err(super::INVALID);
+		}
+		let p = self.picture;
+		let scale = edge.min(p.width.max(p.height)) as f64 / p.width.max(p.height) as f64;
+		let width = (p.width as f64 * scale).max(1.0) as u32;
+		let height = (p.height as f64 * scale).max(1.0) as u32;
+		let transfer = HdrTransfer::from_native(p.transfer);
+		let convert = SdrConverter::new(p.primaries, p.peak_nits.max(203.0), 203.0, transfer);
+		let pixel = |x: u32, y: u32| -> [f32; 4] {
+			if !p.hdr() {
+				let index = (y as usize * p.width as usize + x as usize) * 4;
+				return std::array::from_fn(|i| f32::from(self.data[index + i]));
+			}
+			let word = |index| {
+				f32::from(u16::from_le_bytes([self.data[index], self.data[index + 1]]) >> 6)
+			};
+			let lum = word((y as usize * p.width as usize + x as usize) * 2);
+			let chroma = p.width as usize * p.height as usize * 2
+				+ ((y / 2) as usize * p.width.div_ceil(2) as usize + (x / 2) as usize) * 4;
+			let (yy, cb, cr) = if p.full_range == 1 {
+				(
+					lum / 1023.0,
+					(word(chroma) - 512.0) / 1023.0,
+					(word(chroma + 2) - 512.0) / 1023.0,
+				)
+			} else {
+				(
+					(lum - 64.0) / 876.0,
+					(word(chroma) - 512.0) / 896.0,
+					(word(chroma + 2) - 512.0) / 896.0,
+				)
+			};
+			let (kr, kb) = match p.matrix {
+				1 => (0.2126, 0.0722),
+				5 | 6 => (0.299, 0.114),
+				_ => (0.2627, 0.0593),
+			};
+			let kg = 1.0 - kr - kb;
+			let rgb = [
+				yy + 2.0 * (1.0 - kr) * cr,
+				yy - 2.0 * kb * (1.0 - kb) / kg * cb - 2.0 * kr * (1.0 - kr) / kg * cr,
+				yy + 2.0 * (1.0 - kb) * cb,
+			];
+			let [r, g, b] =
+				convert.to_sdr(convert.source_nits(rgb, transfer.expect("validated HDR transfer")));
+			[f32::from(r), f32::from(g), f32::from(b), 255.0]
+		};
+		let mut rgba = vec![0; width as usize * height as usize * 4];
+		for y in 0..height {
+			for x in 0..width {
+				let sx = ((x as f32 + 0.5) * p.width as f32 / width as f32 - 0.5).max(0.0);
+				let sy = ((y as f32 + 0.5) * p.height as f32 / height as f32 - 0.5).max(0.0);
+				let a = pixel(sx as u32, sy as u32);
+				let b = pixel((sx as u32 + 1).min(p.width - 1), sy as u32);
+				let c = pixel(sx as u32, (sy as u32 + 1).min(p.height - 1));
+				let d = pixel(
+					(sx as u32 + 1).min(p.width - 1),
+					(sy as u32 + 1).min(p.height - 1),
+				);
+				for i in 0..4 {
+					let top = a[i] + (b[i] - a[i]) * sx.fract();
+					let bottom = c[i] + (d[i] - c[i]) * sx.fract();
+					rgba[(y as usize * width as usize + x as usize) * 4 + i] =
+						(top + (bottom - top) * sy.fract()).round() as u8;
+				}
+			}
+		}
+		Ok(super::rotate_rgba(&rgba, width, height, p.rotation))
+	}
 	pub fn new(picture: Picture, data: Vec<u8>) -> Result<Self, &'static str> {
 		picture.validate()?;
 		if data.len() != picture.bytes {
@@ -741,6 +912,100 @@ impl From<super::Sample> for Sample {
 	}
 }
 
+/// Shared FFmpeg-first attachment selection, with native fallback for unavailable formats.
+pub enum AttachmentDecoder {
+	Ffmpeg(File),
+	Native(Box<super::Decoder>),
+}
+impl From<super::Decoder> for AttachmentDecoder {
+	fn from(value: super::Decoder) -> Self {
+		Self::Native(Box::new(value))
+	}
+}
+impl AttachmentDecoder {
+	pub fn take_restart(&mut self) -> bool {
+		match self {
+			Self::Ffmpeg(d) => d.take_restart(),
+			Self::Native(_) => false,
+		}
+	}
+	pub fn open(
+		source: Box<dyn super::ReadSeek>,
+		adapter: Option<VideoAdapter>,
+	) -> Result<Self, &'static str> {
+		Self::open_with_deadline(source, adapter, None)
+	}
+	pub fn open_until(
+		source: Box<dyn super::ReadSeek>,
+		deadline: std::time::Instant,
+	) -> Result<Self, &'static str> {
+		Self::open_with_deadline(source, None, Some(deadline))
+	}
+	fn open_with_deadline(
+		source: Box<dyn super::ReadSeek>,
+		adapter: Option<VideoAdapter>,
+		deadline: Option<std::time::Instant>,
+	) -> Result<Self, &'static str> {
+		let expired = || deadline.is_some_and(|limit| std::time::Instant::now() >= limit);
+		if expired() {
+			return Err(super::INVALID);
+		}
+		let result = match File::open(source, adapter) {
+			Ok(decoder) => Ok(Self::Ffmpeg(decoder)),
+			Err((mut source, error)) if error == super::UNSUPPORTED => {
+				if expired() {
+					return Err(super::INVALID);
+				}
+				source
+					.seek(std::io::SeekFrom::Start(0))
+					.map_err(|_| super::INVALID)?;
+				#[cfg(target_os = "linux")]
+				let decoder = match deadline {
+					Some(limit) => super::Decoder::open_until(source, limit),
+					None => super::Decoder::open(source),
+				};
+				#[cfg(not(target_os = "linux"))]
+				let decoder = super::Decoder::open(source);
+				decoder.map(Self::from)
+			}
+			Err((_, error)) => Err(error),
+		};
+		if expired() {
+			Err(super::INVALID)
+		} else {
+			result
+		}
+	}
+	pub fn info(&self) -> super::Info {
+		match self {
+			Self::Ffmpeg(d) => d.info(),
+			Self::Native(d) => d.info(),
+		}
+	}
+	pub fn seek(&mut self, seconds: f64) -> Result<(), &'static str> {
+		match self {
+			Self::Ffmpeg(d) => d.seek(seconds),
+			Self::Native(d) => d.seek(seconds),
+		}
+	}
+	pub fn poll_video(&mut self) -> Result<std::task::Poll<Option<Sample>>, &'static str> {
+		match self {
+			Self::Ffmpeg(d) => d.poll_video(),
+			Self::Native(d) => d
+				.poll_video()
+				.map(|poll| poll.map(|sample| sample.map(Into::into))),
+		}
+	}
+	pub fn poll_audio(&mut self) -> Result<std::task::Poll<Option<Sample>>, &'static str> {
+		match self {
+			Self::Ffmpeg(d) => d.poll_audio(),
+			Self::Native(d) => d
+				.poll_audio()
+				.map(|poll| poll.map(|sample| sample.map(Into::into))),
+		}
+	}
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct MediaInfo {
@@ -759,13 +1024,16 @@ struct Reader {
 // Native callbacks synchronously borrow an exclusively worker-owned reader. A
 // panicking custom reader must not unwind across the C ABI.
 unsafe extern "C" fn media_read(reader: *mut c_void, output: *mut u8, capacity: i32) -> i32 {
-	if reader.is_null() || output.is_null() || !(1..=65536).contains(&capacity) {
+	if reader.is_null() || output.is_null() || capacity <= 0 {
 		return -5;
 	}
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		// SAFETY: File owns this Box and the native AVIO buffer for the entire call.
 		let reader = unsafe { &mut *reader.cast::<Reader>() };
-		let output = unsafe { std::slice::from_raw_parts_mut(output, capacity as usize) };
+		// FFmpeg may grow its AVIO buffer beyond the initial 64 KiB. Return a
+		// bounded short read, rather than making valid larger requests look like EOF.
+		let output =
+			unsafe { std::slice::from_raw_parts_mut(output, (capacity as usize).min(65536)) };
 		match reader.source.read(output) {
 			Ok(0) => -541478725,
 			Ok(n) if n <= output.len() => n as i32,
@@ -797,6 +1065,100 @@ unsafe extern "C" fn media_seek(reader: *mut c_void, offset: i64, whence: i32) -
 		}
 	}))
 	.unwrap_or(-5)
+}
+
+/// Bounded mono/stereo decoding of packets from the application's audio demuxer.
+/// Absence of a compiled codec permits fallback; corrupt data does not.
+pub struct AudioDecoder {
+	native: NonNull<c_void>,
+	buffer: Vec<f32>,
+	_memory: MemoryLease,
+	_thread: PhantomData<Rc<()>>,
+}
+impl Drop for AudioDecoder {
+	fn drop(&mut self) {
+		// SAFETY: This worker owns the native decoder exclusively.
+		unsafe { serein_audio_close(self.native.as_ptr()) };
+	}
+}
+impl AudioDecoder {
+	pub fn open(
+		name: &std::ffi::CStr,
+		rate: u32,
+		channels: usize,
+		extra: &[u8],
+	) -> Result<Option<Self>, &'static str> {
+		if !(8000..=96000).contains(&rate)
+			|| !(1..=2).contains(&channels)
+			|| extra.len() > 65536 + 64
+		{
+			return Err(super::INVALID);
+		}
+		let mut native = std::ptr::null_mut();
+		let mut memory = MemoryLease::default();
+		memory.resize(2 * 1024 * 1024)?;
+		// SAFETY: Native open copies the bounded header and retains no Rust pointers.
+		match unsafe {
+			serein_audio_open(
+				name.as_ptr(),
+				rate,
+				channels as u32,
+				extra.as_ptr(),
+				extra.len(),
+				&mut native,
+			)
+		} {
+			0 => Ok(None),
+			1 => Ok(Some(Self {
+				native: NonNull::new(native).ok_or(super::INVALID)?,
+				buffer: vec![0.0; 65536 * channels],
+				_memory: memory,
+				_thread: PhantomData,
+			})),
+			_ => Err(super::INVALID),
+		}
+	}
+	/// Drain each packet completely before accepting another. None flushes at EOF.
+	pub fn decode(&mut self, packet: Option<&[u8]>) -> Result<&[f32], &'static str> {
+		if packet.is_some_and(|bytes| bytes.is_empty() || bytes.len() > 1024 * 1024) {
+			return Err(super::INVALID);
+		}
+		let mut written = 0;
+		// SAFETY: C copies the packet and writes at most this fixed PCM capacity.
+		let result = unsafe {
+			serein_audio_decode(
+				self.native.as_ptr(),
+				packet.map_or(std::ptr::null(), |bytes| bytes.as_ptr()),
+				packet.map_or(0, |bytes| bytes.len()),
+				self.buffer.as_mut_ptr(),
+				self.buffer.len(),
+				&mut written,
+			)
+		};
+		if result != 1 || written > self.buffer.len() {
+			return Err(super::INVALID);
+		}
+		Ok(&self.buffer[..written])
+	}
+}
+unsafe extern "C" {
+	fn serein_audio_open(
+		name: *const std::ffi::c_char,
+		rate: u32,
+		channels: u32,
+		extra: *const u8,
+		extra_size: usize,
+		output: *mut *mut c_void,
+	) -> i32;
+	fn serein_audio_close(audio: *mut c_void);
+	fn serein_audio_decode(
+		audio: *mut c_void,
+		packet: *const u8,
+		bytes: usize,
+		output: *mut f32,
+		capacity: usize,
+		written: *mut usize,
+	) -> i32;
 }
 
 /// MOV/Matroska H264/HEVC/AV1 decoding from the application's anonymous reader.

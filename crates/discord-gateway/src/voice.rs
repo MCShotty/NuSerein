@@ -251,7 +251,8 @@ impl Calls {
 					self_deaf: false,
 					mute: false,
 					deaf: false,
-					suppress: false,
+					suppress: Some(false),
+					request_to_speak_timestamp: None,
 					self_video: false,
 					self_stream: false,
 				},
@@ -931,6 +932,7 @@ impl Calls {
 			deafened: participant.deafened,
 			server_muted: participant.server_muted,
 			server_deafened: participant.server_deafened,
+			stage: participant.stage,
 			video: participant.video,
 			streaming: participant.streaming,
 		}))?;
@@ -1086,10 +1088,28 @@ impl Calls {
 fn participant(state: &VoiceStateDto) -> Participant {
 	Participant {
 		user: state.user_id,
-		muted: state.self_mute || state.mute || state.suppress || state.self_deaf || state.deaf,
+		muted: state.self_mute
+			|| state.mute
+			|| state.suppress == Some(true)
+			|| state.self_deaf
+			|| state.deaf,
 		deafened: state.self_deaf || state.deaf,
-		server_muted: state.mute || state.suppress,
+		server_muted: state.mute,
 		server_deafened: state.deaf,
+		stage: state
+			.suppress
+			.filter(|_| {
+				state
+					.request_to_speak_timestamp
+					.as_deref()
+					.is_none_or(|value| discord_protocol::community::timestamp(value).is_ok())
+			})
+			.map_or(model::community::StageParticipation::Unknown, |suppress| {
+				model::community::StageParticipation::from_wire(
+					suppress,
+					state.request_to_speak_timestamp.is_some(),
+				)
+			}),
 		video: state.self_video,
 		streaming: state.self_stream,
 	}
@@ -2256,11 +2276,14 @@ mod tests {
 				})
 			));
 			calls.dispatch("VOICE_STATE_UPDATE", br#"{"guild_id":"10","channel_id":"20","user_id":"1","session_id":"synthetic-session","suppress":true}"#, Some(Id(1)), &emit).unwrap();
+			// Suppression is independent of the server mute flag. The reducer still maps
+			// ordinary-voice suppression to its effective microphone mute gate.
 			assert!(matches!(
 				events.lock().unwrap()[2],
 				Event::Voice(voice::Event::State {
 					request: Some(5),
-					server_muted: true,
+					server_muted: false,
+					stage: voice::StageParticipation::Audience { requested: false },
 					muted: true,
 					..
 				})

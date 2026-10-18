@@ -116,6 +116,7 @@ impl DiscordApi {
 			| Action::Block { user: id, .. }
 			| Action::Ignore { user: id, .. }
 			| Action::Mute { channel: id, .. }
+			| Action::MuteFor { channel: id, .. }
 			| Action::MessageRequest { channel: id, .. } => id,
 		};
 		if id.0 == 0 {
@@ -236,25 +237,63 @@ impl DiscordApi {
 				}
 			}
 			Action::Mute { channel, muted } => {
-				// Unmuting clears the config; a leftover "forever" window keeps the mute on the service.
-				let mute_config =
-					muted.then(|| json!({"end_time": null, "selected_time_window": -1}));
-				let bytes = self.request(Method::PATCH, "/users/@me/guilds/@me/settings",
-					Some(json!({"channel_overrides": {channel.to_string(): {"muted": muted, "mute_config": mute_config}}}))).await?;
-				let setting: discord_protocol::notifications::Setting =
-					discord_protocol::decode(&bytes).map_err(|_| Failure::Protocol)?;
-				if setting.guild_id.is_some()
-					|| !setting.channel_overrides.is_some_and(|o| {
-						o.0.iter()
-							.any(|c| c.channel_id == *channel && c.muted == Some(*muted))
-					}) {
-					return Err(Failure::ProtocolAt(
-						"DM mute response did not confirm the requested setting",
-					));
+				self.write_dm_mute(*channel, *muted, None, None).await
+			}
+			Action::MuteFor {
+				channel,
+				seconds,
+				until,
+			} => {
+				if !client_core::channel_actions::Mute::For(*seconds).valid() || *until <= 0 {
+					return Err(Failure::Protocol);
 				}
-				Ok(())
+				self.write_dm_mute(*channel, true, Some(*seconds), Some(*until))
+					.await
 			}
 		}
+	}
+	async fn write_dm_mute(
+		&self,
+		channel: model::Id,
+		muted: bool,
+		seconds: Option<u32>,
+		until: Option<i64>,
+	) -> Result<(), Failure> {
+		let end = until
+			.map(|until| discord_protocol::pins::format_cursor(i128::from(until) * 1_000_000_000))
+			.transpose()
+			.map_err(|_| Failure::Protocol)?;
+		let config = muted.then(
+			|| json!({"end_time": end, "selected_time_window": seconds.map_or(-1, i64::from)}),
+		);
+		let bytes = self
+			.request_limited(
+				Method::PATCH,
+				"/users/@me/guilds/@me/settings",
+				Some(
+					json!({"channel_overrides": {channel.to_string(): {"muted": muted, "mute_config": config}}}),
+				),
+				512 * 1024,
+			)
+			.await?;
+		let setting: discord_protocol::notifications::Setting =
+			discord_protocol::decode(&bytes).map_err(|_| Failure::Ambiguous)?;
+		let mut matches = setting
+			.channel_overrides
+			.as_ref()
+			.into_iter()
+			.flat_map(|overrides| &overrides.0)
+			.filter(|entry| entry.channel_id == channel);
+		let confirmed = matches.next().is_some_and(|entry| {
+			entry.muted == Some(muted)
+				&& entry.mute_config.as_ref().and_then(|config| config.until()) == until
+		});
+		if setting.guild_id.is_some() || !confirmed || matches.next().is_some() {
+			return Err(Failure::ProtocolAt(
+				"DM mute response did not confirm the requested setting",
+			));
+		}
+		Ok(())
 	}
 }
 
@@ -513,6 +552,36 @@ mod tests {
 				Some(json!({"channel_overrides":{"10":{"muted":false,"mute_config":null}}})),
 				200,
 				r#"{"guild_id":null,"channel_overrides":[{"channel_id":"11","muted":false}]}"#,
+				Err(Failure::ProtocolAt(
+					"DM mute response did not confirm the requested setting",
+				)),
+			),
+			(
+				Action::MuteFor {
+					channel: Id(10),
+					seconds: 900,
+					until: 2_000_000_000,
+				},
+				"PATCH /users/@me/guilds/@me/settings",
+				Some(
+					json!({"channel_overrides":{"10":{"muted":true,"mute_config":{"end_time":"2033-05-18T03:33:20Z","selected_time_window":900}}}}),
+				),
+				200,
+				r#"{"guild_id":null,"channel_overrides":[{"channel_id":"10","muted":true,"mute_config":{"end_time":"2033-05-18T03:33:20Z"}}]}"#,
+				Ok(()),
+			),
+			(
+				Action::MuteFor {
+					channel: Id(10),
+					seconds: 900,
+					until: 2_000_000_000,
+				},
+				"PATCH /users/@me/guilds/@me/settings",
+				Some(
+					json!({"channel_overrides":{"10":{"muted":true,"mute_config":{"end_time":"2033-05-18T03:33:20Z","selected_time_window":900}}}}),
+				),
+				200,
+				r#"{"guild_id":null,"channel_overrides":[{"channel_id":"10","muted":true}]}"#,
 				Err(Failure::ProtocolAt(
 					"DM mute response did not confirm the requested setting",
 				)),

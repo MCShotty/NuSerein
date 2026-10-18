@@ -12,6 +12,7 @@ const MAX_SETTINGS_BYTES: usize = 32 * 1024 * 1024;
 pub struct Notification {
 	pub channel: Id,
 	pub message: Id,
+	author: Id,
 	pub sender: String,
 	pub preview: String,
 	pub avatar_key: String,
@@ -231,6 +232,9 @@ impl State {
 		crate::server_actions::NotificationOptions {
 			level: setting.level.filter(|level| *level <= 3),
 			muted: setting.muted(),
+			mute_until: (setting.muted() == Some(true))
+				.then_some(setting.mute_until)
+				.flatten(),
 			suppress_everyone: setting.suppress_everyone,
 			suppress_roles: setting.suppress_roles,
 		}
@@ -255,7 +259,7 @@ impl State {
 		}
 		if let Some(muted) = options.muted {
 			setting.muted = Some(muted);
-			setting.mute_until = None;
+			setting.mute_until = options.mute_until;
 		}
 		if let Some(suppress) = options.suppress_everyone {
 			setting.suppress_everyone = Some(suppress);
@@ -310,19 +314,36 @@ impl State {
 		{
 			return true;
 		}
-		let mut current = Some(channel.id);
-		for _ in 0..8 {
-			let Some(id) = current else {
-				break;
-			};
-			if self.guild_channel_muted(id) == Some(true) {
-				return true;
+		self.guild_channel_effectively_muted(channel.id) == Some(true)
+	}
+	/// A bounded same-guild ancestry, nearest channel first. Invalid metadata never crosses guilds.
+	pub(crate) fn notification_path(&self, channel: Id) -> Option<[Option<Id>; 8]> {
+		let guild = self.channel(channel)?.guild;
+		let mut path = [None; 8];
+		let mut current = Some(channel);
+		for index in 0..path.len() {
+			let Some(id) = current else { return Some(path) };
+			let source = self.channel(id)?;
+			if source.guild != guild || path[..index].contains(&Some(id)) {
+				return None;
 			}
-			current = self
-				.channel(id)
-				.and_then(|c| c.parent_id.filter(|p| *p != id));
+			path[index] = Some(id);
+			current = source.parent_id;
 		}
-		false
+		current.is_none().then_some(path)
+	}
+	/// Category/channel/thread muting used by the sidebar; server mute does not hide its whole tree.
+	pub fn guild_channel_effectively_muted(&self, channel: Id) -> Option<bool> {
+		self.channel(channel)?.guild?;
+		let mut known = true;
+		for id in self.notification_path(channel)?.into_iter().flatten() {
+			match self.guild_channel_muted(id) {
+				Some(true) => return Some(true),
+				Some(false) => {}
+				None => known = false,
+			}
+		}
+		known.then_some(false)
 	}
 	pub fn guild_channel_muted(&self, channel: Id) -> Option<bool> {
 		let guild = self.channel(channel)?.guild?;
@@ -450,6 +471,11 @@ impl State {
 	/// Time until the next timed mute lapses, so counts that hide muted conversations can be
 	/// refreshed by an otherwise idle window.
 	pub fn next_mute_expiry(&self) -> Option<std::time::Duration> {
+		self.next_mute_deadline()?
+			.duration_since(std::time::SystemTime::now())
+			.ok()
+	}
+	pub fn next_mute_deadline(&self) -> Option<std::time::SystemTime> {
 		let now = Self::permission_time();
 		self.notification_preferences
 			.settings
@@ -461,7 +487,16 @@ impl State {
 			})
 			.filter(|until| *until > now)
 			.min()
-			.map(|until| std::time::Duration::from_secs(until.abs_diff(now)))
+			.and_then(|until| {
+				std::time::UNIX_EPOCH
+					.checked_add(std::time::Duration::from_secs(until as u64))
+					.or_else(|| {
+						// Windows SystemTime cannot represent every service timestamp. Recheck
+						// daily without changing when the mute itself expires.
+						std::time::SystemTime::now()
+							.checked_add(std::time::Duration::from_secs(24 * 60 * 60))
+					})
+			})
 	}
 
 	/// Per-DM notification override; absent settings remain unknown outside the fixture.
@@ -516,6 +551,23 @@ impl State {
 		// DM mute writes are untimed, so a stale expiry must not unmute them.
 		setting.channel_mute_until.retain(|(id, _)| *id != channel);
 		self.read_state.activity.clear_notifications();
+		self.check_notification_capacity()
+	}
+	pub(crate) fn confirm_dm_timed_mute(
+		&mut self,
+		channel: Id,
+		until: i64,
+	) -> Result<(), &'static str> {
+		self.confirm_dm_muted(channel, true)?;
+		let setting = self
+			.notification_preferences
+			.settings
+			.get_mut(&None)
+			.unwrap();
+		if setting.channel_mute_until.len() >= MAX_NAV {
+			return Err("Mute timers exceed safe capacity");
+		}
+		setting.channel_mute_until.push((channel, until));
 		self.check_notification_capacity()
 	}
 	/// Latest known message activity, retained across deletion for navigation ordering.
@@ -596,7 +648,9 @@ impl State {
 				notification.everyone,
 				&notification.roles,
 			);
-			if self.notification_allowed_for(notification.channel, mention) {
+			if self.user_content_restriction(notification.author).is_none()
+				&& self.notification_allowed_for(notification.channel, mention)
+			{
 				return Some(notification);
 			}
 		}
@@ -625,10 +679,11 @@ impl State {
 			return false;
 		}
 		if channel.guild.is_none()
-			&& (channel
-				.recipients
-				.iter()
-				.any(|user| self.user_blocked(user.id) == Some(true))
+			&& ((channel.kind == 1
+				&& channel
+					.recipients
+					.iter()
+					.any(|user| self.user_content_restriction(user.id).is_some()))
 				|| self.message_request_pending(channel.id)
 				|| self.spam_direct(channel.id)
 				|| self.pending_dm_muted(channel.id) == Some(true))
@@ -658,7 +713,10 @@ impl State {
 				None => Some(0),
 			};
 		}
-		for id in [channel.parent_id, Some(channel.id)].into_iter().flatten() {
+		let Some(path) = self.notification_path(channel.id) else {
+			return false;
+		};
+		for id in path.into_iter().rev().flatten() {
 			if let Some((_, muted, override_level)) =
 				setting.channels.iter().find(|(c, ..)| *c == id)
 			{
@@ -764,6 +822,7 @@ impl State {
 	pub(crate) fn counts_toward_mention_badge(&self, message: &Message) -> bool {
 		// Private recipient-remove rows are not mentions. Discord message type 2.
 		if message.kind == 2
+			|| self.user_content_restriction(message.author.id).is_some()
 			|| !model::valid_mention_roles(&message.mention_roles)
 			|| self
 				.user
@@ -911,7 +970,7 @@ impl State {
 		let mention = self.counts_toward_mention_badge(message);
 		// Silent messages still contribute to badges, but never enqueue an OS alert.
 		let allowed = !message.suppress_notifications
-			&& self.user_blocked(message.author.id) != Some(true)
+			&& self.user_content_restriction(message.author.id).is_none()
 			&& self.notification_allowed_for(message.channel, mention);
 		{
 			let activity = &mut self.read_state.activity;
@@ -965,6 +1024,7 @@ impl State {
 		let notification = Notification {
 			channel: message.channel,
 			message: message.id,
+			author: message.author.id,
 			sender,
 			preview,
 			avatar_key: message.author.avatar_key(),
@@ -1118,6 +1178,553 @@ mod tests {
 			.apply_notification_preferences(Event::Presence(Some(false)))
 			.unwrap();
 		state
+	}
+	fn category_fixture() -> State {
+		let mut state = notification_state();
+		state.channels[0].parent_id = Some(Id(30));
+		state.channels[1].parent_id = Some(Id(30));
+		let mut category = state.channels[0].clone();
+		category.id = Id(30);
+		category.kind = 4;
+		category.parent_id = None;
+		category.last_message = None;
+		let mut thread = state.channels[0].clone();
+		thread.id = Id(40);
+		thread.kind = 11;
+		thread.parent_id = Some(Id(20));
+		state.channels.extend([category, thread]);
+		for id in [30, 40] {
+			state.permissions.channels.insert(
+				Id(id),
+				p::Channel {
+					id: Id(id),
+					guild: Id(1),
+					overwrites: Some(vec![]),
+				},
+			);
+		}
+		for role in state
+			.permissions
+			.guilds
+			.get_mut(&Id(1))
+			.unwrap()
+			.roles
+			.iter_mut()
+			.flatten()
+		{
+			role.bits |= p::READ_MESSAGE_HISTORY;
+		}
+		state.permissions = state.permissions.clone();
+		state.invalidate_navigation();
+		state
+			.apply_read_state(crate::read_state::Event::Snapshot {
+				entries: Some(vec![
+					(Id(20), Some(Id(90)), 0),
+					(Id(21), Some(Id(90)), 0),
+					(Id(40), Some(Id(90)), 0),
+				]),
+				version: Some(2),
+				partial: false,
+			})
+			.unwrap();
+		state
+	}
+	#[test]
+	fn category_mute_and_notification_overrides_reach_threads_without_admin_access() {
+		let mut state = category_fixture();
+		assert!(!state.can_manage_channel(Id(30)));
+		assert!(state.notification_allowed(Id(40)));
+		state
+			.confirm_channel_preferences(Id(1), Id(30), Some(false), Some(2))
+			.unwrap();
+		assert!(
+			!state.notification_allowed(Id(40)),
+			"thread inherits the category's notification level"
+		);
+		state
+			.confirm_channel_preferences(Id(1), Id(20), Some(false), Some(0))
+			.unwrap();
+		assert!(
+			state.notification_allowed(Id(40)),
+			"explicit child level overrides category default"
+		);
+		state
+			.confirm_channel_preferences(Id(1), Id(30), Some(true), Some(2))
+			.unwrap();
+		for id in [20, 21, 40] {
+			assert_eq!(state.guild_channel_muted(Id(id)), Some(false));
+			assert_eq!(state.guild_channel_effectively_muted(Id(id)), Some(true));
+			assert!(state.channel_access(Id(id)).muted());
+			assert!(!state.notification_allowed(Id(id)));
+		}
+		state
+			.confirm_channel_mute_timer(Id(30), Some(true), Some(State::permission_time() - 1))
+			.unwrap();
+		assert_eq!(state.guild_channel_effectively_muted(Id(40)), Some(false));
+		assert!(state.notification_allowed(Id(40)));
+		assert_eq!(
+			state.channel_notification_level(Id(20)),
+			Some(0),
+			"expiry preserves child overrides"
+		);
+		state
+			.channels
+			.iter_mut()
+			.find(|channel| channel.id == Id(30))
+			.unwrap()
+			.parent_id = Some(Id(40));
+		state.invalidate_navigation();
+		assert!(state.notification_path(Id(40)).is_none());
+		assert!(
+			!state.notification_allowed(Id(40)),
+			"cycles are bounded and fail closed"
+		);
+		state
+			.channels
+			.iter_mut()
+			.find(|channel| channel.id == Id(30))
+			.unwrap()
+			.parent_id = None;
+		state
+			.channels
+			.iter_mut()
+			.find(|channel| channel.id == Id(30))
+			.unwrap()
+			.guild = Some(Id(99));
+		state.invalidate_navigation();
+		assert!(
+			!state.notification_allowed(Id(40)),
+			"settings never cross guild boundaries"
+		);
+	}
+	#[test]
+	fn scoped_category_and_folder_read_actions_preserve_newer_marks_and_other_conversations() {
+		use crate::{Command, read_state::Event as Read};
+		let mut state = category_fixture();
+		let mut outside = state.channels[0].clone();
+		outside.id = Id(22);
+		outside.parent_id = None;
+		state.channels.push(outside);
+		state.permissions.channels.insert(
+			Id(22),
+			p::Channel {
+				id: Id(22),
+				guild: Id(1),
+				overwrites: Some(vec![]),
+			},
+		);
+		state.invalidate_navigation();
+		state
+			.apply_read_state(Read::Snapshot {
+				entries: Some(vec![
+					(Id(20), Some(Id(90)), 0),
+					(Id(21), Some(Id(90)), 0),
+					(Id(22), Some(Id(90)), 0),
+					(Id(40), Some(Id(90)), 0),
+				]),
+				version: Some(3),
+				partial: false,
+			})
+			.unwrap();
+		state.drafts.insert(Id(20), "Keep this draft".into());
+		let selected = state.selected;
+		assert!(state.can_mark_channel_read(Id(30)));
+		let Command::MarkAllRead { request, channels } =
+			state.prepare_mark_channel_read(Id(30)).unwrap()
+		else {
+			panic!("category uses bounded bulk acknowledgement")
+		};
+		assert_eq!(
+			channels,
+			[(Id(20), Id(95)), (Id(21), Id(95)), (Id(40), Id(95))]
+		);
+		state
+			.apply_read_state(Read::Ack {
+				channel: Id(20),
+				message: Some(Id(80)),
+				manual: true,
+				mention_count: None,
+				version: Some(4),
+			})
+			.unwrap();
+		state
+			.apply_read_state(Read::AllAck {
+				request,
+				acked: channels.len(),
+				result: Ok(()),
+			})
+			.unwrap();
+		assert_eq!(
+			state.read_marker(Id(20)),
+			Some(Some(Id(80))),
+			"newer cross-client mark wins"
+		);
+		assert_eq!(state.unread(Id(21)), Some(false));
+		assert_eq!(state.unread(Id(40)), Some(false));
+		assert_eq!(state.unread(Id(22)), Some(true));
+		assert_eq!(state.selected, selected);
+		assert_eq!(state.drafts[&Id(20)], "Keep this draft");
+		let Command::MarkAllRead { request, channels } =
+			state.prepare_mark_guilds_read(&[Id(1)]).unwrap()
+		else {
+			panic!()
+		};
+		assert_eq!(channels, [(Id(20), Id(95)), (Id(22), Id(95))]);
+		state
+			.apply_read_state(Read::AllAck {
+				request,
+				acked: 1,
+				result: Err(crate::auth::Failure::RateLimited),
+			})
+			.unwrap();
+		assert_eq!(state.unread(Id(20)), Some(false));
+		assert_eq!(state.unread(Id(22)), Some(true));
+		assert!(state.continue_mark_all_read().is_none());
+		assert!(state.prepare_mark_guilds_read(&[Id(0)]).is_none());
+		state.gateway_connected = false;
+		assert!(state.prepare_mark_channel_read(Id(30)).is_none());
+	}
+	#[test]
+	fn deleting_a_channel_during_a_partial_bulk_ack_cannot_acknowledge_its_successor() {
+		use crate::{Command, read_state::Event as Read};
+		let mut state = category_fixture();
+		let Command::MarkAllRead { request, .. } = state.prepare_mark_channel_read(Id(30)).unwrap()
+		else {
+			panic!()
+		};
+		state.remove_channels(&std::collections::BTreeSet::from([Id(20)]));
+		state
+			.apply_read_state(Read::AllAck {
+				request,
+				acked: 1,
+				result: Err(crate::auth::Failure::RateLimited),
+			})
+			.unwrap();
+		assert_eq!(
+			state.unread(Id(21)),
+			Some(true),
+			"the confirmed prefix referred to the deleted channel"
+		);
+		assert_eq!(state.read_marker(Id(20)), None);
+		assert!(state.continue_mark_all_read().is_none());
+	}
+	#[test]
+	fn category_read_continuation_keeps_its_scope_after_a_full_batch() {
+		use crate::{Command, read_state::Event as Read};
+		let mut state = category_fixture();
+		for id in 1000..1000 + crate::MAX_BULK_ACK as u64 {
+			let mut channel = state.channels[0].clone();
+			channel.id = Id(id);
+			state.channels.push(channel);
+			state.permissions.channels.insert(
+				Id(id),
+				p::Channel {
+					id: Id(id),
+					guild: Id(1),
+					overwrites: Some(vec![]),
+				},
+			);
+		}
+		let mut outside = state.channels[0].clone();
+		outside.id = Id(99);
+		outside.parent_id = None;
+		state.channels.push(outside);
+		state.permissions.channels.insert(
+			Id(99),
+			p::Channel {
+				id: Id(99),
+				guild: Id(1),
+				overwrites: Some(vec![]),
+			},
+		);
+		state.invalidate_navigation();
+		state
+			.apply_read_state(Read::Snapshot {
+				entries: Some(
+					state
+						.channels
+						.iter()
+						.filter(|c| c.kind != 4)
+						.map(|c| (c.id, Some(Id(90)), 0))
+						.collect(),
+				),
+				version: Some(3),
+				partial: false,
+			})
+			.unwrap();
+		let Command::MarkAllRead { request, channels } =
+			state.prepare_mark_channel_read(Id(30)).unwrap()
+		else {
+			panic!()
+		};
+		assert_eq!(channels.len(), crate::MAX_BULK_ACK);
+		assert!(!channels.iter().any(|(id, _)| *id == Id(99)));
+		state
+			.apply_read_state(Read::AllAck {
+				request,
+				acked: channels.len(),
+				result: Ok(()),
+			})
+			.unwrap();
+		let Command::MarkAllRead { request, channels } = state.continue_mark_all_read().unwrap()
+		else {
+			panic!()
+		};
+		assert_eq!(channels.len(), 3);
+		assert!(!channels.iter().any(|(id, _)| *id == Id(99)));
+		state
+			.apply_read_state(Read::AllAck {
+				request,
+				acked: channels.len(),
+				result: Ok(()),
+			})
+			.unwrap();
+		assert!(state.continue_mark_all_read().is_none());
+		assert_eq!(state.unread(Id(99)), Some(true));
+	}
+	#[test]
+	fn timed_mute_deadlines_select_the_earliest_future_expiry() {
+		use std::time::{Duration, UNIX_EPOCH};
+		let mut state = notification_state();
+		let now = State::permission_time();
+		let setting = state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap();
+		setting.muted = Some(true);
+		setting.mute_until = Some(now + 3600);
+		setting.channels = vec![(Id(20), Some(true), None), (Id(21), Some(true), None)];
+		setting.channel_mute_until = vec![(Id(20), now + 900), (Id(21), now - 1)];
+		assert_eq!(
+			state.next_mute_deadline(),
+			UNIX_EPOCH.checked_add(Duration::from_secs((now + 900) as u64))
+		);
+		assert_eq!(state.guild_channel_muted(Id(20)), Some(true));
+		assert_eq!(state.guild_channel_muted(Id(21)), Some(false));
+		let setting = state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap();
+		setting.channel_mute_until.clear();
+		assert_eq!(
+			state.next_mute_deadline(),
+			UNIX_EPOCH.checked_add(Duration::from_secs((now + 3600) as u64))
+		);
+		state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap()
+			.mute_until = Some(now - 1);
+		assert!(state.next_mute_deadline().is_none());
+		assert_eq!(state.server_notification_settings(Id(1)).muted, Some(false));
+		state
+			.notification_preferences
+			.settings
+			.get_mut(&Some(Id(1)))
+			.unwrap()
+			.mute_until = None;
+		assert!(state.next_mute_deadline().is_none());
+		assert_eq!(state.server_notification_settings(Id(1)).muted, Some(true));
+	}
+
+	#[test]
+	fn far_future_mutes_keep_their_value_and_a_recheck_on_every_platform() {
+		use std::time::{Duration, SystemTime, UNIX_EPOCH};
+		for (guild, whole_guild) in [(None, false), (Some(Id(1)), false), (Some(Id(1)), true)] {
+			let mut state = notification_state();
+			if guild.is_none() {
+				state.channels[0].guild = None;
+				state.channels[0].kind = 1;
+			}
+			let setting = state
+				.notification_preferences
+				.settings
+				.entry(guild)
+				.or_default();
+			if whole_guild {
+				setting.muted = Some(true);
+				setting.mute_until = Some(i64::MAX);
+			} else {
+				setting.channels = vec![(Id(20), Some(true), None)];
+				setting.channel_mute_until = vec![(Id(20), i64::MAX)];
+			}
+			let before = SystemTime::now();
+			let deadline = state
+				.next_mute_deadline()
+				.expect("future mute needs a recheck");
+			let after = SystemTime::now();
+			if let Some(expected) = UNIX_EPOCH.checked_add(Duration::from_secs(i64::MAX as u64)) {
+				assert_eq!(deadline, expected);
+			} else {
+				// Exercise the actual Windows SystemTime limit, preserving a bounded wakeup.
+				let recheck = Duration::from_secs(24 * 60 * 60);
+				assert!(deadline >= before.checked_add(recheck).unwrap());
+				assert!(deadline <= after.checked_add(recheck).unwrap());
+			}
+			assert!(
+				state
+					.next_mute_expiry()
+					.is_some_and(|delay| !delay.is_zero())
+			);
+			let setting = &state.notification_preferences.settings[&guild];
+			if whole_guild {
+				assert_eq!(setting.mute_until, Some(i64::MAX));
+				assert_eq!(state.server_notification_settings(Id(1)).muted, Some(true));
+			} else {
+				assert_eq!(setting.channel_mute_until, vec![(Id(20), i64::MAX)]);
+				assert_eq!(
+					if guild.is_some() {
+						state.guild_channel_muted(Id(20))
+					} else {
+						state.dm_muted(Id(20))
+					},
+					Some(true)
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn timed_dm_mute_confirms_expiry_and_rejects_old_account_results() {
+		use crate::{
+			Command,
+			user_actions::{Action, Event as UserEvent},
+		};
+		let mut state = notification_state();
+		state.channels[0].guild = None;
+		state.channels[0].kind = 1;
+		state.channels[0].recipients = vec![message(100, 20).author];
+		state.invalidate_navigation();
+		assert!(
+			state
+				.set_dm_mute(Id(20), crate::channel_actions::Mute::For(1))
+				.is_none()
+		);
+		let Command::UserAction {
+			action: Action::MuteFor {
+				channel,
+				seconds,
+				until,
+			},
+			request,
+			..
+		} = state
+			.set_dm_mute(Id(20), crate::channel_actions::Mute::For(900))
+			.unwrap()
+		else {
+			panic!()
+		};
+		assert_eq!(seconds, 900);
+		assert!(until > State::permission_time());
+		assert_eq!(state.dm_muted(Id(20)), Some(true));
+		let action = Action::MuteFor {
+			channel,
+			seconds,
+			until,
+		};
+		state
+			.apply_user_action(UserEvent::Written {
+				action: action.clone(),
+				request,
+				result: Ok(()),
+			})
+			.unwrap();
+		assert_eq!(
+			state.notification_preferences.settings[&None].channel_mute_until,
+			[(Id(20), until)]
+		);
+		state
+			.confirm_dm_timed_mute(Id(20), State::permission_time() - 1)
+			.unwrap();
+		assert_eq!(state.dm_muted(Id(20)), Some(false));
+		state.confirm_dm_muted(Id(20), true).unwrap();
+		assert!(
+			state.notification_preferences.settings[&None]
+				.channel_mute_until
+				.is_empty()
+		);
+		assert_eq!(state.dm_muted(Id(20)), Some(true));
+		let generation = state.generation;
+		state.logout();
+		state.apply(crate::Envelope {
+			generation,
+			event: crate::Event::UserAction(UserEvent::Written {
+				action,
+				request,
+				result: Ok(()),
+			}),
+		});
+		assert!(state.notification_preferences.settings.is_empty());
+	}
+	#[test]
+	fn unread_navigation_skips_muted_channels_but_keeps_mentions_and_preserves_drafts() {
+		let mut state = category_fixture();
+		state.selected = Some(Id(20));
+		state.drafts.insert(Id(20), "Keep draft".into());
+		assert_eq!(state.next_unread_channel(false), Some(Id(21)));
+		assert_eq!(state.next_unread_channel(true), Some(Id(40)));
+		state
+			.confirm_channel_preferences(Id(1), Id(30), Some(true), Some(3))
+			.unwrap();
+		assert!(state.next_unread_channel(false).is_none());
+		state
+			.apply_read_state(crate::read_state::Event::Ack {
+				channel: Id(40),
+				message: Some(Id(90)),
+				manual: true,
+				mention_count: Some(1),
+				version: Some(3),
+			})
+			.unwrap();
+		assert_eq!(state.next_unread_channel(false), Some(Id(40)));
+		assert_eq!(state.selected, Some(Id(20)));
+		assert_eq!(state.drafts[&Id(20)], "Keep draft");
+	}
+	#[test]
+	fn restrictions_recheck_queued_authors_and_do_not_silence_other_group_members() {
+		for ignored in [false, true] {
+			let mut state = notification_state();
+			let incoming = message(100, 20);
+			state.observe_notification(&incoming);
+			if ignored {
+				state
+					.apply_user_action(crate::user_actions::Event::Restriction {
+						user: incoming.author.id,
+						ignored: Some(true),
+						profile: Some((incoming.author.clone(), "synthetic".into())),
+					})
+					.unwrap();
+			} else {
+				state
+					.apply_user_action(crate::user_actions::Event::Relationship {
+						user: incoming.author.id,
+						blocked: true,
+					})
+					.unwrap();
+			}
+			assert!(
+				state.take_notification().is_none(),
+				"queued guild previews must be discarded after a relationship change"
+			);
+			assert!(!state.counts_toward_mention_badge(&incoming));
+			state.channels[0].guild = None;
+			state.channels[0].kind = 3;
+			state.channels[0].recipients = vec![incoming.author.clone()];
+			let mut other = message(101, 20);
+			other.author.id = Id(4);
+			state.observe_notification(&other);
+			assert!(
+				state.take_notification().is_some(),
+				"one restricted recipient must not mute an entire group"
+			);
+			let mut hidden = incoming;
+			hidden.id = Id(102);
+			state.observe_notification(&hidden);
+			assert!(state.take_notification().is_none());
+		}
 	}
 	#[test]
 	fn confirmed_dm_mute_and_block_suppress_notifications() {

@@ -46,7 +46,7 @@ Neither libFuzzer nor its instrumentation is linked into the application.
 
 ## Targets and limits
 
-`decode` consumes a selector byte and up to `MAX_WIRE + 1` payload bytes. Eight branches cover
+`decode` consumes a selector byte and up to `MAX_WIRE + 1` payload bytes. Selector 8 covers bounded saved-message parsing, selector 9 covers AutoMod rules and selector 10 covers ban pages. The original eight branches cover
 message/patch model conversion, READY navigation/users, permission snapshots, thread sync,
 presence normalization and channel/full-patch conversion. Selector 255 derives a valid JSON
 message padded to the 4 MiB boundary, then verifies rejection one byte above it, so large seeds
@@ -65,3 +65,8 @@ The seeds are replayed during corpus initialization before coverage-guided mutat
 smoke run establishes only that these seeds and generated inputs found no failing oracle during
 that run. Coverage counters are instrumentation feedback, not a whole-repository coverage
 percentage, proof of absent bugs, native UI evidence or live Discord compatibility.
+
+Command parity also exercises the bounded autocomplete-choice and private-context account-index parsers (selectors 11 and 12). Seeds are synthetic and contain no account or service traffic.
+
+Soundboard catalogs, administration rows and Gateway effects also use synthetic seeds
+(selectors 13 and 14); successful parsing does not establish live soundboard support.
