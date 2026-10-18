@@ -4315,6 +4315,7 @@ impl MessagingUi {
 		} else {
 			"Connecting…"
 		};
+		let mut connection_rect = egui::Rect::NOTHING;
 		let color = if phase == Phase::Failed {
 			colors.danger
 		} else if connected || state.demo {
@@ -4346,6 +4347,7 @@ impl MessagingUi {
 					// Square status tile like Discord's, tinted with the connection colour.
 					let (tile, _) =
 						ui.allocate_exact_size(egui::Vec2::splat(40.0), egui::Sense::hover());
+					connection_rect = tile;
 					ui.painter().rect_filled(tile, 8, colors.base);
 					crate::icons::paint(
 						ui.painter(),
@@ -4377,13 +4379,14 @@ impl MessagingUi {
 						ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
 							ui.vertical(|ui| {
 								ui.spacing_mut().item_spacing.y = 0.0;
-								ui.add(
+								let title_response = ui.add(
 									egui::Label::new(
 										design::semibold(ui, title, 15.0).color(color),
 									)
 									.truncate()
 									.selectable(false),
 								);
+								connection_rect = connection_rect.union(title_response.rect);
 								ui.add(
 									egui::Label::new(
 										RichText::new(detail).size(12.0).color(colors.muted),
@@ -4395,6 +4398,7 @@ impl MessagingUi {
 						});
 					});
 				});
+				self.voice_connection_trigger(ui, state, connection_rect);
 				call_failure(ui, error, colors.text_strong);
 				if let Some((attempt, reason)) = reconnecting {
 					ui.add(
@@ -5205,7 +5209,7 @@ fn inactive_recipient(state: &State, channel: Id, user: Id) -> bool {
 	})
 }
 
-fn resolve_member<'a>(
+pub(super) fn resolve_member<'a>(
 	state: &'a State,
 	entry: &'a RosterEntry,
 ) -> (Option<&'a model::User>, &'a str) {
@@ -5312,7 +5316,7 @@ fn elapsed_label(call: &client_core::voice::Call) -> Option<String> {
 	))
 }
 
-fn video_codec_name(codec: model::voice_settings::VideoCodec) -> &'static str {
+pub(super) fn video_codec_name(codec: model::voice_settings::VideoCodec) -> &'static str {
 	use model::voice_settings::VideoCodec;
 	match codec {
 		VideoCodec::H264 => "H.264",

@@ -68,6 +68,7 @@ struct Live {
 	context: Context,
 	task: JoinHandle<()>,
 	events: watch::Receiver<Option<Notice>>,
+	diagnostics: watch::Receiver<Option<Arc<model::voice_diagnostics::ConnectionSnapshot>>>,
 	frames: Arc<Mutex<Slot>>,
 	hdr: Arc<Mutex<Option<Arc<platform::video::ffmpeg::Frame>>>>,
 }
@@ -177,6 +178,11 @@ impl Watch {
 		call: Option<super::screen::Call<'_>>,
 		audio: Option<std::sync::mpsc::SyncSender<discord_voice::Frame>>,
 	) -> Option<Command> {
+		// Project only this frame's still-owned connection; early returns retire old data.
+		if !state.demo {
+			ui.voice_diagnostics
+				.remove(model::voice_diagnostics::ConnectionKind::ScreenReceive);
+		}
 		let wanted = state.voice.active.as_ref().and_then(|active| {
 			let streamer = active.watching?;
 			// The separate stream transport survives call rekeys and voice resumption.
@@ -337,6 +343,19 @@ impl Watch {
 			}
 		}
 		if let Some(live) = &mut self.live {
+			if let Some(snapshot) = live.diagnostics.borrow_and_update().as_ref() {
+				ui.voice_diagnostics.update(
+					(
+						live.context.generation,
+						live.context.channel,
+						live.context.request,
+					),
+					snapshot.clone(),
+				);
+			} else {
+				ui.voice_diagnostics
+					.remove(model::voice_diagnostics::ConnectionKind::ScreenReceive);
+			}
 			match *live.events.borrow_and_update() {
 				Some(Notice::Status(status)) => self.status = status,
 				Some(Notice::Failed(error)) => self.ended = Some(error),
@@ -428,6 +447,7 @@ impl Watch {
 			}
 		});
 		let (send, events) = watch::channel(None);
+		let (diagnostics_send, diagnostics) = watch::channel(None);
 		let wake = ctx.clone();
 		let identity = pending.identity;
 		let audio = pending.audio;
@@ -441,6 +461,11 @@ impl Watch {
 				pending.video_adapter,
 				move |event| {
 					let status = match event {
+						Status::Diagnostics(snapshot) => {
+							diagnostics_send.send_replace(Some(snapshot));
+							status_wake.request_repaint();
+							return Ok(());
+						}
 						Status::Connecting => "Connecting to the stream…",
 						Status::Discovering => "Checking the stream network…",
 						Status::TransportReady | Status::Securing => "Securing the stream…",
@@ -470,6 +495,7 @@ impl Watch {
 			context: pending.context,
 			task,
 			events,
+			diagnostics,
 			frames,
 			hdr,
 		});
@@ -484,6 +510,60 @@ impl Drop for Watch {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn stopped_watch_retires_diagnostics_even_on_the_early_return_path() {
+		use model::voice_diagnostics::{ConnectionKind, ConnectionSnapshot};
+		let runtime = tokio::runtime::Runtime::new().unwrap();
+		let mut state = test_support::call_demo_state();
+		state.demo = false;
+		let call = state.voice.active.as_mut().unwrap();
+		call.watching = None;
+		let context = (state.generation, call.channel, call.request);
+		let now = std::time::Instant::now();
+		let mut view = ui::MessagingUi::default();
+		view.voice_diagnostics.update(
+			context,
+			ConnectionSnapshot {
+				server: None,
+				kind: ConnectionKind::ScreenReceive,
+				started: now,
+				at: now,
+				latency_generation: 0,
+				udp_ping: None,
+				websocket_ping: None,
+				sent: Default::default(),
+				received: Default::default(),
+				send_errors: 0,
+				send_bps: 0,
+				receive_bps: 0,
+				secure: true,
+				reported_loss: None,
+				media: Default::default(),
+				video: None,
+				received_video_codec: None,
+				decoded_fps_milli: 0,
+				participants: Vec::new(),
+			},
+		);
+		let mut watching = super::Watch::default();
+		assert!(
+			watching
+				.poll(
+					&runtime,
+					&mut state,
+					&mut view,
+					&eframe::egui::Context::default(),
+					None,
+					None
+				)
+				.is_none()
+		);
+		assert!(
+			view.voice_diagnostics
+				.get(context, ConnectionKind::ScreenReceive)
+				.is_none()
+		);
+	}
 	use super::*;
 
 	#[test]
@@ -514,6 +594,7 @@ mod tests {
 					context,
 					task: runtime.spawn(std::future::pending()),
 					events,
+					diagnostics: watch::channel(None).1,
 					frames: Arc::new(Mutex::new(None)),
 					hdr: Arc::new(Mutex::new(None)),
 				}),

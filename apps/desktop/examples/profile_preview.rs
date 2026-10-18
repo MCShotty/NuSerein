@@ -688,7 +688,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -1366,6 +1366,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						messaging.extensions.preview_theme_editor_tab(tab);
 					}
 				}
+			}
+			if args
+				.iter()
+				.any(|arg| matches!(arg.as_str(), "--voice-debug" | "--voice-connection"))
+			{
+				messaging.preview_voice_connection(
+					&state,
+					args.iter().any(|arg| arg == "--voice-debug"),
+				);
 			}
 			Ok(Box::new(Preview {
 				inbox_demo: inbox_demo::Store::default(),

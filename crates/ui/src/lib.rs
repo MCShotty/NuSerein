@@ -150,11 +150,13 @@ mod user_direct;
 mod user_menu;
 mod verification;
 mod voice;
+mod voice_connection;
 use client_core::{Command, MAX_DRAFT_BYTES, NavStep, State};
 use egui::{RichText, TextEdit};
 use model::{Freshness, Id};
 pub use verification::VerificationUi;
 pub use voice::StageFocus;
+pub use voice_connection::VoiceDiagnostics;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct VoiceGain {
@@ -512,6 +514,8 @@ pub struct MessagingUi {
 	pub voice_ptt_active: bool,
 	pub voice_ptm_active: bool,
 	pub voice_privacy_code: Option<String>,
+	pub voice_diagnostics: VoiceDiagnostics,
+	voice_connection_view: voice_connection::ConnectionView,
 	/// Latest media activity, capped at 64 IDs (512 bytes) by the voice host.
 	pub voice_speaking: Vec<Id>,
 	pub notifications_enabled: bool,
@@ -4382,6 +4386,7 @@ impl MessagingUi {
 				None => {}
 			}
 		}
+		self.sync_voice_connection(state);
 		// Fullscreen media owns the whole client surface, including during native resizing.
 		if self.show_fullscreen_voice(ui.ctx(), state) {
 			ui.painter()
@@ -4393,6 +4398,7 @@ impl MessagingUi {
 				.rect_filled(ui.max_rect(), 0, egui::Color32::BLACK);
 			return commands;
 		}
+		self.show_voice_connection_debug(ui.ctx(), state);
 		self.profile.disarm();
 		ui.ctx().data_mut(|data| {
 			data.remove::<egui::Rect>(profiles::profile_opener_id());

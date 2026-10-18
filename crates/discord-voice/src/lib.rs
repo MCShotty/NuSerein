@@ -4,6 +4,7 @@ pub mod audio;
 pub use audio::recording;
 pub mod camera;
 mod capture;
+mod connection_diagnostics;
 mod crypto;
 mod diagnostics;
 mod effects;
@@ -75,6 +76,8 @@ impl Default for Controls {
 	}
 }
 pub enum Status {
+	/// Advisory latest-value information; hosts must not queue it with call-control events.
+	Diagnostics(std::sync::Arc<model::voice_diagnostics::ConnectionSnapshot>),
 	Connecting,
 	Discovering,
 	TransportReady,
