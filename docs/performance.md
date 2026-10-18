@@ -1034,3 +1034,62 @@ Protection adds temporary passes only for candidate URLs containing `_`, `*`, `~
 or `&`; other messages use an early return. Source remains capped at 8 KiB, each
 pass at 512 events (exhaustion falls back to bounded literal text), and stored
 links at 16. No dependency or retained cache is added.
+
+## PR #620 upstream conflict resolution — October 18, 2026
+
+Runtime merge `3d1acc7968e228c64fbe683b0e13aa9cd0804502` combines the previous
+PR head `4806c9bb4a0f2646bf3e43e048e08796843705b8` with parent main
+`d9d87471f0ea2190da3f90db815e115045461703`. The evidence follow-up changes only
+this document. Account cleanup retains upstream's opt-in saved-login storage
+and pending-save protection. Upload-preview ownership, GIF hover fixtures and
+cached-package font-license fixtures are reconciled with upstream.
+
+Pinned Rust 1.98.1 `cargo xtask check` passes: **1,537 passed, 29 ignored**, with
+formatting, strict workspace/all-target Clippy, minimal production configuration
+and policy checks. Final strict Clippy, login-handoff, cached-xtask/workspace/package,
+Linux/Flatpak packaging, repository-setup and mocked macOS signing fixtures pass.
+Both locked license graphs and six license-policy fixtures pass. Bounded ASan
+fuzzing completes 98,662 decode and 7,086 state runs (31 seconds per target,
+512 MiB ceiling), with no finding. Release replay and the 120-second lifecycle
+soak pass; the soak completes 1,866 passes and eight logout cycles. Replay ran
+alongside compilation, so its timing is not a comparable performance sample.
+These checks use synthetic/offline input and do not establish live compatibility.
+
+Standard voice-enabled Linux directory packaging uses Debian 13 x86-64, the
+pinned toolchain/lockfile, normal release fat LTO, two Cargo build jobs and a
+task-owned native SDK. The complete `cargo xtask package --format dir` command
+passes with an empty output directory, then passes again after preserving that
+output and starting with another empty directory. Dependency caches are reused;
+this is not a cold-cache measurement. No staging repair is performed.
+
+| Footprint / repeatability | First output | Cached repeat | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 92,193,224 B | 92,193,224 B | 0 B |
+| Installed payload (242 files) | 96,791,057 B | 96,791,057 B | 0 B |
+| Normalized ZIP | 55,763,863 B | 55,763,863 B | 0 B |
+
+The payload matches the current Cargo executable and allowlisted installation
+manifest, modes and notices, including all 19 font licenses. ELF dependency
+closure resolves with the task SDK; no development RPATH is embedded. The
+application is not launched. The comparison ZIP is generated from each verified
+directory payload using sorted paths, fixed timestamps, preserved 0755/0644
+modes and DEFLATE level 9. This checks repeatability, not a PR performance delta.
+Executable SHA-256: `2559f36f1c19738521712aa48ff2dbd123e3f8f0abce1bb6a8323e6249b88f6e`.
+Normalized ZIP SHA-256: `21067951174a549de564eb5a5965a5ccc8da4c6fd67963b00492e7f3a54c56be`.
+Both payload manifests and both ZIP hashes are identical.
+
+Historical component evidence keeps its original revisions: the
+[theme-helper fixture](https://github.com/MCShotty/Serein/blob/4e01c7c9526d17da292485e108abf18621dd5ae2/docs/pr-evidence/theme-command-timeout/README.md)
+records a 1,013.038 → 60.032 ms median with one warmup and five samples.
+The avatar reservation fixture compares exact `reserve_attempt` implementations
+at `422e7ad` and `463abd7`: Rust 1.98.1 `-O`, offline Linux x86-64 (4 vCPUs,
+12 GiB), one warmup and five samples of 100,000 calls with 2,047 fresh failed
+entries; median 1,312.063 → 0.149 ms. Neither fixture measures whole-app speed.
+The October 15 package SIGKILL remains a historical failed attempt; this pass
+does not relabel that result.
+
+No fresh matched runtime baseline, UI latency, CPU/RSS, physical-device, Windows
+or macOS package measurement is claimed. Native display and live Discord checks
+remain unverified. Parent native/security/license/fuzz CI jobs exclude draft PRs;
+#620 retains its draft status at the owner's request. Mocked signing and local
+Linux SDK closure do not establish native macOS or global Linux installation.
