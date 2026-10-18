@@ -809,22 +809,12 @@ impl MessagingUi {
 							let visible = !access.hidden();
 							// Forum containers open their post list; Discord lists them as browsable rows.
 							let forum = channel.guild.is_some() && matches!(channel.kind, 15 | 16);
-							// A forum carries no messages of its own: its posts hold the activity.
-							let unread = visible
-								&& (state.channel_unread(channel) == Some(true)
-									|| state.unread_count(channel.id) > 0
-									|| (forum && state.forum_unread(channel.id)));
+							let (unread, count) =
+								crate::notifications::row_activity(state, channel, visible);
 							let new_posts = if visible && forum {
 								state.forum_new_count(channel.id)
 							} else {
 								0
-							};
-							let count = if !visible || forum {
-								0
-							} else if channel.guild.is_some() {
-								state.mention_count(channel.id)
-							} else {
-								state.unread_count(channel.id)
 							};
 							let enabled = visible && (channel.supports_text() || forum);
 							// Kinds Serein cannot render keep Discord's own destination.
@@ -2413,6 +2403,213 @@ mod tests {
 			rows.iter().any(
 				|row| matches!(row, Row::Category(category, _) if category.name == "lowercase")
 			)
+		);
+	}
+
+	#[test]
+	fn voice_unread_marks_need_the_call_and_mentions_stay() {
+		let mut state = test_support::demo_state();
+		state.gateway_connected = true;
+		for id in [Id(20), Id(25)] {
+			state
+				.channels
+				.iter_mut()
+				.find(|channel| channel.id == id)
+				.unwrap()
+				.last_message = Some(Id(800));
+		}
+		let mark = |state: &mut State, mentions: u32, version: u64| {
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+					partial: false,
+					entries: Some(vec![
+						(Id(20), Some(Id(100)), 3),
+						(Id(25), Some(Id(100)), mentions),
+					]),
+					version: Some(version),
+				}),
+			});
+		};
+		mark(&mut state, 3, 2);
+		state.select(Id(22));
+		assert_eq!(
+			state.channel_unread(state.channel(Id(25)).unwrap()),
+			Some(true)
+		);
+		assert_eq!(state.mention_count(Id(25)), 3);
+
+		let mut view = MessagingUi {
+			guild: Some(Id(10)),
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		ctx.enable_accesskit();
+		design::apply(&ctx);
+		let colors = design::palette_for(&ctx);
+		let paint = |state: &mut State, view: &mut MessagingUi| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(280.0, 1600.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					assert!(view.channel_list(ui, state).is_none());
+				},
+			);
+			fn walk(
+				shape: &egui::Shape,
+				texts: &mut Vec<(String, egui::Pos2, egui::Color32)>,
+				rects: &mut Vec<(egui::Rect, egui::Color32)>,
+			) {
+				match shape {
+					egui::Shape::Text(text) => {
+						let color = text
+							.galley
+							.job
+							.sections
+							.first()
+							.map(|section| section.format.color)
+							.unwrap_or(text.fallback_color);
+						texts.push((text.galley.job.text.clone(), text.pos, color));
+					}
+					egui::Shape::Rect(rect) => rects.push((rect.rect, rect.fill)),
+					egui::Shape::Vec(children) => {
+						for shape in children {
+							walk(shape, texts, rects);
+						}
+					}
+					_ => {}
+				}
+			}
+			let (mut texts, mut rects) = (Vec::new(), Vec::new());
+			for clipped in &output.shapes {
+				walk(&clipped.shape, &mut texts, &mut rects);
+			}
+			let labels: Vec<String> = output
+				.platform_output
+				.accesskit_update
+				.iter()
+				.flat_map(|update| update.nodes.iter())
+				.filter_map(|(_, node)| node.label().map(str::to_owned))
+				.collect();
+			let indicators = |name: &str| {
+				let name_row = texts.iter().find(|(text, ..)| text == name);
+				let (pos, color) = name_row
+					.map(|(_, pos, color)| (*pos, *color))
+					.unwrap_or((egui::Pos2::ZERO, egui::Color32::TRANSPARENT));
+				let near = |rect: egui::Rect| (rect.center().y - pos.y).abs() < 20.0;
+				let badge = rects.iter().any(|(rect, fill)| {
+					*fill == colors.danger && near(*rect) && rect.height() >= 16.0
+				});
+				let pill = rects.iter().any(|(rect, fill)| {
+					*fill == colors.text_strong
+						&& near(*rect) && rect.width() <= 6.0
+						&& rect.height() <= 12.0
+				});
+				let label = labels.iter().find(|label| label.contains(name)).cloned();
+				format!(
+					"name={name} painted={} strong={} accent={} badge={badge} pill={pill} label={label:?}",
+					name_row.is_some(),
+					color == colors.text_strong,
+					color == colors.accent,
+				)
+			};
+			let painted = (indicators("getting-started"), indicators("hangout"));
+			output.drop_without_applying_deltas();
+			painted
+		};
+		let expect = |voice: &str, badge: bool, pill: bool, unread_label: bool, note: &str| {
+			assert_eq!(voice.contains("badge=true"), badge, "{note}: {voice}");
+			assert_eq!(voice.contains("pill=true"), pill, "{note}: {voice}");
+			assert_eq!(voice.contains(", unread"), unread_label, "{note}: {voice}");
+		};
+
+		let (text, voice) = paint(&mut state, &mut view);
+		assert!(
+			text.contains("badge=true")
+				&& text.contains("pill=true")
+				&& text.contains("strong=true"),
+			"text control must keep its mention badge and unread pill: {text}"
+		);
+		expect(
+			&voice,
+			true,
+			false,
+			false,
+			"a mention shows outside the call, an unread mark does not",
+		);
+		assert!(
+			voice.contains("strong=false"),
+			"an unread voice name stays idle outside the call: {voice}"
+		);
+
+		mark(&mut state, 0, 3);
+		assert_eq!(state.mention_count(Id(25)), 0);
+		assert_eq!(
+			state.channel_unread(state.channel(Id(25)).unwrap()),
+			Some(true)
+		);
+		let (_, voice) = paint(&mut state, &mut view);
+		expect(
+			&voice,
+			false,
+			false,
+			false,
+			"plain unread stays hidden outside the call",
+		);
+
+		state.voice.active = Some(client_core::voice::Call {
+			channel: Id(25),
+			guild: Some(Id(10)),
+			connected_at: None,
+			channel_started_at: None,
+			server_muted: false,
+			server_deafened: false,
+			request: 1,
+			phase: client_core::voice::Phase::Connecting,
+			muted: false,
+			deafened: false,
+			participants: vec![],
+			camera: false,
+			watching: None,
+			error: None,
+			reconnecting: None,
+		});
+		let (_, voice) = paint(&mut state, &mut view);
+		expect(
+			&voice,
+			false,
+			false,
+			false,
+			"joining is not yet connected, so unread stays hidden",
+		);
+
+		state.voice.active.as_mut().unwrap().phase = client_core::voice::Phase::Connected;
+		let (_, voice) = paint(&mut state, &mut view);
+		expect(
+			&voice,
+			false,
+			true,
+			true,
+			"plain unread appears once the call is connected",
+		);
+		assert!(
+			voice.contains("accent=true"),
+			"the connected call keeps the accent name beside the unread pill: {voice}"
+		);
+
+		mark(&mut state, 3, 4);
+		let (_, voice) = paint(&mut state, &mut view);
+		expect(
+			&voice,
+			true,
+			true,
+			true,
+			"a mention and the unread mark both show while connected",
 		);
 	}
 }

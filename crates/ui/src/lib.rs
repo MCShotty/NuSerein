@@ -309,6 +309,8 @@ pub struct MessagingUi {
 	pub image_cache: model::CachePreferences,
 	/// Clock style for message times.
 	pub time_format: model::TimeFormat,
+	/// Saved logins may fall back to plain files when no OS keyring works.
+	pub plaintext_login: bool,
 	/// Latest disk use of the media and shared-artwork caches, once measured.
 	pub image_cache_usage: Option<[model::CacheUsage; 2]>,
 	/// An image cache partition the owner asked to empty; the desktop consumes it.

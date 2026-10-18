@@ -21,10 +21,9 @@ try {
   fs.writeFileSync(path.join(fixture, 'Cargo.toml'), '[workspace]\n[workspace.package]\nversion="9.8.7"\n');
   fs.mkdirSync(path.join(fixture, '.cargo'));
   fs.writeFileSync(path.join(fixture, '.cargo/config.toml'), '[build]\ntarget-dir="configured target"\n');
+  const fontLicenses = fs.readdirSync(path.join(repo, 'assets/fonts')).filter(name => name.endsWith('.txt'));
   for (const name of ['README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD_PARTY_NOTICES.md',
-    'assets/sounds/README.md', 'assets/fonts/NotoSansCJK-LICENSE.txt', 'assets/fonts/NotoSansArabic-OFL.txt',
-    'assets/fonts/NotoSansMath-OFL.txt', 'assets/fonts/NotoSansSymbols2-OFL.txt',
-    'assets/fonts/Inter-OFL.txt', 'assets/twemoji/LICENSE-GRAPHICS',
+    'assets/sounds/README.md', ...fontLicenses.map(name => `assets/fonts/${name}`), 'assets/twemoji/LICENSE-GRAPHICS',
     'assets/twemoji/LICENSE-UNICODE', 'assets/icons/LICENSE', 'assets/icons/LICENSE-SIMPLE-ICONS']) {
     fs.mkdirSync(path.dirname(path.join(fixture, name)), { recursive: true });
     fs.copyFileSync(path.join(repo, name), path.join(fixture, name));
@@ -80,6 +79,10 @@ try {
     const result = check([foreign, artifact], overrides);
     assert.equal(result.status, 0, result.output);
     assert.equal(fs.readFileSync(path.join(fixture, 'dist/serein'), 'utf8'), 'CURRENT Cargo-reported executable', label);
+    for (const name of fontLicenses) {
+      assert.deepEqual(fs.readFileSync(path.join(fixture, 'dist/licenses', name)),
+        fs.readFileSync(path.join(repo, 'assets/fonts', name)), name);
+    }
     assert.match(fs.readFileSync(pythonLog, 'utf8'), /package\.py dist 9\.8\.7 --format dir/);
     assert.match(fs.readFileSync(path.join(fixture, 'build-args'), 'utf8'), /--message-format=json-render-diagnostics/);
   }

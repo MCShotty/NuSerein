@@ -86,6 +86,8 @@ pub struct AppPreferences {
 	pub image_cache: model::CachePreferences,
 	/// Clock style for message times; older preferences follow the language.
 	pub time_format: model::TimeFormat,
+	/// Owner opt-in: keep saved logins in private plain files when no OS keyring works.
+	pub plaintext_login: bool,
 }
 impl Default for AppPreferences {
 	fn default() -> Self {
@@ -124,6 +126,7 @@ impl Default for AppPreferences {
 			cosmetics: Default::default(),
 			image_cache: Default::default(),
 			time_format: Default::default(),
+			plaintext_login: false,
 		}
 	}
 }

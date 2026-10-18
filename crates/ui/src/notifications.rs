@@ -90,6 +90,22 @@ fn home_request_label(friends: u32, messages: u32) -> String {
 	parts.join(" · ")
 }
 
+pub(super) fn row_activity(state: &State, channel: &model::Channel, visible: bool) -> (bool, u32) {
+	let forum = channel.guild.is_some() && matches!(channel.kind, 15 | 16);
+	let unread = visible
+		&& (state.channel_unread(channel) == Some(true)
+			|| state.unread_count(channel.id) > 0
+			|| (forum && state.forum_unread(channel.id)));
+	let count = if !visible || forum {
+		0
+	} else if channel.guild.is_some() {
+		state.mention_count(channel.id)
+	} else {
+		state.unread_count(channel.id)
+	};
+	(unread, count)
+}
+
 pub(super) fn badge(ui: &egui::Ui, center: egui::Pos2, count: u32, ring: Color32) {
 	badge_scaled(ui, center, count, ring, 1.0);
 }

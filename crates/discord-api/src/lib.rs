@@ -418,7 +418,10 @@ impl DiscordApi {
 		retry: Option<&client_core::captcha::Retry>,
 		mut challenge: Option<&mut Option<client_core::captcha::Challenge>>,
 	) -> Result<Vec<u8>, Failure> {
-		let ResponsePolicy { max_bytes, missing } = response;
+		let ResponsePolicy {
+			max_bytes,
+			mut missing,
+		} = response;
 		// Only typed adapter methods construct paths. Never accept a URL or route from UI/content.
 		if !path.starts_with('/')
 			|| path.contains("://")
@@ -442,12 +445,12 @@ impl DiscordApi {
 		};
 		// Four permits bound concurrent REST work. A slow profile body must not hold the
 		// cooldown mutex and delay a message write; only service rate admission is shared.
-		// Resolve credential-free proxy routing before the admission checks.
-		let client = self.rest_client().await?;
 		let idempotent = method == Method::GET && body.is_none() && !speculative;
 		let mut body = body;
 		let mut rate_limits = 0u8;
 		loop {
+			// Proxy setup may pause: resolve it before checking cooldown and session admission.
+			let client = self.rest_client().await?;
 			loop {
 				let next = *self.cooldown.lock().await;
 				if speculative && Instant::now() < next {
@@ -634,7 +637,7 @@ impl DiscordApi {
 				}
 				if !write
 					&& status == StatusCode::NOT_FOUND
-					&& let Some(missing) = missing
+					&& let Some(missing) = missing.as_deref_mut()
 				{
 					*missing = true;
 					return Ok(Vec::new());
@@ -2117,6 +2120,47 @@ fn safe_delay(seconds: Option<f64>) -> Result<Duration, Failure> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[tokio::test]
+	async fn optional_read_preserves_missing_result_after_a_rate_limit_retry() {
+		tokio::time::timeout(Duration::from_secs(3), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_OPTIONAL_RETRY".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let server = async {
+				for (status, body) in [
+					("429 Too Many Requests", r#"{"retry_after":0.05}"#),
+					("404 Not Found", "{}"),
+				] {
+					let (mut stream, _) = listener.accept().await.unwrap();
+					let mut headers = Vec::new();
+					while !headers.ends_with(b"\r\n\r\n") {
+						assert!(headers.len() < 4096);
+						headers.push(stream.read_u8().await.unwrap());
+					}
+					assert!(
+						std::str::from_utf8(&headers)
+							.unwrap()
+							.starts_with("GET /synthetic/optional HTTP/1.1")
+					);
+					stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+				}
+			};
+			let client = async {
+				assert_eq!(
+					api.request_optional_limited("/synthetic/optional", 128).await,
+					Ok(None)
+				);
+				assert!(!api.stopped());
+			};
+			tokio::join!(server, client);
+		})
+		.await
+		.unwrap();
+	}
+
 	#[tokio::test]
 	async fn response_overflow_preserves_write_ambiguity_and_definite_rejections() {
 		for chunked in [false, true] {
