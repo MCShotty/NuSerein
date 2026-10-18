@@ -1,6 +1,7 @@
 use local_store::AppPreferences;
 
 pub const MIN_WINDOW_SIZE: [u32; 2] = [760, 520];
+pub const DEFAULT_WINDOW_SIZE: [u32; 2] = [1120, 760];
 
 #[derive(Default)]
 pub struct Settings {
@@ -78,6 +79,7 @@ impl Settings {
 			cosmetics: ui.cosmetics,
 			image_cache: ui.image_cache,
 			time_format: ui.time_format,
+			plaintext_login: ui.plaintext_login,
 		};
 		if value != self.current {
 			self.state.touched = true;
@@ -125,6 +127,7 @@ impl Settings {
 		ui.cosmetics = value.cosmetics;
 		ui.image_cache = value.image_cache;
 		ui.time_format = value.time_format;
+		ui.plaintext_login = value.plaintext_login;
 		ui::local_time::set_format(ui.time_format, ui.language);
 	}
 }
@@ -203,6 +206,31 @@ pub fn restore_window_geometry(
 	let _ = window.request_inner_size(size);
 	if movable {
 		window.set_outer_position(winit::dpi::PhysicalPosition::new(position[0], position[1]));
+	}
+	// Linux maximizes from the viewport builder. macOS and Windows maximize only after placing the
+	// normal geometry, since moving a maximized window resets it.
+	if geometry.maximized {
+		#[cfg(target_os = "windows")]
+		egui_winit::set_maximized(window, true); // Keeps the still-hidden window from flashing.
+		#[cfg(target_os = "macos")]
+		window.set_maximized(true);
+	}
+}
+
+/// X11 window managers ignore maximize requests for a window that is not yet shown.
+pub fn maximize_after_show(window: &winit::window::Window) -> bool {
+	#[cfg(target_os = "linux")]
+	{
+		use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+		matches!(
+			window.window_handle().map(|h| h.as_raw()),
+			Ok(RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_))
+		)
+	}
+	#[cfg(not(target_os = "linux"))]
+	{
+		let _ = window;
+		false
 	}
 }
 
@@ -297,6 +325,7 @@ pub fn debug_window_geometry_check() {
 		let geometry = WindowGeometry {
 			size: [size.width, size.height],
 			position,
+			maximized: position.is_some(),
 		};
 		let mut settings = Settings::default();
 		settings.current.window_geometry = Some(geometry);
@@ -314,15 +343,15 @@ pub fn debug_window_geometry_check() {
 		for invalid in [
 			WindowGeometry {
 				size: [0, 800],
-				position,
+				..geometry
 			},
 			WindowGeometry {
 				size: [16385, 800],
-				position,
+				..geometry
 			},
 			WindowGeometry {
-				size: [1200, 800],
 				position: Some([i32::MAX, 0]),
+				..geometry
 			},
 		] {
 			settings.current.window_geometry = Some(invalid);
@@ -333,10 +362,10 @@ pub fn debug_window_geometry_check() {
 			Some(geometry)
 		);
 	}
-	let small = WindowGeometry {
-		size: [640, 480],
-		position: None,
-	};
+	// Older records were saved only while not maximized.
+	let small: WindowGeometry =
+		serde_json::from_str(r#"{"size":[640,480],"position":null}"#).unwrap();
+	assert!(!small.maximized);
 	let preferences = AppPreferences {
 		window_geometry: Some(small),
 		..AppPreferences::default()
@@ -354,7 +383,7 @@ pub fn debug_window_geometry_check() {
 	std::fs::remove_file(path).unwrap();
 	std::fs::remove_dir(directory).unwrap();
 	println!(
-		"Offline window geometry check passed: minimum size, small display, X11 coordinates, native scale, preference preservation, SQLite reopen and bounds."
+		"Offline window geometry check passed: minimum size, small display, X11 coordinates, native scale, maximized state, older records, preference preservation, SQLite reopen and bounds."
 	);
 }
 

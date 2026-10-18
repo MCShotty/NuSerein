@@ -62,9 +62,13 @@ fn message_gif_stars_report_busy_sync_and_accept_explicit_retries() {
 				}
 				let pending = state.gifs.sync_pending.unwrap();
 				let mut view = MessagingUi::default();
-				let frame = |state: &mut State, view: &mut MessagingUi, events| {
+				let mut tick = 0;
+				let mut frame = |state: &mut State, view: &mut MessagingUi, events| {
+					tick += 1;
 					ctx.run_ui(
 						egui::RawInput {
+							time: Some(f64::from(tick) / 60.0),
+							predicted_dt: 1.0 / 60.0,
 							screen_rect: Some(egui::Rect::from_min_size(
 								egui::Pos2::ZERO,
 								egui::vec2(1120.0, 760.0),
@@ -78,9 +82,26 @@ fn message_gif_stars_report_busy_sync_and_accept_explicit_retries() {
 						},
 					)
 				};
-				let mut star = None;
+				let mut hover = None;
 				for _ in 0..5 {
 					let output = frame(&mut state, &mut view, vec![]);
+					hover = output.shapes.iter().find_map(|s| match &s.shape {
+						egui::Shape::Text(text) if text.galley.text() == "GIF" => {
+							Some(text.pos + text.galley.size() * 0.5)
+						}
+						_ => None,
+					});
+					output.drop_without_applying_deltas();
+				}
+				let hover = hover.expect("paused message GIF label");
+				let mut star = None;
+				// The current control appears on hover and takes clicks after its drop-in.
+				for _ in 0..20 {
+					let output = frame(
+						&mut state,
+						&mut view,
+						vec![egui::Event::PointerMoved(hover)],
+					);
 					star = output.shapes.iter().find_map(|s| match &s.shape {
 						egui::Shape::Rect(r) if r.rect.size() == egui::Vec2::splat(30.0) => {
 							Some(r.rect.center())

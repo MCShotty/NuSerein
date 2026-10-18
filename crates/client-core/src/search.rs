@@ -12,6 +12,8 @@ pub struct SearchView {
 	pub guild: Option<Id>,
 	pub query: String,
 	pub before: Option<Id>,
+	/// Discord sorts the whole result set oldest first; later pages keep this order.
+	pub oldest: bool,
 	pub offset: u32,
 	/// Retained during navigation and failures without retaining previous result pages.
 	pub total: Option<u64>,
@@ -137,6 +139,7 @@ impl State {
 			guild,
 			query: query.clone(),
 			before,
+			oldest: self.search_oldest,
 			offset: 0,
 			total: None,
 			pin_before: None,
@@ -151,6 +154,7 @@ impl State {
 			query,
 			before,
 			offset: 0,
+			oldest: self.search_oldest,
 			request: self.search_request,
 		})
 	}
@@ -182,6 +186,7 @@ impl State {
 			query: view.query.clone(),
 			before: view.before,
 			offset,
+			oldest: view.oldest,
 			request: view.request,
 		})
 	}
@@ -213,6 +218,7 @@ impl State {
 			guild: None,
 			query: String::new(),
 			before: None,
+			oldest: false,
 			offset: 0,
 			total: None,
 			pin_before: before,
@@ -274,7 +280,7 @@ impl State {
 		let scope = view.guild.is_none().then_some(channel);
 		match result {
 			Ok(Outcome::Page(page))
-				if !view.pins && page_accessible && page.valid(scope, view.before) =>
+				if !view.pins && page_accessible && page.valid(scope, view.before, view.oldest) =>
 			{
 				view.total = Some(page.total);
 				view.page = Some(page);

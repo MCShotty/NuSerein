@@ -37,6 +37,7 @@ impl Desktop {
 		self.state
 			.disconnect_voice("Discord login session changed; start a new call");
 		self.uploads.cancel();
+		self.uploads.forget_parked();
 		self.login = None;
 		self.state.interrupt_gif_favorites();
 		self.state.interrupt_preloads();
@@ -74,6 +75,8 @@ impl Desktop {
 		self.state.failure_detail = None;
 		let secret = Arc::new(secret);
 		self.pending_save = save.then(|| secret.clone());
+		self.current_login = Some(secret.clone());
+		self.plaintext_save_pending = false;
 		self.pending_account_save = Some(secret.clone());
 		self.connection = Some(connection::Connection::start(
 			self.runtime.handle(),
@@ -105,6 +108,7 @@ impl Desktop {
 		self.sticker_upload.cancel();
 		self.notifications.clear();
 		self.uploads.cancel();
+		self.uploads.forget_parked();
 		if let Some(store) = &mut self.store {
 			store.cancel_load();
 		}
@@ -120,6 +124,8 @@ impl Desktop {
 		self.login = None;
 		self.connection = None;
 		self.pending_save = None;
+		self.current_login = None;
+		self.plaintext_save_pending = false;
 		self.pending_account_save = None;
 		let old_account = self.state.user.as_ref().filter(|_| !was_demo).map(|u| u.id);
 		self.switching = None;
@@ -499,6 +505,8 @@ impl Desktop {
 								}
 								self.connection = None;
 								self.pending_save = None;
+								self.current_login = None;
+								self.plaintext_save_pending = false;
 								self.pending_account_save = None;
 								self.state.auth = AuthState::Unauthenticated;
 								self.state.status = "Disconnected";
@@ -1085,6 +1093,8 @@ impl Desktop {
 			}
 			self.connection = None;
 			self.pending_save = None;
+			self.current_login = None;
+			self.plaintext_save_pending = false;
 			self.pending_account_save = None;
 			let generation = self.state.generation + 1;
 			self.state = test_support::demo_state();

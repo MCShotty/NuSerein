@@ -601,7 +601,14 @@ impl MessagingUi {
 								{
 									(None, None, &[][..], model::ClientPlatforms::default())
 								} else {
-									profiles::presence(state, user.id, None)
+									let (status, custom, activities, clients) =
+										profiles::presence(state, user.id, None);
+									(
+										profiles::shown_status(state, user.id, status),
+										custom,
+										activities,
+										clients,
+									)
 								};
 								let dm = restricted
 									.is_none()

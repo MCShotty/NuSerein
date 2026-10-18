@@ -1093,6 +1093,11 @@ impl MessagingUi {
 					"settings-cosmetics-frames-description",
 					&mut cosmetics.frames,
 				),
+				(
+					"settings-cosmetics-name-styles",
+					"settings-cosmetics-name-styles-description",
+					&mut cosmetics.name_styles,
+				),
 			]
 			.into_iter()
 			.enumerate()
@@ -1298,6 +1303,16 @@ impl MessagingUi {
 			},
 		);
 		self.image_cache_settings(ui, state.demo);
+		design::group(ui, "settings-storage-page-saved-login", |ui| {
+			ui.add_enabled_ui(!state.demo, |ui| {
+				design::switch(
+					ui,
+					"settings-storage-page-plaintext-login",
+					Some("settings-storage-page-plaintext-login-description"),
+					&mut self.plaintext_login,
+				);
+			});
+		});
 		design::group(
 			ui,
 			&crate::i18n::translate("settings-storage-page-your-privacy"),

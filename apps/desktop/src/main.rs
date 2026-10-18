@@ -495,9 +495,16 @@ fn main() -> eframe::Result {
 		viewport: {
 			let builder = egui::ViewportBuilder::default()
 				.with_transparent(transparency_available)
-				.with_inner_size(window_geometry.map_or([1120.0, 760.0], |geometry| {
-					geometry.size.map(|value| value as f32)
-				}))
+				.with_inner_size(
+					window_geometry
+						.map_or(app_settings::DEFAULT_WINDOW_SIZE, |geometry| geometry.size)
+						.map(|value| value as f32),
+				)
+				// Maximize before the first configure so the first frame is not painted small.
+				.with_maximized(
+					cfg!(target_os = "linux")
+						&& window_geometry.is_some_and(|geometry| geometry.maximized),
+				)
 				.with_min_inner_size(app_settings::MIN_WINDOW_SIZE.map(|size| size as f32))
 				.with_active(!start_minimized)
 				.with_app_id("cz.viceverse.serein");
@@ -581,6 +588,8 @@ fn main() -> eframe::Result {
 			desktop.instance = instance;
 			if let Some(geometry) = window_geometry {
 				app_settings::restore_window_geometry(&desktop.window, geometry);
+				desktop.maximize_after_show =
+					geometry.maximized && app_settings::maximize_after_show(&desktop.window);
 			}
 			if start_minimized {
 				cc.egui_ctx
@@ -977,6 +986,10 @@ struct Desktop {
 	clipboard: Option<clipboard::Paste>,
 	download_close_pending: bool,
 	window: Arc<winit::window::Window>,
+	/// The recent-page request whose cached window was already asked for.
+	cached_history_request: Option<(model::Id, u64)>,
+	/// The saved maximized state still has to be re-applied once the window is shown.
+	maximize_after_show: bool,
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,
 	monitor_period: Option<Duration>,
 	frame_metrics: FrameMetrics,
@@ -1029,6 +1042,13 @@ struct Desktop {
 	/// Written under the account's own entry on every READY, including a launch restore, so
 	/// the switcher can always get back to an account it lists.
 	pending_account_save: Option<Arc<SessionSecret>>,
+	/// Current login, sharing the connection allocation, so enabling plaintext storage
+	/// can save it without another authentication, including after disabling/re-enabling.
+	current_login: Option<Arc<SessionSecret>>,
+	/// The plaintext fallback choice last handed to the credential worker.
+	plaintext_login: bool,
+	/// One keyed-then-launch fallback save waiting for bounded credential-queue capacity.
+	plaintext_save_pending: bool,
 	account_presences: std::collections::BTreeMap<model::Id, model::OwnPresence>,
 	presence_load_pending: bool,
 	deferred_connect: Option<(SessionSecret, bool)>,
@@ -1185,16 +1205,36 @@ fn wants_cached_history(state: &State, channel: model::Id, request: u64) -> bool
 			.iter()
 			.any(|c| c.id == channel && c.supports_text())
 }
+impl Desktop {
+	/// Shows the selected conversation's cached window while its recent page loads.
+	fn load_cached_history(&mut self) {
+		let (state, request) = (&self.state, self.state.request);
+		if let Some(channel) = state.selected
+			&& self.cached_history_request != Some((channel, request))
+			&& state.history_before.is_none()
+			&& state.history_after.is_none()
+			&& !state.history_targeted
+			&& wants_cached_history(state, channel, request)
+		{
+			self.cached_history_request = Some((channel, request));
+			self.queue_cache(cache::Operation::LoadChannel { channel, request });
+		}
+	}
+}
 fn hydrate_cached_history(
 	state: &mut State,
 	channel: model::Id,
 	request: u64,
 	messages: Vec<model::Message>,
+	start: bool,
 ) {
 	if wants_cached_history(state, channel, request)
 		&& messages.iter().all(|message| message.channel == channel)
 		&& state.timeline.seed_cache(messages).is_ok()
 	{
+		// The channel's introduction can lead the cached window right away; the network page
+		// replaces this once it arrives.
+		state.older_exhausted = start;
 		state.revision += 1;
 	}
 	state.enforce_resident_budget();
@@ -1204,11 +1244,12 @@ fn hydrate_cache_result(state: &mut State, safety: &cache::HistorySafety, outcom
 		channel,
 		request,
 		messages,
+		start,
 		epoch,
 	} = outcome
 		&& safety.allows(epoch)
 	{
-		hydrate_cached_history(state, channel, request, messages);
+		hydrate_cached_history(state, channel, request, messages, start);
 	}
 }
 
@@ -1252,6 +1293,16 @@ fn recovery_draft(state: &State, channel: model::Id) -> String {
 		})
 		.unwrap_or_default()
 }
+/// Staged files may upload whenever the channel accepts attachments. The history
+/// window's freshness is not a channel state: Send from older history jumps to the
+/// latest page, so that window is reloading while the upload is dispatched.
+fn attachment_send_allowed(state: &State, channel: model::Id) -> bool {
+	!state.demo
+		&& state.can_attach(channel)
+		&& state.auth == AuthState::Authenticated
+		&& state.gateway_connected
+		&& state.selected == Some(channel)
+}
 fn confirmed_recovery_channel(state: &State, event: &Event) -> Option<model::Id> {
 	let (message, nonce) = match event {
 		Event::SendResult {
@@ -1274,7 +1325,7 @@ fn changes_active_history(state: &State, event: &Event) -> bool {
 	let channel = match event {
 		Event::History {
 			channel, request, ..
-		} if *request == state.request && state.history_pending => channel,
+		} if state.history_request(*request) == state.request && state.history_pending => channel,
 		Event::Message(message)
 		| Event::SendResult {
 			result: Ok(message),
@@ -1446,6 +1497,14 @@ impl Desktop {
 			.worker_threads(2)
 			.enable_all()
 			.build()?;
+		// Configured before the worker's first read, so a plaintext login restores on launch.
+		let plaintext_login = !demo
+			&& preferences
+				.as_ref()
+				.is_ok_and(|preferences| preferences.plaintext_login);
+		if !demo {
+			platform::plaintext_login::configure(plaintext_login_dir(), plaintext_login);
+		}
 		let mut store = (!demo).then(|| credentials::Store::start(cc.egui_ctx.clone()));
 		let cache = (!demo).then(|| cache::Cache::start(cc.egui_ctx.clone()));
 		#[cfg(all(debug_assertions, feature = "demo"))]
@@ -2268,6 +2327,8 @@ impl Desktop {
 			window_blur: transparency_available
 				.then(|| platform::window_effects::Blur::new(window.clone())),
 			window,
+			cached_history_request: None,
+			maximize_after_show: false,
 			monitor_geometry: None,
 			monitor_period: None,
 			frame_metrics: FrameMetrics::new(frame_sample),
@@ -2318,6 +2379,9 @@ impl Desktop {
 			variant_changed: false,
 			pending_save: None,
 			pending_account_save: None,
+			current_login: None,
+			plaintext_login,
+			plaintext_save_pending: false,
 			account_presences: std::collections::BTreeMap::new(),
 			presence_load_pending,
 			deferred_connect: None,
@@ -2392,6 +2456,40 @@ impl Desktop {
 		}
 		false
 	}
+	/// Hands the owner's plaintext saved-login choice to the credential worker, in order with
+	/// its other writes, and saves a login that failed earlier for want of a keyring.
+	fn sync_plaintext_login(&mut self) {
+		let enabled = self.messaging.plaintext_login;
+		let (Some(store), Some(directory)) = (&mut self.store, plaintext_login_dir()) else {
+			return;
+		};
+		if enabled != self.plaintext_login {
+			let operation = credentials::Operation::SetPlaintext { directory, enabled };
+			if store
+				.send
+				.try_send((self.state.generation, credentials::Request::NONE, operation))
+				.is_err()
+			{
+				return; // Retried after the worker wakes the UI.
+			}
+			self.plaintext_login = enabled;
+			self.plaintext_save_pending = enabled;
+		}
+		if !enabled || self.state.auth != AuthState::Authenticated {
+			return;
+		}
+		let Some(secret) = self.current_login.clone() else {
+			return;
+		};
+		if self.plaintext_save_pending
+			&& let Some(account) = self.state.user.as_ref().map(|user| user.id)
+			&& store.save_account(self.state.generation, account, secret, true)
+		{
+			// Keep keyed and launch saves in one ordered command, including fallback saves.
+			self.plaintext_save_pending = false;
+		}
+	}
+
 	fn save_app_preferences(&mut self) {
 		if self.fixture_only || self.state.demo {
 			return;
@@ -3161,14 +3259,9 @@ impl Desktop {
 				.iter()
 				.any(|p| p.nonce == *nonce && !p.attachments.is_empty())
 		{
-			let (channel, nonce) = (*channel, nonce.clone());
-			let available = !self.state.demo
-				&& self.state.can_attach(channel)
+			let channel = *channel;
+			let available = attachment_send_allowed(&self.state, channel)
 				&& !self.fixture_only
-				&& self.state.auth == AuthState::Authenticated
-				&& self.state.gateway_connected
-				&& self.state.freshness == model::Freshness::Fresh
-				&& self.state.selected == Some(channel)
 				&& self.connection.is_some();
 			if available
 				&& let Some(source) = self.uploads.take_source(self.state.generation, channel)
@@ -3197,15 +3290,14 @@ impl Desktop {
 					return;
 				}
 			}
-			self.state.apply(Envelope {
-				generation: self.state.generation,
-				event: Event::SendResult {
-					nonce,
-					result: Err(Failure::ProtocolAt(
-						"File not sent; reconnect and reselect the attachment",
-					)),
-				},
-			});
+			// Nothing left the client: keep the caption, reply and staged files for a retry.
+			let failure = "File not sent; check the connection and attachment, then send again";
+			if self.state.return_unsent(command, failure) {
+				self.messaging.draft_changes.push(channel);
+			}
+			self.messaging
+				.toasts
+				.push(ui::design::Level::Error, failure);
 			return;
 		}
 		// A forum post with files takes the same staged-upload path as a message.
@@ -3315,18 +3407,15 @@ impl Desktop {
 				self.messaging.camera_test_texture = None;
 			}
 		}
-		if let Command::History {
-			channel,
-			before: None,
-			after: None,
-			request,
-		} = &command
-			&& wants_cached_history(&self.state, *channel, *request)
-		{
-			self.queue_cache(cache::Operation::LoadChannel {
-				channel: *channel,
-				request: *request,
-			});
+		if matches!(
+			command,
+			Command::History {
+				before: None,
+				after: None,
+				..
+			}
+		) {
+			self.load_cached_history();
 		}
 		#[cfg(feature = "demo")]
 		if self.state.demo {
@@ -3527,6 +3616,13 @@ impl Desktop {
 					Event::ReadState(client_core::read_state::Event::GuildAck {
 						guild,
 						request,
+						result: Ok(()),
+					})
+				}
+				Command::MarkAllRead { request, channels } => {
+					Event::ReadState(client_core::read_state::Event::AllAck {
+						request,
+						acked: channels.len(),
 						result: Ok(()),
 					})
 				}
@@ -3770,6 +3866,7 @@ impl Desktop {
 					query,
 					before,
 					offset,
+					oldest,
 					request,
 					..
 				} => {
@@ -3787,8 +3884,10 @@ impl Desktop {
 						.map_or(channel, model::Id);
 					for id in (1..=500)
 						.rev()
-						.filter(|id| before.is_none_or(|b| *id < b.0))
-					{
+						// The cursor continues older newest first, newer oldest first.
+						.filter(|id| {
+							before.is_none_or(|b| if oldest { *id > b.0 } else { *id < b.0 })
+						}) {
 						let message = test_support::message(id, source);
 						if message
 							.content
@@ -3843,7 +3942,8 @@ impl Desktop {
 								)
 							}) {
 							total += 1;
-							if total > u64::from(offset) && hits.len() < model::SEARCH_PAGE_SIZE {
+							// The fixture is small: keep every match, then page in the chosen order.
+							{
 								hits.push(model::SearchHit {
 									id: message.id,
 									channel: source,
@@ -3856,6 +3956,15 @@ impl Desktop {
 							}
 						}
 					}
+					hits.sort_unstable_by_key(|hit| std::cmp::Reverse(hit.id));
+					if oldest {
+						hits.reverse();
+					}
+					let hits = hits
+						.into_iter()
+						.skip(offset as usize)
+						.take(model::SEARCH_PAGE_SIZE)
+						.collect();
 					Event::Search {
 						channel,
 						request,
@@ -4268,6 +4377,12 @@ impl Desktop {
 		{
 			self.command(command);
 		}
+		// A heartbeat probe replaces a dead gateway socket in seconds, before the rejoin uses it.
+		if std::mem::take(&mut self.voice.gateway_check)
+			&& let Some(connection) = &self.connection
+		{
+			connection.reconnect();
+		}
 	}
 	fn poll(&mut self, ctx: &egui::Context) {
 		let mut cached = Vec::new();
@@ -4407,7 +4522,14 @@ impl Desktop {
 						self.queue_cache_for(*account, cache::Operation::Forget);
 					}
 					match roster {
-						Ok(accounts) => self.messaging.accounts = accounts.clone(),
+						Ok(accounts) => {
+							self.messaging.accounts = accounts.clone();
+							if let Some(store) = &mut self.store {
+								store.retain_accounts(
+									accounts.iter().map(|account| account.id).collect(),
+								);
+							}
+						}
 						Err(_) => {
 							self.roster_failed = true;
 							self.cache_error = true;
@@ -4519,10 +4641,14 @@ impl Desktop {
 			}
 		}
 		self.retry_history_clears();
+		self.sync_plaintext_login();
 		let mut results = Vec::new();
 		if let Some(store) = &mut self.store {
 			for _ in 0..4 {
-				match store.poll(std::time::Instant::now()) {
+				match store.poll(
+					std::time::Instant::now(),
+					self.state.user.as_ref().map(|user| user.id),
+				) {
 					Some(result) => results.push(result),
 					None => break,
 				}
@@ -4536,7 +4662,10 @@ impl Desktop {
 				&& !matches!(&outcome, credentials::Outcome::AccountForgotten(account, _) | credentials::Outcome::Forgotten(Some(account), _)
 					if credentials::account_removal_applies(generation, self.state.generation,
 						*account, self.state.user.as_ref().map(|user| user.id)))
-			{
+				&& !matches!(
+					&outcome,
+					credentials::Outcome::PlaintextSet(..) | credentials::Outcome::Reconciled(..)
+				) {
 				continue;
 			}
 			match outcome {
@@ -4582,8 +4711,15 @@ impl Desktop {
 							"Could not save this account for the switcher; sign in again to retry";
 					}
 					match launch {
-						Some(Ok(())) => {
-							self.credential_status = "Login saved in the OS credential store"
+						Some(Ok(saved)) => {
+							self.credential_status = match saved {
+								platform::Saved::CredentialStore => {
+									"Login saved in the OS credential store"
+								}
+								platform::Saved::Plaintext => {
+									"Login saved in plaintext because no OS keyring is available"
+								}
+							};
 						}
 						Some(Err(_)) => {
 							self.credential_status =
@@ -4592,7 +4728,7 @@ impl Desktop {
 						None if result == Err(platform::CredentialError::NoStore) => {
 							self.messaging.toasts.push(
 								ui::design::Level::Warning,
-								"No OS keyring found, so you will need to sign in again next launch",
+								"No OS keyring found, so you will need to sign in again next launch. Settings › Storage can save it in plaintext instead.",
 							);
 						}
 						None => {}
@@ -4601,6 +4737,24 @@ impl Desktop {
 
 				credentials::Outcome::AccountForgotten(account, result) => {
 					self.account_forgotten(generation, account, result, false);
+				}
+				credentials::Outcome::Reconciled(result) => {
+					if result.is_err() {
+						self.messaging.toasts.push(
+							ui::design::Level::Error,
+							"Could not remove orphaned plaintext saved logins",
+						);
+					}
+				}
+				credentials::Outcome::PlaintextSet(enabled, result) => {
+					if result.is_err() {
+						self.messaging.toasts.push(
+							ui::design::Level::Error,
+							"Could not delete the plaintext saved logins in Serein's data folder",
+						);
+					} else if !enabled {
+						self.credential_status = "Plaintext saved logins deleted";
+					}
 				}
 				credentials::Outcome::Forgotten(account, result) => {
 					self.forgetting = false;
@@ -4697,7 +4851,7 @@ impl Desktop {
 			) || matches!(&event.event, Event::RecipientRemoved { user, .. } if self.state.user.as_ref().is_some_and(|owner| owner.id == *user))
 				|| matches!(&event.event, Event::Reactions(client_core::reactions::Event::Read {channel,result:Err(Failure::Forbidden),..}) if self.state.selected==Some(*channel))
 				|| matches!(&event.event, Event::HistoryFailed { channel, request, failure: Failure::Forbidden }
-                if self.state.selected == Some(*channel) && self.state.request == *request && self.state.history_pending);
+                if self.state.selected == Some(*channel) && self.state.request == self.state.history_request(*request) && self.state.history_pending);
 			let history_changed = changes_active_history(&self.state, &event.event);
 			if history_changed {
 				match &event.event {
@@ -4723,14 +4877,19 @@ impl Desktop {
 					_ => full_window = true,
 				}
 			}
-			let guild_ack = matches!(
-				&event.event,
+			let guild_ack = match &event.event {
 				Event::ReadState(client_core::read_state::Event::GuildAck {
 					guild,
 					request,
 					result: Ok(()),
-				}) if self.state.pending_guild_ack(*guild, *request)
-			);
+				}) => self.state.pending_guild_ack(*guild, *request),
+				Event::ReadState(client_core::read_state::Event::AllAck {
+					request,
+					result: Ok(()),
+					..
+				}) => self.state.pending_all_ack(*request),
+				_ => false,
+			};
 			if event.generation == self.state.generation
 				&& (invalidate
 					|| event.event.changes_access()
@@ -4872,13 +5031,19 @@ impl Desktop {
 				.filter(|m| full_window || changed_messages.contains(&m.id))
 				.cloned()
 				.collect();
+			let start = self.state.older_exhausted && !self.state.timeline.older_evicted();
 			let operation = if full_window {
-				cache::Operation::SaveChannel { channel, messages }
+				cache::Operation::SaveChannel {
+					channel,
+					messages,
+					start,
+				}
 			} else {
 				cache::Operation::SaveChanges {
 					channel,
 					messages,
 					retained: self.state.timeline.iter().map(|m| m.id).collect(),
+					start,
 				}
 			};
 			self.queue_cache(operation);
@@ -4901,6 +5066,7 @@ impl Desktop {
 			self.state.interrupt_gif_favorites();
 			self.connection = None;
 			self.pending_save = None;
+			self.current_login = None;
 			self.pending_account_save = None;
 			self.voice.stop();
 			self.messaging.camera_test_requested = false;
@@ -4909,6 +5075,10 @@ impl Desktop {
 				generation: self.state.generation,
 				event: Event::Failure(failure),
 			});
+			if failure == Failure::RateLimited && self.state.failure_detail.is_none() {
+				self.state.failure_detail =
+					Some(ui::i18n::translate("main-sign-in-rate-limited-detail").into());
+			}
 			if !matches!(self.state.auth, AuthState::Expired | AuthState::Challenged) {
 				self.state.auth = AuthState::Failed;
 			}
@@ -5023,29 +5193,48 @@ impl eframe::App for Desktop {
 	fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
 		// Before the pass begins, so the whole frame resolves System to the same theme.
 		self.sync_system_theme(ctx);
+		if self.maximize_after_show && self.window.is_visible() == Some(true) {
+			self.maximize_after_show = false;
+			self.window.set_maximized(true);
+		}
 		// Read native size independently of viewport rectangles: Wayland has no global position,
 		// so egui-winit cannot supply either rectangle there. Native scale excludes egui zoom.
 		if !self.fixture_only
 			&& !self.state.demo
 			&& self.app_settings.loaded
+			&& !self.maximize_after_show
 			&& let Some(viewport) = raw_input.viewports.get(&raw_input.viewport_id)
 			&& viewport.minimized != Some(true)
-			&& viewport.maximized != Some(true)
 			&& viewport.fullscreen != Some(true)
 			&& !viewport.close_requested()
 			&& self.window.is_visible() != Some(false)
 		{
-			let size = self
-				.window
-				.inner_size()
-				.to_logical::<u32>(self.window.scale_factor());
-			let geometry = local_store::WindowGeometry {
-				size: [size.width, size.height],
-				position: self
+			// While maximized, keep the normal geometry so un-maximizing after a restart returns to it.
+			let geometry = if viewport.maximized == Some(true) {
+				local_store::WindowGeometry {
+					maximized: true,
+					..self.app_settings.current.window_geometry.unwrap_or(
+						local_store::WindowGeometry {
+							size: app_settings::DEFAULT_WINDOW_SIZE,
+							position: None,
+							maximized: true,
+						},
+					)
+				}
+			} else {
+				let size = self
 					.window
-					.outer_position()
-					.ok()
-					.map(|position| [position.x, position.y]),
+					.inner_size()
+					.to_logical::<u32>(self.window.scale_factor());
+				local_store::WindowGeometry {
+					size: [size.width, size.height],
+					position: self
+						.window
+						.outer_position()
+						.ok()
+						.map(|position| [position.x, position.y]),
+					maximized: false,
+				}
 			};
 			if geometry.is_valid() && self.app_settings.current.window_geometry != Some(geometry) {
 				self.app_settings.current.window_geometry = Some(geometry);
@@ -5361,9 +5550,10 @@ impl eframe::App for Desktop {
 			)
 		});
 		ui::design::paint_backdrop(&ctx);
+		// A history page loading while browsing must not refuse a paste or drop.
 		let upload_allowed = self.state.user.is_some()
 			&& self.state.gateway_connected
-			&& self.state.freshness == model::Freshness::Fresh;
+			&& self.state.freshness != model::Freshness::Unavailable;
 		// A forum container carries its own attachment permission for a post's first message.
 		let can_attach = self.state.selected.is_some_and(|channel| {
 			self.state.can_attach(channel) || self.state.can_attach_post(channel)
@@ -5428,6 +5618,13 @@ impl eframe::App for Desktop {
 		if !can_attach {
 			self.uploads.cancel();
 		}
+		let state = &self.state;
+		self.uploads.follow_conversation(
+			state.generation,
+			state.selected,
+			state.user.is_some() && state.gateway_connected,
+			|channel| state.can_view(channel),
+		);
 		self.uploads.poll(
 			self.state.generation,
 			self.state.selected,
@@ -5806,11 +6003,13 @@ impl eframe::App for Desktop {
 			{
 				self.notifications.notify();
 			}
-			// Revalidate scope after navigation without polling workers a second time.
-			self.uploads.revalidate_scope(
-				self.state.generation,
-				self.state.selected,
-				self.state.user.is_some() && self.state.gateway_connected,
+			// Park or restore staged files after navigation without polling workers again.
+			let state = &self.state;
+			self.uploads.follow_conversation(
+				state.generation,
+				state.selected,
+				state.user.is_some() && state.gateway_connected,
+				|channel| state.can_view(channel),
 			);
 			if !self.state.selected.is_some_and(|channel| {
 				self.state.can_attach(channel) || self.state.can_attach_post(channel)
@@ -6158,9 +6357,12 @@ impl eframe::App for Desktop {
 			if let Some(command) = self.state.take_gif_favorites_command() {
 				commands.push(command);
 			}
+			commands.extend(self.state.take_preload_retries());
 			for command in commands {
 				self.command(command);
 			}
+			// A click that adopted a hover preload sends no request of its own.
+			self.load_cached_history();
 			if self.messaging.logout_requested {
 				self.messaging.logout_requested = false;
 				self.request_session_end(&ctx, SessionEnd::Logout);
@@ -6384,6 +6586,13 @@ impl eframe::App for Desktop {
 	}
 }
 
+/// Holds owner-enabled plaintext logins, inside the private local data directory.
+fn plaintext_login_dir() -> Option<std::path::PathBuf> {
+	local_store::data_dir()
+		.ok()
+		.map(|root| root.join("plaintext-login"))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -6512,6 +6721,7 @@ mod tests {
 				alpha,
 				request,
 				vec![test_support::message(1003, alpha)],
+				false,
 			);
 			assert_eq!(
 				state.timeline.row_ids().collect::<Vec<_>>(),
@@ -6545,6 +6755,7 @@ mod tests {
 		let outcome = |epoch| cache::Outcome::Channel {
 			channel,
 			request,
+			start: false,
 			epoch,
 			messages: vec![test_support::message(1000, channel)],
 		};
@@ -6561,6 +6772,35 @@ mod tests {
 	}
 
 	#[test]
+	fn an_adopted_preload_page_is_saved_like_the_clicks_own() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = model::Id(21);
+		state.observe_last_message(channel, model::Id(2_000));
+		let Some(Command::Prefetch(preload)) =
+			state.preload_conversation(None, Some(channel), std::time::Instant::now())
+		else {
+			panic!("pressed conversation preloads");
+		};
+		let Command::History { request, .. } = *preload else {
+			panic!()
+		};
+		assert!(
+			state.select(channel).is_none(),
+			"the click adopts the preload"
+		);
+		let page = |request| Event::History {
+			channel,
+			request,
+			older: false,
+			messages: vec![],
+		};
+		assert!(changes_active_history(&state, &page(request)));
+		assert!(!changes_active_history(&state, &page(request ^ 1)));
+	}
+	#[test]
 	fn cached_history_requires_current_readable_navigation_and_pending_request() {
 		let mut state = test_support::demo_state();
 		let channel = state.selected.unwrap();
@@ -6572,6 +6812,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert_eq!(state.timeline.len(), 1);
 		assert_eq!(state.freshness, model::Freshness::Loading);
@@ -6585,6 +6826,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(
 			state.timeline.is_empty(),
@@ -6595,7 +6837,7 @@ mod tests {
 			vec![test_support::message(1001, model::Id(999))],
 			vec![test_support::message(1002, channel)],
 		] {
-			hydrate_cached_history(&mut state, channel, request.wrapping_sub(1), invalid);
+			hydrate_cached_history(&mut state, channel, request.wrapping_sub(1), invalid, false);
 			assert!(state.timeline.is_empty());
 		}
 		hydrate_cached_history(
@@ -6603,6 +6845,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1001, model::Id(999))],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		state.history_pending = false;
@@ -6611,6 +6854,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		state.history_pending = true;
@@ -6630,6 +6874,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		// Even an inconsistent queued-cache admission state cannot bypass current navigation.
@@ -6642,6 +6887,7 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
 		let mut restored = test_support::demo_state()
@@ -6656,8 +6902,28 @@ mod tests {
 			channel,
 			request,
 			vec![test_support::message(1000, channel)],
+			false,
 		);
 		assert!(state.timeline.is_empty());
+	}
+	#[test]
+	fn attachment_sends_stay_allowed_while_the_latest_page_reloads() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let channel = state.selected.unwrap();
+		assert!(attachment_send_allowed(&state, channel));
+		// Send from older history jumps to the latest page before the upload dispatches.
+		state.history(None);
+		assert_eq!(state.freshness, model::Freshness::Loading);
+		assert!(attachment_send_allowed(&state, channel));
+		state.gateway_connected = false;
+		assert!(!attachment_send_allowed(&state, channel));
+		state.gateway_connected = true;
+		state.freshness = model::Freshness::Unavailable;
+		assert!(!attachment_send_allowed(&state, channel));
+		state.freshness = model::Freshness::Fresh;
+		state.selected = None;
+		assert!(!attachment_send_allowed(&state, channel));
 	}
 	#[test]
 	fn correlated_confirmation_preserves_other_pending_text_and_ignores_unrelated_events() {

@@ -806,6 +806,8 @@ embeds-show-video-preview-playback-opens-in-your-browser = Náhled videa · pře
 embeds-text-text-display-limited = Omezené zobrazení textu
 
 ## crates/ui/src/emoji_details.rs
+# Context: hover_card
+emoji-details-hover-card-click-to-learn-more = Kliknutím zobrazíte více
 # Context: show
 emoji-details-show-a-custom-emoji = Vlastní emotikony.
 # Context: show
@@ -3004,6 +3006,8 @@ server-menu-header-server-menu = Nabídka serveru
 server-menu-leave-item-leave-server = Opustit server
 # Context: read_item
 server-menu-read-item-mark-as-read = Označit jako přečtené
+# Context: all_read_item
+server-menu-all-read-item-mark-all-as-read = Označit vše jako přečtené
 # Context: settings_item
 server-menu-settings-item-server-settings = Nastavení serveru
 # Context: show
@@ -3514,6 +3518,9 @@ settings-storage-page-removes-cached-messages-and-media-drafts-and-your-login-st
 settings-storage-page-serein-does-not-collect-telemetry-or-upload-diagnostics-discord-retains = Serein neshromažďuje telemetrii ani nenahrává diagnostiku. Discord uchovává data na straně služeb podle svých vlastních zásad.
 # Context: storage_page
 settings-storage-page-your-privacy = Vaše soukromí
+settings-storage-page-saved-login = Uložené přihlášení
+settings-storage-page-plaintext-login = Ukládat přihlášení jako prostý text bez klíčenky
+settings-storage-page-plaintext-login-description = Použije se jen tehdy, když nefunguje žádná klíčenka systému (GNOME Keyring, KWallet, Klíčenka ani Správce přihlašovacích údajů). Token se uloží nešifrovaně do soukromého souboru ve složce dat Sereinu, kde ho může přečíst kdokoli s přístupem k vašemu uživatelskému účtu. Vypnutím se tyto soubory smažou.
 # Context: cosmetic_settings
 settings-cosmetics = Kosmetika profilu
 # Context: cosmetic_settings
@@ -3587,6 +3594,8 @@ slash-commands-composer-command-unavailable-your-arguments-are-kept = Příkaz n
 slash-commands-footer-refresh-application-commands = Obnovit příkazy aplikace
 
 ## crates/ui/src/stickers.rs
+# Context: message
+stickers-message-from-an-unavailable-server = Tato nálepka pochází ze serveru, který je jen pro pozvané nebo není dostupný.
 # Context: message
 stickers-message-loading-sticker-details = Načítání podrobností nálepky…
 # Context: message
@@ -4895,3 +4904,15 @@ time-format-12-hour = 12hodinový
 time-format-24-hour = 24hodinový
 profiles-status-edit = Upravit stav
 profiles-status-clear = Vymazat stav
+send-throttled-title = Hola hola, moc pálivé
+send-throttled-body = Posíláte zprávy příliš rychle!
+send-throttled-dismiss = Vstoupit do zóny klidu
+profiles-private-profile = Soukromý profil
+profiles-private-notice = Profil uživatele { $name } je soukromý, takže některé informace jsou skryté. Pošlete žádost o přátelství, abyste viděli víc.
+settings-cosmetics-name-styles = Styly jmen
+settings-cosmetics-name-styles-description = Písma, barvy a efekty zobrazovaných jmen s Nitrem.
+search-overlays-message-contains = Zpráva obsahuje
+search-overlays-no-matching-content-types = Žádné odpovídající typy obsahu
+search-overlays-history = Historie
+search-overlays-clear-history = Vymazat historii hledání
+main-sign-in-rate-limited-detail = Discord omezuje toto přihlášení. Než to zkusíte znovu, počkejte. Dřívější pokus může čekání prodloužit.

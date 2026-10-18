@@ -338,7 +338,7 @@ fn preload_gifs(
 		.iter()
 		.find(|gif| model::valid_gif_preview(&gif.preview))
 	{
-		avatars.gif_texture(ctx, gif, demo);
+		avatars.warm_gif(ctx, gif, demo);
 	}
 	let Some(page) = state
 		.gifs
@@ -350,7 +350,7 @@ fn preload_gifs(
 		return;
 	};
 	if let Some(gif) = page.gifs.first() {
-		avatars.gif_texture(ctx, gif, demo);
+		avatars.warm_gif(ctx, gif, demo);
 	}
 	for preview in page
 		.categories
@@ -358,7 +358,7 @@ fn preload_gifs(
 		.filter_map(|category| category.preview.as_deref())
 		.take(GIF_WARM_TILES)
 	{
-		avatars.preview_texture(ctx, preview, demo);
+		avatars.warm_preview(preview, demo);
 	}
 }
 
