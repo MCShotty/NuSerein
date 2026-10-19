@@ -20,6 +20,11 @@ const WINDOWS_FILES: &[&str] = &[
 	"swscale-serein-8.dll",
 	"swresample-serein-5.dll",
 	"openh264.dll",
+	"voice-enhancement",
+	"msvcp140.dll",
+	"msvcp140_1.dll",
+	"vcruntime140.dll",
+	"vcruntime140_1.dll",
 	"ffmpeg-source",
 	"README.md",
 	"LICENSE-MIT",
@@ -726,6 +731,17 @@ pub(super) fn unpack(
 		"swscale-serein-8.dll",
 		"swresample-serein-5.dll",
 		"openh264.dll",
+		"msvcp140.dll",
+		"msvcp140_1.dll",
+		"vcruntime140.dll",
+		"vcruntime140_1.dll",
+		"voice-enhancement/onnxruntime.dll",
+		"voice-enhancement/backbone.onnx",
+		"voice-enhancement/spec_head.onnx",
+		"voice-enhancement/denoiser_core.onnx",
+		"voice-enhancement/ONNXRuntime-LICENSE",
+		"voice-enhancement/ONNXRuntime-ThirdPartyNotices.txt",
+		"voice-enhancement/MSVC-LICENSE.txt",
 	]
 	.iter()
 	.all(|name| destination.join(name).is_file())
@@ -734,7 +750,7 @@ pub(super) fn unpack(
 		|| !destination.join("THIRD_PARTY_NOTICES.md").is_file()
 	{
 		return Err(
-			"The update is missing its executable, video libraries or bundled notices.".into(),
+			"The update is missing its executable, media dependencies or bundled notices.".into(),
 		);
 	}
 	fs::remove_file(directory.join("package.zip"))
@@ -1249,6 +1265,18 @@ mod ffmpeg_update_tests {
 				None,
 				false,
 			),
+			(
+				"missing-speech-runtime",
+				Some("voice-enhancement/onnxruntime.dll"),
+				None,
+				false,
+			),
+			(
+				"missing-denoiser",
+				Some("voice-enhancement/denoiser_core.onnx"),
+				None,
+				false,
+			),
 			("unexpected", None, Some("unexpected.dll"), false),
 		] {
 			let stage = root.join(case);
@@ -1262,6 +1290,17 @@ mod ffmpeg_update_tests {
 				"swscale-serein-8.dll",
 				"swresample-serein-5.dll",
 				"openh264.dll",
+				"msvcp140.dll",
+				"msvcp140_1.dll",
+				"vcruntime140.dll",
+				"vcruntime140_1.dll",
+				"voice-enhancement/onnxruntime.dll",
+				"voice-enhancement/backbone.onnx",
+				"voice-enhancement/spec_head.onnx",
+				"voice-enhancement/denoiser_core.onnx",
+				"voice-enhancement/ONNXRuntime-LICENSE",
+				"voice-enhancement/ONNXRuntime-ThirdPartyNotices.txt",
+				"voice-enhancement/MSVC-LICENSE.txt",
 				"THIRD_PARTY_NOTICES.md",
 				"licenses/fixture.txt",
 				"ffmpeg-source/source/ffmpeg-7.1.5.tar.xz",

@@ -91,6 +91,9 @@ use zeroize::Zeroizing;
 /// Run explicit offline checks before native startup, or launch the configured desktop client.
 fn main() -> eframe::Result {
 	platform::memory::tune_allocator();
+	if let Some(status) = discord_voice::audio::speech_worker_command() {
+		std::process::exit(status);
+	}
 	if let Some(status) = video_capabilities::probe_command() {
 		std::process::exit(status);
 	}

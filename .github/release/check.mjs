@@ -66,7 +66,7 @@ try {
   assert(prodNotes.includes('notification sounds'));
   assert(prodNotes.includes('need one manual upgrade'));
   assert(prodNotes.includes('\n## Windows upgrades\n'));
-  assert(prodNotes.includes('-media-v3.zip'));
+  assert(prodNotes.includes('-media-v4.zip'));
   assert(prodNotes.includes('by Release Note Author'));
   assert(prodNotes.includes('[#149](https://github.com/ViceVerse-cz/Serein/pull/149)'));
   assert(prodNotes.includes('## New Contributors'));
@@ -78,7 +78,7 @@ try {
   assert(!nightlyNotes.includes('notification sounds'));
   assert(nightlyNotes.includes('need one manual upgrade'));
   assert(nightlyNotes.includes('\n## Windows upgrades\n'));
-  assert(nightlyNotes.includes('-media-v3.zip'));
+  assert(nightlyNotes.includes('-media-v4.zip'));
 } finally {
   process.chdir(sourceRoot);
   rmSync(notesFixture, { recursive: true, force: true });

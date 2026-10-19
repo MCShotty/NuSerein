@@ -16,6 +16,16 @@ use std::{
 use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
 use zeroize::Zeroizing;
 
+fn speech_status(audio: &Audio) -> Option<&'static str> {
+	use discord_voice::audio::SpeechStatus;
+	audio.speech_status().map(|status| match status {
+		SpeechStatus::Loading => "voice-lavasr-loading",
+		SpeechStatus::Warming => "voice-lavasr-description",
+		SpeechStatus::Active => "voice-lavasr-active",
+		SpeechStatus::Fallback => "voice-lavasr-fallback",
+	})
+}
+
 /// Listener gain for a soundboard sound played by `user`: the session soundboard volume and,
 /// for other participants, their local volume or mute. Blocked participants are silent.
 fn soundboard_gain(state: &State, ui: &ui::MessagingUi, me: Id, user: Id) -> f32 {
@@ -923,6 +933,7 @@ impl Voice {
 		ui: &mut ui::MessagingUi,
 		ctx: &egui::Context,
 	) -> Option<Command> {
+		ui.voice_lavasr_status = None;
 		// Project only this frame's still-owned connection; early returns retire old data.
 		if !state.demo {
 			ui.voice_diagnostics
@@ -1105,6 +1116,7 @@ impl Voice {
 				|| ui.voice_ptm_active;
 			live.audio.set_controls(muted, deafened);
 			live.audio.set_processing(ui.voice_processing.effective());
+			ui.voice_lavasr_status = speech_status(&live.audio);
 			live.audio
 				.set_stage_authorization(call.stage_revision, state.can_speak(call.channel));
 			live.audio
@@ -1563,6 +1575,7 @@ impl Voice {
 			.audio
 			.set_processing(ui.voice_processing.effective());
 		preview.audio.set_ready(true);
+		ui.voice_lavasr_status = speech_status(&preview.audio);
 		let error = preview.failure.get().copied().or_else(|| {
 			if preview.audio.is_stopped() {
 				Some("Microphone test stopped; try again.")

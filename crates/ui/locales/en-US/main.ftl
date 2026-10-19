@@ -4383,6 +4383,10 @@ voice-voice-processing-controls-input-threshold = Input threshold
 voice-voice-processing-controls-mute-and-deafen-always-take-priority = Mute and deafen always take priority.
 # Context: voice_processing_controls
 voice-voice-processing-controls-noise-suppression = Noise suppression
+voice-lavasr-description = Restores speech locally with denoising enabled. May add voice delay.
+voice-lavasr-loading = Preparing LavaSRv2…
+voice-lavasr-active = LavaSRv2 is active, with denoising enabled.
+voice-lavasr-fallback = LavaSRv2 is unavailable. Using RNNoise instead.
 # Context: voice_processing_controls
 voice-voice-processing-controls-off = Off
 # Context: voice_processing_controls

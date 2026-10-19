@@ -465,3 +465,12 @@ macOS and Linux have no local HEIC decoder in this implementation; proxy-provide
 PNG/JPEG/WebP renditions can still display. The offline Windows check decodes an
 original synthetic 6000x4000 HEIC both at source size and as a 320px thumbnail,
 checking dimensions and pixel conversion. Owner photos and live Discord remain unverified.
+
+Optional LavaSRv2 microphone enhancement is bundled with pinned CPU ONNX Runtime
+1.23.2 on Windows x64/ARM64, macOS ARM64/x64 and Linux x86_64/ARM64. Package preparation
+verifies model/runtime archive hashes and retains model/runtime notices and the
+Eigen corresponding source. Python is a packaging/development tool, not a
+playback or microphone runtime requirement. Native microphone quality/latency
+checks remain owner operated; synthetic inference alone does not establish
+Discord interoperability. Unsupported or overloaded enhancement falls back to
+RNNoise without disabling microphone capture.

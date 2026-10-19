@@ -505,6 +505,7 @@ pub struct MessagingUi {
 	pub voice_preview_requested: bool,
 	pub voice_preview_level: Option<f32>,
 	pub voice_preview_status: &'static str,
+	pub voice_lavasr_status: Option<&'static str>,
 	/// Device-local application shortcuts; the desktop host mirrors the global binding.
 	pub keybinds: model::Keybinds,
 	keybind_capture: Option<model::KeybindAction>,
@@ -4326,6 +4327,10 @@ impl MessagingUi {
 		self.timeline.video.seen = false;
 		let side = self.drain_side_press();
 		let mut commands = Vec::new();
+		commands.extend(state.request_voice_channel_statuses());
+		if let Some(delay) = state.voice_status_retry_delay() {
+			ui.ctx().request_repaint_after(delay);
+		}
 		commands.extend(cosmetics_refresh);
 		// A server joined from an invite opens as soon as the Gateway delivers it.
 		commands.extend(state.navigate_after_join());

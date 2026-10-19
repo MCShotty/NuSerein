@@ -676,6 +676,13 @@ impl Connection {
                                 })));
                                 continue;
                             }
+                            if let Command::Voice(control @ client_core::voice::Command::ChannelInfo { guild }) = &command {
+                                if !*voice_availability.borrow() || voice_send.try_send(*control).is_err() {
+                                    emit(Event::Voice(client_core::voice::Event::ChannelInfoUnavailable { guild: *guild }))?;
+                                    wake.request_repaint();
+                                }
+                                continue;
+                            }
 							if let Command::Voice(control @ client_core::voice::Command::Sync { channel }) = &command {
 								if *voice_availability.borrow() && dm_channels.lock().map_err(|_|Failure::Protocol)?.contains_key(channel) {
 									voice_send.try_send(*control).map_err(|_|Failure::Capacity)?;
@@ -760,7 +767,7 @@ impl Connection {
                                     drop(community_job.take());
                                     emit(Event::Community(client_core::community::Event{guild,request,result:Err(Failure::Ambiguous)}))?;
                                 }
-                                let (channel,request)=match control {V::AbandonSession{channel,request}|V::ConfirmSession{channel,request,..}|V::Join{channel,request,..}|V::Ring{channel,request}|V::Leave{channel,request}|V::SetMute{channel,request,..}|V::SetCamera{channel,request,..}=>(channel,request),V::Decline{channel}=>(channel,0),V::RingRecipient{..}|V::Sync{..}|V::StartStream{..}|V::StopStream{..}|V::WatchStream{..}|V::StopWatching{..}=>unreachable!("sync and stream actions routed above")};
+                                let (channel,request)=match control {V::AbandonSession{channel,request}|V::ConfirmSession{channel,request,..}|V::Join{channel,request,..}|V::Ring{channel,request}|V::Leave{channel,request}|V::SetMute{channel,request,..}|V::SetCamera{channel,request,..}=>(channel,request),V::Decline{channel}=>(channel,0),V::ChannelInfo{..}|V::RingRecipient{..}|V::Sync{..}|V::StartStream{..}|V::StopStream{..}|V::WatchStream{..}|V::StopWatching{..}=>unreachable!("sync and stream actions routed above")};
                                 if let V::AbandonSession{channel,request}=control {
                                     let owner=voice_request.map(|(channel,request,_)|(channel,request));
                                     if voice_request.is_some_and(|(id,r,_)|id==channel && r==request) {
@@ -1895,6 +1902,7 @@ fn ring_action(
 			V::AbandonSession { .. }
 			| V::ConfirmSession { .. }
 			| V::Sync { .. }
+			| V::ChannelInfo { .. }
 			| V::Leave { .. }
 			| V::SetMute { .. }
 			| V::SetCamera { .. }
@@ -1929,6 +1937,7 @@ fn ring_action(
 		V::AbandonSession { .. }
 		| V::ConfirmSession { .. }
 		| V::Sync { .. }
+		| V::ChannelInfo { .. }
 		| V::Leave { .. }
 		| V::SetMute { .. }
 		| V::SetCamera { .. }

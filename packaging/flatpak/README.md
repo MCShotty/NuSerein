@@ -158,3 +158,9 @@ References: [Flatpak sandbox permissions](https://docs.flatpak.org/en/latest/san
 
 Preparation regression check (no network, compiler build, installation or login):
 `python3 -m unittest discover -s packaging/flatpak -p 'test_*.py'`.
+
+Optional LavaSRv2 microphone enhancement uses the three pinned ONNX graphs and
+CPU ONNX Runtime 1.23.2. Flatpak downloads these as checksum-verified build
+sources and stages them offline; no speech model is fetched during a call.
+The runtime MIT/third-party notices and the model/exporter Apache-2.0 licenses
+ship with the installed payload.

@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "linux"))
-from package import native_elf, stage_payload
+from package import native_elf, native_libraries, stage_payload
 
 
 def update_metadata(version, release_tag):
@@ -48,6 +48,10 @@ def build(root, version):
         temporary = Path(directory)
         appdir = temporary / "Serein.AppDir"
         stage_payload(root, appdir)
+        libraries += "\n" + "\n".join(subprocess.check_output(["ldd", str(path)], text=True)
+                                         for path in native_libraries(appdir))
+        if "not found" in libraries:
+            raise ValueError(f"Missing host media runtime libraries:\n{libraries}")
         shutil.copyfile("packaging/appimage/AppRun", appdir / "AppRun")
         (appdir / "AppRun").chmod(0o755)
         shutil.copyfile("packaging/linux/serein.desktop", appdir / "cz.viceverse.serein.desktop")

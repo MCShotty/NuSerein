@@ -95,6 +95,58 @@
       ]
     },
     {
+      "name": "serein-speech-assets",
+      "buildsystem": "simple",
+      "build-commands": [
+        "mkdir -p /app/serein-speech-cache",
+        "cp backbone.onnx spec_head.onnx denoiser_core.onnx onnxruntime-linux-*-1.23.2.tgz eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip /app/serein-speech-cache/"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://github.com/idocinthebox/LavaSR-ONNX-Embedded/releases/download/v1.0.0/backbone.onnx",
+          "dest-filename": "backbone.onnx",
+          "sha256": "0bc915649f765d40ca52bd3a2272a28e8f7636b09c2ee3148662a69041f28cd9"
+        },
+        {
+          "type": "file",
+          "url": "https://github.com/idocinthebox/LavaSR-ONNX-Embedded/releases/download/v1.0.0/spec_head.onnx",
+          "dest-filename": "spec_head.onnx",
+          "sha256": "a54a5d5d652aceb76b2f48cf9f0ab3f4def0d44427dc7af641fd24284342a48a"
+        },
+        {
+          "type": "file",
+          "url": "https://github.com/idocinthebox/LavaSR-ONNX-Embedded/releases/download/v1.0.0/denoiser_core.onnx",
+          "dest-filename": "denoiser_core.onnx",
+          "sha256": "515a1be1eea4b1108cc6a758198d726fc506e68ec53d7e522bc2618ff2602175"
+        },
+        {
+          "type": "file",
+          "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
+          "dest-filename": "onnxruntime-linux-x64-1.23.2.tgz",
+          "sha256": "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b",
+          "only-arches": [
+            "x86_64"
+          ]
+        },
+        {
+          "type": "file",
+          "url": "https://github.com/eigen-mirror/eigen/archive/1d8b82b0740839c0de7f1242a3585e3390ff5f33/eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip",
+          "sha256": "6a60d76351f97132669daeeb721d6bf14b008101883ad2d687a3201c5c461eb0",
+          "dest-filename": "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip"
+        },
+        {
+          "type": "file",
+          "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
+          "sha256": "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c",
+          "dest-filename": "onnxruntime-linux-aarch64-1.23.2.tgz",
+          "only-arches": [
+            "aarch64"
+          ]
+        }
+      ]
+    },
+    {
       "name": "serein",
       "buildsystem": "simple",
       "build-options": {
@@ -102,7 +154,9 @@
         "env": {
           "CARGO_NET_OFFLINE": "true",
           "CARGO_HOME": "/run/build/serein/flatpak-cargo-home",
-          "FFMPEG_DIR": "/app/serein-ffmpeg"
+          "FFMPEG_DIR": "/app/serein-ffmpeg",
+          "SEREIN_LAVASR_CACHE": "/app/serein-speech-cache",
+          "SEREIN_LAVASR_OFFLINE": "1"
         }
       },
       "build-commands": [
@@ -110,6 +164,7 @@
         "cargo xtask package --format dir",
         "cp -a dist/linux-root/usr/. /app/",
         "rm -rf /app/serein-ffmpeg",
+        "rm -rf /app/serein-speech-cache",
         "rm -f /app/share/icons/hicolor/1024x1024/apps/serein.png",
         "install -Dm644 packaging/flatpak/cz.viceverse.serein.metainfo.xml /app/share/metainfo/cz.viceverse.serein.metainfo.xml"
       ],

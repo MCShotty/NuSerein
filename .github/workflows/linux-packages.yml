@@ -2,7 +2,7 @@ name: Linux packages
 
 on:
   pull_request:
-    paths: ['packaging/aur/**', 'packaging/linux/**', 'packaging/appimage/**', 'packaging/flatpak/**', 'packaging/ffmpeg/**', 'packaging/repositories/**', 'tools/xtask/**', 'scripts/build-ffmpeg.py', 'crates/discord-voice/**', '.github/workflows/linux-packages.yml', '.github/workflows/package-repositories.yml']
+    paths: ['packaging/aur/**', 'packaging/linux/**', 'packaging/appimage/**', 'packaging/flatpak/**', 'packaging/ffmpeg/**', 'packaging/lavasr/**', 'packaging/repositories/**', 'tools/xtask/**', 'scripts/build-ffmpeg.py', 'crates/discord-voice/**', '.github/workflows/linux-packages.yml', '.github/workflows/package-repositories.yml']
   workflow_call:
     inputs:
       release:

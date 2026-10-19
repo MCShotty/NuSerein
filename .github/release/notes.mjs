@@ -125,9 +125,9 @@ async function generateAnnotatedNotes(pluginConfig, context, previousRef) {
   return `${notes}
 ## Windows upgrades
 
-Windows builds from before the FFmpeg migration need one manual upgrade: close Serein
+Windows builds using the legacy or media-v2/v3 update format need one manual upgrade: close Serein
 and run the matching X64 or ARM64 \`-Setup.exe\` over the existing installation.
-Portable users should extract the complete \`-media-v3.zip\` into a new folder.
+Portable users should extract the complete \`-media-v4.zip\` into a new folder.
 Subsequent in-app updates are supported. See the
 [Windows migration guide](https://github.com/ViceVerse-cz/Serein/blob/main/packaging/windows/README.md).
 `;

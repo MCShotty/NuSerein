@@ -83,6 +83,7 @@ try {
       assert.deepEqual(fs.readFileSync(path.join(fixture, 'dist/licenses', name)),
         fs.readFileSync(path.join(repo, 'assets/fonts', name)), name);
     }
+    assert.match(fs.readFileSync(pythonLog, 'utf8'), /lavasr\/bundle\.py dist/);
     assert.match(fs.readFileSync(pythonLog, 'utf8'), /package\.py dist 9\.8\.7 --format dir/);
     assert.match(fs.readFileSync(path.join(fixture, 'build-args'), 'utf8'), /--message-format=json-render-diagnostics/);
   }

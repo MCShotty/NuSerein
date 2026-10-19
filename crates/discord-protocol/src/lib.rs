@@ -2228,6 +2228,15 @@ pub struct ChannelInfoChannelDto {
 	pub id: Id,
 	#[serde(default)]
 	pub voice_start_time: Option<u64>,
+	#[serde(default)]
+	pub status: model::Patch<String>,
+}
+#[derive(Deserialize)]
+pub struct VoiceChannelStatusDto {
+	pub id: Id,
+	pub guild_id: Id,
+	#[serde(default)]
+	pub status: model::Patch<String>,
 }
 #[derive(Deserialize)]
 pub struct VoiceChannelStartTimeDto {

@@ -46,9 +46,16 @@ impl Echo {
 		if settings == self.settings {
 			return Ok(());
 		}
-		if settings.suppression == NoiseSuppression::RnNoise && self.noise.is_none() {
+		if matches!(
+			settings.suppression,
+			NoiseSuppression::RnNoise | NoiseSuppression::LavaSrV2
+		) && self.noise.is_none()
+		{
 			self.noise = Some(noise_state());
-		} else if settings.suppression != NoiseSuppression::RnNoise {
+		} else if !matches!(
+			settings.suppression,
+			NoiseSuppression::RnNoise | NoiseSuppression::LavaSrV2
+		) {
 			self.noise = None;
 		}
 		if settings.echo_cancellation != self.settings.echo_cancellation
@@ -121,6 +128,19 @@ impl Echo {
 		frame: &mut [f32; 960],
 		time_noise: bool,
 	) -> Result<Duration, &'static str> {
+		let mut elapsed = self.prepare_capture(frame, time_noise)?;
+		if self.settings.suppression == NoiseSuppression::LavaSrV2 {
+			elapsed += self.fallback_capture(frame, time_noise);
+		}
+		self.finish_capture(frame)?;
+		Ok(elapsed)
+	}
+
+	pub fn prepare_capture(
+		&mut self,
+		frame: &mut [f32; 960],
+		time_noise: bool,
+	) -> Result<Duration, &'static str> {
 		for sample in frame.iter_mut() {
 			*sample = if sample.is_finite() {
 				sample.clamp(-1.0, 1.0)
@@ -141,7 +161,9 @@ impl Echo {
 					.process_capture_f32(&[chunk], &mut [&mut output])
 					.map_err(|_| "Microphone processing failed")?;
 			}
-			if let Some(noise) = &mut self.noise {
+			if let Some(noise) = &mut self.noise
+				&& self.settings.suppression != NoiseSuppression::LavaSrV2
+			{
 				let start = time_noise.then(Instant::now);
 				let input = output.map(|s| (s * 32768.0).clamp(-32768.0, 32767.0));
 				noise.process_frame(&mut output, &input);
@@ -154,6 +176,28 @@ impl Echo {
 			}
 			chunk.copy_from_slice(&output);
 		}
+		Ok(noise_time)
+	}
+
+	pub fn reset_noise(&mut self) {
+		if self.noise.is_some() {
+			self.noise = Some(noise_state());
+		}
+	}
+	pub fn fallback_capture(&mut self, frame: &mut [f32; 960], time_noise: bool) -> Duration {
+		let start = time_noise.then(Instant::now);
+		if let Some(noise) = &mut self.noise {
+			for chunk in frame.as_chunks_mut::<480>().0 {
+				let input = chunk.map(|x| (x * 32768.0).clamp(-32768.0, 32767.0));
+				noise.process_frame(chunk, &input);
+				for value in chunk {
+					*value = (*value / 32768.0).clamp(-1.0, 1.0);
+				}
+			}
+		}
+		start.map_or(Duration::ZERO, |time| time.elapsed())
+	}
+	pub fn finish_capture(&mut self, frame: &mut [f32; 960]) -> Result<(), &'static str> {
 		if let Some(gain) = &mut self.gain {
 			for chunk in frame.as_chunks_mut::<480>().0 {
 				let mut output = [0.0; 480];
@@ -169,6 +213,6 @@ impl Echo {
 				0.0
 			};
 		}
-		Ok(noise_time)
+		Ok(())
 	}
 }

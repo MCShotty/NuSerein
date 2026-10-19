@@ -150,16 +150,17 @@ pub fn show(
 			});
 			let matching = details
 				.filter(|value| value.message == message && value.emoji.same(&reaction.emoji));
-			if response.hovered() && matching.is_none() && action.is_none() {
+			if enabled && response.contains_pointer() && matching.is_none() && action.is_none() {
 				action = Some(Action::Inspect(reaction.emoji.clone(), false));
 			}
 			let clicked = response.clicked();
 			let secondary_clicked = response.secondary_clicked();
 			let colors = crate::design::palette(ui);
 			let width = 320.0_f32.min((ui.ctx().content_rect().width() - 40.0).max(180.0));
-			egui::Popup::from_response(&response)
-				.kind(egui::PopupKind::Tooltip)
-				.open(response.enabled() && egui::Tooltip::should_show_tooltip(&response, false))
+			let mut tooltip = egui::Tooltip::for_widget(&response);
+			tooltip.popup = tooltip
+				.popup
+				.open(enabled && egui::Tooltip::should_show_tooltip(&response, false))
 				.gap(4.0)
 				.width(width)
 				.interactable(false)
@@ -169,60 +170,64 @@ pub fn show(
 						.stroke(egui::Stroke::new(1.0, colors.border))
 						.inner_margin(12)
 						.corner_radius(6),
-				)
-				.show(|ui| {
-					ui.set_width(width - 24.0);
-					ui.horizontal_centered(|ui| {
-						if let Some(image) = match reaction.emoji.id {
-							Some(id) => Some(
-								media
-									.0
-									.custom_image(ui.ctx(), id, 52.0, media.1)
-									.unwrap_or_else(|| crate::emoji::blank(ui.ctx(), 52.0)),
-							),
-							// The full-size raster matches message artwork; the atlas cell bridges it.
-							None => crate::emoji::lookup(&reaction.emoji.label())
-								.and_then(|cell| media.0.unicode_image(ui.ctx(), cell, 52.0))
-								.or_else(|| {
-									crate::emoji::image(ui.ctx(), &reaction.emoji.label(), 52.0)
-								}),
-						} {
-							ui.add(image);
-						} else {
-							ui.label(
-								egui::RichText::new(reaction.emoji.label())
-									.size(26.0)
-									.color(colors.text_strong),
-							);
-						}
-						ui.add_space(8.0);
-						let summary = if let Some(value) = matching
-							&& !value.users.is_empty()
-						{
-							let reactors = reacting_names(
-								value.users.iter().map(|user| user.name.as_str()),
-								reaction.count,
-							);
-							crate::i18n::translate_args(
-								"reactions-tooltip-reacted-by",
-								&[
-									("emoji", &summary_name(&reaction.emoji)),
-									("reactors", &reactors),
-								],
-							)
-						} else if matching.is_some_and(|value| value.error.is_some()) {
-							crate::i18n::translate("reactions-tooltip-unavailable")
-						} else {
-							crate::i18n::translate("reactions-show-users-loading-reactions")
-						};
-						ui.add(
-							egui::Label::new(
-								egui::RichText::new(summary).size(15.0).color(colors.text),
-							)
-							.wrap(),
+				);
+			tooltip.show(|ui| {
+				ui.set_width(width - 24.0);
+				ui.horizontal_centered(|ui| {
+					if let Some(image) = match reaction.emoji.id {
+						Some(id) => Some(
+							media
+								.0
+								.custom_image(ui.ctx(), id, 52.0, media.1)
+								.unwrap_or_else(|| crate::emoji::blank(ui.ctx(), 52.0)),
+						),
+						// The full-size raster matches message artwork; the atlas cell bridges it.
+						None => crate::emoji::lookup(&reaction.emoji.label())
+							.and_then(|cell| media.0.unicode_image(ui.ctx(), cell, 52.0))
+							.or_else(|| {
+								crate::emoji::image(ui.ctx(), &reaction.emoji.label(), 52.0)
+							}),
+					} {
+						ui.add(image);
+					} else {
+						ui.label(
+							egui::RichText::new(reaction.emoji.label())
+								.size(26.0)
+								.color(colors.text_strong),
 						);
-					});
+					}
+					ui.add_space(8.0);
+					let summary = if let Some(value) = matching
+						&& !value.users.is_empty()
+					{
+						let reactors = reacting_names(
+							value.users.iter().map(|user| user.name.as_str()),
+							reaction.count,
+						);
+						crate::i18n::translate_args(
+							"reactions-tooltip-reacted-by",
+							&[
+								("emoji", &summary_name(&reaction.emoji)),
+								("reactors", &reactors),
+							],
+						)
+					} else if matching.is_some_and(|value| value.error.is_some()) {
+						crate::i18n::translate("reactions-tooltip-unavailable")
+					} else if matching.is_some_and(|value| !value.loading) {
+						crate::i18n::translate(
+							"reactions-show-users-nobody-currently-has-this-reaction",
+						)
+					} else {
+						crate::i18n::translate("reactions-show-users-loading-reactions")
+					};
+					ui.add(
+						egui::Label::new(
+							egui::RichText::new(summary).size(15.0).color(colors.text),
+						)
+						.wrap(),
+					);
 				});
+			});
 			if secondary_clicked {
 				action = Some(Action::Inspect(reaction.emoji.clone(), true));
 			} else if clicked {
@@ -516,6 +521,166 @@ mod tests {
 				output.drop_without_applying_deltas();
 			}
 			assert_eq!(action, Some(Action::Inspect(emoji, false)));
+		}
+	}
+
+	#[test]
+	fn reaction_hover_can_inspect_while_toggling_is_disabled() {
+		for (writing, refreshing) in [(false, false), (true, false), (false, true)] {
+			let ctx = egui::Context::default();
+			crate::emoji::install(&ctx).unwrap();
+			let emoji = ReactionEmoji {
+				id: None,
+				name: Some("👍".into()),
+			};
+			let mut action = None;
+			let mut avatars = crate::avatars::Avatars::default();
+			for frame in 0..3 {
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(480.0, 320.0),
+						)),
+						time: Some(frame as f64),
+						events: (frame == 0)
+							.then(|| egui::Event::PointerMoved(egui::pos2(20.0, 15.0)))
+							.into_iter()
+							.collect(),
+						..Default::default()
+					},
+					|ui| {
+						action = show(
+							ui,
+							Some(&[Reaction {
+								emoji: emoji.clone(),
+								count: 3,
+								me: false,
+								me_burst: false,
+							}]),
+							true,
+							writing,
+							refreshing,
+							(&mut avatars, true),
+							model::Id(1),
+							None,
+							|_, _| false,
+						);
+					},
+				);
+				output.drop_without_applying_deltas();
+			}
+			assert_eq!(action, Some(Action::Inspect(emoji, false)));
+		}
+	}
+
+	#[test]
+	fn reaction_tooltip_keeps_loaded_names_visible_when_toggle_is_disabled() {
+		fn text(shape: &egui::Shape, output: &mut String) {
+			match shape {
+				egui::Shape::Text(value) => output.push_str(&value.galley.job.text),
+				egui::Shape::Vec(values) => values.iter().for_each(|value| text(value, output)),
+				_ => {}
+			}
+		}
+		let mut state = test_support::demo_state();
+		let channel = model::Id(22);
+		state.selected = Some(channel);
+		state.gateway_connected = true;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.freshness = model::Freshness::Fresh;
+		let mut message = test_support::message(500, channel);
+		let emoji = message.reactions.as_ref().unwrap()[0].emoji.clone();
+		message.reactions.as_mut().unwrap()[0].count = 5;
+		let users = ["Avery", "Robin", "Sam"]
+			.into_iter()
+			.enumerate()
+			.map(|(index, name)| {
+				let mut user = message.author.clone();
+				user.id = model::Id(900 + index as u64);
+				user.name = name.into();
+				user
+			})
+			.collect();
+		state.timeline.insert(message, false, false).unwrap();
+		let Some(client_core::Command::Reactions(client_core::reactions::Command::Users {
+			request,
+			..
+		})) = state.request_reaction_users(model::Id(500), emoji.clone(), false)
+		else {
+			panic!("The hover requests the actual reactor list");
+		};
+		state
+			.apply_reactions(client_core::reactions::Event::Users {
+				channel,
+				message: model::Id(500),
+				emoji,
+				request,
+				result: Ok(users),
+			})
+			.unwrap();
+		for (writing, refreshing) in [(false, false), (true, false), (false, true)] {
+			let ctx = egui::Context::default();
+			crate::emoji::install(&ctx).unwrap();
+			let mut avatars = crate::avatars::Avatars::default();
+			for frame in 0..6 {
+				let mut action = None;
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(640.0, 320.0),
+						)),
+						time: Some(frame as f64),
+						events: (frame == 0)
+							.then(|| egui::Event::PointerMoved(egui::pos2(20.0, 15.0)))
+							.into_iter()
+							.collect(),
+						..Default::default()
+					},
+					|ui| {
+						action = show(
+							ui,
+							state
+								.timeline
+								.get(model::Id(500))
+								.unwrap()
+								.reactions
+								.as_deref(),
+							true,
+							writing,
+							refreshing,
+							(&mut avatars, true),
+							model::Id(500),
+							state.reactions.users.as_ref(),
+							|_, _| false,
+						);
+					},
+				);
+				if frame >= 3 {
+					let mut painted = String::new();
+					for shape in &output.shapes {
+						text(&shape.shape, &mut painted);
+					}
+					assert!(
+						painted.contains("Avery, Robin, Sam"),
+						"Loaded reactor names stay visible: {painted}"
+					);
+					let plain: String = painted
+						.chars()
+						.filter(|c| !matches!(c, '\u{2068}' | '\u{2069}'))
+						.collect();
+					assert!(
+						plain.contains("2 others"),
+						"The remaining count is retained: {painted}"
+					);
+				}
+				assert!(
+					action.is_none(),
+					"A loaded tooltip must not request on every paint"
+				);
+				output.drop_without_applying_deltas();
+			}
 		}
 	}
 

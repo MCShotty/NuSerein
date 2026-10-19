@@ -37,6 +37,7 @@ impl MessagingUi {
 				NoiseSuppression::Off => "off",
 				NoiseSuppression::RnNoise => "rnnoise",
 				NoiseSuppression::WebRtc => "webrtc",
+				NoiseSuppression::LavaSrV2 => "lavasr_v2",
 			}
 			.into(),
 			suppression_level: effective.suppression_level,
@@ -200,6 +201,7 @@ impl MessagingUi {
 							"off" => NoiseSuppression::Off,
 							"rnnoise" => NoiseSuppression::RnNoise,
 							"webrtc" => NoiseSuppression::WebRtc,
+							"lavasr_v2" => NoiseSuppression::LavaSrV2,
 							_ => return Err("Invalid suppression mode".into()),
 						};
 					}
@@ -365,6 +367,31 @@ impl MessagingUi {
 mod tests {
 	use super::*;
 	use extensions::{AudioSettingsPatch, OwnPresencePatch, OwnProfilePatch};
+
+	#[test]
+	fn speech_enhancement_setting_round_trips_through_the_sdk() {
+		let mut state = test_support::demo_state();
+		let mut view = MessagingUi::default();
+		let mut commands = Vec::new();
+		let settings = AudioSettingsPatch {
+			suppression: Some("lavasr_v2".into()),
+			..Default::default()
+		};
+		assert!(settings.validate().is_ok());
+		view.apply_extension_account_action(
+			&mut state,
+			AppAction::SetAudioSettings { settings },
+			&mut commands,
+		)
+		.unwrap();
+		assert_eq!(view.voice_processing.profile, InputProfile::Custom);
+		assert_eq!(
+			view.voice_processing.effective().suppression,
+			NoiseSuppression::LavaSrV2
+		);
+		assert!(commands.is_empty() && !view.voice_preview_requested);
+		assert_eq!(view.extension_audio_settings().suppression, "lavasr_v2");
+	}
 
 	#[test]
 	fn audio_patch_uses_visible_preset_and_rejects_invalid_patch_atomically() {

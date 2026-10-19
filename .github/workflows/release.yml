@@ -147,6 +147,13 @@ jobs:
           cargo xtask package
           mkdir release-assets
           echo "ASSET=serein-$TAG-$RUNNER_OS-$RUNNER_ARCH" >> "$GITHUB_ENV"
+      - name: Verify packaged speech worker without devices
+        run: |
+          if [[ "$RUNNER_OS" == 'Windows' ]]; then
+            dist/serein.exe --self-test-lavasr
+          else
+            dist/Serein.app/Contents/MacOS/serein --self-test-lavasr
+          fi
       - name: Sign, notarize and verify Mac app
         if: runner.os == 'macOS'
         env:
@@ -166,7 +173,7 @@ jobs:
         run: |
           python packaging/windows/test_update_archive.py
           if ($LASTEXITCODE -ne 0) { throw "Windows update archive tests failed" }
-          $archive = "release-assets/${env:ASSET}-media-v3.zip"
+          $archive = "release-assets/${env:ASSET}-media-v4.zip"
           Compress-Archive -Path "$env:PACKAGE_ROOT/*" -DestinationPath $archive
           python packaging/windows/check_update_archive.py $archive
           if ($LASTEXITCODE -ne 0) { throw "Windows media update archive is incomplete or incorrectly named" }

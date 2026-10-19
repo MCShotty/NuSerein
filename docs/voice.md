@@ -633,7 +633,7 @@ Voice & Video settings offers three saved profiles:
   control (maximum 20 dB), and −55 dBFS input sensitivity.
 - **Studio:** bypasses processing and sensitivity gating. Manual gain, mute, deafen,
   push-to-talk and permission/security gates still apply.
-- **Custom:** Off, RNNoise, or WebRTC (four suppression strengths);
+- **Custom:** Off, RNNoise, WebRTC (four suppression strengths), or LavaSRv2;
   independent echo cancellation and automatic gain controls; and optional manual
   sensitivity from −80 to 0 dBFS. The gate uses 3 dB hysteresis, a 200 ms release
   hold and a 5 ms ramp. This controls transmitted audio, not just the speaking glow.
@@ -656,6 +656,40 @@ The explicit voice-message recorder below retains one bounded microphone clip in
 RAM. Quality, CPU cost, physical latency and
 cross-platform behavior require owner-operated checks; this local implementation does
 not establish production readiness or superiority over Discord's processing.
+
+**LavaSRv2** is an optional local microphone enhancer with its ULUNAS denoiser
+always enabled. Select it under **Custom → Noise suppression**. It uses 16 kHz
+denoising and restores a 48 kHz output, after echo cancellation and before gain,
+metering, sensitivity and Opus. Default profiles remain unchanged. Playback,
+screen audio and the separate RNNoise voice-message option are unaffected.
+
+The normal package bundles three hash-pinned models and CPU ONNX Runtime;
+there are no model downloads during a call, Python dependency or remote audio
+service. A disposable helper owns inference and fixed history, with one queued
+input/output block, at most four retained 20 ms output frames, epoch retirement
+on privacy/device/settings changes, up to one second for retiring-helper
+handoff, a five-second initialization deadline and a 150 ms per-request deadline. Sustained queue pressure or helper failure switches
+to RNNoise and shows a short fallback hint. Toggle suppression off and on to
+retry. Initialization warms the models on synthetic silence while using RNNoise;
+enhancement starts only from fresh PCM after initialization finishes.
+
+Streaming uses 40 ms blocks, 20 ms overlap and 40 ms lookahead; it adds voice
+delay and CPU/memory cost. The upstream 44.1 kHz mel configuration is retained
+even though waveform output is 48 kHz. This streaming adaptation is not a claim
+of quality equivalence to whole-file inference. Pinned assets, licenses and
+source provenance are in `packaging/lavasr/bundle.py` and
+`assets/licenses/voice/lavasr/PROVENANCE.md`. `serein --self-test-lavasr`
+exercises the packaged worker, reset and teardown with synthetic PCM only.
+
+## Voice-channel status
+
+Guild voice-channel custom status is displayed beneath the channel name, with
+the full text on hover. Initial metadata and live status/clear updates are
+independent of joining a call. Text is ephemeral, permission gated and bounded
+to 512 entries/1 MiB, with 500 characters per status; disconnect, logout,
+channel removal and guild selection retire obsolete state. The status gateway
+dispatch/opcode is an unofficial client protocol path; offline fixtures do not
+prove live Discord behavior. Editing the server's status is not exposed here.
 
 ## Screen sharing
 
