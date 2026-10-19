@@ -665,12 +665,12 @@ screen audio and the separate RNNoise voice-message option are unaffected.
 
 The normal package bundles three hash-pinned models and CPU ONNX Runtime;
 there are no model downloads during a call, Python dependency or remote audio
-service. A disposable helper owns inference and fixed history, with one queued
-input/output block, at most four retained 20 ms output frames, epoch retirement
+service. A disposable helper owns inference and fixed history, with at most two queued
+input blocks and one output block, at most four retained 20 ms output frames, epoch retirement
 on privacy/device/settings changes, up to one second for retiring-helper
 handoff, a five-second initialization deadline and a 150 ms per-request deadline. Sustained queue pressure or helper failure switches
 to RNNoise and shows a short fallback hint. Toggle suppression off and on to
-retry. Initialization warms the models on synthetic silence while using RNNoise;
+retry. Initialization warms the models on synthetic audio while using RNNoise;
 enhancement starts only from fresh PCM after initialization finishes.
 
 Streaming uses 40 ms blocks, 20 ms overlap and 40 ms lookahead; it adds voice
@@ -679,7 +679,10 @@ even though waveform output is 48 kHz. This streaming adaptation is not a claim
 of quality equivalence to whole-file inference. Pinned assets, licenses and
 source provenance are in `packaging/lavasr/bundle.py` and
 `assets/licenses/voice/lavasr/PROVENANCE.md`. `serein --self-test-lavasr`
-exercises the packaged worker, reset and teardown with synthetic PCM only.
+checks packaged model initialization, reset and teardown using synthetic silence,
+without requiring real-time inference speed from shared CI machines. Nonzero
+model regressions and separate helper benchmarks cover processing; these checks
+do not establish physical microphone quality.
 
 ## Voice-channel status
 
