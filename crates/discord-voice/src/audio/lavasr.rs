@@ -301,13 +301,16 @@ fn supervise(
 	let mut stdin = process.0.stdin.take().ok_or(())?;
 	let (read_send, read_receive) = mpsc::sync_channel(2);
 	let (write_send, write_receive) = mpsc::sync_channel::<Packet>(1);
+	let supervisor = thread::current();
 	let reader = thread::Builder::new()
 		.name("voice-speech-reader".into())
 		.spawn(move || {
 			loop {
 				let result = read_packet(&mut stdout);
 				let failed = result.is_err();
-				if read_send.try_send(result).is_err() || failed {
+				let sent = read_send.try_send(result);
+				supervisor.unpark();
+				if sent.is_err() || failed {
 					break;
 				}
 			}
@@ -485,7 +488,14 @@ pub fn command() -> Option<i32> {
 	let result = if helper && !test {
 		worker()
 	} else if test && !helper {
-		self_test()
+		let result = self_test();
+		// A failing command must still let the supervisor kill and reap its child
+		// before main exits; Controller::drop itself never blocks the audio worker.
+		let deadline = Instant::now() + Duration::from_secs(2);
+		while ACTIVE.load(Ordering::Acquire) && Instant::now() < deadline {
+			thread::sleep(Duration::from_millis(5));
+		}
+		result
 	} else {
 		Err("Choose one speech command")
 	};

@@ -171,7 +171,7 @@
             ${lib.concatMapStringsSep "\n" (source: ''cp ${source} speech-cache/${source.name}'') speechSources}
             python3 ${../packaging/lavasr/bundle.py} "$out" --cache-dir speech-cache --offline
         '';
-        meta.license = [lib.licenses.mit lib.licenses.asl20];
+        meta.license = [lib.licenses.mit lib.licenses.asl20 lib.licenses.mpl20];
     };
 
     # webKit stack
