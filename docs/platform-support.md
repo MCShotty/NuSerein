@@ -430,9 +430,10 @@ retirement, suppression, blocking, spoiler revocation, session changes and logou
 the view. Loading failures expose Retry and the existing confirmed Open original action.
 Provider restrictions, private/age-restricted videos, native runtime availability and live
 playback remain separate acceptance checks. Other provider-only HTML players retain the
-confirmed browser fallback; no arbitrary-origin extractor is added.
-Audio synchronization, seeking, rotation, pause, volume and cancellation remain
-in the desktop player. Incoming camera/screen video uses the same typed pictures
+confirmed browser fallback; no arbitrary-origin extractor is added. Provider playback
+uses the web engine's controls and system audio output.
+Direct-file audio synchronization, seeking, rotation, pause, volume and cancellation
+remain in the desktop player. Incoming camera/screen video uses the same typed pictures
 through 8K, including 6144×2560, with bounded queues and latest-frame presentation.
 
 PQ and HLG retain ten-bit P010 pixels and explicit range/matrix/primaries. A
