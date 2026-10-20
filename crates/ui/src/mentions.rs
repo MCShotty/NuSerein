@@ -1088,6 +1088,10 @@ mod tests {
 			.find(|c| c.id == channel)
 			.unwrap()
 			.guild = Some(Id(2));
+		state
+			.permissions
+			.replace(test_support::permission_snapshot(&state))
+			.unwrap();
 		menu.refresh(&state, channel, ":wave", Some(5), &[]);
 		assert_eq!(menu.candidates[0].id(), Id(1));
 	}
