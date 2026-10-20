@@ -178,6 +178,17 @@ command are in `assets/icons/README.md`. The profile popout keeps its 300px Disc
 Voice & Video places video backend and codec controls after audio, keybinds and
 camera controls, at the bottom of the page.
 
+Social link cards place post photos below the text, including portrait photos and related
+thumbnail galleries; explicit bot thumbnails retain their side placement. Provider labels
+use the small muted style. Embedded video with unknown dimensions reserves a normal
+16:9 stage, and pictures keep their aspect ratio. Direct media files use the
+native player, including extensionless proxy/offload endpoints. YouTube posters and Play buttons
+open its isolated provider player, with Close, Retry and confirmed Open original actions.
+The native video window is a child surface on Windows/macOS and a separate Serein window
+on Linux. Provider content loads only after Play; source/session/privacy changes retire it.
+`profile_preview --demo --page=embeds --media-embeds` exercises synthetic social/video cards;
+`--provider-embed` selects the YouTube fixture without contacting a provider.
+
 Shortcut capture also accepts egui's browser, media and system keys, including Caps Lock,
 Pause and the macOS Fn key, when the OS delivers them to the focused window. These bindings
 persist through the existing device settings. Global availability remains limited by the

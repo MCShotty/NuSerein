@@ -1927,6 +1927,33 @@ impl TimelineView {
 		})
 	}
 	pub(super) fn show_fullscreen_video(&mut self, ctx: &egui::Context, state: &State) -> bool {
+		if let Some(provider) = &self.video.provider {
+			let valid = provider.generation == state.generation
+				&& display_message(state, provider.message).is_some_and(|message| {
+					state.selected == Some(provider.channel)
+						&& message.channel == provider.channel
+						&& self
+							.restricted
+							.allows(state, crate::restricted::Key::message(message))
+						&& !message.embeds_suppressed
+						&& (!crate::embeds::has_media_spoilers(message)
+							|| self
+								.revealed
+								.get(&message.id)
+								.is_some_and(|reveal| reveal.media && reveal.matches(message)))
+						&& message.embeds.iter().any(|embed| {
+							crate::embeds::youtube_video(embed).as_ref() == Some(&provider.target)
+								&& crate::embeds::provider_source(embed).as_deref()
+									== Some(provider.source.as_str())
+						})
+				});
+			if valid {
+				self.video.show_provider(ctx, &mut self.opening);
+			} else {
+				self.video.stop();
+			}
+			return valid;
+		}
 		if self.video.is_fullscreen() {
 			let current = self
 				.video
@@ -5650,6 +5677,91 @@ mod tests {
 					"channel navigation resets the embed viewer"
 				);
 			}
+		}
+	}
+
+	/// Provider playback is revoked before exposing a stale or newly restricted message.
+	#[test]
+	fn provider_players_retire_with_source_privacy_and_session_changes() {
+		for reason in 0..9 {
+			let mut state = test_support::demo_state();
+			let channel = state.selected.unwrap();
+			let mut message = test_support::message(600, channel);
+			message.author.id = Id(900);
+			message.attachments.clear();
+			message.embeds = vec![model::Embed {
+				kind: "video".into(),
+				url: Some("https://youtu.be/fT6TIXnmv-s".into()),
+				..Default::default()
+			}];
+			state.timeline.clear();
+			state.timeline.seed_cache(vec![message.clone()]).unwrap();
+			let ctx = egui::Context::default();
+			let mut view = TimelineView::default();
+			view.video.open_provider(
+				&message,
+				model::YouTubeVideo::new("fT6TIXnmv-s", 0).unwrap(),
+				message.embeds[0].url.clone().unwrap(),
+				state.generation,
+			);
+			let render = |view: &mut TimelineView, state: &State, events| {
+				let mut shown = false;
+				ctx.run_ui(
+					egui::RawInput {
+						events,
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(900.0, 700.0),
+						)),
+						..Default::default()
+					},
+					|ui| {
+						shown = view.show_fullscreen_video(ui.ctx(), state);
+					},
+				)
+				.drop_without_applying_deltas();
+				shown
+			};
+			assert!(render(&mut view, &state, vec![]));
+			assert!(render(&mut view, &state, vec![]));
+			assert!(view.video.provider.as_ref().unwrap().bounds.is_some());
+			match reason {
+				0 => state.selected = Some(Id(999)),
+				1 => message.embeds_suppressed = true,
+				2 => message.embeds.clear(),
+				3 => message.embeds[0].url = Some("https://youtu.be/synthet1c01".into()),
+				4 => message.embeds[0].description = Some("||hidden media||".into()),
+				5 => {
+					state.apply(client_core::Envelope {
+						generation: state.generation,
+						event: client_core::Event::UserAction(
+							client_core::user_actions::Event::Relationship {
+								user: message.author.id,
+								blocked: true,
+							},
+						),
+					});
+				}
+				6 => state.timeline.clear(),
+				7 => state.generation += 1,
+				_ => {}
+			};
+			if (1..=4).contains(&reason) {
+				state.timeline.insert(message, true, false).unwrap();
+			}
+			let events = if reason == 8 {
+				vec![egui::Event::Key {
+					key: egui::Key::Escape,
+					physical_key: None,
+					pressed: true,
+					repeat: false,
+					modifiers: egui::Modifiers::NONE,
+				}]
+			} else {
+				vec![]
+			};
+			render(&mut view, &state, events);
+			assert!(view.video.provider.is_none(), "retirement reason {reason}");
 		}
 	}
 

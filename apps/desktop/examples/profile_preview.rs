@@ -685,6 +685,76 @@ fn channel_settings(
 }
 
 /// Bounded, offline conversation for typography and spacing comparisons.
+fn prime_media_embeds(state: &mut client_core::State, provider_only: bool) {
+	let channel = state.selected.expect("synthetic embed conversation");
+	let poster = model::EmbedMedia {
+		url: Some("https://example.org/synthetic/poster.png".into()),
+		proxy_url: Some("https://images-ext-1.discordapp.net/external/synthetic-poster/https/example.org/poster.png".into()),
+		width: 960,
+		height: 540,
+		..Default::default()
+	};
+	let messages = (if provider_only { 2..3 } else { 0..2 })
+		.rev()
+		.map(|variant| {
+			let mut message = test_support::message(600 + variant, channel);
+			message.attachments.clear();
+			message.reactions = Some(vec![]);
+			message.reply_to = None;
+			let embed = match variant {
+				0 => model::Embed {
+					kind: "rich".into(),
+					url: Some("https://x.com/synthetic/status/600".into()),
+					description: Some("A synthetic post with a full-size photo. The photo should sit below the text and keep its original proportions.".into()),
+					author: Some(model::EmbedAuthor {
+						name: "Synthetic (@synthetic)".into(),
+						url: Some("https://x.com/synthetic".into()),
+						..Default::default()
+					}),
+					thumbnail: Some(poster.clone()),
+					footer: Some(model::EmbedFooter { text: "X".into(), ..Default::default() }),
+					timestamp: Some("2026-10-12T17:37:03Z".into()),
+					color: Some(0x1da1f2),
+					..Default::default()
+				},
+				1 => model::Embed {
+					kind: "video".into(),
+					url: Some("https://example.org/synthetic/video".into()),
+					title: Some("Video without size metadata".into()),
+					video: Some(model::EmbedMedia {
+						url: Some("https://example.org/synthetic/video.mp4".into()),
+						proxy_url: Some("https://media.discordapp.net/external/synthetic-video/https/example.org/video.mp4".into()),
+						..Default::default()
+					}),
+					..Default::default()
+				},
+				_ => model::Embed {
+					kind: "video".into(),
+					url: Some("https://www.youtube.com/watch?v=synthet1c01".into()),
+					title: Some("Provider-hosted player".into()),
+					provider: Some(model::EmbedAuthor { name: "YouTube".into(), ..Default::default() }),
+					thumbnail: Some(poster.clone()),
+					video: Some(model::EmbedMedia {
+						url: Some("https://www.youtube.com/embed/synthet1c01".into()),
+						width: 1280,
+						height: 720,
+						..Default::default()
+					}),
+					..Default::default()
+				},
+			};
+			message.content = embed.url.clone().unwrap();
+			message.embeds = vec![embed];
+			message
+		})
+		.collect();
+	state.timeline.clear();
+	state
+		.timeline
+		.seed_cache(messages)
+		.expect("synthetic media embeds");
+}
+
 fn prime_conversation(state: &mut client_core::State, inline_media: bool) {
 	let channel = state.selected.expect("synthetic conversation");
 	let ready = client_core::Event::Ready {
@@ -845,7 +915,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -1000,7 +1070,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			if args.iter().any(|arg| arg == "--nitro") {
 				state.premium_type = 2;
 			}
-			if page == "embeds" {
+			if page == "embeds" && args.iter().any(|arg| arg == "--media-embeds") {
+				prime_media_embeds(&mut state, args.iter().any(|arg| arg == "--provider-embed"));
+			} else if page == "embeds" {
 				let channel = state.selected.expect("synthetic embed conversation");
 				let messages = (0..3)
 					.rev()

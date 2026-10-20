@@ -5389,3 +5389,11 @@ announcement-follow-title = Follow Announcement Channel
 announcement-follow-detail = Published announcements will be delivered to the channel you choose. You need Manage Webhooks there. Manage or unfollow this feed in that server's Integrations settings.
 announcement-follow-search = Search servers and channels
 announcement-follow-no-targets = No matching destinations are available with your current permissions.
+
+video-provider-play = Play YouTube video
+video-provider-close = Close
+video-provider-loading = Loading video player…
+video-provider-separate-window = Playback is open in the video window.
+video-provider-retry = Retry
+video-provider-open-original = Open original…
+video-provider-load-failed = Could not load the video player. Retry or open the original.

@@ -1453,7 +1453,15 @@ There is no status history. Demo changes never publish, persist, or call Discord
 Native video decoding is memory-only. One lazy worker handles the latest requested attachment,
 with a replaceable pending request and cancellation fencing. The network source retains
 up to eight 256 KiB ranges (2 MiB, including an in-flight range); responses are checked for exact range/total/body lengths and reject
-redirects and content encoding. Encoded attachment size is capped at 100 MiB.
+content encoding. Attachment reads refuse redirects. Encoded attachment size is capped at 100 MiB.
+An explicitly played embed with unknown length may accept one complete response when
+the server ignores Range, capped at 256 KiB and retained inside the same source cache.
+Larger responses still require range support. This fallback has the same cancellation
+checks and request timeout; it does not create a file cache. Explicit embed playback prefers
+Discord's external media proxy. Without one, it admits only Twitter's public MP4 paths,
+OGInstagram's offload endpoint and MP4 files on Instagram's public CDNs. At most three
+redirects may stay within these approved HTTPS media origins; credentials, arbitrary hosts,
+loopback URLs and provider HTML pages are refused. Signed queries remain opaque and unlogged.
 The application queues at most two decoded frames (1080p NV12 on macOS and Linux,
 RGBA on Windows), one replaceable display frame, one GPU texture with its planes, one second of stereo float PCM (at most 768,000 bytes), and one decoded
 audio packet plus at most two seconds of timestamp-gap silence. Each native decoded
@@ -2142,3 +2150,29 @@ in the UI and one pending creation snapshot, plus one fixed-size returned ID/req
 record. Its wire response is capped at 32 KiB; channel and owner/recipient projections
 are both charged to the event budget. The offline fixture retains at most 64 fixed-size
 group owner ID pairs, cleared at the session boundary; it is never a live data cache.
+
+### Explicit provider video playback
+
+One user-selected YouTube player may exist at a time. Its request retains one public
+video ID, start time, source link (at most 2048 bytes), message/channel/generation IDs
+and one viewport rectangle. These fields are session-only and not written to the client
+cache or diagnostics. Native playback stops when the request is dismissed, loses its
+message/source/reveal permission, changes session, is hidden/minimized or logs out.
+Demo and synthetic application fixtures never create an external provider view.
+
+The official privacy-enhanced YouTube player receives only its selected video/start
+parameters and a fixed Serein project referrer. It has no Discord token, login IPC,
+account identifiers, cached browser profile or authenticated HTTP client. Playback
+loads provider-managed scripts/media after the explicit click; it uses the native web
+engine rather than FFmpeg's anonymous range reader. Navigation is pinned to that
+player and popups, downloads and permission requests are denied. Reported startup failures
+or a 30-second load timeout expose Retry/Open original without an automatic retry loop.
+Other provider-only HTML players keep the existing confirmed browser action.
+
+Windows/macOS use a dedicated incognito WebContext; an owner-private temporary directory
+keeps its engine data separate from authentication and is removed when the view is
+released (OS/browser file locks can delay or prevent cleanup; this is not forensic erasure).
+Linux uses a separate ephemeral WebKit network session with persistent credentials
+disabled, and destroys its window/web process on retirement. Native browser processes,
+caches and decoder allocations are additional to Serein's bounded player bookkeeping;
+provider-process memory and live playback require separate native measurements.

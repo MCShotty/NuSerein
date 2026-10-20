@@ -142,34 +142,24 @@ pub fn standalone_media_links(message: &Message) -> bool {
 		})
 }
 
-/// A directly proxied MP4/MOV embed video (X, Reddit, Streamable…) for the native player.
-/// Only Discord's media proxy is fetched; the desktop validates the URL again.
+/// A media proxy or known public provider's video file for the native player.
+/// The desktop validates the URL again; HTML players must not reach a file decoder.
 pub(crate) fn native_video(embed: &Embed) -> Option<model::Attachment> {
 	if embed.kind == "gifv" {
 		return None;
 	}
 	let video = embed.video.as_ref()?;
-	let proxy = video.proxy_url.as_deref().filter(|url| {
-		url.len() <= 2048
-			&& url::Url::parse(url).ok().is_some_and(|url| {
-				url.scheme() == "https"
-					&& url.host_str() == Some("media.discordapp.net")
-					&& url.port_or_known_default() == Some(443)
-					&& url.username().is_empty()
-					&& url.password().is_none()
-					&& url.fragment().is_none()
-					&& url.path().starts_with("/external/")
-					&& !url.path().contains('\\')
-					&& crate::avatars::media::is_motion_video(url.path())
-			})
-	})?;
-	let poster = embed.thumbnail.as_ref().or(embed.image.as_ref());
-	let dimension = |video: u32, poster: Option<u32>| {
-		if video > 0 {
-			video
-		} else {
-			poster.unwrap_or(0)
-		}
+	if video.url.as_deref().and_then(youtube_target).is_some() {
+		return None;
+	}
+	let proxy = crate::video::embedded_video_url(video)?;
+	let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
+	let (width, height) = if video.width > 0 && video.height > 0 {
+		(video.width, video.height)
+	} else if let Some(poster) = poster.filter(|poster| poster.width > 0 && poster.height > 0) {
+		(poster.width, poster.height)
+	} else {
+		(0, 0)
 	};
 	Some(model::Attachment {
 		id: model::Id(0),
@@ -184,10 +174,10 @@ pub(crate) fn native_video(embed: &Embed) -> Option<model::Attachment> {
 		// Unknown size marks an embed; the desktop probes it with a range request.
 		size: 0,
 		media: model::EmbedMedia {
-			url: Some(proxy.to_owned()),
+			url: Some(proxy.into()),
 			proxy_url: None,
-			width: dimension(video.width, poster.map(|p| p.width)),
-			height: dimension(video.height, poster.map(|p| p.height)),
+			width,
+			height,
 			placeholder: Vec::new(),
 		},
 		spoiler: false,
@@ -219,7 +209,7 @@ fn gallery_len(embeds: &[Embed]) -> usize {
 		return 0;
 	};
 	let eligible = |e: &Embed| {
-		e.image.is_some()
+		(e.image.is_some() || large_thumbnail(e).is_some())
 			&& e.video.is_none()
 			&& matches!(e.kind.as_str(), "rich" | "article" | "link" | "image")
 	};
@@ -237,7 +227,9 @@ fn gallery_len(embeds: &[Embed]) -> usize {
 				&& (e.provider.is_none() || e.provider == first.provider)
 				&& (e.footer.is_none() || e.footer == first.footer)
 				&& (e.timestamp.is_none() || e.timestamp == first.timestamp)
-				&& (e.thumbnail.is_none() || e.thumbnail == first.thumbnail)
+				&& (e.thumbnail.is_none()
+					|| e.thumbnail == first.thumbnail
+					|| (first.image.is_none() && e.image.is_none() && large_thumbnail(e).is_some()))
 				&& (e.fields.is_empty() || e.fields == first.fields)
 		})
 		.count()
@@ -292,7 +284,11 @@ fn gallery(
 				.id_salt(("gallery", index))
 				.max_rect(rect),
 			|ui| {
-				let media = embed.image.as_ref().expect("gallery has images");
+				let media = embed
+					.image
+					.as_ref()
+					.or_else(|| large_thumbnail(embed))
+					.expect("gallery has images");
 				let target = media
 					.url
 					.as_deref()
@@ -430,10 +426,123 @@ pub(crate) fn gif_for_media(
 fn large_thumbnail(embed: &Embed) -> Option<&model::EmbedMedia> {
 	embed.thumbnail.as_ref().filter(|thumbnail| {
 		embed.image.is_none()
-			&& matches!(embed.kind.as_str(), "article" | "link" | "video")
-			&& thumbnail.width >= 300
-			&& thumbnail.width as f32 >= thumbnail.height as f32 * 1.2
+			&& (social_post(embed)
+				|| (matches!(embed.kind.as_str(), "article" | "link" | "video")
+					&& thumbnail.width >= 300
+					&& thumbnail.width as f32 >= thumbnail.height as f32 * 1.2))
 	})
+}
+
+fn social_post(embed: &Embed) -> bool {
+	embed
+		.url
+		.as_deref()
+		.and_then(|raw| url::Url::parse(raw).ok())
+		.is_some_and(|url| {
+			matches!(
+				url.host_str(),
+				Some(
+					"x.com"
+						| "www.x.com" | "twitter.com"
+						| "www.twitter.com"
+						| "fxtwitter.com" | "fixupx.com"
+						| "vxtwitter.com" | "fixvx.com"
+						| "bsky.app" | "reddit.com"
+						| "www.reddit.com" | "old.reddit.com"
+						| "redd.it" | "instagram.com"
+						| "www.instagram.com"
+						| "oginstagram.com"
+						| "www.oginstagram.com"
+				)
+			)
+		})
+}
+
+pub(crate) fn youtube_video(embed: &Embed) -> Option<model::YouTubeVideo> {
+	[
+		embed.url.as_deref(),
+		embed.video.as_ref().and_then(|video| video.url.as_deref()),
+	]
+	.into_iter()
+	.flatten()
+	.find_map(youtube_target)
+}
+fn youtube_target(raw: &str) -> Option<model::YouTubeVideo> {
+	if raw.len() > 2048 || raw.contains('\\') {
+		return None;
+	}
+	let url = url::Url::parse(raw).ok()?;
+	if url.scheme() != "https"
+		|| url.port_or_known_default() != Some(443)
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+	{
+		return None;
+	}
+	let query_id = url
+		.query_pairs()
+		.find(|(key, _)| key == "v")
+		.map(|(_, value)| value.into_owned());
+	let id = match url.host_str()? {
+		"youtu.be" => url.path().strip_prefix('/')?,
+		"youtube.com"
+		| "www.youtube.com"
+		| "m.youtube.com"
+		| "music.youtube.com"
+		| "youtube-nocookie.com"
+		| "www.youtube-nocookie.com" => {
+			if url.path() == "/watch" {
+				query_id.as_deref()?
+			} else {
+				["/embed/", "/shorts/", "/live/"]
+					.into_iter()
+					.find_map(|prefix| url.path().strip_prefix(prefix))?
+			}
+		}
+		_ => return None,
+	};
+	let start = url
+		.query_pairs()
+		.find(|(key, _)| key == "start")
+		.or_else(|| url.query_pairs().find(|(key, _)| key == "t"))
+		.and_then(|(_, value)| youtube_start(&value))
+		.unwrap_or(0);
+	model::YouTubeVideo::new(id, start)
+}
+pub(crate) fn provider_source(embed: &Embed) -> Option<String> {
+	[
+		embed.url.as_deref(),
+		embed.video.as_ref().and_then(|video| video.url.as_deref()),
+	]
+	.into_iter()
+	.flatten()
+	.find_map(external_url)
+}
+fn youtube_start(raw: &str) -> Option<u32> {
+	if raw.is_empty() || raw.len() > 32 {
+		return None;
+	}
+	let (mut total, mut value, mut digits) = (0_u32, 0_u32, false);
+	for byte in raw.bytes() {
+		if byte.is_ascii_digit() {
+			value = value.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;
+			digits = true;
+		} else {
+			if !digits {
+				return None;
+			}
+			let factor = match byte {
+				b'h' => 3600,
+				b'm' => 60,
+				b's' => 1,
+				_ => return None,
+			};
+			total = total.checked_add(value.checked_mul(factor)?)?;
+			value = 0;
+			digits = false;
+		}
+	}
+	total.checked_add(value)
 }
 
 /// Discord's closed-poll card: the winning answer and a jump back to the poll.
@@ -563,6 +672,92 @@ fn image_preview(
 	embed_context_menu(&response, image, download, demo);
 	if response.clicked() {
 		download.view_embed(message, image);
+	}
+}
+
+#[allow(clippy::too_many_arguments)]
+fn browser_video_preview(
+	ui: &mut egui::Ui,
+	message: &Message,
+	embed: &Embed,
+	poster: &model::EmbedMedia,
+	images: &mut Avatars,
+	download: &mut DownloadUi,
+	opening: &mut Option<String>,
+	video: &mut crate::video::VideoUi,
+	state: &client_core::State,
+) {
+	let demo = state.demo;
+	let target = provider_source(embed);
+	let painted = images
+		.show_media(
+			ui,
+			poster,
+			egui::vec2(
+				ui.available_width(),
+				crate::avatars::media::MEDIA_MAX_HEIGHT,
+			),
+			demo,
+			Surface::Inline,
+		)
+		.response;
+	let response = ui.interact(
+		painted.rect,
+		painted.id.with("open-video"),
+		if target.is_some() {
+			egui::Sense::click()
+		} else {
+			egui::Sense::hover()
+		},
+	);
+	embed_context_menu(&response, poster, download, demo);
+	let Some(target) = target else { return };
+	let provider = youtube_video(embed);
+	response.widget_info(|| {
+		egui::WidgetInfo::labeled(
+			if provider.is_some() {
+				egui::Role::Button
+			} else {
+				egui::Role::Link
+			},
+			ui.is_enabled(),
+			crate::i18n::translate(if provider.is_some() {
+				"video-provider-play"
+			} else {
+				"embeds-show-video-preview-playback-opens-in-your-browser"
+			}),
+		)
+	});
+	let painter = ui.painter().with_clip_rect(response.rect);
+	let center = response.rect.center();
+	painter.circle_filled(
+		center,
+		28.0,
+		egui::Color32::from_black_alpha(if response.hovered() { 210 } else { 170 }),
+	);
+	painter.add(egui::Shape::convex_polygon(
+		vec![
+			center + egui::vec2(-7.0, -11.0),
+			center + egui::vec2(12.0, 0.0),
+			center + egui::vec2(-7.0, 11.0),
+		],
+		egui::Color32::WHITE,
+		egui::Stroke::NONE,
+	));
+	if response
+		.on_hover_cursor(egui::CursorIcon::PointingHand)
+		.on_hover_text(crate::i18n::translate(if provider.is_some() {
+			"video-provider-play"
+		} else {
+			"embeds-show-video-preview-playback-opens-in-your-browser"
+		}))
+		.clicked()
+	{
+		if let Some(provider) = provider {
+			video.open_provider(message, provider, target, state.generation);
+		} else {
+			*opening = Some(target);
+		}
 	}
 }
 
@@ -699,9 +894,14 @@ pub fn show(
 							let part = 1 + index as u16 * 64;
 							let native = native_video(embed);
 							let playable = native.is_some();
+							let provider = youtube_video(embed);
+							let web_video = provider.is_some()
+								|| embed.video.is_some() || embed.kind == "video";
 							let large = large_thumbnail(embed).filter(|_| count == 1);
 							let thumbnail = embed.thumbnail.as_ref().filter(|_| {
-								!playable && large.is_none() && ui.available_width() >= 300.0
+								!playable
+									&& !web_video && large.is_none()
+									&& ui.available_width() >= 300.0
 							});
 							let body_width = (ui.available_width()
 								- if thumbnail.is_some() { 96.0 } else { 0.0 })
@@ -710,13 +910,20 @@ pub fn show(
 								ui.vertical(|ui| {
 									ui.set_width(body_width);
 									if let Some(provider) = &embed.provider {
-										link(
-											ui,
-											&provider.name,
-											provider.url.as_deref(),
-											opening,
-											false,
-										);
+										ui.scope(|ui| {
+											ui.style_mut().text_styles.insert(
+												egui::TextStyle::Body,
+												egui::FontId::proportional(12.0),
+											);
+											ui.visuals_mut().hyperlink_color = colors.muted;
+											link(
+												ui,
+												&provider.name,
+												provider.url.as_deref(),
+												opening,
+												false,
+											);
+										});
 									}
 									if let Some(author) = &embed.author {
 										// Discord: a 24 px icon and the name in strong text,
@@ -811,7 +1018,7 @@ pub fn show(
 								});
 								field += count;
 							}
-							let poster = embed.thumbnail.as_ref().or(embed.image.as_ref());
+							let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
 							if let Some(attachment) = &native {
 								let size =
 									crate::video::stage_size(attachment, ui.available_width());
@@ -844,6 +1051,11 @@ pub fn show(
 								});
 							} else if count > 1 {
 								gallery(ui, group, images, message.id, download, demo);
+							} else if let Some(poster) = poster.filter(|_| web_video) {
+								browser_video_preview(
+									ui, message, embed, poster, images, download, opening, video,
+									state,
+								);
 							} else if let Some(image) = embed.image.as_ref().or(large) {
 								image_preview(
 									ui,
@@ -860,7 +1072,7 @@ pub fn show(
 							}
 							if thumbnail.is_none()
 								&& !playable && large.is_none()
-								&& let Some(image) = &embed.thumbnail
+								&& !web_video && let Some(image) = &embed.thumbnail
 							{
 								image_preview(
 									ui,
@@ -873,6 +1085,18 @@ pub fn show(
 								);
 							}
 							if !playable
+								&& poster.is_none() && let Some(target) = provider
+								&& crate::design::button(
+									ui,
+									"video-provider-play",
+									crate::design::ButtonKind::Outline,
+								)
+								.clicked() && let Some(source) = provider_source(embed)
+							{
+								video.open_provider(message, target, source, state.generation);
+							}
+							if !playable
+								&& youtube_video(embed).is_none()
 								&& (embed.video.is_some()
 									|| matches!(embed.kind.as_str(), "video" | "gifv"))
 							{
@@ -1069,6 +1293,165 @@ pub fn estimated_height(embeds: &[Embed]) -> f32 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn youtube_links_resolve_only_bounded_public_video_ids_and_start_times() {
+		for (url, start) in [
+			("https://youtu.be/fT6TIXnmv-s", 0),
+			("https://youtu.be/fT6TIXnmv-s?t=1m2s", 62),
+			("https://www.youtube.com/watch?v=fT6TIXnmv-s&start=12", 12),
+			("https://www.youtube.com/shorts/fT6TIXnmv-s", 0),
+			("https://www.youtube.com/live/fT6TIXnmv-s", 0),
+			("https://www.youtube-nocookie.com/embed/fT6TIXnmv-s", 0),
+		] {
+			let embed = Embed {
+				url: Some(url.into()),
+				..Default::default()
+			};
+			assert_eq!(
+				youtube_video(&embed),
+				model::YouTubeVideo::new("fT6TIXnmv-s", start)
+			);
+		}
+		for raw in [
+			"https://youtu.be/short",
+			"https://youtu.be/fT6TIXnmv-s/extra",
+			"https://www.youtube.com/playlist?list=synthetic",
+			"https://youtube.com.evil.test/watch?v=fT6TIXnmv-s",
+			"https://user@youtu.be/fT6TIXnmv-s",
+			"https://youtu.be:444/fT6TIXnmv-s",
+			"javascript:alert(1)",
+		] {
+			assert!(
+				youtube_video(&Embed {
+					url: Some(raw.into()),
+					..Default::default()
+				})
+				.is_none(),
+				"{raw}"
+			);
+		}
+		assert_eq!(youtube_start("9999999999999999999999999999h"), None);
+		assert_eq!(youtube_start("1m2s"), Some(62));
+		assert!(model::YouTubeVideo::new("<script>", 0).is_none());
+	}
+
+	#[test]
+	fn social_thumbnails_use_full_media_and_group_without_changing_bot_cards() {
+		let mut embeds = gallery_embeds(3);
+		for (index, embed) in embeds.iter_mut().enumerate() {
+			embed.url = Some("https://vxtwitter.com/synthetic/status/1".into());
+			embed.thumbnail = embed.image.take();
+			if index == 0 {
+				embed.description = Some("A synthetic post".into());
+			}
+			assert!(large_thumbnail(embed).is_some());
+		}
+		assert_eq!(gallery_len(&embeds), 3);
+		for url in [
+			"https://x.com/synthetic/status/1",
+			"https://www.instagram.com/reel/synthetic",
+			"https://www.oginstagram.com/reel/synthetic",
+		] {
+			embeds[0].url = Some(url.into());
+			embeds[0].thumbnail.as_mut().unwrap().width = 720;
+			embeds[0].thumbnail.as_mut().unwrap().height = 1280;
+			assert!(
+				large_thumbnail(&embeds[0]).is_some(),
+				"portrait photos belong below the text"
+			);
+		}
+		embeds[0].url = Some("https://example.org/bot".into());
+		assert!(large_thumbnail(&embeds[0]).is_none());
+	}
+
+	#[test]
+	fn provider_poster_keyboard_play_never_opens_the_image_viewer() {
+		for (youtube, poster) in [(true, true), (true, false), (false, true)] {
+			let source = if youtube {
+				"https://youtu.be/fT6TIXnmv-s"
+			} else {
+				"https://example.org/synthetic/player"
+			};
+			let mut message = test_support::message(1, model::Id(2));
+			message.embeds = vec![Embed {
+				kind: "video".into(),
+				url: Some(source.into()),
+				video: Some(model::EmbedMedia {
+					url: Some(
+						if youtube {
+							"https://www.youtube.com/embed/fT6TIXnmv-s"
+						} else {
+							"https://example.org/synthetic/embed"
+						}
+						.into(),
+					),
+					..Default::default()
+				}),
+				thumbnail: poster.then(|| model::EmbedMedia {
+					width: 960,
+					height: 540,
+					..Default::default()
+				}),
+				..Default::default()
+			}];
+			let ctx = egui::Context::default();
+			let mut video = crate::video::VideoUi::default();
+			let mut opening = None;
+			let mut download = DownloadUi::default();
+			let mut frame = |events| {
+				ctx.run_ui(
+					egui::RawInput {
+						events,
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(480.0, 800.0),
+						)),
+						..Default::default()
+					},
+					|ui| {
+						show(
+							ui,
+							&message,
+							&mut FormatCache::default(),
+							&mut Avatars::default(),
+							&mut opening,
+							&mut download,
+							&mut crate::profiles::ProfileSession::default(),
+							&mut video,
+							&client_core::State::default(),
+							crate::design::MessageCardSurface::Conversation,
+							false,
+						);
+					},
+				)
+				.drop_without_applying_deltas();
+			};
+			frame(vec![]);
+			for key in [egui::Key::Tab, egui::Key::Enter] {
+				frame(vec![egui::Event::Key {
+					key,
+					physical_key: None,
+					pressed: true,
+					repeat: false,
+					modifiers: egui::Modifiers::NONE,
+				}]);
+			}
+			assert!(download.embed_view_request.is_none());
+			if youtube {
+				assert!(opening.is_none());
+				assert_eq!(
+					video.provider.as_ref().unwrap().target,
+					model::YouTubeVideo::new("fT6TIXnmv-s", 0).unwrap()
+				);
+				assert!(video.provider.as_ref().unwrap().start_requested);
+				assert!(video.active.is_none());
+			} else {
+				assert_eq!(opening.as_deref(), Some(source));
+				assert!(video.provider.is_none());
+			}
+		}
+	}
 
 	#[test]
 	fn source_fallback_requires_a_safe_url_without_an_existing_source_action() {
@@ -1399,6 +1782,13 @@ mod tests {
 			..Default::default()
 		};
 		assert!(native_video(&youtube).is_none());
+		let mut proxied_html = youtube.clone();
+		proxied_html.video.as_mut().unwrap().proxy_url = Some(
+			"https://media.discordapp.net/external/hash/https/www.youtube.com/embed/KwRSAfoW5uo"
+				.into(),
+		);
+		assert!(native_video(&proxied_html).is_none());
+		assert!(youtube_video(&proxied_html).is_some());
 		let mut x = youtube.clone();
 		x.thumbnail.as_mut().unwrap().width = 480;
 		x.thumbnail.as_mut().unwrap().height = 360;

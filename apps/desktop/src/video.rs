@@ -60,11 +60,19 @@ struct PosterDone {
 	frame: Option<(u32, u32, Vec<u8>)>,
 	cancelled: Arc<AtomicBool>,
 }
+struct ProviderSession {
+	generation: u64,
+	message: model::Id,
+	channel: model::Id,
+	target: model::YouTubeVideo,
+	view: platform::embed_player::ProviderPlayer,
+}
 #[derive(Default)]
 pub struct Video {
 	adapter: Option<model::VideoAdapter>,
 	pub output: Option<String>,
 	session: Option<Arc<Session>>,
+	provider: Option<ProviderSession>,
 	requests: Option<tokio::sync::watch::Sender<Option<Request>>>,
 	poster_jobs: Option<std::sync::mpsc::Sender<PosterJob>>,
 	poster_results: Arc<Mutex<Vec<PosterDone>>>,
@@ -85,6 +93,7 @@ impl Video {
 			adapter: Some(adapter),
 			output: None,
 			session: None,
+			provider: None,
 			requests: None,
 			poster_jobs: None,
 			poster_results: Default::default(),
@@ -94,12 +103,109 @@ impl Video {
 		}
 	}
 	pub fn stop(&mut self) {
+		self.provider = None;
 		if let Some(session) = self.session.take() {
 			session.cancelled.store(true, Ordering::Release);
 		}
 		self.texture = Default::default();
 		if let Some(requests) = &self.requests {
 			requests.send_replace(None);
+		}
+	}
+	pub fn sync_provider(
+		&mut self,
+		player: &mut VideoUi,
+		generation: u64,
+		window: &Arc<winit::window::Window>,
+		ctx: &eframe::egui::Context,
+		allowed: bool,
+	) {
+		if !allowed
+			|| !player.seen
+			|| self
+				.provider
+				.as_ref()
+				.is_some_and(|session| session.generation != generation)
+		{
+			self.provider = None;
+			player.provider = None;
+			return;
+		}
+		let Some(request) = &mut player.provider else {
+			self.provider = None;
+			return;
+		};
+		if request.generation != generation {
+			self.provider = None;
+			player.provider = None;
+			return;
+		}
+		if self.provider.as_ref().is_some_and(|session| {
+			session.message != request.message
+				|| session.channel != request.channel
+				|| session.target != request.target
+		}) {
+			self.provider = None;
+		}
+		if request.error.is_some() {
+			self.provider = None;
+			return;
+		}
+		let Some(rect) = request.bounds else { return };
+		if std::mem::take(&mut request.start_requested) {
+			self.provider = None;
+			let wake = ctx.clone();
+			match platform::embed_player::ProviderPlayer::open(
+				window.clone(),
+				&request.target,
+				move || wake.request_repaint(),
+			) {
+				Ok(view) => {
+					request.standalone = cfg!(target_os = "linux");
+					self.provider = Some(ProviderSession {
+						generation,
+						message: request.message,
+						channel: request.channel,
+						target: request.target.clone(),
+						view,
+					});
+				}
+				Err(error) => {
+					request.error = Some(error);
+					ctx.request_repaint();
+					return;
+				}
+			}
+		}
+		let Some(session) = &self.provider else {
+			return;
+		};
+		let scale = ctx.pixels_per_point();
+		let result = session
+			.view
+			.set_bounds(
+				(rect.left() * scale).round() as i32,
+				(rect.top() * scale).round() as i32,
+				(rect.width() * scale).round() as u32,
+				(rect.height() * scale).round() as u32,
+			)
+			.and_then(|_| session.view.poll());
+		match result {
+			Ok(true) => ctx.request_repaint_after(if cfg!(target_os = "linux") {
+				std::time::Duration::from_millis(20)
+			} else {
+				std::time::Duration::from_secs(1)
+			}),
+			Ok(false) => {
+				self.provider = None;
+				player.provider = None;
+				ctx.request_repaint();
+			}
+			Err(error) => {
+				self.provider = None;
+				request.error = Some(error);
+				ctx.request_repaint();
+			}
 		}
 	}
 	/// Session boundary: abandons queued and in-flight posters so none of their downloads
@@ -211,7 +317,7 @@ impl Video {
 			None
 		} else if attachment.size == 0 {
 			// Embed videos have no declared size; the worker probes it before decoding.
-			Some(embed_url(&attachment.media).ok_or("Video embed unavailable")?)
+			Some(ui::embedded_video_url(&attachment.media).ok_or("Video embed unavailable")?)
 		} else {
 			Some(
 				crate::downloads::original_url(&attachment)
@@ -465,21 +571,6 @@ fn downscale_poster(width: u32, height: u32, rgba: Vec<u8>) -> (u32, u32, Vec<u8
 		}
 	}
 	(out_width, out_height, out)
-}
-/// Only Discord's media proxy copy of an external MP4/MOV; never the third-party origin.
-fn embed_url(media: &model::EmbedMedia) -> Option<url::Url> {
-	let raw = media.url.as_deref().filter(|url| url.len() <= 2048)?;
-	let url = url::Url::parse(raw).ok()?;
-	(url.scheme() == "https"
-		&& url.host_str() == Some("media.discordapp.net")
-		&& url.port_or_known_default() == Some(443)
-		&& url.username().is_empty()
-		&& url.password().is_none()
-		&& url.fragment().is_none()
-		&& url.path().starts_with("/external/")
-		&& !url.path().contains('\\')
-		&& ui::is_motion_video(url.path()))
-	.then_some(url)
 }
 impl Drop for Video {
 	fn drop(&mut self) {

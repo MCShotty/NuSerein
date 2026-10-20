@@ -16,6 +16,15 @@ const CACHE_CHUNKS: usize = 8;
 const INVALID: &str = "Video download failed or changed; reload the conversation";
 const UNSUPPORTED: &str = "Video server does not support buffering; download to play externally";
 
+fn embed_redirect_allowed(url: &url::Url, previous: usize) -> bool {
+	previous <= 3
+		&& ui::embedded_video_url(&model::EmbedMedia {
+			url: Some(url.as_str().into()),
+			..Default::default()
+		})
+		.is_some()
+}
+
 pub(super) fn source(
 	url: Option<url::Url>,
 	expected: usize,
@@ -25,6 +34,7 @@ pub(super) fn source(
 	if expected > MAX_BYTES {
 		return Err("Video preview limit: 100 MiB");
 	}
+	let mut cache = VecDeque::new();
 	let (input, len) = if let Some(url) = url {
 		// The caller has validated the service URL; never let URL userinfo add credentials.
 		if !url.username().is_empty() || url.password().is_some() {
@@ -36,12 +46,26 @@ pub(super) fn source(
 			.no_brotli()
 			.no_deflate()
 			.no_zstd()
-			.redirect(reqwest::redirect::Policy::none())
+			.redirect(if expected == 0 {
+				reqwest::redirect::Policy::custom(|attempt| {
+					if embed_redirect_allowed(attempt.url(), attempt.previous().len()) {
+						attempt.follow()
+					} else {
+						attempt.stop()
+					}
+				})
+			} else {
+				reqwest::redirect::Policy::none()
+			})
 			.timeout(Duration::from_secs(15))
 			.build()
 			.map_err(|_| INVALID)?;
 		let len = if expected == 0 {
-			probe(&client, &url, &cancelled, &runtime)?
+			let (len, whole) = probe(&client, &url, &cancelled, &runtime)?;
+			if let Some(bytes) = whole {
+				cache.push_back((0, bytes));
+			}
+			len
 		} else {
 			expected
 		};
@@ -73,17 +97,18 @@ pub(super) fn source(
 		cancelled,
 		len,
 		position: 0,
-		cache: VecDeque::new(),
+		cache,
 	}))
 }
 
-/// Reads the total length of a size-less embed video from a one-byte range response.
+/// Probe an unknown length. A small server that ignores Range may return its whole file;
+/// retain that one bounded chunk instead of rejecting a valid clip or downloading it twice.
 fn probe(
 	client: &reqwest::Client,
 	url: &url::Url,
 	cancelled: &AtomicBool,
 	runtime: &Handle,
-) -> Result<usize, &'static str> {
+) -> Result<(usize, Option<Vec<u8>>), &'static str> {
 	runtime.block_on(async {
 		let cancelled = async {
 			while !cancelled.load(Ordering::Acquire) {
@@ -91,13 +116,43 @@ fn probe(
 			}
 		};
 		let transfer = async {
-			let response = client
+			let mut response = client
 				.get(url.clone())
 				.header(reqwest::header::ACCEPT_ENCODING, "identity")
 				.header(reqwest::header::RANGE, "bytes=0-0")
 				.send()
 				.await
 				.map_err(|_| INVALID)?;
+			if response
+				.headers()
+				.get(reqwest::header::CONTENT_ENCODING)
+				.is_some_and(|value| value != "identity")
+			{
+				return Err(INVALID);
+			}
+			if response.status() == reqwest::StatusCode::OK {
+				if response
+					.headers()
+					.contains_key(reqwest::header::CONTENT_RANGE)
+				{
+					return Err(INVALID);
+				}
+				let expected = response.content_length();
+				if expected.is_some_and(|len| len > CHUNK as u64) {
+					return Err(UNSUPPORTED);
+				}
+				let mut bytes = Vec::with_capacity(expected.map_or(CHUNK, |len| len as usize));
+				while let Some(chunk) = response.chunk().await.map_err(|_| INVALID)? {
+					if chunk.len() > CHUNK - bytes.len() {
+						return Err(UNSUPPORTED);
+					}
+					bytes.extend_from_slice(&chunk);
+				}
+				if bytes.is_empty() || expected.is_some_and(|len| len != bytes.len() as u64) {
+					return Err(INVALID);
+				}
+				return Ok((bytes.len(), Some(bytes)));
+			}
 			if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
 				return Err(UNSUPPORTED);
 			}
@@ -107,6 +162,7 @@ fn probe(
 				.and_then(|value| value.to_str().ok())
 				.and_then(|value| value.strip_prefix("bytes 0-0/"))
 				.and_then(|total| total.parse::<usize>().ok())
+				.map(|len| (len, None))
 				.ok_or(INVALID)
 		};
 		tokio::select! { biased;
@@ -302,7 +358,8 @@ mod tests {
 			))
 			.unwrap();
 			let server = std::thread::spawn(move || {
-				let deadline = std::time::Instant::now() + Duration::from_secs(2);
+				// Covers client initialization plus the bounded 15-second request under parallel load.
+				let deadline = std::time::Instant::now() + Duration::from_secs(20);
 				let mut socket = loop {
 					match listener.accept() {
 						Ok((socket, _)) => break socket,
@@ -319,7 +376,7 @@ mod tests {
 				// Winsock inherits the listener's nonblocking mode; headers use blocking reads.
 				socket.set_nonblocking(false).unwrap();
 				socket
-					.set_read_timeout(Some(Duration::from_secs(2)))
+					.set_read_timeout(Some(Duration::from_secs(20)))
 					.unwrap();
 				let mut header = Vec::new();
 				while !header.ends_with(b"\r\n\r\n") {
@@ -343,6 +400,162 @@ mod tests {
 			if let Ok(mut source) = result {
 				assert_eq!(source.seek(SeekFrom::End(0)).unwrap(), 8);
 			}
+			server.join().unwrap();
+		}
+	}
+
+	#[test]
+	fn unknown_size_embeds_decode_with_ranges_or_one_bounded_whole_response() {
+		let runtime = tokio::runtime::Builder::new_multi_thread()
+			.worker_threads(1)
+			.enable_all()
+			.build()
+			.unwrap();
+		for (ranges, length_header) in [(true, true), (false, true), (false, false)] {
+			let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+			listener.set_nonblocking(true).unwrap();
+			let url = url::Url::parse(&format!(
+				"http://{}/offload/synthetic/1?sig=synthetic",
+				listener.local_addr().unwrap()
+			))
+			.unwrap();
+			let server = std::thread::spawn(move || {
+				let movie = include_bytes!("../../tests/fixtures/video.mov");
+				assert!(movie.len() < CHUNK);
+				let deadline = std::time::Instant::now() + Duration::from_secs(10);
+				for request in 0..if ranges { 2 } else { 1 } {
+					let mut socket = loop {
+						match listener.accept() {
+							Ok((socket, _)) => break socket,
+							Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+								assert!(
+									std::time::Instant::now() < deadline,
+									"missing video request"
+								);
+								std::thread::sleep(Duration::from_millis(5));
+							}
+							Err(error) => panic!("{error}"),
+						}
+					};
+					socket.set_nonblocking(false).unwrap();
+					socket
+						.set_read_timeout(Some(Duration::from_secs(5)))
+						.unwrap();
+					let mut header = Vec::new();
+					while !header.ends_with(b"\r\n\r\n") {
+						assert!(header.len() < 8192);
+						let mut byte = [0];
+						socket.read_exact(&mut byte).unwrap();
+						header.push(byte[0]);
+					}
+					let header = String::from_utf8(header).unwrap().to_ascii_lowercase();
+					assert!(header.starts_with("get /offload/synthetic/1?sig=synthetic "));
+					assert!(!header.contains("authorization:") && !header.contains("cookie:"));
+					let end = if ranges && request == 0 {
+						0
+					} else {
+						movie.len() - 1
+					};
+					if ranges {
+						assert!(header.contains(&format!("range: bytes=0-{end}\r\n")));
+						write!(
+							socket,
+							"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{end}/{}\r\n",
+							movie.len()
+						)
+						.unwrap();
+					} else {
+						assert!(header.contains("range: bytes=0-0\r\n"));
+						write!(socket, "HTTP/1.1 200 OK\r\n").unwrap();
+					}
+					if length_header {
+						write!(socket, "Content-Length: {}\r\n", end + 1).unwrap();
+					}
+					write!(
+						socket,
+						"Content-Type: video/mp4\r\nConnection: close\r\n\r\n"
+					)
+					.unwrap();
+					socket.write_all(&movie[..=end]).unwrap();
+				}
+			});
+			let mut input = source(
+				Some(url),
+				0,
+				Arc::new(AtomicBool::new(false)),
+				runtime.handle().clone(),
+			)
+			.unwrap();
+			assert_eq!(
+				input.seek(SeekFrom::End(0)).unwrap(),
+				include_bytes!("../../tests/fixtures/video.mov").len() as u64
+			);
+			input.seek(SeekFrom::Start(0)).unwrap();
+			let mut decoder =
+				platform::video::ffmpeg::AttachmentDecoder::open(input, None).unwrap();
+			let deadline = std::time::Instant::now() + Duration::from_secs(10);
+			loop {
+				if matches!(
+					decoder.poll_video().unwrap(),
+					std::task::Poll::Ready(Some(_))
+				) {
+					break;
+				}
+				let _ = decoder.poll_audio().unwrap();
+				assert!(std::time::Instant::now() < deadline, "no decoded picture");
+				std::thread::sleep(Duration::from_millis(2));
+			}
+			server.join().unwrap();
+		}
+	}
+
+	#[test]
+	fn whole_embed_probe_rejects_excess_bytes_and_content_encoding() {
+		let runtime = tokio::runtime::Builder::new_multi_thread()
+			.worker_threads(1)
+			.enable_all()
+			.build()
+			.unwrap();
+		for (headers, body) in [
+			(format!("Content-Length: {}\r\n", CHUNK + 1), Vec::new()),
+			(
+				"Content-Encoding: gzip\r\nContent-Length: 1\r\n".into(),
+				vec![0],
+			),
+			("Content-Length: 0\r\n".into(), Vec::new()),
+			("".into(), vec![0; CHUNK + 1]),
+		] {
+			let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+			let url = url::Url::parse(&format!("http://{}/video", listener.local_addr().unwrap()))
+				.unwrap();
+			let server = std::thread::spawn(move || {
+				let (mut socket, _) = listener.accept().unwrap();
+				socket
+					.set_read_timeout(Some(Duration::from_secs(5)))
+					.unwrap();
+				let mut header = Vec::new();
+				while !header.ends_with(b"\r\n\r\n") {
+					assert!(header.len() < 8192);
+					let mut byte = [0];
+					socket.read_exact(&mut byte).unwrap();
+					header.push(byte[0]);
+				}
+				write!(
+					socket,
+					"HTTP/1.1 200 OK\r\n{headers}Connection: close\r\n\r\n"
+				)
+				.unwrap();
+				let _ = socket.write_all(&body); // A rejected response can close before its body.
+			});
+			assert!(
+				source(
+					Some(url),
+					0,
+					Arc::new(AtomicBool::new(false)),
+					runtime.handle().clone()
+				)
+				.is_err()
+			);
 			server.join().unwrap();
 		}
 	}
@@ -472,6 +685,45 @@ mod tests {
 		);
 		server.join().unwrap();
 	}
+	#[test]
+	fn cancellation_interrupts_a_stalled_whole_embed_probe() {
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let url = url::Url::parse(&format!(
+			"http://{}/stalled",
+			listener.local_addr().unwrap()
+		))
+		.unwrap();
+		let cancelled = Arc::new(AtomicBool::new(false));
+		let stop = cancelled.clone();
+		let server = std::thread::spawn(move || {
+			let (mut socket, _) = listener.accept().unwrap();
+			socket
+				.set_read_timeout(Some(Duration::from_secs(5)))
+				.unwrap();
+			let mut header = Vec::new();
+			while !header.ends_with(b"\r\n\r\n") {
+				assert!(header.len() < 8192);
+				let mut byte = [0];
+				socket.read_exact(&mut byte).unwrap();
+				header.push(byte[0]);
+			}
+			write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {CHUNK}\r\n\r\n").unwrap();
+			std::thread::sleep(Duration::from_millis(40));
+			stop.store(true, Ordering::Release);
+			match socket.read(&mut [0]) {
+				Ok(0) => {}
+				Err(error) if error.kind() == io::ErrorKind::ConnectionReset => {}
+				other => panic!("probe connection stayed open: {other:?}"),
+			}
+		});
+		let runtime = tokio::runtime::Builder::new_multi_thread()
+			.worker_threads(1)
+			.enable_all()
+			.build()
+			.unwrap();
+		assert!(source(Some(url), 0, cancelled, runtime.handle().clone()).is_err());
+		server.join().unwrap();
+	}
 
 	#[test]
 	fn ranges_follow_reads_and_seeks_and_reject_changed_responses() {
@@ -579,6 +831,66 @@ mod tests {
 				runtime.handle().clone()
 			)
 			.is_err()
+		);
+	}
+	#[test]
+	fn embed_redirects_are_bounded_and_cannot_reach_arbitrary_origins() {
+		let approved =
+			url::Url::parse("https://video.xx.fbcdn.net/video/clip.mp4?sig=synthetic").unwrap();
+		assert!(embed_redirect_allowed(&approved, 1));
+		assert!(embed_redirect_allowed(&approved, 3));
+		assert!(!embed_redirect_allowed(&approved, 4));
+		for raw in [
+			"https://example.org/clip.mp4",
+			"https://127.0.0.1/clip.mp4",
+			"https://video.xx.fbcdn.net.evil.test/clip.mp4",
+			"https://user@video.xx.fbcdn.net/video/clip.mp4",
+			"http://video.xx.fbcdn.net/video/clip.mp4",
+		] {
+			assert!(!embed_redirect_allowed(&url::Url::parse(raw).unwrap(), 1));
+		}
+		let runtime = tokio::runtime::Builder::new_multi_thread()
+			.worker_threads(1)
+			.enable_all()
+			.build()
+			.unwrap();
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+		destination.set_nonblocking(true).unwrap();
+		let url =
+			url::Url::parse(&format!("http://{}/clip", listener.local_addr().unwrap())).unwrap();
+		let location = format!("http://{}/private", destination.local_addr().unwrap());
+		let server = std::thread::spawn(move || {
+			let (mut socket, _) = listener.accept().unwrap();
+			socket
+				.set_read_timeout(Some(Duration::from_secs(20)))
+				.unwrap();
+			let mut header = Vec::new();
+			while !header.ends_with(b"\r\n\r\n") {
+				assert!(header.len() < 8192);
+				let mut byte = [0];
+				socket.read_exact(&mut byte).unwrap();
+				header.push(byte[0]);
+			}
+			write!(
+				socket,
+				"HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+			)
+			.unwrap();
+		});
+		assert!(
+			source(
+				Some(url),
+				0,
+				Arc::new(AtomicBool::new(false)),
+				runtime.handle().clone()
+			)
+			.is_err()
+		);
+		server.join().unwrap();
+		assert_eq!(
+			destination.accept().unwrap_err().kind(),
+			io::ErrorKind::WouldBlock
 		);
 	}
 }

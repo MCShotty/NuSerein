@@ -6211,7 +6211,7 @@ impl eframe::App for Desktop {
 				}
 			}
 			if !player.seen
-				|| player.active.is_none()
+				|| (player.active.is_none() && player.provider.is_none())
 				|| (!self.state.demo && self.state.auth != AuthState::Authenticated)
 			{
 				self.video.stop();
@@ -6226,6 +6226,18 @@ impl eframe::App for Desktop {
 					self.fixture_only || self.state.demo,
 				);
 			}
+			self.video.sync_provider(
+				player,
+				self.state.generation,
+				&self.window,
+				&ctx,
+				!self.fixture_only
+					&& !self.state.demo
+					&& !self.confirming_close
+					&& !self.confirming_logout
+					&& self.state.auth == AuthState::Authenticated
+					&& self.state.verification().is_none(),
+			);
 			// Posters download attachments too, so they follow the playback session gate.
 			if !self.state.demo && self.state.auth != AuthState::Authenticated {
 				player.poster_queue.clear();

@@ -16,7 +16,7 @@ mod role_names;
 mod server_profile;
 pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
-pub use video::{MediaView, VideoCommand, VideoState, VideoUi};
+pub use video::{MediaView, VideoCommand, VideoState, VideoUi, embedded_video_url};
 mod attachments;
 pub mod external_upload;
 pub mod voice_messages;
