@@ -713,6 +713,12 @@ fn new_custom_reactions_require_eligibility_but_existing_and_removal_stay_separa
 			}]),
 		},
 	);
+	assert!(
+		!state.can_react(Id(100), Some(&emoji), true),
+		"external emoji needs Nitro"
+	);
+	assert!(state.prepare_reaction(Id(100), emoji.clone()).is_none());
+	state.premium_type = 2;
 	assert!(state.can_react(Id(100), Some(&emoji), true));
 	state.guilds.last_mut().unwrap().emojis = None;
 	assert!(!state.can_react(Id(100), Some(&emoji), true));
@@ -1793,4 +1799,57 @@ fn thread_members_load_without_parent_list_and_reject_retired_replies() {
 			.is_none_or(|list| list.freshness != Freshness::Fresh)
 	);
 	assert!(state.request_members().is_none());
+}
+
+#[test]
+fn new_animated_reactions_need_entitlement_but_existing_reactions_do_not() {
+	let mut state = state();
+	let custom = model::CustomEmoji {
+		id: Id(400),
+		name: "party".into(),
+		animated: true,
+		available: true,
+		managed: false,
+		roles: Some(vec![]),
+	};
+	let emoji = model::ReactionEmoji {
+		id: Some(custom.id),
+		name: Some(custom.name.clone()),
+	};
+	state.guilds[0].emojis = Some(vec![custom]);
+	assert!(!state.can_react(Id(100), Some(&emoji), true));
+	assert!(
+		state
+			.prepare_set_reaction(Id(100), emoji.clone(), true)
+			.is_err()
+	);
+	state.guilds[0].emojis.as_mut().unwrap()[0].animated = false;
+	assert!(
+		state.can_react(Id(100), Some(&emoji), true),
+		"static local emoji remains free"
+	);
+	state.guilds[0].emojis.as_mut().unwrap()[0].animated = true;
+	state.premium_type = 2;
+	assert!(state.can_react(Id(100), Some(&emoji), true));
+	state.premium_type = 0;
+	state
+		.timeline
+		.set_reactions(
+			Id(100),
+			Some(vec![model::Reaction {
+				emoji: emoji.clone(),
+				count: 2,
+				me: false,
+				me_burst: false,
+			}]),
+		)
+		.unwrap();
+	assert!(state.can_react(Id(100), Some(&emoji), true));
+	assert!(matches!(
+		state.prepare_reaction(Id(100), emoji),
+		Some(Command::Reactions(crate::reactions::Command::Set {
+			add: true,
+			..
+		}))
+	));
 }

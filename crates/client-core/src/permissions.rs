@@ -887,10 +887,7 @@ impl State {
 			let Some((source, custom)) = self.custom_emoji(id) else {
 				return false;
 			};
-			if self
-				.custom_emoji_unavailable_reason(channel, source.id, custom)
-				.is_some()
-			{
+			if !self.can_send_custom_emoji(channel, source.id, custom) {
 				return false;
 			}
 		}

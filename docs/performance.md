@@ -2440,3 +2440,83 @@ Discord status/hover behavior and microphone quality remain separate checks;
 local archive inspection and synthetic fixtures do not establish those results.
 Older Windows media packages need the updated installer for the new payload
 layout. Canonical SDK docs include the new configured suppression value.
+
+## GIF favorite order and server emoji (2026-10-20)
+
+Runtime source: `e8916a91` (the change after `b3ad937e` only repairs a test fixture).
+Fork baseline: `da97a14f`. The current official nightly remains
+`v1.0.0-nightly.20261017.60` / `d9d87471`, rechecked against release metadata on
+October 20. Its previously verified Ubuntu x64 payload and source revision are
+used below. Nightly differences include the rest of the fork and release-runner
+conditions; the fork-before column isolates this task.
+
+Debian 13.6 x86_64, Xeon Platinum 8573C, shared container; Rust 1.98.1 and committed
+lockfiles. Production packages and reducer executables use identical manifest
+release profiles: optimization 3, fat LTO, one codegen unit, line-table debug
+information and stripped symbols. No task compilers ran during sampling.
+
+| Release footprint / method | Current nightly | Fork before | After | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Executable | 91,957,328 B | 95,419,720 B | 95,424,840 B | +5,120 B |
+| Installed payload | 96,555,161 B | 140,250,352 B | 140,255,472 B | +5,120 B |
+| Normalized ZIP | 55,682,561 B | 89,814,051 B | 89,815,051 B | +1,000 B |
+
+Both complete normal `cargo xtask package --format dir` runs started without
+`dist`; the second reused build caches. No output was manually repaired. All
+546 portable/installation files match between runs by relative path, mode and
+SHA-256, as do the comparison ZIPs. Both installed trees contain 280 files; only
+`usr/bin/serein` differs from the baseline. Validation covers native library
+closure/RPATHs, seven pinned source archives, notices and 19 font licenses. The
+installed driver-query startup succeeds with development FFmpeg paths removed;
+the task SDK still supplies system GTK libraries. This is not a full desktop
+integration or account test. One earlier compilation was interrupted before
+staging to freeze the corrected test fixture; it is not a package measurement.
+
+Comparison ZIPs sort installed paths, use 1980 timestamps, comparison-only 0644
+entry modes and DEFLATE level 9, matching the nightly method. They are not Linux
+installers. Executable SHA-256: `f65327fccf321f6cef329b689e3c6be9db828ccfb2c6c7700d76ba9d612c34cf`.
+Normalized ZIP SHA-256: `5bbb1561312a58d33adacb3be24021ee754b5b091454658289e8c1618f1fe2ab`.
+
+The release reducer uses the same 100,000-event driver on all three revisions,
+separate build directories, one warmup per revision and five counterbalanced
+runs per set. A confirmation reverses revision order; a final control binds all
+processes to CPU 0. Every set is retained rather than selecting the best result.
+
+| Reducer median / five samples | Current nightly source | Fork before | After | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Unrestricted, initial | 84.778 ms | 91.345 ms | 102.162 ms | +11.84% |
+| Unrestricted, confirmation | 133.454 ms | 153.875 ms | 175.734 ms | +14.21% |
+| Fixed CPU 0, control | 86.833 ms | 97.700 ms | 97.503 ms | -0.20% |
+
+The unrestricted runs regress by 11.8–14.2%; the fixed-core control is essentially
+flat. The scheduling/frequency sensitivity and cause are not isolated, and no
+performance improvement is claimed. Nightly is rebuilt from its release source
+under the same settings; it is not a timed run of the downloaded application.
+All versions retain 500 records and 401,492..401,977 estimated timeline bytes.
+The 120-second core-only soak passed with 2,536 passes, 81,152 channel visits,
+48,691,200 live inserts and ten logouts. These are not native RSS or live tests.
+
+Native UI observations use development builds (`debug=0`, `demo` feature), the
+same synthetic `--page=emoji` and `--page=gif-favorites` fixtures, Xvfb at scale 1,
+1120 × 760 and wgpu (exact adapter/backend unrecorded). Each process has a
+three-second warmup followed by fifteen one-second RSS samples; settled RSS is
+the last-five-sample median. CPU uses process user+system ticks as a percentage
+of one core. The sampler verifies process liveness and bounds logs. No helper
+processes were present. The initial sampler could not read the optional Linux
+`children` proc file and produced no UI report; the completed observations use
+`ps --ppid` instead.
+
+| Development preview observation | Fork before | After |
+| --- | ---: | ---: |
+| emoji: idle CPU, one core | 0.00% | 0.07% |
+| emoji: observed peak / settled RSS | 191,578,112 / 191,578,112 B | 187,039,744 / 187,039,744 B |
+| gif-favorites: idle CPU, one core | 0.00% | 0.33% |
+| gif-favorites: observed peak / settled RSS | 194,080,768 / 194,080,768 B | 191,193,088 / 191,193,088 B |
+
+These single idle observations show different visible contents as intended by
+the fix. They do not establish a memory/CPU improvement, release UI throughput,
+frame/startup latency or leak freedom. Matching fresh native screenshots use the
+same fixture opening steps on both revisions; only the new preview-page setup
+is backported to the baseline. Dark/light and narrow layouts were inspected.
+Live Discord, Windows/macOS interaction and native application/package CI remain
+unverified locally. No account, microphone or capture session was opened.
