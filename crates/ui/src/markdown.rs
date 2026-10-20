@@ -27,6 +27,7 @@ pub(crate) struct PreviewEmoji {
 
 enum PreviewImage {
 	Emoji(usize),
+	Custom { id: Id, animated: bool },
 	Channel(crate::icons::Icon),
 }
 
@@ -745,6 +746,8 @@ fn escape_bare_quotes(input: &str) -> std::borrow::Cow<'_, str> {
 /// Everything one message body needs while its spans are laid out, so a quote can lay out its
 /// own nested run without repeating the argument list.
 struct Render<'a> {
+	/// Message chrome, excluded from body selection and link/emoji parsing.
+	edited: bool,
 	opening: &'a mut Option<String>,
 	users: &'a [model::User],
 	source: Option<&'a crate::mentions::MentionSource<'a>>,
@@ -1545,6 +1548,40 @@ impl Formatted {
 		query: &str,
 		card_surface: crate::design::MessageCardSurface,
 	) {
+		self.show_message(
+			ui,
+			opening,
+			users,
+			source,
+			profile,
+			references,
+			media,
+			surface,
+			query,
+			card_surface,
+			false,
+		);
+	}
+	#[allow(clippy::too_many_arguments)]
+	pub(crate) fn show_message(
+		&self,
+		ui: &mut egui::Ui,
+		opening: &mut Option<String>,
+		users: &[model::User],
+		source: Option<&crate::mentions::MentionSource<'_>>,
+		profile: &mut crate::profiles::ProfileSession,
+		references: (
+			&[model::Channel],
+			&mut Option<Id>,
+			&[model::Guild],
+			&[model::permissions::Role],
+		),
+		media: (&mut crate::avatars::Avatars, bool, &mut u32),
+		surface: &mut crate::select::Surface,
+		query: &str,
+		card_surface: crate::design::MessageCardSurface,
+		edited: bool,
+	) {
 		let (channels, channel, guilds, roles) = references;
 		let (images, demo, revealed) = media;
 		// Relative timestamps age without input; a coarse tick keeps them honest without a timer.
@@ -1562,6 +1599,7 @@ impl Formatted {
 		// height first; text is then centred in the same row everywhere.
 		let line = self.artwork.then(|| crate::emoji::inline_size(ui));
 		let mut render = Render {
+			edited,
 			opening,
 			users,
 			source,
@@ -2016,6 +2054,32 @@ impl Formatted {
 						);
 					}
 					start += count;
+				}
+				if !quoted && render.edited {
+					// Continue the final wrapped text row; a block ending naturally gets its
+					// own row. This is status chrome, never part of the copied message.
+					let body = egui::TextStyle::Body.resolve(ui.style());
+					let height = render
+						.line
+						.unwrap_or_else(|| ui.fonts_mut(|fonts| fonts.row_height(&body)));
+					let mut font_id = egui::TextStyle::Small.resolve(ui.style());
+					font_id.size = font_id.size.min(body.size * 0.8);
+					let format = TextFormat {
+						font_id,
+						color: crate::design::palette(ui).muted,
+						line_height: Some(height),
+						valign: egui::Align::BOTTOM,
+						..Default::default()
+					};
+					let mut job = LayoutJob::default();
+					job.append(
+						&crate::i18n::translate("timeline-show-with-scroll-edited"),
+						0.0,
+						format,
+					);
+					ui.add_space(4.0);
+					let status = ui.add(egui::Label::new(job).wrap().selectable(false));
+					render.surface.exclude(status.rect);
 				}
 			},
 		);
@@ -2710,25 +2774,36 @@ impl Formatted {
 			let take: String = display.chars().take(remaining).collect();
 			remaining -= take.chars().count();
 			let mut start = 0;
-			if !style.code {
-				for (offset, cluster) in take.grapheme_indices(true) {
-					let Some(cell) = crate::emoji::lookup(cluster) else {
-						continue;
-					};
+			let mut offset = 0;
+			while !style.code && offset < take.len() {
+				let custom = crate::emoji::custom_prefix(&take[offset..]);
+				let cluster = take[offset..]
+					.graphemes(true)
+					.next()
+					.expect("remaining preview");
+				let len = custom.map_or(cluster.len(), |(_, len)| len);
+				let image = custom
+					.map(|(id, _)| PreviewImage::Custom {
+						id,
+						animated: crate::emoji::custom_animated(&take[offset..]),
+					})
+					.or_else(|| crate::emoji::lookup(cluster).map(PreviewImage::Emoji));
+				if let Some(image) = image {
 					job.append(&take[start..offset], 0.0, format.clone());
 					emojis.push(PreviewEmoji {
 						at: job.text.len(),
 						len: 1,
-						text: cluster.into(),
-						image: PreviewImage::Emoji(cell),
+						text: take[offset..offset + len].into(),
+						image,
 					});
 					job.append(
 						" ",
 						0.0,
 						crate::emoji::inline_format(ui, PREVIEW_EMOJI_SIZE, PREVIEW_EMOJI_SIZE),
 					);
-					start = offset + cluster.len();
+					start = offset + len;
 				}
+				offset += len;
 			}
 			job.append(&take[start..], 0.0, format);
 		}
@@ -2746,6 +2821,8 @@ impl Formatted {
 		galley_pos: egui::Pos2,
 		galley: &egui::Galley,
 		emojis: &[PreviewEmoji],
+		images: &mut crate::avatars::Avatars,
+		demo: bool,
 	) {
 		let colors = crate::design::palette(ui);
 		// Channel icons sit on ordinary spaces: place them by character offset.
@@ -2773,7 +2850,7 @@ impl Formatted {
 		}
 		let emojis: Vec<_> = emojis
 			.iter()
-			.filter(|emoji| matches!(emoji.image, PreviewImage::Emoji(_)))
+			.filter(|emoji| !matches!(emoji.image, PreviewImage::Channel(_)))
 			.collect();
 		let atlas = crate::emoji::atlas(ui.ctx());
 		let mut next = 0;
@@ -2794,11 +2871,20 @@ impl Formatted {
 					rect.center(),
 					egui::Vec2::splat(PREVIEW_EMOJI_SIZE),
 				);
-				if let PreviewImage::Emoji(cell) = emoji.image
-					&& let Some(atlas) = atlas
-				{
-					crate::emoji::image_cell(atlas, &emoji.text, cell, PREVIEW_EMOJI_SIZE)
-						.paint_at(ui, rect);
+				if ui.is_rect_visible(rect) {
+					let image = match emoji.image {
+						PreviewImage::Emoji(cell) => atlas.map(|atlas| {
+							crate::emoji::image_cell(atlas, &emoji.text, cell, PREVIEW_EMOJI_SIZE)
+						}),
+						PreviewImage::Custom { id, animated } => {
+							images.custom_emoji(ui.ctx(), id, animated, PREVIEW_EMOJI_SIZE, demo)
+						}
+						PreviewImage::Channel(_) => None,
+					};
+					if let Some(image) = image {
+						let size = image.calc_size(rect.size(), image.size());
+						image.paint_at(ui, egui::Rect::from_center_size(rect.center(), size));
+					}
 				}
 				next += 1;
 			}
@@ -3324,6 +3410,7 @@ mod tests {
 	/// Offline message-body harness: assertions include the renderer's outgoing actions,
 	/// not just the parser flags or a standalone chip response.
 	struct MessageLinkTestUi {
+		edited: bool,
 		ctx: egui::Context,
 		state: client_core::State,
 		parsed: Formatted,
@@ -3335,6 +3422,7 @@ mod tests {
 	impl MessageLinkTestUi {
 		fn new(source: &str) -> Self {
 			Self {
+				edited: false,
 				ctx: egui::Context::default(),
 				state: test_support::demo_state(),
 				parsed: Formatted::parse(source),
@@ -3365,7 +3453,7 @@ mod tests {
 				},
 				|ui| {
 					let mut surface = crate::select::Surface::new(ui, "message-link-body");
-					self.parsed.show_references(
+					self.parsed.show_message(
 						ui,
 						&mut opening,
 						&[],
@@ -3377,7 +3465,9 @@ mod tests {
 						(&self.state.channels, &mut channel, &self.state.guilds, &[]),
 						(&mut self.images, false, &mut self.revealed),
 						&mut surface,
+						"",
 						crate::design::MessageCardSurface::Opaque,
+						self.edited,
 					);
 					surface.finish(ui);
 				},
@@ -3413,6 +3503,108 @@ mod tests {
 			.shapes
 			.iter()
 			.find_map(|shape| find(&shape.shape, target))
+	}
+
+	#[test]
+	fn edited_status_stays_on_last_text_line_and_wraps_within_the_viewport() {
+		for size in [10.0, 12.0, 15.0, 20.0] {
+			for width in [260.0, 800.0] {
+				let source = "A corrected first line.\nLast line.";
+				let mut ui = MessageLinkTestUi::new(source);
+				ui.edited = true;
+				crate::fonts::install(&ui.ctx);
+				crate::design::apply(&ui.ctx);
+				ui.ctx.all_styles_mut(|style| {
+					style
+						.text_styles
+						.get_mut(&egui::TextStyle::Body)
+						.unwrap()
+						.size = size;
+				});
+				let (mut output, _) = ui.frame(width, vec![]);
+				output.textures_delta.clear();
+				let body = message_link_text(&output, source).expect("body text");
+				let last = body
+					.galley
+					.rows
+					.last()
+					.unwrap()
+					.rect()
+					.translate(body.pos.to_vec2());
+				let status = message_link_text(&output, "(edited)").expect("visible status");
+				let status = status.galley.rows[0]
+					.rect_without_leading_space()
+					.translate(status.pos.to_vec2());
+				assert!(
+					(status.top() - last.top()).abs() < 1.0,
+					"{last:?} {status:?}"
+				);
+				assert!(
+					status.left() >= last.right(),
+					"status must follow the final line"
+				);
+				assert!(
+					status.bottom() <= last.bottom() + 1.0,
+					"no extra status row"
+				);
+				output.drop_without_applying_deltas();
+			}
+		}
+		let mut ui = MessageLinkTestUi::new("A short message that wraps.");
+		ui.edited = true;
+		let (mut output, _) = ui.frame(90.0, vec![]);
+		output.textures_delta.clear();
+		let status = message_link_text(&output, "(edited)").unwrap();
+		assert!(status.pos.x + status.galley.rect.right() <= 90.0 + 1.0);
+		output.drop_without_applying_deltas();
+	}
+
+	#[test]
+	fn selecting_edited_message_copies_only_the_body() {
+		let source = "The corrected body";
+		let mut ui = MessageLinkTestUi::new(source);
+		ui.edited = true;
+		let (mut output, _) = ui.frame(800.0, vec![]);
+		output.textures_delta.clear();
+		let body = message_link_text(&output, source).unwrap();
+		let begin = body.pos + egui::vec2(0.0, body.galley.size().y / 2.0);
+		let status = message_link_text(&output, "(edited)").unwrap();
+		let end =
+			status.pos + egui::vec2(status.galley.size().x + 10.0, status.galley.size().y / 2.0);
+		output.drop_without_applying_deltas();
+		for events in [
+			vec![
+				egui::Event::PointerMoved(begin),
+				egui::Event::PointerButton {
+					pos: begin,
+					button: egui::PointerButton::Primary,
+					pressed: true,
+					modifiers: egui::Modifiers::NONE,
+				},
+			],
+			vec![egui::Event::PointerMoved(end)],
+			vec![egui::Event::PointerButton {
+				pos: end,
+				button: egui::PointerButton::Primary,
+				pressed: false,
+				modifiers: egui::Modifiers::NONE,
+			}],
+		] {
+			ui.frame(800.0, events).0.drop_without_applying_deltas();
+		}
+		let (mut output, _) = ui.frame(800.0, vec![egui::Event::Copy]);
+		output.textures_delta.clear();
+		let copied = output
+			.platform_output
+			.commands
+			.iter()
+			.find_map(|command| match command {
+				egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+				_ => None,
+			})
+			.expect("selected body");
+		assert_eq!(copied, source);
+		output.drop_without_applying_deltas();
 	}
 
 	fn message_link_key(key: egui::Key, pressed: bool) -> egui::Event {
@@ -5877,6 +6069,135 @@ mod tests {
 			}
 		}
 	}
+	#[test]
+	fn reply_preview_renders_static_and_animated_custom_emoji_without_raw_markup() {
+		let ctx = egui::Context::default();
+		crate::emoji::install(&ctx).unwrap();
+		let raw = "no <:serein_wave:9001> <a:serein_party:9002> 🙂";
+		let parsed = Formatted::parse(raw);
+		let mut job = LayoutJob::default();
+		let mut images = Vec::new();
+		let mut avatars = crate::avatars::Avatars::default();
+		let mut output = ctx.run_ui(Default::default(), |ui| {
+			images = parsed.append_inline_preview(&mut job, ui, &[], None, &[], &[]);
+			let (at, galley, _) = egui::Label::new(job.clone()).layout_in_ui(ui);
+			Formatted::paint_inline_preview_emojis(ui, at, &galley, &images, &mut avatars, true);
+		});
+		output.textures_delta.clear();
+		assert_eq!(Formatted::inline_preview_text(&job, &images), raw);
+		assert!(!job.text.contains("<:"));
+		assert!(!job.text.contains("<a:"));
+		assert_eq!(images.len(), 3);
+		assert!(matches!(
+			images[0].image,
+			PreviewImage::Custom {
+				id: Id(9001),
+				animated: false
+			}
+		));
+		assert!(matches!(
+			images[1].image,
+			PreviewImage::Custom {
+				id: Id(9002),
+				animated: true
+			}
+		));
+		assert_eq!(
+			output
+				.shapes
+				.iter()
+				.filter(|shape| match &shape.shape {
+					egui::Shape::Mesh(mesh) => mesh.texture_id != egui::TextureId::default(),
+					egui::Shape::Rect(rect) => rect
+						.brush
+						.as_ref()
+						.is_some_and(|brush| brush.fill_texture_id != egui::TextureId::default()),
+					_ => false,
+				})
+				.count(),
+			3
+		);
+
+		assert!(
+			avatars.take_requests().is_empty(),
+			"synthetic artwork never downloads"
+		);
+		output.drop_without_applying_deltas();
+		for raw in ["`<:serein_wave:9001>`", "`<a:serein_party:9002>`"] {
+			let mut job = LayoutJob::default();
+			let output = ctx.run_ui(Default::default(), |ui| {
+				assert!(
+					Formatted::parse(raw)
+						.append_inline_preview(&mut job, ui, &[], None, &[], &[])
+						.is_empty()
+				);
+			});
+			output.drop_without_applying_deltas();
+		}
+	}
+
+	#[test]
+	fn inline_custom_emoji_fits_the_message_row_without_cropping_or_stretching() {
+		for (width, size) in [(80.0, 10.0), (180.0, 15.0), (180.0, 20.0)] {
+			let ctx = egui::Context::default();
+			crate::fonts::install(&ctx);
+			crate::design::apply(&ctx);
+			let mut avatars = crate::avatars::Avatars::default();
+			// Follow the real cache admission boundary before delivering decoded pixels.
+			let _ = avatars.custom_emoji(&ctx, Id(9001), false, size, false);
+			let _ = avatars.take_requests();
+			avatars.accept(
+				&ctx,
+				"emoji-9001".into(),
+				Some(egui::ColorImage::filled([8, 16], egui::Color32::GREEN)),
+			);
+			let mut bounds = egui::Rect::NOTHING;
+			let mut output = ctx.run_ui(Default::default(), |ui| {
+				ui.set_width(width);
+				ui.style_mut()
+					.text_styles
+					.get_mut(&egui::TextStyle::Body)
+					.unwrap()
+					.size = size;
+				Formatted::parse("no <:serein_wave:9001>").show_with_images(
+					ui,
+					&mut None,
+					&[],
+					None,
+					&mut crate::profiles::ProfileSession::default(),
+					(&mut avatars, true, &[]),
+					crate::design::MessageCardSurface::Opaque,
+				);
+				bounds = ui.min_rect();
+			});
+			output.textures_delta.clear();
+			let art: Vec<_> = output
+				.shapes
+				.iter()
+				.filter_map(|shape| match &shape.shape {
+					egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+						Some(mesh.calc_bounds())
+					}
+					egui::Shape::Rect(rect)
+						if rect.brush.as_ref().is_some_and(|brush| {
+							brush.fill_texture_id != egui::TextureId::default()
+						}) =>
+					{
+						Some(rect.rect)
+					}
+					_ => None,
+				})
+				.collect();
+			assert_eq!(art.len(), 1);
+			assert!(
+				bounds.expand(1.0).contains_rect(art[0]),
+				"artwork {art:?} escaped message {bounds:?}"
+			);
+			assert!((art[0].width() / art[0].height() - 0.5).abs() < 0.01);
+			output.drop_without_applying_deltas();
+		}
+	}
+
 	#[test]
 	fn timestamps_render_the_formatted_instant_not_the_raw_token() {
 		let parsed = Formatted::parse(

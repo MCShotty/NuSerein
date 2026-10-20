@@ -55,19 +55,23 @@ window/menu radius, softer than the 4px/8px pair the layout started from.
 Inter (Regular, Medium, SemiBold; SIL OFL 1.1) leads proportional text; egui's default faces and
 the bundled Noto CJK/Arabic fallbacks follow in every family. egui has no synthetic bold, so
 `design::semibold`/`design::medium` select the heavier families for author names, headings,
-channel names and uppercase 12px eyebrows. Body is 15px, small 12px. Until `fonts::install`
+unread/selected channel names and 12px eyebrows. Category names retain their original case;
+read channel names use the regular face. Body is 15px, small 12px. Until `fonts::install`
 marks a context, the weight families resolve to the default face so headless tests never
 reference an unknown family.
 
-Appearance → Typography can import one TTF or OTF file up to 8 MiB, apply it immediately,
-or reset to Inter. The selected face leads all proportional families; variable fonts use
+Dark-mode coverage compensation is deliberately light so regular text keeps its intended weight.
+
+Appearance → Typography offers a searchable installed-font picker and a reset to Inter.
+The selected TTF or OTF face is validated within a 32 MiB limit and applied immediately.
+It leads all proportional families; variable fonts use
 400/500/600 weights while static fonts retain their supplied weight. Code stays monospace,
 and bundled/system missing-glyph fallbacks remain available. A bounded local copy survives
 restart and logout; import and persistence failures leave the current font in use.
 
 Text is rasterized by egui on the CPU as grayscale coverage, not by DirectWrite or Core Text.
 That cannot reproduce ClearType. `design::apply` turns TrueType hinting off and sub-pixel
-binning on. Dark mode remaps coverage with `FontColorTransferFunction::Gamma(0.5)`. Light
+binning on. Dark mode remaps coverage with `FontColorTransferFunction::Gamma(0.8)`. Light
 mode leaves the transfer function off. Inter faces set `FontTweak.hinting` to `Some(false)`.
 The bundled faces remain upstream's hinted TrueType builds. See `assets/README.md`.
 
@@ -124,7 +128,8 @@ messages expose confirmed Publish. All of these keep the ordinary conversation d
   (reload, threads/archive, pins, member list toggle), a 144px search field and DM call/voice
   controls. A thin notice strip appears only for loading/stale/archive/history states.
 - Timeline: 16px gutters, 40px avatars, content at 72px, medium-weight author names, 12px muted
-  timestamps, `hover` row highlight, date dividers with a centred label, red "New messages"
+  timestamps, inline edited labels that wrap with the body, `hover` row highlight, date dividers
+  with a centred label, red "New messages"
   divider, floating hover toolbar (react, reply, edit, more) overlapping the row above.
 - Composer: rounded `raised` bar with attach (+), placeholder `Message #channel`, emoji picker
   and send icons; a character counter appears within 200 characters of the limit.
@@ -136,7 +141,10 @@ messages expose confirmed Publish. All of these keep the ordinary conversation d
   unavailable catalog have explicit states; Retry (or Enter in the failed picker) retries
   a failed lookup. Empty or loading results leave Enter available to send the draft and
   Tab available for normal focus navigation. The catalog also resolves game references
-  in messages and reply previews.
+  in messages and reply previews. Custom emojis render as artwork in reply previews as well as
+  message bodies; the same visibility and bounded image cache rules apply. Draft mention pills
+  resolve current server nicknames consistently with the picker and received messages, while the
+  editor retains the original user-ID tokens for selection, copying, undo and sending.
 - Member list (240px): ONLINE/OFFLINE eyebrows with counts; group DMs show a localized
   Members — N heading including the current account, updated with participant changes. 42px rows with
   presence dots, custom status and hover fill; opens a Members window on narrow layouts.

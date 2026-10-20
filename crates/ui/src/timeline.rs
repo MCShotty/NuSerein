@@ -3247,6 +3247,8 @@ impl TimelineView {
 														preview_pos,
 														&preview_galley,
 														&preview_emojis,
+														avatars,
+														state.demo,
 													);
 													let reply_preview = reply_preview
 														.on_hover_cursor(
@@ -3529,6 +3531,7 @@ impl TimelineView {
 												text,
 											);
 											let mut media = before.1;
+											let mut inline_edited = false;
 											let content_shown =
 												system.as_ref().is_some_and(|s| s.content_shown);
 											if !content_shown
@@ -3565,7 +3568,7 @@ impl TimelineView {
 																	state,
 																	channel: message.channel,
 																};
-															formatted.show_references(
+															formatted.show_message(
 																ui,
 																&mut self.opening,
 																&message.mentions,
@@ -3582,8 +3585,11 @@ impl TimelineView {
 																),
 																(avatars, state.demo, &mut text),
 																&mut surface,
+																"",
 																crate::design::MessageCardSurface::Conversation,
+																message.edited,
 															);
+															inline_edited = message.edited;
 														}
 													})
 													.response
@@ -3692,7 +3698,7 @@ impl TimelineView {
 												self.heights.remove(&id);
 												ui.ctx().request_repaint();
 											}
-											if message.edited {
+											if message.edited && !inline_edited {
 												ui.label(
 													RichText::new(crate::i18n::translate(
 														"timeline-show-with-scroll-edited",
@@ -7779,6 +7785,12 @@ mod tests {
 				.find(|(t, _)| t.contains("Grouped continuation"))
 				.unwrap()
 				.1;
+			let status = idle.iter().find(|(text, _)| text == "(edited)").unwrap().1;
+			assert!(
+				(status.top() - row.top()).abs() < 1.0,
+				"status and body share a line"
+			);
+
 			let heights = view.heights.clone();
 			let hovered = render(
 				&mut view,

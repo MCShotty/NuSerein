@@ -395,8 +395,8 @@ fn category_header(
 		color,
 	);
 	let mut job = egui::text::LayoutJob::simple_singleline(
-		name.to_uppercase(),
-		egui::FontId::new(12.0, crate::design::semibold_family(ui.ctx())),
+		name.to_owned(),
+		egui::FontId::new(12.0, crate::design::medium_family(ui.ctx())),
 		color,
 	);
 	job.wrap.max_width = (rect.width() - 24.0).max(10.0);
@@ -1113,8 +1113,12 @@ impl MessagingUi {
 										} else {
 											ui.add(
 												egui::Label::new(
-													design::medium(ui, &label, 15.0)
-														.color(name_color),
+													if unread || active {
+														design::medium(ui, &label, 15.0)
+													} else {
+														RichText::new(&label).size(15.0)
+													}
+													.color(name_color),
 												)
 												.truncate()
 												.selectable(false),
@@ -1479,6 +1483,21 @@ pub fn debug_thread_navigation_check(state: &mut State) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn category_header_preserves_original_case() {
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let name = "Author’s Channels · café";
+		let output = ctx.run_ui(Default::default(), |ui| {
+			ui.set_width(150.0);
+			category_header(ui, "mixed-case", name, 2, false, 34.0, false);
+		});
+		assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+			egui::Shape::Text(text) if text.galley.job.text == name
+		)));
+		output.drop_without_applying_deltas();
+	}
 
 	#[test]
 	#[ignore = "release channel-list benchmark; ten warmup frames and one warmup/five measured batches"]

@@ -1094,7 +1094,7 @@ mod tests {
 				.visuals
 				.text_options
 				.color_transfer_function,
-			egui::epaint::FontColorTransferFunction::Gamma(0.5)
+			egui::epaint::FontColorTransferFunction::Gamma(0.8)
 		);
 		let tweaks = definitions(false)
 			.font_data

@@ -684,11 +684,168 @@ fn channel_settings(
 	}
 }
 
+/// Bounded, offline conversation for typography and spacing comparisons.
+fn prime_conversation(state: &mut client_core::State, inline_media: bool) {
+	let channel = state.selected.expect("synthetic conversation");
+	let ready = client_core::Event::Ready {
+		user: state.user.clone().expect("synthetic account"),
+		guilds: state.guilds.clone(),
+		channels: state.channels.clone(),
+		permissions: test_support::permission_snapshot(state),
+	};
+	*state = client_core::State {
+		demo: true,
+		..Default::default()
+	};
+	state.apply(client_core::Envelope {
+		generation: state.generation,
+		event: ready,
+	});
+	let _ = state.select(channel);
+	state.older_exhausted = true;
+	state.status = "Offline fixture · no network access";
+
+	for category in state
+		.channels
+		.iter_mut()
+		.filter(|channel| channel.kind == 4)
+	{
+		category.name = if category.id == model::Id(23) {
+			"Welcome"
+		} else {
+			"Discussion"
+		}
+		.into();
+	}
+	let samples = [
+		("Hey, how is the new build looking?", false, false),
+		(
+			"The text is easier to read. Names and timestamps stay on one line.",
+			false,
+			false,
+		),
+		("A short reply, with a corrected word.", true, false),
+		(
+			"This longer message wraps naturally when the window gets smaller, without adding another row just for its edited label.",
+			true,
+			false,
+		),
+		(
+			"One message can have several lines.\nEach line keeps the same rhythm.\nThe next reply starts a new group.",
+			false,
+			false,
+		),
+		("That makes sense, thanks!", false, true),
+		("And this is a follow-up from the same author.", false, true),
+		(
+			"**Bold**, *italic*, `inline code` and a [link](https://example.invalid/) still fit together.",
+			true,
+			false,
+		),
+		("Replying to the earlier update.", false, false),
+		("A final short message.", false, true),
+	];
+	let mut messages: Vec<model::Message> = Vec::new();
+	for (index, (text, edited, same_author)) in samples.into_iter().enumerate() {
+		let mut message = test_support::message(
+			1562072894668800000 + index as u64 * 251_658_240_000,
+			channel,
+		);
+		message.author = test_support::message(index as u64, channel).author;
+		if same_author && let Some(previous) = messages.last() {
+			message.author = previous.author.clone();
+		}
+		message.author.primary_guild = None;
+		message.author.cosmetics = None;
+		message.author.name = if message.author.id == model::Id(1) {
+			"Avery (synthetic)"
+		} else {
+			"Robin (synthetic)"
+		}
+		.into();
+		message.content = if inline_media {
+			match index {
+				0 => "no <:serein_wave:9001> · inline 🙂",
+				1 => "<@1> <@2> — names follow the server nickname.",
+				4 => "😔",
+				_ => text,
+			}
+		} else {
+			text
+		}
+		.into();
+		message.edited = edited;
+		message.embeds.clear();
+		message.attachments.clear();
+		message.reactions = Some(vec![]);
+		if index == 8 {
+			message.reply_to = Some(messages[if inline_media { 0 } else { 1 }].id);
+		}
+		messages.push(message);
+	}
+	state.timeline.clear();
+	state.read_state.reset();
+	state.history_pending = false;
+	state.freshness = model::Freshness::Fresh;
+	let last = messages.last().unwrap().id;
+	let slots = messages[..2]
+		.iter()
+		.map(|message| {
+			Some(model::MemberSlot::Person(model::Member {
+				user: message.author.clone(),
+				nick: None,
+				roles: vec![],
+				status: Some("online".into()),
+				custom_status: Some("Offline typography fixture".into()),
+				activities: vec![],
+				clients: Default::default(),
+			}))
+		})
+		.collect();
+	state.members = Some(model::MemberList {
+		channel,
+		guild: Some(model::Id(10)),
+		request: 0,
+		total: 2,
+		start: 0,
+		lazy: false,
+		groups: vec![],
+		ranges: vec![],
+		freshness: model::Freshness::Fresh,
+		slots,
+	});
+	if inline_media {
+		if let Some(model::MemberSlot::Person(member)) = state
+			.members
+			.as_mut()
+			.and_then(|list| list.slots[1].as_mut())
+		{
+			member.nick = Some("Rowan (server nickname)".into());
+		}
+		state
+			.drafts
+			.insert(channel, "<@2> no <:serein_wave:9001> 🙂".into());
+	}
+
+	state
+		.timeline
+		.seed_cache(messages)
+		.expect("valid synthetic conversation");
+	state.apply(client_core::Envelope {
+		generation: state.generation,
+		event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+			partial: false,
+			entries: Some(vec![(channel, Some(last), 0)]),
+			version: Some(2),
+		}),
+	});
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -711,6 +868,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "profile-card"
 			| "collectibles"
 			| "member-tags"
+			| "conversation"
 			| "markdown"
 			| "embeds"
 			| "channel-links"
@@ -745,7 +903,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "friends"
 			| "screen-share"
 	) {
-		return Err("Page must be events, event-detail, event-edit, stage, profile, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation or screen-share".into());
+		return Err("Page must be events, event-detail, event-edit, stage, profile, conversation, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation or screen-share".into());
 	}
 	let slash_command = value("--command=").unwrap_or("help").to_owned();
 	if !matches!(slash_command.as_str(), "help" | "weather") {
@@ -990,6 +1148,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				state.auth = client_core::auth::AuthState::Authenticated;
 				let _ = state.select(model::Id(26));
 			}
+			if page == "conversation" {
+				prime_conversation(&mut state, args.iter().any(|arg| arg == "--inline-media"));
+			}
 			let mut messaging = ui::MessagingUi::default();
 			if styled {
 				messaging.cosmetics.name_styles = true;
@@ -1039,6 +1200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					| "member-tags" | "dm-tags"
 					| "dm-intro" | "channel-intro"
 					| "post-intro" | "markdown"
+					| "conversation"
 					| "channel-links"
 					| "channel-link-replies"
 					| "embeds"
