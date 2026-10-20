@@ -1125,7 +1125,8 @@ pub fn apply(ctx: &egui::Context) {
 		style.visuals.text_options.font_hinting = false;
 		style.visuals.text_options.subpixel_binning = true;
 		style.visuals.text_options.color_transfer_function = if theme == egui::Theme::Dark {
-			FontColorTransferFunction::Gamma(0.5)
+			// Keep some dark-background compensation without making regular text look bold.
+			FontColorTransferFunction::Gamma(0.8)
 		} else {
 			FontColorTransferFunction::Off
 		};

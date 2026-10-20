@@ -124,7 +124,13 @@ the initial fast local pass.
 
 Windows/Linux local staging artifacts remain unsigned. These are not certified installers. Use `ditto -c -k --keepParent dist/Serein.app dist/Serein-macos.zip` on macOS; normal archive tools may package Windows staging output. Do not modify bundle resources after sealing; rerun packaging when source documentation changes. Linux additionally supports `--format rpm`, `--format arch` and `--format dir`; release jobs target Ubuntu 26.04 (x86_64 and ARM64), Fedora 43/44, openSUSE Tumbleweed and Arch independently. Fedora 43 packaging was added in a local fast pass; its build and installation remain unverified until Linux CI and desktop validation. [Flatpak](../packaging/flatpak/README.md) builds offline against GNOME SDK 49 with the pinned Rust compiler and locked vendored sources. Its sandbox currently excludes direct V4L2 camera access, and host game IPC needs the documented socket link; desktop login/keyring/audio still need Linux runtime validation. [Signed repository preparation](../packaging/repositories/README.md) supports apt, dnf/zypper and pacman, but requires configured signing credentials and an HTTPS host; preparing artifacts does not publish repositories. Windows installer/signing and release reproducibility remain open work.
 
-The webview lives only during login: WKWebView on macOS, WebView2 on Windows, GTK/WebKitGTK on Linux. Linux uses a separate GTK authentication window and pumps it only while login is active. Voice is built in. Audio devices open only for explicit playback, device testing, or a call reaching required encrypted readiness. Popup-dependent authentication and third-party embedded challenges may not work; do not claim all Discord login methods without live tests.
+Temporary webviews serve login, invite verification and explicitly opened YouTube players:
+WKWebView on macOS, WebView2 on Windows and GTK/WebKitGTK on Linux. Each purpose has
+separate ephemeral storage and no shared authentication bridge. Linux uses separate GTK
+windows and pumps them only while their respective surface is active. Voice is built in.
+Audio devices open only for explicit playback, device testing, or a call reaching required
+encrypted readiness. Popup-dependent authentication and third-party embedded challenges
+may not work; do not claim all Discord login methods without live tests.
 
 The first Windows upgrade from a build whose updater predates the FFmpeg library
 allowlist requires the installer or manual extraction: that old updater rejects
@@ -406,8 +412,28 @@ failure does not restart playback through another decoder. Gapless trimming,
 the one-second PCM queue, cancellation and audio preview limits remain enforced.
 This playback selection is independent of the Stable/Experimental video encoding
 setting. Still images and animated GIFs keep their existing image decoders.
-Audio synchronization, seeking, rotation, pause, volume and cancellation remain
-in the desktop player. Incoming camera/screen video uses the same typed pictures
+Direct embed videos use the same bounded decoder, including extensionless Discord proxy
+URLs and WebM/Matroska containers. Unknown dimensions reserve a usable 16:9 stage;
+decoded pictures retain their aspect ratio within it. Small servers that ignore a range probe can supply
+one complete file of at most 256 KiB; larger files still require validated range support.
+When Discord omits a media proxy, explicit Play also accepts Twitter's public MP4 paths,
+OGInstagram offloads and Instagram CDN MP4 files. Up to three redirects stay within the
+approved HTTPS media origins; arbitrary sites and credential-bearing URLs are refused.
+
+YouTube's HTML player is separate from FFmpeg file decoding. An explicit Play action opens
+the official privacy-enhanced player in an isolated native surface on Windows/macOS, or
+a separate Serein GTK video window on Linux. Only a validated public video ID and start
+time reach that player. It receives a fixed application referrer, never Discord credentials,
+message URLs or account identifiers. Navigation stays on that selected player; popups,
+downloads and device permissions are denied. Closing, minimization, navigation, source
+retirement, suppression, blocking, spoiler revocation, session changes and logout retire
+the view. Loading failures expose Retry and the existing confirmed Open original action.
+Provider restrictions, private/age-restricted videos, native runtime availability and live
+playback remain separate acceptance checks. Other provider-only HTML players retain the
+confirmed browser fallback; no arbitrary-origin extractor is added. Provider playback
+uses the web engine's controls and system audio output.
+Direct-file audio synchronization, seeking, rotation, pause, volume and cancellation
+remain in the desktop player. Incoming camera/screen video uses the same typed pictures
 through 8K, including 6144×2560, with bounded queues and latest-frame presentation.
 
 PQ and HLG retain ten-bit P010 pixels and explicit range/matrix/primaries. A

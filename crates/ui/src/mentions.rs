@@ -190,6 +190,37 @@ pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 	users
 }
 
+/// Resolve only wire mentions present in the draft. Keep the autocomplete identity snapshot
+/// unchanged, and borrow it when no contextual display name needs replacing.
+pub(crate) fn composer_users<'a>(
+	state: &State,
+	channel: Id,
+	draft: &str,
+	users: &'a [User],
+) -> std::borrow::Cow<'a, [User]> {
+	let mut names = std::borrow::Cow::Borrowed(users);
+	let mut rest = draft;
+	for _ in 0..256 {
+		let Some(start) = rest.find("<@") else {
+			break;
+		};
+		let token = &rest[start..];
+		if let Some((id, len)) = model::user_mention_prefix(token) {
+			if let Some(index) = users.iter().position(|user| user.id == id) {
+				let label = mention_label(id, users, Some(&MentionSource { state, channel }));
+				let name = label.strip_prefix('@').unwrap_or(&label);
+				if names[index].name != name {
+					names.to_mut()[index].name = name.to_owned();
+				}
+			}
+			rest = &token[len..];
+		} else {
+			rest = &token[2..];
+		}
+	}
+	names
+}
+
 // Compute all candidate recencies in one scan of the already-loaded bounded conversation.
 fn recent_user_ranks(
 	state: &State,
@@ -1148,8 +1179,32 @@ mod tests {
 		let label =
 			|state: &State| mention_label(target, &[], Some(&MentionSource { state, channel }));
 		assert_eq!(label(&state), "@Shared nickname");
+		let users = known_users(&state, channel);
+		let display = composer_users(&state, channel, "<@90001> <@90002>", &users);
+		assert_eq!(
+			display.iter().find(|user| user.id == target).unwrap().name,
+			"Shared nickname"
+		);
+		assert_eq!(
+			users.iter().find(|user| user.id == target).unwrap().name,
+			"Account90001"
+		);
+		assert!(matches!(
+			composer_users(&state, channel, "plain text", &users),
+			std::borrow::Cow::Borrowed(_)
+		));
+
 		state.member_search[0].rows[0].nick = Some("Renamed".into());
 		assert_eq!(label(&state), "@Renamed");
+		assert_eq!(
+			composer_users(&state, channel, "<@90001>", &users)
+				.iter()
+				.find(|user| user.id == target)
+				.unwrap()
+				.name,
+			"Renamed"
+		);
+
 		let _ = state.search_members(channel, "Different", 0).unwrap();
 		assert_eq!(
 			label(&state),

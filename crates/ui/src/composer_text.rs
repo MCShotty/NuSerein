@@ -325,7 +325,11 @@ impl Layout {
 				avatars.touch_share_image(ui.ctx(), asset, self.demo);
 			}
 			if let Some(label) = &inline.label {
-				painter.rect_filled(rect, 3, inline.background);
+				let background = egui::Rect::from_center_size(
+					rect.center(),
+					egui::vec2(rect.width(), (label.size().y + 2.0).min(rect.height())),
+				);
+				painter.rect_filled(background, 3, inline.background);
 				let offset = if let Some(icon) = inline.icon {
 					let size = emoji::inline_size(ui);
 					if let Some(key) = &inline.game_icon {

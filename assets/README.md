@@ -22,7 +22,7 @@ Downloaded from pinned upstream sources (September 10, 2026 unless specified):
   These are the hinted TrueType builds. Upstream also ships CFF outlines. egui paints
   grayscale coverage, not DirectWrite ClearType. Serein leaves the TrueType interpreter
   off and keeps sub-pixel binning on. Dark mode remaps coverage with
-  `FontColorTransferFunction::Gamma(0.5)`. Light mode leaves the transfer function off.
+  `FontColorTransferFunction::Gamma(0.8)`. Light mode leaves the transfer function off.
   Inter faces set `FontTweak.hinting` to `Some(false)`. The files stay the hinted
   TrueType builds. The interpreter does not run. Glyph designs and advance widths are
   unchanged, so layout is unaffected.

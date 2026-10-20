@@ -16,7 +16,7 @@ mod role_names;
 mod server_profile;
 pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
-pub use video::{MediaView, VideoCommand, VideoState, VideoUi};
+pub use video::{MediaView, VideoCommand, VideoState, VideoUi, embedded_video_url};
 mod attachments;
 pub mod external_upload;
 pub mod voice_messages;
@@ -3818,7 +3818,7 @@ impl MessagingUi {
                                 ui,
                                 draft,
                                 ui.available_width(),
-                                &mention_users,
+                                &mentions::composer_users(state, channel, draft, &mention_users),
                                 mentions::known_roles(state, channel),
                                 &state.channels,
                                 &state.game_mentions,
@@ -3840,7 +3840,7 @@ impl MessagingUi {
                                         ui,
                                         buffer.as_str(),
                                         width,
-                                        &mention_users,
+                                        &mentions::composer_users(state, channel, buffer.as_str(), &mention_users),
                                         mentions::known_roles(state, channel),
                                         &state.channels,
                                         &state.game_mentions,

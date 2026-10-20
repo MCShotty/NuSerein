@@ -5469,3 +5469,12 @@ voice-connection-peer-concealed = Audio concealment requests
 voice-connection-peer-concealed-help = Concealment includes the short tail after speech stops; it is not a network-loss count.
 voice-connection-peer-decoded-size = Decoded resolution
 voice-connection-peer-awaiting = Waiting for a keyframe
+
+
+video-provider-play = Play YouTube video
+video-provider-close = Close
+video-provider-loading = Loading video player…
+video-provider-separate-window = Playback is open in the video window.
+video-provider-retry = Retry
+video-provider-open-original = Open original…
+video-provider-load-failed = Could not load the video player. Retry or open the original.

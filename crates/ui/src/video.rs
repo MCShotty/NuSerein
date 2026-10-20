@@ -40,8 +40,21 @@ pub enum VideoCommand {
 	Volume(f32),
 	Stop,
 }
+/// One explicitly selected provider player; discarded with its message/session.
+pub struct ProviderPlayback {
+	pub generation: u64,
+	pub channel: Id,
+	pub message: Id,
+	pub target: model::YouTubeVideo,
+	pub source: String,
+	pub bounds: Option<egui::Rect>,
+	pub start_requested: bool,
+	pub error: Option<&'static str>,
+	pub standalone: bool,
+}
 pub struct VideoUi {
 	pub active: Option<(Id, Id, Attachment)>,
+	pub provider: Option<ProviderPlayback>,
 	pub state: VideoState,
 	pub position: f64,
 	pub duration: f64,
@@ -83,6 +96,7 @@ impl Default for VideoUi {
 	fn default() -> Self {
 		Self {
 			active: None,
+			provider: None,
 			state: VideoState::Idle,
 			position: 0.0,
 			duration: 0.0,
@@ -109,6 +123,7 @@ impl VideoUi {
 	pub fn stop(&mut self) {
 		self.exit_fullscreen();
 		self.active = None;
+		self.provider = None;
 		self.texture = None;
 		self.media = None;
 		self.managed = None;
@@ -128,6 +143,105 @@ impl VideoUi {
 	}
 	pub fn take_fullscreen_request(&mut self) -> Option<bool> {
 		self.fullscreen_request.take()
+	}
+	pub(crate) fn open_provider(
+		&mut self,
+		message: &Message,
+		target: model::YouTubeVideo,
+		source: String,
+		generation: u64,
+	) {
+		self.stop();
+		self.provider = Some(ProviderPlayback {
+			generation,
+			channel: message.channel,
+			message: message.id,
+			target,
+			source,
+			bounds: None,
+			start_requested: true,
+			error: None,
+			standalone: false,
+		});
+		self.seen = true;
+	}
+	pub(crate) fn show_provider(&mut self, ctx: &egui::Context, opening: &mut Option<String>) {
+		let Some(player) = &mut self.provider else {
+			return;
+		};
+		self.seen = true;
+		player.bounds = None;
+		let screen = ctx.content_rect();
+		let mut close = false;
+		let modal = egui::Modal::new(egui::Id::unique("provider-video")).show(ctx, |ui| {
+			let width = (screen.width() - 64.0).clamp(1.0, 960.0);
+			ui.set_width(width);
+			ui.horizontal(|ui| {
+				ui.label(crate::design::medium(ui, "YouTube", 16.0));
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+					close = crate::design::button(
+						ui,
+						"video-provider-close",
+						crate::design::ButtonKind::Outline,
+					)
+					.clicked();
+				});
+			});
+			let height = (width * 9.0 / 16.0).min((screen.height() - 160.0).max(1.0));
+			let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+			ui.painter().rect_filled(rect, 4, egui::Color32::BLACK);
+			if let Some(error) = player.error {
+				let text = ui.painter().layout(
+					crate::i18n::translate_if_key(error),
+					egui::FontId::proportional(14.0),
+					egui::Color32::WHITE,
+					(rect.width() - 32.0).max(1.0),
+				);
+				ui.painter().galley(
+					rect.center() - text.size() / 2.0,
+					text,
+					egui::Color32::WHITE,
+				);
+			} else {
+				player.bounds = Some(rect);
+				ui.painter().text(
+					rect.center(),
+					egui::Align2::CENTER_CENTER,
+					crate::i18n::translate(if player.standalone {
+						"video-provider-separate-window"
+					} else {
+						"video-provider-loading"
+					}),
+					egui::FontId::proportional(14.0),
+					egui::Color32::WHITE,
+				);
+			}
+			ui.horizontal(|ui| {
+				if player.error.is_some()
+					&& crate::design::button(
+						ui,
+						"video-provider-retry",
+						crate::design::ButtonKind::Outline,
+					)
+					.clicked()
+				{
+					player.error = None;
+					player.start_requested = true;
+				}
+				if crate::design::button(
+					ui,
+					"video-provider-open-original",
+					crate::design::ButtonKind::Outline,
+				)
+				.clicked()
+				{
+					*opening = crate::markdown::external_url(&player.source);
+				}
+			});
+		});
+		if close || modal.should_close() || opening.is_some() {
+			self.stop();
+		}
 	}
 	pub(super) fn is_fullscreen(&self) -> bool {
 		self.fullscreen.is_some()
@@ -251,6 +365,7 @@ impl VideoUi {
 			VideoState::Playing => VideoCommand::Pause(true),
 			VideoState::Paused => VideoCommand::Pause(false),
 			_ => {
+				self.provider = None;
 				self.active = Some((message.channel, message.id, attachment.clone()));
 				self.texture = None;
 				self.media = None;
@@ -907,17 +1022,67 @@ impl Drop for VideoUi {
 pub(crate) fn is_embedded(attachment: &Attachment) -> bool {
 	attachment.size == 0
 }
+/// Prefer Discord's media proxy, with known public video origins as a fallback.
+/// Extensionless offload/proxy endpoints still require the decoder to validate the container.
+/// Shared with the desktop worker so a visible Play action has the same URL policy as playback.
+pub fn embedded_video_url(media: &model::EmbedMedia) -> Option<url::Url> {
+	[media.proxy_url.as_deref(), media.url.as_deref()]
+		.into_iter()
+		.flatten()
+		.filter(|raw| raw.len() <= 2048 && !raw.contains('\\'))
+		.filter_map(|raw| url::Url::parse(raw).ok())
+		.find(|url| {
+			url.scheme() == "https"
+				&& url.port_or_known_default() == Some(443)
+				&& url.username().is_empty()
+				&& url.password().is_none()
+				&& url.fragment().is_none()
+				&& embedded_video_origin(url)
+		})
+}
+fn embedded_video_origin(url: &url::Url) -> bool {
+	let Some(host) = url.host_str() else {
+		return false;
+	};
+	match host {
+		"media.discordapp.net" | "images-ext-1.discordapp.net" | "images-ext-2.discordapp.net" => {
+			url.path().starts_with("/external/")
+		}
+		"video.twimg.com" => {
+			["/ext_tw_video/", "/amplify_video/", "/tweet_video/"]
+				.into_iter()
+				.any(|prefix| url.path().starts_with(prefix))
+				&& url.path().ends_with(".mp4")
+		}
+		"oginstagram.com" | "www.oginstagram.com" => url.path().starts_with("/offload/"),
+		_ => {
+			// The offload endpoint can redirect to Instagram's public video CDN.
+			(host == "cdninstagram.com"
+				|| host.ends_with(".cdninstagram.com")
+				|| host == "fbcdn.net"
+				|| host.ends_with(".fbcdn.net"))
+				&& url.path().ends_with(".mp4")
+		}
+	}
+}
 pub(crate) fn embed_stage_height(width: u32, height: u32, available: f32) -> f32 {
-	let (w, h) = if width > 0 && height > 0 {
+	let known = width > 0 && height > 0;
+	let (w, h) = if known {
 		(width as f32, height as f32)
 	} else {
 		(16.0, 9.0)
 	};
 	let available = available.clamp(1.0, MAX_WIDTH);
-	h * (available / w).min(MAX_HEIGHT / h)
+	h * (available / w)
+		.min(MAX_HEIGHT / h)
+		.min(if known { 1.0 } else { f32::INFINITY })
 }
 pub(crate) fn stage_size(attachment: &Attachment, width: f32) -> egui::Vec2 {
 	let width = width.clamp(1.0, MAX_WIDTH);
+	if attachment.media.width == 0 || attachment.media.height == 0 {
+		// 16:9 is an aspect ratio, not the pixel dimensions of the stage.
+		return egui::vec2(width, embed_stage_height(0, 0, width));
+	}
 	let (native_width, native_height) = if attachment.media.width > 0 && attachment.media.height > 0
 	{
 		(
@@ -944,6 +1109,155 @@ fn timestamp(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn embedded_sources_use_only_media_proxies_or_known_public_video_origins() {
+		for host in [
+			"media.discordapp.net",
+			"images-ext-1.discordapp.net",
+			"images-ext-2.discordapp.net",
+		] {
+			for path in ["clip.MP4", "clip.webm", "clip.mkv", "offload/synthetic/1"] {
+				let raw = format!(
+					"https://{host}/external/synthetic-hash/https/example.org/{path}?v=2&sig=synthetic"
+				);
+				for proxy_field in [true, false] {
+					let media = model::EmbedMedia {
+						url: Some(if proxy_field {
+							"https://example.org/original.mp4".into()
+						} else {
+							raw.clone()
+						}),
+						proxy_url: proxy_field.then(|| raw.clone()),
+						..Default::default()
+					};
+					assert_eq!(embedded_video_url(&media).unwrap().as_str(), raw);
+				}
+			}
+		}
+		for raw in [
+			"https://video.twimg.com/ext_tw_video/1/pu/vid/1280x720/clip.mp4?tag=12",
+			"https://video.twimg.com/amplify_video/1/vid/clip.mp4",
+			"https://video.twimg.com/tweet_video/clip.mp4",
+			"https://www.oginstagram.com/offload/synthetic/1?sig=synthetic",
+			"https://scontent.cdninstagram.com/video/clip.mp4?sig=synthetic",
+			"https://video.xx.fbcdn.net/video/clip.mp4?sig=synthetic",
+		] {
+			let media = model::EmbedMedia {
+				url: Some(raw.into()),
+				..Default::default()
+			};
+			assert_eq!(embedded_video_url(&media).unwrap().as_str(), raw);
+			let proxy = "https://media.discordapp.net/external/hash/https/example.org/clip";
+			assert_eq!(
+				embedded_video_url(&model::EmbedMedia {
+					proxy_url: Some(proxy.into()),
+					..media
+				})
+				.unwrap()
+				.as_str(),
+				proxy,
+				"prefer Discord's proxy when present"
+			);
+		}
+		for raw in [
+			"https://example.org/video.mp4",
+			"https://www.youtube.com/embed/synthetic",
+			"http://media.discordapp.net/external/h/clip.mp4",
+			"https://media.discordapp.net.evil.test/external/h/clip.mp4",
+			"https://user@media.discordapp.net/external/h/clip.mp4",
+			"https://media.discordapp.net:444/external/h/clip.mp4",
+			"https://media.discordapp.net/external/h/clip.mp4#fragment",
+			"https://media.discordapp.net/api/video.mp4",
+			"https://media.discordapp.net\\external\\h\\clip.mp4",
+			"https://video.twimg.com.evil.test/ext_tw_video/clip.mp4",
+			"https://video.twimg.com/ext_tw_video/playlist.m3u8",
+			"https://www.oginstagram.com/reel/synthetic",
+			"https://www.oginstagram.com.evil.test/offload/synthetic/1",
+			"https://user@video.twimg.com/tweet_video/clip.mp4",
+			"https://video.twimg.com:444/tweet_video/clip.mp4",
+			"https://video.twimg.com/tweet_video/clip.mp4#fragment",
+			"https://cdninstagram.com.evil.test/video/clip.mp4",
+			"https://evilcdninstagram.com/video/clip.mp4",
+			"https://video.xx.fbcdn.net/iframe.html",
+			"https://127.0.0.1/video.mp4",
+		] {
+			assert!(
+				embedded_video_url(&model::EmbedMedia {
+					url: Some(raw.into()),
+					..Default::default()
+				})
+				.is_none(),
+				"{raw}"
+			);
+		}
+	}
+
+	#[test]
+	fn missing_dimensions_keep_a_full_size_keyboard_operable_player() {
+		let message = test_support::message(1, Id(2));
+		for metadata in [(0, 0), (1920, 0), (0, 1080)] {
+			let attachment = Attachment {
+				id: Id(0),
+				filename: "Video".into(),
+				description: None,
+				content_type: Some("video/mp4".into()),
+				size: 0,
+				media: model::EmbedMedia {
+					width: metadata.0,
+					height: metadata.1,
+					..Default::default()
+				},
+				spoiler: false,
+				duration_ms: None,
+				waveform: vec![],
+			};
+			let ctx = egui::Context::default();
+			crate::design::apply(&ctx);
+			let mut player = VideoUi::default();
+			let mut frame = |events| {
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(480.0, 600.0),
+						)),
+						events,
+						..Default::default()
+					},
+					|ui| {
+						let response = player.show_embedded(
+							ui,
+							&message,
+							&attachment,
+							None,
+							false,
+							&mut crate::DownloadUi::default(),
+							&mut None,
+							false,
+						);
+						assert!(response.rect.width() > 400.0 && response.rect.height() > 200.0);
+					},
+				);
+				output.drop_without_applying_deltas();
+			};
+			frame(vec![]);
+			for key in [egui::Key::Tab, egui::Key::Enter] {
+				frame(vec![egui::Event::Key {
+					key,
+					physical_key: None,
+					pressed: true,
+					repeat: false,
+					modifiers: egui::Modifiers::NONE,
+				}]);
+			}
+			assert!(matches!(player.command, Some(VideoCommand::Play(_))));
+			assert!(player.seen);
+			assert!(
+				(embed_stage_height(0, 0, 456.0) - stage_size(&attachment, 456.0).y).abs() < 0.01
+			);
+		}
+	}
+
 	#[test]
 	fn video_controls_are_explicit_bounded_and_keyboard_operable() {
 		let mut message = test_support::message(1, Id(2));

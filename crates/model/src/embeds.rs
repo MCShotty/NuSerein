@@ -3,6 +3,31 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_EMBEDS: usize = 10;
 pub const MAX_EMBED_BYTES: usize = 64 * 1024;
+
+/// A public YouTube video identity, not an arbitrary URL or authenticated browser session.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct YouTubeVideo {
+	id: String,
+	start_seconds: u32,
+}
+impl YouTubeVideo {
+	pub fn new(id: &str, start_seconds: u32) -> Option<Self> {
+		(id.len() == 11
+			&& id
+				.bytes()
+				.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+		.then(|| Self {
+			id: id.into(),
+			start_seconds,
+		})
+	}
+	pub fn embed_url(&self) -> String {
+		format!(
+			"https://www.youtube-nocookie.com/embed/{}?autoplay=1&playsinline=1&rel=0&start={}",
+			self.id, self.start_seconds
+		)
+	}
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbedMedia {

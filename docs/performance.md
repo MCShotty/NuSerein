@@ -2520,3 +2520,244 @@ same fixture opening steps on both revisions; only the new preview-page setup
 is backported to the baseline. Dark/light and narrow layouts were inspected.
 Live Discord, Windows/macOS interaction and native application/package CI remain
 unverified locally. No account, microphone or capture session was opened.
+
+## Chat typography and inline media — October 20, 2026
+
+Runtime source `6f821a743d0048e0c2d3b6f231813f15aee8add4` is compared with fork
+main `da97a14f9edee868e0773c01e110eaab0eb07649`. Subsequent evidence documentation
+does not alter the runtime. The published-nightly reference is
+`v1.0.0-nightly.20261017.60`, source `d9d87471f0ea2190da3f90db815e115045461703`.
+It was the latest published nightly when checked for this task; nightly comparisons
+include earlier fork features and do not isolate this UI change.
+
+### Native visual and idle-process evidence
+
+Fresh unedited native before/after screenshots are in
+[`pr-evidence/chat-typography`](pr-evidence/chat-typography). The pair uses the same
+synthetic conversation, 1440 × 960 window, scale 1, Inter fonts and dark appearance.
+The baseline contains only fixture additions needed to show category casing and
+edited messages; its production UI remains `da97a14f`. `inline-media.png` is a
+separate after-only fixture showing custom reply emoji and contextual mention names,
+not a matched baseline. Light, compact and 760 × 760 variants were also inspected.
+No saved session, account, microphone or live capture was opened.
+
+Environment: Linux 6.18.55, glibc 2.41, Intel Xeon Platinum 8573C, five available
+logical CPUs and 18,440,112 KiB total RAM. Native previews use Rust 1.98.1,
+`demo`, the dev profile with debug information disabled, wgpu and Xvfb; the physical
+adapter was not recorded. Both use `profile_preview --demo --page=conversation`
+at the dimensions above. After a three-second warmup, 15 one-second observations
+sample `/proc` CPU ticks and RSS, checking process liveness each time. CPU is percent
+of one core; settled RSS is the median of the last five samples. Previews are pinned
+to CPU 0. Task package compilers were stopped and verified stopped for sampling,
+then resumed; their resident memory remained allocated. No helper children appeared.
+
+| Idle process metric / method | Fork baseline | After | Observed delta |
+| --- | ---: | ---: | ---: |
+| CPU / 15 samples | 0.2621% | 0.0000% | -0.2621 percentage points |
+| Peak sampled RSS | 199,294,976 B | 194,387,968 B | -4,907,008 B (-2.46%) |
+| Settled RSS / last-five median | 199,294,976 B | 194,387,968 B | -4,907,008 B (-2.46%) |
+
+These are single idle observations of development previews, not release UI throughput,
+interaction latency, p95 frame time, GPU memory or a memory-leak test. No causal
+CPU or memory improvement is claimed. Release UI/media performance remains unmeasured.
+
+### Release reducer cross-check
+
+The same 100,000-event driver runs with locked Rust 1.98.1 release builds: fat LTO,
+one codegen unit, stripped symbols and line tables. Each variant uses one warmup and
+five counterbalanced timed runs on CPU 0, under the compiler pause described above.
+The UI crate is not part of this workload and no reducer/model/cache/workload changes
+are present. Both measured sets are retained:
+
+| Median elapsed, ms | Nightly | Fork baseline | After | Delta vs fork / nightly |
+| --- | ---: | ---: | ---: | ---: |
+| Initial | 93.424659 | 96.036594 | 117.556673 | +22.4% / +25.8% |
+| Confirmation | 97.392611 | 112.499102 | 105.641862 | -6.1% / +8.5% |
+
+The first run is slower. A fresh exact-baseline rebuild produced a byte-for-byte
+identical executable (SHA-256 `c43070765fe3dc64823ce25ce08755e9e2b8b5447af82efcb4d9b6891cd192e9`).
+The one confirmation reverses the timing direction using unchanged binaries, so
+this comparison is inconclusive and the cause remains unisolated. No reducer speed
+improvement is claimed. All runs retain 500 records and 401,492–401,977 estimated
+bytes. Raw measured samples, milliseconds:
+
+```text
+initial/nightly: 93.424659, 87.150309, 92.363940, 100.333103, 114.112718
+initial/before: 96.036594, 94.471337, 112.639644, 108.679608, 95.086756
+initial/after: 118.037344, 122.820004, 114.543492, 117.556673, 110.634903
+confirmation/nightly: 85.215247, 101.866661, 136.326542, 85.245207, 97.392611
+confirmation/before: 99.570896, 118.921861, 112.499102, 104.064618, 119.439574
+confirmation/after: 105.697624, 110.787072, 103.557331, 105.641862, 99.495916
+```
+
+### Standard release packages
+
+Normal `cargo xtask package --format dir` passes first into empty output and again
+with caches and fresh empty output. Neither package is manually repaired. Both
+complete outputs have identical paths, types, modes, hashes and symlink targets
+(604 entries); both installed payloads contain 280 regular files. Only the executable
+changes relative to the verified exact-baseline payload. Validation covers all six
+private FFmpeg/OpenH264 libraries, 19 font notices, seven pinned corresponding-source
+archive hashes, the payload allowlist, desktop metadata and absent development RPATHs.
+The packaged query-only launch exits successfully with development FFmpeg directories
+removed from search paths; the task SDK supplies system libraries. This does not
+exercise a GUI launch or owner session.
+
+Baseline and new packages use Debian 13 x86-64, the same SDK and FFmpeg prefix,
+pinned locked release settings, voice enabled and no demo/developer features.
+The retained baseline executable was rehashed against its recorded manifest. The
+nightly column is the official Ubuntu 26.04 AMD64 DEB payload, verified again against
+release asset SHA-256 `78ad0d190e3f894b595a673642f118aede6785fb27dbcfdecb72707d3b5cdac6`.
+Normalized ZIPs use sorted regular paths, fixed timestamps, 0644 comparison-entry
+modes and DEFLATE level 9; these are size-comparison archives, not installers.
+
+| Metric | Published nightly | Fork baseline | After | Delta vs fork / nightly |
+| --- | ---: | ---: | ---: | ---: |
+| Executable | 91,957,328 B | 95,419,720 B | 95,425,224 B | +5,504 B (+0.0058%) / +3.8% |
+| Installed payload | 96,555,161 B | 140,250,352 B | 140,255,856 B | +5,504 B (+0.0039%) / +45.3% |
+| Normalized ZIP | 55,682,561 B | 89,814,051 B | 89,816,286 B | +2,235 B (+0.0025%) / +61.3% |
+
+New executable SHA-256: `36d561cda08efd18d3bac219c626a33c225ff8c9be2e11cd99dfcc3a284df2eb`.
+Clean/cached normalized ZIP SHA-256: `e33b61f89dc790897329a239c3cac35bc47ed72f515abdb6e833ae3ae3852a0e`.
+Nightly size deltas reflect the complete fork and different package environments;
+they are not this change's isolated cost. Windows/macOS package deltas are unmeasured.
+
+### Verification and remaining checks
+
+At runtime source `6f821a74`, `cargo xtask check` passes 1,936 tests with zero failures
+and 32 ignored, pinned formatting, strict workspace Clippy, minimal application and
+policy checks. Demo-preview Clippy, login-handoff and cached-xtask workspace checks
+pass. Bounded ASan fuzz smoke completes 108,579 decode and 3,375 state-transition
+runs without a finding. Release replay and the 120-second core soak pass: 1,119 passes,
+35,808 channel visits, 21,484,800 live inserts and five logouts in 120.097 seconds.
+These are synthetic checks; the soak does not test native media or process RSS.
+Native Windows/macOS application/package CI is separate from this local Linux gate.
+Windows DirectWrite-style rendering, physical DPI scaling, native accessibility and
+owner-controlled Discord behavior remain unverified. No dependency, license text,
+SDK API or live-service behavior changes are introduced.
+
+## Embedded media playback and social cards — October 20, 2026
+
+Runtime source `9c6c102c96c6119f1330b3047494559ca8eefa31` follows `c93303fb`,
+whose production source is `6f821a74`. The baseline production code is unchanged;
+only the same synthetic embed fixture was added to its native preview. The latest
+published nightly was checked again: `v1.0.0-nightly.20261017.60`,
+`d9d87471f0ea2190da3f90db815e115045461703`. Later changes to this evidence do not
+alter the measured runtime.
+
+### Native layout and idle process
+
+The [matched native pair](pr-evidence/media-embeds) uses the same synthetic post
+and video with missing dimensions, 1440 × 1200 window, scale 1, Inter and dark
+appearance. Light and 760 × 1000 layouts were also inspected. Reproduce with
+`profile_preview --demo --page=embeds --media-embeds`; `--provider-embed` is an
+additional, after-only YouTube card fixture. These fixtures never open a provider
+webview, an owner account or an audio device.
+
+Environment: Linux 6.18.55/glibc 2.41, Xeon Platinum 8573C, five available CPUs,
+18,440,112 KiB total RAM, Rust 1.98.1, locked dependencies, wgpu/Xvfb and the
+`demo` dev profile with debug information disabled. The physical adapter was not
+recorded. Previews use `--interactive` and the dimensions above, pinned to CPU 0.
+After three seconds of warmup, 15 one-second samples check liveness and read
+`/proc` CPU ticks/RSS. Settled RSS is the last-five median. Task compiler trees
+were verified stopped for sampling and resumed afterward; their memory remained
+resident. Neither preview had helper children.
+
+| Idle development-preview metric | Before | After | Observed delta |
+| --- | ---: | ---: | ---: |
+| CPU / percent of one core | 0.0000% | 0.0000% | 0.0000 percentage points |
+| Peak sampled RSS | 190,353,408 B | 192,970,752 B | +2,617,344 B (+1.37%) |
+| Settled RSS / last-five median | 190,353,408 B | 192,970,752 B | +2,617,344 B (+1.37%) |
+
+This single idle sample covers the larger social image/player stages. It does not
+measure release frame latency, video throughput, GPU memory, provider processes,
+startup performance or settled memory after repeated playback. No speed or leak
+improvement is claimed.
+
+### Release reducer cross-check
+
+The unchanged 100,000-event driver uses the pinned locked release profile: fat
+LTO, one codegen unit, stripped symbols and line tables. One warmup and five
+counterbalanced runs per variant used CPU 0 during the compiler pause above.
+
+| Median elapsed, ms | Current nightly | Fork baseline | After | Delta vs fork / nightly |
+| --- | ---: | ---: | ---: | ---: |
+| Reducer replay | 137.962306 | 112.680223 | 125.228989 | +11.1% / -9.2% |
+
+The new median is slower than the fork baseline. Both executables are byte-for-byte
+identical (SHA-256 `c43070765fe3dc64823ce25ce08755e9e2b8b5447af82efcb4d9b6891cd192e9`),
+so the timing difference cannot establish a code regression; its environmental
+cause remains unisolated. The earlier typography timing results above remain
+historical evidence. All runs retain 500 records and 401,492–401,977 estimated
+bytes. Raw measured samples, milliseconds:
+
+```text
+nightly: 107.306184, 137.962306, 215.119072, 120.680036, 154.416027
+before: 136.17896, 112.680223, 106.174381, 108.479018, 119.905133
+after: 115.437129, 125.228989, 190.964896, 125.575998, 116.806149
+```
+
+### Normal release packages
+
+`cargo xtask package --format dir` completed from an empty package directory after
+rebuilding the current packager, then completed again with caches and fresh empty
+output. Compiler and verified FFmpeg caches were retained; this is not a clean-room
+rebuild of third-party libraries. No output was manually repaired. Both complete
+outputs match across all 604 paths, entry types, modes, hashes and symlink targets;
+the installed payload has 280 regular files. Only the executable and README change
+relative to the retained exact-baseline package (each appears twice in the complete
+output). The new screenshots remain development evidence outside the payload.
+
+Validation covers all six private FFmpeg/OpenH264 libraries, corresponding source
+and license assembly, 19 font notices, seven pinned source-archive hashes, the
+payload allowlist, desktop metadata and absent development RPATHs. The query-only
+packaged launch exits 0 with the development FFmpeg directories removed from
+search paths. The task SDK still supplies system libraries; this is not a GUI
+launch, WebKit runtime test or owner-session check.
+
+Both local revisions use Debian 13 x86-64, the same SDK/FFmpeg prefix, locked Rust
+1.98.1 release settings, voice enabled and no demo/developer features. The nightly
+reference is the official Ubuntu 26.04 AMD64 DEB payload, release asset SHA-256
+`78ad0d190e3f894b595a673642f118aede6785fb27dbcfdecb72707d3b5cdac6`. It is
+the same latest asset verified in the typography comparison above. Normalized
+ZIPs use sorted regular paths, fixed timestamps, 0644 comparison-entry modes and
+DEFLATE 9; they compare size and are not installers.
+
+| Metric | Current nightly | Local baseline | After | Delta vs local / nightly |
+| --- | ---: | ---: | ---: | ---: |
+| Executable | 91,957,328 B | 95,425,224 B | 95,469,896 B | +44,672 B (+0.047%) / +3.8% |
+| Installed payload | 96,555,161 B | 140,255,856 B | 140,300,532 B | +44,676 B (+0.032%) / +45.3% |
+| Normalized ZIP | 55,682,561 B | 89,816,286 B | 89,836,033 B | +19,747 B (+0.022%) / +61.3% |
+
+New executable SHA-256: `13dba9d5e8568c11f2cb2d2802be20894f57fe46cefd791196ed99309f6c2c7c`.
+Clean/cached normalized ZIP SHA-256: `d66e9174ba6586aa7733e35e31d3e307da0bd9bdbd3d6a7db62e1096cfe983b5`.
+Nightly deltas include the full fork and package-environment differences; they do
+not isolate this embed change. Windows/macOS package sizes are unmeasured.
+
+### Verification and native limits
+
+The controlled `cargo xtask check` run passes 1,947 test executions with 33 ignored
+(including separately spawned child-fixture summaries), formatting, strict Clippy,
+minimal application and policy checks. It uses `RUST_TEST_THREADS=2` with task
+compilers paused. An initial run during parallel compilation timed out in the
+existing looping-video preview test; that unchanged test passed alone in 0.54 s
+and in the controlled full run. The probe fixture's accept deadline now covers
+client initialization and the existing 15-second request timeout; production
+deadlines were not relaxed.
+
+Demo-preview Clippy, login-handoff, cached-workspace and six license-policy
+fixtures pass. FFmpeg bundle fixtures pass (22 tests, one platform skip), as do
+Linux directory-package and four Flatpak preparation fixtures. Bounded ASan fuzz
+smoke completes 111,991 decode and 2,552 state-transition runs without a finding.
+Release replay and the 120-second core soak pass: 1,645 passes, 52,640 channel
+visits, 31,584,000 live inserts and seven logouts in 121.874 seconds. The soak
+contains no renderer, media engine, network, storage or audio devices.
+
+The ignored native provider lifecycle fixture could not run with this task's
+incomplete WebKit SDK/helper and sandbox mount layout; no browser sandbox was
+disabled. The supplied YouTube/VXTwitter pages and Instagram media requests are
+restricted by the workspace network. No live playback success is claimed.
+Native Windows/macOS/Linux application/package CI, physical rendering, provider
+restrictions, system audio routing and owner-controlled Discord behavior remain
+separate checks. Provider-process memory, release media throughput, interaction
+latency and repeated native lifecycle memory remain unmeasured.

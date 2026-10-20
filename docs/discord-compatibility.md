@@ -3162,15 +3162,24 @@ fields; no new dependency or retained emoji cache is introduced.
 
 ### Native embedded videos — October 17, 2026
 
-Reviewed native portions of upstream PR #439 add MP4/MOV/M4V embed playback from
-validated HTTPS `media.discordapp.net/external/` video proxies. Play is explicit;
-unknown lengths require a one-byte range probe with a nonzero total at most 100 MiB.
+Reviewed native portions of upstream PR #439 add embed playback preferring validated HTTPS
+`media.discordapp.net` and `images-ext-1/2.discordapp.net` external video proxies. When a
+proxy is absent, Twitter MP4 paths, OGInstagram offloads and Instagram CDN MP4 files
+are admitted after explicit Play, with at most three redirects between approved media origins.
+Both media metadata fields are considered, including extensionless endpoints;
+the decoder validates the actual container. Play is explicit. Unknown lengths require
+a one-byte range probe with a nonzero total at most 100 MiB, or one complete response
+of at most 256 KiB when a small server ignores Range. Unknown dimensions reserve a
+normal 16:9 player instead of a 16 × 9 pixel control strip.
 Anonymous bounded range reads feed the existing FFmpeg-first decoder and native
-HDR/GPU presentation. Redirects and credentials are refused. Suppressed/spoiler
+HDR/GPU presentation. Other redirects and all credentials are refused. Suppressed/spoiler
 media retain their existing reveal gates; source changes revoke fullscreen playback.
-Provider HTML/JavaScript players remain confirmed external links. No general
-webview, provider extraction service, arbitrary-origin fetch or FFmpeg networking
-is introduced. Native visual/decoder tests and owner-controlled playback acceptance
+YouTube watch, short, live and embed links resolve to one validated public video ID and
+start time. Explicit Play opens its official privacy-enhanced web player in an isolated
+native surface; it does not pass an iframe URL to FFmpeg. Other unsupported provider
+HTML/JavaScript players remain confirmed external links. No general browser, provider
+extraction service, arbitrary-origin file fetch or FFmpeg networking is introduced.
+Native visual/decoder tests and owner-controlled playback acceptance
 must be reported separately; historical upstream evidence is not current-fork evidence.
 
 Ban browsing accepts either View Audit Log or Ban Members, matching the documented
