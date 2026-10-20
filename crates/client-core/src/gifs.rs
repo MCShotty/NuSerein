@@ -305,27 +305,7 @@ impl State {
 					}
 				}
 				let previous = std::mem::take(&mut self.gifs.favorites);
-				// Keep distinct local fallback entries before filling remaining remote slots.
-				for gif in previous {
-					// A local still preview outranks the synchronized clip for the same URL,
-					// on every sync while the account lists it as a clip.
-					let remote = favorites.iter().find(|remote| remote.url == gif.url);
-					let still = model::valid_gif_preview(&gif.preview);
-					let over_clip = still
-						&& remote.is_some_and(|remote| !model::valid_gif_preview(&remote.preview));
-					if !previous_remote.contains(&gif.url) || over_clip {
-						let current = remote.filter(|_| !still);
-						self.gifs.favorites.push(current.cloned().unwrap_or(gif));
-					}
-				}
-				for gif in favorites {
-					if self.gifs.favorites.len() == MAX_GIF_FAVORITES {
-						break;
-					}
-					if !self.is_gif_favorite(&gif) {
-						self.gifs.favorites.push(gif);
-					}
-				}
+				self.gifs.favorites = merge_favorites(previous, favorites, &previous_remote);
 				self.gifs.favorites.shrink_to_fit();
 				self.gifs.sync_ready = true;
 				self.gifs.sync_loaded = true;
@@ -387,29 +367,18 @@ impl State {
 			return;
 		}
 		if self.gifs.sync_loaded {
-			let previous = std::mem::take(&mut self.gifs.favorites);
+			let mut restored = Vec::<Gif>::new();
 			for gif in favorites {
-				if self.gifs.favorites.len() == MAX_GIF_FAVORITES {
-					break;
-				}
-				if gif.valid()
-					&& !removed.contains(&gif.url)
-					&& (!self.gifs.sync_remote.contains(&gif.url)
-						|| model::valid_gif_preview(&gif.preview))
-					&& !self.is_gif_favorite(&gif)
+				if restored.len() < MAX_GIF_FAVORITES
+					&& gif.valid() && !removed.contains(&gif.url)
+					&& !restored.iter().any(|known| known.url == gif.url)
 				{
-					self.gifs.favorites.push(gif);
+					restored.push(gif);
 				}
 			}
-			self.gifs.favorites_changed |= !self.gifs.favorites.is_empty();
-			for gif in previous {
-				if self.gifs.favorites.len() == MAX_GIF_FAVORITES {
-					break;
-				}
-				if !self.is_gif_favorite(&gif) {
-					self.gifs.favorites.push(gif);
-				}
-			}
+			self.gifs.favorites_changed |= !restored.is_empty();
+			let current = std::mem::take(&mut self.gifs.favorites);
+			self.gifs.favorites = merge_favorites(restored, current, &self.gifs.sync_remote);
 			self.gifs.favorites.shrink_to_fit();
 			return;
 		}
@@ -430,10 +399,72 @@ impl State {
 	}
 }
 
+/// Reserve room for unsynchronized local favorites, but keep shared records in server order.
+/// Better local still previews replace metadata at the same position, never the saved ordering.
+fn merge_favorites(local: Vec<Gif>, remote: Vec<Gif>, previous_remote: &[String]) -> Vec<Gif> {
+	let local_only = |gif: &&Gif| {
+		!previous_remote.contains(&gif.url) && !remote.iter().any(|other| other.url == gif.url)
+	};
+	let reserved = local.iter().filter(local_only).count();
+	let mut merged = Vec::with_capacity(MAX_GIF_FAVORITES);
+	for gif in remote.iter().take(MAX_GIF_FAVORITES - reserved) {
+		let still = local.iter().find(|known| {
+			known.url == gif.url
+				&& model::valid_gif_preview(&known.preview)
+				&& !model::valid_gif_preview(&gif.preview)
+		});
+		merged.push(still.unwrap_or(gif).clone());
+	}
+	merged.extend(local.iter().filter(local_only).cloned());
+	merged
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::{Envelope, Event};
+
+	#[test]
+	fn synchronized_order_survives_cache_arrival_preview_replacement_and_refresh() {
+		for cache_first in [false, true] {
+			let mut state = test_state();
+			let a = gif("a");
+			let b = gif("b");
+			let local = gif("offline");
+			let mut clip = a.clone();
+			clip.preview = "https://media.tenor.com/a/tenor.mp4".into();
+			let cache = vec![a.clone(), local.clone(), b.clone()];
+			if cache_first {
+				state.restore_gif_favorites(cache.clone());
+			}
+			let Some(Command::GifFavorites { request, .. }) = state.request_gif_favorites() else {
+				panic!()
+			};
+			state.apply_gif_favorites(request, Ok(vec![b.clone(), clip.clone()]));
+			if !cache_first {
+				state.restore_gif_favorites(cache);
+			}
+			assert_eq!(
+				state.gifs.favorites,
+				vec![b.clone(), a.clone(), local.clone()]
+			);
+			// A still preview must not pin the old position when another client reorders favorites.
+			let Some(Command::GifFavorites { request, .. }) = state.request_gif_favorites() else {
+				panic!()
+			};
+			state.apply_gif_favorites(request, Ok(vec![clip, b.clone()]));
+			assert_eq!(state.gifs.favorites, vec![a.clone(), b, local.clone()]);
+			let Some(Command::GifFavorites { request, .. }) = state.request_gif_favorites() else {
+				panic!()
+			};
+			state.apply_gif_favorites(request, Ok(vec![]));
+			assert_eq!(
+				state.gifs.favorites,
+				vec![local],
+				"removals retire synchronized stills too"
+			);
+		}
+	}
 
 	fn gif(id: &str) -> Gif {
 		Gif {
@@ -826,7 +857,7 @@ mod tests {
 			};
 			state.apply_gif_favorites(request, Ok(remote));
 		}
-		assert_eq!(state.gifs.favorites, vec![gif("still"), gif("other")]);
+		assert_eq!(state.gifs.favorites, vec![gif("other"), gif("still")]);
 		// A synchronized image favorite keeps following the server's entry.
 		let mut state = test_state();
 		let mut updated = gif("image");

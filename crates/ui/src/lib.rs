@@ -3775,7 +3775,7 @@ impl MessagingUi {
 						if mention_enabled
 							&& let Some(cursor) = cursor
 							&& let Some(cursor) =
-								emoji_picker::complete_shortcode(draft, cursor, remaining, editing_here)
+								emoji_picker::complete_shortcode(state, channel, self.hide_nitro_emojis, draft, cursor, remaining, editing_here)
 						{
 							let mut edit_state = egui::text_edit::TextEditState::load(ctx, composer_id)
 								.unwrap_or_default();

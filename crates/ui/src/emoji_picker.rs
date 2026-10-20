@@ -73,8 +73,11 @@ pub(crate) fn insert(
 	Some(start + inserted)
 }
 
-/// Replace an exact completed Unicode shortcode immediately before the caret.
+/// Complete local-server names before Unicode aliases, matching the suggestion priority.
 pub(crate) fn complete_shortcode(
+	state: &State,
+	channel: Id,
+	hide_nitro: bool,
 	draft: &mut String,
 	cursor: usize,
 	remaining: usize,
@@ -97,7 +100,38 @@ pub(crate) fn complete_shortcode(
 	if !(2..=64).contains(&name.chars().count()) {
 		return None;
 	}
-	let emoji =
+	let custom = state
+		.channel(channel)
+		.and_then(|target| target.guild)
+		.and_then(|id| state.guild(id))
+		.and_then(|guild| guild.emojis.as_ref().map(|emojis| (guild, emojis)))
+		.and_then(|(guild, emojis)| {
+			emojis
+				.iter()
+				.filter(|emoji| {
+					emoji.valid()
+						&& emoji.name.eq_ignore_ascii_case(name)
+						&& !(hide_nitro
+							&& state.custom_emoji_requires_nitro(channel, guild.id, emoji))
+						&& (state.can_send_custom_emoji(channel, guild.id, emoji)
+							|| state.can_send(channel))
+				})
+				.min_by_key(|emoji| emoji.id)
+				.map(|emoji| (guild, emoji))
+		});
+	let custom_text = custom.map(|(guild, emoji)| {
+		if state.can_send_custom_emoji(channel, guild.id, emoji) {
+			emoji.markup()
+		} else {
+			model::ImageShare::Emoji {
+				id: emoji.id,
+				animated: emoji.animated,
+			}
+			.markdown(&emoji.name)
+			.unwrap_or_else(|| emoji.markup())
+		}
+	});
+	let emoji = custom_text.as_deref().or_else(|| {
 		standard()
 			.iter()
 			.zip(discord_names())
@@ -106,7 +140,8 @@ pub(crate) fn complete_shortcode(
 					.split(',')
 					.any(|alias| alias.eq_ignore_ascii_case(name))
 					.then_some(*emoji)
-			})?;
+			})
+	})?;
 	let start = draft[..start].chars().count();
 	insert(
 		draft,
@@ -217,6 +252,16 @@ fn server_rail_index(row: usize, current: Option<usize>) -> usize {
 	}
 }
 
+fn default_server(state: &State, channel: Option<Id>) -> Option<Id> {
+	let guild = state.channel(channel?)?.guild?;
+	state
+		.guild(guild)?
+		.emojis
+		.as_ref()
+		.filter(|emojis| !emojis.is_empty())
+		.map(|_| guild)
+}
+
 /// Case-insensitive substring test against an already lowercased `needle`. ASCII names
 /// (Discord permits only `[A-Za-z0-9_]`) compare in place; only non-ASCII server names allocate.
 fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
@@ -233,10 +278,19 @@ fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
 /// Retain indices only; cap search results independently of the joined-server count.
 fn custom_matches(state: &State, server: Option<Id>, query: &str) -> Vec<(usize, usize)> {
 	let query = query.trim().to_lowercase();
-	let mut matching: Vec<_> = state
+	let current = state
+		.selected
+		.and_then(|channel| state.channel(channel))
+		.and_then(|c| c.guild);
+	let preferred = state
 		.guilds
 		.iter()
-		.enumerate()
+		.position(|guild| Some(guild.id) == current);
+	let mut matching: Vec<_> = (0..state.guilds.len())
+		.map(|row| {
+			let index = server_rail_index(row, preferred);
+			(index, &state.guilds[index])
+		})
 		.filter(|(_, guild)| !query.is_empty() || server == Some(guild.id))
 		.flat_map(|(guild_index, guild)| {
 			let query = &query;
@@ -256,6 +310,7 @@ fn custom_matches(state: &State, server: Option<Id>, query: &str) -> Vec<(usize,
 	matching.sort_unstable_by_key(|&(guild, emoji)| {
 		let guild = &state.guilds[guild];
 		(
+			Some(guild.id) != current,
 			guild.id,
 			guild.emojis.as_ref().expect("matched catalog")[emoji].id,
 		)
@@ -263,9 +318,18 @@ fn custom_matches(state: &State, server: Option<Id>, query: &str) -> Vec<(usize,
 	matching
 }
 
+#[derive(PartialEq, Eq)]
+struct CustomMatchKey {
+	generation: u64,
+	revision: u64,
+	user: Option<Id>,
+	server: Option<Id>,
+	current: Option<Id>,
+}
+
 #[derive(Default)]
 struct CustomMatches {
-	key: Option<(u64, u64, Option<Id>, Option<Id>)>,
+	key: Option<CustomMatchKey>,
 	query: Box<str>,
 	// At most CUSTOM_LIMIT index pairs (16 KiB on 64-bit), with no catalog clones/references.
 	entries: Box<[(usize, usize)]>,
@@ -273,13 +337,17 @@ struct CustomMatches {
 
 impl CustomMatches {
 	fn update(&mut self, state: &State, server: Option<Id>, query: &str) -> bool {
-		let key = (
-			state.generation,
-			state.catalog_revision(),
-			state.user.as_ref().map(|user| user.id),
+		let key = CustomMatchKey {
+			generation: state.generation,
+			revision: state.catalog_revision(),
+			user: state.user.as_ref().map(|user| user.id),
 			server,
-		);
-		if self.key == Some(key) && self.query.as_ref() == query {
+			current: state
+				.selected
+				.and_then(|channel| state.channel(channel))
+				.and_then(|c| c.guild),
+		};
+		if self.key.as_ref() == Some(&key) && self.query.as_ref() == query {
 			return false;
 		}
 		// Catalog/name/membership changes invalidate these indices; messages do not.
@@ -619,7 +687,7 @@ impl Picker {
 			self.channel = channel;
 			self.generation = state.generation;
 			self.open = false;
-			self.server = None;
+			self.server = default_server(state, channel);
 			self.query.clear();
 			self.filter();
 			if !self.pending_open {
@@ -647,7 +715,7 @@ impl Picker {
 		self.open = true;
 		self.focus = true;
 		self.tab = Tab::Emoji;
-		self.server = None;
+		self.server = default_server(state, Some(channel));
 		self.query.clear();
 		self.filter();
 	}
@@ -716,7 +784,7 @@ impl Picker {
 		self.open = true;
 		self.focus = true;
 		self.tab = Tab::Emoji;
-		self.server = None;
+		self.server = default_server(state, Some(channel));
 		self.query.clear();
 		self.filter();
 	}
@@ -855,13 +923,13 @@ impl Picker {
 		}
 	}
 
-	/// The user opted out of emoji they cannot use natively without Nitro.
+	/// Reactions/forms require native emoji; the composer may optionally hide image fallbacks.
 	fn nitro_locked(
 		&self,
 		state: &State,
 		custom: Option<(&model::Guild, &model::CustomEmoji)>,
 	) -> bool {
-		self.hide_nitro_emojis
+		(self.hide_nitro_emojis || self.reaction.is_some())
 			&& custom.is_some_and(|(guild, emoji)| {
 				self.channel.is_some_and(|channel| {
 					state.custom_emoji_requires_nitro(channel, guild.id, emoji)
@@ -875,27 +943,20 @@ impl Picker {
 		emoji: &model::ReactionEmoji,
 		custom: Option<(&model::Guild, &model::CustomEmoji)>,
 	) -> bool {
+		if let Some((Target::React(message), _, _)) = self.reaction {
+			return !state.reactions.busy() && state.can_react(message, Some(emoji), true);
+		}
 		if self.nitro_locked(state, custom) {
 			return false;
 		}
 		if self.shares_emoji(state, emoji, custom) {
 			return self.channel.is_some_and(|channel| state.can_send(channel));
 		}
-		match self.reaction {
-			Some((Target::React(message), _, _)) => {
-				!state.reactions.busy() && state.can_react(message, Some(emoji), true)
-			}
-			Some((Target::Choose { .. }, _, _)) | None => {
-				emoji.id.is_none()
-					|| custom.is_some_and(|(guild, emoji)| {
-						self.channel.is_some_and(|channel| {
-							state
-								.custom_emoji_unavailable_reason(channel, guild.id, emoji)
-								.is_none()
-						})
-					})
-			}
-		}
+		emoji.id.is_none()
+			|| custom.is_some_and(|(guild, emoji)| {
+				self.channel
+					.is_some_and(|channel| state.can_send_custom_emoji(channel, guild.id, emoji))
+			})
 	}
 
 	pub fn show(
@@ -2552,6 +2613,217 @@ fn cell(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn current_server_search_wins_before_the_result_cap_and_scope_changes() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let current = state.guilds[0].id;
+		let local = state.guilds[0].emojis.as_ref().unwrap()[0].clone();
+		let mut external = state.guilds[0].clone();
+		external.id = Id(2);
+		external.emojis = Some(
+			(1..=CUSTOM_LIMIT)
+				.map(|id| model::CustomEmoji {
+					id: Id(id as u64),
+					name: "serein_wave".into(),
+					..local.clone()
+				})
+				.collect(),
+		);
+		state.guilds.insert(0, external);
+		let mut cache = CustomMatches::default();
+		assert!(cache.update(&state, None, "wave"));
+		assert_eq!(cache.len(), CUSTOM_LIMIT);
+		assert_eq!(cache.get(&state, 0).unwrap().0.id, current);
+		state.guilds.reverse();
+		state.invalidate_navigation();
+		cache.update(&state, None, "wave");
+		assert_eq!(cache.get(&state, 0).unwrap().0.id, current);
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == channel)
+			.unwrap()
+			.guild = Some(Id(2));
+		assert!(cache.update(&state, None, "wave"));
+		assert_eq!(cache.get(&state, 0).unwrap().0.id, Id(2));
+		state.selected = Some(Id(22)); // DM: no server preference.
+		assert!(cache.update(&state, None, "wave"));
+		assert_eq!(cache.get(&state, 0).unwrap().0.id, Id(2));
+	}
+
+	#[test]
+	fn reaction_and_form_choices_reject_nitro_only_emoji_without_image_fallback() {
+		let mut state = test_support::demo_state();
+		let mut picker = Picker::default();
+		picker.sync(&state, state.selected);
+		assert_eq!(picker.server, Some(state.guilds[0].id));
+		let emoji = model::ReactionEmoji {
+			id: Some(Id(9002)),
+			name: Some("serein_party".into()),
+		};
+		for premium in [0, 2] {
+			state.premium_type = premium;
+			let custom = state.custom_emoji(Id(9002));
+			for target in [Target::React(Id(500)), Target::Choose { clearable: true }] {
+				picker.reaction = Some((target, egui::Rect::NOTHING, egui::Id::unique("choice")));
+				assert_eq!(picker.can_pick(&state, &emoji, custom), premium != 0);
+				assert!(!picker.shares_emoji(&state, &emoji, custom));
+			}
+		}
+		state.premium_type = 0;
+		state
+			.timeline
+			.set_reactions(
+				Id(500),
+				Some(vec![model::Reaction {
+					emoji: emoji.clone(),
+					count: 1,
+					me: false,
+					me_burst: false,
+				}]),
+			)
+			.unwrap();
+		picker.reaction = Some((
+			Target::React(Id(500)),
+			egui::Rect::NOTHING,
+			egui::Id::unique("reaction"),
+		));
+		picker.hide_nitro_emojis = true;
+		assert!(
+			picker.can_pick(&state, &emoji, state.custom_emoji(Id(9002))),
+			"existing reactions remain joinable"
+		);
+	}
+
+	#[test]
+	fn unavailable_reaction_cells_ignore_mouse_and_keyboard_activation() {
+		let ctx = egui::Context::default();
+		ctx.enable_accesskit();
+		let mut state = test_support::demo_state();
+		let mut picker = Picker::default();
+		let mut avatars = Avatars::default();
+		picker.open_reaction(
+			&state,
+			Id(500),
+			egui::Rect::from_min_size(egui::pos2(700.0, 600.0), egui::Vec2::splat(28.0)),
+			egui::Id::unique("react"),
+		);
+		picker.query = "serein_party".into();
+		picker.filter();
+		let mut frame = |picker: &mut Picker, state: &mut State, events| {
+			let mut commands = Vec::new();
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(900.0, 700.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| picker.show_reaction(ui, state, &mut avatars, &mut commands),
+			);
+			assert!(
+				commands.is_empty(),
+				"unavailable emoji cannot produce a write"
+			);
+			output
+		};
+		for _ in 0..3 {
+			frame(&mut picker, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		let output = frame(&mut picker, &mut state, vec![]);
+		let bounds = output
+			.platform_output
+			.accesskit_update
+			.as_ref()
+			.unwrap()
+			.nodes
+			.iter()
+			.find_map(|(_, node)| {
+				(node.label() == Some(":serein_party:"))
+					.then(|| node.bounds())
+					.flatten()
+			})
+			.expect("disabled emoji remains discoverable");
+		let pos = egui::pos2(
+			((bounds.x0 + bounds.x1) * 0.5) as f32,
+			((bounds.y0 + bounds.y1) * 0.5) as f32,
+		);
+		output.drop_without_applying_deltas();
+		for pressed in [true, false] {
+			frame(
+				&mut picker,
+				&mut state,
+				vec![
+					egui::Event::PointerMoved(pos),
+					egui::Event::PointerButton {
+						pos,
+						button: egui::PointerButton::Primary,
+						pressed,
+						modifiers: egui::Modifiers::NONE,
+					},
+				],
+			)
+			.drop_without_applying_deltas();
+		}
+		frame(
+			&mut picker,
+			&mut state,
+			vec![egui::Event::Key {
+				key: egui::Key::Enter,
+				physical_key: None,
+				pressed: true,
+				repeat: false,
+				modifiers: egui::Modifiers::NONE,
+			}],
+		)
+		.drop_without_applying_deltas();
+		// Navigation reaches other controls, but the locked result never receives focus.
+		for _ in 0..20 {
+			frame(
+				&mut picker,
+				&mut state,
+				vec![egui::Event::Key {
+					key: egui::Key::Tab,
+					physical_key: None,
+					pressed: true,
+					repeat: false,
+					modifiers: egui::Modifiers::NONE,
+				}],
+			)
+			.drop_without_applying_deltas();
+			assert!(
+				!ctx.memory(|m| m.focused())
+					.and_then(|id| ctx.read_response(id))
+					.is_some_and(|response| response.rect.contains(pos)),
+				"locked emoji is not a keyboard target"
+			);
+		}
+	}
+
+	#[test]
+	fn completed_local_shortcode_wins_over_unicode_and_uses_the_same_fallback_rules() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		state.guilds[0].emojis.as_mut().unwrap()[0].name = "wave".into();
+		let complete = |state: &State, hidden: bool| {
+			let mut draft = "hello :wave:".into();
+			complete_shortcode(state, channel, hidden, &mut draft, 12, 1024, false).unwrap();
+			draft
+		};
+		assert_eq!(complete(&state, false), "hello <:wave:9001>");
+		state.guilds[0].emojis.as_mut().unwrap()[0].animated = true;
+		assert!(complete(&state, false).contains("https://cdn.discordapp.com/emojis/9001.gif"));
+		assert_eq!(complete(&state, true), "hello 👋");
+		state.premium_type = 2;
+		assert_eq!(complete(&state, true), "hello <a:wave:9001>");
+		state.guilds[0].emojis = None;
+		assert_eq!(complete(&state, false), "hello 👋");
+	}
+
 	#[test]
 	fn gif_favorite_loading_is_single_flight_and_video_placeholders_never_request_media() {
 		let ctx = egui::Context::default();
@@ -3583,7 +3855,18 @@ mod tests {
 			"x".repeat(client_core::MAX_CONTENT - 8)
 		);
 		let cursor = shortcode.chars().count();
-		assert!(complete_shortcode(&mut shortcode, cursor, 64, false).is_some());
+		assert!(
+			complete_shortcode(
+				&State::default(),
+				Id(0),
+				false,
+				&mut shortcode,
+				cursor,
+				64,
+				false
+			)
+			.is_some()
+		);
 		assert!(shortcode.ends_with("❤️"));
 		assert!(model::message_options::valid(
 			&shortcode,

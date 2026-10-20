@@ -1572,14 +1572,19 @@ and right-click Copy emoji copies the entire token. Selection endpoints treat ea
 one item, avoiding broken ZWJ sequences or partial custom markup. Whole-message Copy is unchanged.
 
 The chat Emoji button opens a searchable Unicode/name palette and a joined-server rail, also
-available in DMs. Search matches custom emoji names and source server names across loaded
-catalogs; `:name` autocomplete includes native and image-fallback customs with their source server. Choosing
+available in DMs. It opens on the current server's loaded, nonempty catalog; the standard emoji category remains
+available in the rail. Search matches custom emoji names and source server names across loaded
+catalogs, prioritizing the current conversation's server before applying result limits. The same
+priority applies to reaction and poll pickers, `:name` autocomplete and completed local shortcodes.
+Autocomplete includes native and image-fallback customs with their source server. Choosing
 inserts at the saved text cursor or replaces its selection, preserves Unicode presentation
 selectors, and records the draft without sending. Escape/close restores keyboard focus.
 Catalog entries must be explicitly available and unmanaged, with known role restrictions
 matched against the account's known source-server roles. A destination guild must allow
 USE_EXTERNAL_EMOJIS for another server's emoji; DMs have no guild permission gate. New custom
-reactions use the same eligibility rules, while existing reaction/removal semantics remain.
+reactions and native form choices also require the account's animated/external emoji entitlement;
+image-sharing fallback never grants reaction eligibility. Existing reactions remain joinable without
+that entitlement, and removing one's own reaction is unchanged.
 Unknown native eligibility remains disabled. The built-in picker and autocomplete use the current
 session's confirmed Nitro entitlement for animated or external custom emoji, choosing
 the native path when available and the image fallback otherwise. Static custom emoji
@@ -3057,6 +3062,15 @@ links may come from any host; this does not authorize fetching arbitrary origins
 Previews still use the existing provider/Discord media admission and bounded
 pipeline. The original share URL, including attachment signatures, is retained.
 The offline debug check is `cargo run --locked -p serein --features demo --example gif_favorites`.
+
+### Favorite GIF order (October 20, 2026)
+
+Successful favorite synchronization follows the returned server order, including when the local
+cache arrives later. A cached still preview can replace a synchronized video's preview metadata
+without changing that favorite's position. Unsynchronized local-only favorites retain reserved
+capacity within the existing 100-item limit and follow synchronized entries. Refreshes still remove
+previously synchronized favorites deleted remotely; interrupted writes are not replayed. This is
+covered by bounded offline fixtures, not a live account comparison.
 
 ## Private profiles - October 15, 2026
 

@@ -627,6 +627,7 @@ impl Menu {
 				})
 				.collect(),
 			Kind::Emoji => {
+				let current = state.channel(channel).and_then(|c| c.guild);
 				let mut out = Vec::with_capacity(EMOJI_LIMIT);
 				for guild in &state.guilds {
 					let source_match = rank(&query, &guild.name, Id(0)).map(|_| 2);
@@ -638,14 +639,18 @@ impl Menu {
 								.is_none()) && !(self.hide_nitro_emojis
 							&& state.custom_emoji_requires_nitro(channel, guild.id, emoji))
 						{
-							push_emoji(&mut out, (rank, 0, emoji.id.0), || Candidate::Custom {
-								id: emoji.id,
-								name: emoji.name.clone(),
-								animated: emoji.animated,
-								image_fallback: !state
-									.can_send_custom_emoji(channel, guild.id, emoji),
-								server: guild.name.chars().take(120).collect(),
-							});
+							push_emoji(
+								&mut out,
+								(u8::from(Some(guild.id) != current), rank * 2, emoji.id.0),
+								|| Candidate::Custom {
+									id: emoji.id,
+									name: emoji.name.clone(),
+									animated: emoji.animated,
+									image_fallback: !state
+										.can_send_custom_emoji(channel, guild.id, emoji),
+									server: guild.name.chars().take(120).collect(),
+								},
+							);
 						}
 					}
 				}
@@ -660,9 +665,8 @@ impl Menu {
 						.filter_map(|alias| rank(&query, alias, Id(0)))
 						.min();
 					if let Some(rank) = rank {
-						push_emoji(&mut out, (rank, 1, index as u64), || Candidate::Unicode {
-							text,
-							code,
+						push_emoji(&mut out, (1, rank * 2 + 1, index as u64), || {
+							Candidate::Unicode { text, code }
 						});
 					}
 				}
@@ -1049,6 +1053,45 @@ fn row(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn current_server_suggestions_beat_external_prefixes_and_survive_the_cap() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let mut external = state.guilds[0].clone();
+		external.id = Id(2);
+		let local = state.guilds[0].emojis.as_ref().unwrap()[0].clone();
+		external.emojis = Some(
+			(1..=EMOJI_LIMIT + 10)
+				.map(|i| model::CustomEmoji {
+					id: Id(i as u64),
+					name: "wave".into(),
+					..local.clone()
+				})
+				.collect(),
+		);
+		state.guilds.insert(0, external);
+		let mut menu = Menu::default();
+		menu.refresh(&state, channel, ":wave", Some(5), &[]);
+		assert_eq!(menu.candidates.len(), EMOJI_LIMIT);
+		assert_eq!(
+			menu.candidates[0].id(),
+			local.id,
+			"local substring beats external prefix"
+		);
+		state.guilds.reverse();
+		menu.refresh(&state, channel, ":wave", Some(5), &[]);
+		assert_eq!(menu.candidates[0].id(), local.id);
+		state
+			.channels
+			.iter_mut()
+			.find(|c| c.id == channel)
+			.unwrap()
+			.guild = Some(Id(2));
+		menu.refresh(&state, channel, ":wave", Some(5), &[]);
+		assert_eq!(menu.candidates[0].id(), Id(1));
+	}
+
 	use model::Channel;
 
 	#[test]
