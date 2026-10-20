@@ -1,6 +1,8 @@
 //! Offline viewer check: reordered/RTX packets, audio gain/backlog, native decode.
 #![cfg(not(test))]
 #![allow(dead_code)]
+#[path = "../src/diagnostics.rs"]
+mod diagnostics;
 #[path = "../src/stream_playout.rs"]
 mod stream_playout;
 #[path = "../src/video.rs"]

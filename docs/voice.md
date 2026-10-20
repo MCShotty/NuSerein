@@ -455,6 +455,50 @@ The outgoing DAVE key-package encoding was corrected to match reference implemen
 [the adapter's source comparison](../crates/discord-voice/README.md#key-package-interoperability-correction).
 Actual two-way audio still requires the owner-operated test above.
 
+## Voice connection details
+
+Hover over the connection icon or **Voice Connected** text in the account card to see
+voice-path ping, the negotiated voice server and its region when recognized. Click the
+same control, or focus it and press Enter/Space, to open connection details and a recent
+ping graph. **Voice Debug** shows call, outgoing screen-share and watched-stream
+measurements separately. **Copy diagnostics** copies a bounded local diagnostic summary;
+it excludes account/participant identifiers, tokens, session identifiers, privacy codes,
+keys, signaling contents and media. The debug view also shows the safe call failure reason.
+
+Voice ping matches replies to the existing UDP keepalives; signaling ping measures the
+separate WebSocket heartbeat. Missing, expired, duplicate or unrelated replies never
+become zero-millisecond samples. Region names are inferred from recognized media-host
+conventions, not independently verified locations. Unsupported measurements stay unavailable;
+reported outgoing video loss is not an audio-loss estimate. UDP byte rates include control
+and repair packets, and decoder deliveries are distinct from configured encoder FPS.
+
+In **Voice Debug**, the Statistics selector switches between the connection and a remote
+participant. Names come from the current local roster; selecting a person sends no request.
+Incoming audio shows packet/byte counts, receive rate, RFC 3550 arrival jitter, decoded
+packets, actual concealment requests and decoder errors. Incoming video shows its codec,
+resolution, receive rate, reassembly outcomes, delivered FPS, decoder errors and keyframe
+wait. Missing or unforwarded media remains unavailable. There is no individual peer ping:
+participants share the voice server route.
+
+Per-source RTP loss is an estimate finalized after a fixed 64-packet reorder window;
+duplicates cannot hide gaps, and in-window repairs close gaps. It is
+not a sender RTCP report or proof of where loss occurred. Audio bytes count authenticated
+UDP media datagrams admitted to the audio path; video bytes count authenticated RTP
+payloads, including inner encryption. Concealment includes the bounded tail after speech
+stops and must not be interpreted as a packet-loss count. Decoder deliveries can precede
+a display/synchronization drop. Copying a selected person's statistics adds only numeric
+media measurements, without their name, ID or the roster.
+
+This view does not require an environment variable or write a log. It retains one latest
+snapshot and at most 60 ping samples for each of three connection scopes. Participant
+counters share the existing speaker and video-source budgets; removed/reassigned sources
+lose their counters, and no per-user history or payload is retained. Outstanding latency
+probes have four fixed slots and expire after 15 seconds. Once-per-second snapshots
+use separate latest-value handoffs, so they cannot fill call-control queues or stop a call
+when the UI is slow. Resumes retire old latency samples; source retirement, call teardown
+and account changes release their diagnostic state. Synthetic loopback and UI checks cover
+these paths; native/live Discord route names and keepalive replies still need owner checks.
+
 ## Investigating high CPU during a call
 
 Failed calls show their first safe failure reason, with a **Copy failure reason**
@@ -589,7 +633,7 @@ Voice & Video settings offers three saved profiles:
   control (maximum 20 dB), and −55 dBFS input sensitivity.
 - **Studio:** bypasses processing and sensitivity gating. Manual gain, mute, deafen,
   push-to-talk and permission/security gates still apply.
-- **Custom:** Off, RNNoise, or WebRTC (four suppression strengths);
+- **Custom:** Off, RNNoise, WebRTC (four suppression strengths), or LavaSRv2;
   independent echo cancellation and automatic gain controls; and optional manual
   sensitivity from −80 to 0 dBFS. The gate uses 3 dB hysteresis, a 200 ms release
   hold and a 5 ms ramp. This controls transmitted audio, not just the speaking glow.
@@ -612,6 +656,43 @@ The explicit voice-message recorder below retains one bounded microphone clip in
 RAM. Quality, CPU cost, physical latency and
 cross-platform behavior require owner-operated checks; this local implementation does
 not establish production readiness or superiority over Discord's processing.
+
+**LavaSRv2** is an optional local microphone enhancer with its ULUNAS denoiser
+always enabled. Select it under **Custom → Noise suppression**. It uses 16 kHz
+denoising and restores a 48 kHz output, after echo cancellation and before gain,
+metering, sensitivity and Opus. Default profiles remain unchanged. Playback,
+screen audio and the separate RNNoise voice-message option are unaffected.
+
+The normal package bundles three hash-pinned models and CPU ONNX Runtime;
+there are no model downloads during a call, Python dependency or remote audio
+service. A disposable helper owns inference and fixed history, with at most two queued
+input blocks and one output block, at most four retained 20 ms output frames, epoch retirement
+on privacy/device/settings changes, up to one second for retiring-helper
+handoff, a five-second initialization deadline and a 150 ms per-request deadline. Sustained queue pressure or helper failure switches
+to RNNoise and shows a short fallback hint. Toggle suppression off and on to
+retry. Initialization warms the models on synthetic audio while using RNNoise;
+enhancement starts only from fresh PCM after initialization finishes.
+
+Streaming uses 40 ms blocks, 20 ms overlap and 40 ms lookahead; it adds voice
+delay and CPU/memory cost. The upstream 44.1 kHz mel configuration is retained
+even though waveform output is 48 kHz. This streaming adaptation is not a claim
+of quality equivalence to whole-file inference. Pinned assets, licenses and
+source provenance are in `packaging/lavasr/bundle.py` and
+`assets/licenses/voice/lavasr/PROVENANCE.md`. `serein --self-test-lavasr`
+checks packaged model initialization, reset and teardown using synthetic silence,
+without requiring real-time inference speed from shared CI machines. Nonzero
+model regressions and separate helper benchmarks cover processing; these checks
+do not establish physical microphone quality.
+
+## Voice-channel status
+
+Guild voice-channel custom status is displayed beneath the channel name, with
+the full text on hover. Initial metadata and live status/clear updates are
+independent of joining a call. Text is ephemeral, permission gated and bounded
+to 512 entries/1 MiB, with 500 characters per status; disconnect, logout,
+channel removal and guild selection retire obsolete state. The status gateway
+dispatch/opcode is an unofficial client protocol path; offline fixtures do not
+prove live Discord behavior. Editing the server's status is not exposed here.
 
 ## Screen sharing
 

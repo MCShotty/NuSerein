@@ -2244,3 +2244,199 @@ No fresh UI CPU/RSS, frame latency, media throughput, physical-device or live
 Discord measurement is claimed. Existing screenshots retain their original source
 labels. SDK documentation is included in the fork; parent-wiki publication is not
 a gate for this fork integration.
+
+## Voice connection and participant diagnostics (2026-10-18)
+
+Runtime source: `a20914b6`; task baseline: `da97a14f`. The preserved release package
+from `d3994ba1` is equivalent to the task baseline for production source: the only
+later changes were performance documentation and the extension catalog. The catalog
+is read from the service at runtime; its repository copy is embedded only in tests
+and the preview example. Its preserved executable and package hashes were verified
+before this comparison.
+
+Linux x86_64, Intel Xeon Platinum 8573C cloud host, 4-core CPU quota and 16 GiB memory
+limit; pinned Rust 1.98.1 and committed lockfile. Standard production features,
+manifest release settings (optimization 3, fat LTO, one codegen unit, symbols stripped,
+line-table debug setting). The current official Ubuntu x64 nightly is
+`v1.0.0-nightly.20261017.60` / `d9d87471`, published October 18. Its DEB checksum was
+verified before extracting it, without installation or execution. Its build environment
+is the release runner's, so the nightly comparison includes existing fork differences
+and build-environment differences; the previous-fork column isolates this task.
+
+| Release metric / method | Current nightly | Fork before | After | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Executable | 91,957,328 B | 95,419,720 B | 95,541,960 B | +122,240 B (+0.13%) |
+| Installed payload | 96,555,161 B | 140,250,352 B | 140,372,592 B | +122,240 B (+0.09%) |
+| Normalized ZIP | 55,682,561 B | 89,814,051 B | 89,868,267 B | +54,216 B (+0.06%) |
+
+Both new packages used the complete normal `cargo xtask package --format dir`
+command, each with an initially absent `dist` directory; the second build reused caches.
+No manual staging repair was used. Their 280-file payloads and normalized ZIP hashes
+match. Validation checked the Cargo executable, allowlisted payload, six private media
+libraries, 19 font notices, seven corresponding-source archives and their checksums,
+and absent development RPATHs. A query-only startup ran with development FFmpeg paths
+removed; the task SDK still supplied system libraries. This is not a production GUI
+or account launch. ZIP comparisons use sorted paths, fixed timestamps, comparison-only
+0644 entry modes and DEFLATE level 9 for every payload, including the nightly. They are
+size-comparison archives, not Linux installers; executable modes are checked separately.
+
+Executable SHA-256: `934e12e7f967f65f7ecec3240efe5a09f281d0b11a89ddb464ce55c562b0d761`.
+Normalized ZIP SHA-256: `df63bc51863a49b31d3d72840d7dee007602f6be0e739b39cc3f37fa268187ec`.
+
+Matched native preview samples use the **development profile, not release**
+(`debug=0`, `demo` feature), Xvfb at scale 1, wgpu with adapter/backend not recorded,
+and the same synthetic Stage at 1120 × 760 with connection details closed. Each
+process warmed for 3 seconds, then provided 15 RSS samples at 1-second intervals.
+CPU is process user+system time across those intervals as a percentage of one core;
+settled RSS is the median of the last five samples. Both processes remained alive
+through sampling and had no child processes. These are single short observations,
+not confidence intervals or a live voice workload.
+
+| Development preview metric | Before `da97a14f` | After `a20914b6` | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, one core | 5.46% | 5.47% | +0.0002 percentage points (+0.004%) |
+| Peak RSS | 187,699,200 B | 187,621,376 B | -77,824 B |
+| Settled RSS | 187,699,200 B | 187,621,376 B | -77,824 B |
+
+No CPU or memory improvement is inferred. An earlier development sample of `d0489364`
+measured 5.40% → 6.33% CPU; the final matched pair above is effectively unchanged.
+The selector follow-up does not execute on the measured closed-panel path, so these
+short-run differences are treated as unisolated sampling variability. Release UI CPU/RSS,
+frame latency, media throughput, live packet cost and Windows/macOS measurements remain
+unmeasured locally. Native application/package CI and an owner-controlled Discord session
+must establish
+platform behavior and real server replies/attribution. Offline reducer comparisons
+against the current nightly completed on Windows, macOS and Linux for `a20914b6`
+([CI artifacts](https://github.com/MCShotty/Serein/actions/runs/39106926485)); these
+are not UI or voice performance measurements.
+
+Synthetic [before](pr-evidence/voice-connection/before.png),
+[after](pr-evidence/voice-connection/after.png) and
+[per-user debug](pr-evidence/voice-connection/per-user.png) captures are fresh native
+framebuffers. The pair uses the same Stage, theme, fonts and viewport; new diagnostic
+values are explicit preview data. Also inspected dark and light themes, a 760 × 520 layout, and
+scrolling through the participant video rows. Reproduce the new states with
+`profile_preview --demo --page=stage --voice-connection` or `--voice-debug`.
+
+Source checks passed: `cargo xtask check` (1,953 passed, 32 ignored; strict Clippy,
+minimal app and policy), login-handoff, cached-xtask workspace/package regressions,
+Linux packaging fixtures, replay and the 120-second reducer soak. Both bounded fuzz
+smokes passed (106,863 decode runs; 6,546 state-transition runs). The soak is core-only,
+not evidence of native media memory behavior. Loopback UDP/WebSocket plus Opus/video
+and UI regressions check attribution, repair windows, stale samples, source replacement,
+resume, call-control independence, copy redaction and teardown; no account, microphone
+or live capture is used.
+
+## Voice-channel status, reactor tooltips and microphone enhancement (2026-10-19)
+
+Runtime source: `4f86f7d2b5fc`; task baseline: `88bd5eea0a3a` (production source
+`a20914b6`). The official nightly is still `v1.0.0-nightly.20261017.60` /
+`d9d87471`, rechecked October 19; its verified published payload is retained
+from the preceding comparison. Nightly differences include prior fork changes
+and release-runner differences; the fork column isolates this follow-up.
+
+Debian 13.6 x86_64, Xeon Platinum 8573C, four-core CPU quota, 16 GiB memory
+limit; Rust 1.98.1, committed lockfile, normal production features and manifest
+release settings (optimization 3, fat LTO, one codegen unit, stripped symbols
+and line-table debug setting).
+
+| Release metric / method | Current nightly | Fork before | After | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Executable | 91,957,328 B | 95,541,960 B | 95,943,368 B | +401,408 B (+0.42%) |
+| Installed payload | 96,555,161 B | 140,372,592 B | 224,692,514 B | +84,319,922 B (+60.07%) |
+| Normalized ZIP | 55,682,561 B | 89,868,267 B | 154,439,891 B | +64,571,624 B (+71.85%) |
+
+The bundled speech models, CPU runtime, source and notices occupy
+83,874,775 bytes in the installed speech directory. Both
+complete normal `cargo xtask package --format dir` runs started without a
+`dist` directory; the second reused caches with speech downloads disabled.
+Their 295-file installation trees match by path, size, mode and SHA-256,
+as do their comparison ZIPs. An earlier attempt using a stale local cached
+`xtask` omitted speech staging and failed; `xtask` was rebuilt before the
+successful runs. No output was manually repaired. Validation checks the
+allowlisted payload, seven native media/speech libraries, pinned models and
+corresponding sources, notices, executable modes and absent development RPATHs.
+Driver-query startup and three speech initialization/reset/teardown checks per
+package pass without development FFmpeg paths; the task SDK still supplies
+system GTK libraries. No account, microphone, capture or production GUI opens.
+
+Comparison ZIPs use sorted paths, 1980 timestamps, comparison-only 0644 entry
+modes and DEFLATE level 9, matching both baselines. They are size-comparison
+archives, not Linux installers. Executable SHA-256: `8a1129b54c7841665c85c9c8d03706b69b94fb768188863caf4493c99df3abe6`.
+Normalized ZIP SHA-256: `46cbf73198db8a9b128eb45b02f5825432b7590cf38ba10882f5b10cd8e2518f`.
+
+The reducer comparison uses 100,000 events, identical locked release settings,
+separate build directories, one warmup and five counterbalanced samples per
+revision, followed by one confirmation set with the same method. Other task
+compilers were paused or finished during sampling. All ten observations remain
+in the result; no outliers were removed.
+
+| Reducer metric | Fork before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Median, ten runs | 103.279 ms | 103.093 ms | -0.186 ms (-0.18%) |
+
+The initial five-run median was 95.345 → 102.202 ms (+7.2%). The confirmation
+medians are 112.464 → 103.985 ms.
+This is an unisolated shared-host observation, not an improvement claim or
+a voice benchmark. Both versions retain 500 records and estimated timeline
+bytes of 401,492..401,977. The 120-second core-only soak passed with bounded
+retention; neither workload measures native audio memory or live compatibility.
+Current-nightly reducer comparisons on Windows/macOS/Linux are delegated to
+the existing CI job and remain distinct from local fork-isolation measurements.
+
+Native UI observations use the development profile (`debug=0`, `demo` feature),
+Xvfb at scale 1, wgpu (adapter/backend unrecorded), the same synthetic Stage at
+1120 × 760, three-second warmup and fifteen one-second RSS samples. The new
+status fixture is absent in the baseline. CPU is user+system time as a percent
+of one core; settled RSS is the last-five-sample median. Both previews remained
+alive throughout and had no helpers. Concurrent compilation makes these single
+short observations noisy; no CPU or memory improvement is inferred.
+
+| Development preview observation | Before | After |
+| --- | ---: | ---: |
+| Idle CPU, one core | 5.91% | 5.31% |
+| Observed peak RSS | 189,640,704 B | 188,502,016 B |
+| Settled RSS | 189,640,704 B | 188,502,016 B |
+
+One direct packaged speech-helper observation uses synthetic 48 kHz mono
+audio, 40 ms blocks, twenty warmup blocks and one hundred measured blocks
+targeting a 40 ms input cadence. It checks finite/nonzero output, epoch reset to
+silence, normal pipe close and child reaping. It excludes the controller,
+physical capture, AEC, AGC, Opus and network.
+
+| New helper observation (no previous equivalent) | Value |
+| --- | ---: |
+| IPC + inference median / p95 / maximum | 36.94 / 51.37 / 139.69 ms |
+| CPU, one core | 118.86% |
+| Observed peak / settled RSS | 154,218,496 / 154,218,496 B |
+| Process RSS high-water mark | 154,681,344 B |
+| One-second idle CPU | 0.00% |
+
+The hundred measured blocks represent four seconds of audio and took
+4.223 seconds. This observation does not establish sustained
+real-time processing on this host; individual requests exceeded the block
+budget. Initialization was 556.0 ms in one observation,
+not a startup distribution. Helper timing varies under load; sustained queue
+pressure selects fresh RNNoise fallback. Package self-tests verify model
+initialization and generation/lifecycle handling with silence, rather than
+imposing a real-time speed requirement on shared CI. Nonzero native graph
+regressions separately compare the pinned models against an independent
+Torch/torchaudio reference. No physical latency, speech quality, native audio
+soak, release UI CPU/RSS or Windows/macOS performance claim is made.
+
+Fresh native synthetic [before](pr-evidence/voice-status/before.png) and
+[after](pr-evidence/voice-status/after.png) screenshots use the same fonts,
+theme and viewport; the status text is explicit fixture data. The separate
+[LavaSRv2 selector](pr-evidence/voice-status/lavasr.png) image opens no microphone.
+Dark/light and narrow layouts were inspected. Earlier voice-connection and
+participant screenshots above retain their original revision labels. Reactor
+name loading/visibility is covered by synthetic multi-frame UI regressions.
+
+Final source checks include `cargo xtask check` (1,968 passed, 33 ignored),
+strict Clippy, login handoff,
+cached-xtask checks, bounded fuzz, replay/soak, license policy and packaging
+fixtures. Native application/package CI, Nix/Flatpak builds, owner-operated
+Discord status/hover behavior and microphone quality remain separate checks;
+local archive inspection and synthetic fixtures do not establish those results.
+Older Windows media packages need the updated installer for the new payload
+layout. Canonical SDK docs include the new configured suppression value.

@@ -170,3 +170,8 @@ class PreparationTest(unittest.TestCase):
             # which selects SDK source downloads for the target architecture.
             self.assertEqual(archives["libvpl-2.14.0.tar.gz"]["only-arches"], ["x86_64"])
             self.assertTrue(all(len(item["sha256"]) == 64 for item in archives.values()))
+            speech = next(module for module in prepared["modules"] if module["name"] == "serein-speech-assets")
+            speech_assets = {item["dest-filename"] for item in speech["sources"]}
+            self.assertEqual(speech_assets, {"backbone.onnx", "spec_head.onnx", "denoiser_core.onnx", "onnxruntime-linux-x64-1.23.2.tgz", "onnxruntime-linux-aarch64-1.23.2.tgz", "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip"})
+            app = next(module for module in prepared["modules"] if module["name"] == "serein")
+            self.assertEqual(app["build-options"]["env"]["SEREIN_LAVASR_OFFLINE"], "1")

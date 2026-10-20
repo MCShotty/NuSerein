@@ -2142,3 +2142,11 @@ in the UI and one pending creation snapshot, plus one fixed-size returned ID/req
 record. Its wire response is capped at 32 KiB; channel and owner/recipient projections
 are both charged to the event budget. The offline fixture retains at most 64 fixed-size
 group owner ID pairs, cleared at the session boundary; it is never a live data cache.
+
+LavaSRv2 speech models and CPU ONNX Runtime are installed program resources,
+not account data or a speech cache. The enhancer saves no microphone recordings,
+enhancement output or model requests. The disposable worker retains
+only bounded PCM history/queues and clears them on capture-generation
+changes and termination. Logout removes account state but keeps installed
+model resources; uninstall removes those resources. Runtime selection never
+downloads a model or contacts a speech service.

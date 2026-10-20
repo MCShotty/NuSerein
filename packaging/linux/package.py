@@ -43,6 +43,15 @@ def payload_files(root):
     return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
 
 
+def native_libraries(stage):
+    """Include dlopen-only speech runtime in dependency closure checks."""
+    for path in sorted((stage / "usr/lib/serein").rglob("*")):
+        if path.is_file():
+            with path.open("rb") as stream:
+                if stream.read(4) == b"\x7fELF":
+                    yield path
+
+
 def stage_payload(root, stage, prefix="usr"):
     """Copy the shared, allowlisted native/Flatpak installation payload."""
     if prefix not in {"usr", "app"}:
@@ -52,6 +61,10 @@ def stage_payload(root, stage, prefix="usr"):
     # The replaceable LGPL/BSD libraries are independent of host FFmpeg.
     for name in ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libavformat-serein.so.61", "libswscale-serein.so.8", "libswresample-serein.so.5", "libopenh264-serein.so.8"):
         copy(root / "lib" / name, stage / prefix / "lib/serein" / name)
+    for name in ("libonnxruntime.so.1.23.2", "backbone.onnx", "spec_head.onnx", "denoiser_core.onnx",
+                 "build.json", "ONNXRuntime-LICENSE", "ONNXRuntime-ThirdPartyNotices.txt",
+                 "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip"):
+        copy(root / "voice-enhancement" / name, stage / prefix / "lib/serein/voice-enhancement" / name)
     for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "serein-openh264.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING"):
         copy(root / "ffmpeg-source" / name, doc / "ffmpeg-source" / name)
     copy(root / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", doc / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz")
@@ -124,7 +137,7 @@ def smoke(package, stage, temporary, version, architecture, depends):
     if payload_files(control) != ["control"]:
         raise ValueError("Unexpected control files or maintainer scripts")
     checked("desktop-file-validate", str(extracted / "usr/share/applications/cz.viceverse.serein.desktop"))
-    libraries = output("ldd", str(extracted / "usr/bin/serein"))
+    libraries = "\n".join(output("ldd", str(path)) for path in [extracted / "usr/bin/serein", *native_libraries(extracted)])
     if "not found" in libraries:
         raise ValueError(f"Unresolved packaged executable dependencies:\n{libraries}")
     print(f"Debian package smoke passed: {len(expected)} files; executable, desktop entry, "
@@ -165,7 +178,7 @@ def package(root, application_version):
         # Ignore our private SONAMEs; scan their native dependency closure too.
         dependencies = output("dpkg-shlibdeps", "-O", "-l" + str(stage / "usr/lib/serein"),
                               "-x" + "serein", "debian/serein/usr/bin/serein",
-                              *[str(path) for path in sorted((stage / "usr/lib/serein").iterdir())], cwd=temporary)
+                              *[str(path) for path in native_libraries(stage)], cwd=temporary)
         depends = next(line.removeprefix("shlibs:Depends=") for line in dependencies.splitlines()
                        if line.startswith("shlibs:Depends="))
         # dlopen libraries and desktop services are invisible to ELF DT_NEEDED.
@@ -247,7 +260,7 @@ def native_package(root, application_version, format):
         stage = temporary / "payload"
         stage_payload(root, stage)
         checked("desktop-file-validate", str(stage / "usr/share/applications/cz.viceverse.serein.desktop"))
-        libraries = output("ldd", str(stage / "usr/bin/serein"))
+        libraries = "\n".join(output("ldd", str(path)) for path in [stage / "usr/bin/serein", *native_libraries(stage)])
         if "not found" in libraries:
             raise ValueError(f"Unresolved packaged executable dependencies:\n{libraries}")
         if format == "rpm":
@@ -282,7 +295,7 @@ def rpm_package(temporary, stage, application_version, distro):
         "%global __provides_exclude_from ^/usr/lib/serein/.*$\n"
         "%global __requires_exclude ^(libavcodec-serein\\.so\\.61|libavutil-serein\\.so\\.59|libavformat-serein\\.so\\.61|libswscale-serein\\.so\\.8|libswresample-serein\\.so\\.5|libopenh264-serein\\.so\\.8).*\n"
         f"Name: serein\nVersion: {version}\nRelease: {release}\n"
-        "Summary: Unofficial native Discord client\nLicense: (MIT OR Apache-2.0) AND LGPL-2.1-or-later AND BSD-2-Clause\n"
+        "Summary: Unofficial native Discord client\nLicense: (MIT OR Apache-2.0) AND LGPL-2.1-or-later AND BSD-2-Clause AND MPL-2.0\n"
         "URL: https://github.com/ViceVerse-cz/Serein\n"
         + "\n".join(f"Requires: {item}" for item in requires)
         + f"\nRecommends: gnome-keyring, {hardware_plugins}\n"
@@ -349,7 +362,7 @@ def arch_package(temporary, stage, application_version, libraries):
         f"pkgname=serein\npkgver='{version}'\npkgrel=1\n"
         "pkgdesc='Unofficial native Discord client'\n"
         f"arch=('{platform.machine()}')\nurl='https://github.com/ViceVerse-cz/Serein'\n"
-        "license=('MIT' 'Apache-2.0' 'LGPL-2.1-or-later' 'BSD-2-Clause')\noptions=('!strip' '!debug' '!lto')\n"
+        "license=('MIT' 'Apache-2.0' 'LGPL-2.1-or-later' 'BSD-2-Clause' 'MPL-2.0')\noptions=('!strip' '!debug' '!lto')\n"
         + "depends=(" + " ".join(f"'{item}'" for item in sorted(depends)) + ")\n"
         "optdepends=('gnome-keyring: Secret Service credential provider' "
         "'gst-plugins-bad-libs: Stable H264 parser and NVENC plugin' "

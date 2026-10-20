@@ -13,6 +13,7 @@ struct Speaker {
 	activity: u8,
 	/// Timestamp of the next sample in the current decoded packet.
 	timestamp: Option<u32>,
+	diagnostics: crate::connection_diagnostics::AudioMonitor,
 }
 #[derive(Default)]
 pub(crate) struct Mixer {
@@ -49,6 +50,7 @@ impl Mixer {
 			length: 0,
 			activity: 0,
 			timestamp: None,
+			diagnostics: Default::default(),
 		});
 		Ok(())
 	}
@@ -67,6 +69,28 @@ impl Mixer {
 			.find(|s| s.user == user)
 			.map(|s| s.ssrc)
 	}
+	pub fn received(
+		&mut self,
+		ssrc: u32,
+		sequence: u16,
+		timestamp: u32,
+		bytes: usize,
+		now: std::time::Instant,
+	) {
+		if let Some(speaker) = self.speakers.iter_mut().find(|s| s.ssrc == ssrc) {
+			speaker
+				.diagnostics
+				.packet(sequence, Some(timestamp), bytes, now);
+		}
+	}
+	pub fn diagnostics(
+		&self,
+	) -> impl Iterator<Item = (u64, model::voice_diagnostics::AudioStatistics)> + '_ {
+		self.speakers
+			.iter()
+			.map(|speaker| (speaker.user, speaker.diagnostics.snapshot()))
+	}
+
 	pub fn push(&mut self, ssrc: u32, sequence: u16, opus: Vec<u8>) {
 		if let Some(speaker) = self.speakers.iter_mut().find(|s| s.ssrc == ssrc) {
 			speaker.jitter.push(sequence, opus);
@@ -85,6 +109,7 @@ impl Mixer {
 			speaker.length = 0;
 			speaker.activity = 0;
 			speaker.timestamp = None;
+			speaker.diagnostics.reset_timing();
 		}
 	}
 	pub fn speaking(&self) -> impl Iterator<Item = u64> + '_ {
@@ -136,6 +161,10 @@ impl Mixer {
 						break;
 					};
 					decoded += 1;
+					if opus.is_empty() {
+						speaker.diagnostics.concealed =
+							speaker.diagnostics.concealed.saturating_add(1);
+					}
 					let limit = if opus.is_empty() {
 						// Preserve the lost packet duration; long concealment drains over 20ms ticks.
 						speaker
@@ -151,8 +180,12 @@ impl Mixer {
 							.decoder
 							.decode_float(&opus, &mut speaker.pcm[..limit], false)
 					else {
+						speaker.diagnostics.errors = speaker.diagnostics.errors.saturating_add(1);
 						continue;
 					};
+					if !opus.is_empty() {
+						speaker.diagnostics.decoded = speaker.diagnostics.decoded.saturating_add(1);
+					}
 					if timestamp.is_some() || !opus.is_empty() {
 						speaker.timestamp = timestamp;
 					}
@@ -201,6 +234,33 @@ impl Mixer {
 mod tests {
 	use super::*;
 	use opus2::{Application, Encoder};
+	#[test]
+	fn participant_audio_counters_follow_real_decode_and_concealment_without_crossing_sources() {
+		let mut mixer = Mixer::default();
+		mixer.announce(1, 11).unwrap();
+		mixer.announce(2, 22).unwrap();
+		let packet = opus(0.03);
+		mixer.push(11, 7, packet);
+		for _ in 0..4 {
+			mixer.pop();
+		}
+		let peers: Vec<_> = mixer.diagnostics().collect();
+		let first = peers.iter().find(|(user, _)| *user == 1).unwrap().1;
+		assert_eq!(
+			(first.decoded, first.concealed, first.decoder_errors),
+			(1, 1, 0)
+		);
+		let second = peers.iter().find(|(user, _)| *user == 2).unwrap().1;
+		assert_eq!(
+			(second.decoded, second.concealed, second.decoder_errors),
+			(0, 0, 0)
+		);
+		mixer.announce(1, 33).unwrap();
+		let first = mixer.diagnostics().find(|(user, _)| *user == 1).unwrap().1;
+		assert_eq!((first.decoded, first.concealed), (0, 0));
+		mixer.remove(1);
+		assert_eq!(mixer.diagnostics().count(), 1);
+	}
 	fn opus(frequency: f32) -> Vec<u8> {
 		let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Voip).unwrap();
 		let pcm: Frame = std::array::from_fn(|i| (i as f32 * frequency).sin() * 0.2);
@@ -262,6 +322,7 @@ mod tests {
 				for speaker in &mut mixer.speakers {
 					speaker.pcm.fill(speaker.user as f32 * 0.1);
 					speaker.timestamp = None;
+					speaker.diagnostics.reset_timing();
 					speaker.offset = 0;
 					speaker.length = 960;
 				}

@@ -286,6 +286,11 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\licenses"
   RMDir /r "$INSTDIR\source"
   RMDir /r "$INSTDIR\ffmpeg-source"
+  RMDir /r "$INSTDIR\voice-enhancement"
+  Delete "$INSTDIR\msvcp140.dll"
+  Delete "$INSTDIR\msvcp140_1.dll"
+  Delete "$INSTDIR\vcruntime140.dll"
+  Delete "$INSTDIR\vcruntime140_1.dll"
 
   ; Setup permits existing custom folders. Preserve unrelated files and update
   ; backups; remove the installation directory only when our payload left it empty.

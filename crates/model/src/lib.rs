@@ -21,6 +21,7 @@ pub mod notification_preferences;
 pub mod onboarding;
 pub mod privacy_preferences;
 pub mod profile_cosmetics;
+pub mod voice_diagnostics;
 pub mod voice_settings;
 pub use channel_preferences::{ChannelPreferences, PreferenceEdit, Shortcut};
 pub use keybinds::{KeyChord, KeybindAction, Keybinds};

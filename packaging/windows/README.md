@@ -15,17 +15,17 @@ Serein supports both portable zip extraction and a per-user Windows installer:
 - **PowerShell Setup**: `packaging/windows/setup.ps1` provides a zero-dependency installer/uninstaller script (`powershell -File .\setup.ps1` to install, `powershell -File .\setup.ps1 -Uninstall` to remove).
 - **Autoupdate Compatibility**: Both installers register Serein in `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Serein`. When Serein autoupdates, the update helper automatically synchronizes `DisplayVersion` in the registry upon file replacement, keeping Windows Settings and Installed Apps accurate. The release zip packages remain strictly decoupled from the installer executable, preventing allowlist check failures during in-app update extraction.
 
-## Moving an existing Windows install to the FFmpeg build
+## Moving an existing Windows install to the media-runtime build
 
-Windows releases with the FFmpeg runtime use
-`serein-<tag>-Windows-<arch>-media-v3.zip` (`X64` or `ARM64`). The installer name
+Windows releases with FFmpeg and the local speech runtime use
+`serein-<tag>-Windows-<arch>-media-v4.zip` (`X64` or `ARM64`). The installer name
 remains `serein-<tag>-Windows-<arch>-Setup.exe`. The updated client selects the
-media-v3 ZIP for subsequent in-app updates.
+media-v4 ZIP for subsequent in-app updates.
 
-Earlier clients accept either the original payload or the encoder-only media-v2
-payload. Neither can install the additional demuxing, scaling and audio-conversion
-DLLs. They look for their older ZIP filename and report a missing package on a
-media-v3 release. Updating
+Earlier clients accept the original, media-v2 or media-v3 payload. Their
+allowlists reject the new speech models/runtime and app-local MSVC DLLs. They
+look for their older ZIP filename and report a missing package on a media-v4
+release. Updating
 the allowlist in the new binary cannot repair the old running updater, and users
 can skip an intermediate release, so publishing a bridge release alone is
 insufficient.
@@ -36,14 +36,14 @@ The first migration requires one manual install:
    from the project's trusted release page. Run it over the existing per-user
    installation. The installer replaces application files; it does not remove
    account settings, local data or credentials.
-2. For a portable installation, extract the complete media-v3 ZIP into a new
+2. For a portable installation, extract the complete media-v4 ZIP into a new
    folder and start `serein.exe` from that folder. Keep the adjacent DLLs,
-   `licenses` and `ffmpeg-source`; copying just the executable is insufficient.
+   `licenses`, `ffmpeg-source` and `voice-enhancement`; copying just the executable is insufficient.
    If you registered a portable notification shortcut, remove the old shortcut
    using its `install-notifications.ps1 -Remove` and register it again from the
    new folder.
 
-Do not rename a media-v3 ZIP to the legacy filename when publishing a release.
+Do not rename a media-v4 ZIP to the legacy filename when publishing a release.
 The release workflow checks the actual archive's name, required DLLs, notices
 and corresponding source before upload. Run the offline checks with
 `python packaging/windows/test_update_archive.py`; they use synthetic ZIPs and
@@ -53,3 +53,7 @@ still needs native verification before release.
 Run `python packaging/windows/test_installer.py` in a disposable Windows user with Rust and NSIS installed. It uses an offline fixture executable to check the running-process guard, Unicode install paths, shortcut target/working directory/AppUserModelID, upgrades, registry entries and uninstall cleanup. It never launches the real client. CI runs this check on Windows x64 and ARM64, including draft PRs.
 
 Removing script-driven setup behavior addresses the installer heuristics reported in [issue #546](https://github.com/ViceVerse-cz/Serein/issues/546). Windows signing is not configured in the release workflow; a rebuilt installer still needs vendor scanning and can receive reputation or antivirus warnings. Portable notification setup and the app's existing update helper remain separate PowerShell flows.
+
+The local speech assets include LavaSRv2 with denoising, CPU ONNX Runtime and
+app-local MSVC CRT DLLs. Uninstall removes the installed models; account logout
+does not. The application never downloads a model during a call.

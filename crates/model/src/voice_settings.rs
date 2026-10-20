@@ -287,6 +287,7 @@ pub enum NoiseSuppression {
 	#[default]
 	RnNoise,
 	WebRtc,
+	LavaSrV2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-"""Check a Windows media-v3 release ZIP before uploading it as an update asset."""
+"""Check a Windows media-v4 release ZIP before uploading it as an update asset."""
 
 import argparse
 from pathlib import Path
@@ -15,6 +15,12 @@ REQUIRED_FILES = (
     "swscale-serein-8.dll",
     "swresample-serein-5.dll",
     "openh264.dll",
+    "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll",
+    "voice-enhancement/onnxruntime.dll",
+    'voice-enhancement/eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip',
+    "voice-enhancement/backbone.onnx", "voice-enhancement/spec_head.onnx", "voice-enhancement/denoiser_core.onnx",
+    "voice-enhancement/ONNXRuntime-LICENSE", "voice-enhancement/ONNXRuntime-ThirdPartyNotices.txt",
+    "voice-enhancement/MSVC-LICENSE.txt", "voice-enhancement/build.json",
     "THIRD_PARTY_NOTICES.md",
     "ffmpeg-source/build.json",
     "ffmpeg-source/configure.json",
@@ -33,13 +39,14 @@ ALLOWED_ROOTS = {
     "ffmpeg-source", "README.md", "LICENSE-MIT", "LICENSE-APACHE",
     "THIRD_PARTY_NOTICES.md", "docs", "licenses", "source",
     "install-notifications.ps1", "setup.ps1",
+    "voice-enhancement", "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll",
 }
 
 
 def check_archive(path):
     path = Path(path)
-    if not re.fullmatch(r"serein-v[A-Za-z0-9.+-]{1,95}-Windows-(X64|ARM64)-media-v3\.zip", path.name):
-        raise ValueError("Windows FFmpeg ZIPs must use the media-v3 asset name, never the legacy update name")
+    if not re.fullmatch(r"serein-v[A-Za-z0-9.+-]{1,95}-Windows-(X64|ARM64)-media-v4\.zip", path.name):
+        raise ValueError("Windows FFmpeg ZIPs must use the media-v4 asset name, never the legacy update name")
     if path.stat().st_size > 512 * 1024 * 1024:
         raise ValueError("Windows update ZIP exceeds the download limit")
     with zipfile.ZipFile(path) as archive:
@@ -75,7 +82,7 @@ def main():
     parser.add_argument("archive", type=Path)
     args = parser.parse_args()
     check_archive(args.archive)
-    print(f"Windows media-v3 update asset checked: {args.archive.name}")
+    print(f"Windows media-v4 update asset checked: {args.archive.name}")
 
 
 if __name__ == "__main__":

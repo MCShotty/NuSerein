@@ -3,6 +3,11 @@
 use crate::diagnostics::{Metrics, Scope, Stage};
 use crate::{CapturedFrame, Frame};
 mod echo;
+mod lavasr;
+pub use lavasr::Status as SpeechStatus;
+pub fn speech_worker_command() -> Option<i32> {
+	lavasr::command()
+}
 pub mod recording;
 use model::voice_settings::{NoiseSuppression, Processing, VoiceProcessing};
 #[cfg(target_os = "macos")]
@@ -10,7 +15,7 @@ mod permission_macos;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{
 	Arc,
-	atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
+	atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering},
 	mpsc,
 };
 use std::time::{Duration, Instant};
@@ -93,6 +98,7 @@ pub struct Gate {
 	echo_reset: AtomicBool,
 	preview_level: AtomicU16,
 	processing_ready: AtomicBool,
+	speech_status: AtomicU8,
 }
 impl Default for Gate {
 	fn default() -> Self {
@@ -116,6 +122,7 @@ impl Default for Gate {
 			echo_reset: AtomicBool::new(false),
 			preview_level: AtomicU16::new(0),
 			processing_ready: AtomicBool::new(true),
+			speech_status: AtomicU8::new(0),
 		}
 	}
 }
@@ -236,6 +243,9 @@ impl Audio {
 				let mut metrics = Metrics::new(Scope::Audio);
 				let mut streams: Option<(u64, Streams)> = None;
 				let mut echo = echo::Echo::new();
+				let mut speech: Option<lavasr::Controller> = None;
+				let mut speech_attempted = false;
+				let mut previous_speech_status = None;
 				let mut opened_at: Option<Instant> = None;
 				let mut last_selection: Option<Devices> = None;
 				let mut opened_once = false;
@@ -245,6 +255,12 @@ impl Audio {
 				let mut next_default_check = Instant::now();
 				let mut next_input_retry = Instant::now() + Duration::from_secs(2);
 				'audio: while !worker_gate.stopped.load(Ordering::Acquire) {
+					let capture_generation = worker_gate.capture_generation.load(Ordering::Acquire);
+					if let Some(speech) = &mut speech
+						&& speech.generation() != capture_generation
+					{
+						speech.reset(capture_generation);
+					}
 					let revision = worker_gate.revision.load(Ordering::Acquire);
 					let current = selected.borrow_and_update().clone();
 					if last_selection.as_ref() != Some(&current) {
@@ -371,6 +387,9 @@ impl Audio {
 					let mut noise_frames = 0;
 					if reset {
 						echo.reset();
+						if let Some(speech) = &mut speech {
+							speech.reset(capture_generation);
+						}
 						active.input_gate = crate::activity::InputGate::default();
 						for _ in 0..8 {
 							let _ = active.input.pop();
@@ -378,13 +397,43 @@ impl Audio {
 						}
 					}
 					let processing = *selected_processing.borrow_and_update();
+					let use_speech = processing.suppression == NoiseSuppression::LavaSrV2;
+					if !use_speech {
+						speech = None;
+						speech_attempted = false;
+						previous_speech_status = None;
+						worker_gate.speech_status.store(0, Ordering::Release);
+					} else if !speech_attempted {
+						speech_attempted = true;
+						speech = lavasr::Controller::new().ok();
+						if let Some(speech) = &mut speech {
+							speech.reset(capture_generation);
+						}
+					}
 					if active.processing != processing {
 						active.input_gate = crate::activity::InputGate::default();
 						active.processing = processing;
+						if let Some(speech) = &mut speech {
+							speech.reset(capture_generation);
+						}
 					}
 					if let Err(error) = echo.configure(processing) {
 						emit(Err(error));
 						break 'audio;
+					}
+					if use_speech {
+						let status = speech
+							.as_ref()
+							.map_or(SpeechStatus::Fallback, lavasr::Controller::status);
+						if status == SpeechStatus::Fallback
+							&& previous_speech_status != Some(status)
+						{
+							echo.reset_noise();
+						}
+						previous_speech_status = Some(status);
+						worker_gate
+							.speech_status
+							.store(status as u8, Ordering::Release);
 					}
 					// Publish readiness under the same watch lock as configuration changes.
 					let latest_processing = selected_processing.borrow();
@@ -419,7 +468,11 @@ impl Audio {
 						if worker_gate.capture_in_generation(captured.generation) {
 							let mut frame = captured.pcm;
 							let start = metrics.start();
-							let result = echo.capture(&mut frame, start.is_some());
+							let result = if use_speech {
+								echo.prepare_capture(&mut frame, start.is_some())
+							} else {
+								echo.capture(&mut frame, start.is_some())
+							};
 							metrics.finish(Stage::EchoCapture, start);
 							noise_frames += u64::from(noise);
 							match result {
@@ -429,35 +482,55 @@ impl Audio {
 									break 'audio;
 								}
 							}
-							let gain =
-								f32::from(worker_gate.input_gain.load(Ordering::Relaxed)) / 100.0;
-							for sample in &mut frame {
-								*sample = amplify(*sample, gain);
-							}
-							if worker_gate.capture_in_generation(captured.generation)
-								&& !worker_gate.echo_reset.load(Ordering::Acquire)
-							{
-								worker_gate.preview_level.store(
-									(crate::activity::level_db(&frame) + 100.0) as u16,
-									Ordering::Relaxed,
-								);
-								let audible = active
-									.input_gate
-									.apply(&mut frame, processing.sensitivity_db);
-								if preview {
-									drops += u64::from(active.output.push(frame).is_err());
-								} else if audible {
-									drops += u64::from(
-										capture
-											.try_send(CapturedFrame {
-												generation: captured.generation,
-												pcm: frame,
-											})
-											.is_err(),
-									);
+							if use_speech {
+								if let Some(speech) = &mut speech {
+									speech.push(&CapturedFrame {
+										generation: captured.generation,
+										pcm: frame,
+									});
+								}
+								let status = speech
+									.as_ref()
+									.map_or(SpeechStatus::Fallback, lavasr::Controller::status);
+								if matches!(status, SpeechStatus::Warming | SpeechStatus::Active) {
+									continue;
+								}
+								let duration = echo.fallback_capture(&mut frame, start.is_some());
+								metrics.add(Stage::Noise, duration);
+								if let Err(error) = echo.finish_capture(&mut frame) {
+									emit(Err(error));
+									break 'audio;
 								}
 							}
+							drops += publish_capture(
+								&worker_gate,
+								active,
+								CapturedFrame {
+									generation: captured.generation,
+									pcm: frame,
+								},
+								processing,
+								preview,
+								&capture,
+							);
 						}
+					}
+					if let Some(speech) = &mut speech
+						&& let Some(mut frame) = speech.poll()
+						&& worker_gate.capture_in_generation(frame.generation)
+					{
+						if let Err(error) = echo.finish_capture(&mut frame.pcm) {
+							emit(Err(error));
+							break 'audio;
+						}
+						drops += publish_capture(
+							&worker_gate,
+							active,
+							frame,
+							processing,
+							preview,
+							&capture,
+						);
 					}
 					for _ in 0..8 {
 						let Ok(frame) = playback.try_recv() else {
@@ -471,6 +544,7 @@ impl Audio {
 					std::thread::park_timeout(Duration::from_millis(5));
 				}
 				worker_gate.stopped.store(true, Ordering::Release);
+				drop(speech);
 				drop(streams);
 				drop(lease);
 				let _ = finished.send(());
@@ -573,10 +647,23 @@ impl Audio {
 				return false;
 			}
 			self.gate.processing_ready.store(false, Ordering::Release);
+			if current.suppression != settings.suppression {
+				self.gate.capture_generation.fetch_add(1, Ordering::AcqRel);
+				self.gate.echo_reset.store(true, Ordering::Release);
+			}
 			*current = settings;
 			true
 		});
 		self.thread.unpark();
+	}
+	pub fn speech_status(&self) -> Option<SpeechStatus> {
+		match self.gate.speech_status.load(Ordering::Acquire) {
+			0 => None,
+			1 => Some(SpeechStatus::Loading),
+			2 => Some(SpeechStatus::Warming),
+			3 => Some(SpeechStatus::Active),
+			_ => Some(SpeechStatus::Fallback),
+		}
 	}
 	/// Adjusts software gain without reopening devices. Defaults to 100%; clamps to 0..=200%.
 	pub fn set_gain(&self, input_percent: u16, output_percent: u16) {
@@ -593,6 +680,37 @@ impl Drop for Audio {
 		self.gate.stopped.store(true, Ordering::Release);
 		self.gate.ready.store(false, Ordering::Release);
 		self.thread.unpark();
+	}
+}
+
+fn publish_capture(
+	gate: &Gate,
+	streams: &mut Streams,
+	mut frame: CapturedFrame,
+	processing: Processing,
+	preview: bool,
+	capture: &mpsc::SyncSender<CapturedFrame>,
+) -> u64 {
+	let gain = f32::from(gate.input_gain.load(Ordering::Relaxed)) / 100.0;
+	for sample in &mut frame.pcm {
+		*sample = amplify(*sample, gain);
+	}
+	if !gate.capture_in_generation(frame.generation) || gate.echo_reset.load(Ordering::Acquire) {
+		return 0;
+	}
+	gate.preview_level.store(
+		(crate::activity::level_db(&frame.pcm) + 100.0) as u16,
+		Ordering::Relaxed,
+	);
+	let audible = streams
+		.input_gate
+		.apply(&mut frame.pcm, processing.sensitivity_db);
+	if preview {
+		u64::from(streams.output.push(frame.pcm).is_err())
+	} else if audible {
+		u64::from(capture.try_send(frame).is_err())
+	} else {
+		0
 	}
 }
 
@@ -1199,7 +1317,11 @@ pub fn debug_processing_check() {
 	let mut frame = original;
 	dsp.capture(&mut frame, false).unwrap();
 	assert_eq!(frame, original, "Studio must bypass DSP");
-	for suppression in [NoiseSuppression::RnNoise, NoiseSuppression::WebRtc] {
+	for suppression in [
+		NoiseSuppression::RnNoise,
+		NoiseSuppression::WebRtc,
+		NoiseSuppression::LavaSrV2,
+	] {
 		dsp.configure(Processing {
 			suppression,
 			..Processing::default()
@@ -1328,6 +1450,29 @@ mod tests {
 		assert!(gate.muted.load(Ordering::Acquire) && gate.deafened.load(Ordering::Acquire));
 		audio.set_controls(false, false);
 		assert!(!gate.muted.load(Ordering::Acquire) && gate.echo_reset.load(Ordering::Acquire));
+	}
+
+	#[test]
+	fn speech_mode_changes_retire_capture_but_preserve_playback_and_settings() {
+		let audio = audio_without_devices();
+		let before = audio.capture_generation();
+		let settings = Processing {
+			suppression: NoiseSuppression::LavaSrV2,
+			..Processing::default()
+		};
+		audio.set_processing(settings);
+		assert_eq!(audio.capture_generation(), before + 1);
+		assert!(audio.gate.echo_reset.load(Ordering::Acquire));
+		assert_eq!(audio.gate.playback_generation.load(Ordering::Acquire), 0);
+		audio.set_processing(settings);
+		assert_eq!(audio.capture_generation(), before + 1);
+		let saved = serde_json::to_string(&settings).unwrap();
+		assert_eq!(
+			serde_json::from_str::<Processing>(&saved).unwrap(),
+			settings
+		);
+		audio.set_processing(Processing::studio());
+		assert_eq!(audio.capture_generation(), before + 2);
 	}
 
 	#[test]

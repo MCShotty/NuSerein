@@ -16,6 +16,16 @@ use std::{
 use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
 use zeroize::Zeroizing;
 
+fn speech_status(audio: &Audio) -> Option<&'static str> {
+	use discord_voice::audio::SpeechStatus;
+	audio.speech_status().map(|status| match status {
+		SpeechStatus::Loading => "voice-lavasr-loading",
+		SpeechStatus::Warming => "voice-lavasr-description",
+		SpeechStatus::Active => "voice-lavasr-active",
+		SpeechStatus::Fallback => "voice-lavasr-fallback",
+	})
+}
+
 /// Listener gain for a soundboard sound played by `user`: the session soundboard volume and,
 /// for other participants, their local volume or mute. Blocked participants are silent.
 fn soundboard_gain(state: &State, ui: &ui::MessagingUi, me: Id, user: Id) -> f32 {
@@ -192,6 +202,7 @@ struct Live {
 	audio: Audio,
 	controls: watch::Sender<Controls>,
 	events: mpsc::Receiver<Notice>,
+	diagnostics: watch::Receiver<Option<Arc<model::voice_diagnostics::ConnectionSnapshot>>>,
 	// Terminal errors must survive a full progress queue; retain the first safe reason.
 	failure: Arc<OnceLock<&'static str>>,
 	speakers: watch::Receiver<[u64; 64]>,
@@ -922,6 +933,12 @@ impl Voice {
 		ui: &mut ui::MessagingUi,
 		ctx: &egui::Context,
 	) -> Option<Command> {
+		ui.voice_lavasr_status = None;
+		// Project only this frame's still-owned connection; early returns retire old data.
+		if !state.demo {
+			ui.voice_diagnostics
+				.remove(model::voice_diagnostics::ConnectionKind::Call);
+		}
 		self.reap();
 		self.poll_mic_preview(state, ui, ctx);
 		if std::mem::take(&mut self.leave_cue) && ui.notification_options.allows(Sound::UserLeave) {
@@ -997,6 +1014,7 @@ impl Voice {
 			ui.voice_camera_preview = None;
 			ui.voice_camera_status = "";
 			ui.voice_privacy_code = None;
+			ui.voice_diagnostics.clear();
 		}
 		// Remote camera textures exist only for live media and are always dropped together
 		// with the ids the view borrows, so no tile can draw a freed texture.
@@ -1098,6 +1116,7 @@ impl Voice {
 				|| ui.voice_ptm_active;
 			live.audio.set_controls(muted, deafened);
 			live.audio.set_processing(ui.voice_processing.effective());
+			ui.voice_lavasr_status = speech_status(&live.audio);
 			live.audio
 				.set_stage_authorization(call.stage_revision, state.can_speak(call.channel));
 			live.audio
@@ -1158,6 +1177,15 @@ impl Voice {
 				live.audio.set_devices(devices.clone());
 				live.devices = devices;
 				live.device_deadline = None;
+			}
+			if let Some(snapshot) = live.diagnostics.borrow_and_update().as_ref() {
+				ui.voice_diagnostics.update(
+					(live.generation, live.channel, live.request),
+					snapshot.clone(),
+				);
+			} else {
+				ui.voice_diagnostics
+					.remove(model::voice_diagnostics::ConnectionKind::Call);
 			}
 			for _ in 0..8 {
 				let Ok(event) = live.events.try_recv() else {
@@ -1547,6 +1575,7 @@ impl Voice {
 			.audio
 			.set_processing(ui.voice_processing.effective());
 		preview.audio.set_ready(true);
+		ui.voice_lavasr_status = speech_status(&preview.audio);
 		let error = preview.failure.get().copied().or_else(|| {
 			if preview.audio.is_stopped() {
 				Some("Microphone test stopped; try again.")
@@ -1842,6 +1871,7 @@ impl Voice {
 		let (stream_audio, stream_audio_receive) = mpsc::sync_channel(8);
 		let (playback, playback_receive) = mpsc::sync_channel(8);
 		let (send, events) = mpsc::sync_channel(8);
+		let (diagnostics_send, diagnostics) = watch::channel(None);
 		let failure = Arc::new(OnceLock::new());
 		let audio_failure = failure.clone();
 		let (speaking, speakers) = watch::channel([0; 64]);
@@ -1976,6 +2006,11 @@ impl Voice {
 				Some(transport_effects),
 				move |event| {
 					let notice = match event {
+						Status::Diagnostics(snapshot) => {
+							diagnostics_send.send_replace(Some(snapshot));
+							status_wake.request_repaint();
+							return Ok(());
+						}
 						Status::TransportReady => Notice::TransportReady(negotiation_revision),
 						Status::CameraAvailable(available) => Notice::CameraAvailable(available),
 						Status::Connecting => Notice::Progress(Phase::ConnectingTransport),
@@ -2026,6 +2061,7 @@ impl Voice {
 			audio,
 			controls,
 			events,
+			diagnostics,
 			failure,
 			speakers,
 			task,
@@ -3147,6 +3183,7 @@ mod tests {
 			audio,
 			controls,
 			events,
+			diagnostics: watch::channel(None).1,
 			failure: Arc::new(OnceLock::new()),
 			speakers,
 			task,

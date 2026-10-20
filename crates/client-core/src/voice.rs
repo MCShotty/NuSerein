@@ -12,6 +12,9 @@ pub const MAX_DM_CALLS: usize = 64;
 pub const MAX_DM_CALL_BYTES: usize = MAX_DM_CALLS * size_of::<Id>();
 pub const MAX_ROSTER: usize = 4096;
 pub const MAX_ROSTER_BYTES: usize = 1024 * 1024;
+pub const MAX_CHANNEL_STATUSES: usize = 512;
+pub const MAX_CHANNEL_STATUS_BYTES: usize = 1024 * 1024;
+pub const MAX_CHANNEL_STATUS_CHARS: usize = 500;
 use std::fmt;
 use zeroize::Zeroizing;
 
@@ -194,6 +197,10 @@ pub struct State {
 	pub(crate) dm_ringing: Vec<(Id, Vec<Id>)>,
 	pub ring_error: Option<(Id, u64, &'static str)>,
 	pub roster: Vec<RosterEntry>,
+	/// Ephemeral server-provided channel text; independent of this device's joined call.
+	pub channel_statuses: std::collections::BTreeMap<Id, String>,
+	pub(crate) status_requested: Option<Id>,
+	pub(crate) status_retry: Option<Instant>,
 	pub preview: Option<StreamPreview>,
 	sequence: u64,
 }
@@ -231,6 +238,9 @@ impl State {
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Command {
+	ChannelInfo {
+		guild: Id,
+	},
 	/// Retire an unconfirmed local negotiation without changing service voice state.
 	AbandonSession {
 		channel: Id,
@@ -344,6 +354,18 @@ pub enum Event {
 		channel: Id,
 		unix_seconds: Option<u64>,
 	},
+	ChannelStatus {
+		guild: Id,
+		channel: Id,
+		status: Option<String>,
+	},
+	ChannelStatuses {
+		guild: Id,
+		statuses: Vec<(Id, Option<String>)>,
+	},
+	ChannelInfoUnavailable {
+		guild: Id,
+	},
 	State {
 		guild: Option<Id>,
 		member: Option<Box<Member>>,
@@ -402,6 +424,14 @@ pub enum Event {
 impl Event {
 	pub fn bytes(&self) -> usize {
 		match self {
+			Self::ChannelStatuses { statuses, .. } => {
+				statuses.capacity() * size_of::<(Id, Option<String>)>()
+					+ statuses
+						.iter()
+						.map(|(_, status)| status.as_ref().map_or(0, String::capacity))
+						.sum::<usize>()
+			}
+			Self::ChannelStatus { status, .. } => status.as_ref().map_or(0, String::capacity),
 			Self::Snapshot { participants, .. } => {
 				participants.capacity() * size_of::<RosterEntry>()
 					+ participants.iter().map(RosterEntry::bytes).sum::<usize>()
@@ -436,6 +466,72 @@ impl Event {
 	}
 }
 impl ClientState {
+	pub(crate) fn retry_voice_channel_statuses(&mut self, guild: Id) {
+		if self.voice.status_requested == Some(guild) {
+			self.voice.status_requested = None;
+			self.voice.status_retry = Some(Instant::now() + Duration::from_secs(1));
+		}
+	}
+	pub fn voice_status_retry_delay(&self) -> Option<Duration> {
+		let now = Instant::now();
+		self.voice
+			.status_retry
+			.filter(|time| *time > now)
+			.map(|time| time.duration_since(now))
+	}
+	pub fn voice_channel_status(&self, channel: Id) -> Option<&str> {
+		(self.auth == AuthState::Authenticated
+			&& self.gateway_connected
+			&& self.can_view(channel)
+			&& self.channel(channel).is_some_and(|value| value.kind == 2))
+		.then(|| {
+			self.voice
+				.channel_statuses
+				.get(&channel)
+				.map(String::as_str)
+		})
+		.flatten()
+	}
+	/// Initial ephemeral metadata is independent of member-list support and joining a call.
+	pub fn request_voice_channel_statuses(&mut self) -> Option<crate::Command> {
+		if self.demo || self.auth != AuthState::Authenticated || !self.gateway_connected {
+			return None;
+		}
+		let Some(guild) = self
+			.selected
+			.and_then(|id| self.channel(id))
+			.and_then(|c| c.guild)
+		else {
+			self.voice.status_requested = None;
+			return None;
+		};
+		if self.voice.status_requested == Some(guild)
+			|| self
+				.voice
+				.status_retry
+				.is_some_and(|time| Instant::now() < time)
+			|| !self
+				.channels
+				.iter()
+				.any(|c| c.guild == Some(guild) && c.kind == 2 && self.can_view(c.id))
+		{
+			return None;
+		}
+		self.voice.status_requested = Some(guild);
+		self.voice.status_retry = None;
+		let active = self.voice.active.as_ref().map(|call| call.channel);
+		let retained: std::collections::BTreeSet<_> = self
+			.channels
+			.iter()
+			.filter(|channel| channel.guild == Some(guild) && channel.kind == 2)
+			.map(|channel| channel.id)
+			.chain(active)
+			.collect();
+		self.voice
+			.channel_statuses
+			.retain(|channel, _| retained.contains(channel));
+		Some(crate::Command::Voice(Command::ChannelInfo { guild }))
+	}
 	pub fn request_stream_preview(
 		&mut self,
 		guild: Id,
@@ -992,6 +1088,70 @@ impl ClientState {
 				}
 			}
 			Event::Deleted { channel } => self.end_voice_channel(channel),
+			Event::ChannelInfoUnavailable { guild } => self.retry_voice_channel_statuses(guild),
+			Event::ChannelStatuses { guild, statuses } => {
+				if statuses.len() > MAX_CHANNEL_STATUSES
+					|| statuses
+						.iter()
+						.map(|(_, status)| status.as_ref().map_or(0, String::capacity))
+						.sum::<usize>() > MAX_CHANNEL_STATUS_BYTES
+				{
+					return;
+				}
+				for (channel, status) in statuses {
+					self.apply_voice(Event::ChannelStatus {
+						guild,
+						channel,
+						status,
+					});
+				}
+			}
+			Event::ChannelStatus {
+				guild,
+				channel,
+				status,
+			} => {
+				if self.auth != AuthState::Authenticated
+					|| !self.gateway_connected
+					|| self
+						.channel(channel)
+						.is_none_or(|c| c.guild != Some(guild) || c.kind != 2)
+					|| !self.can_view(channel)
+				{
+					return;
+				}
+				if let Some(status) = status.filter(|value| !value.is_empty()) {
+					if status.len() > MAX_CHANNEL_STATUS_CHARS * 4
+						|| status.chars().count() > MAX_CHANNEL_STATUS_CHARS
+						|| status.contains('\0')
+					{
+						return;
+					}
+					let previous = self
+						.voice
+						.channel_statuses
+						.get(&channel)
+						.map_or(0, String::capacity);
+					let bytes: usize = self
+						.voice
+						.channel_statuses
+						.values()
+						.map(String::capacity)
+						.sum();
+					if (previous == 0 && self.voice.channel_statuses.len() >= MAX_CHANNEL_STATUSES)
+						|| bytes
+							.saturating_sub(previous)
+							.saturating_add(status.capacity())
+							> MAX_CHANNEL_STATUS_BYTES
+					{
+						return;
+					}
+					self.voice.channel_statuses.insert(channel, status);
+				} else {
+					self.voice.channel_statuses.remove(&channel);
+				}
+				self.revision += 1;
+			}
 			Event::ChannelStarted {
 				guild,
 				channel,
@@ -1421,6 +1581,128 @@ mod tests {
 		};
 		crate::tests::grant_permissions(&mut state);
 		state
+	}
+
+	#[test]
+	fn channel_status_reads_are_coalesced_and_do_not_join_a_call() {
+		let mut state = stream_preview_state();
+		state.selected = Some(Id(20));
+		assert!(matches!(
+			state.request_voice_channel_statuses(),
+			Some(crate::Command::Voice(Command::ChannelInfo {
+				guild: Id(10)
+			}))
+		));
+		assert!(state.request_voice_channel_statuses().is_none());
+		assert!(state.voice.active.is_none());
+		state.apply_voice(Event::ChannelInfoUnavailable { guild: Id(10) });
+		assert!(state.request_voice_channel_statuses().is_none());
+		state.voice.status_retry = Some(Instant::now());
+		assert!(state.request_voice_channel_statuses().is_some());
+		state.apply_voice(Event::ChannelStatus {
+			guild: Id(10),
+			channel: Id(20),
+			status: Some("Building together 👩🏽‍💻".into()),
+		});
+		assert_eq!(
+			state.voice_channel_status(Id(20)),
+			Some("Building together 👩🏽‍💻")
+		);
+		state.apply_voice(Event::ChannelStatus {
+			guild: Id(99),
+			channel: Id(20),
+			status: None,
+		});
+		assert!(state.voice_channel_status(Id(20)).is_some());
+		state.apply_voice(Event::ChannelStatus {
+			guild: Id(10),
+			channel: Id(20),
+			status: Some("x".repeat(501)),
+		});
+		assert_eq!(
+			state.voice_channel_status(Id(20)),
+			Some("Building together 👩🏽‍💻")
+		);
+		state.apply_voice(Event::ChannelStatus {
+			guild: Id(10),
+			channel: Id(20),
+			status: None,
+		});
+		assert!(state.voice_channel_status(Id(20)).is_none());
+		state.apply_voice(Event::ChannelStatus {
+			guild: Id(10),
+			channel: Id(20),
+			status: Some("Fresh".into()),
+		});
+		state.apply(Envelope {
+			generation: state.generation,
+			event: CoreEvent::Disconnected,
+		});
+		assert!(state.voice.channel_statuses.is_empty());
+		assert!(state.voice.status_requested.is_none());
+	}
+
+	#[test]
+	fn channel_statuses_respect_scope_permissions_items_and_bytes() {
+		let mut state = stream_preview_state();
+		let prototype = state.channels[0].clone();
+		for id in 21..621 {
+			let mut channel = prototype.clone();
+			channel.id = Id(id);
+			state.channels.push(channel);
+		}
+		crate::tests::grant_permissions(&mut state);
+		for id in 20..621 {
+			state.apply_voice(Event::ChannelStatus {
+				guild: Id(10),
+				channel: Id(id),
+				status: Some("Hi".into()),
+			});
+		}
+		assert_eq!(state.voice.channel_statuses.len(), MAX_CHANNEL_STATUSES);
+		for id in 20..621 {
+			state.apply_voice(Event::ChannelStatus {
+				guild: Id(10),
+				channel: Id(id),
+				status: Some("👋".repeat(500)),
+			});
+		}
+		assert!(
+			state
+				.voice
+				.channel_statuses
+				.values()
+				.map(String::capacity)
+				.sum::<usize>()
+				<= MAX_CHANNEL_STATUS_BYTES
+		);
+		let previous = state.voice.channel_statuses.get(&Id(20)).cloned();
+		let mut oversized = String::with_capacity(MAX_CHANNEL_STATUS_BYTES + 1);
+		oversized.push_str("Hi");
+		state.apply_voice(Event::ChannelStatus {
+			guild: Id(10),
+			channel: Id(20),
+			status: Some(oversized),
+		});
+		assert_eq!(state.voice.channel_statuses.get(&Id(20)), previous.as_ref());
+		state.channels[0].kind = 0;
+		assert!(state.voice_channel_status(Id(20)).is_none());
+		state.apply_voice(Event::ChannelStatus {
+			guild: Id(10),
+			channel: Id(20),
+			status: Some("Wrong kind".into()),
+		});
+		assert_ne!(
+			state
+				.voice
+				.channel_statuses
+				.get(&Id(20))
+				.map(String::as_str),
+			Some("Wrong kind")
+		);
+		state.channels[0].kind = 2;
+		state.permissions = Default::default();
+		assert!(state.voice_channel_status(Id(20)).is_none());
 	}
 
 	#[test]

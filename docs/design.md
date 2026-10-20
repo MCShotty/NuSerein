@@ -120,6 +120,9 @@ messages expose confirmed Publish. All of these keep the ordinary conversation d
   32px rows with `#`/speaker/forum/thread glyphs, `selected`/`hover` fills, unread edge pill,
   mention badge; DM rows are 44px with 32px avatars. Forum rows open their post archive.
   Account card at the bottom (`raised`, avatar with presence dot, name, status, settings gear).
+  During a call, hovering the connection icon/title shows ping and voice-server details.
+  Clicking or keyboard-activating it opens connection details and the opt-in Voice Debug view;
+  technical counters stay inside that view. Missing measurements show Unavailable.
 - Conversation header (48px): channel glyph or DM avatar, semibold name, then icon buttons
   (reload, threads/archive, pins, member list toggle), a 144px search field and DM call/voice
   controls. A thin notice strip appears only for loading/stale/archive/history states.

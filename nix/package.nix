@@ -120,6 +120,60 @@
         meta.license = [lib.licenses.lgpl21Plus lib.licenses.bsd2 lib.licenses.mit];
     };
 
+    speechSources = [
+        (fetchurl {
+            url = "https://github.com/idocinthebox/LavaSR-ONNX-Embedded/releases/download/v1.0.0/backbone.onnx";
+            name = "backbone.onnx";
+            sha256 = "0bc915649f765d40ca52bd3a2272a28e8f7636b09c2ee3148662a69041f28cd9";
+        })
+        (fetchurl {
+            url = "https://github.com/idocinthebox/LavaSR-ONNX-Embedded/releases/download/v1.0.0/spec_head.onnx";
+            name = "spec_head.onnx";
+            sha256 = "a54a5d5d652aceb76b2f48cf9f0ab3f4def0d44427dc7af641fd24284342a48a";
+        })
+        (fetchurl {
+            url = "https://github.com/idocinthebox/LavaSR-ONNX-Embedded/releases/download/v1.0.0/denoiser_core.onnx";
+            name = "denoiser_core.onnx";
+            sha256 = "515a1be1eea4b1108cc6a758198d726fc506e68ec53d7e522bc2618ff2602175";
+        })
+        (fetchurl {
+            url = "https://github.com/eigen-mirror/eigen/archive/1d8b82b0740839c0de7f1242a3585e3390ff5f33/eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip";
+            name = "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip";
+            sha256 = "6a60d76351f97132669daeeb721d6bf14b008101883ad2d687a3201c5c461eb0";
+        })
+    ] ++ [ (fetchurl (if isDarwin && stdenv.hostPlatform.isAarch64 then {
+        url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz";
+        name = "onnxruntime-osx-arm64-1.23.2.tgz";
+        sha256 = "b4d513ab2b26f088c66891dbbc1408166708773d7cc4163de7bdca0e9bbb7856";
+    } else if isDarwin then {
+        url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz";
+        name = "onnxruntime-osx-x86_64-1.23.2.tgz";
+        sha256 = "d10359e16347b57d9959f7e80a225a5b4a66ed7d7e007274a15cae86836485a6";
+    } else if stdenv.hostPlatform.isAarch64 then {
+        url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz";
+        name = "onnxruntime-linux-aarch64-1.23.2.tgz";
+        sha256 = "7c63c73560ed76b1fac6cff8204ffe34fe180e70d6582b5332ec094810241e5c";
+    } else {
+        url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz";
+        name = "onnxruntime-linux-x64-1.23.2.tgz";
+        sha256 = "1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b";
+    })) ];
+
+    sereinSpeech = stdenv.mkDerivation {
+        pname = "serein-speech";
+        version = "1.23.2";
+        dontUnpack = true;
+        dontBuild = true;
+        nativeBuildInputs = [python3] ++ lib.optionals isLinux [autoPatchelfHook];
+        buildInputs = lib.optionals isLinux [stdenv.cc.cc.lib];
+        installPhase = ''
+            mkdir speech-cache
+            ${lib.concatMapStringsSep "\n" (source: ''cp ${source} speech-cache/${source.name}'') speechSources}
+            python3 ${../packaging/lavasr/bundle.py} "$out" --cache-dir speech-cache --offline
+        '';
+        meta.license = [lib.licenses.mit lib.licenses.asl20 lib.licenses.mpl20];
+    };
+
     # webKit stack
     toolkitDeps = [
         glib
@@ -260,6 +314,8 @@ in
                 cp -R ${sereinFfmpeg}/share/serein-ffmpeg "$docs/ffmpeg-source"
             ''
             + lib.optionalString isLinux ''
+                mkdir -p "$out/lib/serein"
+                cp -R ${sereinSpeech}/voice-enhancement "$out/lib/serein/"
                 install -Dm444 packaging/linux/serein.desktop \
                   $out/share/applications/cz.viceverse.serein.desktop
                 substituteInPlace $out/share/applications/cz.viceverse.serein.desktop \
@@ -270,6 +326,9 @@ in
             # The executable lives inside the bundle so macOS resolves its Info.plist
             # (privacy usage descriptions, identifier and icon) from the launched binary.
             + lib.optionalString isDarwin ''
+                mkdir -p "$app/Resources" "$app/Frameworks"
+                cp -R ${sereinSpeech}/Serein.app/Contents/Resources/voice-enhancement "$app/Resources/"
+                cp ${sereinSpeech}/Serein.app/Contents/Frameworks/*.dylib "$app/Frameworks/"
                 install -Dm444 packaging/macos/Info.plist "$app/Info.plist"
                 install -Dm444 packaging/macos/Serein.icns "$app/Resources/Serein.icns"
                 mkdir -p "$app/MacOS" "$out/share/doc"

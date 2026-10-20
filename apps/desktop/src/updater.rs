@@ -571,9 +571,9 @@ fn asset_name(tag: &str) -> Option<String> {
 	Some(zip_asset_name(tag, os, arch))
 }
 fn zip_asset_name(tag: &str, os: &str, arch: &str) -> String {
-	// Pre-FFmpeg Windows clients only accept their original package allowlist.
-	// Preserve that asset namespace so they cannot download an incompatible ZIP.
-	let format = if os == "Windows" { "-media-v3" } else { "" };
+	// Earlier Windows clients reject the speech-runtime payload. Keep distinct
+	// update namespaces so they cannot download an incompatible archive.
+	let format = if os == "Windows" { "-media-v4" } else { "" };
 	format!("serein-{tag}-{os}-{arch}{format}.zip")
 }
 fn on_channel(release: &Release, version: &semver::Version, nightly: bool) -> bool {
@@ -1123,7 +1123,7 @@ mod windows_asset_tests {
 			for arch in ["X64", "ARM64"] {
 				let media = zip_asset_name(tag, "Windows", arch);
 				let legacy = format!("serein-{tag}-Windows-{arch}.zip");
-				assert_eq!(media, format!("serein-{tag}-Windows-{arch}-media-v3.zip"));
+				assert_eq!(media, format!("serein-{tag}-Windows-{arch}-media-v4.zip"));
 				assert_ne!(media, legacy);
 				assert_eq!(
 					zip_asset_name(tag, "macOS", arch),
@@ -1178,7 +1178,7 @@ mod windows_asset_tests {
 		);
 		let newer = release(
 			"v1.2.3",
-			&["serein-v1.2.3-Windows-X64-media-v3.zip", "SHA256SUMS.txt"],
+			&["serein-v1.2.3-Windows-X64-media-v4.zip", "SHA256SUMS.txt"],
 		);
 		let error = select_release_with_asset(vec![older, newer], false, &current, archive_name)
 			.err()

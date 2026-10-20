@@ -21,6 +21,16 @@ class NativePackageTest(unittest.TestCase):
             staged.mkdir()
             shutil.copyfile("/bin/true", staged / "serein")
             (staged / "lib").mkdir()
+            (staged / "voice-enhancement").mkdir()
+            for name in ("libonnxruntime.so.1.23.2", "backbone.onnx", "spec_head.onnx", "denoiser_core.onnx",
+                         "build.json", "ONNXRuntime-LICENSE", "ONNXRuntime-ThirdPartyNotices.txt",
+                         "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip"):
+                (staged / "voice-enhancement" / name).write_bytes(b"synthetic speech dependency; never loaded")
+            (staged / "voice-enhancement/private.log").write_bytes(b"must not ship")
+            speech_source = root / "speech.c"
+            speech_source.write_text("int synthetic_speech(void) { return 0; }\n")
+            subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname,libonnxruntime.so.1",
+                            "-o", str(staged / "voice-enhancement/libonnxruntime.so.1.23.2"), str(speech_source)], check=True)
             # Exercise the actual private SONAME closure without any media APIs.
             for name, symbol in (("libavutil-serein.so.59", "synthetic_util"), ("libopenh264-serein.so.8", "synthetic_h264"),
                                  ("libavformat-serein.so.61", "synthetic_format"), ("libswscale-serein.so.8", "synthetic_scale"),
@@ -137,6 +147,8 @@ class NativePackageTest(unittest.TestCase):
             self.assertIn("licenses/notification-sounds.md", listing)
             self.assertIn("licenses/voice/", listing)
             self.assertIn("usr/lib/serein/libavcodec-serein.so.61", listing)
+            self.assertIn("usr/lib/serein/voice-enhancement/denoiser_core.onnx", listing)
+            self.assertNotIn("private.log", listing)
             self.assertIn("ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", listing)
             for name in vulkan_files:
                 self.assertIn("ffmpeg-source/" + name, listing)

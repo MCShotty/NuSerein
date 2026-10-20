@@ -2678,6 +2678,9 @@ impl State {
 
 		if let Command::Voice(control) = command {
 			match control {
+				voice::Command::ChannelInfo { guild } => {
+					self.retry_voice_channel_statuses(guild);
+				}
 				voice::Command::RingRecipient {
 					channel, request, ..
 				} => self.apply_voice(voice::Event::RingFailed {
@@ -3842,6 +3845,9 @@ impl State {
 					self.freshness = Freshness::Stale;
 				}
 				self.voice.roster.clear();
+				self.voice.channel_statuses.clear();
+				self.voice.status_requested = None;
+				self.voice.status_retry = None;
 				self.voice.preview = None;
 				self.voice.dm_calls.clear();
 				self.voice.dm_participants.clear();
@@ -4297,6 +4303,9 @@ impl State {
 				Ok(())
 			}
 			Event::Disconnected => {
+				self.voice.channel_statuses.clear();
+				self.voice.status_requested = None;
+				self.voice.status_retry = None;
 				self.release_message_challenge(
 					"Verification ended by disconnect; retry the message",
 				);
@@ -4510,6 +4519,9 @@ impl State {
 		}
 	}
 	fn remove_channels(&mut self, removed: &BTreeSet<Id>) {
+		self.voice
+			.channel_statuses
+			.retain(|channel, _| !removed.contains(channel));
 		// Check scope before removing navigation identity, including sibling search hits.
 		if removed
 			.iter()

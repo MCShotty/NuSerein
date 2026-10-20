@@ -167,6 +167,8 @@ jobs:
           - run: bun tests/xtask-workspace.cjs
           - name: FFmpeg native libraries and packaging regression (offline)
             run: python packaging/ffmpeg/test_bundle.py
+          - name: Speech assets and runtime packaging regression (offline)
+            run: python -m unittest discover -s packaging/lavasr -p 'test_*.py'
           - name: Linux package regression
             if: runner.os == 'Linux'
             run: PYTHONDONTWRITEBYTECODE=1 python3 packaging/linux/test_package.py
@@ -182,13 +184,23 @@ jobs:
           rm -rf dist dist-installer
       - name: Package app without demo or developer features
         run: cargo xtask package
+      - name: Packaged LavaSRv2 microphone worker (synthetic, no devices)
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == 'Windows' ]]; then
+            dist/serein.exe --self-test-lavasr
+          elif [[ "$RUNNER_OS" == 'macOS' ]]; then
+            dist/Serein.app/Contents/MacOS/serein --self-test-lavasr
+          else
+            dist/serein --self-test-lavasr
+          fi
       - name: Validate and launch the clean Windows package without development DLL paths
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $checkDir = Join-Path $env:RUNNER_TEMP 'serein-package-clean'
           New-Item -ItemType Directory -Path $checkDir -Force | Out-Null
-          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v3.zip"
+          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v4.zip"
           Compress-Archive -Path "dist/*" -DestinationPath $archive
           python packaging/windows/check_update_archive.py $archive
           if ($LASTEXITCODE -ne 0) { throw "Windows media update archive validation failed" }
@@ -205,6 +217,8 @@ jobs:
             # This bounded driver query exits before UI/login/capture/audio initialization.
             $probe = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--query-video-codec','nvenc','h264' -PassThru -Wait -RedirectStandardError "$checkDir/launch.log"
             if ($probe.ExitCode -notin 0,1,2,5,9) { throw "Packaged executable failed to load: $($probe.ExitCode)" }
+            $speech = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--self-test-lavasr' -PassThru -Wait -RedirectStandardError "$checkDir/speech.log"
+            if ($speech.ExitCode -ne 0) { throw "Packaged speech worker failed: $($speech.ExitCode)" }
             @{revision=$env:GITHUB_SHA; run='clean'; launchExit=$probe.ExitCode; bytes=(Get-Item $archive).Length; sha256=(Get-FileHash $archive -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content "$checkDir/result.json"
           } finally { $env:PATH = $buildPath }
       - name: Recheck the cached native build (MSVC)
@@ -216,11 +230,12 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item dist,dist-installer -Recurse -Force
+          $env:SEREIN_LAVASR_OFFLINE = '1'
           cargo xtask package
           if ($LASTEXITCODE -ne 0) { throw 'Cached packaging failed' }
           $checkDir = Join-Path $env:RUNNER_TEMP 'serein-package-cached'
           New-Item -ItemType Directory -Path $checkDir -Force | Out-Null
-          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v3.zip"
+          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v4.zip"
           Compress-Archive -Path "dist/*" -DestinationPath $archive
           python packaging/windows/check_update_archive.py $archive
           if ($LASTEXITCODE -ne 0) { throw 'Cached archive validation failed' }
@@ -236,6 +251,8 @@ jobs:
             }) -join ';'
             $probe = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--query-video-codec','nvenc','h264' -PassThru -Wait -RedirectStandardError "$checkDir/launch.log"
             if ($probe.ExitCode -notin 0,1,2,5,9) { throw "Cached executable failed to load: $($probe.ExitCode)" }
+            $speech = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--self-test-lavasr' -PassThru -Wait -RedirectStandardError "$checkDir/speech.log"
+            if ($speech.ExitCode -ne 0) { throw "Cached speech worker failed: $($speech.ExitCode)" }
             @{revision=$env:GITHUB_SHA; run='cached'; launchExit=$probe.ExitCode; bytes=(Get-Item $archive).Length; sha256=(Get-FileHash $archive -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content "$checkDir/result.json"
           } finally { $env:PATH = $buildPath }
       - name: Preserve clean and cached package evidence
@@ -246,8 +263,10 @@ jobs:
           path: |
             ${{ runner.temp }}/serein-package-clean/result.json
             ${{ runner.temp }}/serein-package-clean/launch.log
+            ${{ runner.temp }}/serein-package-clean/speech.log
             ${{ runner.temp }}/serein-package-cached/result.json
             ${{ runner.temp }}/serein-package-cached/launch.log
+            ${{ runner.temp }}/serein-package-cached/speech.log
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v7.0.1
         with:

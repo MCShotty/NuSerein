@@ -82,7 +82,11 @@ jobs:
               data = binary.read_bytes()
               offset = struct.unpack_from('<I', data, 0x3c)[0]
               assert data[:2] == b'MZ' and data[offset:offset+4] == b'PE\0\0'
-              assert struct.unpack_from('<H', data, offset+4)[0] == expected, name
+              machine = struct.unpack_from('<H', data, offset+4)[0]
+              allowed = {expected}
+              if expected == 0xaa64 and binary.name.lower() in {'msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'}:
+                  allowed.add(0xa64e)  # ARM64X CRTs contain the native ARM64 implementation too.
+              assert machine in allowed, name
           count = 0
           for path in source.rglob('*'):
               if path.is_file() and path.name not in ('setup.ps1', 'install-notifications.ps1'):

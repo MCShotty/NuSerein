@@ -1,4 +1,4 @@
-// Opt-in fixed-size aggregates. No strings or media enter the reporter queue.
+// Fixed-size local diagnostics and optional reports. No strings or media enter the reporter queue.
 use std::{
 	io::Write,
 	sync::{
@@ -8,6 +8,69 @@ use std::{
 	},
 	time::{Duration, Instant},
 };
+
+/// Fixed-size duplicate/reorder accounting. Very late packets do not rewrite a
+/// finalized loss estimate. Packet payloads never enter this tracker.
+pub(crate) struct Incoming {
+	pub started: Instant,
+	pub totals: model::voice_diagnostics::IncomingPackets,
+	highest: Option<u16>,
+	seen: u64,
+	window: u16,
+}
+impl Default for Incoming {
+	fn default() -> Self {
+		Self {
+			started: Instant::now(),
+			totals: Default::default(),
+			highest: None,
+			seen: 0,
+			window: 0,
+		}
+	}
+}
+impl Incoming {
+	pub fn packet(&mut self, sequence: u16, bytes: usize, now: Instant) {
+		self.totals.last_received = Some(now);
+		self.totals.received.add(bytes);
+		let Some(highest) = self.highest else {
+			self.highest = Some(sequence);
+			self.seen = 1;
+			self.window = 1;
+			return;
+		};
+		let forward = sequence.wrapping_sub(highest);
+		if forward != 0 && forward < 32768 {
+			let expired = (self.window + forward).saturating_sub(64);
+			let present = if forward >= 64 {
+				self.seen.count_ones()
+			} else {
+				(self.seen >> (64 - forward)).count_ones()
+			};
+			self.totals.finalized = self.totals.finalized.saturating_add(u64::from(expired));
+			self.totals.missing = self
+				.totals
+				.missing
+				.saturating_add(u64::from(expired).saturating_sub(u64::from(present)));
+			self.seen = if forward >= 64 {
+				1
+			} else {
+				(self.seen << forward) | 1
+			};
+			self.window = (self.window + forward).min(64);
+			self.highest = Some(sequence);
+		} else {
+			let behind = highest.wrapping_sub(sequence);
+			if behind < self.window {
+				let bit = 1u64 << behind;
+				if self.seen & bit != 0 {
+					self.totals.duplicates = self.totals.duplicates.saturating_add(1);
+				}
+				self.seen |= bit;
+			}
+		}
+	}
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Scope {
@@ -270,6 +333,8 @@ pub(crate) struct Metrics {
 	send: Option<&'static mpsc::SyncSender<Report>>,
 	since: Instant,
 	report: Report,
+	/// Fixed-size UI totals, independent from opt-in stderr diagnostics and flush windows.
+	live: model::voice_diagnostics::MediaCounters,
 }
 
 /// Reports and bytes the reporter thread accepts before going quiet. Debug-only opt-in, but
@@ -306,6 +371,7 @@ impl Metrics {
 		Self {
 			send: send.as_ref(),
 			since: Instant::now(),
+			live: Default::default(),
 			report: Report {
 				scope,
 				encoder_counts: [0; 2],
@@ -357,6 +423,31 @@ impl Metrics {
 
 	/// Adds to one remote video counter; ignored while diagnostics are off.
 	pub fn video(&mut self, event: Video, count: u64) {
+		let counter = match event {
+			Video::Packets => Some(&mut self.live.video_packets),
+			Video::NotReady => Some(&mut self.live.video_not_ready),
+			Video::UnknownSsrc => Some(&mut self.live.unknown_video_sources),
+			Video::Complete => Some(&mut self.live.complete_video_frames),
+			Video::Gated => Some(&mut self.live.gated_video_frames),
+			Video::Keyframes => Some(&mut self.live.received_keyframes),
+			Video::KeyframesWithoutParams => Some(&mut self.live.keyframes_without_parameters),
+			Video::AwaitingTicks => Some(&mut self.live.awaiting_keyframe_ticks),
+			Video::StallTicks => Some(&mut self.live.video_stall_ticks),
+			Video::Rtx => Some(&mut self.live.rtx_packets),
+			Video::OpenFailed => Some(&mut self.live.authentication_failures),
+			Video::Incomplete => Some(&mut self.live.incomplete_frames),
+			Video::DecryptFailed => Some(&mut self.live.decryption_failures),
+			Video::QueueFull => Some(&mut self.live.queue_drops),
+			Video::PliSent => Some(&mut self.live.pli_sent),
+			Video::DecoderErrors => Some(&mut self.live.decoder_errors),
+			Video::Pictures => Some(&mut self.live.decoded_pictures),
+			Video::StaleFrames => Some(&mut self.live.stale_frames),
+			Video::Rejected => Some(&mut self.live.rejected_frames),
+			_ => None,
+		};
+		if let Some(counter) = counter {
+			*counter = counter.saturating_add(count);
+		}
 		if self.send.is_none() {
 			return;
 		}
@@ -366,6 +457,15 @@ impl Metrics {
 
 	/// Keeps the largest observed value for a maximum-style video counter.
 	pub fn video_max(&mut self, event: Video, value: u64) {
+		match event {
+			Video::PictureGapMs => {
+				self.live.max_picture_gap_ms = self.live.max_picture_gap_ms.max(value)
+			}
+			Video::DecodeQueueMs => {
+				self.live.max_decode_queue_ms = self.live.max_decode_queue_ms.max(value)
+			}
+			_ => {}
+		}
 		if self.send.is_none() {
 			return;
 		}
@@ -393,6 +493,8 @@ impl Metrics {
 	}
 
 	pub fn poll(&mut self, reset: bool, drops: u64, stalled: bool, noise_frames: u64) {
+		self.live.local_media_drops = self.live.local_media_drops.saturating_add(drops);
+		self.live.media_stalls = self.live.media_stalls.saturating_add(u64::from(stalled));
 		if self.send.is_none() {
 			return;
 		}
@@ -404,6 +506,10 @@ impl Metrics {
 		if self.since.elapsed() >= Duration::from_secs(5) {
 			self.flush();
 		}
+	}
+
+	pub fn connection_counters(&self) -> model::voice_diagnostics::MediaCounters {
+		self.live
 	}
 
 	/// Counts true state flags per stream tick and observed queued audio chunks.

@@ -18,6 +18,12 @@ class UpdateArchiveTests(unittest.TestCase):
             for name in (
                 "serein.exe", "avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll",
                 "avformat-serein-61.dll", "swscale-serein-8.dll", "swresample-serein-5.dll",
+                "msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll",
+                "voice-enhancement/onnxruntime.dll",
+    'voice-enhancement/eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip', "voice-enhancement/backbone.onnx",
+                "voice-enhancement/spec_head.onnx", "voice-enhancement/denoiser_core.onnx",
+                "voice-enhancement/ONNXRuntime-LICENSE", "voice-enhancement/ONNXRuntime-ThirdPartyNotices.txt",
+                "voice-enhancement/MSVC-LICENSE.txt", "voice-enhancement/build.json",
                 "THIRD_PARTY_NOTICES.md", "licenses/voice/fixture.txt", "README.md",
                 "ffmpeg-source/build.json", "ffmpeg-source/configure.json",
                 "ffmpeg-source/build-ffmpeg.py", "ffmpeg-source/serein-ffmpeg.patch",
@@ -38,11 +44,11 @@ class UpdateArchiveTests(unittest.TestCase):
     def test_complete_packages_for_both_architectures_and_channels(self):
         for version in ("v1.2.3", "v1.2.3-nightly.20261005.1"):
             for arch in ("X64", "ARM64"):
-                check_archive(self.archive(f"serein-{version}-Windows-{arch}-media-v3.zip"))
+                check_archive(self.archive(f"serein-{version}-Windows-{arch}-media-v4.zip"))
 
     def test_media_payload_cannot_be_published_under_legacy_update_name(self):
         for arch in ("X64", "ARM64"):
-            for suffix in ("", "-media-v2"):
+            for suffix in ("", "-media-v2", "-media-v3"):
                 with self.assertRaisesRegex(ValueError, "legacy update name"):
                     check_archive(self.archive(f"serein-v1.2.3-Windows-{arch}{suffix}.zip"))
 
@@ -52,6 +58,9 @@ class UpdateArchiveTests(unittest.TestCase):
             "avformat-serein-61.dll", "swscale-serein-8.dll", "swresample-serein-5.dll",
             "ffmpeg-source/dav1d-COPYING", "ffmpeg-source/source/dav1d-1.5.1.tar.xz",
             "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "licenses/voice/fixture.txt",
+            "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll",
+            "voice-enhancement/backbone.onnx", "voice-enhancement/spec_head.onnx",
+            "msvcp140_1.dll", "voice-enhancement/ONNXRuntime-LICENSE",
         ):
             for empty in (False, True):
                 payload = dict(self.payload)
@@ -61,7 +70,7 @@ class UpdateArchiveTests(unittest.TestCase):
                     del payload[filename]
                 with self.subTest(filename=filename, empty=empty):
                     with self.assertRaisesRegex(ValueError, "Incomplete"):
-                        check_archive(self.archive("serein-v1.2.3-Windows-X64-media-v3.zip", payload))
+                        check_archive(self.archive("serein-v1.2.3-Windows-X64-media-v4.zip", payload))
 
     def test_accidental_package_nesting_or_installer_in_zip_is_rejected(self):
         for payload in (
@@ -69,10 +78,10 @@ class UpdateArchiveTests(unittest.TestCase):
             self.payload | {"serein-1.2.3-setup.exe": b"synthetic installer"},
         ):
             with self.assertRaisesRegex(ValueError, "Unexpected update payload"):
-                check_archive(self.archive("serein-v1.2.3-Windows-X64-media-v3.zip", payload))
+                check_archive(self.archive("serein-v1.2.3-Windows-X64-media-v4.zip", payload))
 
     def test_corrupted_payload_is_rejected_before_publication(self):
-        path = self.root / "serein-v1.2.3-Windows-X64-media-v3.zip"
+        path = self.root / "serein-v1.2.3-Windows-X64-media-v4.zip"
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
             for filename, data in self.payload.items():
                 archive.writestr(filename, data)

@@ -1737,7 +1737,7 @@ async fn run_recoverable(
 										#[derive(serde::Deserialize)] struct Notice { guild_id: Id, #[serde(default)] channel_id: Option<Id> }
 										if let Ok(notice)=decode::<Notice>(packet.d.get().as_bytes()) { emit(Event::CommunityChanged {guild:notice.guild_id, channel:notice.channel_id, stage_ended:packet.t.as_deref()==Some("STAGE_INSTANCE_DELETE")})?; }
 									}
-									"CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "CHANNEL_INFO" | "VOICE_CHANNEL_START_TIME_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE" | "STREAM_CREATE" | "STREAM_SERVER_UPDATE" | "STREAM_DELETE" => calls.dispatch(packet.t.as_deref().unwrap_or(""),packet.d.get().as_bytes(),owner_id,&emit)?,
+									"CALL_CREATE" | "CALL_UPDATE" | "CALL_DELETE" | "CHANNEL_INFO" | "VOICE_CHANNEL_START_TIME_UPDATE" | "VOICE_CHANNEL_STATUS_UPDATE" | "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE" | "STREAM_CREATE" | "STREAM_SERVER_UPDATE" | "STREAM_DELETE" => calls.dispatch(packet.t.as_deref().unwrap_or(""),packet.d.get().as_bytes(),owner_id,&emit)?,
 									"THREAD_MEMBER_LIST_UPDATE" => {
 										if let Some(active) = &mut active_members {
 											match active.thread_update(packet.d.get().as_bytes()) {

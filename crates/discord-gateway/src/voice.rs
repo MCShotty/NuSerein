@@ -6,8 +6,8 @@ use client_core::{
 	voice::{self, Command, Participant, RosterEntry, Secret},
 };
 use discord_protocol::{
-	CallDto, ChannelInfoDto, GuildDto, UserDto, VoiceChannelStartTimeDto, VoiceMemberDto,
-	VoiceServerDto, VoiceStateDto, decode, stream,
+	CallDto, ChannelInfoDto, GuildDto, UserDto, VoiceChannelStartTimeDto, VoiceChannelStatusDto,
+	VoiceMemberDto, VoiceServerDto, VoiceStateDto, decode, stream,
 };
 use model::{Id, Member, User};
 use serde_json::json;
@@ -289,6 +289,11 @@ impl Calls {
 	}
 	pub(super) fn packet(&mut self, command: Command) -> Result<Option<Frame>, Failure> {
 		let (channel, guild) = match command {
+			Command::ChannelInfo { guild } => {
+				return Ok(self.allowed.values().any(|value| *value == Some(guild)).then(|| {
+					Frame::Text(json!({"op":43,"d":{"guild_id":guild,"fields":["status","voice_start_time"]}}).to_string().into())
+				}));
+			}
 			Command::Sync { channel } => {
 				if self.allowed.get(&channel) != Some(&None) {
 					return Ok(None);
@@ -443,7 +448,7 @@ impl Calls {
 			&& self.allowed.get(&channel) == Some(&Some(guild)))
 		.then(|| {
 			Frame::Text(
-				json!({"op":43,"d":{"guild_id":guild,"fields":["voice_start_time"]}})
+				json!({"op":43,"d":{"guild_id":guild,"fields":["status","voice_start_time"]}})
 					.to_string()
 					.into(),
 			)
@@ -467,6 +472,30 @@ impl Calls {
 			}))?;
 		}
 		Ok(())
+	}
+	fn channel_status(
+		&self,
+		guild: Id,
+		channel: Id,
+		status: model::Patch<String>,
+	) -> Option<Option<String>> {
+		if self.allowed.get(&channel) != Some(&Some(guild)) {
+			return None;
+		}
+		let status = match status {
+			model::Patch::Absent => return None,
+			model::Patch::Null => None,
+			model::Patch::Value(value) => {
+				if value.len() > voice::MAX_CHANNEL_STATUS_CHARS * 4
+					|| value.chars().count() > voice::MAX_CHANNEL_STATUS_CHARS
+					|| value.contains('\0')
+				{
+					return None;
+				}
+				Some(value)
+			}
+		};
+		Some(status)
 	}
 	pub(super) fn stream_packet(
 		&mut self,
@@ -1030,13 +1059,44 @@ impl Calls {
 				if info.channels.len() > client_core::MAX_NAV {
 					return Err(Failure::Capacity);
 				}
-				if let Some((channel, unix_seconds)) = info
-					.channels
-					.into_iter()
-					.find(|channel| self.active.is_some_and(|(active, _)| active == channel.id))
-					.map(|channel| (channel.id, channel.voice_start_time))
+				let mut statuses =
+					Vec::with_capacity(info.channels.len().min(voice::MAX_CHANNEL_STATUSES));
+				let mut bytes = 0;
+				for channel in info.channels {
+					if let Some(status) =
+						self.channel_status(info.guild_id, channel.id, channel.status)
+					{
+						let size = status.as_ref().map_or(0, String::capacity);
+						if statuses.len() < voice::MAX_CHANNEL_STATUSES
+							&& bytes + size <= voice::MAX_CHANNEL_STATUS_BYTES
+						{
+							bytes += size;
+							statuses.push((channel.id, status));
+						}
+					}
+					self.channel_started(
+						info.guild_id,
+						channel.id,
+						channel.voice_start_time,
+						emit,
+					)?;
+				}
+				if !statuses.is_empty() {
+					emit(Event::Voice(voice::Event::ChannelStatuses {
+						guild: info.guild_id,
+						statuses,
+					}))?;
+				}
+			}
+			"VOICE_CHANNEL_STATUS_UPDATE" => {
+				let update: VoiceChannelStatusDto = decode(data).map_err(|_| Failure::Protocol)?;
+				if let Some(status) = self.channel_status(update.guild_id, update.id, update.status)
 				{
-					self.channel_started(info.guild_id, channel, unix_seconds, emit)?;
+					emit(Event::Voice(voice::Event::ChannelStatus {
+						guild: update.guild_id,
+						channel: update.id,
+						status,
+					}))?;
 				}
 			}
 			"VOICE_CHANNEL_START_TIME_UPDATE" => {
@@ -1204,6 +1264,90 @@ mod tests {
 
 	use super::*;
 	use std::sync::Mutex;
+
+	#[test]
+	fn channel_status_snapshots_and_updates_work_without_joining_voice() {
+		let mut calls = Calls::default();
+		calls.allowed.insert(Id(20), Some(Id(10)));
+		calls.allowed.insert(Id(21), Some(Id(10)));
+		assert!(
+			calls
+				.packet(Command::ChannelInfo { guild: Id(99) })
+				.unwrap()
+				.is_none()
+		);
+		let Some(Frame::Text(packet)) = calls
+			.packet(Command::ChannelInfo { guild: Id(10) })
+			.unwrap()
+		else {
+			panic!("Channel metadata has a separate query");
+		};
+		let packet: serde_json::Value = serde_json::from_str(&packet).unwrap();
+		assert_eq!(
+			packet,
+			json!({"op":43,"d":{"guild_id":"10","fields":["status","voice_start_time"]}})
+		);
+		assert!(calls.active.is_none());
+		let events = Mutex::new(Vec::new());
+		let emit = |event| {
+			events.lock().unwrap().push(event);
+			Ok(())
+		};
+		calls.dispatch("CHANNEL_INFO", br#"{"guild_id":"10","channels":[{"id":"20","status":"Building together"},{"id":"21","status":null},{"id":"99","status":"Unknown"}]}"#, Some(Id(1)), &emit).unwrap();
+		{
+			let events = events.lock().unwrap();
+			assert_eq!(
+				events.len(),
+				1,
+				"The initial snapshot is one bounded queue item"
+			);
+			let Event::Voice(voice::Event::ChannelStatuses { guild, statuses }) = &events[0] else {
+				panic!("Status snapshot");
+			};
+			assert_eq!(*guild, Id(10));
+			assert_eq!(
+				statuses,
+				&vec![(Id(20), Some("Building together".into())), (Id(21), None)]
+			);
+		}
+		calls
+			.dispatch(
+				"VOICE_CHANNEL_STATUS_UPDATE",
+				br#"{"guild_id":"99","id":"20","status":"Wrong server"}"#,
+				Some(Id(1)),
+				&emit,
+			)
+			.unwrap();
+		calls
+			.dispatch(
+				"VOICE_CHANNEL_STATUS_UPDATE",
+				br#"{"guild_id":"10","id":"20"}"#,
+				Some(Id(1)),
+				&emit,
+			)
+			.unwrap();
+		assert_eq!(events.lock().unwrap().len(), 1);
+		calls
+			.dispatch(
+				"VOICE_CHANNEL_STATUS_UPDATE",
+				br#"{"guild_id":"10","id":"20","status":null}"#,
+				Some(Id(1)),
+				&emit,
+			)
+			.unwrap();
+		assert!(matches!(
+			&events.lock().unwrap()[1],
+			Event::Voice(voice::Event::ChannelStatus {
+				guild: Id(10),
+				channel: Id(20),
+				status: None
+			})
+		));
+		assert!(
+			calls.active.is_none(),
+			"Status reads never acquire a voice session"
+		);
+	}
 	#[test]
 	fn optional_login_users_are_bounded_without_rejecting_the_session() {
 		{
@@ -2232,7 +2376,7 @@ mod tests {
 			let info: serde_json::Value = serde_json::from_str(&info).unwrap();
 			assert_eq!(
 				info,
-				json!({"op":43,"d":{"guild_id":"10","fields":["voice_start_time"]}})
+				json!({"op":43,"d":{"guild_id":"10","fields":["status","voice_start_time"]}})
 			);
 			calls
 				.dispatch(

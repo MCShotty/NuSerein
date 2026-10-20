@@ -419,10 +419,14 @@ impl MessagingUi {
 		let elapsed = call.and_then(elapsed_label);
 		let access = state.channel_access(channel.id);
 		let viewable = !access.hidden();
+		let status = state.voice_channel_status(channel.id);
 		let (rect, response) = ui
 			.push_id(channel.id, |ui| {
 				ui.allocate_exact_size(
-					egui::vec2(ui.available_width(), 34.0),
+					egui::vec2(
+						ui.available_width(),
+						if status.is_some() { 52.0 } else { 34.0 },
+					),
 					if viewable {
 						if draggable {
 							egui::Sense::click_and_drag()
@@ -435,13 +439,17 @@ impl MessagingUi {
 				)
 			})
 			.inner;
-		let row = rect.shrink2(egui::vec2(0.0, 1.0));
+		let bounds = rect.shrink2(egui::vec2(0.0, 1.0));
+		let row = egui::Rect::from_min_size(bounds.min, egui::vec2(bounds.width(), 32.0));
 		let hovered = viewable && (response.hovered() || response.has_focus());
 		if selected {
-			ui.painter().rect_filled(row, 8, colors.selected);
+			ui.painter().rect_filled(bounds, 8, colors.selected);
 		} else if hovered {
-			ui.painter()
-				.rect_filled(row, 8, crate::design::row_highlight(ui, colors.hover, 1.0));
+			ui.painter().rect_filled(
+				bounds,
+				8,
+				crate::design::row_highlight(ui, colors.hover, 1.0),
+			);
 		}
 		let (unread, count) = crate::notifications::row_activity(state, channel, viewable);
 		let unread_while_connected = unread && connected;
@@ -483,12 +491,14 @@ impl MessagingUi {
 		let marks = channel_marks::trailing(access);
 		let elapsed_width = if elapsed.is_some() { 64.0 } else { 0.0 };
 		let badge_width = if count > 0 { 34.0 } else { 0.0 };
-		let name = ui.painter().layout(
+		let mut name = egui::text::LayoutJob::simple(
 			channel.name.clone(),
 			egui::FontId::new(15.0, design::medium_family(ui.ctx())),
 			text_color,
 			(row.width() - 40.0 - elapsed_width - badge_width - marks).max(10.0),
 		);
+		name.wrap.max_rows = 1;
+		let name = ui.painter().layout_job(name);
 		let name_rect = egui::Rect::from_min_size(
 			egui::pos2(row.left() + 34.0, row.center().y - name.size().y * 0.5),
 			egui::vec2(
@@ -526,13 +536,27 @@ impl MessagingUi {
 			ui.ctx()
 				.request_repaint_after(std::time::Duration::from_secs(1));
 		}
+		if let Some(status) = status {
+			let mut job = egui::text::LayoutJob::simple(
+				status.replace(['\r', '\n'], " "),
+				egui::FontId::proportional(12.0),
+				colors.muted,
+				(row.width() - 42.0).max(1.0),
+			);
+			job.wrap.max_rows = 1;
+			let text = ui.painter().layout_job(job);
+			let position = egui::pos2(row.left() + 34.0, row.bottom());
+			ui.painter()
+				.with_clip_rect(bounds)
+				.galley(position, text, colors.muted);
+		}
 		response.widget_info(|| {
 			egui::WidgetInfo::selected(
 				egui::Role::Button,
 				viewable,
 				selected,
 				format!(
-					"{} {}{}{}{}; {} {}",
+					"{} {}{}{}{}; {} {}{}",
 					channel.name,
 					crate::i18n::translate("voice-voice-channel-button-voice-channel"),
 					channel_marks::label(access),
@@ -547,17 +571,23 @@ impl MessagingUi {
 						String::new()
 					},
 					count,
-					crate::i18n::translate("categories-channel-list-notifications")
+					crate::i18n::translate("categories-channel-list-notifications"),
+					status.map(|value| format!("; {value}")).unwrap_or_default(),
 				),
 			)
 		});
 		response.on_hover_text_with(|| {
-			format!(
+			let mut text = format!(
 				"{} · View voice channel{}{}",
 				channel.name,
 				channel_marks::label(access),
 				if connected { " · Connected" } else { "" }
-			)
+			);
+			if let Some(status) = status {
+				text.push('\n');
+				text.push_str(status);
+			}
+			text
 		})
 	}
 
@@ -3245,6 +3275,7 @@ impl MessagingUi {
 				(NoiseSuppression::Off, "Off"),
 				(NoiseSuppression::RnNoise, "RNNoise"),
 				(NoiseSuppression::WebRtc, "WebRTC"),
+				(NoiseSuppression::LavaSrV2, "LavaSRv2"),
 			];
 			design::row(
 				ui,
@@ -3272,6 +3303,15 @@ impl MessagingUi {
 						});
 				},
 			);
+			if processing.suppression == NoiseSuppression::LavaSrV2 {
+				design::hint(
+					ui,
+					&crate::i18n::translate(
+						self.voice_lavasr_status
+							.unwrap_or("voice-lavasr-description"),
+					),
+				);
+			}
 			if processing.suppression == NoiseSuppression::WebRtc {
 				ui.add_space(6.0);
 				let strength = ["Low", "Moderate", "High", "Very high"];
@@ -4315,6 +4355,7 @@ impl MessagingUi {
 		} else {
 			"Connecting…"
 		};
+		let mut connection_rect = egui::Rect::NOTHING;
 		let color = if phase == Phase::Failed {
 			colors.danger
 		} else if connected || state.demo {
@@ -4346,6 +4387,7 @@ impl MessagingUi {
 					// Square status tile like Discord's, tinted with the connection colour.
 					let (tile, _) =
 						ui.allocate_exact_size(egui::Vec2::splat(40.0), egui::Sense::hover());
+					connection_rect = tile;
 					ui.painter().rect_filled(tile, 8, colors.base);
 					crate::icons::paint(
 						ui.painter(),
@@ -4377,13 +4419,14 @@ impl MessagingUi {
 						ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
 							ui.vertical(|ui| {
 								ui.spacing_mut().item_spacing.y = 0.0;
-								ui.add(
+								let title_response = ui.add(
 									egui::Label::new(
 										design::semibold(ui, title, 15.0).color(color),
 									)
 									.truncate()
 									.selectable(false),
 								);
+								connection_rect = connection_rect.union(title_response.rect);
 								ui.add(
 									egui::Label::new(
 										RichText::new(detail).size(12.0).color(colors.muted),
@@ -4395,6 +4438,7 @@ impl MessagingUi {
 						});
 					});
 				});
+				self.voice_connection_trigger(ui, state, connection_rect);
 				call_failure(ui, error, colors.text_strong);
 				if let Some((attempt, reason)) = reconnecting {
 					ui.add(
@@ -5205,7 +5249,7 @@ fn inactive_recipient(state: &State, channel: Id, user: Id) -> bool {
 	})
 }
 
-fn resolve_member<'a>(
+pub(super) fn resolve_member<'a>(
 	state: &'a State,
 	entry: &'a RosterEntry,
 ) -> (Option<&'a model::User>, &'a str) {
@@ -5312,7 +5356,7 @@ fn elapsed_label(call: &client_core::voice::Call) -> Option<String> {
 	))
 }
 
-fn video_codec_name(codec: model::voice_settings::VideoCodec) -> &'static str {
+pub(super) fn video_codec_name(codec: model::voice_settings::VideoCodec) -> &'static str {
 	use model::voice_settings::VideoCodec;
 	match codec {
 		VideoCodec::H264 => "H.264",
@@ -5468,6 +5512,83 @@ fn device_combo(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn voice_channel_status_fits_a_second_line_and_respects_visibility() {
+		fn labels(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+			match shape {
+				egui::Shape::Text(text) => out.push((
+					text.galley.job.text.clone(),
+					text.galley.rect.translate(text.pos.to_vec2()),
+				)),
+				egui::Shape::Vec(values) => values.iter().for_each(|value| labels(value, out)),
+				_ => {}
+			}
+		}
+		for width in [180.0, 320.0] {
+			for light in [false, true] {
+				let mut state = test_support::demo_state();
+				state.auth = client_core::auth::AuthState::Authenticated;
+				state.gateway_connected = true;
+				let status = "A long shared project status · 日本語 · العربية · 👋";
+				state.apply_voice(client_core::voice::Event::ChannelStatus {
+					guild: Id(10),
+					channel: Id(25),
+					status: Some(status.into()),
+				});
+				let ctx = egui::Context::default();
+				ctx.set_visuals(if light {
+					egui::Visuals::light()
+				} else {
+					egui::Visuals::dark()
+				});
+				let mut view = MessagingUi::default();
+				for hidden in [false, true] {
+					if hidden {
+						state.permissions = Default::default();
+					}
+					let mut row = egui::Rect::NOTHING;
+					let output = ctx.run_ui(
+						egui::RawInput {
+							screen_rect: Some(egui::Rect::from_min_size(
+								egui::Pos2::ZERO,
+								egui::vec2(width, 200.0),
+							)),
+							..Default::default()
+						},
+						|ui| {
+							row = view
+								.voice_channel_button(
+									ui,
+									&state,
+									state.channel(Id(25)).unwrap(),
+									false,
+									false,
+								)
+								.rect;
+						},
+					);
+					let mut painted = Vec::new();
+					for shape in &output.shapes {
+						labels(&shape.shape, &mut painted);
+					}
+					assert_eq!(row.height(), if hidden { 34.0 } else { 52.0 });
+					let label = painted.iter().find(|(text, _)| text == status);
+					if hidden {
+						assert!(label.is_none());
+					} else {
+						let (_, rect) = label.expect("The server-provided status is painted");
+						assert!(
+							rect.height() <= 18.0
+								&& row.contains(rect.min)
+								&& row.contains(rect.max)
+						);
+					}
+					output.drop_without_applying_deltas();
+				}
+			}
+		}
+	}
 
 	fn video_controls_frame(
 		ctx: &egui::Context,

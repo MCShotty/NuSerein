@@ -171,6 +171,18 @@ The objc2 upstream licensing notice already retained under
 `assets/licenses/notifications` covers these generated framework bindings.
 AVFoundation is supplied by macOS and is not redistributed.
 
+Optional microphone enhancement uses **LavaSRv2** and its ULUNAS denoiser
+(Apache-2.0) through pinned embedded-weight ONNX exports (Apache-2.0),
+**ONNX Runtime 1.23.2** (MIT) and the **ort 2.0.0-rc.14** Rust bindings
+(MIT OR Apache-2.0). Model denoising stays enabled. The native CPU runtime and
+models are installed locally; no audio is sent to a model service. Exact
+revisions, model/runtime checksums, upstream licenses and the runtime's
+third-party notices ship with the package; see
+`assets/licenses/voice/lavasr/PROVENANCE.md`. Support crates include
+libloading 0.9.0 (ISC), ndarray 0.17.2, matrixmultiply 0.3.11 and rawpointer
+0.2.1 (MIT OR Apache-2.0); RustFFT and SHA-2 retain their existing licenses.
+Windows packages include the MSVC app-local CRT redistributable and its terms.
+
 Optional microphone noise suppression uses **nnnoiseless 0.5.2**, a Rust port of
 Xiph RNNoise, with the built-in model (BSD-3-Clause). Its original COPYING is
 `assets/licenses/voice/nnnoiseless-COPYING.txt`. Default crate features are disabled.

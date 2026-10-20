@@ -81,15 +81,23 @@ impl<'a> RemotePicture<'a> {
 pub type VideoSink = Arc<dyn Fn(RemoteFrame<'_>) + Send + Sync>;
 
 pub(crate) struct SourceLifetime {
+	started: Instant,
 	active: AtomicBool,
 	pub pictures: AtomicU64,
+	errors: AtomicU64,
+	stale: AtomicU64,
+	dimensions: AtomicU64,
 }
 
 impl SourceLifetime {
 	fn new() -> Self {
 		Self {
 			active: AtomicBool::new(true),
+			started: Instant::now(),
 			pictures: AtomicU64::new(0),
+			errors: AtomicU64::new(0),
+			stale: AtomicU64::new(0),
+			dimensions: AtomicU64::new(0),
 		}
 	}
 }
@@ -234,6 +242,10 @@ pub(crate) struct Assembler {
 	// Only packets of the current picture; the next timestamp expires missing fragments.
 	pending: Vec<(u16, bool, Vec<u8>)>,
 	pending_bytes: usize,
+	incoming: super::diagnostics::Incoming,
+	complete: u64,
+	incomplete: u64,
+	queue_drops: u64,
 }
 impl Assembler {
 	/// Feed one packet; returns a complete access unit when the marker closes an intact frame.
@@ -721,6 +733,80 @@ impl Receivers {
 	pub fn users(&self) -> impl Iterator<Item = u64> + '_ {
 		self.sources.iter().map(|(_, user, _)| *user)
 	}
+	pub fn queue_drop(&mut self, user: u64) {
+		if let Some((_, _, source)) = self.sources.iter_mut().find(|(_, owner, _)| *owner == user) {
+			source.queue_drops = source.queue_drops.saturating_add(1);
+		}
+	}
+	pub fn diagnostics(
+		&self,
+		decoder: Option<&DecoderQueue>,
+	) -> Vec<(u64, model::voice_diagnostics::VideoStatistics)> {
+		use model::voice_diagnostics::VideoStatistics;
+		let mut result: Vec<(u64, VideoStatistics)> = Vec::new();
+		for (_, user, source) in &self.sources {
+			let row = if let Some(index) = result.iter().position(|(owner, _)| owner == user) {
+				&mut result[index].1
+			} else {
+				result.push((
+					*user,
+					VideoStatistics {
+						started: source.incoming.started,
+						packets: Default::default(),
+						codec: None,
+						complete: 0,
+						incomplete: 0,
+						queue_drops: 0,
+						awaiting_keyframe: self.awaiting_keyframe.contains(user),
+						decoded: 0,
+						decoder_errors: 0,
+						stale: 0,
+						dimensions: None,
+						decoded_fps_milli: 0,
+					},
+				));
+				&mut result.last_mut().expect("inserted participant").1
+			};
+			row.started = row.started.max(source.incoming.started);
+			let totals = source.incoming.totals;
+			row.packets.last_received = row.packets.last_received.max(totals.last_received);
+			row.packets.received.packets = row
+				.packets
+				.received
+				.packets
+				.saturating_add(totals.received.packets);
+			row.packets.received.bytes = row
+				.packets
+				.received
+				.bytes
+				.saturating_add(totals.received.bytes);
+			row.packets.finalized = row.packets.finalized.saturating_add(totals.finalized);
+			row.packets.missing = row.packets.missing.saturating_add(totals.missing);
+			row.packets.duplicates = row.packets.duplicates.saturating_add(totals.duplicates);
+			if totals.received.packets != 0 {
+				row.codec = Some(source.codec);
+			}
+			row.complete = row.complete.saturating_add(source.complete);
+			row.incomplete = row.incomplete.saturating_add(source.incomplete);
+			row.queue_drops = row.queue_drops.saturating_add(source.queue_drops);
+		}
+		if let Some(sources) = decoder.and_then(|decoder| decoder.active.try_lock().ok()) {
+			for (user, row) in &mut result {
+				if let Some(source) = sources.get(user) {
+					// Adding/removing an overlapping simulcast layer must not restart
+					// the rate baseline for this still-current decoder lifetime.
+					row.started = source.lifetime.started;
+					row.decoded = source.lifetime.pictures.load(Ordering::Relaxed);
+					row.decoder_errors = source.lifetime.errors.load(Ordering::Relaxed);
+					row.stale = source.lifetime.stale.load(Ordering::Relaxed);
+					let size = source.lifetime.dimensions.load(Ordering::Relaxed);
+					row.dimensions = (size != 0).then_some(((size >> 32) as u32, size as u32));
+				}
+			}
+		}
+		result
+	}
+
 	/// Drains the depacketizer counters.
 	pub fn take_stats(&mut self) -> ReceiveStats {
 		std::mem::take(&mut self.stats)
@@ -771,12 +857,23 @@ impl Receivers {
 		if assembler.codec != codec {
 			*assembler = Assembler {
 				codec,
+				incoming: std::mem::take(&mut assembler.incoming),
+				complete: assembler.complete,
+				incomplete: assembler.incomplete,
+				queue_drops: assembler.queue_drops,
 				..Default::default()
 			};
 			self.malformed.retain(|(owner, _)| *owner != user);
 		}
+		assembler
+			.incoming
+			.packet(sequence, payload.len(), Instant::now());
 		let frame = assembler.push(sequence, timestamp, marker, payload);
+		assembler.complete = assembler
+			.complete
+			.saturating_add(u64::from(frame.is_some()));
 		let lost = std::mem::take(&mut assembler.lost);
+		assembler.incomplete = assembler.incomplete.saturating_add(u64::from(lost));
 		self.stats.incomplete += u64::from(lost);
 		self.stats.complete += u64::from(frame.is_some());
 		if lost {
@@ -1294,6 +1391,7 @@ fn decode_loop_on_adapter(
 		);
 		if age > MAX_DECODE_AGE {
 			counters.stale.fetch_add(1, Ordering::Relaxed);
+			lifetime.stale.fetch_add(1, Ordering::Relaxed);
 			decoders.remove(&frame.user);
 			decoder_counts(&decoders, &counters);
 			mark_broken(frame.user, &mut broken, &lost);
@@ -1378,6 +1476,7 @@ fn decode_loop_on_adapter(
 				// Backpressure, not a decoder fault: keep the decoder and its hardware path,
 				// and skip predictions until the requested keyframe arrives.
 				counters.stale.fetch_add(1, Ordering::Relaxed);
+				lifetime.stale.fetch_add(1, Ordering::Relaxed);
 				decoder_counts(&decoders, &counters);
 				mark_broken(frame.user, &mut broken, &lost);
 				continue;
@@ -1386,6 +1485,7 @@ fn decode_loop_on_adapter(
 				// Corrupt or lost data: a fresh decoder waits for the next keyframe. A
 				// hardware decoder that fails on a keyframe is replaced by software.
 				counters.errors.fetch_add(1, Ordering::Relaxed);
+				lifetime.errors.fetch_add(1, Ordering::Relaxed);
 				decoders.remove(&frame.user);
 				decoder_counts(&decoders, &counters);
 				if hardware && frame.keyframe && !software_only.contains(&frame.user) {
@@ -1418,6 +1518,10 @@ fn decode_loop_on_adapter(
 		if !lifetime.active.load(Ordering::Acquire) {
 			continue;
 		}
+		lifetime.dimensions.store(
+			(u64::from(width) << 32) | u64::from(height),
+			Ordering::Relaxed,
+		);
 		lifetime.pictures.fetch_add(1, Ordering::Relaxed);
 		counters.pictures.fetch_add(1, Ordering::Relaxed);
 		sink(RemoteFrame {
@@ -1441,6 +1545,7 @@ fn fail_source(
 	counters: &DecoderCounters,
 ) {
 	counters.errors.fetch_add(1, Ordering::Relaxed);
+	lifetime.errors.fetch_add(1, Ordering::Relaxed);
 	if lifetime.active.swap(false, Ordering::AcqRel)
 		&& let Ok(mut failures) = counters.failures.lock()
 		&& failures.len() < MAX_SOURCES
@@ -1688,6 +1793,44 @@ mod tests {
 		)
 	}
 
+	#[test]
+	fn participant_video_statistics_follow_decode_and_ignore_retired_lifetimes() {
+		let (queue, lost) = spawn_decoder(Arc::new(|_| {})).unwrap();
+		let mut receivers = Receivers::default();
+		receivers.announce(1, 11).unwrap();
+		receivers.announce(2, 22).unwrap();
+		retain_sources(&queue, &receivers);
+		let old = queue.source_lifetime(1).unwrap();
+		receivers.push(11, 1, 0, true, &[0x65, 1]);
+		receivers.queue_drop(1);
+		decoder_cleanup_decode(&queue, 1, &decoder_cleanup_keyframe(64, 48));
+		let peers = receivers.diagnostics(Some(&queue));
+		let first = peers.iter().find(|(user, _)| *user == 1).unwrap().1;
+		assert!(first.decoded > 0);
+		assert_eq!(first.dimensions, Some((64, 48)));
+		assert_eq!((first.complete, first.queue_drops), (1, 1));
+		assert_eq!(
+			peers.iter().find(|(user, _)| *user == 2).unwrap().1.decoded,
+			0
+		);
+		receivers.announce(3, 11).unwrap();
+		retain_sources(&queue, &receivers);
+		old.pictures.fetch_add(100, Ordering::Relaxed);
+		old.errors.fetch_add(10, Ordering::Relaxed);
+		let peers = receivers.diagnostics(Some(&queue));
+		assert!(!peers.iter().any(|(user, _)| *user == 1));
+		let next = peers.iter().find(|(user, _)| *user == 3).unwrap().1;
+		assert_eq!(
+			(next.decoded, next.decoder_errors, next.complete),
+			(0, 0, 0)
+		);
+		assert!(next.dimensions.is_none());
+		receivers.remove(2);
+		receivers.remove(3);
+		retain_sources(&queue, &receivers);
+		assert!(receivers.diagnostics(Some(&queue)).is_empty());
+		drop(lost);
+	}
 	fn decoder_cleanup_keyframe(width: usize, height: usize) -> Vec<u8> {
 		use openh264::{
 			OpenH264API,

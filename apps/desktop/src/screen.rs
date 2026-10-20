@@ -65,6 +65,7 @@ struct Live {
 	worker: Worker,
 	task: JoinHandle<()>,
 	events: watch::Receiver<Option<Notice>>,
+	diagnostics: watch::Receiver<Option<Arc<model::voice_diagnostics::ConnectionSnapshot>>>,
 }
 struct Closing {
 	context: Context,
@@ -210,6 +211,11 @@ impl Screen {
 		ctx: &egui::Context,
 		call: Option<Call<'_>>,
 	) -> Option<Command> {
+		// Project only this frame's still-owned connection; early returns retire old data.
+		if !state.demo {
+			ui.voice_diagnostics
+				.remove(model::voice_diagnostics::ConnectionKind::ScreenSend);
+		}
 		if self
 			.retiring
 			.as_ref()
@@ -396,6 +402,19 @@ impl Screen {
 
 		let mut failure = None;
 		if let Some(live) = &mut self.live {
+			if let Some(snapshot) = live.diagnostics.borrow_and_update().as_ref() {
+				ui.voice_diagnostics.update(
+					(
+						live.context.generation,
+						live.context.channel,
+						live.context.request,
+					),
+					snapshot.clone(),
+				);
+			} else {
+				ui.voice_diagnostics
+					.remove(model::voice_diagnostics::ConnectionKind::ScreenSend);
+			}
 			match *live.events.borrow_and_update() {
 				Some(Notice::Status(status)) => self.status = status,
 				Some(Notice::Failed(error)) => failure = Some(error),
@@ -502,12 +521,18 @@ impl Screen {
 			move || wake.request_repaint(),
 		)?;
 		let (send, events) = watch::channel(None);
+		let (diagnostics_send, diagnostics) = watch::channel(None);
 		let wake = ctx.clone();
 		let identity = pending.identity;
 		let task = runtime.spawn(async move {
 			let (status_send, status_wake) = (send.clone(), wake.clone());
 			let result = discord_voice::run_stream(credentials, identity, video, move |event| {
 				let status = match event {
+					Status::Diagnostics(snapshot) => {
+						diagnostics_send.send_replace(Some(snapshot));
+						status_wake.request_repaint();
+						return Ok(());
+					}
 					Status::Connecting => "Connecting screen-share transport…",
 					Status::Discovering => "Checking screen-share network…",
 					Status::TransportReady | Status::Securing => "Securing screen video…",
@@ -538,6 +563,7 @@ impl Screen {
 			worker,
 			task,
 			events,
+			diagnostics,
 		});
 		Ok(())
 	}

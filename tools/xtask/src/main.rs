@@ -399,6 +399,14 @@ fn package() -> Result<(), String> {
 	if !status.success() {
 		return Err("FFmpeg shared-library staging failed; build scripts/build-ffmpeg.py and set FFMPEG_DIR".into());
 	}
+	let status = Command::new(if cfg!(windows) { "python" } else { "python3" })
+		.arg("packaging/lavasr/bundle.py")
+		.arg(&root)
+		.status()
+		.map_err(|e| e.to_string())?;
+	if !status.success() {
+		return Err("LavaSRv2 models/runtime staging failed".into());
+	}
 	if cfg!(target_os = "macos") {
 		let status = std::process::Command::new("sh")
 			.arg("packaging/macos/compile-icon.sh")
