@@ -77,6 +77,7 @@ def fetch(cache, name, size, digest, url, offline):
                 raise ValueError(f"Asset checksum/size mismatch: {name}")
             temporary.replace(path)
         finally:
+            stream.close()
             temporary.unlink(missing_ok=True)
     return path
 
@@ -113,6 +114,7 @@ def extract(archive, member, destination):
             temporary.replace(destination)
             destination.chmod(0o644)
         finally:
+            stream.close()
             temporary.unlink(missing_ok=True)
 
 
