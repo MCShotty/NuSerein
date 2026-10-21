@@ -1424,16 +1424,11 @@ fn date(millis: Option<i128>) -> String {
 			|date| {
 				let date = crate::local_time::local(date);
 				format!(
-					"{} {}, {}\n{}:{:02} {}",
+					"{} {}, {}\n{}",
 					&date.month().to_string()[..3],
 					date.day(),
 					date.year(),
-					match date.hour() % 12 {
-						0 => 12,
-						hour => hour,
-					},
-					date.minute(),
-					if date.hour() < 12 { "AM" } else { "PM" }
+					crate::local_time::clock(date)
 				)
 			},
 		)

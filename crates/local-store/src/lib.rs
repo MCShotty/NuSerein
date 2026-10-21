@@ -88,6 +88,8 @@ pub struct AppPreferences {
 	pub image_cache: model::CachePreferences,
 	/// Clock style for message times; older preferences follow the language.
 	pub time_format: model::TimeFormat,
+	/// Device-local timezone; missing or malformed values recover to System.
+	pub time_zone: model::TimeZonePreference,
 	/// Owner opt-in: keep saved logins in private plain files when no OS keyring works.
 	pub plaintext_login: bool,
 }
@@ -129,6 +131,7 @@ impl Default for AppPreferences {
 			cosmetics: Default::default(),
 			image_cache: Default::default(),
 			time_format: Default::default(),
+			time_zone: Default::default(),
 			plaintext_login: false,
 		}
 	}
@@ -156,6 +159,7 @@ impl AppPreferences {
 			&& self.muted_users.len() <= 64
 			&& self.keybinds.is_valid()
 			&& self.image_cache.is_valid()
+			&& self.time_zone.is_valid()
 			&& [&self.voice_input, &self.voice_output, &self.media_output]
 				.into_iter()
 				.all(|value| value.as_ref().is_none_or(|value| value.len() <= 1024))
@@ -2400,6 +2404,55 @@ mod tests {
 		store.save_app_preferences(&preferences).unwrap();
 		assert_eq!(store.app_preferences().unwrap(), preferences);
 	}
+	#[test]
+	fn timezone_preferences_round_trip_and_invalid_values_recover_independently() {
+		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
+		for zone in [
+			model::TimeZonePreference::System,
+			model::TimeZonePreference::Named("Europe/London".into()),
+			model::TimeZonePreference::FixedOffset(345),
+			model::TimeZonePreference::FixedOffset(-210),
+		] {
+			let preferences = AppPreferences {
+				time_zone: zone.clone(),
+				time_format: model::TimeFormat::TwelveHour,
+				..Default::default()
+			};
+			store.save_app_preferences(&preferences).unwrap();
+			let reopened = store.app_preferences().unwrap();
+			assert_eq!(reopened.time_zone, zone);
+			assert_eq!(reopened.time_format, model::TimeFormat::TwelveHour);
+		}
+		for invalid in [
+			r#""offset:841""#,
+			r#""offset:broken""#,
+			r#""iana:../secret""#,
+			r#""future:unknown""#,
+			"null",
+			"42",
+			r#"{"future":true}"#,
+		] {
+			let preferences: AppPreferences = serde_json::from_str(&format!(
+				r#"{{"time_zone":{invalid},"time_format":"24-hour","transparency":37}}"#
+			))
+			.unwrap();
+			assert_eq!(
+				preferences.time_zone,
+				model::TimeZonePreference::System,
+				"{invalid}"
+			);
+			assert_eq!(preferences.time_format, model::TimeFormat::TwentyFourHour);
+			assert_eq!(preferences.transparency, 37);
+		}
+		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
+		assert_eq!(legacy.time_zone, model::TimeZonePreference::System);
+		let invalid = AppPreferences {
+			time_zone: model::TimeZonePreference::FixedOffset(841),
+			..Default::default()
+		};
+		assert!(store.save_app_preferences(&invalid).is_err());
+	}
+
 	#[test]
 	fn app_preferences_round_trip_and_reject_invalid_replacement() {
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();

@@ -31,6 +31,8 @@ mod graphics;
 pub use graphics::{GpuPreference, VideoAdapter, VideoAdapterIdentity};
 mod time_format;
 pub use time_format::TimeFormat;
+mod time_zone;
+pub use time_zone::TimeZonePreference;
 pub mod guild_folders;
 pub mod message_options;
 pub mod permissions;

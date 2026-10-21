@@ -1,5 +1,25 @@
 //! Converts UTC instants to the user's local zone for display.
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+
+mod zone;
+pub(crate) use zone::names as timezone_names;
+#[cfg(test)]
+pub(crate) use zone::pin_timezone;
+pub use zone::{
+	TimezoneRequest, begin_frame, refresh_system_timezone, set_timezone, take_timezone_request,
+	timezone_label, timezone_status,
+};
+
+static FORMAT_REVISION: AtomicU64 = AtomicU64::new(1);
+
+/// Changes only when an effective clock/date/zone setting changes, for layout cache keys.
+pub fn format_revision() -> u64 {
+	let revision = FORMAT_REVISION.load(Ordering::Relaxed);
+	#[cfg(test)]
+	return revision.wrapping_shl(32) | u64::from(zone::test_revision());
+	#[cfg(not(test))]
+	revision
+}
 
 /// Whether times of day use a 12-hour clock; set from Settings › Language & Time.
 static TWELVE_HOUR: AtomicBool = AtomicBool::new(false);
@@ -16,8 +36,12 @@ pub fn set_format(format: model::TimeFormat, language: crate::i18n::Language) {
 		model::TimeFormat::TwentyFourHour => false,
 		model::TimeFormat::Auto => twelve_hour_locale(&tag),
 	};
-	TWELVE_HOUR.store(twelve, Ordering::Relaxed);
-	DATE_ORDER.store(DateOrder::of_locale(&tag) as u8, Ordering::Relaxed);
+	let old_twelve = TWELVE_HOUR.swap(twelve, Ordering::Relaxed);
+	let order = DateOrder::of_locale(&tag) as u8;
+	let old_order = DATE_ORDER.swap(order, Ordering::Relaxed);
+	if old_twelve != twelve || old_order != order {
+		FORMAT_REVISION.fetch_add(1, Ordering::Relaxed);
+	}
 }
 
 /// How a locale writes a numeric date, as Discord's short date (`L`) does.
@@ -138,20 +162,14 @@ fn format_clock(at: time::OffsetDateTime, seconds: bool, twelve: bool) -> String
 
 /// Shifts `instant` to the local offset in effect at that moment; falls back to UTC.
 pub fn local(instant: time::OffsetDateTime) -> time::OffsetDateTime {
-	// Tests pin UTC so date-boundary assertions hold on every machine.
-	let offset = if cfg!(test) {
-		time::UtcOffset::UTC
-	} else {
-		time::UtcOffset::local_offset_at(instant).unwrap_or(time::UtcOffset::UTC)
-	};
-	instant.to_offset(offset)
+	zone::convert(&zone::display_zone(), instant)
 }
 
 /// Current wall-clock time in the local zone.
 pub fn now() -> time::OffsetDateTime {
 	#[cfg(test)]
 	if let Some(now) = TEST_NOW.get() {
-		return now;
+		return local(now);
 	}
 	local(time::OffsetDateTime::now_utc())
 }

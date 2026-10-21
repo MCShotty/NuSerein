@@ -150,6 +150,7 @@ pub struct TimelineView {
 	pub(super) browser_opening: Option<String>,
 	text_size: f32,
 	font_revision: (usize, usize, u32),
+	time_revision: u64,
 	scale: f32,
 	pub(super) load_older: bool,
 	pub(super) latest: bool,
@@ -2363,10 +2364,12 @@ impl TimelineView {
 		}
 		let text_size = egui::TextStyle::Body.resolve(ui.style()).size;
 		let font_revision = crate::fonts::revision(ui.ctx());
+		let time_revision = crate::local_time::format_revision();
 		let scale = ui.ctx().pixels_per_point();
 		let width_changed = (self.width - width).abs() > 1.0;
 		let content_dimensions_changed = self.text_size != text_size
 			|| self.font_revision != font_revision
+			|| self.time_revision != time_revision
 			|| self.scale != scale
 			|| self.hide_media_links != self.applied_hide_media_links
 			|| self.compact_messages != self.applied_compact_messages;
@@ -2424,6 +2427,7 @@ impl TimelineView {
 			self.width = width;
 			self.text_size = text_size;
 			self.font_revision = font_revision;
+			self.time_revision = time_revision;
 			self.scale = scale;
 			let row_ids: Vec<_> = intro
 				.as_ref()
@@ -10177,6 +10181,53 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn timezone_changes_rebuild_date_grouping_without_moving_the_reading_anchor() {
+		let _utc = crate::local_time::pin_timezone("UTC");
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut state = overscan_state();
+		state.timeline.clear();
+		let first_millis = 1_735_678_800_000u64; // 2024-12-31 21:00 UTC.
+		let ids: Vec<_> = (0..500)
+			.map(|index| Id(((first_millis + index * 60_000 - 1_420_070_400_000) << 22) | 1))
+			.collect();
+		for id in &ids {
+			state
+				.timeline
+				.insert(text_message(id.0), false, false)
+				.unwrap();
+		}
+		let mut view = TimelineView::default();
+		let mut avatars = crate::avatars::Avatars::default();
+		for _ in 0..10 {
+			overscan_frame(&ctx, &mut view, &mut state, &mut avatars, 900.0, vec![]);
+		}
+		view.following = false;
+		view.anchor = Some((ids[250], 5.0));
+		view.revision = u64::MAX;
+		for _ in 0..12 {
+			overscan_frame(&ctx, &mut view, &mut state, &mut avatars, 900.0, vec![]);
+		}
+		let before = view.anchor.unwrap();
+		let revision = view.time_revision;
+		let _riyadh = crate::local_time::pin_timezone("Asia/Riyadh");
+		for _ in 0..12 {
+			overscan_frame(&ctx, &mut view, &mut state, &mut avatars, 900.0, vec![]);
+		}
+		let after = view.anchor.unwrap();
+		assert_ne!(
+			view.time_revision, revision,
+			"Timezone changes invalidate layout without a model event"
+		);
+		assert_eq!(after.0, before.0);
+		assert!(
+			(after.1 - before.1).abs() <= 1.0,
+			"Reading offset changed: {before:?} -> {after:?}"
+		);
+		assert!(!view.following);
 	}
 
 	#[test]

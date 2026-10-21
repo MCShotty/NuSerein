@@ -334,6 +334,8 @@ pub struct MessagingUi {
 	pub image_cache: model::CachePreferences,
 	/// Clock style for message times.
 	pub time_format: model::TimeFormat,
+	/// Device-local display timezone, independent of language and clock style.
+	pub time_zone: model::TimeZonePreference,
 	/// Saved logins may fall back to plain files when no OS keyring works.
 	pub plaintext_login: bool,
 	/// Latest disk use of the media and shared-artwork caches, once measured.

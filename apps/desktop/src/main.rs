@@ -1025,6 +1025,8 @@ struct Desktop {
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,
 	monitor_period: Option<Duration>,
 	frame_metrics: FrameMetrics,
+	timezone_focused: bool,
+	timezone_checked: std::time::Instant,
 	#[cfg(feature = "demo")]
 	rendering_demo: Option<rendering_demo::RenderingDemo>,
 	avatars: Option<avatars::AvatarWorker>,
@@ -2414,6 +2416,8 @@ impl Desktop {
 			monitor_geometry: None,
 			monitor_period: None,
 			frame_metrics: FrameMetrics::new(frame_sample),
+			timezone_focused: false,
+			timezone_checked: std::time::Instant::now(),
 			#[cfg(feature = "demo")]
 			rendering_demo: (demo && std::env::args().any(|arg| arg == "--demo-rendering"))
 				.then(rendering_demo::RenderingDemo::default),
@@ -5340,6 +5344,32 @@ impl Desktop {
 	}
 }
 impl Desktop {
+	/// Native timezone discovery runs in the existing blocking pool; publish it only
+	/// at a frame boundary so every timestamp in this frame uses the same zone.
+	fn sync_timezone(&mut self, ctx: &egui::Context) {
+		if let Some(recovered) = ui::local_time::begin_frame() {
+			self.messaging.time_zone = recovered;
+		}
+		ui::local_time::set_timezone(&self.messaging.time_zone);
+		let focused = ctx.input(|input| input.focused && input.viewport().minimized != Some(true));
+		if focused {
+			if !self.timezone_focused || self.timezone_checked.elapsed() >= Duration::from_secs(60)
+			{
+				ui::local_time::refresh_system_timezone();
+				self.timezone_checked = std::time::Instant::now();
+			}
+			ctx.request_repaint_after(Duration::from_secs(60));
+		}
+		self.timezone_focused = focused;
+		if let Some(request) = ui::local_time::take_timezone_request() {
+			let wake = ctx.clone();
+			self.runtime.spawn_blocking(move || {
+				request.resolve();
+				wake.request_repaint();
+			});
+		}
+	}
+
 	fn sync_customization(&mut self, ctx: &egui::Context) {
 		if self.messaging.primary_color != ui::design::primary_color() {
 			ui::design::set_primary_color(self.messaging.primary_color);
@@ -5505,6 +5535,7 @@ impl eframe::App for Desktop {
 			}
 		};
 		self.frame_metrics.begin(ctx, search_focused);
+		self.sync_timezone(ctx);
 		self.startup.sync(
 			ctx,
 			&self.runtime,

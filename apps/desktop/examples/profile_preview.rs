@@ -63,6 +63,17 @@ impl eframe::App for Preview {
 
 	fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
+		if let Some(recovered) = ui::local_time::begin_frame() {
+			self.messaging.time_zone = recovered;
+		}
+		ui::local_time::set_timezone(&self.messaging.time_zone);
+		if let Some(request) = ui::local_time::take_timezone_request() {
+			let wake = ctx.clone();
+			std::thread::spawn(move || {
+				request.resolve();
+				wake.request_repaint();
+			});
+		}
 		ui::design::paint_backdrop(&ctx);
 		// Only synthetic fixtures execute these commands; no service adapters exist here.
 		for command in self.messaging.show(ui, &mut self.state) {

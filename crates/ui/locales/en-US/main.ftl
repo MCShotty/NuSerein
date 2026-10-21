@@ -5488,6 +5488,20 @@ video-provider-embedding-disabled = This video cannot play inside other apps. Op
 video-provider-identity-failed = YouTube could not verify the player. Retry or open the original.
 video-provider-buffering-failed = Video buffering stopped. Retry or open the original.
 video-provider-open-window = Open video player
+
+# Device-local timezone display; source timestamps remain unchanged.
+timezone-group = Time zone
+timezone-system = System timezone
+timezone-custom = Custom timezone
+timezone-region = City or region
+timezone-fixed = Fixed UTC offset
+timezone-search = Search cities or regions…
+timezone-region-description = Daylight-saving changes are applied automatically.
+timezone-apply = Apply
+timezone-offset-invalid = Enter UTC±HH:MM between −14:00 and +14:00.
+timezone-updating = Updating time zone…
+timezone-system-unavailable = System timezone could not be detected. Showing UTC.
+timezone-unknown-recovered = The saved timezone is unavailable. Following the system timezone.
 mentions-section-members = Members
 mentions-section-roles = Roles
 mentions-section-special = Other mentions

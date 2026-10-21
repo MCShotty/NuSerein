@@ -40,6 +40,8 @@ rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled
 dirs = "=7.0.0"
 getrandom = "0.4"
 time = { version = "0.3", features = ["parsing"] }
+jiff = { version = "=0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
+iana-time-zone = "=0.1.65"
 wry = { version = "=0.57.0", default-features = false, features = ["os-webview"] }
 keyring = "=4.2.0"
 keyring-core = "=1.0.0"
