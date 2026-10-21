@@ -2761,3 +2761,83 @@ Native Windows/macOS/Linux application/package CI, physical rendering, provider
 restrictions, system audio routing and owner-controlled Discord behavior remain
 separate checks. Provider-process memory, release media throughput, interaction
 latency and repeated native lifecycle memory remain unmeasured.
+
+## Embedded playback recovery October 21, 2026
+
+Baseline: fork main `5775101829dde47d3319228ed711f3c5ff485d5d`. Changed code:
+`e1497ffe9582731ee3dee6bccfadd6525c779b03`. The later expanded-player link-confirmation
+correction was not remeasured; it is outside the sampled default-card interaction.
+The subsequent synthetic-clock correction changes tests only. Debian 13 x86_64,
+Xeon Platinum 8573C, 4-CPU quota and
+16-GiB memory limit; pinned Rust 1.98.1 and committed lockfile. Both builds use the
+repository release profile: fat LTO, one codegen unit, stripped symbols and line tables.
+Each checkout has separate target directories; cached external dependencies were
+reused, with workspace packages rebuilt for the changed source.
+
+Both normal `cargo xtask package --format dir` runs started with an empty output
+directory and used no staging repair. A second changed run with caches and empty
+output reproduced every installed file and the normalized archive. One cached speech-worker
+initialization check failed; an unchanged retry passed. Its cause remains unisolated, and
+the speech subsystem was not changed by this work. The installed
+application passed its synthetic speech-worker launch check with the development
+FFmpeg directory removed from PATH and library search paths; all six private media
+libraries resolved from the installed payload, with no development FFmpeg RPATH.
+
+| Metric | Baseline | Changed | Delta |
+| --- | ---: | ---: | ---: |
+| Executable, bytes | 95,997,128 | 96,030,920 | +33,792 (+0.035%) |
+| Installed regular files, bytes | 224,747,738 | 224,781,530 | +33,792 (+0.015%) |
+| Normalized ZIP, bytes | 154,676,801 | 154,695,765 | +18,964 (+0.012%) |
+
+ZIP uses sorted payload paths, fixed timestamps and deflate level 6 on the same
+Python/zlib installation. Shared libraries, corresponding source and license files
+are included. These are local Linux directory-package comparisons, not installer
+or Windows/macOS size measurements.
+
+Native UI measurements use release `profile_preview` with
+`--no-default-features --features demo`, forced OpenGL/software rendering under
+Xvfb, dark appearance, display scale 1 and a 1440 × 1100 window. Both use
+`--demo --page=embeds --media-embeds --provider-embed --interactive`. After a
+two-second warmup, the same poster is clicked; sampling starts 0.8 seconds later.
+One warmup run is discarded, followed by five measured runs per revision in
+interleaved order, with 100 samples at 100-ms intervals. Preview liveness is checked
+after warmup and before every sample; an exited preview invalidates the run and
+identifies its log. Compiler jobs have finished before sampling.
+
+| Median of five runs | Baseline | Changed | Delta |
+| --- | ---: | ---: | ---: |
+| Sampled parent-process peak RSS, MiB | 142.75 | 142.47 | -0.28 MiB (-0.20%) |
+| Settled parent RSS, last two seconds, MiB | 142.75 | 142.47 | -0.28 MiB (-0.20%) |
+| CPU, percent of one core over sample interval | 0.00 | 0.00 | +0.00 percentage points |
+
+RSS comes from `/proc/PID/status`; CPU uses process user/system clock ticks divided
+by elapsed sample time. These measure the affected host UI states: the old modal
+and the new card with visible chat. They do not isolate renderer cost or establish
+a general speed improvement. The 0.28-MiB RSS difference is within run variation.
+CPU medians are quantized at the 10-ms process-clock resolution; individual runs
+ranged from 0 to 1.18% of one core. This synthetic preview never creates a provider view;
+no helper processes were observed. Actual provider-process RSS, GPU memory, decoded
+media throughput and frame/interaction latency remain unmeasured.
+
+The reported public Twitter clip also reproduces the native demux failure: the
+baseline stops at three decoded pictures, with no audio and neither track at EOF.
+The changed bridge delivers all 274 pictures and 441,344 audio frames, with both
+tracks reaching EOF. This uses a bounded local copy, anonymous Serein-identified
+HTTP requests and a virtual presentation clock; it is functional Linux software
+decode evidence, not wall-clock throughput or proof of Windows/Discord playback.
+No public clip or service traffic is committed. Generated fixtures additionally
+exercise normal, audio-first and video-first packet layouts through the production
+player and synthetic audio sink, plus byte/packet exhaustion, seek and cancellation.
+The synthetic sink catches up delayed timer wakeups in bounded bursts. Its layout
+test fails after five seconds without presentation progress and caps each case at
+40 seconds, with the production startup deadline retained. It does not impose a
+native real-time throughput requirement on shared CI machines.
+
+Formatting, strict Clippy, workspace/minimal-build/policy checks, offline provider
+API, login-handoff/workspace and packaging fixtures, replay, the 120-second soak and
+bounded pinned fuzz checks passed. The matched synthetic screenshots are in
+[embed-playback](pr-evidence/embed-playback). Native Windows/macOS clipping, focus,
+fullscreen, scrolling and provider interoperability remain owner-controlled checks.
+The Linux native WebKit fixture cannot locate its helper in the staged SDK here;
+no browser sandbox was disabled. YouTube is blocked by the workspace proxy, and
+reachable VXTwitter/OGInstagram pages alone do not establish playback.

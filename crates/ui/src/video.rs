@@ -366,7 +366,7 @@ impl VideoUi {
 				*opening = crate::markdown::external_url(&player.source);
 			}
 		});
-		if inline || response.should_close() {
+		if inline || response.should_close() || opening.is_some() {
 			player.expanded = false;
 			player.bounds = None;
 			player.clip = None;

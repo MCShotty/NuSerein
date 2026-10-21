@@ -1264,11 +1264,19 @@ mod tests {
 				play_decoded(decoder, &playing, None, &eframe::egui::Context::default())
 			});
 			let started = Instant::now();
+			let mut progressed = started;
 			let mut saw_picture = false;
 			let mut maximum = 0.0_f64;
-			while !worker.is_finished() && started.elapsed() < Duration::from_secs(8) {
+			while !worker.is_finished()
+				&& started.elapsed() < Duration::from_secs(40)
+				&& (!saw_picture || progressed.elapsed() < Duration::from_secs(5))
+			{
 				let mut update = session.update.lock().unwrap();
-				saw_picture |= update.frame.take().is_some();
+				let picture = update.frame.take().is_some();
+				if (picture && !saw_picture) || update.position > maximum {
+					progressed = Instant::now();
+				}
+				saw_picture |= picture;
 				maximum = maximum.max(update.position);
 				drop(update);
 				std::thread::sleep(Duration::from_millis(10));

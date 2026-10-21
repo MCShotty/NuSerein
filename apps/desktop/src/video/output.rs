@@ -210,9 +210,25 @@ pub(super) fn synthetic(rate: u32, capacity: usize, controls: Controls) -> Outpu
 			controls,
 		};
 		let mut buffer = vec![0.0_f32; 960];
+		let tick = std::time::Duration::from_millis(10);
+		let mut next = std::time::Instant::now();
 		while !stopped.load(Ordering::Acquire) {
-			playback.render(&mut buffer, 2, 48000);
-			std::thread::sleep(std::time::Duration::from_millis(10));
+			// Model elapsed device time, including coalesced macOS timers, rather
+			// than making the media clock depend on how often this thread wakes.
+			let now = std::time::Instant::now();
+			let mut callbacks = 0;
+			while now >= next && callbacks < 10 {
+				playback.render(&mut buffer, 2, 48000);
+				next += tick;
+				callbacks += 1;
+			}
+			if next < now {
+				next = now + tick;
+			}
+			std::thread::sleep(
+				next.saturating_duration_since(std::time::Instant::now())
+					.min(tick),
+			);
 		}
 	});
 	Output {
