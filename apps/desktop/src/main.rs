@@ -5470,6 +5470,10 @@ impl eframe::App for Desktop {
 			track,
 			self.messaging.wants_mouse_buttons(),
 		);
+		if intercepted.middle.pressed.is_some() || intercepted.side.back || intercepted.side.forward
+		{
+			ui::scroll::reset_wheel(ctx);
+		}
 		self.messaging.middle_button(intercepted.middle);
 		self.messaging.side_buttons(intercepted.side);
 		if track

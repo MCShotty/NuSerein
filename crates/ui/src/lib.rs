@@ -4266,7 +4266,17 @@ impl MessagingUi {
 			.iter()
 			.map(|gif| gif.url.clone())
 			.collect();
-		crate::scroll::apply_preferences(ui.ctx(), self.reading_preferences);
+		crate::scroll::apply_preferences_in(
+			ui.ctx(),
+			self.reading_preferences,
+			egui::Id::unique((
+				"reading-wheel",
+				state.generation,
+				state.selected,
+				self.settings.open,
+				self.search.open,
+			)),
+		);
 		let diagnostics_chord = self
 			.keybinds
 			.chord(model::KeybindAction::CopyIssueDiagnostics);
