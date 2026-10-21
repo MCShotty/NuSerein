@@ -496,8 +496,15 @@ int serein_decode_receive(void *pointer, SereinPicture *picture, uint8_t *output
     return 1;
 }
 
-/* One pending compressed packet across both tracks prevents demux from building
- * hidden unbounded queues when the player temporarily stops draining audio. */
+/* Demux may encounter a run of one track while the presentation clock needs the
+ * other. Retain compressed packets, not decoded pictures, under one shared budget. */
+#define MEDIA_PACKET_BYTES ((size_t)8 * 1024 * 1024)
+#define MEDIA_PACKET_COUNT 512
+typedef struct SereinPackets {
+    AVPacket *items[MEDIA_PACKET_COUNT];
+    size_t costs[MEDIA_PACKET_COUNT];
+    unsigned head, count;
+} SereinPackets;
 typedef struct SereinMedia {
     AVFormatContext *format;
     AVIOContext *io;
@@ -513,7 +520,61 @@ typedef struct SereinMedia {
     uint32_t rotation;
     double duration, audio_next_pts;
     int video_started, resample_drained;
+    SereinPackets queues[2];
+    size_t queued_bytes;
+    unsigned queued_count;
 } SereinMedia;
+
+static void media_clear_packets(SereinMedia *media)
+{
+    for (unsigned track = 0; track < 2; track++) {
+        SereinPackets *queue = &media->queues[track];
+        for (unsigned i = 0; i < MEDIA_PACKET_COUNT; i++)
+            av_packet_free(&queue->items[i]);
+        queue->head = queue->count = 0;
+    }
+    media->queued_bytes = media->queued_count = 0;
+}
+
+static int media_queue_packet(SereinMedia *media, int track)
+{
+    AVPacket *packet = media->packet;
+    if (packet->size < 0 || (size_t)packet->size > MEDIA_PACKET_BYTES ||
+        packet->side_data_elems < 0 || packet->side_data_elems > 64) return -4;
+    size_t buffered = packet->buf ? packet->buf->size : AV_INPUT_BUFFER_PADDING_SIZE + (size_t)packet->size;
+    if (buffered > MEDIA_PACKET_BYTES) return -4;
+    size_t cost = sizeof(AVPacket) + buffered;
+    for (int i = 0; i < packet->side_data_elems; i++) {
+        size_t extra = packet->side_data[i].size;
+        if (extra > MEDIA_PACKET_BYTES || cost > MEDIA_PACKET_BYTES - extra) return -4;
+        cost += extra;
+        if (cost > MEDIA_PACKET_BYTES - sizeof(AVPacketSideData)) return -4;
+        cost += sizeof(AVPacketSideData);
+    }
+    if (cost > MEDIA_PACKET_BYTES || media->queued_bytes > MEDIA_PACKET_BYTES - cost ||
+        media->queued_count >= MEDIA_PACKET_COUNT) return -4;
+    SereinPackets *queue = &media->queues[track];
+    unsigned index = (queue->head + queue->count) % MEDIA_PACKET_COUNT;
+    AVPacket *owned = av_packet_alloc();
+    if (!owned) return -3;
+    av_packet_move_ref(owned, packet);
+    queue->items[index] = owned;
+    queue->costs[index] = cost;
+    queue->count++;
+    media->queued_count++;
+    media->queued_bytes += cost;
+    return 0;
+}
+
+static void media_pop_packet(SereinMedia *media, int track)
+{
+    SereinPackets *queue = &media->queues[track];
+    media->queued_bytes -= queue->costs[queue->head];
+    media->queued_count--;
+    av_packet_free(&queue->items[queue->head]);
+    queue->head = (queue->head + 1) % MEDIA_PACKET_COUNT;
+    queue->count--;
+}
 
 static void media_reset_resampler(SereinMedia *media)
 {
@@ -527,6 +588,7 @@ void serein_media_close(void *pointer)
 {
     SereinMedia *media = pointer;
     if (!media) return;
+    media_clear_packets(media);
     serein_decode_close(media->video);
     media_reset_resampler(media);
     avcodec_free_context(&media->audio);
@@ -656,6 +718,7 @@ static int media_software_fallback(SereinMedia *media)
     if (av_seek_frame(media->format, media->video_stream,
         stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time, AVSEEK_FLAG_BACKWARD) < 0) return -1;
     av_packet_unref(media->packet);
+    media_clear_packets(media);
     if (media->audio) avcodec_flush_buffers(media->audio);
     media_reset_resampler(media);
     if (media->audio_frame) av_frame_unref(media->audio_frame);
@@ -685,15 +748,29 @@ int serein_media_poll(void *pointer, int audio)
             if (result < 0 && media->video->hardware && !media->video_started)
                 return media_software_fallback(media);
             if (result != 0) return result;
-            if (media->video_drained && !media->packet->data) return 2;
+            if (media->video_drained) return 2;
         }
-        if (!media->packet->data && !media->eof) {
+        SereinPackets *queue = &media->queues[audio != 0];
+        AVPacket *packet = queue->count ? queue->items[queue->head] : NULL;
+        if (!packet && !media->eof) {
             int result = av_read_frame(media->format, media->packet);
             if (result == AVERROR_EOF) media->eof = 1;
             else if (result < 0) return -1;
             else if (media->packet->size < 0 || (size_t)media->packet->size > SEREIN_MAX_UNIT) return -3;
+            if (!media->eof) {
+                int stream = media->packet->stream_index;
+                if (stream != media->video_stream && stream != media->audio_stream) {
+                    av_packet_unref(media->packet);
+                    continue;
+                }
+                int track = stream == media->audio_stream;
+                result = media_queue_packet(media, track);
+                if (result < 0) return result;
+                if (track != (audio != 0)) continue;
+                packet = queue->items[queue->head];
+            }
         }
-        if (media->eof) {
+        if (!packet && media->eof) {
             if (audio && !media->audio_drained) {
                 if (avcodec_send_packet(media->audio, NULL) < 0) return -1;
                 media->audio_drained = 1;
@@ -703,16 +780,10 @@ int serein_media_poll(void *pointer, int audio)
             } else return 2;
             continue;
         }
-        const int stream = media->packet->stream_index;
-        if (stream != media->video_stream && stream != media->audio_stream) {
-            av_packet_unref(media->packet);
-            continue;
-        }
-        if (stream != (audio ? media->audio_stream : media->video_stream)) return 0;
         AVCodecContext *codec = audio ? media->audio : media->video->codec;
-        int result = avcodec_send_packet(codec, media->packet);
+        int result = avcodec_send_packet(codec, packet);
         if (result == AVERROR(EAGAIN)) continue;
-        av_packet_unref(media->packet);
+        media_pop_packet(media, audio != 0);
         if (result < 0 && !audio && media->video->hardware && !media->video_started)
             return media_software_fallback(media);
         if (result < 0) return -1;
@@ -794,6 +865,7 @@ int serein_media_seek(void *pointer, double seconds)
     if (!media || !isfinite(seconds) || seconds < 0 || seconds > media->duration) return -1;
     if (avformat_seek_file(media->format, -1, INT64_MIN, (int64_t)(seconds * AV_TIME_BASE), INT64_MAX, 0) < 0) return -1;
     av_packet_unref(media->packet);
+    media_clear_packets(media);
     avcodec_flush_buffers(media->video->codec);
     media->video->pending = 0;
     av_frame_unref(media->video->frame);

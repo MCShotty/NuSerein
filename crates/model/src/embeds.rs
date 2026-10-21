@@ -27,6 +27,12 @@ impl YouTubeVideo {
 			self.id, self.start_seconds
 		)
 	}
+	pub fn id(&self) -> &str {
+		&self.id
+	}
+	pub fn start_seconds(&self) -> u32 {
+		self.start_seconds
+	}
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]

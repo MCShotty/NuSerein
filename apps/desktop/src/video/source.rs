@@ -15,6 +15,74 @@ const CHUNK: usize = 256 * 1024;
 const CACHE_CHUNKS: usize = 8;
 const INVALID: &str = "Video download failed or changed; reload the conversation";
 const UNSUPPORTED: &str = "Video server does not support buffering; download to play externally";
+const WEB_PAGE: &str = "This embed links to a web page; open the original to watch it";
+fn html_bytes(bytes: &[u8]) -> bool {
+	let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+	bytes.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'<')
+}
+fn web_page(headers: &reqwest::header::HeaderMap) -> bool {
+	headers
+		.get(reqwest::header::CONTENT_TYPE)
+		.and_then(|v| v.to_str().ok())
+		.is_some_and(|value| {
+			let value = value.split(';').next().unwrap_or(value).trim();
+			value.eq_ignore_ascii_case("text/html")
+				|| value.eq_ignore_ascii_case("application/xhtml+xml")
+		})
+}
+pub(super) const STARTUP_TIMEOUT: &str = "Video took too long to start; retry or open the original";
+pub(super) const STALL_TIMEOUT: &str = "Video buffering stalled; retry or open the original";
+#[derive(Clone)]
+pub(super) struct Startup {
+	deadline: std::time::Instant,
+	pub first_picture: Arc<AtomicBool>,
+	progress: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+}
+impl Startup {
+	pub fn new(deadline: std::time::Instant) -> Self {
+		Self {
+			deadline,
+			first_picture: Arc::new(AtomicBool::new(false)),
+			progress: Default::default(),
+		}
+	}
+	pub fn progressed(&self) {
+		if let Ok(mut progress) = self.progress.lock() {
+			*progress = Some(std::time::Instant::now());
+		}
+	}
+	pub fn expired(&self) -> bool {
+		let now = std::time::Instant::now();
+		if !self.first_picture.load(Ordering::Acquire) {
+			return now >= self.deadline;
+		}
+		self.progress
+			.lock()
+			.map(|last| last.is_none_or(|last| now.duration_since(last) >= Duration::from_secs(15)))
+			.unwrap_or(true)
+	}
+	pub fn timeout_error(&self) -> &'static str {
+		if self.first_picture.load(Ordering::Acquire) {
+			STALL_TIMEOUT
+		} else {
+			STARTUP_TIMEOUT
+		}
+	}
+}
+
+async fn interruption(cancelled: &AtomicBool, startup: Option<&Startup>) -> &'static str {
+	loop {
+		if cancelled.load(Ordering::Acquire) {
+			return INVALID;
+		}
+		if let Some(startup) = startup
+			&& startup.expired()
+		{
+			return startup.timeout_error();
+		}
+		tokio::time::sleep(Duration::from_millis(20)).await;
+	}
+}
 
 fn embed_redirect_allowed(url: &url::Url, previous: usize) -> bool {
 	previous <= 3
@@ -31,6 +99,20 @@ pub(super) fn source(
 	cancelled: Arc<AtomicBool>,
 	runtime: Handle,
 ) -> Result<Box<dyn platform::video::ReadSeek>, &'static str> {
+	source_until(url, expected, cancelled, runtime, None)
+}
+pub(super) fn source_until(
+	url: Option<url::Url>,
+	expected: usize,
+	cancelled: Arc<AtomicBool>,
+	runtime: Handle,
+	startup: Option<Startup>,
+) -> Result<Box<dyn platform::video::ReadSeek>, &'static str> {
+	if let Some(startup) = &startup
+		&& startup.expired()
+	{
+		return Err(startup.timeout_error());
+	}
 	if expected > MAX_BYTES {
 		return Err("Video preview limit: 100 MiB");
 	}
@@ -41,6 +123,11 @@ pub(super) fn source(
 			return Err(INVALID);
 		}
 		let client = reqwest::Client::builder()
+			.user_agent(concat!(
+				"Serein/",
+				env!("CARGO_PKG_VERSION"),
+				" (+https://github.com/ViceVerse-cz/Serein)"
+			))
 			.no_proxy()
 			.no_gzip()
 			.no_brotli()
@@ -61,7 +148,7 @@ pub(super) fn source(
 			.build()
 			.map_err(|_| INVALID)?;
 		let len = if expected == 0 {
-			let (len, whole) = probe(&client, &url, &cancelled, &runtime)?;
+			let (len, whole) = probe(&client, &url, &cancelled, &runtime, startup.as_ref())?;
 			if let Some(bytes) = whole {
 				cache.push_back((0, bytes));
 			}
@@ -98,6 +185,7 @@ pub(super) fn source(
 		len,
 		position: 0,
 		cache,
+		startup,
 	}))
 }
 
@@ -108,13 +196,10 @@ fn probe(
 	url: &url::Url,
 	cancelled: &AtomicBool,
 	runtime: &Handle,
+	startup: Option<&Startup>,
 ) -> Result<(usize, Option<Vec<u8>>), &'static str> {
 	runtime.block_on(async {
-		let cancelled = async {
-			while !cancelled.load(Ordering::Acquire) {
-				tokio::time::sleep(Duration::from_millis(20)).await;
-			}
-		};
+		let cancelled = interruption(cancelled, startup);
 		let transfer = async {
 			let mut response = client
 				.get(url.clone())
@@ -123,6 +208,9 @@ fn probe(
 				.send()
 				.await
 				.map_err(|_| INVALID)?;
+			if web_page(response.headers()) {
+				return Err(WEB_PAGE);
+			}
 			if response
 				.headers()
 				.get(reqwest::header::CONTENT_ENCODING)
@@ -148,6 +236,9 @@ fn probe(
 					}
 					bytes.extend_from_slice(&chunk);
 				}
+				if html_bytes(&bytes) {
+					return Err(WEB_PAGE);
+				}
 				if bytes.is_empty() || expected.is_some_and(|len| len != bytes.len() as u64) {
 					return Err(INVALID);
 				}
@@ -166,7 +257,7 @@ fn probe(
 				.ok_or(INVALID)
 		};
 		tokio::select! { biased;
-			_ = cancelled => Err(INVALID),
+			error = cancelled => Err(error),
 			result = transfer => result,
 		}
 	})
@@ -187,12 +278,21 @@ struct Source {
 	len: usize,
 	position: usize,
 	cache: VecDeque<(usize, Vec<u8>)>,
+	startup: Option<Startup>,
 }
 fn invalid() -> io::Error {
 	io::Error::new(io::ErrorKind::InvalidData, INVALID)
 }
 impl Source {
 	fn check_cancelled(&self) -> io::Result<()> {
+		if let Some(startup) = &self.startup
+			&& startup.expired()
+		{
+			return Err(io::Error::new(
+				io::ErrorKind::TimedOut,
+				startup.timeout_error(),
+			));
+		}
 		if self.cancelled.load(Ordering::Acquire) {
 			// Read::read_exact retries Interrupted indefinitely.
 			Err(io::Error::new(
@@ -222,11 +322,7 @@ impl Source {
 		let count = CHUNK.min(self.len - start);
 		let end = start + count - 1;
 		let bytes = runtime.block_on(async {
-			let cancelled = async {
-				while !self.cancelled.load(Ordering::Acquire) {
-					tokio::time::sleep(Duration::from_millis(20)).await;
-				}
-			};
+			let cancelled = interruption(&self.cancelled, self.startup.as_ref());
 			let transfer = async {
 				let mut response = client
 					.get(url.clone())
@@ -235,6 +331,9 @@ impl Source {
 					.send()
 					.await
 					.map_err(|_| invalid())?;
+				if web_page(response.headers()) {
+					return Err(io::Error::new(io::ErrorKind::Unsupported, WEB_PAGE));
+				}
 				if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
 					let range = format!("bytes {start}-{end}/{}", self.len);
 					if response
@@ -273,11 +372,14 @@ impl Source {
 				Ok(bytes)
 			};
 			tokio::select! { biased;
-				_ = cancelled => Err(io::Error::new(io::ErrorKind::ConnectionAborted, "Cancelled")),
+				error = cancelled => Err(io::Error::new(io::ErrorKind::ConnectionAborted, error)),
 				result = transfer => result,
 			}
 		})?;
 		self.check_cancelled()?;
+		if start == 0 && html_bytes(&bytes) {
+			return Err(io::Error::new(io::ErrorKind::Unsupported, WEB_PAGE));
+		}
 		self.cache.push_back((start, bytes));
 		Ok(())
 	}
@@ -330,6 +432,103 @@ impl Seek for Source {
 mod tests {
 	use super::*;
 	use std::{io::Write, net::TcpListener, sync::atomic::AtomicUsize};
+
+	#[test]
+	fn presentation_progress_and_recovery_share_the_stall_deadline() {
+		let runtime = tokio::runtime::Runtime::new().unwrap();
+		let startup = Startup::new(std::time::Instant::now() + Duration::from_secs(30));
+		startup.first_picture.store(true, Ordering::Release);
+		*startup.progress.lock().unwrap() =
+			Some(std::time::Instant::now() - Duration::from_secs(16));
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		listener.set_nonblocking(true).unwrap();
+		let url =
+			url::Url::parse(&format!("http://{}/clip", listener.local_addr().unwrap())).unwrap();
+		let open = |limits| {
+			source_until(
+				Some(url.clone()),
+				0,
+				Arc::new(AtomicBool::new(false)),
+				runtime.handle().clone(),
+				Some(limits),
+			)
+		};
+		assert_eq!(open(startup.clone()).err(), Some(STALL_TIMEOUT));
+		assert!(
+			listener.accept().is_err(),
+			"a retry must not reset the last presentation deadline"
+		);
+		startup.progressed();
+		assert!(!startup.expired());
+	}
+
+	#[test]
+	fn startup_deadline_interrupts_a_body_and_html_never_reaches_the_decoder() {
+		for html in [false, true] {
+			let runtime = tokio::runtime::Runtime::new().unwrap();
+			let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+			listener.set_nonblocking(true).unwrap();
+			let url = url::Url::parse(&format!("http://{}/clip", listener.local_addr().unwrap()))
+				.unwrap();
+			let finished = Arc::new(AtomicBool::new(false));
+			let done = finished.clone();
+			let server = std::thread::spawn(move || {
+				let deadline = std::time::Instant::now() + Duration::from_secs(5);
+				let mut socket = loop {
+					match listener.accept() {
+						Ok((s, _)) => break s,
+						Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+							if done.load(Ordering::Acquire) {
+								return;
+							}
+							assert!(std::time::Instant::now() < deadline);
+							std::thread::sleep(Duration::from_millis(5));
+						}
+						Err(e) => panic!("{e}"),
+					}
+				};
+				socket.set_nonblocking(false).unwrap();
+				socket
+					.set_read_timeout(Some(Duration::from_secs(5)))
+					.unwrap();
+				let mut headers = Vec::new();
+				while !headers.ends_with(b"\r\n\r\n") {
+					let mut b = [0];
+					socket.read_exact(&mut b).unwrap();
+					headers.push(b[0]);
+					assert!(headers.len() < 8192);
+				}
+				write!(
+					socket,
+					"HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: 128\r\nConnection: close\r\n\r\n",
+					if html { "text/html" } else { "video/mp4" }
+				)
+				.unwrap();
+				// Hold the declared body open until timeout or MIME rejection closes the reader.
+				let _ = socket.read(&mut [0]);
+			});
+			let result = source_until(
+				Some(url),
+				0,
+				Arc::new(AtomicBool::new(false)),
+				runtime.handle().clone(),
+				Some(Startup::new(
+					std::time::Instant::now()
+						+ if html {
+							Duration::from_secs(5)
+						} else {
+							Duration::from_millis(200)
+						},
+				)),
+			);
+			finished.store(true, Ordering::Release);
+			server.join().unwrap();
+			assert_eq!(
+				result.err(),
+				Some(if html { WEB_PAGE } else { STARTUP_TIMEOUT })
+			);
+		}
+	}
 
 	#[test]
 	fn embed_probe_requires_a_bounded_range_length() {

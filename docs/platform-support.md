@@ -416,18 +416,26 @@ Direct embed videos use the same bounded decoder, including extensionless Discor
 URLs and WebM/Matroska containers. Unknown dimensions reserve a usable 16:9 stage;
 decoded pictures retain their aspect ratio within it. Small servers that ignore a range probe can supply
 one complete file of at most 256 KiB; larger files still require validated range support.
-When Discord omits a media proxy, explicit Play also accepts Twitter's public MP4 paths,
-OGInstagram offloads and Instagram CDN MP4 files. Up to three redirects stay within the
+Explicit Play accepts signed Discord CDN attachment links, including MOV links whose
+embed omits video metadata. Media attachment hosts resolve to the original CDN without
+changing signed parameters. Proxy and approved original candidates remain available for
+one fallback attempt. Twitter public MP4 paths, OGInstagram offloads and Instagram CDN
+MP4 files use the same anonymous reader, with a Serein User-Agent. HTML responses are
+rejected before decoding. Up to three redirects stay within the
 approved HTTPS media origins; arbitrary sites and credential-bearing URLs are refused.
 
 YouTube's HTML player is separate from FFmpeg file decoding. An explicit Play action opens
-the official privacy-enhanced player in an isolated native surface on Windows/macOS, or
+the official privacy-enhanced player inside its message card on Windows/macOS, or
 a separate Serein GTK video window on Linux. Only a validated public video ID and start
-time reach that player. It receives a fixed application referrer, never Discord credentials,
+time reach that player. Its owned wrapper supplies an application origin, never Discord credentials,
 message URLs or account identifiers. Navigation stays on that selected player; popups,
-downloads and device permissions are denied. Closing, minimization, navigation, source
-retirement, suppression, blocking, spoiler revocation, session changes and logout retire
-the view. Loading failures expose Retry and the existing confirmed Open original action.
+downloads and device permissions are denied. The child surface is clipped to the visible
+card and hidden behind client menus/dialogs. Scrolling offscreen pauses playback without
+losing position or overriding a manual pause. Enlarge and fullscreen require explicit actions. Closing,
+minimization, navigation, source retirement, suppression, blocking, spoiler revocation,
+session changes and logout retire the view. The official IFrame API supplies playback and
+error status; document load does not establish playback. Startup is bounded to 30 seconds
+and playback stalls to 15 seconds. Failures expose Retry and confirmed Open original.
 Provider restrictions, private/age-restricted videos, native runtime availability and live
 playback remain separate acceptance checks. Other provider-only HTML players retain the
 confirmed browser fallback; no arbitrary-origin extractor is added. Provider playback

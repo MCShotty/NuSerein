@@ -50,6 +50,7 @@ pub struct SearchUi {
 	/// the rest of search.
 	history: Vec<String>,
 	formats: crate::markdown::FormatCache,
+
 	/// Bounded message shells for the current page so the chat media renderers can draw hits.
 	previews: std::collections::HashMap<Id, model::Message>,
 	/// Attachment viewer open on a result: (message, attachment).
@@ -1551,6 +1552,60 @@ impl SearchUi {
 				});
 		}
 	}
+	/// Validate an active search source even while its result row is outside the viewport.
+	pub(super) fn playback_message<'a>(
+		&'a self,
+		state: &State,
+		video: &crate::video::VideoUi,
+	) -> Option<&'a model::Message> {
+		if !self.open || self.channel != state.selected || (!state.demo && !state.can_search()) {
+			return None;
+		}
+		let (channel, id) = video
+			.active
+			.as_ref()
+			.map(|(c, id, _)| (*c, *id))
+			.or_else(|| video.provider.as_ref().map(|p| (p.channel, p.message)))?;
+		let view = state.search.as_ref()?;
+		if view.pins != self.pins {
+			return None;
+		}
+		let hit = view
+			.page
+			.as_ref()?
+			.hits
+			.iter()
+			.find(|hit| hit.id == id && hit.channel == channel)?;
+		let preview = self.previews.get(&id)?;
+		if !self
+			.restricted
+			.allows(state, crate::restricted::Key::hit(hit))
+			|| preview.author != hit.author
+			|| preview.content != hit.excerpt
+			|| preview.attachments != hit.attachments
+			|| preview.embeds != hit.embeds
+			|| crate::embeds::has_media_spoilers(preview)
+		{
+			return None;
+		}
+		let matches = if let Some((_, _, attachment)) = &video.active {
+			preview.attachments.contains(attachment)
+				|| preview
+					.embeds
+					.iter()
+					.any(|e| crate::embeds::native_video(e).as_ref() == Some(attachment))
+		} else {
+			let provider = video.provider.as_ref()?;
+			provider.generation == state.generation
+				&& preview.embeds.iter().any(|e| {
+					crate::embeds::youtube_video(e).as_ref() == Some(&provider.target)
+						&& crate::embeds::provider_source(e).as_deref()
+							== Some(provider.source.as_str())
+				})
+		};
+		matches.then_some(preview)
+	}
+
 	/// Bounded message shell that lets the chat attachment and embed renderers draw a hit.
 	fn shell(&mut self, hit: &model::SearchHit) {
 		let preview = self
@@ -1803,6 +1858,8 @@ impl SearchUi {
 									.color(colors.muted),
 								);
 							} else {
+								let previous_origin = media.video.rendering;
+								media.video.rendering = crate::video::Origin::Search;
 								if !preview.embeds.is_empty()
 									&& let Some(gif) = crate::embeds::show(
 										ui,
@@ -1834,6 +1891,7 @@ impl SearchUi {
 										crate::design::MessageCardSurface::Opaque,
 									);
 								}
+								media.video.rendering = previous_origin;
 							}
 						}
 						surface.finish(ui);
@@ -2136,6 +2194,59 @@ fn channel_heading(ui: &mut egui::Ui, state: &State, channel: &model::Channel) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn search_playback_survives_outside_the_timeline_and_retires_with_its_source() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		state.timeline.clear();
+		let embed = model::Embed {
+			url: Some("https://cdn.discordapp.com/attachments/1/2/clip.mov".into()),
+			..Default::default()
+		};
+		let attachment = crate::embeds::native_video(&embed).unwrap();
+		let source = test_support::message(500, channel);
+		let hit = model::SearchHit {
+			id: source.id,
+			channel,
+			author: source.author.clone(),
+			mentions: vec![],
+			excerpt: "A video result".into(),
+			attachments: vec![attachment.clone()],
+			embeds: vec![],
+		};
+		state.request_search("has:video".into(), None).unwrap();
+		let mut search = SearchUi {
+			open: true,
+			channel: Some(channel),
+			..Default::default()
+		};
+		search.shell(&hit);
+		state.search.as_mut().unwrap().page = Some(model::SearchPage {
+			hits: vec![hit],
+			total: 1,
+			partial: false,
+			pin_cursor: None,
+		});
+		let mut timeline = crate::timeline::TimelineView::default();
+		timeline.video.origin = crate::video::Origin::Search;
+		timeline.video.active = Some((channel, source.id, attachment));
+		assert!(search.playback_message(&state, &timeline.video).is_some());
+		assert!(!timeline.show_fullscreen_video(&egui::Context::default(), &state));
+		assert!(
+			timeline.video.active.is_some(),
+			"search playback must not depend on a timeline row"
+		);
+		search.open = false;
+		assert!(search.playback_message(&state, &timeline.video).is_none());
+		search.open = true;
+		state.search.as_mut().unwrap().page.as_mut().unwrap().hits[0]
+			.attachments
+			.clear();
+		assert!(search.playback_message(&state, &timeline.video).is_none());
+		timeline.show_search_video(&egui::Context::default(), None, true);
+		assert!(timeline.video.active.is_none());
+	}
+
 	#[test]
 	fn restricted_search_and_pin_cards_never_preload_media_and_close_existing_playback() {
 		for pins in [false, true] {

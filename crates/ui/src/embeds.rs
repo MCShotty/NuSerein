@@ -144,15 +144,44 @@ pub fn standalone_media_links(message: &Message) -> bool {
 
 /// A media proxy or known public provider's video file for the native player.
 /// The desktop validates the URL again; HTML players must not reach a file decoder.
+enum PlaybackTarget {
+	Native(model::Attachment),
+	YouTube(model::YouTubeVideo),
+	External,
+}
+fn playback_target(embed: &Embed) -> PlaybackTarget {
+	if let Some(clip) = native_media(embed) {
+		PlaybackTarget::Native(clip)
+	} else if let Some(target) = youtube_video(embed) {
+		PlaybackTarget::YouTube(target)
+	} else {
+		PlaybackTarget::External
+	}
+}
 pub(crate) fn native_video(embed: &Embed) -> Option<model::Attachment> {
+	match playback_target(embed) {
+		PlaybackTarget::Native(clip) => Some(clip),
+		_ => None,
+	}
+}
+fn native_media(embed: &Embed) -> Option<model::Attachment> {
 	if embed.kind == "gifv" {
 		return None;
 	}
-	let video = embed.video.as_ref()?;
+	let fallback;
+	let video = if let Some(video) = &embed.video {
+		video
+	} else {
+		fallback = model::EmbedMedia {
+			url: embed.url.clone(),
+			..Default::default()
+		};
+		&fallback
+	};
 	if video.url.as_deref().and_then(youtube_target).is_some() {
 		return None;
 	}
-	let proxy = crate::video::embedded_video_url(video)?;
+	crate::video::embedded_video_url(video)?;
 	let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
 	let (width, height) = if video.width > 0 && video.height > 0 {
 		(video.width, video.height)
@@ -174,8 +203,8 @@ pub(crate) fn native_video(embed: &Embed) -> Option<model::Attachment> {
 		// Unknown size marks an embed; the desktop probes it with a range request.
 		size: 0,
 		media: model::EmbedMedia {
-			url: Some(proxy.into()),
-			proxy_url: None,
+			url: video.url.clone(),
+			proxy_url: video.proxy_url.clone(),
 			width,
 			height,
 			placeholder: Vec::new(),
@@ -722,7 +751,11 @@ fn browser_video_preview(
 			},
 			ui.is_enabled(),
 			crate::i18n::translate(if provider.is_some() {
-				"video-provider-play"
+				if cfg!(target_os = "linux") {
+					"video-provider-open-window"
+				} else {
+					"video-provider-play"
+				}
 			} else {
 				"embeds-show-video-preview-playback-opens-in-your-browser"
 			}),
@@ -730,24 +763,40 @@ fn browser_video_preview(
 	});
 	let painter = ui.painter().with_clip_rect(response.rect);
 	let center = response.rect.center();
-	painter.circle_filled(
-		center,
-		28.0,
-		egui::Color32::from_black_alpha(if response.hovered() { 210 } else { 170 }),
-	);
-	painter.add(egui::Shape::convex_polygon(
-		vec![
-			center + egui::vec2(-7.0, -11.0),
-			center + egui::vec2(12.0, 0.0),
-			center + egui::vec2(-7.0, 11.0),
-		],
-		egui::Color32::WHITE,
-		egui::Stroke::NONE,
-	));
+	if provider.is_none() {
+		crate::icons::paint(
+			&painter,
+			crate::icons::Icon::External,
+			egui::Rect::from_center_size(
+				response.rect.right_top() + egui::vec2(-20.0, 20.0),
+				egui::vec2(20.0, 20.0),
+			),
+			egui::Color32::WHITE,
+		);
+	} else {
+		painter.circle_filled(
+			center,
+			28.0,
+			egui::Color32::from_black_alpha(if response.hovered() { 210 } else { 170 }),
+		);
+		painter.add(egui::Shape::convex_polygon(
+			vec![
+				center + egui::vec2(-7.0, -11.0),
+				center + egui::vec2(12.0, 0.0),
+				center + egui::vec2(-7.0, 11.0),
+			],
+			egui::Color32::WHITE,
+			egui::Stroke::NONE,
+		));
+	}
 	if response
 		.on_hover_cursor(egui::CursorIcon::PointingHand)
 		.on_hover_text(crate::i18n::translate(if provider.is_some() {
-			"video-provider-play"
+			if cfg!(target_os = "linux") {
+				"video-provider-open-window"
+			} else {
+				"video-provider-play"
+			}
 		} else {
 			"embeds-show-video-preview-playback-opens-in-your-browser"
 		}))
@@ -892,9 +941,12 @@ pub fn show(
 						.auto_shrink([false, true])
 						.show(ui, |ui| {
 							let part = 1 + index as u16 * 64;
-							let native = native_video(embed);
+							let (native, provider) = match playback_target(embed) {
+								PlaybackTarget::Native(clip) => (Some(clip), None),
+								PlaybackTarget::YouTube(target) => (None, Some(target)),
+								PlaybackTarget::External => (None, None),
+							};
 							let playable = native.is_some();
-							let provider = youtube_video(embed);
 							let web_video = provider.is_some()
 								|| embed.video.is_some() || embed.kind == "video";
 							let large = large_thumbnail(embed).filter(|_| count == 1);
@@ -1019,7 +1071,17 @@ pub fn show(
 								field += count;
 							}
 							let poster = embed.image.as_ref().or(embed.thumbnail.as_ref());
-							if let Some(attachment) = &native {
+							let provider_active = provider
+								.as_ref()
+								.is_some_and(|target| video.provider_matches(message, target));
+							if provider_active {
+								let dimensions = embed
+									.video
+									.as_ref()
+									.or(poster)
+									.map_or((0, 0), |v| (v.width, v.height));
+								video.show_provider_card(ui, dimensions, opening);
+							} else if let Some(attachment) = &native {
 								let size =
 									crate::video::stage_size(attachment, ui.available_width());
 								let stage = egui::Rect::from_min_size(ui.cursor().min, size);
@@ -1085,7 +1147,8 @@ pub fn show(
 								);
 							}
 							if !playable
-								&& poster.is_none() && let Some(target) = provider
+								&& !provider_active && poster.is_none()
+								&& let Some(target) = provider
 								&& crate::design::button(
 									ui,
 									"video-provider-play",

@@ -1593,6 +1593,82 @@ pub fn seed_stickers(state: &mut State) {
 	}
 }
 
+/// The existing synthetic MOV with its physical chunks grouped by track. Sample timing,
+/// codec headers and payloads are unchanged; only stco offsets and mdat order change.
+pub fn video_fixture(video_first: Option<bool>) -> Vec<u8> {
+	reorder_video_fixture(
+		include_bytes!("../../../apps/desktop/tests/fixtures/video.mov"),
+		video_first,
+	)
+}
+pub fn reorder_video_fixture(input: &[u8], video_first: Option<bool>) -> Vec<u8> {
+	fn u32_at(bytes: &[u8], at: usize) -> usize {
+		u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+	}
+	fn chunks(
+		bytes: &[u8],
+		start: usize,
+		end: usize,
+		mut track: usize,
+		tables: &mut Vec<(usize, usize, usize)>,
+	) {
+		let mut at = start;
+		while at + 8 <= end {
+			let size = u32_at(bytes, at);
+			assert!(size >= 8 && at + size <= end);
+			let kind = &bytes[at + 4..at + 8];
+			if kind == b"trak" {
+				track = at;
+			}
+			if [b"moov", b"trak", b"mdia", b"minf", b"stbl"]
+				.iter()
+				.any(|k| kind == *k)
+			{
+				chunks(bytes, at + 8, at + size, track, tables);
+			}
+			if kind == b"stco" {
+				for index in 0..u32_at(bytes, at + 12) {
+					let field = at + 16 + index * 4;
+					tables.push((track, u32_at(bytes, field), field));
+				}
+			}
+			at += size;
+		}
+	}
+	let mut output = input.to_vec();
+	let Some(video_first) = video_first else {
+		return output;
+	};
+	let mut tables = Vec::new();
+	chunks(input, 0, input.len(), 0, &mut tables);
+	let mut tracks: Vec<_> = tables.iter().map(|t| t.0).collect();
+	tracks.sort_unstable();
+	tracks.dedup();
+	assert_eq!(tracks.len(), 2);
+	let mut offsets: Vec<_> = tables.iter().map(|t| t.1).collect();
+	offsets.sort_unstable();
+	let mut at = 0;
+	while &input[at + 4..at + 8] != b"mdat" {
+		at += u32_at(input, at);
+	}
+	let end = at + u32_at(input, at);
+	let mut cursor = at + 8;
+	if !video_first {
+		tracks.reverse();
+	}
+	for track in tracks {
+		for &(_, offset, field) in tables.iter().filter(|t| t.0 == track) {
+			let next = offsets.iter().copied().find(|n| *n > offset).unwrap_or(end);
+			let len = next - offset;
+			output[cursor..cursor + len].copy_from_slice(&input[offset..next]);
+			output[field..field + 4].copy_from_slice(&(cursor as u32).to_be_bytes());
+			cursor += len;
+		}
+	}
+	assert_eq!(cursor, end);
+	output
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

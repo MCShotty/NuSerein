@@ -32,6 +32,7 @@ pub(super) fn open(
 	source: Box<dyn platform::video::ReadSeek>,
 	cancelled: &AtomicBool,
 	adapter: Option<model::VideoAdapter>,
+	startup: impl Fn() -> Option<&'static str>,
 ) -> Result<AttachmentDecoder, &'static str> {
 	let executable = [
 		"/opt/homebrew/bin/ffmpeg",
@@ -53,7 +54,7 @@ pub(super) fn open(
 		.create(&directory)
 		.map_err(|_| FAILED)?;
 	let temporary = Temporary(directory);
-	let result = convert(source, cancelled, adapter, executable, &temporary);
+	let result = convert(source, cancelled, adapter, executable, &temporary, &startup);
 	fs::remove_dir_all(&temporary.0).map_err(
 		|_| "Temporary video cleanup failed; remove serein-video files from the system temporary folder",
 	)?;
@@ -66,6 +67,7 @@ fn convert(
 	adapter: Option<model::VideoAdapter>,
 	executable: &str,
 	temporary: &Temporary,
+	startup: &impl Fn() -> Option<&'static str>,
 ) -> Result<AttachmentDecoder, &'static str> {
 	let input = temporary.0.join("input");
 	let output = temporary.0.join("output.mp4");
@@ -80,6 +82,9 @@ fn convert(
 	loop {
 		if cancelled.load(Ordering::Acquire) {
 			return Err(FAILED);
+		}
+		if let Some(error) = startup() {
+			return Err(error);
 		}
 		let count = source.read(&mut buffer).map_err(|_| FAILED)?;
 		if count == 0 {
@@ -112,10 +117,16 @@ fn convert(
 		.spawn().map_err(|_| FAILED)?;
 	let deadline = Instant::now() + Duration::from_secs(120);
 	let status = loop {
-		if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+		let startup_error = startup();
+		if cancelled.load(Ordering::Acquire)
+			|| startup_error.is_some()
+			|| Instant::now() >= deadline
+		{
 			let _ = child.kill();
 			let _ = child.wait();
-			return Err("Video conversion cancelled or exceeded two minutes");
+			return Err(
+				startup_error.unwrap_or("Video conversion cancelled or exceeded two minutes")
+			);
 		}
 		match child.try_wait() {
 			Ok(Some(status)) => break status,

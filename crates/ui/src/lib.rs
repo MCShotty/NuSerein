@@ -16,7 +16,9 @@ mod role_names;
 mod server_profile;
 pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
-pub use video::{MediaView, VideoCommand, VideoState, VideoUi, embedded_video_url};
+pub use video::{
+	MediaView, VideoCommand, VideoState, VideoUi, embedded_video_candidates, embedded_video_url,
+};
 mod attachments;
 pub mod external_upload;
 pub mod voice_messages;
@@ -4325,6 +4327,10 @@ impl MessagingUi {
 		}
 		self.timeline.audio.seen = false;
 		self.timeline.video.seen = false;
+		if let Some(player) = &mut self.timeline.video.provider {
+			player.bounds = None;
+			player.clip = None;
+		}
 		let side = self.drain_side_press();
 		let mut commands = Vec::new();
 		commands.extend(state.request_voice_channel_statuses());
@@ -4398,7 +4404,14 @@ impl MessagingUi {
 				.rect_filled(ui.max_rect(), 0, egui::Color32::BLACK);
 			return commands;
 		}
-		if self.timeline.show_fullscreen_video(ui.ctx(), state) {
+		let expanded_video = if self.timeline.video.origin == video::Origin::Search {
+			let message = self.search.playback_message(state, &self.timeline.video);
+			self.timeline
+				.show_search_video(ui.ctx(), message, state.demo)
+		} else {
+			self.timeline.show_fullscreen_video(ui.ctx(), state)
+		};
+		if expanded_video {
 			ui.painter()
 				.rect_filled(ui.max_rect(), 0, egui::Color32::BLACK);
 			return commands;
@@ -7606,6 +7619,118 @@ mod composer_tests {
 				assert!(frame(&mut view, &mut state, vec![]).3.is_empty());
 			}
 		}
+	}
+
+	#[test]
+	fn expanded_provider_original_reaches_the_shared_link_confirmation() {
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let source = "https://youtu.be/synthet1c01";
+		let mut message = test_support::message(600, channel);
+		message.attachments.clear();
+		message.embeds = vec![model::Embed {
+			kind: "video".into(),
+			url: Some(source.into()),
+			..Default::default()
+		}];
+		state.timeline.clear();
+		state.timeline.seed_cache(vec![message.clone()]).unwrap();
+		let mut view = MessagingUi::default();
+		view.reading_preferences.confirm_external_links = true;
+		let frame = |view: &mut MessagingUi, state: &mut State, events| {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1000.0, 800.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					let _ = view.show(ui, state);
+				},
+			)
+		};
+		fn point(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+			output
+				.shapes
+				.iter()
+				.find_map(|shape| match &shape.shape {
+					egui::Shape::Text(text) if text.galley.job.text == label => {
+						Some(text.pos + text.galley.rect.center().to_vec2())
+					}
+					_ => None,
+				})
+				.unwrap_or_else(|| panic!("missing {label}"))
+		}
+		let click = |pos, pressed| {
+			vec![
+				egui::Event::PointerMoved(pos),
+				egui::Event::PointerButton {
+					pos,
+					button: egui::PointerButton::Primary,
+					pressed,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]
+		};
+		for _ in 0..3 {
+			frame(&mut view, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		view.timeline.video.open_provider(
+			&message,
+			model::YouTubeVideo::new("synthet1c01", 0).unwrap(),
+			source.into(),
+			state.generation,
+		);
+		view.timeline.video.provider.as_mut().unwrap().expanded = true;
+		for _ in 0..3 {
+			frame(&mut view, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		let output = frame(&mut view, &mut state, vec![]);
+		let original = point(
+			&output,
+			&crate::i18n::translate("video-provider-open-original"),
+		);
+		output.drop_without_applying_deltas();
+		for pressed in [true, false] {
+			let output = frame(&mut view, &mut state, click(original, pressed));
+			assert!(
+				!output
+					.platform_output
+					.commands
+					.iter()
+					.any(|command| matches!(command, egui::OutputCommand::OpenUrl(_)))
+			);
+			output.drop_without_applying_deltas();
+		}
+		assert_eq!(view.timeline.opening.as_deref(), Some(source));
+		assert!(!view.timeline.video.provider.as_ref().unwrap().expanded);
+		for _ in 0..3 {
+			frame(&mut view, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		let output = frame(&mut view, &mut state, vec![]);
+		let confirm = point(
+			&output,
+			&crate::i18n::translate("markdown-confirm-external-link-open-in-browser"),
+		);
+		output.drop_without_applying_deltas();
+		let mut opened = Vec::new();
+		for pressed in [true, false] {
+			let output = frame(&mut view, &mut state, click(confirm, pressed));
+			opened.extend(output.platform_output.commands.iter().filter_map(
+				|command| match command {
+					egui::OutputCommand::OpenUrl(url) => Some(url.url.clone()),
+					_ => None,
+				},
+			));
+			output.drop_without_applying_deltas();
+		}
+		assert_eq!(opened, [source]);
+		assert!(view.timeline.opening.is_none());
 	}
 
 	#[test]

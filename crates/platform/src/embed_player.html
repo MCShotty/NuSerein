@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-serein-player' https://www.youtube.com; frame-src https://www.youtube-nocookie.com; style-src 'nonce-serein-player'; base-uri 'none'; form-action 'none'">
+<style nonce="serein-player">html,body,#player{margin:0;width:100%;height:100%;overflow:hidden;background:#000}</style>
+<div id="player"></div>
+<script nonce="serein-player">
+'use strict';
+const video = __VIDEO__;
+let player, ready = false, hidden = true, resume = false, observed = -1;
+function send(state, error = 0) {
+  const position = ready ? player.getCurrentTime() : 0;
+  const data = JSON.stringify({state, error, position: Number.isFinite(position) ? position : 0});
+  if (window.ipc) window.ipc.postMessage(data);
+  else if (window.webkit?.messageHandlers?.sereinPlayer) window.webkit.messageHandlers.sereinPlayer.postMessage(data);
+}
+window.sereinVisibility = function(visible) {
+  if (hidden === !visible) return;
+  hidden = !visible;
+  if (!ready) return;
+  if (hidden) {
+    resume = observed === 1 || observed === 3 || observed === -1;
+    player.pauseVideo();
+  } else if (resume) {
+    resume = false;
+    player.playVideo();
+  }
+};
+window.onYouTubeIframeAPIReady = function() {
+  player = new YT.Player('player', {
+    host: 'https://www.youtube-nocookie.com', width: '100%', height: '100%', videoId: video.id,
+    playerVars: {autoplay: 1, playsinline: 1, rel: 0, start: video.start, origin: location.origin},
+    events: {
+      onReady() { ready = true; send('ready'); if (hidden) { resume = true; player.pauseVideo(); send('paused'); } else player.playVideo(); },
+      onStateChange(event) {
+        observed = event.data;
+        if (hidden && observed === 1) { resume = true; player.pauseVideo(); return; }
+        send(({[-1]:'loading', 0:'ended', 1:'playing', 2:'paused', 3:'buffering', 5:'ready'})[observed] || 'loading');
+      },
+      onError(event) { observed = 0; resume = false; send('failed', event.data); },
+      onAutoplayBlocked() { observed = 2; send('paused'); }
+    }
+  });
+};
+setInterval(() => { if (ready && observed === 1) send('playing'); }, 1000);
+</script>
+<script src="https://www.youtube.com/iframe_api"></script>
