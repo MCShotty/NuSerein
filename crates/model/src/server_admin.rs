@@ -582,7 +582,7 @@ impl Members {
 			+ self
 				.roles
 				.iter()
-				.map(|role| role.role.name.capacity())
+				.map(|role| role.role.heap_bytes())
 				.sum::<usize>()
 			+ self.features.capacity() * size_of::<String>()
 			+ self.features.iter().map(String::capacity).sum::<usize>()

@@ -686,6 +686,7 @@ mod tests {
 			panic!()
 		};
 		let user = |id| User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(id),
@@ -1278,6 +1279,7 @@ mod tests {
 	#[test]
 	fn reaction_permissions_distinguish_existing_emoji_and_late_reads() {
 		let user = User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(2),
@@ -1324,6 +1326,8 @@ mod tests {
 					id: Id(1),
 					owner: Some(Id(999)),
 					roles: Some(vec![p::Role {
+						icon: None,
+						unicode_emoji: None,
 						name: String::new(),
 						color: 0,
 						secondary_color: None,

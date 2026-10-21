@@ -145,6 +145,7 @@ mod tests {
 		};
 		let mut state = State {
 			user: Some(User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(9),
@@ -196,6 +197,8 @@ mod tests {
 						id: guild.id,
 						owner: Some(Id(999)),
 						roles: Some(vec![model::permissions::Role {
+							icon: None,
+							unicode_emoji: None,
 							name: String::new(),
 							color: 0,
 							secondary_color: None,
@@ -268,6 +271,7 @@ mod tests {
 			id: Id(500),
 			channel: Id(100),
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(9),

@@ -701,6 +701,7 @@ mod tests {
 	}
 	fn person(id: u64) -> model::User {
 		model::User {
+			username: None,
 			id: Id(id),
 			name: format!("Synthetic {id}"),
 			avatar: None,
@@ -1030,6 +1031,7 @@ mod tests {
 			generation: state.generation,
 			event: CoreEvent::Ready {
 				user: model::User {
+					username: None,
 					primary_guild: None,
 					cosmetics: None,
 					id: Id(1),

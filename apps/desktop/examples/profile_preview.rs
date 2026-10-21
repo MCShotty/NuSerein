@@ -381,6 +381,8 @@ fn prime_channel_links(state: &mut client_core::State) {
 		event: client_core::Event::Permissions(client_core::permissions::Event::Role {
 			guild: model::Id(10),
 			role: model::permissions::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: model::Id(101),
 				name: "Synthetic colored role".into(),
 				bits: 0,

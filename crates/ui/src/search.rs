@@ -2686,6 +2686,7 @@ mod tests {
 						id: Id(10),
 						channel: Id(1),
 						author: model::User {
+							username: None,
 							kind: model::AccountKind::Human,
 							webhook: false,
 							id: Id(7),
@@ -2976,6 +2977,7 @@ mod tests {
 			last_message: None,
 		};
 		let user = model::User {
+			username: None,
 			kind: model::AccountKind::Human,
 			webhook: false,
 			id: Id(42),

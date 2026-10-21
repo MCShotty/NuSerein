@@ -5488,3 +5488,6 @@ video-provider-embedding-disabled = This video cannot play inside other apps. Op
 video-provider-identity-failed = YouTube could not verify the player. Retry or open the original.
 video-provider-buffering-failed = Video buffering stopped. Retry or open the original.
 video-provider-open-window = Open video player
+mentions-section-members = Members
+mentions-section-roles = Roles
+mentions-section-special = Other mentions

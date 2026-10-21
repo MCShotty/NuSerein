@@ -629,6 +629,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(2),
@@ -672,6 +673,8 @@ mod tests {
 					id: Id(1),
 					owner: Some(Id(9)),
 					roles: Some(vec![model::permissions::Role {
+						icon: None,
+						unicode_emoji: None,
 						id: Id(1),
 						bits: p::VIEW_CHANNEL | p::READ_MESSAGE_HISTORY,
 						name: "Synthetic everyone".into(),

@@ -515,6 +515,8 @@ mod tests {
 						id: Id(id),
 						owner: Some(Id(99)),
 						roles: Some(vec![model::permissions::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: Id(id),
 							bits: model::permissions::VIEW_CHANNEL
 								| model::permissions::READ_MESSAGE_HISTORY,

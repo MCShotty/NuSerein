@@ -6579,6 +6579,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(20),
 			author: model::User {
+				username: None,
 				id: Id(2),
 				name: "Robin".into(),
 				avatar: None,
@@ -8578,6 +8579,7 @@ mod tests {
 			auth: client_core::auth::AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				username: None,
 				id: Id(999),
 				name: "Synthetic".into(),
 				avatar: None,
@@ -8613,6 +8615,8 @@ mod tests {
 							timeout_until: None,
 						}),
 						roles: Some(vec![p::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: Id(id),
 							name: String::new(),
 							color: 0,
@@ -10388,6 +10392,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				username: None,
 				id: Id(3),
 				name: "Synthetic".into(),
 				avatar: None,
@@ -10450,6 +10455,7 @@ mod tests {
 		});
 		// Channel names are shown only with view and read permission.
 		state.user = Some(model::User {
+			username: None,
 			id: Id(9),
 			name: "Synthetic viewer".into(),
 			avatar: None,
@@ -10564,6 +10570,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				username: None,
 				id: Id(3),
 				name: "Synthetic".into(),
 				avatar: None,
@@ -10666,6 +10673,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				username: None,
 				id: Id(3),
 				name: "Synthetic".into(),
 				avatar: None,

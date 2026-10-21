@@ -328,6 +328,8 @@ fn main() -> eframe::Result {
 			event: Event::Permissions(client_core::permissions::Event::Role {
 				guild,
 				role: model::permissions::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: role,
 					name: "Verified".into(),
 					color: 0x00ff00,
@@ -1676,6 +1678,8 @@ impl Desktop {
 					}
 					roles.extend([
 						model::permissions::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: model::Id(9001),
 							bits: 0,
 							name: "Founders".into(),
@@ -1686,6 +1690,8 @@ impl Desktop {
 							hoist: true,
 						},
 						model::permissions::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: model::Id(9002),
 							bits: 0,
 							name: "Community".into(),

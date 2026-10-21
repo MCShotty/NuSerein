@@ -1519,7 +1519,7 @@ fn reaction_chip(ui: &mut egui::Ui, images: (&mut Avatars, bool), reaction: &mod
 }
 
 /// A post's title; read posts stay quiet and unread ones bright, like Discord.
-fn title_row(ui: &mut egui::Ui, post: &Channel, unread: bool, size: f32) {
+fn title_row(ui: &mut egui::Ui, post: &Channel, unread: bool, mentions: u32, size: f32) {
 	let colors = design::palette(ui);
 	ui.horizontal(|ui| {
 		ui.spacing_mut().item_spacing.x = 8.0;
@@ -1528,7 +1528,11 @@ fn title_row(ui: &mut egui::Ui, post: &Channel, unread: bool, size: f32) {
 			ui.painter()
 				.circle_filled(rect.center(), 4.0, colors.text_strong);
 		}
-		ui.add(
+		let badge = crate::notifications::badge_size(mentions);
+		let title_width =
+			(ui.available_width() - if mentions > 0 { badge.x + 8.0 } else { 0.0 }).max(0.0);
+		ui.add_sized(
+			[title_width, size + 4.0],
 			egui::Label::new(if unread {
 				design::semibold(ui, &post.name, size).color(colors.text_strong)
 			} else {
@@ -1537,6 +1541,10 @@ fn title_row(ui: &mut egui::Ui, post: &Channel, unread: bool, size: f32) {
 			.truncate()
 			.selectable(false),
 		);
+		if mentions > 0 {
+			let (rect, _) = ui.allocate_exact_size(badge, egui::Sense::hover());
+			crate::notifications::badge(ui, rect.center(), mentions, colors.raised);
+		}
 	});
 }
 
@@ -1635,13 +1643,18 @@ fn stats_row(
 	});
 }
 
-fn describe(response: &egui::Response, post: &Channel, (archived, unread): (bool, bool)) {
+fn describe(
+	response: &egui::Response,
+	post: &Channel,
+	(archived, unread): (bool, bool),
+	mentions: u32,
+) {
 	response.widget_info(|| {
 		egui::WidgetInfo::labeled(
 			egui::Role::Button,
 			true,
 			format!(
-				"{}{}{}; {} {}",
+				"{}{}{}; {} {}; {} {}",
 				post.name,
 				if unread {
 					crate::i18n::translate("forum-describe-unread")
@@ -1657,7 +1670,9 @@ fn describe(response: &egui::Response, post: &Channel, (archived, unread): (bool
 					|| crate::i18n::translate("forum-describe-unknown"),
 					|n| n.to_string()
 				),
-				crate::i18n::translate("forum-describe-replies")
+				crate::i18n::translate("forum-describe-replies"),
+				mentions,
+				crate::i18n::translate("inbox-mentions")
 			),
 		)
 	});
@@ -1695,7 +1710,7 @@ fn card(
 								if !tags.is_empty() {
 									card_tags(ui, (images, state.demo), &tags, CARD_TAGS);
 								}
-								title_row(ui, post, flags.1, 16.0);
+								title_row(ui, post, flags.1, state.mention_count(post.id), 16.0);
 								latest_row(ui, state, post);
 								stats_row(ui, state, images, post, flags, now);
 							});
@@ -1714,7 +1729,7 @@ fn card(
 			},
 		)
 		.response;
-	describe(&response, post, flags);
+	describe(&response, post, flags, state.mention_count(post.id));
 	response
 }
 
@@ -1783,7 +1798,7 @@ fn tile(
 								} else {
 									card_tags(ui, (images, state.demo), &tags, 2);
 								}
-								title_row(ui, post, flags.1, 15.0);
+								title_row(ui, post, flags.1, state.mention_count(post.id), 15.0);
 								latest_row(ui, state, post);
 								stats_row(ui, state, images, post, flags, now);
 							});
@@ -1791,7 +1806,7 @@ fn tile(
 			},
 		)
 		.response;
-	describe(&response, post, flags);
+	describe(&response, post, flags, state.mention_count(post.id));
 	response
 }
 
@@ -2020,6 +2035,63 @@ mod tests {
 			draw,
 		);
 		output.drop_without_applying_deltas();
+	}
+
+	#[test]
+	fn forum_list_and_gallery_show_mention_counts_even_for_long_titles() {
+		for gallery in [false, true] {
+			let ctx = egui::Context::default();
+			let mut state = test_support::demo_state();
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+					entries: Some(vec![(Id(27), Some(Id(27)), 123)]),
+					version: None,
+					partial: true,
+				}),
+			});
+			let mut post = state.channel(Id(27)).unwrap().clone();
+			post.name =
+				"A long synthetic post title that must leave room for its mentions".repeat(3);
+			let mut images = Avatars::default();
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(320.0, 600.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					if gallery {
+						tile(
+							ui,
+							&state,
+							&mut images,
+							&post,
+							(false, true),
+							(280.0, crate::local_time::now()),
+						);
+					} else {
+						card(
+							ui,
+							&state,
+							&mut images,
+							&post,
+							(false, true),
+							crate::local_time::now(),
+						);
+					}
+				},
+			);
+			assert!(
+				painted_text(&output.shapes)
+					.iter()
+					.any(|text| text == "99+"),
+				"missing mention badge, gallery={gallery}"
+			);
+			output.drop_without_applying_deltas();
+		}
 	}
 
 	#[test]

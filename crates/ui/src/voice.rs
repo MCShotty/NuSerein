@@ -7821,6 +7821,7 @@ mod tests {
 				name: "Synthetic DM".into(),
 				kind: 1,
 				recipients: vec![model::User {
+					username: None,
 					id: Id(2),
 					name: "Synthetic peer".into(),
 					avatar: None,

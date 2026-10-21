@@ -621,6 +621,40 @@ impl State {
 			0
 		}
 	}
+	/// Sidebar counts include a thread's mentions on its immediate parent. Rail totals
+	/// must continue summing `mention_count`, so each conversation contributes only once.
+	/// Constructed once per navigation revision, never by scanning children per painted row.
+	pub fn channel_mention_counts(&self) -> BTreeMap<Id, u32> {
+		let mut counts = BTreeMap::new();
+		for channel in self.channels.iter().take(MAX_NAV) {
+			if channel.guild.is_none() {
+				continue;
+			}
+			let count = self.mention_count(channel.id);
+			if count > 0 {
+				counts.insert(channel.id, count);
+			}
+		}
+		for channel in self.channels.iter().take(MAX_NAV) {
+			if !matches!(channel.kind, 10..=12) {
+				continue;
+			}
+			let count = counts.get(&channel.id).copied().unwrap_or(0);
+			if count == 0 {
+				continue;
+			}
+			if let Some(parent) = channel.parent_id.and_then(|id| self.channel(id))
+				&& parent.guild.is_some()
+				&& parent.guild == channel.guild
+				&& matches!(parent.kind, 0 | 5 | 15 | 16)
+				&& self.can_view(parent.id)
+			{
+				let entry = counts.entry(parent.id).or_default();
+				*entry = entry.saturating_add(count);
+			}
+		}
+		counts
+	}
 	pub(crate) fn reconcile_notifications(&mut self) {
 		let activity = &self.read_state.activity;
 		let revoked: BTreeSet<_> = activity
@@ -972,6 +1006,7 @@ impl State {
 		let allowed = !message.suppress_notifications
 			&& self.user_content_restriction(message.author.id).is_none()
 			&& self.notification_allowed_for(message.channel, mention);
+		let mut evicted_mention = false;
 		{
 			let activity = &mut self.read_state.activity;
 			// ponytail: retain 4096 observed messages; counts become a lower bound after eviction.
@@ -983,6 +1018,7 @@ impl State {
 				{
 					counts.0 -= 1;
 					counts.1 -= u32::from(mention);
+					evicted_mention |= mention;
 					if counts.0 == 0 {
 						activity.observed_counts.remove(&channel);
 					}
@@ -994,6 +1030,9 @@ impl State {
 			let counts = activity.observed_counts.entry(message.channel).or_default();
 			counts.0 += 1;
 			counts.1 += u32::from(mention);
+		}
+		if evicted_mention {
+			self.note_evicted_mention();
 		}
 		if !allowed {
 			return;
@@ -1055,8 +1094,156 @@ mod tests {
 	use super::*;
 
 	use model::{Channel, Guild, Patch, User, permissions as p};
+
+	#[test]
+	fn mentioned_text_traffic_reuses_rows_but_thread_activity_and_own_ack_refresh() {
+		let mut state = notification_state();
+		let apply = |state: &mut State, message| {
+			state.apply(crate::Envelope {
+				generation: state.generation,
+				event: crate::Event::Message(message),
+			});
+		};
+		apply(&mut state, message(100, 20));
+		assert_eq!(state.mention_count(Id(20)), 1);
+		let initial = state.channel_list_revision();
+		for id in 101..111 {
+			let mut incoming = message(id, 20);
+			incoming.mentions.clear();
+			apply(&mut state, incoming);
+			assert_eq!(state.mention_count(Id(20)), 1);
+			assert_eq!(
+				state.channel_list_revision(),
+				initial,
+				"ordinary messages do not change a mentioned text channel's row or count"
+			);
+		}
+		let mut own = message(111, 20);
+		own.author = state.user.clone().unwrap();
+		own.mentions.clear();
+		apply(&mut state, own);
+		assert_eq!(state.mention_count(Id(20)), 0);
+		assert_ne!(
+			state.channel_list_revision(),
+			initial,
+			"own-message ACK retires the badge"
+		);
+		let mut post = state.channels[0].clone();
+		post.id = Id(30);
+		post.kind = 11;
+		post.parent_id = Some(Id(20));
+		state.channels.push(post);
+		state.invalidate_navigation();
+		apply(&mut state, message(200, 30));
+		let before_activity = state.channel_list_revision();
+		let mut reply = message(201, 30);
+		reply.mentions.clear();
+		apply(&mut state, reply);
+		assert_eq!(state.mention_count(Id(30)), 1);
+		assert_ne!(
+			state.channel_list_revision(),
+			before_activity,
+			"activity in a pinged thread refreshes its position among other pinged threads"
+		);
+	}
+
+	#[test]
+	fn observed_mention_eviction_invalidates_its_other_channel_sidebar_rollup() {
+		let mut state = notification_state();
+		let mut post = state.channels[0].clone();
+		post.id = Id(30);
+		post.kind = 11;
+		post.parent_id = Some(Id(20));
+		state.channels.push(post);
+		state.invalidate_navigation();
+		let apply = |state: &mut State, message| {
+			state.apply(crate::Envelope {
+				generation: state.generation,
+				event: crate::Event::Message(message),
+			});
+		};
+		let mut ping = message(100, 30);
+		ping.suppress_notifications = true;
+		apply(&mut state, ping);
+		assert_eq!(state.mention_count(Id(30)), 1);
+		let initial = state.channel_list_revision();
+		let ordinary = |id| {
+			let mut incoming = message(id, 20);
+			incoming.mentions.clear();
+			incoming.suppress_notifications = true;
+			incoming
+		};
+		for index in 0..MAX_OBSERVED - 1 {
+			apply(&mut state, ordinary(101 + index as u64));
+			assert_eq!(
+				state.channel_list_revision(),
+				initial,
+				"ordinary non-evicting guild traffic reuses sidebar rows"
+			);
+		}
+		assert_eq!(state.channel_mention_counts().get(&Id(20)), Some(&1));
+		let catalog = state.catalog_revision();
+		let labels = state.channel_labels_revision();
+		apply(&mut state, ordinary(101 + MAX_OBSERVED as u64));
+		assert_eq!(state.mention_count(Id(30)), 0);
+		assert!(state.channel_mention_counts().is_empty());
+		assert_ne!(
+			state.channel_list_revision(),
+			initial,
+			"evicting another conversation's mention retires its revealed row and parent badge"
+		);
+		assert_eq!(state.catalog_revision(), catalog);
+		assert_eq!(state.channel_labels_revision(), labels);
+		let after_eviction = state.channel_list_revision();
+		apply(&mut state, ordinary(102 + MAX_OBSERVED as u64));
+		assert_eq!(
+			state.channel_list_revision(),
+			after_eviction,
+			"evicting an ordinary observation does not rebuild navigation"
+		);
+	}
+
+	#[test]
+	fn sidebar_mentions_roll_up_threads_without_changing_direct_counts_or_parent_ack() {
+		let mut state = notification_state();
+		state.channels[0].kind = 15;
+		let mut post = state.channels[0].clone();
+		post.id = Id(30);
+		post.kind = 11;
+		post.parent_id = Some(Id(20));
+		state.channels.push(post);
+		state.invalidate_navigation();
+		state.read_state.activity.set_count(Id(20), 2);
+		state.read_state.activity.set_count(Id(30), 3);
+		let counts = state.channel_mention_counts();
+		assert_eq!(counts.get(&Id(20)), Some(&5));
+		assert_eq!(counts.get(&Id(30)), Some(&3));
+		assert_eq!(
+			state.mention_count(Id(20)) + state.mention_count(Id(30)),
+			5,
+			"server totals use each conversation once"
+		);
+		state
+			.apply_read_state(crate::read_state::Event::Ack {
+				channel: Id(20),
+				message: Some(Id(100)),
+				manual: false,
+				mention_count: Some(0),
+				version: None,
+			})
+			.unwrap();
+		assert_eq!(state.mention_count(Id(30)), 3);
+		assert_eq!(state.channel_mention_counts().get(&Id(20)), Some(&3));
+		state.channels.retain(|channel| channel.id != Id(30));
+		state.invalidate_navigation();
+		assert!(
+			state.channel_mention_counts().is_empty(),
+			"removed metadata cannot leave a parent badge"
+		);
+	}
 	fn notification_state() -> State {
 		let owner = User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(2),
@@ -1105,6 +1292,8 @@ mod tests {
 					owner: Some(Id(999)),
 					roles: Some(vec![
 						p::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: Id(1),
 							bits: p::VIEW_CHANNEL,
 							name: String::new(),
@@ -1115,6 +1304,8 @@ mod tests {
 							hoist: false,
 						},
 						p::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: Id(10),
 							bits: 0,
 							name: String::new(),
@@ -1125,6 +1316,8 @@ mod tests {
 							hoist: false,
 						},
 						p::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: Id(11),
 							bits: 0,
 							name: String::new(),
@@ -2007,6 +2200,7 @@ mod tests {
 
 	fn message(id: u64, channel: u64) -> Message {
 		let owner = User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(2),
@@ -2017,6 +2211,7 @@ mod tests {
 			discriminator: 0,
 		};
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			kind: 0,

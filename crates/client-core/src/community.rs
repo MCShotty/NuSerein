@@ -762,6 +762,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				username: None,
 				id: Id(1),
 				name: "Synthetic owner".into(),
 				avatar: None,
@@ -811,6 +812,8 @@ mod tests {
 				id: Id(10),
 				owner: Some(Id(99)),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(10),
 					name: "@everyone".into(),
 					bits,

@@ -1225,6 +1225,7 @@ impl State {
 						(!self.user_actions.requests.contains_key(&user)).then(|| {
 							(
 								model::User {
+									username: None,
 									id: user,
 									name: "Unknown user".into(),
 									avatar: None,
@@ -2634,6 +2635,7 @@ mod tests {
 	/// Synthetic authenticated state for user-action tests.
 	fn state() -> State {
 		let user = |id| model::User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(id),

@@ -2222,6 +2222,7 @@ mod tests {
 		let ready = || Event::Ready {
 			permissions: model::permissions::Snapshot::default(),
 			user: model::User {
+				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),
 				avatar: None,

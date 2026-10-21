@@ -399,6 +399,7 @@ mod tests {
 			channel: Id(channel),
 			kind: 0,
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(9),
@@ -905,6 +906,8 @@ mod tests {
 					id: Id(10),
 					owner: Some(Id(8)),
 					roles: Some(vec![p::Role {
+						icon: None,
+						unicode_emoji: None,
 						name: String::new(),
 						color: 0,
 						secondary_color: None,

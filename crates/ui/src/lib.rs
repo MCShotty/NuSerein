@@ -1872,6 +1872,10 @@ impl MessagingUi {
 									})
 									.flatten();
 								let text_color = if online { colors.text } else { colors.muted };
+								let icon_role =
+									guild.and_then(|guild| state.guild_roles(guild)).and_then(
+										|roles| mentions::member_icon_role(roles, &member.roles),
+									);
 								let mut show_name = |ui: &mut egui::Ui| {
 									ui.allocate_ui_with_layout(
 										egui::vec2(ui.available_width(), 18.0),
@@ -1881,7 +1885,8 @@ impl MessagingUi {
 											let server_tag = member.user.primary_guild.as_deref();
 											let trailing =
 												profiles::server_tag_width(ui, server_tag)
-													+ if server_tag.is_some() { 5.0 } else { 0.0 };
+													+ if server_tag.is_some() { 5.0 } else { 0.0 }
+													+ if icon_role.is_some() { 21.0 } else { 0.0 };
 											crate::name_styles::in_row(
 												response.contains_pointer() || response.has_focus(),
 												|| {
@@ -1906,6 +1911,15 @@ impl MessagingUi {
 													)
 												},
 											);
+											if let Some(role) = icon_role {
+												mentions::show_role_icon(
+													ui,
+													&mut self.avatars,
+													role,
+													16.0,
+													state.demo,
+												);
+											}
 											if let Some(tag) = server_tag {
 												profiles::server_tag(
 													ui,
@@ -6910,6 +6924,7 @@ mod composer_tests {
 
 	fn edit_state() -> State {
 		let user = model::User {
+			username: None,
 			id: Id(1),
 			name: "Alex".into(),
 			avatar: None,
@@ -9054,6 +9069,7 @@ mod composer_tests {
 					.map(|id| {
 						Some(model::MemberSlot::Person(model::Member {
 							user: model::User {
+								username: None,
 								id: Id(id),
 								name: format!("Synthetic {id}"),
 								avatar: None,
@@ -9090,6 +9106,8 @@ mod composer_tests {
 				owner: None,
 				member: None,
 				roles: Some(vec![model::permissions::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(8),
 					bits: 0,
 					name: "Founders".into(),
@@ -9813,6 +9831,7 @@ mod composer_tests {
 	fn profile_uses_open_conversation_not_browsed_sidebar_server() {
 		for guild in [None, Some(Id(10))] {
 			let user = model::User {
+				username: None,
 				id: Id(2),
 				name: "Synthetic".into(),
 				avatar: None,

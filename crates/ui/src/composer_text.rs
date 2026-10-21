@@ -560,6 +560,7 @@ mod tests {
 
 	fn users() -> Vec<User> {
 		vec![User {
+			username: None,
 			id: model::Id(42),
 			name: "Zoë".into(),
 			avatar: None,

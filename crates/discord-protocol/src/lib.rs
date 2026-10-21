@@ -161,6 +161,12 @@ impl UserDto {
 			self.collectibles,
 			self.display_name_styles,
 		);
+		let username: String = self
+			.username
+			.chars()
+			.filter(|c| !c.is_control())
+			.take(128)
+			.collect();
 		User {
 			kind: if self.bot && (self.public_flags | self.flags) & (1 << 16) != 0 {
 				model::AccountKind::VerifiedBot
@@ -172,10 +178,11 @@ impl UserDto {
 			id: self.id,
 			name: self
 				.global_name
-				.unwrap_or(self.username)
+				.unwrap_or_else(|| username.clone())
 				.chars()
 				.take(128)
 				.collect(),
+			username: (!username.is_empty()).then(|| username.into_boxed_str()),
 			avatar: self.avatar.filter(|hash| model::valid_avatar_hash(hash)),
 			webhook: false,
 			discriminator: self

@@ -601,6 +601,7 @@ mod tests {
 	fn state() -> State {
 		let mut state = State {
 			user: Some(model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),
@@ -644,6 +645,8 @@ mod tests {
 					id: Id(2),
 					owner: Some(Id(9)),
 					roles: Some(vec![model::permissions::Role {
+						icon: None,
+						unicode_emoji: None,
 						id: Id(2),
 						bits: VIEW_CHANNEL | CREATE_INSTANT_INVITE,
 						name: String::new(),
@@ -847,6 +850,7 @@ mod tests {
 	fn server_invites_options_friends_acknowledgement_and_cancellation() {
 		let mut state = state();
 		let friend = model::User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(8),

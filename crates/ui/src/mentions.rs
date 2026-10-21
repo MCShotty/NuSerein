@@ -51,6 +51,9 @@ enum Candidate {
 	Role {
 		id: Id,
 		name: String,
+		color: u32,
+		icon: Option<String>,
+		unicode_emoji: Option<String>,
 	},
 	User {
 		user: User,
@@ -80,7 +83,37 @@ pub(crate) fn user_mention_token(user: Id) -> String {
 	format!("<@{user}> ")
 }
 
+fn username_label(user: &User, display: &str) -> Option<String> {
+	let username = user.username.as_deref().filter(|name| !name.is_empty())?;
+	let label = if user.discriminator == 0 {
+		username.to_owned()
+	} else {
+		format!("{username}#{:04}", user.discriminator)
+	};
+	(label != display).then_some(label)
+}
+
 impl Candidate {
+	fn section(&self) -> u8 {
+		match self {
+			Self::User { .. } => 0,
+			Self::Role { .. } => 1,
+			_ => 2,
+		}
+	}
+	fn same_identity(&self, other: &Self) -> bool {
+		match (self, other) {
+			(Self::User { user: a, .. }, Self::User { user: b, .. }) => a.id == b.id,
+			(Self::Role { id: a, .. }, Self::Role { id: b, .. })
+			| (Self::Channel { id: a, .. }, Self::Channel { id: b, .. })
+			| (Self::Custom { id: a, .. }, Self::Custom { id: b, .. }) => a == b,
+			(Self::Game(a), Self::Game(b)) => a.id == b.id,
+			(Self::Mass { name: a }, Self::Mass { name: b }) => a == b,
+			(Self::Unicode { code: a, .. }, Self::Unicode { code: b, .. }) => a == b,
+			(Self::GameSearch, Self::GameSearch) => true,
+			_ => false,
+		}
+	}
 	#[cfg(test)]
 	fn id(&self) -> Id {
 		match self {
@@ -131,6 +164,61 @@ pub fn known_roles(state: &State, channel: Id) -> &[model::permissions::Role] {
 		.and_then(|c| c.guild)
 		.and_then(|guild| state.guild_roles(guild))
 		.unwrap_or(&[])
+}
+
+/// The icon role follows the role hierarchy independently of hoisting and name color.
+pub(crate) fn member_icon_role<'a>(
+	roles: &'a [model::permissions::Role],
+	assigned: &[Id],
+) -> Option<&'a model::permissions::Role> {
+	roles
+		.iter()
+		.filter(|role| role.has_icon() && assigned.contains(&role.id))
+		.max_by(|a, b| a.cmp_hierarchy(b))
+}
+
+pub(crate) fn show_role_icon(
+	ui: &mut egui::Ui,
+	avatars: &mut Avatars,
+	role: &model::permissions::Role,
+	size: f32,
+	demo: bool,
+) {
+	if let Some(hash) = role
+		.icon
+		.as_deref()
+		.filter(|hash| model::valid_avatar_hash(hash))
+	{
+		avatars
+			.show_icon(
+				ui,
+				Some(format!("role-icon-{}-{hash}", role.id)),
+				size,
+				demo,
+				&role.name,
+			)
+			.on_hover_text(&role.name);
+	} else {
+		let (rect, response) =
+			ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+		if let Some(emoji) = &role.unicode_emoji {
+			if let Some(image) = crate::emoji::image(ui.ctx(), emoji, size) {
+				image.paint_at(ui, rect);
+			} else {
+				ui.painter().with_clip_rect(rect).text(
+					rect.center(),
+					egui::Align2::CENTER_CENTER,
+					emoji,
+					egui::FontId::proportional(size),
+					crate::design::palette(ui).text,
+				);
+			}
+		}
+		response.widget_info(|| {
+			egui::WidgetInfo::labeled(egui::Role::Image, ui.is_enabled(), &role.name)
+		});
+		response.on_hover_text(&role.name);
+	}
 }
 pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 	let mut users = Vec::new();
@@ -544,6 +632,13 @@ impl Menu {
 		}
 		self.catalog_revision = state.game_mentions.revision;
 		self.game_status = state.game_mentions.status;
+		let previous_selection = (self.channel == Some(channel)
+			&& self.generation == state.generation
+			&& self.range == range
+			&& self.query == query
+			&& self.kind == Some(kind))
+		.then(|| self.candidates.get(self.selected).cloned())
+		.flatten();
 		if self.channel != Some(channel)
 			|| self.generation != state.generation
 			|| self.range != range
@@ -588,24 +683,43 @@ impl Menu {
 							Some(&MentionSource { state, channel }),
 						);
 						let name = label.strip_prefix('@').unwrap_or(&label);
-						rank(&query, name, user.id)
-							.or_else(|| rank(&query, &user.name, user.id))
-							.or_else(|| {
-								let search = &state.member_search[0];
-								(search.request.as_ref().is_some_and(|r| {
-									r.channel == channel && r.query.to_lowercase() == query
-								}) && search.rows.iter().any(|m| m.user.id == user.id))
-								.then_some(0)
-							})
-							.map(|r| {
-								(
-									(r, 0, recency.get(&user.id).copied().unwrap_or(u64::MAX)),
-									Candidate::User {
-										user: user.clone(),
-										name: name.to_owned(),
-									},
-								)
-							})
+						[
+							rank(&query, name, user.id),
+							rank(&query, &user.name, user.id),
+							user.username
+								.as_deref()
+								.and_then(|name| rank(&query, name, user.id)),
+							(user.discriminator != 0 && query.contains('#'))
+								.then(|| {
+									user.username.as_ref().and_then(|name| {
+										rank(
+											&query,
+											&format!("{name}#{:04}", user.discriminator),
+											user.id,
+										)
+									})
+								})
+								.flatten(),
+						]
+						.into_iter()
+						.flatten()
+						.min()
+						.or_else(|| {
+							let search = &state.member_search[0];
+							(search.request.as_ref().is_some_and(|r| {
+								r.channel == channel && r.query.to_lowercase() == query
+							}) && search.rows.iter().any(|m| m.user.id == user.id))
+							.then_some(0)
+						})
+						.map(|r| {
+							(
+								(r, 0, recency.get(&user.id).copied().unwrap_or(u64::MAX)),
+								Candidate::User {
+									user: user.clone(),
+									name: name.to_owned(),
+								},
+							)
+						})
 					})
 					.collect::<Vec<_>>();
 				for role in known_roles(state, channel)
@@ -618,6 +732,9 @@ impl Menu {
 							Candidate::Role {
 								id: role.id,
 								name: role.name.chars().take(120).collect(),
+								color: role.color,
+								icon: role.icon.clone(),
+								unicode_emoji: role.unicode_emoji.clone(),
 							},
 						));
 					}
@@ -718,18 +835,51 @@ impl Menu {
 				},
 			));
 		}
-		ranked.sort_by_key(|(r, _)| *r);
+		ranked.sort_by_key(|(r, candidate)| {
+			(
+				if kind == Kind::User {
+					candidate.section()
+				} else {
+					0
+				},
+				*r,
+			)
+		});
 		let limit = if matches!(kind, Kind::Emoji | Kind::Game) {
 			EMOJI_LIMIT
 		} else {
 			SHORT_LIMIT
 		};
-		let candidates: Vec<Candidate> = ranked.into_iter().map(|(_, c)| c).take(limit).collect();
+		let mut section_counts = [0_usize; 3];
+		let candidates: Vec<Candidate> = ranked
+			.into_iter()
+			.map(|(_, c)| c)
+			.filter(|candidate| {
+				if kind != Kind::User {
+					return true;
+				}
+				let count = &mut section_counts[usize::from(candidate.section())];
+				let allowed = *count < SHORT_LIMIT;
+				*count += usize::from(allowed);
+				allowed
+			})
+			.take(if kind == Kind::User {
+				SHORT_LIMIT * 3
+			} else {
+				limit
+			})
+			.collect();
 		if candidates != self.candidates {
 			self.follow = true;
 		}
+		self.selected = previous_selection
+			.and_then(|previous| {
+				candidates
+					.iter()
+					.position(|candidate| candidate.same_identity(&previous))
+			})
+			.unwrap_or_else(|| self.selected.min(candidates.len().saturating_sub(1)));
 		self.candidates = candidates;
-		self.selected = self.selected.min(self.candidates.len().saturating_sub(1));
 	}
 	fn pick(&self, index: usize) -> Option<Pick> {
 		self.candidates.get(index).cloned().map(|candidate| Pick {
@@ -794,7 +944,18 @@ impl Menu {
 		let width = anchor.width().min(bounds.width());
 		const HEADER: f32 = 34.0;
 		const PADDING: f32 = 8.0;
-		let rows = (self.candidates.len().max(1) as f32)
+		let section_count = if self.kind == Some(Kind::User) {
+			self.candidates
+				.iter()
+				.enumerate()
+				.filter(|(index, candidate)| {
+					*index == 0 || self.candidates[*index - 1].section() != candidate.section()
+				})
+				.count()
+		} else {
+			0
+		};
+		let rows = (self.candidates.len().max(1) as f32 + section_count as f32 * 24.0 / ROW)
 			.min(VISIBLE_ROWS)
 			.min(((bounds.height() - HEADER - PADDING) / ROW).max(1.0));
 		let height = (HEADER + rows * ROW + PADDING).min(bounds.height());
@@ -897,6 +1058,29 @@ impl Menu {
 									});
 								}
 								for (index, candidate) in self.candidates.iter().enumerate() {
+									if self.kind == Some(Kind::User)
+										&& (index == 0
+											|| self.candidates[index - 1].section()
+												!= candidate.section())
+									{
+										let key = match candidate.section() {
+											0 => "mentions-section-members",
+											1 => "mentions-section-roles",
+											_ => "mentions-section-special",
+										};
+										ui.allocate_ui_with_layout(
+											egui::vec2(width - 2.0, 24.0),
+											egui::Layout::left_to_right(egui::Align::Center),
+											|ui| {
+												ui.add_space(12.0);
+												ui.label(crate::design::eyebrow(
+													ui,
+													crate::i18n::translate(key),
+													colors.muted,
+												));
+											},
+										);
+									}
 									let response = row(
 										ui,
 										candidate,
@@ -951,7 +1135,10 @@ fn row(
 	let text_left = icon.right() + 10.0;
 	let source = match candidate {
 		Candidate::Custom { server, .. } => Some(server.as_str()),
-		Candidate::Role { .. } => Some("Role"),
+		_ => None,
+	};
+	let username = match candidate {
+		Candidate::User { user, name } => username_label(user, name),
 		_ => None,
 	};
 	let primary = match candidate {
@@ -974,12 +1161,51 @@ fn row(
 			avatars.show(&mut child, user, 24.0, demo);
 			name.clone()
 		}
-		Candidate::Mass { .. } | Candidate::Role { .. } => {
-			let name = match candidate {
-				Candidate::Mass { name } => *name,
-				Candidate::Role { name, .. } => name.as_str(),
-				_ => unreachable!(),
-			};
+		Candidate::Role {
+			id,
+			name,
+			color,
+			icon: hash,
+			unicode_emoji,
+		} => {
+			if let Some(hash) = hash
+				.as_deref()
+				.filter(|hash| model::valid_avatar_hash(hash))
+			{
+				let mut child = ui.new_child(egui::UiBuilder::new().max_rect(icon));
+				avatars.show_icon(
+					&mut child,
+					Some(format!("role-icon-{id}-{hash}")),
+					24.0,
+					demo,
+					name,
+				);
+			} else if let Some(emoji) = unicode_emoji {
+				if let Some(image) = crate::emoji::image(ui.ctx(), emoji, 24.0) {
+					image.paint_at(ui, icon);
+				} else {
+					ui.painter().with_clip_rect(icon).text(
+						icon.center(),
+						egui::Align2::CENTER_CENTER,
+						emoji,
+						egui::FontId::proportional(20.0),
+						colors.text,
+					);
+				}
+			} else {
+				let color = crate::design::role_name_color(*color, colors.sidebar, colors.accent);
+				ui.painter().circle_filled(icon.center(), 12.0, color);
+				ui.painter().text(
+					icon.center(),
+					egui::Align2::CENTER_CENTER,
+					"@",
+					egui::FontId::proportional(16.0),
+					colors.sidebar,
+				);
+			}
+			format!("@{name}")
+		}
+		Candidate::Mass { name } => {
 			ui.painter()
 				.circle_filled(icon.center(), 12.0, colors.accent);
 			ui.painter().text(
@@ -1026,19 +1252,38 @@ fn row(
 		}
 	};
 	let font = egui::FontId::new(15.0, crate::design::medium_family(ui.ctx()));
-	let galley = ui.painter().layout_no_wrap(
-		primary,
-		font,
-		if selected {
-			colors.text_strong
-		} else {
-			colors.text
-		},
-	);
+	let text_color = match candidate {
+		Candidate::Role { color, .. } => crate::design::role_name_color(
+			*color,
+			if selected {
+				colors.selected
+			} else if response.hovered() {
+				colors.hover
+			} else {
+				colors.sidebar
+			},
+			colors.text,
+		),
+		_ if selected => colors.text_strong,
+		_ => colors.text,
+	};
+	let galley = ui.painter().layout_no_wrap(primary, font, text_color);
 	let max_text = rect.right() - 12.0 - text_left;
+	let username = username.map(|text| {
+		ui.painter()
+			.layout_no_wrap(text, egui::FontId::proportional(13.0), colors.muted)
+	});
+	let username_width = username
+		.as_ref()
+		.map_or(0.0, |galley| galley.size().x.min(max_text.max(0.0) * 0.45));
 	let clip = egui::Rect::from_min_max(
 		egui::pos2(text_left, rect.top()),
-		egui::pos2(text_left + max_text.max(0.0), rect.bottom()),
+		egui::pos2(
+			text_left
+				+ (max_text - username_width - if username.is_some() { 12.0 } else { 0.0 })
+					.max(0.0),
+			rect.bottom(),
+		),
 	);
 	ui.painter().with_clip_rect(clip).galley(
 		egui::pos2(
@@ -1050,8 +1295,20 @@ fn row(
 			},
 		),
 		galley,
-		colors.text,
+		text_color,
 	);
+	if let Some(username) = username {
+		let left = rect.right() - 12.0 - username_width;
+		let clip = egui::Rect::from_min_max(
+			egui::pos2(left, rect.top()),
+			egui::pos2(rect.right() - 12.0, rect.bottom()),
+		);
+		ui.painter().with_clip_rect(clip).galley(
+			egui::pos2(left, rect.center().y - username.size().y / 2.0),
+			username,
+			colors.muted,
+		);
+	}
 	if let Some(source) = source {
 		ui.painter().with_clip_rect(clip).text(
 			egui::pos2(text_left, rect.bottom() - 2.0),
@@ -1069,7 +1326,8 @@ fn row(
 			match candidate {
 				Candidate::GameSearch => "@game, search games".into(),
 				Candidate::Game(game) => format!("{}, game", game.name),
-				Candidate::User { name, .. } => name.clone(),
+				Candidate::User { user, name } => username_label(user, name)
+					.map_or_else(|| name.clone(), |username| format!("{name}, {username}")),
 				Candidate::Mass { name } => format!("@{name}"),
 				Candidate::Role { name, .. } => format!("@{name}, role"),
 				Candidate::Channel { name, .. } => name.clone(),
@@ -1084,6 +1342,126 @@ fn row(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn icon_role_is_independent_of_color_hoist_and_assignment_order() {
+		let state = test_support::demo_state();
+		let guild = state
+			.channel(state.selected.unwrap())
+			.unwrap()
+			.guild
+			.unwrap();
+		let template = state.guild_roles(guild).unwrap()[0].clone();
+		let role = |id, position, color, hoist, emoji: Option<&str>| {
+			let mut role = template.clone();
+			role.id = Id(id);
+			role.position = position;
+			role.color = color;
+			role.hoist = hoist;
+			role.icon = None;
+			role.unicode_emoji = emoji.map(str::to_owned);
+			role
+		};
+		let roles = [
+			role(100, 9, 0xff0000, true, None),
+			role(102, 3, 0, false, Some("⭐")),
+			role(101, 3, 0, false, Some("🏅")),
+			role(103, 10, 0, false, Some("🚫")),
+		];
+		assert_eq!(
+			member_icon_role(&roles, &[Id(100), Id(102), Id(101)])
+				.unwrap()
+				.id,
+			Id(101)
+		);
+		assert!(member_icon_role(&roles, &[Id(100)]).is_none());
+	}
+
+	#[test]
+	fn member_and_role_sections_have_independent_caps_and_stable_keyboard_identity() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let roles = state
+			.permissions
+			.guilds
+			.get_mut(&guild)
+			.unwrap()
+			.roles
+			.as_mut()
+			.unwrap();
+		let template = roles[0].clone();
+		roles.extend((10000..10012).map(|id| {
+			let mut role = template.clone();
+			role.id = Id(id);
+			role.name = format!("SharedRole{id}");
+			role
+		}));
+		let mut users = (20000..20012)
+			.map(|id| user(id, "Shared nickname"))
+			.collect::<Vec<_>>();
+		for user in &mut users {
+			user.username = Some(format!("account_{}", user.id).into_boxed_str());
+		}
+		let mut menu = Menu::default();
+		menu.refresh(&state, channel, "@Shared", Some(7), &users);
+		assert_eq!(menu.candidates.len(), 16);
+		assert!(
+			menu.candidates[..8]
+				.iter()
+				.all(|c| matches!(c, Candidate::User { .. }))
+		);
+		assert!(
+			menu.candidates[8..]
+				.iter()
+				.all(|c| matches!(c, Candidate::Role { .. }))
+		);
+		menu.selected = 5;
+		let selected = menu.candidates[5].id();
+		users.insert(0, user(19999, "Shared arrival"));
+		menu.refresh(&state, channel, "@Shared", Some(7), &users);
+		assert_eq!(menu.candidates[menu.selected].id(), selected);
+		menu.selected = 7;
+		let ctx = egui::Context::default();
+		let output = ctx.run_ui(
+			egui::RawInput {
+				events: [egui::Key::ArrowDown, egui::Key::Enter]
+					.into_iter()
+					.map(|key| egui::Event::Key {
+						key,
+						physical_key: None,
+						pressed: true,
+						repeat: false,
+						modifiers: egui::Modifiers::NONE,
+					})
+					.collect(),
+				..Default::default()
+			},
+			|_| {
+				assert!(
+					menu.keys(&ctx)
+						.unwrap()
+						.candidate
+						.token()
+						.starts_with("<@&")
+				);
+			},
+		);
+		output.drop_without_applying_deltas();
+		menu.refresh(&state, channel, "@account_20001", Some(14), &users);
+		assert_eq!(menu.candidates.len(), 1);
+		assert_eq!(menu.candidates[0].id(), Id(20001));
+		assert_eq!(
+			username_label(&users[2], "Shared nickname"),
+			Some("account_20001".into())
+		);
+		let mut legacy = users[2].clone();
+		legacy.discriminator = 42;
+		assert_eq!(
+			username_label(&legacy, "Shared nickname"),
+			Some("account_20001#0042".into())
+		);
+	}
 
 	#[test]
 	fn current_server_suggestions_beat_external_prefixes_and_survive_the_cap() {
@@ -1768,6 +2146,8 @@ mod tests {
 							id: guild,
 							owner: Some(Id(8)),
 							roles: Some(vec![p::Role {
+								icon: None,
+								unicode_emoji: None,
 								id: guild,
 								name: String::new(),
 								color: 0,
@@ -1856,6 +2236,7 @@ mod tests {
 
 	fn user(id: u64, name: &str) -> User {
 		User {
+			username: None,
 			id: Id(id),
 			name: name.into(),
 			avatar: None,
@@ -2233,7 +2614,15 @@ pub(crate) fn debug_pointer_check(state: &mut State, channel: Id) {
 				memory.area_rect(egui::Id::unique(("composer-autocomplete", Some(channel))))
 			})
 			.unwrap();
-		let point = egui::pos2(area.center().x, area.top() + 34.0 + ROW / 2.0 + 1.0);
+		let section_header = if view.mention_menu.kind == Some(Kind::User) {
+			24.0
+		} else {
+			0.0
+		};
+		let point = egui::pos2(
+			area.center().x,
+			area.top() + 34.0 + section_header + ROW / 2.0 + 1.0,
+		);
 		frame(&mut view, state, vec![egui::Event::PointerMoved(point)]);
 		for pressed in [true, false] {
 			frame(
@@ -2270,6 +2659,7 @@ pub fn debug_role_mentions_check(state: &mut State) {
 		author.id = Id(user.id.0.wrapping_add(1));
 		author.name = "Other".into();
 		let message = model::Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: vec![],
 			id: Id(2),
@@ -2369,6 +2759,8 @@ pub fn debug_role_mentions_check(state: &mut State) {
 		.as_mut()
 		.unwrap();
 	roles.push(model::permissions::Role {
+		icon: None,
+		unicode_emoji: None,
 		id: Id(1548470397144666162),
 		name: "Role check".into(),
 		bits: 0,

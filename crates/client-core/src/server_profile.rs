@@ -263,6 +263,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(User {
+				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),
 				avatar: None,

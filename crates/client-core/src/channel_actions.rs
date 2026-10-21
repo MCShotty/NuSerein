@@ -1539,6 +1539,7 @@ mod tests {
 			demo: true,
 			gateway_connected: true,
 			user: Some(model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),
@@ -1614,6 +1615,8 @@ mod tests {
 		let guild = state.permissions.guilds.get_mut(&Id(2)).unwrap();
 		guild.owner = Some(Id(99));
 		guild.roles = Some(vec![model::permissions::Role {
+			icon: None,
+			unicode_emoji: None,
 			id: Id(2),
 			bits,
 			name: String::new(),
@@ -2084,6 +2087,8 @@ mod tests {
 			let guild = state.permissions.guilds.get_mut(&Id(2)).unwrap();
 			guild.owner = Some(Id(99));
 			guild.roles = Some(vec![model::permissions::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: Id(2),
 				name: String::new(),
 				color: 0,
@@ -2199,6 +2204,8 @@ mod tests {
 		let guild = state.permissions.guilds.get_mut(&Id(2)).unwrap();
 		guild.owner = Some(Id(99));
 		guild.roles = Some(vec![model::permissions::Role {
+			icon: None,
+			unicode_emoji: None,
 			id: Id(2),
 			name: String::new(),
 			color: 0,

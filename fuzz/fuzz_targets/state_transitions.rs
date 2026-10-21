@@ -7,6 +7,7 @@ use std::hash::{Hash, Hasher};
 
 fn user() -> User {
 	User {
+		username: None,
 		webhook: false,
 		kind: Default::default(),
 		id: Id(2),
@@ -50,6 +51,8 @@ fn ready() -> Event {
 				id: Id(10),
 				owner: Some(Id(999)),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(10),
 					bits: p::VIEW_CHANNEL | p::READ_MESSAGE_HISTORY | p::SEND_MESSAGES,
 					name: String::new(),

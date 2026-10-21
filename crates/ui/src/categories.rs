@@ -208,6 +208,7 @@ fn drop_move(
 pub(super) struct Cache {
 	key: Option<CacheKey>,
 	rows: Vec<CachedRow>,
+	mention_counts: BTreeMap<Id, u32>,
 	mute_expiry: Option<std::time::SystemTime>,
 }
 impl Cache {
@@ -226,6 +227,13 @@ fn rows<'a>(
 ) -> Vec<Row<'a>> {
 	let guild = scope.guild();
 	let channels = &state.channels;
+	let mentions = state.channel_mention_counts();
+	let recent: BTreeMap<_, _> = state
+		.last_viewed_threads
+		.iter()
+		.enumerate()
+		.map(|(index, id)| (*id, index))
+		.collect();
 	let mut categories: Vec<_> = channels
 		.iter()
 		.filter(|c| guild.is_some() && c.guild == guild && c.kind == 4)
@@ -242,7 +250,11 @@ fn rows<'a>(
 	for channel in channels.iter().filter(|c| {
 		scope.admits(c, state) && (show_hidden || state.can_view(c.id)) && !roster.lifted(c.id)
 	}) {
-		if matches!(channel.kind, 10..=12) && !state.last_viewed_threads.contains(&channel.id) {
+		if matches!(channel.kind, 10..=12)
+			&& Some(channel.id) != state.selected
+			&& !recent.contains_key(&channel.id)
+			&& !mentions.contains_key(&channel.id)
+		{
 			continue;
 		}
 		if matches!(channel.kind, 10..=12)
@@ -265,22 +277,44 @@ fn rows<'a>(
 		}
 	}
 	for group in threads.values_mut() {
-		group.sort_unstable_by_key(|c| state.last_viewed_threads.iter().position(|id| *id == c.id));
+		group.sort_unstable_by_key(|c| {
+			let rank = if Some(c.id) == state.selected {
+				0
+			} else if mentions.contains_key(&c.id) {
+				1
+			} else {
+				2
+			};
+			(
+				rank,
+				if rank == 1 {
+					std::cmp::Reverse(state.channel_activity(c))
+				} else {
+					std::cmp::Reverse(Id(0))
+				},
+				recent.get(&c.id).copied().unwrap_or(usize::MAX),
+				c.id,
+			)
+		});
+		let mut ordinary = 0;
+		group.retain(|c| {
+			if Some(c.id) == state.selected || mentions.contains_key(&c.id) {
+				true
+			} else {
+				ordinary += 1;
+				ordinary <= MAX_VISIBLE_THREADS
+			}
+		});
 	}
 	let important = |channel: &Channel| {
 		Some(channel.id) == state.selected
+			|| mentions.contains_key(&channel.id)
 			|| state.unread_count(channel.id) > 0
 			|| (state.channel_unread(channel) == Some(true)
 				&& !state.channel_access(channel.id).muted())
 	};
 	let append = |channel: &'a Channel, slot: Slot, collapsed: bool, rows: &mut Vec<Row<'a>>| {
-		let nested = || {
-			threads
-				.get(&channel.id)
-				.into_iter()
-				.flatten()
-				.take(MAX_VISIBLE_THREADS)
-		};
+		let nested = || threads.get(&channel.id).into_iter().flatten();
 		if collapsed && !important(channel) && !nested().any(|c| important(c)) {
 			return;
 		}
@@ -294,11 +328,7 @@ fn rows<'a>(
 	let count = |channels: &[&Channel]| {
 		channels
 			.iter()
-			.map(|c| {
-				1 + threads
-					.get(&c.id)
-					.map_or(0, |threads| threads.len().min(MAX_VISIBLE_THREADS))
-			})
+			.map(|c| 1 + threads.get(&c.id).map_or(0, Vec::len))
 			.sum::<usize>()
 	};
 	let mut rows = Vec::new();
@@ -534,6 +564,7 @@ impl MessagingUi {
 		};
 		if self.channel_cache.key != Some(key) {
 			self.channel_cache.mute_expiry = state.next_mute_deadline();
+			self.channel_cache.mention_counts = state.channel_mention_counts();
 			let categories: BTreeSet<_> = state
 				.channels
 				.iter()
@@ -569,6 +600,7 @@ impl MessagingUi {
 			if hide_muted {
 				channel_rows.retain(|row| {
 					!matches!(row, Row::Channel(channel, ..) if Some(channel.id) != state.selected
+						&& !self.channel_cache.mention_counts.contains_key(&channel.id)
 						&& !state.selected.and_then(|id| state.channel(id)).is_some_and(|selected| selected.parent_id == Some(channel.id))
 						&& state.guild_channel_effectively_muted(channel.id) == Some(true))
 				});
@@ -839,8 +871,18 @@ impl MessagingUi {
 							let visible = !access.hidden();
 							// Forum containers open their post list; Discord lists them as browsable rows.
 							let forum = channel.guild.is_some() && matches!(channel.kind, 15 | 16);
-							let (unread, count) =
+							let (unread, direct_count) =
 								crate::notifications::row_activity(state, channel, visible);
+							let count = if visible && channel.guild.is_some() {
+								self.channel_cache
+									.mention_counts
+									.get(&channel.id)
+									.copied()
+									.unwrap_or(0)
+							} else {
+								direct_count
+							};
+							let unread = unread || (count > 0 && !matches!(channel.kind, 2 | 13));
 							let new_posts = if visible && forum {
 								state.forum_new_count(channel.id)
 							} else {
@@ -926,7 +968,7 @@ impl MessagingUi {
 									Emphasis::Idle
 								},
 							);
-							let new_label = (new_posts > 0).then(|| {
+							let new_label = (new_posts > 0 && count == 0).then(|| {
 								ui.painter().layout_no_wrap(
 									format!(
 										"{} {}",
@@ -1472,11 +1514,17 @@ pub fn debug_thread_navigation_check(state: &mut State) {
 	}
 	assert_eq!(visible(state), [Id(1004), Id(1003), Id(1002), Id(1001)]);
 	state.select(Id(1002));
-	assert_eq!(visible(state), [Id(1002), Id(1004), Id(1003), Id(1001)]);
+	assert_eq!(
+		visible(state),
+		[Id(1002), Id(1004), Id(1003), Id(1001), Id(1000)]
+	);
 	state.select(Id(1000));
-	assert_eq!(visible(state), [Id(1000), Id(1002), Id(1004), Id(1003)]);
+	assert_eq!(
+		visible(state),
+		[Id(1000), Id(1002), Id(1004), Id(1003), Id(1001)]
+	);
 	println!(
-		"Thread debug check passed: image post dispatch permission, created posts, four opened threads, newest first."
+		"Thread debug check passed: image post dispatch permission, created posts, selected thread and four recent threads."
 	);
 }
 
@@ -2165,6 +2213,7 @@ mod tests {
 	fn unsupported_channel_opens_confirmation_by_keyboard_without_selecting() {
 		let mut state = State {
 			user: Some(model::User {
+				username: None,
 				id: Id(2),
 				name: "Synthetic".into(),
 				avatar: None,
@@ -2325,6 +2374,126 @@ mod tests {
 		);
 	}
 	#[test]
+	fn unopened_mentions_reveal_muted_posts_and_parent_under_collapsed_categories() {
+		let mut state = test_support::demo_state();
+		let parent = Id(26);
+		let category = state.channel(parent).unwrap().parent_id.unwrap();
+		let guild = state.channel(parent).unwrap().guild.unwrap();
+		let template = state.channel(Id(27)).unwrap().clone();
+		for id in 1001..=1007 {
+			let mut post = template.clone();
+			post.id = Id(id);
+			post.name = format!("Synthetic post {id}");
+			post.last_message = Some(Id(id + 100_000));
+			state.channels.push(post);
+		}
+		state.selected = Some(Id(1007));
+		state.last_viewed_threads = (1003..=1007).map(Id).collect();
+		state.invalidate_navigation();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+				entries: Some(vec![
+					(Id(1001), Some(Id(1001)), 1),
+					(Id(1002), Some(Id(1002)), 2),
+				]),
+				version: None,
+				partial: true,
+			}),
+		});
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::NotificationPreferences(
+				client_core::notifications::Event::Settings {
+					entries: vec![client_core::notifications::Setting {
+						guild: Some(guild),
+						muted: Some(false),
+						overrides_known: true,
+						hide_muted_channels: Some(true),
+						channels: vec![(category, Some(true), Some(3))],
+						..Default::default()
+					}],
+					replace: false,
+				},
+			),
+		});
+		let expanded = rows(
+			&state,
+			Scope::Guild(guild),
+			&Roster::default(),
+			&BTreeSet::new(),
+			false,
+			false,
+		);
+		let posts: Vec<_> = expanded
+			.iter()
+			.filter_map(|row| match row {
+				Row::Channel(channel, _, true) if channel.parent_id == Some(parent) => {
+					Some(channel.id)
+				}
+				_ => None,
+			})
+			.collect();
+		assert_eq!(
+			posts,
+			[
+				Id(1007),
+				Id(1002),
+				Id(1001),
+				Id(1003),
+				Id(1004),
+				Id(1005),
+				Id(1006)
+			]
+		);
+		let mut view = MessagingUi {
+			guild: Some(guild),
+			..Default::default()
+		};
+		view.channel_preferences.collapsed_categories = vec![category];
+		let ctx = egui::Context::default();
+		let frame = |view: &mut MessagingUi, state: &mut State| {
+			ctx.run_ui(egui::RawInput::default(), |ui| {
+				view.channel_list(ui, state);
+			})
+			.drop_without_applying_deltas();
+		};
+		frame(&mut view, &mut state);
+		let visible: Vec<_> = view
+			.channel_cache
+			.rows
+			.iter()
+			.filter_map(|row| match row {
+				CachedRow::Channel(index, ..) => Some(state.channels[*index].id),
+				_ => None,
+			})
+			.collect();
+		assert!(visible.contains(&parent));
+		assert!(visible.contains(&Id(1001)) && visible.contains(&Id(1002)));
+		assert!(
+			!visible.contains(&Id(1003)),
+			"ordinary muted posts remain hidden"
+		);
+		assert_eq!(view.channel_cache.mention_counts.get(&parent), Some(&3));
+		let key = view.channel_cache.key;
+		let mut incoming = test_support::message(900_000, Id(1003));
+		incoming.author.id = Id(999);
+		incoming.mentions = vec![state.user.clone().unwrap()];
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Message(incoming),
+		});
+		frame(&mut view, &mut state);
+		assert!(
+			view.channel_cache.key != key,
+			"a live ping rebuilds cached row membership"
+		);
+		assert!(view.channel_cache.rows.iter().any(
+			|row| matches!(row, CachedRow::Channel(index, ..) if state.channels[*index].id == Id(1003))
+		));
+	}
+
+	#[test]
 	fn timed_mute_expiry_restores_hidden_sidebar_rows_without_an_event() {
 		let mut state = test_support::demo_state();
 		let muted = state
@@ -2467,6 +2636,7 @@ mod tests {
 		);
 		let mut state = State {
 			user: Some(model::User {
+				username: None,
 				id: Id(2),
 				name: "Synthetic member".into(),
 				avatar: None,
@@ -2703,7 +2873,8 @@ mod tests {
 					.unwrap_or((egui::Pos2::ZERO, egui::Color32::TRANSPARENT));
 				let near = |rect: egui::Rect| (rect.center().y - pos.y).abs() < 20.0;
 				let badge = rects.iter().any(|(rect, fill)| {
-					*fill == colors.danger && near(*rect) && rect.height() >= 16.0
+					*fill == crate::notifications::MENTION_BADGE_COLOR
+						&& near(*rect) && rect.height() >= 20.0
 				});
 				let pill = rects.iter().any(|(rect, fill)| {
 					*fill == colors.text_strong

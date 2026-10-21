@@ -1140,11 +1140,13 @@ mod navigation_tests {
 	use model::{Channel, Message, User};
 	fn message(id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(id),
 			channel: Id(1),
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(9),
@@ -1843,6 +1845,8 @@ mod navigation_tests {
 			let mut state = state(Some(Id(100)));
 			state.open_unread().unwrap();
 			page(&mut state, (101..=150).map(message).collect());
+			let previous_cursor = state.newer_cursor;
+			let could_load_newer = state.can_load_newer();
 			state.open_target_window(Id(50)).unwrap();
 			let request = state.request;
 			apply(
@@ -1850,13 +1854,17 @@ mod navigation_tests {
 				CoreEvent::History {
 					channel: Id(1),
 					request,
-					older: true,
+					older: false,
 					messages: vec![],
 				},
 			);
-			assert!(state.newer_cursor.is_none());
-			assert!(!state.can_load_newer());
-			assert_eq!(state.search_target, Some(Id(50)));
+			assert_eq!(state.newer_cursor, previous_cursor);
+			assert_eq!(state.can_load_newer(), could_load_newer);
+			assert!(
+				state.timeline.get(Id(101)).is_some(),
+				"missing targets preserve the current history"
+			);
+			assert!(state.search_target.is_none());
 		}
 	}
 }

@@ -57,6 +57,8 @@ pub struct Role {
 	pub id: Id,
 	pub bits: u128,
 	pub name: String,
+	pub icon: Option<String>,
+	pub unicode_emoji: Option<String>,
 	pub color: u32,
 	pub secondary_color: Option<u32>,
 	pub tertiary_color: Option<u32>,
@@ -79,7 +81,21 @@ impl Role {
 			.then_with(|| other.id.cmp(&self.id))
 	}
 	pub fn bytes(&self) -> usize {
-		size_of::<Self>() + self.name.capacity()
+		size_of::<Self>() + self.heap_bytes()
+	}
+	pub fn heap_bytes(&self) -> usize {
+		self.name.capacity()
+			+ self.icon.as_ref().map_or(0, String::capacity)
+			+ self.unicode_emoji.as_ref().map_or(0, String::capacity)
+	}
+	pub fn has_icon(&self) -> bool {
+		self.icon.as_deref().is_some_and(crate::valid_avatar_hash)
+			|| self.unicode_emoji.as_ref().is_some_and(|emoji| {
+				!emoji.trim().is_empty()
+					&& emoji.len() <= 128
+					&& emoji.chars().count() <= 32
+					&& !emoji.chars().any(char::is_control)
+			})
 	}
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,7 +220,7 @@ impl Guild {
 		size_of::<Self>()
 			+ self.roles.as_ref().map_or(0, |roles| {
 				roles.capacity() * size_of::<Role>()
-					+ roles.iter().map(|role| role.name.capacity()).sum::<usize>()
+					+ roles.iter().map(Role::heap_bytes).sum::<usize>()
 			}) + self
 			.member
 			.as_ref()
@@ -314,6 +330,21 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn guild_budget_includes_allocated_role_icon_metadata() {
+		let mut guild = guild();
+		let before = guild.bytes();
+		let role = &mut guild.roles.as_mut().unwrap()[0];
+		let mut icon = String::from("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+		icon.reserve(256);
+		let mut emoji = String::from("🏅");
+		emoji.reserve(128);
+		let allocated = icon.capacity() + emoji.capacity();
+		role.icon = Some(icon);
+		role.unicode_emoji = Some(emoji);
+		assert_eq!(guild.bytes() - before, allocated);
+	}
+
+	#[test]
 	fn member_list_identity_matches_wire_hash_and_bounds() {
 		assert_eq!(murmur3(b""), 0);
 		assert_eq!(murmur3(b"foo"), 0xf6a5c420);
@@ -355,6 +386,8 @@ mod tests {
 			owner: Some(Id(99)),
 			roles: Some(vec![
 				Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -368,6 +401,8 @@ mod tests {
 						| (1 << 100),
 				},
 				Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -378,6 +413,8 @@ mod tests {
 					bits: CONNECT,
 				},
 				Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -500,6 +537,8 @@ mod tests {
 			Guild {
 				roles: Some(vec![
 					Role {
+						icon: None,
+						unicode_emoji: None,
 						name: String::new(),
 						color: 0,
 						secondary_color: None,
@@ -515,6 +554,8 @@ mod tests {
 			},
 			Guild {
 				roles: Some(vec![Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -551,6 +592,8 @@ mod tests {
 				roles: Some(
 					(1..=MAX_ROLES + 1)
 						.map(|id| Role {
+							icon: None,
+							unicode_emoji: None,
 							name: String::new(),
 							color: 0,
 							secondary_color: None,

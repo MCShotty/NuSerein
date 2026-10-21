@@ -123,6 +123,10 @@ pub struct User {
 	pub webhook: bool,
 	pub id: Id,
 	pub name: String,
+	/// Actual service username, separate from global display names and guild nicknames.
+	/// Session display metadata only; older disk history has no authoritative username.
+	#[serde(default, skip)]
+	pub username: Option<Box<str>>,
 	pub avatar: Option<String>,
 	pub discriminator: u16,
 	/// Service-supplied server identity displayed beside this user's name.
@@ -144,6 +148,7 @@ impl User {
 	}
 	pub fn heap_bytes(&self) -> usize {
 		self.name.capacity()
+			+ self.username.as_deref().map_or(0, str::len)
 			+ self.avatar.as_ref().map_or(0, String::capacity)
 			+ self.primary_guild.as_ref().map_or(0, |guild| {
 				std::mem::size_of::<ClanTag>()
@@ -242,6 +247,7 @@ impl SavedAccount {
 	/// Avatar lookups and name rows reuse the ordinary user widgets.
 	pub fn user(&self) -> User {
 		User {
+			username: None,
 			kind: AccountKind::Human,
 			webhook: false,
 			id: self.id,

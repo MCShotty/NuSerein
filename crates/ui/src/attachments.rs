@@ -1634,6 +1634,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				username: None,
 				id: Id(4),
 				name: "Synthetic".into(),
 				avatar: None,

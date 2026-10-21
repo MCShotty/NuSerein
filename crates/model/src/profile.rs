@@ -602,6 +602,7 @@ mod banner_tests {
 	#[test]
 	fn banner_and_avatar_urls_resolve_static_and_animated() {
 		let user = User {
+			username: None,
 			kind: AccountKind::Human,
 			webhook: false,
 			id: Id(12345),
@@ -617,6 +618,7 @@ mod banner_tests {
 		);
 
 		let static_user = User {
+			username: None,
 			kind: AccountKind::Human,
 			webhook: false,
 			id: Id(12345),

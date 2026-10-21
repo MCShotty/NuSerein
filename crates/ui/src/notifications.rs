@@ -102,7 +102,7 @@ pub(super) fn row_activity(state: &State, channel: &model::Channel, visible: boo
 		&& (state.channel_unread(channel) == Some(true)
 			|| state.unread_count(channel.id) > 0
 			|| (forum && state.forum_unread(channel.id)));
-	let count = if !visible || forum {
+	let count = if !visible {
 		0
 	} else if channel.guild.is_some() {
 		state.mention_count(channel.id)
@@ -111,6 +111,20 @@ pub(super) fn row_activity(state: &State, channel: &model::Channel, visible: boo
 	};
 	(unread, count)
 }
+
+pub(super) fn badge_size(count: u32) -> egui::Vec2 {
+	egui::vec2(
+		if count > 99 {
+			34.0
+		} else if count > 9 {
+			27.0
+		} else {
+			20.0
+		},
+		20.0,
+	)
+}
+pub(super) const MENTION_BADGE_COLOR: Color32 = Color32::from_rgb(190, 35, 55);
 
 pub(super) fn badge(ui: &egui::Ui, center: egui::Pos2, count: u32, ring: Color32) {
 	badge_scaled(ui, center, count, ring, 1.0);
@@ -121,19 +135,11 @@ fn badge_scaled(ui: &egui::Ui, center: egui::Pos2, count: u32, ring: Color32, sc
 	} else {
 		count.to_string()
 	};
-	let width = if count > 99 {
-		29.0
-	} else if count > 9 {
-		23.0
-	} else {
-		18.0
-	};
-	let rect = egui::Rect::from_center_size(center, egui::vec2(width, 18.0) * scale);
-	let colors = design::palette(ui);
+	let rect = egui::Rect::from_center_size(center, badge_size(count) * scale);
 	ui.painter()
 		.rect_filled(rect.expand(2.0 * scale), (11.0 * scale) as u8, ring);
 	ui.painter()
-		.rect_filled(rect, (9.0 * scale) as u8, colors.danger);
+		.rect_filled(rect, (10.0 * scale) as u8, MENTION_BADGE_COLOR);
 	// A fixed text size keeps the pop-in from laying out glyphs at every intermediate size.
 	if scale < 0.8 {
 		return;
@@ -142,7 +148,7 @@ fn badge_scaled(ui: &egui::Ui, center: egui::Pos2, count: u32, ring: Color32, sc
 		center,
 		Align2::CENTER_CENTER,
 		label,
-		FontId::new(11.5, crate::design::semibold_family(ui.ctx())),
+		FontId::new(12.0, crate::design::semibold_family(ui.ctx())),
 		Color32::WHITE,
 	);
 }

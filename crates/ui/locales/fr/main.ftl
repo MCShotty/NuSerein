@@ -5092,3 +5092,6 @@ inbox-service-availability = Availability depends on your Discord account.
 inbox-spoiler = Spoiler
 inbox-custom-reminder = Custom date and time (UTC)
 inbox-set-reminder = Set reminder
+mentions-section-members = Members
+mentions-section-roles = Roles
+mentions-section-special = Other mentions
