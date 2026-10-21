@@ -23,8 +23,9 @@ or fixed UTC offsets. These device-local preferences update absolute timestamps 
 grouping together while preserving the reading anchor. Relative durations and explicitly
 labelled UTC inputs retain their meaning.
 
-Wheel smoothing completes within 150 ms of the last discrete input; precision scrolling
-uses the operating system's movement directly. Input reversal and another interaction
+Discrete wheel motion has a 150 ms completion deadline after the last input; any remaining
+movement lands on the next available frame. Precision scrolling uses the operating system's
+movement directly. Input reversal and another interaction
 retire old motion, and a gesture cannot continue in a different conversation or overlay.
 
 Serein follows the familiar three-column messaging layout and density of a modern desktop chat

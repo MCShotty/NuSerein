@@ -5,6 +5,9 @@
 Reply summaries are session-only and deduplicated by conversation/message. At most 128
 summaries, 8 KiB each and 1 MiB combined, share the existing 16 MiB conversation budget.
 Only visible/overscan references enter the 32-target queue, with two reads in flight.
+Request-attempt markers retain at most the 500 visible/overscan target IDs, with allocated
+capacity charged to the same budget. Evicting a completed summary does not restart its read
+on repaint; explicit Retry, invalidation or a changed viewport may permit a new attempt.
 Summaries retain no nested reply chains or media URLs and never become actionable history
 rows. A single Back window shares the conversation row/byte limits and is retired on
 relevant live changes, permission changes, reconnect, expiry or history-cache clearing.

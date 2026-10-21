@@ -2841,3 +2841,135 @@ fullscreen, scrolling and provider interoperability remain owner-controlled chec
 The Linux native WebKit fixture cannot locate its helper in the staged SDK here;
 no browser sandbox was disabled. YouTube is blocked by the workspace proxy, and
 reachable VXTwitter/OGInstagram pages alone do not establish playback.
+
+
+## Conversation navigation and time preferences (October 21, 2026)
+
+The frozen fork baseline is `bc35a629eeed1d80708baf66152bbb0a91005989`.
+Implementation source is `a8b118d1c8944c0df10f5c73c561204933e628c6`.
+The published upstream nightly is `v1.0.0-nightly.20261017.60`, pinned to
+`d9d87471f0ea2190da3f90db815e115045461703`; it is distinct from upstream main.
+Detailed methods, synthetic captures and raw repetitions are in
+[conversation-qol](pr-evidence/conversation-qol).
+
+Current-source CI compares the same core workloads within each OS job: Rust 1.98.1,
+release O3, thin LTO, one codegen unit, line-table debug information, stripped symbols
+and abort-on-panic. Each revision gets one warmup and five measured repetitions in
+rotated order, with CPU affinity on Linux/Windows. These measure reducer elapsed time,
+not UI presentation, input latency or live Discord behavior.
+
+| CI environment / median elapsed | Upstream nightly | Fork baseline | Changed source | Change vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux, 100,000-event reducer | 56.61 ms | 59.81 ms | 63.86 ms | +6.8% |
+| Linux, 10,000-event wide-channel reducer | 102.91 ms | 97.29 ms | 102.20 ms | +5.0% |
+| Windows, 100,000-event reducer | 105.83 ms | 111.38 ms | 121.02 ms | +8.7% |
+| Windows, 10,000-event wide-channel reducer | 170.01 ms | 171.75 ms | 171.49 ms | -0.1% |
+| macOS, current source | Unavailable | Unavailable | Jobs cancelled before starting | Unmeasured |
+
+Linux ran on Ubuntu/glibc 2.39 with four logical CPUs; Windows ran on Server 2025
+(10.0.26100), AMD64 Family 25 Model 1, with four logical CPUs. Raw ranges and samples
+are retained with their environment and source revision. In these CI runs the reducer medians remain slower
+than fork main and nightly; the remaining cost is not isolated. Windows wide-channel
+ranges overlap; Linux wide-channel runs are slower with disjoint observed ranges. Earlier
+macOS measurements retain their original revision label and are not current-source results.
+No overall application speedup is claimed.
+
+
+Normal local Linux packaging uses the standard fat-LTO release profile, including
+voice, private media libraries, corresponding source and notices. Both revisions
+were packaged from an empty output directory and repeated with caches; every
+staged file and mode matched its clean run (578 baseline files, 592 changed files).
+No manual staging repair was performed. The installed packages passed the encoder
+query and synthetic speech-worker launch with development FFmpeg/private-library
+paths removed; all six private media libraries resolved inside the installed payload.
+Release RPATH contains only the two existing `$ORIGIN` locations.
+
+| Linux package size | Fork baseline | Changed source | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 96,030,920 B | 96,789,832 B | +758,912 B (+0.790%) |
+| Installed regular files | 224,781,530 B | 225,548,851 B | +767,321 B (+0.341%) |
+| Normalized ZIP | 154,695,813 B | 154,975,101 B | +279,288 B (+0.181%) |
+
+Installed payloads contain 296 and 303 regular files respectively. The normalized
+ZIP uses sorted paths, fixed timestamps/modes and deflate level 6 on the same
+Python/zlib installation. The bundled IANA 2026e dataset contains 206,788 raw TZif
+bytes; total package growth also includes feature code and notices, so the table
+does not isolate timezone overhead. Windows/macOS package-size comparisons are
+unavailable in this workspace.
+
+
+Native UI comparisons use release O3/one codegen unit with a thin-LTO override on
+both example executables, `--no-default-features --features demo`, dark appearance,
+1120 × 760, scale 1 and the same synthetic data. The baseline has only the common
+example fixture/instrumentation overlay; its production sources remain unchanged.
+The host is Linux 6.18.55/glibc 2.41, Xeon Platinum 8573C, 18.88 GB host RAM with
+a 16-GiB process-group limit. The process and sampler inherit one logical CPU.
+Both use wgpu's GL backend on llvmpipe LLVM 19.1.7 / Mesa 25.0.7-2+deb13u1.
+
+One warmup and five interleaved measured repetitions per build/state use three
+seconds of startup warmup, five seconds of CPU/RSS sampling at 100 ms intervals,
+and two seconds of settling. The table reports medians of per-run measurements.
+CPU is process user+system time over elapsed sample time. Peak RSS is sampled after
+warmup, not lifetime peak; settled RSS is the median during the two settling seconds.
+The at-rest demo states include their normal demo loading/animation work; they are
+not measurements of an idle connected account. Active callback samples measure
+`MessagingUi::show` (including possible egui passes), not presented frames or physical
+input latency. Active samples request at most 100-ms repaints; at-rest samples omit
+callback instrumentation. No provider/helper process was started or observed.
+
+| Native synthetic metric / median of five | Fork baseline | Changed source | Delta |
+| --- | ---: | ---: | ---: |
+| Conversation, unrelated revision churn, CPU (% of one core) | 83.88 | 85.79 | +1.91 percentage points |
+| Conversation, unrelated revision churn, sampled peak RSS (MiB) | 140.44 | 141.23 | +0.80 MiB |
+| Conversation, unrelated revision churn, settled RSS (MiB) | 140.44 | 141.23 | +0.80 MiB |
+| Conversation, unrelated revision churn, UI callback p50 (ms) | 1.546 | 1.551 | +0.3% |
+| Conversation, unrelated revision churn, UI callback p95 (ms) | 4.655 | 3.989 | -14.3% |
+| Conversation at rest, CPU (% of one core) | 9.89 | 10.86 | +0.97 percentage points |
+| Conversation at rest, sampled peak RSS (MiB) | 139.95 | 140.22 | +0.27 MiB |
+| Conversation at rest, settled RSS (MiB) | 139.95 | 140.22 | +0.27 MiB |
+| Language & Time at rest, CPU (% of one core) | 4.58 | 19.77 | +15.19 percentage points |
+| Language & Time at rest, sampled peak RSS (MiB) | 143.18 | 143.83 | +0.65 MiB |
+| Language & Time at rest, settled RSS (MiB) | 143.18 | 143.83 | +0.65 MiB |
+| GIF scrolling, CPU (% of one core) | 87.36 | 88.55 | +1.19 percentage points |
+| GIF scrolling, sampled peak RSS (MiB) | 145.24 | 145.77 | +0.53 MiB |
+| GIF scrolling, settled RSS (MiB) | 145.24 | 145.64 | +0.40 MiB |
+| GIF scrolling, UI callback p50 (ms) | 1.280 | 1.185 | -7.4% |
+| GIF scrolling, UI callback p95 (ms) | 3.247 | 4.024 | +23.9% |
+
+Results are mixed. Conversation callback p50 is essentially unchanged; p95 is lower,
+with overlapping per-run ranges. CPU/RSS increase in several states. Language & Time
+at-rest CPU rises substantially on this software renderer; the remaining cause is
+not isolated. This is a recorded cost, not an overall application speedup. Actual
+provider CPU/RSS, GPU memory, presented-frame/input latency, native cache occupancy
+and outstanding full-application tasks remain unmeasured. Core row/byte bounds and
+request/cancellation behavior are covered by production-path regressions and replay.
+One GIF attempt failed to locate a visible preview window; only that workload was
+repeated, and the final table contains only complete successful repetitions.
+
+Local standard fat-LTO replay uses the same frozen revisions on one logical CPU,
+one warmup and five rotated repetitions per revision. These are a separate
+environment/profile from CI; the different results must not be pooled.
+
+| Local core median | Upstream nightly | Fork baseline | Changed source |
+| --- | ---: | ---: | ---: |
+| 100,000-event reducer, ms | 115.01 | 125.07 | 122.20 |
+| 10,000-event wide-channel reducer, ms | 223.84 | 178.78 | 177.77 |
+| Core selection median, µs | 0.284 | 0.307 | 0.325 |
+
+An isolated snapshot microbenchmark compiles the exact production helper against
+`model::Gif` and its Vec field, comparing the previous URL-clone expression with
+100 unchanged favorites over 10,000 calls. One warmup and five alternating-order
+repetitions give 38.97 ms before and 4.23 ms after
+(-89.2%). This supports retaining that allocation change; it is not whole-UI throughput.
+The production UI's ignored `favorite_snapshot_benchmark` provides the equivalent
+workload. Source/binary hashes and the isolated harness method are recorded in the JSON.
+
+The 120-second functional release soak passed: 55,072 conversation visits and seven
+logout cycles, with row/byte pressure inside shipping bounds. Its iteration count
+is not a performance comparison. Deterministic scrolling traces retain movement
+and deadline assertions at 30/60/144/240 Hz; they do not measure physical input latency.
+
+Current-source native application/package CI passed on Linux and Windows x64/ARM64.
+The macOS jobs were cancelled before starting. Physical wheel/touchpad behavior, live
+OS timezone changes and live Discord permissions/navigation remain owner-controlled
+checks. Windows/macOS GUI and memory comparisons are unavailable locally.

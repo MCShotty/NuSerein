@@ -1,0 +1,3354 @@
+{
+  "source_revision": "a8b118d1c8944c0df10f5c73c561204933e628c6",
+  "fork_baseline": "bc35a629eeed1d80708baf66152bbb0a91005989",
+  "nightly": "d9d87471f0ea2190da3f90db815e115045461703",
+  "environment": {
+    "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+    "cpuinfo": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "logical_cpus": 5,
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "host_ram_bytes": 18882674688,
+    "cgroup_memory_max": "17179869184",
+    "cgroup_cpu_max": "400000 100000",
+    "display": ":97 Xvfb 1600x1200x24",
+    "screen_scale": 1
+  },
+  "validation": {
+    "revision": "a8b118d1c8944c0df10f5c73c561204933e628c6",
+    "full_workspace_gate_revision": "9e4e599207850809abc5279196619492639236fc",
+    "full_gate_note": "Full xtask gate passed before the four final core files changed. All core tests, strict core all-target Clippy, fmt, diff checks and both bounded fuzz targets repeated afterward. UI/desktop source unchanged since the full gate.",
+    "focused_checks": {
+      "core_passed": 302,
+      "core_ignored": 2,
+      "core_strict_clippy": true,
+      "formatting": true,
+      "diff_check": true
+    },
+    "fuzz": {
+      "decode": {
+        "runs": 153406,
+        "seconds": 31
+      },
+      "state-transitions": {
+        "runs": 4168,
+        "seconds": 31
+      }
+    },
+    "lock_sha256": "3271233715e955738f9e28e6097880ce034e1a9b8f2768fe56aa5d336d8ec660"
+  },
+  "source_ci": {
+    "source_revision": "a8b118d1c8944c0df10f5c73c561204933e628c6",
+    "run_id": 39615531760,
+    "jobs": [
+      {
+        "id": 119275686232,
+        "name": "security",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275686347,
+        "name": "extension-sdk",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275686460,
+        "name": "licenses",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275686482,
+        "name": "native (macos-latest)",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "current_step": null
+      },
+      {
+        "id": 119275686509,
+        "name": "native (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275686528,
+        "name": "fuzz",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275686578,
+        "name": "replay comparison (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275686601,
+        "name": "native (windows-11-arm)",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275686809,
+        "name": "replay comparison (macos-latest)",
+        "status": "completed",
+        "conclusion": "cancelled",
+        "current_step": null
+      },
+      {
+        "id": 119275686821,
+        "name": "replay comparison (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      },
+      {
+        "id": 119275687016,
+        "name": "native (windows-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "current_step": null
+      }
+    ]
+  },
+  "package": {
+    "before": {
+      "revision": "bc35a629eeed1d80708baf66152bbb0a91005989",
+      "command": "cargo xtask package --format dir",
+      "rust": "1.98.1",
+      "profile": "standard release (fat LTO)",
+      "executable_bytes": 96030920,
+      "executable_sha256": "c1fcf2ffd077a850e670450b2266a479fa8071d379a85f3db63fb2eb6fad9c20",
+      "installed_bytes": 224781530,
+      "installed_files": 296,
+      "zip_deflate6_bytes": 154695813,
+      "archive_sha256": "a22067c55f6d43d214bdbe4cff991638adaa3ca75075d216d434cffc5e60b0af"
+    },
+    "after": {
+      "revision": "a8b118d1c8944c0df10f5c73c561204933e628c6",
+      "command": "cargo xtask package --format dir",
+      "rust": "1.98.1",
+      "profile": "standard release (fat LTO)",
+      "executable_bytes": 96789832,
+      "executable_sha256": "fb07a5787a608d98787e575c4a41f659ca5923ed1224085973ce21f058003ff2",
+      "installed_bytes": 225548851,
+      "installed_files": 303,
+      "zip_deflate6_bytes": 154975101,
+      "archive_sha256": "580bc03730643f43c168232c8031997dbeb44d6c4b96a59133026ff24da1f60b"
+    },
+    "before_cached": {
+      "files": 578,
+      "identical": true,
+      "executable_sha256": "c1fcf2ffd077a850e670450b2266a479fa8071d379a85f3db63fb2eb6fad9c20"
+    },
+    "after_cached": {
+      "revision": "a8b118d1c8944c0df10f5c73c561204933e628c6",
+      "files": 592,
+      "all_bytes_modes_identical": true,
+      "manual_staging_repair": false
+    },
+    "before_launch": {
+      "executable_sha256": "c1fcf2ffd077a850e670450b2266a479fa8071d379a85f3db63fb2eb6fad9c20",
+      "development_ffmpeg_removed": true,
+      "manual_staging_repair": false,
+      "rpaths": [
+        "0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/lib:$ORIGIN/../lib/serein]"
+      ],
+      "packaged_private_libraries": [
+        "libavcodec-serein.so.61 => <task>/baseline/dist/linux-root/usr/bin/../lib/serein/libavcodec-serein.so.61 (0x00007f7254707000)",
+        "libavutil-serein.so.59 => <task>/baseline/dist/linux-root/usr/bin/../lib/serein/libavutil-serein.so.59 (0x00007f7253573000)",
+        "libavformat-serein.so.61 => <task>/baseline/dist/linux-root/usr/bin/../lib/serein/libavformat-serein.so.61 (0x00007f72534f7000)",
+        "libswscale-serein.so.8 => <task>/baseline/dist/linux-root/usr/bin/../lib/serein/libswscale-serein.so.8 (0x00007f7253452000)",
+        "libswresample-serein.so.5 => <task>/baseline/dist/linux-root/usr/bin/../lib/serein/libswresample-serein.so.5 (0x00007f7253431000)",
+        "libopenh264-serein.so.8 => <task>/baseline/dist/linux-root/usr/bin/../lib/serein/libopenh264-serein.so.8 (0x00007f724a2e0000)"
+      ],
+      "results": [
+        {
+          "check": "encoder-query",
+          "exit_code": 0,
+          "seconds": 0.3169523629912874
+        },
+        {
+          "check": "synthetic-speech-worker",
+          "exit_code": 0,
+          "seconds": 3.0850973880005768
+        }
+      ]
+    },
+    "after_launch": {
+      "executable_sha256": "fb07a5787a608d98787e575c4a41f659ca5923ed1224085973ce21f058003ff2",
+      "development_ffmpeg_removed": true,
+      "manual_staging_repair": false,
+      "rpaths": [
+        "0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/lib:$ORIGIN/../lib/serein]"
+      ],
+      "packaged_private_libraries": [
+        "libavcodec-serein.so.61 => <task>/worktree/dist/linux-root/usr/bin/../lib/serein/libavcodec-serein.so.61 (0x00007f12f898b000)",
+        "libavutil-serein.so.59 => <task>/worktree/dist/linux-root/usr/bin/../lib/serein/libavutil-serein.so.59 (0x00007f12f77f7000)",
+        "libavformat-serein.so.61 => <task>/worktree/dist/linux-root/usr/bin/../lib/serein/libavformat-serein.so.61 (0x00007f12f777b000)",
+        "libswscale-serein.so.8 => <task>/worktree/dist/linux-root/usr/bin/../lib/serein/libswscale-serein.so.8 (0x00007f12f76d6000)",
+        "libswresample-serein.so.5 => <task>/worktree/dist/linux-root/usr/bin/../lib/serein/libswresample-serein.so.5 (0x00007f12f76b5000)",
+        "libopenh264-serein.so.8 => <task>/worktree/dist/linux-root/usr/bin/../lib/serein/libopenh264-serein.so.8 (0x00007f12ee564000)"
+      ],
+      "results": [
+        {
+          "check": "encoder-query",
+          "exit_code": 0,
+          "seconds": 0.31867360799515154
+        },
+        {
+          "check": "synthetic-speech-worker",
+          "exit_code": 0,
+          "seconds": 2.8863668760022847
+        }
+      ]
+    },
+    "timezone_notices_verified": [
+      "iana-time-zone-0.1.65-LICENSE-MIT",
+      "iana-time-zone-haiku-0.1.2-LICENSE-MIT",
+      "jiff-0.2.38-LICENSE-MIT",
+      "jiff-core-0.1.1-LICENSE-MIT",
+      "jiff-tzdb-0.1.9-COPYING",
+      "jiff-tzdb-0.1.9-LICENSE-MIT",
+      "timezone-PROVENANCE.md"
+    ],
+    "bundled_iana_version": "2026e",
+    "bundled_tzif_raw_bytes": 206788
+  },
+  "native": {
+    "environment": {
+      "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+      "cpu": "",
+      "renderer": "Xvfb; adapter recorded in per-run startup logs; no physical display",
+      "scale": 1,
+      "viewport": [
+        1120,
+        760
+      ],
+      "interval_seconds": 0.1,
+      "warmup_seconds": 3,
+      "sample_seconds": 5,
+      "settle_seconds": 2,
+      "input": "conversation-churn: 500 rows with unrelated revision churn at requested 60Hz; GIFs: alternating ten-notch wheel bursts, approximately5Hz; conversation-idle/language: natural idle, without callback sampling",
+      "callback": "MessagingUi::show only, three-second warmup/five-second window; active sampled pages request at most100ms repaint; idle runs omit sampling; not presented frame/input latency",
+      "affinity": "measurement parent and children inherit one logical CPU",
+      "provider_policy": "synthetic fixture does not create provider subprocesses"
+    },
+    "workloads": {
+      "conversation-churn": {
+        "before": [
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 102,
+            "ui_callback_p50_ms": 1.479343,
+            "ui_callback_p95_ms": 4.654629,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 83.60912358828037,
+            "peak_rss_bytes": 147361792,
+            "settled_rss_bytes": 147361792.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 46,
+            "elapsed_seconds": 5.035335641994607
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 116,
+            "ui_callback_p50_ms": 1.546484,
+            "ui_callback_p95_ms": 3.644365,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 83.88353546616734,
+            "peak_rss_bytes": 147243008,
+            "settled_rss_bytes": 147243008.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 44,
+            "elapsed_seconds": 5.054627200006507
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 89,
+            "ui_callback_p50_ms": 1.771633,
+            "ui_callback_p95_ms": 6.970312,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 87.1804102698385,
+            "peak_rss_bytes": 147165184,
+            "settled_rss_bytes": 147165184.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 45,
+            "elapsed_seconds": 5.092887250997592
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 98,
+            "ui_callback_p50_ms": 1.800349,
+            "ui_callback_p95_ms": 5.06669,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 83.39428062129366,
+            "peak_rss_bytes": 147259392,
+            "settled_rss_bytes": 147259392.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 45,
+            "elapsed_seconds": 5.204193822006346
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 136,
+            "ui_callback_p50_ms": 1.457047,
+            "ui_callback_p95_ms": 2.616024,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 88.18643716783208,
+            "peak_rss_bytes": 147881984,
+            "settled_rss_bytes": 147881984.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 47,
+            "elapsed_seconds": 5.091485883996938
+          }
+        ],
+        "after": [
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 113,
+            "ui_callback_p50_ms": 1.501481,
+            "ui_callback_p95_ms": 4.138127,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 82.21336070983713,
+            "peak_rss_bytes": 147931136,
+            "settled_rss_bytes": 147931136.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 45,
+            "elapsed_seconds": 5.023514382992289
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 132,
+            "ui_callback_p50_ms": 1.551278,
+            "ui_callback_p95_ms": 3.021576,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 88.63528038660901,
+            "peak_rss_bytes": 148602880,
+            "settled_rss_bytes": 148602880.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 47,
+            "elapsed_seconds": 5.065702935011359
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 91,
+            "ui_callback_p50_ms": 1.66285,
+            "ui_callback_p95_ms": 5.953892,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 84.58873456640856,
+            "peak_rss_bytes": 147832832,
+            "settled_rss_bytes": 147832832.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 43,
+            "elapsed_seconds": 5.036131610002485
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 118,
+            "ui_callback_p50_ms": 1.708129,
+            "ui_callback_p95_ms": 3.988678,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 87.61223440347331,
+            "peak_rss_bytes": 148094976,
+            "settled_rss_bytes": 148094976.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 47,
+            "elapsed_seconds": 5.102027165994514
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 127,
+            "ui_callback_p50_ms": 1.523435,
+            "ui_callback_p95_ms": 3.564617,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 85.79314334418851,
+            "peak_rss_bytes": 148647936,
+            "settled_rss_bytes": 148647936.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 47,
+            "elapsed_seconds": 5.0936471490131225
+          }
+        ]
+      },
+      "conversation-idle": {
+        "before": [
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 9.891713572823084,
+            "peak_rss_bytes": 145924096,
+            "settled_rss_bytes": 145924096.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.155830648000119
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 11.282951053885611,
+            "peak_rss_bytes": 146907136,
+            "settled_rss_bytes": 146907136.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.051869828006602
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 8.506104127694494,
+            "peak_rss_bytes": 146747392,
+            "settled_rss_bytes": 146747392.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.055193230000441
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 17.683965370217376,
+            "peak_rss_bytes": 147550208,
+            "settled_rss_bytes": 147550208.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 46,
+            "elapsed_seconds": 5.089356267999392
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 7.5084994969547045,
+            "peak_rss_bytes": 146124800,
+            "settled_rss_bytes": 146124800.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.06093128399516
+          }
+        ],
+        "after": [
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 7.469251271866469,
+            "peak_rss_bytes": 146219008,
+            "settled_rss_bytes": 146219008.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 49,
+            "elapsed_seconds": 5.08752465499856
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 14.093969539384542,
+            "peak_rss_bytes": 147034112,
+            "settled_rss_bytes": 147034112.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 46,
+            "elapsed_seconds": 5.037615541994455
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 10.858505368274207,
+            "peak_rss_bytes": 146370560,
+            "settled_rss_bytes": 146370560.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 46,
+            "elapsed_seconds": 5.0651538250094745
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 9.982418905924915,
+            "peak_rss_bytes": 147374080,
+            "settled_rss_bytes": 147374080.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.00880602899997
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 13.527607009526642,
+            "peak_rss_bytes": 147808256,
+            "settled_rss_bytes": 147808256.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 46,
+            "elapsed_seconds": 5.100680404997547
+          }
+        ]
+      },
+      "language": {
+        "before": [
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 5.12738903192998,
+            "peak_rss_bytes": 151474176,
+            "settled_rss_bytes": 151474176.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 46,
+            "elapsed_seconds": 5.07080696200137
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 4.312640351244881,
+            "peak_rss_bytes": 151318528,
+            "settled_rss_bytes": 151318528.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 49,
+            "elapsed_seconds": 5.101283252995927
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 4.5761181090502845,
+            "peak_rss_bytes": 149618688,
+            "settled_rss_bytes": 149618688.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.02609405000112
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 4.5811072352308155,
+            "peak_rss_bytes": 149331968,
+            "settled_rss_bytes": 149331968.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.020620303999749
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 5.387301381798338,
+            "peak_rss_bytes": 150138880,
+            "settled_rss_bytes": 150138880.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 48,
+            "elapsed_seconds": 5.011785695009166
+          }
+        ],
+        "after": [
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 10.232754380692192,
+            "peak_rss_bytes": 152043520,
+            "settled_rss_bytes": 152043520.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 49,
+            "elapsed_seconds": 5.0817207240033895
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 20.118103822495428,
+            "peak_rss_bytes": 150818816,
+            "settled_rss_bytes": 150818816.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 45,
+            "elapsed_seconds": 5.020353850995889
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 19.76824197136322,
+            "peak_rss_bytes": 151035904,
+            "settled_rss_bytes": 151035904.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 42,
+            "elapsed_seconds": 5.00803258799715
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 22.89376861942744,
+            "peak_rss_bytes": 150376448,
+            "settled_rss_bytes": 150376448.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 43,
+            "elapsed_seconds": 5.066880946003948
+          },
+          {
+            "renderer": null,
+            "ui_callback_samples": 0,
+            "ui_callback_p50_ms": null,
+            "ui_callback_p95_ms": null,
+            "ui_wheel_events": 0,
+            "cpu_one_core_percent": 18.251028963118216,
+            "peak_rss_bytes": 148262912,
+            "settled_rss_bytes": 148262912.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 47,
+            "elapsed_seconds": 5.095603113004472
+          }
+        ]
+      },
+      "gif-favorites": {
+        "before": [
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 19,
+            "ui_callback_p50_ms": 1.518109,
+            "ui_callback_p95_ms": 5.995328,
+            "ui_wheel_events": 14,
+            "cpu_one_core_percent": 65.85396424566177,
+            "peak_rss_bytes": 150654976,
+            "settled_rss_bytes": 150654976.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 8,
+            "elapsed_seconds": 5.572937092001666
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 93,
+            "ui_callback_p50_ms": 1.162219,
+            "ui_callback_p95_ms": 2.709417,
+            "ui_wheel_events": 38,
+            "cpu_one_core_percent": 87.35937296508543,
+            "peak_rss_bytes": 151814144,
+            "settled_rss_bytes": 151814144.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 21,
+            "elapsed_seconds": 5.059560125009739
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 93,
+            "ui_callback_p50_ms": 1.291966,
+            "ui_callback_p95_ms": 3.247236,
+            "ui_wheel_events": 42,
+            "cpu_one_core_percent": 89.4200758815913,
+            "peak_rss_bytes": 152297472,
+            "settled_rss_bytes": 152297472.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 22,
+            "elapsed_seconds": 5.144258663000073
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 92,
+            "ui_callback_p50_ms": 1.279863,
+            "ui_callback_p95_ms": 2.821781,
+            "ui_wheel_events": 42,
+            "cpu_one_core_percent": 88.73366414953543,
+            "peak_rss_bytes": 152342528,
+            "settled_rss_bytes": 152342528.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 23,
+            "elapsed_seconds": 5.2065921589965
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 76,
+            "ui_callback_p50_ms": 1.243504,
+            "ui_callback_p95_ms": 3.449892,
+            "ui_wheel_events": 40,
+            "cpu_one_core_percent": 85.88115258886279,
+            "peak_rss_bytes": 152510464,
+            "settled_rss_bytes": 152510464.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 21,
+            "elapsed_seconds": 5.158291273997747
+          }
+        ],
+        "after": [
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 84,
+            "ui_callback_p50_ms": 1.308565,
+            "ui_callback_p95_ms": 3.908778,
+            "ui_wheel_events": 40,
+            "cpu_one_core_percent": 89.08548226779571,
+            "peak_rss_bytes": 152715264,
+            "settled_rss_bytes": 152715264.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 22,
+            "elapsed_seconds": 5.085003622007207
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 93,
+            "ui_callback_p50_ms": 1.184536,
+            "ui_callback_p95_ms": 3.133413,
+            "ui_wheel_events": 42,
+            "cpu_one_core_percent": 89.22631377873094,
+            "peak_rss_bytes": 152850432,
+            "settled_rss_bytes": 152850432.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 22,
+            "elapsed_seconds": 5.11060000899306
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 84,
+            "ui_callback_p50_ms": 1.328725,
+            "ui_callback_p95_ms": 4.023797,
+            "ui_wheel_events": 40,
+            "cpu_one_core_percent": 88.54943495793252,
+            "peak_rss_bytes": 150654976,
+            "settled_rss_bytes": 150654976.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 21,
+            "elapsed_seconds": 5.081907075000345
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 29,
+            "ui_callback_p50_ms": 1.182688,
+            "ui_callback_p95_ms": 6.057471,
+            "ui_wheel_events": 14,
+            "cpu_one_core_percent": 56.845986372054824,
+            "peak_rss_bytes": 153092096,
+            "settled_rss_bytes": 153092096.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 11,
+            "elapsed_seconds": 7.458749985002214
+          },
+          {
+            "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+            "ui_callback_samples": 16,
+            "ui_callback_p50_ms": 1.14068,
+            "ui_callback_p95_ms": 17.09638,
+            "ui_wheel_events": 12,
+            "cpu_one_core_percent": 52.308156086718064,
+            "peak_rss_bytes": 154783744,
+            "settled_rss_bytes": 151990272.0,
+            "helper_peak_rss_bytes": 0,
+            "samples": 8,
+            "elapsed_seconds": 5.7734782220068155
+          }
+        ]
+      }
+    },
+    "binaries": {
+      "before": {
+        "path": "<task>/baseline-bin/profile_preview-native",
+        "sha256": "eacdc6bb7f4f4f39736b2ada5cb90cd487f454670f5108c0e5ae0ebe211e0dc5"
+      },
+      "after": {
+        "path": "<task>/new-bin/profile_preview",
+        "sha256": "079dd267022a211caa41d3ee0294d41e68851652e2e3859fdfffc1797bd33476"
+      }
+    },
+    "sampling_notes": [
+      "An initial GIF workload attempt aborted when xdotool found no visible preview window. No partial GIF result was accepted. That workload alone was repeated successfully with the same frozen binaries and settings; the three completed workloads were preserved."
+    ]
+  },
+  "native_fixture": {
+    "baseline": "bc35a629eeed1d80708baf66152bbb0a91005989",
+    "overlay": "Identical example-only synthetic fixture and optional callback instrumentation; production sources unchanged",
+    "files": {
+      "conversation_qol.rs": "4146ca65cfde25b061423635e82641dd164f788f0d74afdd81b79f31f491229d",
+      "native_metrics.rs": "3ddf0f70cf78f0c208406c614a6c7f1f55dbffd75c5943834d500d7bfb4cfcca"
+    },
+    "binary": {
+      "path": "<task>/baseline-bin/profile_preview-native",
+      "bytes": 63708200,
+      "sha256": "eacdc6bb7f4f4f39736b2ada5cb90cd487f454670f5108c0e5ae0ebe211e0dc5"
+    },
+    "native_release_command": "cargo rustc --release --locked -p serein --no-default-features --features demo --example profile_preview -- -C lto=thin"
+  },
+  "native_after_binary": {
+    "revision": "a8b118d1c8944c0df10f5c73c561204933e628c6",
+    "path": "<task>/new-bin/profile_preview",
+    "bytes": 64472016,
+    "sha256": "079dd267022a211caa41d3ee0294d41e68851652e2e3859fdfffc1797bd33476"
+  },
+  "local_replay": {
+    "environment": {
+      "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+      "affinity_cpu": 0,
+      "warmup_runs": 1,
+      "measured_runs": 5,
+      "method": "Core-reported elapsed time; not process RSS, frame time or input latency"
+    },
+    "binaries": {
+      "nightly": {
+        "path": "<nightly-workspace>/nightly-replay-target/release/replay-bench",
+        "sha256": "288da68f2ddcd2560ef9b7c22bee6813ec77f90939c1e475f5a6282df86b5e07"
+      },
+      "fork": {
+        "path": "<task>/baseline-bin/replay-bench",
+        "sha256": "8a2b324a2c363905ed0717fae37509d8c3079c46292ac85d9202dfe6300946a4"
+      },
+      "after": {
+        "path": "<task>/new-bin/replay-bench",
+        "sha256": "5c99ee8b1eea52715bcd0594e692a41dd0296057aefd39e0d6ffd47a7e28cf39"
+      }
+    },
+    "workloads": {
+      "reducer": {
+        "nightly": {
+          "output": [
+            "Synthetic reducer replay: 100000 events in 145.484503ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 102.455998ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 123.99458ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 115.009546ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 113.936038ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility."
+          ],
+          "samples_ms": [
+            145.484503,
+            102.455998,
+            123.99458,
+            115.009546,
+            113.936038
+          ],
+          "median_ms": 115.009546,
+          "min_ms": 102.455998,
+          "max_ms": 145.484503
+        },
+        "fork": {
+          "output": [
+            "Synthetic reducer replay: 100000 events in 125.066341ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 127.187795ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 122.568298ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 142.934207ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 117.329105ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility."
+          ],
+          "samples_ms": [
+            125.066341,
+            127.187795,
+            122.568298,
+            142.934207,
+            117.329105
+          ],
+          "median_ms": 125.066341,
+          "min_ms": 117.329105,
+          "max_ms": 142.934207
+        },
+        "after": {
+          "output": [
+            "Synthetic reducer replay: 100000 events in 151.612295ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 222.128367ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 122.199856ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 116.646052ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+            "Synthetic reducer replay: 100000 events in 115.688513ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility."
+          ],
+          "samples_ms": [
+            151.612295,
+            222.128367,
+            122.199856,
+            116.646052,
+            115.688513
+          ],
+          "median_ms": 122.199856,
+          "min_ms": 115.688513,
+          "max_ms": 222.128367
+        }
+      },
+      "wide_channels": {
+        "nightly": {
+          "output": [
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 155.654838ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 223.835521ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 228.867867ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 246.960866ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 198.946766ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility."
+          ],
+          "samples_ms": [
+            155.654838,
+            223.835521,
+            228.867867,
+            246.960866,
+            198.946766
+          ],
+          "median_ms": 223.835521,
+          "min_ms": 155.654838,
+          "max_ms": 246.960866
+        },
+        "fork": {
+          "output": [
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 140.104819ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 230.819421ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 206.37631ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 178.775869ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 143.898435ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility."
+          ],
+          "samples_ms": [
+            140.104819,
+            230.819421,
+            206.37631,
+            178.775869,
+            143.898435
+          ],
+          "median_ms": 178.775869,
+          "min_ms": 140.104819,
+          "max_ms": 230.819421
+        },
+        "after": {
+          "output": [
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 139.274301ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 131.444298ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 236.335928ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 177.768539ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+            "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 251.693871ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility."
+          ],
+          "samples_ms": [
+            139.274301,
+            131.444298,
+            236.335928,
+            177.768539,
+            251.693871
+          ],
+          "median_ms": 177.768539,
+          "min_ms": 131.444298,
+          "max_ms": 251.693871
+        }
+      },
+      "navigation": {
+        "nightly": {
+          "output": [
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 291ns, p95 325ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 285ns, p95 336ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 281ns, p95 315ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 282ns, p95 320ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 284ns, p95 317ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS)."
+          ],
+          "selection_samples": [
+            {
+              "median_us": 0.291,
+              "p95_us": 0.325
+            },
+            {
+              "median_us": 0.28500000000000003,
+              "p95_us": 0.336
+            },
+            {
+              "median_us": 0.281,
+              "p95_us": 0.315
+            },
+            {
+              "median_us": 0.28200000000000003,
+              "p95_us": 0.32
+            },
+            {
+              "median_us": 0.28400000000000003,
+              "p95_us": 0.317
+            }
+          ],
+          "selection_median_us": 0.28400000000000003,
+          "selection_p95_us": 0.32
+        },
+        "fork": {
+          "output": [
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 307ns, p95 348ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 317ns, p95 349ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 307ns, p95 344ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 308ns, p95 346ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 305ns, p95 336ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS)."
+          ],
+          "selection_samples": [
+            {
+              "median_us": 0.307,
+              "p95_us": 0.34800000000000003
+            },
+            {
+              "median_us": 0.317,
+              "p95_us": 0.34900000000000003
+            },
+            {
+              "median_us": 0.307,
+              "p95_us": 0.34400000000000003
+            },
+            {
+              "median_us": 0.308,
+              "p95_us": 0.34600000000000003
+            },
+            {
+              "median_us": 0.305,
+              "p95_us": 0.336
+            }
+          ],
+          "selection_median_us": 0.307,
+          "selection_p95_us": 0.34600000000000003
+        },
+        "after": {
+          "output": [
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 327ns, p95 512ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339556 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017649 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 322ns, p95 359ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339556 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017649 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 325ns, p95 364ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339556 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017649 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 329ns, p95 376ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339556 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017649 estimated retained bytes (not RSS).",
+            "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 324ns, p95 407ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339556 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017649 estimated retained bytes (not RSS)."
+          ],
+          "selection_samples": [
+            {
+              "median_us": 0.327,
+              "p95_us": 0.512
+            },
+            {
+              "median_us": 0.322,
+              "p95_us": 0.359
+            },
+            {
+              "median_us": 0.325,
+              "p95_us": 0.364
+            },
+            {
+              "median_us": 0.329,
+              "p95_us": 0.376
+            },
+            {
+              "median_us": 0.324,
+              "p95_us": 0.40700000000000003
+            }
+          ],
+          "selection_median_us": 0.325,
+          "selection_p95_us": 0.376
+        }
+      }
+    }
+  },
+  "ci_replay": {
+    "linux": {
+      "run_id": 39615531760,
+      "job_id": 119275686578,
+      "revisions": {
+        "nightly": "d9d87471f0ea2190da3f90db815e115045461703",
+        "previous_fork": "bc35a629eeed1d80708baf66152bbb0a91005989",
+        "after": "a8b118d1c8944c0df10f5c73c561204933e628c6"
+      },
+      "nightly_tag": "v1.0.0-nightly.20261017.60",
+      "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+      "cpu": "x86_64",
+      "logical_cpus": 4,
+      "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "release_settings": {
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+        "CARGO_PROFILE_RELEASE_LTO": "thin",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+        "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+        "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+        "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+        "CARGO_PROFILE_RELEASE_PANIC": "abort",
+        "CARGO_BUILD_JOBS": "2"
+      },
+      "samples": 5,
+      "warmup_runs": 1,
+      "workloads": {
+        "reducer": {
+          "nightly": {
+            "median_ms": 56.612443,
+            "min_ms": 56.138447,
+            "max_ms": 58.098719,
+            "samples_ms": [
+              57.353603,
+              56.203365,
+              56.612443,
+              56.138447,
+              58.098719
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 59.809453,
+            "min_ms": 58.276988,
+            "max_ms": 62.240226,
+            "samples_ms": [
+              59.809453,
+              62.240226,
+              58.276988,
+              58.553366,
+              60.295718
+            ]
+          },
+          "after": {
+            "median_ms": 63.861265,
+            "min_ms": 61.770436,
+            "max_ms": 64.119916,
+            "samples_ms": [
+              61.770436,
+              63.861265,
+              64.088919,
+              63.050841,
+              64.119916
+            ]
+          }
+        },
+        "wide_channels": {
+          "nightly": {
+            "median_ms": 102.912085,
+            "min_ms": 100.569756,
+            "max_ms": 105.067712,
+            "samples_ms": [
+              105.067712,
+              100.569756,
+              102.912085,
+              104.686653,
+              100.784215
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 97.290512,
+            "min_ms": 95.552906,
+            "max_ms": 100.644673,
+            "samples_ms": [
+              95.552906,
+              98.574802,
+              97.076608,
+              97.290512,
+              100.644673
+            ]
+          },
+          "after": {
+            "median_ms": 102.202103,
+            "min_ms": 101.984594,
+            "max_ms": 104.055233,
+            "samples_ms": [
+              102.202103,
+              103.531021,
+              101.984594,
+              104.055233,
+              102.113692
+            ]
+          }
+        }
+      },
+      "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+      "sampling_affinity": "logical CPU 0"
+    },
+    "windows": {
+      "run_id": 39615531760,
+      "job_id": 119275686821,
+      "revisions": {
+        "nightly": "d9d87471f0ea2190da3f90db815e115045461703",
+        "previous_fork": "bc35a629eeed1d80708baf66152bbb0a91005989",
+        "after": "a8b118d1c8944c0df10f5c73c561204933e628c6"
+      },
+      "nightly_tag": "v1.0.0-nightly.20261017.60",
+      "os": "Windows-2025Server-10.0.26100-SP0",
+      "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "logical_cpus": 4,
+      "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "release_settings": {
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+        "CARGO_PROFILE_RELEASE_LTO": "thin",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+        "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+        "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+        "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+        "CARGO_PROFILE_RELEASE_PANIC": "abort",
+        "CARGO_BUILD_JOBS": "2"
+      },
+      "samples": 5,
+      "warmup_runs": 1,
+      "workloads": {
+        "reducer": {
+          "nightly": {
+            "median_ms": 105.8276,
+            "min_ms": 104.4632,
+            "max_ms": 111.7263,
+            "samples_ms": [
+              106.0055,
+              105.8276,
+              104.4632,
+              104.9214,
+              111.7263
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 111.3783,
+            "min_ms": 109.3062,
+            "max_ms": 125.2832,
+            "samples_ms": [
+              110.7933,
+              125.2832,
+              109.3062,
+              111.5511,
+              111.3783
+            ]
+          },
+          "after": {
+            "median_ms": 121.0165,
+            "min_ms": 120.4331,
+            "max_ms": 123.0095,
+            "samples_ms": [
+              121.0165,
+              123.0095,
+              120.791,
+              121.6503,
+              120.4331
+            ]
+          }
+        },
+        "wide_channels": {
+          "nightly": {
+            "median_ms": 170.0105,
+            "min_ms": 169.4466,
+            "max_ms": 171.503,
+            "samples_ms": [
+              170.9158,
+              169.9565,
+              170.0105,
+              171.503,
+              169.4466
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 171.7461,
+            "min_ms": 170.0852,
+            "max_ms": 190.3074,
+            "samples_ms": [
+              170.0852,
+              190.3074,
+              171.7461,
+              171.7164,
+              177.6322
+            ]
+          },
+          "after": {
+            "median_ms": 171.4884,
+            "min_ms": 171.2885,
+            "max_ms": 172.2818,
+            "samples_ms": [
+              171.8984,
+              171.2885,
+              172.2818,
+              171.4756,
+              171.4884
+            ]
+          }
+        }
+      },
+      "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+      "sampling_affinity": "logical CPU mask 1"
+    }
+  },
+  "historical_macos": {
+    "reviewed_revision": "83ef42d03ad708882061c25462bbe88b82787fab",
+    "run_id": 39598722213,
+    "result": {
+      "job_id": 119217462538,
+      "job_url": "https://github.com/MCShotty/Serein/actions/runs/39598722213/job/119217462538",
+      "revisions": {
+        "nightly": "d9d87471f0ea2190da3f90db815e115045461703",
+        "previous_fork": "bc35a629eeed1d80708baf66152bbb0a91005989",
+        "after": "83ef42d03ad708882061c25462bbe88b82787fab"
+      },
+      "nightly_tag": "v1.0.0-nightly.20261017.60",
+      "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+      "cpu": "arm",
+      "logical_cpus": 3,
+      "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "release_settings": {
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+        "CARGO_PROFILE_RELEASE_LTO": "thin",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+        "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+        "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+        "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+        "CARGO_PROFILE_RELEASE_PANIC": "abort",
+        "CARGO_BUILD_JOBS": "2"
+      },
+      "samples": 5,
+      "warmup_runs": 1,
+      "workloads": {
+        "reducer": {
+          "nightly": {
+            "median_ms": 99.690833,
+            "min_ms": 65.767625,
+            "max_ms": 113.99775,
+            "samples_ms": [
+              99.690833,
+              109.104417,
+              65.767625,
+              85.46775,
+              113.99775
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 93.884916,
+            "min_ms": 69.369417,
+            "max_ms": 107.424292,
+            "samples_ms": [
+              90.668584,
+              107.424292,
+              69.369417,
+              93.884916,
+              104.553417
+            ]
+          },
+          "after": {
+            "median_ms": 120.525042,
+            "min_ms": 78.8775,
+            "max_ms": 194.301792,
+            "samples_ms": [
+              113.886084,
+              121.188291,
+              78.8775,
+              194.301792,
+              120.525042
+            ]
+          }
+        },
+        "wide_channels": {
+          "nightly": {
+            "median_ms": 201.884666,
+            "min_ms": 160.287792,
+            "max_ms": 223.323375,
+            "samples_ms": [
+              203.892625,
+              223.323375,
+              165.915959,
+              201.884666,
+              160.287792
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 161.398792,
+            "min_ms": 141.439959,
+            "max_ms": 199.6785,
+            "samples_ms": [
+              161.398792,
+              199.6785,
+              141.439959,
+              168.53725,
+              156.324875
+            ]
+          },
+          "after": {
+            "median_ms": 168.667209,
+            "min_ms": 135.733125,
+            "max_ms": 230.3825,
+            "samples_ms": [
+              229.1505,
+              230.3825,
+              165.6725,
+              135.733125,
+              168.667209
+            ]
+          }
+        }
+      },
+      "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+      "sampling_affinity": "unavailable; platform scheduler",
+      "comparisons": {
+        "reducer": {
+          "after_vs_nightly_percent": 20.898821258720957,
+          "after_vs_previous_fork_percent": 28.375299393142118,
+          "after_range_width_percent_of_median": 95.76789195393934
+        },
+        "wide_channels": {
+          "after_vs_nightly_percent": -16.45368004323815,
+          "after_vs_previous_fork_percent": 4.503389963414373,
+          "after_range_width_percent_of_median": 56.11604980076477
+        }
+      },
+      "job_conclusion": "success",
+      "job_name": "replay comparison (macos-latest)"
+    },
+    "note": "Historical source, not current-head validation or performance"
+  },
+  "favorite_snapshot": {
+    "warmup": {
+      "sample": 0,
+      "before_ms": 37.285846,
+      "after_ms": 3.8183219999999998
+    },
+    "measured": [
+      {
+        "sample": 1,
+        "before_ms": 28.459106000000002,
+        "after_ms": 4.059296000000001
+      },
+      {
+        "sample": 2,
+        "before_ms": 38.972022,
+        "after_ms": 3.060345
+      },
+      {
+        "sample": 3,
+        "before_ms": 42.333297,
+        "after_ms": 4.225772
+      },
+      {
+        "sample": 4,
+        "before_ms": 37.00826,
+        "after_ms": 4.249448999999999
+      },
+      {
+        "sample": 5,
+        "before_ms": 40.567569999999996,
+        "after_ms": 4.559887000000001
+      }
+    ],
+    "before_median_ms": 38.972022,
+    "after_median_ms": 4.225772,
+    "affinity_cpu": 0
+  },
+  "favorite_provenance": {
+    "revision": "a8b118d1c8944c0df10f5c73c561204933e628c6",
+    "method": "Exact production sync_gif_favorites method, actual model::Gif, bounded Vec-only receiver; old per-frame URL clone expression; 100 favorites/10000 calls; not whole UI or presented latency",
+    "source_sha256": "e3a5fe470250598b9434fec1beb14f2704b1a148b3330fafec3b962485c15cf7",
+    "helper_sha256": "87677c6e0caab83aea4f831ae75b7559a2604b1ff3c317cc81746715d1a6c564",
+    "generated_sha256": "f7f76dcd3637bffa29ef2f720a1b37bba9cd321864638fec30a3bef4a78d3b9c",
+    "model": "<task>/target/release/deps/libmodel-1da21d8c87808f16.rlib",
+    "command": [
+      "rustc",
+      "--edition=2024",
+      "-C",
+      "opt-level=3",
+      "-C",
+      "lto=thin",
+      "-C",
+      "codegen-units=1",
+      "-C",
+      "strip=symbols",
+      "--extern",
+      "model=<task>/target/release/deps/libmodel-1da21d8c87808f16.rlib",
+      "-L",
+      "dependency=<task>/target/release/deps",
+      "<task>/favorite-measure.rs",
+      "-o",
+      "<task>/favorite-measure"
+    ]
+  },
+  "scroll": {
+    "bounded_frames_per_case": 160,
+    "limitations": [
+      "Not a wall-clock CPU or input-to-display latency benchmark.",
+      "No native window, compositor, GPU presentation, Discord account or physical input device is exercised.",
+      "Timeline positions are covered separately by the production TimelineScenario UI regression.",
+      "Completion occurs on the first scheduled frame at/after the 150 ms deadline; overruns are bounded by one frame interval.",
+      "Opposite-direction residual distance is intentionally retired on reversal, and is reported separately.",
+      "The palette helper is a stub; the scroll module and egui input processing are production code."
+    ],
+    "line_scroll_speed_pt": 120.0,
+    "method": "Deterministic RawInput through the actual pinned-egui production scroll adapter; public delta captured before a scroll-area consumer.",
+    "precision": "Software coordinates, not physical device events.",
+    "sample_columns": [
+      "time_s",
+      "requested_y_pt",
+      "applied_y_pt",
+      "cumulative_requested_y_pt",
+      "cumulative_applied_y_pt"
+    ],
+    "schema": 1,
+    "traces": [
+      {
+        "applied_total_y_pt": -4320.0,
+        "case": "line-burst",
+        "completion_deadline_s": 0.416667,
+        "completion_frame_s": 0.433333,
+        "deadline_overrun_s": 0.016667,
+        "first_idle_frame_s": 0.466667,
+        "frame_schedule_hz": 30,
+        "frames_evaluated": 21,
+        "input_events": 12,
+        "last_input_frame_s": 0.266667,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -360.0,
+            -65.454544,
+            -360.0,
+            -65.454544
+          ],
+          [
+            0.066667,
+            -720.0,
+            -184.462814,
+            -1080.0,
+            -249.917358
+          ],
+          [
+            0.1,
+            -720.0,
+            -281.833221,
+            -1800.0,
+            -531.75061
+          ],
+          [
+            0.133333,
+            -360.0,
+            -296.045349,
+            -2160.0,
+            -827.795959
+          ],
+          [
+            0.166667,
+            -720.0,
+            -373.128021,
+            -2880.0,
+            -1200.92395
+          ],
+          [
+            0.2,
+            -720.0,
+            -436.195679,
+            -3600.0,
+            -1637.119629
+          ],
+          [
+            0.233333,
+            -360.0,
+            -422.341888,
+            -3960.0,
+            -2059.461426
+          ],
+          [
+            0.266667,
+            -360.0,
+            -411.007019,
+            -4320.0,
+            -2470.468506
+          ],
+          [
+            0.433333,
+            0.0,
+            -205.503479,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.466667,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.666667,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -1080.923706,
+        "case": "line-reversal",
+        "completion_deadline_s": 0.35,
+        "completion_frame_s": 0.366667,
+        "deadline_overrun_s": 0.016667,
+        "first_idle_frame_s": 0.4,
+        "frame_schedule_hz": 30,
+        "frames_evaluated": 21,
+        "input_events": 9,
+        "last_input_frame_s": 0.2,
+        "requested_total_y_pt": -2760.0,
+        "reversal_first_applied_y_pt": 21.818182,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -360.0,
+            -65.454544,
+            -360.0,
+            -65.454544
+          ],
+          [
+            0.066667,
+            -720.0,
+            -184.462814,
+            -1080.0,
+            -249.917358
+          ],
+          [
+            0.1,
+            -720.0,
+            -281.833221,
+            -1800.0,
+            -531.75061
+          ],
+          [
+            0.133333,
+            -360.0,
+            -296.045349,
+            -2160.0,
+            -827.795959
+          ],
+          [
+            0.166667,
+            -720.0,
+            -373.128021,
+            -2880.0,
+            -1200.92395
+          ],
+          [
+            0.2,
+            120.0,
+            21.818182,
+            -2760.0,
+            -1179.105713
+          ],
+          [
+            0.366667,
+            0.0,
+            10.909088,
+            -2760.0,
+            -1080.923706
+          ],
+          [
+            0.4,
+            0.0,
+            0.0,
+            -2760.0,
+            -1080.923706
+          ],
+          [
+            0.666667,
+            0.0,
+            0.0,
+            -2760.0,
+            -1080.923706
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": -1679.076294
+      },
+      {
+        "applied_total_y_pt": -4320.0,
+        "case": "smooth-off",
+        "completion_deadline_s": 0.266667,
+        "completion_frame_s": 0.266667,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.3,
+        "frame_schedule_hz": 30,
+        "frames_evaluated": 21,
+        "input_events": 12,
+        "last_input_frame_s": 0.266667,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -360.0,
+            -360.0,
+            -360.0,
+            -360.0
+          ],
+          [
+            0.066667,
+            -720.0,
+            -720.0,
+            -1080.0,
+            -1080.0
+          ],
+          [
+            0.1,
+            -720.0,
+            -720.0,
+            -1800.0,
+            -1800.0
+          ],
+          [
+            0.133333,
+            -360.0,
+            -360.0,
+            -2160.0,
+            -2160.0
+          ],
+          [
+            0.166667,
+            -720.0,
+            -720.0,
+            -2880.0,
+            -2880.0
+          ],
+          [
+            0.2,
+            -720.0,
+            -720.0,
+            -3600.0,
+            -3600.0
+          ],
+          [
+            0.233333,
+            -360.0,
+            -360.0,
+            -3960.0,
+            -3960.0
+          ],
+          [
+            0.266667,
+            -360.0,
+            -360.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.3,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.666667,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ]
+        ],
+        "smooth_scrolling": false,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -370.5,
+        "case": "precision-points",
+        "completion_deadline_s": 0.066667,
+        "completion_frame_s": 0.066667,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.1,
+        "frame_schedule_hz": 30,
+        "frames_evaluated": 21,
+        "input_events": 3,
+        "last_input_frame_s": 0.066667,
+        "requested_total_y_pt": -370.5,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -123.5,
+            -123.5,
+            -123.5,
+            -123.5
+          ],
+          [
+            0.066667,
+            -247.0,
+            -247.0,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.1,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.666667,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -75.0,
+        "case": "os-momentum",
+        "completion_deadline_s": 0.066667,
+        "completion_frame_s": 0.066667,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.1,
+        "frame_schedule_hz": 30,
+        "frames_evaluated": 21,
+        "input_events": 3,
+        "last_input_frame_s": 0.066667,
+        "requested_total_y_pt": -75.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -40.0,
+            -40.0,
+            -40.0,
+            -40.0
+          ],
+          [
+            0.066667,
+            -35.0,
+            -35.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.1,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.666667,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -4319.999512,
+        "case": "line-burst",
+        "completion_deadline_s": 0.4,
+        "completion_frame_s": 0.4,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.416667,
+        "frame_schedule_hz": 60,
+        "frames_evaluated": 40,
+        "input_events": 12,
+        "last_input_frame_s": 0.25,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -360.0,
+            -36.0,
+            -360.0,
+            -36.0
+          ],
+          [
+            0.05,
+            -360.0,
+            -68.400002,
+            -720.0,
+            -104.400002
+          ],
+          [
+            0.066667,
+            -360.0,
+            -97.559998,
+            -1080.0,
+            -201.959991
+          ],
+          [
+            0.083333,
+            -360.0,
+            -123.804008,
+            -1440.0,
+            -325.764008
+          ],
+          [
+            0.1,
+            -360.0,
+            -147.423615,
+            -1800.0,
+            -473.187622
+          ],
+          [
+            0.133333,
+            -360.0,
+            -153.938889,
+            -2160.0,
+            -774.55011
+          ],
+          [
+            0.15,
+            -360.0,
+            -174.545013,
+            -2520.0,
+            -949.095093
+          ],
+          [
+            0.166667,
+            -360.0,
+            -193.0905,
+            -2880.0,
+            -1142.185547
+          ],
+          [
+            0.183333,
+            -360.0,
+            -209.781448,
+            -3240.0,
+            -1351.967041
+          ],
+          [
+            0.2,
+            -360.0,
+            -224.803299,
+            -3600.0,
+            -1576.770386
+          ],
+          [
+            0.233333,
+            -360.0,
+            -215.842636,
+            -3960.0,
+            -2017.416382
+          ],
+          [
+            0.25,
+            -360.0,
+            -230.258347,
+            -4320.0,
+            -2247.674805
+          ],
+          [
+            0.4,
+            0.0,
+            -230.258331,
+            -4320.0,
+            -4319.999512
+          ],
+          [
+            0.416667,
+            0.0,
+            0.0,
+            -4320.0,
+            -4319.999512
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -4320.0,
+            -4319.999512
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -1022.185547,
+        "case": "line-reversal",
+        "completion_deadline_s": 0.333333,
+        "completion_frame_s": 0.333333,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.35,
+        "frame_schedule_hz": 60,
+        "frames_evaluated": 40,
+        "input_events": 9,
+        "last_input_frame_s": 0.183333,
+        "requested_total_y_pt": -2760.0,
+        "reversal_first_applied_y_pt": 12.0,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -360.0,
+            -36.0,
+            -360.0,
+            -36.0
+          ],
+          [
+            0.05,
+            -360.0,
+            -68.400002,
+            -720.0,
+            -104.400002
+          ],
+          [
+            0.066667,
+            -360.0,
+            -97.559998,
+            -1080.0,
+            -201.959991
+          ],
+          [
+            0.083333,
+            -360.0,
+            -123.804008,
+            -1440.0,
+            -325.764008
+          ],
+          [
+            0.1,
+            -360.0,
+            -147.423615,
+            -1800.0,
+            -473.187622
+          ],
+          [
+            0.133333,
+            -360.0,
+            -153.938889,
+            -2160.0,
+            -774.55011
+          ],
+          [
+            0.15,
+            -360.0,
+            -174.545013,
+            -2520.0,
+            -949.095093
+          ],
+          [
+            0.166667,
+            -360.0,
+            -193.0905,
+            -2880.0,
+            -1142.185547
+          ],
+          [
+            0.183333,
+            120.0,
+            12.0,
+            -2760.0,
+            -1130.185547
+          ],
+          [
+            0.333333,
+            0.0,
+            12.0,
+            -2760.0,
+            -1022.185547
+          ],
+          [
+            0.35,
+            0.0,
+            0.0,
+            -2760.0,
+            -1022.185547
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -2760.0,
+            -1022.185547
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": -1737.814453
+      },
+      {
+        "applied_total_y_pt": -4320.0,
+        "case": "smooth-off",
+        "completion_deadline_s": 0.25,
+        "completion_frame_s": 0.25,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.266667,
+        "frame_schedule_hz": 60,
+        "frames_evaluated": 40,
+        "input_events": 12,
+        "last_input_frame_s": 0.25,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -360.0,
+            -360.0,
+            -360.0,
+            -360.0
+          ],
+          [
+            0.05,
+            -360.0,
+            -360.0,
+            -720.0,
+            -720.0
+          ],
+          [
+            0.066667,
+            -360.0,
+            -360.0,
+            -1080.0,
+            -1080.0
+          ],
+          [
+            0.083333,
+            -360.0,
+            -360.0,
+            -1440.0,
+            -1440.0
+          ],
+          [
+            0.1,
+            -360.0,
+            -360.0,
+            -1800.0,
+            -1800.0
+          ],
+          [
+            0.133333,
+            -360.0,
+            -360.0,
+            -2160.0,
+            -2160.0
+          ],
+          [
+            0.15,
+            -360.0,
+            -360.0,
+            -2520.0,
+            -2520.0
+          ],
+          [
+            0.166667,
+            -360.0,
+            -360.0,
+            -2880.0,
+            -2880.0
+          ],
+          [
+            0.183333,
+            -360.0,
+            -360.0,
+            -3240.0,
+            -3240.0
+          ],
+          [
+            0.2,
+            -360.0,
+            -360.0,
+            -3600.0,
+            -3600.0
+          ],
+          [
+            0.233333,
+            -360.0,
+            -360.0,
+            -3960.0,
+            -3960.0
+          ],
+          [
+            0.25,
+            -360.0,
+            -360.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.266667,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ]
+        ],
+        "smooth_scrolling": false,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -370.5,
+        "case": "precision-points",
+        "completion_deadline_s": 0.066667,
+        "completion_frame_s": 0.066667,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.083333,
+        "frame_schedule_hz": 60,
+        "frames_evaluated": 40,
+        "input_events": 3,
+        "last_input_frame_s": 0.066667,
+        "requested_total_y_pt": -370.5,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -123.5,
+            -123.5,
+            -123.5,
+            -123.5
+          ],
+          [
+            0.05,
+            -123.5,
+            -123.5,
+            -247.0,
+            -247.0
+          ],
+          [
+            0.066667,
+            -123.5,
+            -123.5,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.083333,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -75.0,
+        "case": "os-momentum",
+        "completion_deadline_s": 0.066667,
+        "completion_frame_s": 0.066667,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.083333,
+        "frame_schedule_hz": 60,
+        "frames_evaluated": 40,
+        "input_events": 3,
+        "last_input_frame_s": 0.066667,
+        "requested_total_y_pt": -75.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.033333,
+            -40.0,
+            -40.0,
+            -40.0,
+            -40.0
+          ],
+          [
+            0.05,
+            -25.0,
+            -25.0,
+            -65.0,
+            -65.0
+          ],
+          [
+            0.066667,
+            -10.0,
+            -10.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.083333,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -4319.998535,
+        "case": "line-burst",
+        "completion_deadline_s": 0.393056,
+        "completion_frame_s": 0.395833,
+        "deadline_overrun_s": 0.002778,
+        "first_idle_frame_s": 0.402778,
+        "frame_schedule_hz": 144,
+        "frames_evaluated": 95,
+        "input_events": 12,
+        "last_input_frame_s": 0.243056,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -360.0,
+            -15.929203,
+            -360.0,
+            -15.929203
+          ],
+          [
+            0.041667,
+            -360.0,
+            -29.743912,
+            -720.0,
+            -77.531525
+          ],
+          [
+            0.0625,
+            -360.0,
+            -41.724812,
+            -1080.0,
+            -178.744156
+          ],
+          [
+            0.083333,
+            -360.0,
+            -52.115326,
+            -1440.0,
+            -314.309113
+          ],
+          [
+            0.104167,
+            -360.0,
+            -61.126568,
+            -1800.0,
+            -479.666321
+          ],
+          [
+            0.125,
+            -360.0,
+            -68.94162,
+            -2160.0,
+            -670.861084
+          ],
+          [
+            0.145833,
+            -360.0,
+            -75.719276,
+            -2520.0,
+            -884.463684
+          ],
+          [
+            0.166667,
+            -360.0,
+            -81.59726,
+            -2880.0,
+            -1117.499512
+          ],
+          [
+            0.180556,
+            -360.0,
+            -90.305458,
+            -3240.0,
+            -1289.402222
+          ],
+          [
+            0.201389,
+            -360.0,
+            -94.247223,
+            -3600.0,
+            -1564.260254
+          ],
+          [
+            0.222222,
+            -360.0,
+            -97.665733,
+            -3960.0,
+            -1850.42041
+          ],
+          [
+            0.243056,
+            -360.0,
+            -100.630455,
+            -4320.0,
+            -2146.382324
+          ],
+          [
+            0.395833,
+            0.0,
+            -60.378265,
+            -4320.0,
+            -4319.998535
+          ],
+          [
+            0.402778,
+            0.0,
+            0.0,
+            -4320.0,
+            -4319.998535
+          ],
+          [
+            0.652778,
+            0.0,
+            0.0,
+            -4320.0,
+            -4319.998535
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -1079.097778,
+        "case": "line-reversal",
+        "completion_deadline_s": 0.330556,
+        "completion_frame_s": 0.333333,
+        "deadline_overrun_s": 0.002778,
+        "first_idle_frame_s": 0.340278,
+        "frame_schedule_hz": 144,
+        "frames_evaluated": 95,
+        "input_events": 9,
+        "last_input_frame_s": 0.180556,
+        "requested_total_y_pt": -2760.0,
+        "reversal_first_applied_y_pt": 5.309734,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -360.0,
+            -15.929203,
+            -360.0,
+            -15.929203
+          ],
+          [
+            0.041667,
+            -360.0,
+            -29.743912,
+            -720.0,
+            -77.531525
+          ],
+          [
+            0.0625,
+            -360.0,
+            -41.724812,
+            -1080.0,
+            -178.744156
+          ],
+          [
+            0.083333,
+            -360.0,
+            -52.115326,
+            -1440.0,
+            -314.309113
+          ],
+          [
+            0.104167,
+            -360.0,
+            -61.126568,
+            -1800.0,
+            -479.666321
+          ],
+          [
+            0.125,
+            -360.0,
+            -68.94162,
+            -2160.0,
+            -670.861084
+          ],
+          [
+            0.145833,
+            -360.0,
+            -75.719276,
+            -2520.0,
+            -884.463684
+          ],
+          [
+            0.166667,
+            -360.0,
+            -81.59726,
+            -2880.0,
+            -1117.499512
+          ],
+          [
+            0.180556,
+            120.0,
+            5.309734,
+            -2760.0,
+            -1193.787109
+          ],
+          [
+            0.333333,
+            0.0,
+            3.18584,
+            -2760.0,
+            -1079.097778
+          ],
+          [
+            0.340278,
+            0.0,
+            0.0,
+            -2760.0,
+            -1079.097778
+          ],
+          [
+            0.652778,
+            0.0,
+            0.0,
+            -2760.0,
+            -1079.097778
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": -1680.902222
+      },
+      {
+        "applied_total_y_pt": -4320.0,
+        "case": "smooth-off",
+        "completion_deadline_s": 0.243056,
+        "completion_frame_s": 0.243056,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.25,
+        "frame_schedule_hz": 144,
+        "frames_evaluated": 95,
+        "input_events": 12,
+        "last_input_frame_s": 0.243056,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -360.0,
+            -360.0,
+            -360.0,
+            -360.0
+          ],
+          [
+            0.041667,
+            -360.0,
+            -360.0,
+            -720.0,
+            -720.0
+          ],
+          [
+            0.0625,
+            -360.0,
+            -360.0,
+            -1080.0,
+            -1080.0
+          ],
+          [
+            0.083333,
+            -360.0,
+            -360.0,
+            -1440.0,
+            -1440.0
+          ],
+          [
+            0.104167,
+            -360.0,
+            -360.0,
+            -1800.0,
+            -1800.0
+          ],
+          [
+            0.125,
+            -360.0,
+            -360.0,
+            -2160.0,
+            -2160.0
+          ],
+          [
+            0.145833,
+            -360.0,
+            -360.0,
+            -2520.0,
+            -2520.0
+          ],
+          [
+            0.166667,
+            -360.0,
+            -360.0,
+            -2880.0,
+            -2880.0
+          ],
+          [
+            0.180556,
+            -360.0,
+            -360.0,
+            -3240.0,
+            -3240.0
+          ],
+          [
+            0.201389,
+            -360.0,
+            -360.0,
+            -3600.0,
+            -3600.0
+          ],
+          [
+            0.222222,
+            -360.0,
+            -360.0,
+            -3960.0,
+            -3960.0
+          ],
+          [
+            0.243056,
+            -360.0,
+            -360.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.25,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.652778,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ]
+        ],
+        "smooth_scrolling": false,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -370.5,
+        "case": "precision-points",
+        "completion_deadline_s": 0.0625,
+        "completion_frame_s": 0.0625,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.069444,
+        "frame_schedule_hz": 144,
+        "frames_evaluated": 95,
+        "input_events": 3,
+        "last_input_frame_s": 0.0625,
+        "requested_total_y_pt": -370.5,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -123.5,
+            -123.5,
+            -123.5,
+            -123.5
+          ],
+          [
+            0.041667,
+            -123.5,
+            -123.5,
+            -247.0,
+            -247.0
+          ],
+          [
+            0.0625,
+            -123.5,
+            -123.5,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.069444,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.652778,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -75.0,
+        "case": "os-momentum",
+        "completion_deadline_s": 0.0625,
+        "completion_frame_s": 0.0625,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.069444,
+        "frame_schedule_hz": 144,
+        "frames_evaluated": 95,
+        "input_events": 3,
+        "last_input_frame_s": 0.0625,
+        "requested_total_y_pt": -75.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -40.0,
+            -40.0,
+            -40.0,
+            -40.0
+          ],
+          [
+            0.041667,
+            -25.0,
+            -25.0,
+            -65.0,
+            -65.0
+          ],
+          [
+            0.0625,
+            -10.0,
+            -10.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.069444,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.652778,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -4319.998047,
+        "case": "line-burst",
+        "completion_deadline_s": 0.391667,
+        "completion_frame_s": 0.391667,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.395833,
+        "frame_schedule_hz": 240,
+        "frames_evaluated": 157,
+        "input_events": 12,
+        "last_input_frame_s": 0.241667,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -360.0,
+            -9.72973,
+            -360.0,
+            -9.72973
+          ],
+          [
+            0.041667,
+            -360.0,
+            -18.14463,
+            -720.0,
+            -66.793274
+          ],
+          [
+            0.0625,
+            -360.0,
+            -25.42238,
+            -1080.0,
+            -164.794174
+          ],
+          [
+            0.083333,
+            -360.0,
+            -31.716656,
+            -1440.0,
+            -298.200348
+          ],
+          [
+            0.1,
+            -360.0,
+            -38.017555,
+            -1800.0,
+            -431.367828
+          ],
+          [
+            0.120833,
+            -360.0,
+            -42.609776,
+            -2160.0,
+            -626.047852
+          ],
+          [
+            0.141667,
+            -360.0,
+            -46.581432,
+            -2520.0,
+            -843.068481
+          ],
+          [
+            0.1625,
+            -360.0,
+            -50.016376,
+            -2880.0,
+            -1079.410522
+          ],
+          [
+            0.183333,
+            -360.0,
+            -52.987137,
+            -3240.0,
+            -1332.463135
+          ],
+          [
+            0.2,
+            -360.0,
+            -56.988522,
+            -3600.0,
+            -1548.413208
+          ],
+          [
+            0.220833,
+            -360.0,
+            -59.017097,
+            -3960.0,
+            -1835.384399
+          ],
+          [
+            0.241667,
+            -360.0,
+            -60.771545,
+            -4320.0,
+            -2132.224365
+          ],
+          [
+            0.391667,
+            0.0,
+            -60.771534,
+            -4320.0,
+            -4319.998047
+          ],
+          [
+            0.395833,
+            0.0,
+            0.0,
+            -4320.0,
+            -4319.998047
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -4320.0,
+            -4319.998047
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -1159.474365,
+        "case": "line-reversal",
+        "completion_deadline_s": 0.333333,
+        "completion_frame_s": 0.333333,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.3375,
+        "frame_schedule_hz": 240,
+        "frames_evaluated": 157,
+        "input_events": 9,
+        "last_input_frame_s": 0.183333,
+        "requested_total_y_pt": -2760.0,
+        "reversal_first_applied_y_pt": 3.243243,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -360.0,
+            -9.72973,
+            -360.0,
+            -9.72973
+          ],
+          [
+            0.041667,
+            -360.0,
+            -18.14463,
+            -720.0,
+            -66.793274
+          ],
+          [
+            0.0625,
+            -360.0,
+            -25.42238,
+            -1080.0,
+            -164.794174
+          ],
+          [
+            0.083333,
+            -360.0,
+            -31.716656,
+            -1440.0,
+            -298.200348
+          ],
+          [
+            0.1,
+            -360.0,
+            -38.017555,
+            -1800.0,
+            -431.367828
+          ],
+          [
+            0.120833,
+            -360.0,
+            -42.609776,
+            -2160.0,
+            -626.047852
+          ],
+          [
+            0.141667,
+            -360.0,
+            -46.581432,
+            -2520.0,
+            -843.068481
+          ],
+          [
+            0.1625,
+            -360.0,
+            -50.016376,
+            -2880.0,
+            -1079.410522
+          ],
+          [
+            0.183333,
+            120.0,
+            3.243243,
+            -2760.0,
+            -1276.232666
+          ],
+          [
+            0.333333,
+            0.0,
+            3.243244,
+            -2760.0,
+            -1159.474365
+          ],
+          [
+            0.3375,
+            0.0,
+            0.0,
+            -2760.0,
+            -1159.474365
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -2760.0,
+            -1159.474365
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": -1600.525635
+      },
+      {
+        "applied_total_y_pt": -4320.0,
+        "case": "smooth-off",
+        "completion_deadline_s": 0.241667,
+        "completion_frame_s": 0.241667,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.245833,
+        "frame_schedule_hz": 240,
+        "frames_evaluated": 157,
+        "input_events": 12,
+        "last_input_frame_s": 0.241667,
+        "requested_total_y_pt": -4320.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -360.0,
+            -360.0,
+            -360.0,
+            -360.0
+          ],
+          [
+            0.041667,
+            -360.0,
+            -360.0,
+            -720.0,
+            -720.0
+          ],
+          [
+            0.0625,
+            -360.0,
+            -360.0,
+            -1080.0,
+            -1080.0
+          ],
+          [
+            0.083333,
+            -360.0,
+            -360.0,
+            -1440.0,
+            -1440.0
+          ],
+          [
+            0.1,
+            -360.0,
+            -360.0,
+            -1800.0,
+            -1800.0
+          ],
+          [
+            0.120833,
+            -360.0,
+            -360.0,
+            -2160.0,
+            -2160.0
+          ],
+          [
+            0.141667,
+            -360.0,
+            -360.0,
+            -2520.0,
+            -2520.0
+          ],
+          [
+            0.1625,
+            -360.0,
+            -360.0,
+            -2880.0,
+            -2880.0
+          ],
+          [
+            0.183333,
+            -360.0,
+            -360.0,
+            -3240.0,
+            -3240.0
+          ],
+          [
+            0.2,
+            -360.0,
+            -360.0,
+            -3600.0,
+            -3600.0
+          ],
+          [
+            0.220833,
+            -360.0,
+            -360.0,
+            -3960.0,
+            -3960.0
+          ],
+          [
+            0.241667,
+            -360.0,
+            -360.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.245833,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -4320.0,
+            -4320.0
+          ]
+        ],
+        "smooth_scrolling": false,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -370.5,
+        "case": "precision-points",
+        "completion_deadline_s": 0.0625,
+        "completion_frame_s": 0.0625,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.066667,
+        "frame_schedule_hz": 240,
+        "frames_evaluated": 157,
+        "input_events": 3,
+        "last_input_frame_s": 0.0625,
+        "requested_total_y_pt": -370.5,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -123.5,
+            -123.5,
+            -123.5,
+            -123.5
+          ],
+          [
+            0.041667,
+            -123.5,
+            -123.5,
+            -247.0,
+            -247.0
+          ],
+          [
+            0.0625,
+            -123.5,
+            -123.5,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.066667,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -370.5,
+            -370.5
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      },
+      {
+        "applied_total_y_pt": -75.0,
+        "case": "os-momentum",
+        "completion_deadline_s": 0.0625,
+        "completion_frame_s": 0.0625,
+        "deadline_overrun_s": 0.0,
+        "first_idle_frame_s": 0.066667,
+        "frame_schedule_hz": 240,
+        "frames_evaluated": 157,
+        "input_events": 3,
+        "last_input_frame_s": 0.0625,
+        "requested_total_y_pt": -75.0,
+        "reversal_first_applied_y_pt": null,
+        "samples": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.020833,
+            -40.0,
+            -40.0,
+            -40.0,
+            -40.0
+          ],
+          [
+            0.041667,
+            -25.0,
+            -25.0,
+            -65.0,
+            -65.0
+          ],
+          [
+            0.0625,
+            -10.0,
+            -10.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.066667,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ],
+          [
+            0.65,
+            0.0,
+            0.0,
+            -75.0,
+            -75.0
+          ]
+        ],
+        "smooth_scrolling": true,
+        "superseded_request_y_pt": 0.0
+      }
+    ],
+    "source_sha256": "2391b9e134cec62696ccaa59087bc9ea6bef57c453457eb0625eb2edc4ec46bd",
+    "rustc": "1.98.1",
+    "repeat_identical": true,
+    "egui_revision": "4821fc54ae083ac516e137a61e70550330e55169",
+    "assertions": [
+      "Same-direction line input retains total movement within 0.01 pt of f32 accumulation.",
+      "Direction reversal produces movement in the new direction on the same software frame.",
+      "Smooth-off, precision point and OS momentum inputs are delivered without another smoothing tail.",
+      "Completion is no later than the first available frame after the 150 ms deadline.",
+      "Each case evaluates at most 160 frames; only input and completion/idle samples are retained."
+    ]
+  },
+  "soak": {
+    "output": "Synthetic lifecycle soak: 1721 passes, 55072 channel visits, 33043200 live inserts in 120.279903308s; row-pressure visits 27536, byte-pressure visits 27536, logout cycles 7. Steady retained history estimates: small (967108, 14364781), large (6400363, 14364781) bytes. No network, storage, renderer or audio devices; not process RSS, native scrolling or live compatibility.",
+    "note": "Functional release-binary check; co-ran with compilation, iteration count is not a performance comparison"
+  }
+}
