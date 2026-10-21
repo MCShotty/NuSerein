@@ -4262,22 +4262,19 @@ impl Desktop {
 					Event::Members(demo_members(&self.state, guild, channel, request))
 				}
 				Command::ForumPosts { .. } | Command::ForumSummaries { .. } => return,
-				Command::History {
-					channel,
-					request,
-					before,
-					after,
-				} => {
-					if std::env::args().any(|arg| arg == "--demo-message-links") {
-						test_support::load_message_link_page(
-							&mut self.state,
-							channel,
-							request,
-							before,
-							after,
-						);
-					} else {
-						test_support::load_page_with_cursors(&mut self.state, before, after);
+				command @ (Command::History { .. }
+				| Command::HistoryAround { .. }
+				| Command::ReplyPreview { .. }
+				| Command::CancelReplyPreviews) => {
+					if let Some(event) = test_support::offline_history_event(
+						&self.state,
+						&command,
+						std::env::args().any(|arg| arg == "--demo-message-links"),
+					) {
+						self.state.apply(Envelope {
+							generation: self.state.generation,
+							event,
+						});
 					}
 					return;
 				}

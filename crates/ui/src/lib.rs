@@ -8588,7 +8588,7 @@ mod composer_tests {
 						events,
 						..Default::default()
 					},
-					|ui| commands = view.show(ui, state),
+					|ui| commands.extend(view.show(ui, state)),
 				);
 				// egui reports settled text selection for the native PRIMARY clipboard.
 				// Explicit clipboard writes and browser actions must remain absent.
@@ -8785,10 +8785,16 @@ mod composer_tests {
 				let mut reload = None;
 				for _ in 0..80 {
 					let (labels, _) = frame(&mut view, &mut state, vec![edit_key(egui::Key::Tab)]);
-					if let Some((_, rect)) =
-						labels.iter().find(|(text, _)| text == "Reload history")
+					if let Some(response) = ctx
+						.memory(|memory| memory.focused())
+						.and_then(|id| ctx.read_response(id))
+						&& labels
+							.iter()
+							.any(|(text, rect)| text == "Reload history" && *rect == response.rect)
 					{
-						reload = Some(rect.center());
+						// Focus tooltips have their own text rectangles outside the icon.
+						// Activate the actual button, not that painted tooltip.
+						reload = Some(response.rect.center());
 						break;
 					}
 				}
@@ -8823,6 +8829,10 @@ mod composer_tests {
 						.count();
 				}
 				assert_eq!(reloads, 1, "Explicit Reload returns to recent history");
+				assert!(state.history_pending);
+				assert_eq!(state.freshness, Freshness::Loading);
+				assert!(!state.history_targeted);
+				assert!(state.history_before.is_none() && state.history_after.is_none());
 			}
 		}
 	}

@@ -97,6 +97,23 @@ impl eframe::App for Preview {
 		}
 		for command in commands {
 			let event = match command {
+				command @ (client_core::Command::History { .. }
+				| client_core::Command::HistoryAround { .. }
+				| client_core::Command::ReplyPreview { .. }
+				| client_core::Command::CancelReplyPreviews) => {
+					let links = std::env::args().any(|arg| {
+						matches!(
+							arg.as_str(),
+							"--page=channel-links" | "--page=channel-link-replies"
+						)
+					});
+					let Some(event) =
+						test_support::offline_history_event(&self.state, &command, links)
+					else {
+						continue;
+					};
+					event
+				}
 				client_core::Command::EditProfile {
 					user,
 					request,
