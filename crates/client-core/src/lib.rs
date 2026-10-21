@@ -2190,6 +2190,11 @@ impl State {
 	}
 	/// Reports a command the transport could not accept as a bounded outcome error.
 	pub fn command_rejected(&mut self, command: Command) {
+		if matches!(command, Command::CancelReplyPreviews) {
+			// Core retired these request IDs before asking the worker to cancel. A full
+			// queue cannot make their late results current or invalidate this conversation.
+			return;
+		}
 		if let Command::Polls(request) = command {
 			let _ = self.apply_poll(polls::Event::Result {
 				channel: request.channel,

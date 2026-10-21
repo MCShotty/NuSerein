@@ -3854,6 +3854,7 @@ impl MessagingUi {
                             .min_scrolled_height(ui.ctx().viewport_rect().height() * 0.5)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
+                                crate::scroll::claim_wheel_content(ui);
                                 let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width: f32| {
                                     rich_layout.galley_games(
                                         ui,
@@ -4075,6 +4076,7 @@ impl MessagingUi {
 		egui::ScrollArea::horizontal()
 			.id_salt("pending-attachments")
 			.show(ui, |ui| {
+				crate::scroll::claim_wheel_content(ui);
 				ui.horizontal(|ui| {
 					ui.spacing_mut().item_spacing.x = 12.0;
 					for (index, (filename, bytes)) in files.iter().enumerate() {

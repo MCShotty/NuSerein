@@ -488,6 +488,7 @@ impl MessagingUi {
 							))
 							.auto_shrink([false, false])
 							.show(ui, |ui| {
+								crate::scroll::claim_wheel_content(ui);
 								crate::dialog::page_fade(
 									ui,
 									egui::Id::unique((
@@ -644,6 +645,7 @@ impl MessagingUi {
 			.id_salt("settings-navigation-scroll")
 			.auto_shrink([false, false])
 			.show(ui, |ui| {
+				crate::scroll::claim_wheel_content(ui);
 				ui.spacing_mut().item_spacing.y = 2.0;
 				self.settings_search(ui);
 				ui.add_space(12.0);
@@ -1078,6 +1080,7 @@ impl MessagingUi {
 									row_height,
 									self.settings.timezone_matches.len(),
 									|ui, rows| {
+										crate::scroll::claim_wheel_content(ui);
 										for row in rows {
 											let (name, _) =
 												&names[self.settings.timezone_matches[row]];

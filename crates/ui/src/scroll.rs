@@ -21,7 +21,8 @@ struct WheelMotion {
 	preferences: Option<(bool, u16)>,
 	scope: Option<egui::Id>,
 	owner: Option<WheelOwner>,
-	pointer: Option<Pos2>,
+	hovered_layer: Option<egui::LayerId>,
+	focused: Option<bool>,
 	pass: Option<u64>,
 }
 
@@ -46,11 +47,17 @@ impl WheelMotion {
 			self.cancel();
 			self.preferences = Some(settings);
 		}
-		if !preferences.is_valid() || !input.focused || !now.is_finite() {
+		if !preferences.is_valid() || !now.is_finite() {
 			self.cancel();
 			self.last_time = None;
 			return egui::Vec2::ZERO;
 		}
+		// Desktop systems can route new wheel events to the hovered, inactive window.
+		// A focus transition cancels its old gesture without discarding those new events.
+		if self.focused == Some(true) && !input.focused {
+			self.cancel();
+		}
+		self.focused = Some(input.focused);
 		if self.last_time.is_some_and(|last| now < last)
 			|| input.raw.events.iter().any(replaces_wheel_motion)
 		{
@@ -206,16 +213,17 @@ pub fn apply_preferences_in(
 		motion.scope = Some(scope);
 	}
 	let pointer = ctx.input(|input| input.pointer.hover_pos());
+	let hovered_layer = pointer.and_then(|pos| ctx.layer_id_at(pos));
 	let frame = ctx.cumulative_frame_nr();
 	let outside_owner = motion.owner.is_some_and(|owner| {
 		pointer.is_none_or(|pos| {
 			!owner.area.contains(pos) || ctx.layer_id_at(pos) != Some(owner.layer)
 		}) || owner.frame.saturating_add(1) < frame
 	});
-	if outside_owner || (motion.owner.is_none() && motion.pointer != pointer) {
+	if outside_owner || (motion.owner.is_none() && motion.hovered_layer != hovered_layer) {
 		motion.cancel();
 	}
-	motion.pointer = pointer;
+	motion.hovered_layer = hovered_layer;
 	let options = ctx.options(|options| options.input_options);
 	let delta = ctx.input(|input| motion.update(input, options, preferences));
 	let pending = motion.pending != egui::Vec2::ZERO;
@@ -257,6 +265,11 @@ pub fn claim_wheel_area(ui: &egui::Ui, target: egui::Id, area: Rect) {
 			data.insert_temp(id, motion);
 		}
 	});
+}
+
+/// Register a direct egui scroll area's content viewport, without the middle-click adapter.
+pub fn claim_wheel_content(ui: &egui::Ui) {
+	claim_wheel_area(ui, ui.scope_id(), ui.clip_rect());
 }
 
 fn normalized_wheel_delta(
@@ -834,6 +847,18 @@ mod tests {
 		scope: egui::Id,
 		focused: bool,
 	) -> egui::Vec2 {
+		adapter_frame_config(ctx, time, events, scope, focused, Default::default(), true)
+	}
+
+	fn adapter_frame_config(
+		ctx: &egui::Context,
+		time: f64,
+		events: Vec<egui::Event>,
+		scope: egui::Id,
+		focused: bool,
+		preferences: model::ReadingPreferences,
+		claim: bool,
+	) -> egui::Vec2 {
 		let mut result = None;
 		let output = ctx.run_ui(
 			egui::RawInput {
@@ -844,24 +869,178 @@ mod tests {
 				..Default::default()
 			},
 			|ui| {
-				apply_preferences_in(ctx, Default::default(), scope);
+				apply_preferences_in(ctx, preferences, scope);
 				if result.is_none() {
 					result = Some(ui.input(|input| input.smooth_scroll_delta()));
 				}
-				claim_wheel_area(
-					ui,
-					egui::Id::unique("left-pane"),
-					Rect::from_min_max(Pos2::ZERO, egui::pos2(400.0, 600.0)),
-				);
-				claim_wheel_area(
-					ui,
-					egui::Id::unique("right-pane"),
-					Rect::from_min_max(egui::pos2(400.0, 0.0), egui::pos2(800.0, 600.0)),
-				);
+				if claim {
+					claim_wheel_area(
+						ui,
+						egui::Id::unique("left-pane"),
+						Rect::from_min_max(Pos2::ZERO, egui::pos2(400.0, 600.0)),
+					);
+					claim_wheel_area(
+						ui,
+						egui::Id::unique("right-pane"),
+						Rect::from_min_max(egui::pos2(400.0, 0.0), egui::pos2(800.0, 600.0)),
+					);
+				}
 			},
 		);
 		output.drop_without_applying_deltas();
 		result.unwrap()
+	}
+
+	#[test]
+	fn inactive_windows_accept_new_wheel_events_with_smoothing_on_or_off() {
+		for smooth_scrolling in [true, false] {
+			let ctx = egui::Context::default();
+			ctx.options_mut(|options| {
+				options.input_options.line_scroll_speed = DISCORD_LINE_SCROLL_SPEED
+			});
+			let scope = egui::Id::unique("inactive-window");
+			let preferences = model::ReadingPreferences {
+				smooth_scrolling,
+				..Default::default()
+			};
+			adapter_frame_config(
+				&ctx,
+				0.0,
+				vec![egui::Event::PointerMoved(egui::pos2(100.0, 100.0))],
+				scope,
+				false,
+				preferences,
+				true,
+			);
+			let mut total = adapter_frame_config(
+				&ctx,
+				0.01,
+				vec![wheel(egui::MouseWheelUnit::Line, egui::vec2(0.0, -1.0))],
+				scope,
+				false,
+				preferences,
+				true,
+			)
+			.y;
+			assert!(
+				total < 0.0,
+				"new inactive-window input must be applied immediately"
+			);
+			for frame in 2..=20 {
+				total += adapter_frame_config(
+					&ctx,
+					f64::from(frame) * 0.01,
+					vec![],
+					scope,
+					false,
+					preferences,
+					true,
+				)
+				.y;
+			}
+			assert!(
+				(total + DISCORD_LINE_SCROLL_SPEED).abs() < 0.001,
+				"inactive input lost distance: {total}"
+			);
+		}
+	}
+
+	#[test]
+	fn focus_loss_retires_old_motion_without_rejecting_a_new_inactive_gesture() {
+		let ctx = egui::Context::default();
+		ctx.options_mut(|options| {
+			options.input_options.line_scroll_speed = DISCORD_LINE_SCROLL_SPEED
+		});
+		let scope = egui::Id::unique("focus-change");
+		adapter_frame(
+			&ctx,
+			0.0,
+			vec![egui::Event::PointerMoved(egui::pos2(100.0, 100.0))],
+			scope,
+			true,
+		);
+		adapter_frame(
+			&ctx,
+			0.01,
+			vec![wheel(egui::MouseWheelUnit::Line, egui::vec2(0.0, -20.0))],
+			scope,
+			true,
+		);
+		assert_eq!(
+			adapter_frame(&ctx, 0.02, vec![], scope, false),
+			egui::Vec2::ZERO
+		);
+		let mut total = adapter_frame(
+			&ctx,
+			0.03,
+			vec![wheel(egui::MouseWheelUnit::Line, egui::vec2(0.0, -1.0))],
+			scope,
+			false,
+		)
+		.y;
+		for frame in 4..=22 {
+			total += adapter_frame(&ctx, f64::from(frame) * 0.01, vec![], scope, false).y;
+		}
+		assert!(
+			(total + DISCORD_LINE_SCROLL_SPEED).abs() < 0.001,
+			"old tail contaminated inactive gesture: {total}"
+		);
+	}
+
+	#[test]
+	fn unclaimed_same_layer_pointer_movement_does_not_cancel_the_wheel_tail() {
+		let ctx = egui::Context::default();
+		ctx.options_mut(|options| {
+			options.input_options.line_scroll_speed = DISCORD_LINE_SCROLL_SPEED
+		});
+		let scope = egui::Id::unique("unclaimed-scroll-area");
+		adapter_frame_config(
+			&ctx,
+			0.0,
+			vec![egui::Event::PointerMoved(egui::pos2(100.0, 100.0))],
+			scope,
+			true,
+			Default::default(),
+			false,
+		);
+		let mut total = adapter_frame_config(
+			&ctx,
+			0.01,
+			vec![wheel(egui::MouseWheelUnit::Line, egui::vec2(0.0, -1.0))],
+			scope,
+			true,
+			Default::default(),
+			false,
+		)
+		.y;
+		let moved = adapter_frame_config(
+			&ctx,
+			0.02,
+			vec![egui::Event::PointerMoved(egui::pos2(110.0, 120.0))],
+			scope,
+			true,
+			Default::default(),
+			false,
+		)
+		.y;
+		assert!(
+			moved < 0.0,
+			"small movement inside the same layer must retain smoothing"
+		);
+		total += moved;
+		for frame in 3..=20 {
+			total += adapter_frame_config(
+				&ctx,
+				f64::from(frame) * 0.01,
+				vec![],
+				scope,
+				true,
+				Default::default(),
+				false,
+			)
+			.y;
+		}
+		assert!((total + DISCORD_LINE_SCROLL_SPEED).abs() < 0.001);
 	}
 
 	#[test]
@@ -955,43 +1134,55 @@ mod tests {
 
 	#[test]
 	fn a_foreground_overlay_retires_motion_in_the_covered_pane() {
-		let ctx = egui::Context::default();
-		let scope = egui::Id::unique("conversation");
-		adapter_frame(
-			&ctx,
-			0.0,
-			vec![egui::Event::PointerMoved(egui::pos2(100.0, 100.0))],
-			scope,
-			true,
-		);
-		adapter_frame(
-			&ctx,
-			0.01,
-			vec![wheel(egui::MouseWheelUnit::Line, egui::vec2(0.0, -20.0))],
-			scope,
-			true,
-		);
-		// The menu appears after input processing; its higher layer becomes authoritative next frame.
-		let output = ctx.run_ui(
-			egui::RawInput {
-				time: Some(0.02),
-				screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
-				..Default::default()
-			},
-			|_ui| {
-				egui::Area::new(egui::Id::unique("covering-menu"))
-					.order(egui::Order::Foreground)
-					.fixed_pos(egui::pos2(20.0, 20.0))
-					.show(&ctx, |ui| {
-						ui.allocate_space(egui::vec2(250.0, 250.0));
-					});
-			},
-		);
-		output.drop_without_applying_deltas();
-		assert_eq!(
-			adapter_frame(&ctx, 0.03, vec![], scope, true),
-			egui::Vec2::ZERO
-		);
+		for claim in [true, false] {
+			let ctx = egui::Context::default();
+			let scope = egui::Id::unique("conversation");
+			adapter_frame_config(
+				&ctx,
+				0.0,
+				vec![egui::Event::PointerMoved(egui::pos2(100.0, 100.0))],
+				scope,
+				true,
+				Default::default(),
+				claim,
+			);
+			adapter_frame_config(
+				&ctx,
+				0.01,
+				vec![wheel(egui::MouseWheelUnit::Line, egui::vec2(0.0, -20.0))],
+				scope,
+				true,
+				Default::default(),
+				claim,
+			);
+			// A newly created Area has a sizing pass before its final interaction rectangle.
+			for time in [0.02, 0.03] {
+				let output = ctx.run_ui(
+					egui::RawInput {
+						time: Some(time),
+						screen_rect: Some(Rect::from_min_size(
+							Pos2::ZERO,
+							egui::vec2(800.0, 600.0),
+						)),
+						..Default::default()
+					},
+					|_ui| {
+						egui::Area::new(egui::Id::unique("covering-menu"))
+							.order(egui::Order::Foreground)
+							.fixed_pos(egui::pos2(20.0, 20.0))
+							.show(&ctx, |ui| {
+								ui.allocate_space(egui::vec2(250.0, 250.0));
+							});
+					},
+				);
+				output.drop_without_applying_deltas();
+			}
+			assert_eq!(
+				adapter_frame_config(&ctx, 0.04, vec![], scope, true, Default::default(), claim),
+				egui::Vec2::ZERO,
+				"claimed={claim}"
+			);
+		}
 	}
 
 	struct TimelineScenario {

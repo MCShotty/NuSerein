@@ -1088,6 +1088,342 @@ mod tests {
 	}
 
 	#[test]
+	fn rejected_preview_cancellation_preserves_history_and_fences_old_results() {
+		use crate::reply_previews::{ResultEvent, Status};
+		let mut state = state();
+		let request = |commands: Vec<Command>| {
+			commands
+				.into_iter()
+				.find_map(|command| match command {
+					Command::ReplyPreview { request, .. } => Some(request),
+					_ => None,
+				})
+				.unwrap()
+		};
+		let old = request(state.sync_visible_reply_previews(&[Id(50)]));
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[]).as_slice(),
+			[Command::CancelReplyPreviews]
+		));
+		let current = request(state.sync_visible_reply_previews(&[Id(50)]));
+		assert_ne!(old, current);
+		state.status = "Keep this unrelated outcome";
+		state.command_rejected(Command::CancelReplyPreviews);
+		assert_eq!(state.status, "Keep this unrelated outcome");
+		assert_eq!(state.freshness, Freshness::Fresh);
+		assert!(!state.history_pending);
+		for request in [old, current] {
+			apply(
+				&mut state,
+				Event::ReplyPreview(ResultEvent {
+					channel: Id(1),
+					message: Id(50),
+					request,
+					result: Ok(Some(Box::new(
+						model::ReplyPreview::from_message(message(50)).unwrap(),
+					))),
+				}),
+			);
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				if request == old {
+					Status::Loading
+				} else {
+					Status::Ready
+				}
+			);
+			assert_eq!(state.status, "Keep this unrelated outcome");
+			assert_eq!(state.freshness, Freshness::Fresh);
+		}
+	}
+
+	const SHARED_HISTORY_BYTES: usize = 16 * 1024 * 1024 - 66 * 1024;
+
+	fn byte_limited_reply_state() -> State {
+		let mut state = state();
+		let mut fourth = state.channels[0].clone();
+		fourth.id = Id(4);
+		state.channels.push(fourth);
+		for channel in 1..=4 {
+			if channel == 1 {
+				state.history(None);
+			} else {
+				state.select(Id(channel)).unwrap();
+			}
+			let mut source = message(channel * 10000);
+			source.channel = Id(channel);
+			if channel == 4 {
+				source.reply_to = Some(Id(50));
+			}
+			let request = state.request;
+			apply(
+				&mut state,
+				Event::History {
+					channel: Id(channel),
+					request,
+					older: false,
+					messages: vec![source],
+				},
+			);
+			if channel < 4 {
+				// A real cache may hold many individually valid 64 KiB messages. The
+				// timeline bounds this hydration before the shared budget is applied.
+				state
+					.timeline
+					.seed_cache(
+						(1..=80)
+							.map(|offset| {
+								let mut item = message(channel * 10000 + offset);
+								item.channel = Id(channel);
+								item.content = "x".repeat(64 * 1024);
+								item
+							})
+							.collect(),
+					)
+					.unwrap();
+				state
+					.channels
+					.iter_mut()
+					.find(|item| item.id == Id(channel))
+					.unwrap()
+					.last_message = Some(Id(channel * 10000 + 80));
+				state.enforce_resident_budget();
+			}
+		}
+		assert_eq!(state.resident_window_count(), 3);
+		let source_capacity = state.timeline.get(Id(40000)).unwrap().content.capacity();
+		for id in 40001..40128 {
+			let remaining = SHARED_HISTORY_BYTES - state.resident_history_bytes() - 1024;
+			if remaining <= 64 * 1024 - source_capacity {
+				break;
+			}
+			let mut incoming = message(id);
+			incoming.channel = Id(4);
+			incoming.content = "x".repeat(48 * 1024);
+			apply(&mut state, Event::Message(incoming));
+		}
+		let mut source = state.timeline.get(Id(40000)).unwrap().clone();
+		let remaining = SHARED_HISTORY_BYTES - state.resident_history_bytes() - 1024;
+		source.content = "x".repeat(source.content.capacity() + remaining);
+		assert!(Timeline::valid_message(&source));
+		apply(&mut state, Event::Message(source));
+		assert_eq!(state.resident_window_count(), 3);
+		assert_eq!(state.resident_history_bytes(), SHARED_HISTORY_BYTES - 1024);
+		state
+	}
+
+	#[test]
+	fn preview_growth_obeys_the_shared_budget_with_large_dormant_windows() {
+		use crate::reply_previews::ResultEvent;
+		for path in ["fetched", "live", "history"] {
+			let mut state = byte_limited_reply_state();
+			let source = state.timeline.get(Id(40000)).unwrap().clone();
+			let mut original = message(50);
+			original.channel = Id(4);
+			original.content = "p".repeat(4096);
+			let preview = Box::new(model::ReplyPreview::from_message(original).unwrap());
+			assert!(preview.bytes() > 1024);
+			if path == "fetched" {
+				let request = state
+					.sync_visible_reply_previews(&[Id(50)])
+					.into_iter()
+					.find_map(|command| match command {
+						Command::ReplyPreview { request, .. } => Some(request),
+						_ => None,
+					})
+					.unwrap();
+				apply(
+					&mut state,
+					Event::ReplyPreview(ResultEvent {
+						channel: Id(4),
+						message: Id(50),
+						request,
+						result: Ok(Some(preview)),
+					}),
+				);
+			} else {
+				let mut incoming = source.clone();
+				incoming.reply_preview = Some(preview);
+				if path == "history" {
+					state.history(Some(Id(40001)));
+					let request = state.request;
+					apply(
+						&mut state,
+						Event::History {
+							channel: Id(4),
+							request,
+							older: true,
+							messages: vec![incoming],
+						},
+					);
+				} else {
+					apply(&mut state, Event::Message(incoming));
+				}
+			}
+			assert!(
+				state.resident_history_bytes() <= SHARED_HISTORY_BYTES,
+				"{path}"
+			);
+			assert!(state.resident_history_rows() <= 1475);
+			assert_eq!(
+				state.resident_window_count(),
+				3,
+				"preview payloads give way before dormant windows"
+			);
+			assert_eq!(
+				state.timeline.get(source.id).unwrap().content,
+				source.content
+			);
+			assert!(
+				state.reply_original(Id(50)).is_none(),
+				"the over-budget {path} preview must be evicted"
+			);
+			assert_eq!(state.freshness, Freshness::Fresh);
+		}
+	}
+
+	#[test]
+	fn atomic_reply_install_obeys_shared_byte_budget_and_preserves_back_cursor() {
+		let mut state = byte_limited_reply_state();
+		state.remember_reading(
+			Id(4),
+			crate::ReadingCursor {
+				message: Some(Id(40000)),
+				inset: 19.0,
+			},
+		);
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!()
+		};
+		let originals = (25..75)
+			.map(|id| {
+				let mut original = message(id);
+				original.channel = Id(4);
+				original.content = "t".repeat(64 * 1024);
+				original
+			})
+			.collect();
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(4),
+				request,
+				older: false,
+				messages: originals,
+			},
+		);
+		assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+		assert_eq!(state.resident_window_count(), 3);
+		assert_eq!(state.timeline.get(Id(50)).unwrap().content.len(), 64 * 1024);
+		assert_eq!(state.search_target, Some(Id(50)));
+		assert_eq!(
+			state.history_navigation.bytes(),
+			0,
+			"retire the return payload under pressure"
+		);
+		assert!(state.can_return_from_reply());
+		assert!(matches!(
+			state.return_from_reply(),
+			Some(Command::History {
+				channel: Id(4),
+				before: None,
+				after: Some(Id(39999)),
+				..
+			})
+		));
+		assert_eq!(state.reading(Id(4)).unwrap().inset, 19.0);
+	}
+
+	#[test]
+	fn atomic_reply_install_obeys_shared_row_budget_and_preserves_back_cursor() {
+		let mut state = state();
+		for (channel, rows) in [(1, 500), (2, 475), (3, 500)] {
+			if channel == 1 {
+				state.history(None);
+			} else {
+				state.select(Id(channel)).unwrap();
+			}
+			let mut first = message(channel * 10000);
+			first.channel = Id(channel);
+			first.reply_to = Some(Id(50));
+			let request = state.request;
+			apply(
+				&mut state,
+				Event::History {
+					channel: Id(channel),
+					request,
+					older: false,
+					messages: vec![first],
+				},
+			);
+			// Production disk hydration can restore the rest of a bounded 500-row window.
+			state
+				.timeline
+				.seed_cache(
+					(1..rows)
+						.map(|offset| {
+							let mut item = message(channel * 10000 + offset);
+							item.channel = Id(channel);
+							item
+						})
+						.collect(),
+				)
+				.unwrap();
+			state
+				.channels
+				.iter_mut()
+				.find(|item| item.id == Id(channel))
+				.unwrap()
+				.last_message = Some(Id(channel * 10000 + rows - 1));
+			state.enforce_resident_budget();
+		}
+		assert_eq!(state.resident_window_count(), 2);
+		assert_eq!(state.resident_history_rows(), 1475);
+		state.remember_reading(
+			Id(3),
+			crate::ReadingCursor {
+				message: Some(Id(30000)),
+				inset: 23.0,
+			},
+		);
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(3),
+				request,
+				older: false,
+				messages: (25..75)
+					.map(|id| {
+						let mut item = message(id);
+						item.channel = Id(3);
+						item
+					})
+					.collect(),
+			},
+		);
+		assert_eq!(state.timeline.row_count(), 50);
+		assert_eq!(state.resident_history_rows(), 1025);
+		assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+		assert_eq!(state.resident_window_count(), 2);
+		assert_eq!(state.search_target, Some(Id(50)));
+		assert_eq!(state.history_navigation.rows(), 0);
+		assert!(state.can_return_from_reply());
+		assert!(matches!(
+			state.return_from_reply(),
+			Some(Command::History {
+				channel: Id(3),
+				before: None,
+				after: Some(Id(29999)),
+				..
+			})
+		));
+		assert_eq!(state.reading(Id(3)).unwrap().inset, 23.0);
+	}
+
+	#[test]
 	fn reply_jump_keeps_the_source_until_success_and_restores_its_anchor() {
 		let mut state = state();
 		state.remember_reading(
