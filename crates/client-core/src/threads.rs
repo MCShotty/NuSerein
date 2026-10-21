@@ -266,6 +266,7 @@ mod tests {
 			assert_eq!(state.freshness, Freshness::Fresh);
 		}
 		let mut message = Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(500),

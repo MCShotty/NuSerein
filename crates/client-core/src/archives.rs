@@ -282,6 +282,7 @@ mod tests {
 	}
 	fn message(id: u64, channel: Id) -> model::Message {
 		model::Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			flags: 0,

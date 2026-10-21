@@ -323,6 +323,7 @@ mod tests {
 	}
 	fn test_message() -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(1),

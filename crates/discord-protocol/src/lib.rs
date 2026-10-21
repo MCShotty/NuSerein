@@ -838,8 +838,8 @@ pub struct MessageDto {
 	pub interaction_metadata: Option<InteractionDto>,
 	#[serde(default)]
 	pub message_snapshots: Snapshots,
-	#[serde(default)]
-	pub referenced_message: model::Patch<extra_content::Object>,
+	#[serde(default, deserialize_with = "reply_preview_field")]
+	pub referenced_message: model::Patch<ReplyPreviewDto>,
 	#[serde(default)]
 	pub attachments: AttachmentList,
 	#[serde(default)]
@@ -861,6 +861,142 @@ pub struct MessageMemberDto {
 	pub nick: Option<String>,
 	#[serde(default, deserialize_with = "permissions::member_roles")]
 	pub roles: Vec<Id>,
+}
+
+/// Deliberately one level: unknown fields, including nested replies and embeds, are ignored.
+#[derive(Deserialize)]
+pub struct ReplyPreviewDto {
+	#[serde(default)]
+	id: Option<Id>,
+	#[serde(default)]
+	channel_id: Option<Id>,
+	#[serde(default)]
+	author: Option<UserDto>,
+	#[serde(default)]
+	content: String,
+	#[serde(default)]
+	mentions: MentionList,
+	#[serde(default)]
+	attachments: AttachmentList,
+	#[serde(default)]
+	member: Option<MessageMemberDto>,
+	#[serde(default)]
+	flags: u64,
+	#[serde(default, rename = "type")]
+	kind: u8,
+}
+fn reply_preview_field<'de, D: serde::Deserializer<'de>>(
+	d: D,
+) -> Result<model::Patch<ReplyPreviewDto>, D::Error> {
+	struct Bounded(ReplyPreviewDto);
+	impl<'de> serde::Deserialize<'de> for Bounded {
+		fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+			struct Fields<A> {
+				inner: A,
+				count: usize,
+			}
+			impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for Fields<A> {
+				type Error = A::Error;
+				fn next_key_seed<K: serde::de::DeserializeSeed<'de>>(
+					&mut self,
+					seed: K,
+				) -> Result<Option<K::Value>, Self::Error> {
+					let key = self.inner.next_key_seed(seed)?;
+					if key.is_some() {
+						self.count += 1;
+						if self.count > 64 {
+							return Err(serde::de::Error::custom("Too many reply preview fields"));
+						}
+					}
+					Ok(key)
+				}
+				fn next_value_seed<V: serde::de::DeserializeSeed<'de>>(
+					&mut self,
+					seed: V,
+				) -> Result<V::Value, Self::Error> {
+					self.inner.next_value_seed(seed)
+				}
+			}
+			struct Object;
+			impl<'de> serde::de::Visitor<'de> for Object {
+				type Value = Bounded;
+				fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+					f.write_str("one bounded reply preview object")
+				}
+				fn visit_map<A: serde::de::MapAccess<'de>>(
+					self,
+					map: A,
+				) -> Result<Self::Value, A::Error> {
+					ReplyPreviewDto::deserialize(serde::de::value::MapAccessDeserializer::new(
+						Fields {
+							inner: map,
+							count: 0,
+						},
+					))
+					.map(Bounded)
+				}
+			}
+			d.deserialize_map(Object)
+		}
+	}
+	Ok(match model::Patch::<Bounded>::deserialize(d)? {
+		model::Patch::Absent => model::Patch::Absent,
+		model::Patch::Null => model::Patch::Null,
+		model::Patch::Value(Bounded(preview)) => model::Patch::Value(preview),
+	})
+}
+impl ReplyPreviewDto {
+	fn into_model(self, channel: Id, target: Id) -> Option<Box<model::ReplyPreview>> {
+		if self.id != Some(target) || self.channel_id.is_some_and(|id| id != channel) {
+			return None;
+		}
+		let author = self.author?.into_model();
+		let message = Message {
+			id: target,
+			channel,
+			author,
+			content: self.content,
+			mentions: self
+				.mentions
+				.0
+				.into_iter()
+				.map(UserDto::into_model)
+				.collect(),
+			author_nick: self.member.as_ref().and_then(|member| {
+				member
+					.nick
+					.as_ref()
+					.map(|nick| nick.chars().take(128).collect())
+			}),
+			author_roles: self.member.map_or_else(Vec::new, |member| member.roles),
+			attachments: self.attachments.0,
+			flags: self.flags,
+			kind: self.kind,
+			poll: None,
+			sticker_items: Vec::new(),
+			components: Vec::new(),
+			application_id: None,
+			reactions: None,
+			ephemeral: false,
+			mention_roles: Vec::new(),
+			mention_everyone: false,
+			suppress_notifications: true,
+			edited: false,
+			edited_at: None,
+			revision: 0,
+			nonce: None,
+			reply_to: None,
+			reply_preview: None,
+			reply_deleted: false,
+			forwarded: false,
+			interaction: None,
+			unsupported: false,
+			extra_content: Default::default(),
+			embeds: Vec::new(),
+			embeds_suppressed: true,
+		};
+		model::ReplyPreview::from_message(message).map(Box::new)
+	}
 }
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -989,6 +1125,12 @@ impl MessageDto {
 			self.message_reference.is_some() && reply_to.is_none() && !forwarded;
 		let reply_deleted =
 			reply_to.is_some() && matches!(self.referenced_message, model::Patch::Null);
+		let reply_preview = match (reply_to, self.referenced_message) {
+			(Some(target), model::Patch::Value(preview)) => {
+				preview.into_model(self.channel_id, target)
+			}
+			_ => None,
+		};
 		let interaction = match (self.interaction.take(), self.interaction_metadata.take()) {
 			(Some(legacy), Some(metadata)) if metadata.user.is_some() => {
 				metadata.into_model(legacy.name)
@@ -1015,6 +1157,7 @@ impl MessageDto {
 		}
 		let has_poll = self.poll.is_some();
 		Message {
+			reply_preview,
 			poll: self.poll.and_then(|poll| poll.0),
 			flags: self.flags,
 			ephemeral: self.flags & (1 << 6) != 0,
@@ -1389,6 +1532,18 @@ mod tests {
 			let message=decode::<MessageDto>(br#"{"id":"1","channel_id":"2","author":{"id":"3","username":"author"},"content":"<@4>","mentions":[{"id":"4","username":"user","global_name":"Display name"}]}"#).unwrap().into_model();
 			assert_eq!(message.mentions[0].id, Id(4));
 			assert_eq!(message.mentions[0].name, "Display name");
+			assert_eq!(message.mentions[0].username.as_deref(), Some("user"));
+			let disk = serde_json::to_value(&message.mentions[0]).unwrap();
+			assert!(
+				disk.get("username").is_none(),
+				"real usernames remain session-local"
+			);
+			assert!(
+				serde_json::from_value::<User>(disk)
+					.unwrap()
+					.username
+					.is_none()
+			);
 			assert!(matches!(
 				decode::<PatchDto>(br#"{"id":"1","channel_id":"2"}"#)
 					.unwrap()
@@ -1407,6 +1562,33 @@ mod tests {
 			assert!(decode::<PatchDto>(&serde_json::to_vec(&large).unwrap()).is_err());
 		}
 	}
+	#[test]
+	fn reply_previews_keep_one_bounded_level_and_validate_identity() {
+		let mut wire = serde_json::json!({"id":"100","channel_id":"2","type":19,"author":{"id":"3","username":"reply-author"},"message_reference":{"channel_id":"2","message_id":"50"},"referenced_message":{"id":"50","channel_id":"2","author":{"id":"4","username":"original"},"content":"Original 😀 text","referenced_message":{"content":"must not retain nested content"},"embeds":[{"title":"must not retain embed"}]}});
+		let read = |wire: &serde_json::Value| {
+			decode::<MessageDto>(&serde_json::to_vec(wire).unwrap())
+				.unwrap()
+				.into_model()
+		};
+		let message = read(&wire);
+		let preview = message.reply_preview.unwrap();
+		assert_eq!(preview.message().content, "Original 😀 text");
+		assert_eq!(preview.message().author.id, Id(4));
+		assert!(
+			preview.message().reply_preview.is_none()
+				&& preview.message().reply_to.is_none()
+				&& preview.message().embeds.is_empty()
+		);
+		assert!(preview.bytes() <= model::MAX_REPLY_PREVIEW_BYTES);
+		wire["referenced_message"]["content"] = "😀".repeat(10000).into();
+		assert!(read(&wire).reply_preview.unwrap().bytes() <= model::MAX_REPLY_PREVIEW_BYTES);
+		wire["referenced_message"]["id"] = "49".into();
+		assert!(read(&wire).reply_preview.is_none());
+		wire["referenced_message"]["id"] = "50".into();
+		wire["referenced_message"]["channel_id"] = "9".into();
+		assert!(read(&wire).reply_preview.is_none());
+	}
+
 	#[test]
 	fn forwarded_snapshot_uses_bounded_audio_body_and_outer_identity() {
 		{
@@ -1467,7 +1649,7 @@ mod tests {
 				assert!(deleted.reply_deleted && !deleted.unsupported);
 			}
 			let mut value = wire();
-			// Nested bodies are deliberately discarded, never rendered or cached as another message.
+			// An incomplete preview is discarded; nested reply chains are never decoded.
 			value["referenced_message"] = serde_json::json!({"content":"nested secret marker", "referenced_message":{"content":"nested"}});
 			let resolved = read(value);
 			assert!(!resolved.reply_deleted);

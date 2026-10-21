@@ -1634,6 +1634,7 @@ mod tests {
 	}
 	fn announcement(author: model::User) -> model::Message {
 		model::Message {
+			reply_preview: None,
 			id: Id(50),
 			channel: Id(3),
 			author,

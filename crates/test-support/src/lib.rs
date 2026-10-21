@@ -95,6 +95,7 @@ pub fn message(id: u64, channel: Id) -> Message {
 		content = format!("Hey <@2> — see <#21>. {content}");
 	}
 	Message {
+		reply_preview: None,
 		poll: None,
 		reactions: Some(if id == 500 {
 			vec![Reaction {

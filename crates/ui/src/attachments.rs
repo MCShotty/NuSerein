@@ -1629,6 +1629,7 @@ mod tests {
 			},
 		};
 		let message = Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: vec![],
 			id: Id(1),

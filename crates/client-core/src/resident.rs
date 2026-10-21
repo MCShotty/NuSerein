@@ -77,6 +77,7 @@ impl State {
 	/// Session-only extension policy. Disabling releases every retained deleted payload.
 	pub fn set_preserve_deleted_messages(&mut self, enabled: bool) {
 		if self.preserve_deleted_messages != enabled {
+			self.history_navigation.evict_back();
 			self.preserve_deleted_messages = enabled;
 			self.revision += 1;
 		}
@@ -96,6 +97,9 @@ impl State {
 	/// Drop dormant previews when disk history is cleared; preserve the visible conversation.
 	pub fn clear_cached_history(&mut self) {
 		self.resident = Windows::default();
+		self.reply_previews.clear();
+		self.history_navigation.clear_back();
+		self.cancel_reply_navigation();
 	}
 	/// Number of dormant windows, excluding the active timeline.
 	pub fn resident_window_count(&self) -> usize {
@@ -119,6 +123,7 @@ impl State {
 	/// Active plus dormant reading rows, including deletion placeholders.
 	pub fn resident_history_rows(&self) -> usize {
 		self.timeline.row_count()
+			+ self.history_navigation.rows()
 			+ self
 				.resident
 				.entries
@@ -129,6 +134,8 @@ impl State {
 	/// Conservative active plus dormant allocation charge (not process RSS).
 	pub fn resident_history_bytes(&self) -> usize {
 		self.timeline.retained_bytes()
+			+ self.history_navigation.bytes()
+			+ self.reply_previews.bytes()
 			+ size_of::<Windows>()
 			+ self.resident.entries.capacity() * size_of::<Window>()
 			+ self
@@ -145,6 +152,10 @@ impl State {
 	}
 	/// Also call after direct disk hydration of the public active timeline.
 	pub fn enforce_resident_budget(&mut self) {
+		if self.resident_history_bytes() > MAX_BYTES || self.resident_history_rows() > MAX_ROWS {
+			self.history_navigation.evict_back();
+		}
+		while self.resident_history_bytes() > MAX_BYTES && self.reply_previews.evict() {}
 		if self.timeline.older_evicted() {
 			self.older_exhausted = false;
 		}
@@ -393,6 +404,7 @@ mod tests {
 
 	fn message(channel: u64, id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(id),

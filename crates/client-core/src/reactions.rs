@@ -1357,6 +1357,7 @@ mod tests {
 			.timeline
 			.insert(
 				Message {
+					reply_preview: None,
 					poll: None,
 					sticker_items: Vec::new(),
 					kind: 0,

@@ -6971,6 +6971,7 @@ mod composer_tests {
 			.timeline
 			.insert(
 				model::Message {
+					reply_preview: None,
 					poll: None,
 					sticker_items: vec![],
 					id: Id(20),

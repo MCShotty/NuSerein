@@ -44,6 +44,8 @@ pub mod server_roles;
 pub mod server_settings;
 pub mod soundboard;
 pub use reading_preferences::ReadingPreferences;
+mod reply_preview;
+pub use reply_preview::{MAX_REPLY_PREVIEW_BYTES, ReplyPreview};
 mod cache_preferences;
 pub use cache_preferences::*;
 pub mod badges;
@@ -399,6 +401,8 @@ pub struct Message {
 	pub nonce: Option<String>,
 	/// The replied-to message, or the closed poll of a poll result (type 46).
 	pub reply_to: Option<Id>,
+	/// Bounded original-message summary supplied by the service; never persisted.
+	pub reply_preview: Option<Box<ReplyPreview>>,
 	/// Discord message type; 255 denotes an unknown legacy cached type.
 	pub kind: u8,
 	/// The service explicitly returned a null referenced message, not an unresolved preview.
@@ -442,6 +446,10 @@ impl Message {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ self.poll.as_ref().map_or(0, |poll| poll.bytes())
+			+ self
+				.reply_preview
+				.as_ref()
+				.map_or(0, |preview| preview.bytes())
 			+ self.reactions.as_ref().map_or(0, |r| {
 				reaction_bytes(r) + r.capacity().saturating_sub(r.len()) * size_of::<Reaction>()
 			}) + self.content.capacity()

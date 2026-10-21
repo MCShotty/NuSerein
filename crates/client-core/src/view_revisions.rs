@@ -72,13 +72,14 @@ impl State {
 				| Event::Reactions(_)
 				| Event::Members(_)
 				| Event::Voice(_)
+				| Event::ReplyPreview(_)
 		) {
 			revisions.catalog_skipped = revisions.catalog_skipped.wrapping_add(1);
 			revisions.labels_skipped = revisions.labels_skipped.wrapping_add(1);
 		}
 		let metadata_unchanged = matches!(
 			event,
-			Event::Patch(_) | Event::Reactions(_) | Event::Members(_)
+			Event::Patch(_) | Event::Reactions(_) | Event::Members(_) | Event::ReplyPreview(_)
 		);
 		if metadata_unchanged || guild_message {
 			revisions.channels_skipped = revisions.channels_skipped.wrapping_add(1);
@@ -102,6 +103,59 @@ mod tests {
 			state.channel_labels_revision(),
 			state.rail_revision(),
 		]
+	}
+
+	#[test]
+	fn preview_reads_update_content_without_rebuilding_navigation() {
+		let mut state = State {
+			auth: crate::auth::AuthState::Authenticated,
+			gateway_connected: true,
+			freshness: model::Freshness::Fresh,
+			selected: Some(Id(1)),
+			channels: vec![Channel {
+				id: Id(1),
+				guild: None,
+				parent_id: None,
+				position: 0,
+				name: "Synthetic".into(),
+				kind: 1,
+				recipients: vec![],
+				last_message: Some(Id(2)),
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			}],
+			..State::default()
+		};
+		let mut reply = crate::tests::message(2);
+		reply.reply_to = Some(Id(1));
+		state.timeline.insert(reply, false, false).unwrap();
+		let commands = state.sync_visible_reply_previews(&[Id(1)]);
+		let request = commands
+			.iter()
+			.find_map(|command| match command {
+				crate::Command::ReplyPreview { request, .. } => Some(*request),
+				_ => None,
+			})
+			.unwrap();
+		let before = keys(&state);
+		let revision = state.revision;
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::ReplyPreview(crate::reply_previews::ResultEvent {
+				channel: Id(1),
+				message: Id(1),
+				request,
+				result: Err(crate::auth::Failure::Network),
+			}),
+		});
+		assert!(state.revision > revision);
+		assert_eq!(keys(&state), before);
+		assert_eq!(
+			state.reply_preview_status(Id(1)),
+			crate::reply_previews::Status::Failed
+		);
 	}
 
 	#[test]

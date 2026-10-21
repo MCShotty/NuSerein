@@ -88,6 +88,7 @@ fn payload(selector: u8, remaining: &mut usize) -> String {
 
 fn message(id: Id, channel: Id, content: String) -> Message {
 	Message {
+		reply_preview: None,
 		poll: None,
 		sticker_items: vec![],
 		flags: 0,
@@ -232,7 +233,7 @@ fuzz_target!(|data: &[u8]| {
 	for op in data.as_chunks::<8>().0.iter().take(256) {
 		let channel = Id(20 + u64::from(op[1] % 3));
 		let id = Id(1 + u64::from(u16::from_le_bytes([op[2], op[3]])));
-		match op[0] % 20 {
+		match op[0] % 25 {
 			0 => {
 				state.select(channel);
 			}
@@ -241,7 +242,7 @@ fuzz_target!(|data: &[u8]| {
 				state.history(before);
 			}
 			2 | 3 => {
-				let stale = op[0] % 20 == 3;
+				let stale = op[0] % 25 == 3;
 				let prior = stale.then(|| fingerprint(&state));
 				let request = if stale {
 					state.request.wrapping_sub(1)
@@ -313,7 +314,7 @@ fuzz_target!(|data: &[u8]| {
 				},
 			),
 			8 | 9 => {
-				let revoked = op[0] % 20 == 8;
+				let revoked = op[0] % 25 == 8;
 				apply(
 					&mut state,
 					Event::Permissions(PermissionEvent::Channel {
@@ -386,8 +387,77 @@ fuzz_target!(|data: &[u8]| {
 					invariants(&state);
 				}
 			}
-			_ => {
+			19 => {
 				state.clear_cached_history();
+			}
+			20 => {
+				let mut reply = message(Id(id.0 + 1), channel, "reply".into());
+				reply.reply_to = Some(id);
+				if op[6] & 1 != 0 {
+					reply.reply_preview = model::ReplyPreview::from_message(message(
+						id,
+						channel,
+						payload(op[4], &mut remaining),
+					))
+					.map(Box::new);
+				}
+				apply(&mut state, Event::Message(reply));
+			}
+			21 => {
+				let targets: Vec<_> = state
+					.timeline
+					.iter()
+					.filter_map(|message| message.reply_to)
+					.take(32)
+					.collect();
+				for command in state.sync_visible_reply_previews(&targets) {
+					if let client_core::Command::ReplyPreview {
+						channel,
+						message: target,
+						request,
+					} = command
+					{
+						let result = match op[6] % 4 {
+							0 => Ok(None),
+							1 => Err(Failure::Forbidden),
+							2 => Err(Failure::Network),
+							_ => Ok(model::ReplyPreview::from_message(message(
+								target,
+								channel,
+								payload(op[4], &mut remaining),
+							))
+							.map(Box::new)),
+						};
+						apply(
+							&mut state,
+							Event::ReplyPreview(client_core::reply_previews::ResultEvent {
+								channel,
+								message: target,
+								request: request.wrapping_sub(u64::from(op[7] & 1)),
+								result,
+							}),
+						);
+					}
+				}
+			}
+			22 => {
+				state.open_reply_target(id);
+			}
+			23 => {
+				state.return_from_reply();
+			}
+			_ => {
+				let prior = fingerprint(&state);
+				state.apply(Envelope {
+					generation: state.generation.wrapping_sub(1),
+					event: Event::ReplyPreview(client_core::reply_previews::ResultEvent {
+						channel,
+						message: id,
+						request: state.request,
+						result: Ok(None),
+					}),
+				});
+				assert_eq!(fingerprint(&state), prior);
 			}
 		}
 		invariants(&state);

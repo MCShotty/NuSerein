@@ -350,6 +350,7 @@ fn channel(id: u64, kind: u8, parent: Option<Id>) -> Channel {
 }
 fn message(id: u64, channel: Id) -> Message {
 	Message {
+		reply_preview: None,
 		poll: None,
 		sticker_items: Vec::new(),
 		id: Id(id),

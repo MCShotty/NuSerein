@@ -178,6 +178,7 @@ mod tests {
 	}
 	fn message(user: u64, channel: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(100),

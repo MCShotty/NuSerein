@@ -6574,6 +6574,7 @@ mod tests {
 
 	fn text_message(id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: vec![],
 			id: Id(id),
@@ -10387,6 +10388,7 @@ mod tests {
 
 	fn check_channel_rename_heights() {
 		let message = Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: vec![],
 			id: Id(1),
@@ -10564,6 +10566,7 @@ mod tests {
 	#[test]
 	fn same_id_revision_reset_does_not_reuse_reveal_or_height() {
 		let mut message = Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: vec![],
 			reactions: Some(vec![]),
@@ -10667,6 +10670,7 @@ mod tests {
 			}
 		}
 		let mut message = Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: vec![],
 			reactions: Some(vec![]),

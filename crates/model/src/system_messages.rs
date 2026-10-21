@@ -403,6 +403,7 @@ mod tests {
 
 	fn message(kind: u8) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			flags: 0,
 			sticker_items: vec![],

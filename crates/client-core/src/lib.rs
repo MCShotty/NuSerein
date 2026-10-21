@@ -35,6 +35,7 @@ pub mod profile;
 pub mod reactions;
 pub mod read_state;
 mod replies;
+pub mod reply_previews;
 pub mod server_profile;
 pub use replies::{HistoryNavigation, ParkedReplies, Reply, ReplyDeletions};
 pub mod community_admin;
@@ -324,6 +325,17 @@ pub enum Command {
 		after: Option<Id>,
 		request: u64,
 	},
+	HistoryAround {
+		channel: Id,
+		target: Id,
+		request: u64,
+	},
+	ReplyPreview {
+		channel: Id,
+		message: Id,
+		request: u64,
+	},
+	CancelReplyPreviews,
 	/// The command a click would send, sent early on intent and answered by that command's own
 	/// event: a conversation's recent `History` page or a `Profile`.
 	Prefetch(Box<Command>),
@@ -714,6 +726,7 @@ pub enum Event {
 		request: u64,
 		failure: auth::Failure,
 	},
+	ReplyPreview(reply_previews::ResultEvent),
 	Message(Message),
 	Patch(MessagePatch),
 	Delete {
@@ -851,6 +864,7 @@ pub struct State {
 	/// One exact target awaiting its history page; never a metadata cache.
 	#[doc(hidden)]
 	pub history_navigation: HistoryNavigation,
+	pub reply_previews: reply_previews::Previews,
 	/// Session reading cursors. Missing means the channel has not been opened yet.
 	pub reading: Vec<(Id, ReadingCursor)>,
 	pub reply_deletions: ReplyDeletions,
@@ -1091,6 +1105,7 @@ impl Default for State {
 			restore_scroll: false,
 			history_targeted: false,
 			history_navigation: HistoryNavigation::default(),
+			reply_previews: reply_previews::Previews::default(),
 			reading: Vec::new(),
 			reply_deletions: ReplyDeletions::default(),
 			read_state: read_state::ReadState::default(),
@@ -1423,6 +1438,7 @@ impl State {
 		if !self.can_view(channel) {
 			return Apply::Rejected("Channel permissions are unavailable or access was revoked");
 		}
+		self.history_navigation.clear_back();
 		if let Some(previous) = self.selected {
 			self.remember_channel(previous);
 		}
@@ -1540,6 +1556,7 @@ impl State {
 
 	/// Open Friends / Home. Does not clear the timeline or emit a command.
 	pub fn open_home(&mut self) {
+		self.history_navigation.clear_back();
 		self.park_reply();
 		self.reset_thread_starter();
 		self.last_viewed_dm = None;
@@ -1553,6 +1570,7 @@ impl State {
 
 	/// Land on Home because the open channel is gone.
 	pub fn arrived_home(&mut self) {
+		self.history_navigation.clear_back();
 		self.reset_thread_starter();
 		self.application_commands.clear();
 		if let Some(Place::Channel(id)) = self.trail.current()
@@ -1568,6 +1586,11 @@ impl State {
 	}
 
 	pub fn navigate_back(&mut self) -> Option<NavStep> {
+		if self.can_return_from_reply() {
+			return Some(NavStep {
+				command: self.return_from_reply(),
+			});
+		}
 		self.navigate(true)
 	}
 
@@ -1590,6 +1613,7 @@ impl State {
 			};
 			let apply = match place {
 				Place::Home => {
+					self.history_navigation.clear_back();
 					self.park_reply();
 					self.application_commands.clear();
 					self.selected = None;
@@ -1861,6 +1885,7 @@ impl State {
 		}
 	}
 	fn history_range(&mut self, before: Option<Id>, after: Option<Id>) -> Command {
+		self.reply_previews.cancel_pending();
 		if self.selected.is_some_and(|channel| {
 			self.history_navigation
 				.target(channel, self.request)
@@ -2748,12 +2773,32 @@ impl State {
 			}
 			return;
 		}
+		if let Command::ReplyPreview {
+			channel,
+			message,
+			request,
+		} = &command
+		{
+			self.apply_reply_preview(reply_previews::ResultEvent {
+				channel: *channel,
+				message: *message,
+				request: *request,
+				result: Err(auth::Failure::ProtocolAt("Preview queue is full; retry")),
+			});
+			return;
+		}
 		if let Command::History {
+			channel, request, ..
+		}
+		| Command::HistoryAround {
 			channel, request, ..
 		} = &command
 		{
 			if self.selected != Some(*channel) || *request != self.request || !self.history_pending
 			{
+				return;
+			}
+			if self.fail_history_navigation(auth::Failure::Capacity) {
 				return;
 			}
 			self.cancel_history();
@@ -2791,6 +2836,7 @@ impl State {
 		if envelope.generation != self.generation {
 			return;
 		}
+		self.invalidate_reply_previews(&envelope.event);
 		if envelope.event.changes_access()
 			|| matches!(&envelope.event, Event::Disconnected | Event::Resumed)
 		{
@@ -3928,19 +3974,33 @@ impl State {
 					|| messages.len() > 50
 					|| messages.iter().any(|message| {
 						message.channel != channel
-							|| (has_deleted_reference && !Timeline::valid_message(message))
+							|| ((has_deleted_reference
+								|| self.history_navigation.target(channel, request).is_some())
+								&& !Timeline::valid_message(message))
 							|| self
 								.history_before
 								.is_some_and(|before| message.id >= before)
 							|| self.history_after.is_some_and(|after| message.id <= after)
 							|| !ids.insert(message.id)
 					}) {
+					if self.fail_history_navigation(auth::Failure::Protocol) {
+						return;
+					}
 					self.cancel_history();
 					self.fail(auth::Failure::Protocol);
 					return;
 				}
+				if self
+					.prepare_target_history(channel, request, &messages)
+					.is_err()
+				{
+					return;
+				}
 				for message in &messages {
 					self.record_reply_deletion(message);
+				}
+				for message in &mut messages {
+					self.ingest_reply_preview(message);
 				}
 				self.history_pending = false;
 				if !older
@@ -4017,6 +4077,9 @@ impl State {
 				{
 					return;
 				}
+				if self.fail_history_navigation(failure) {
+					return;
+				}
 				if failure == auth::Failure::Capacity && adopted {
 					// Preloads give way to clicks and never reached the service: ask for the
 					// page as the click would have.
@@ -4045,7 +4108,12 @@ impl State {
 				}
 				Ok(())
 			}
+			Event::ReplyPreview(event) => {
+				self.apply_reply_preview(event);
+				Ok(())
+			}
 			Event::Message(mut m) => {
+				self.ingest_reply_preview(&mut m);
 				if self.timeline.get(m.id).is_some_and(|old| {
 					old.edited_at
 						.is_none_or(|at| m.edited_at.is_some_and(|new| new >= at))
@@ -5034,6 +5102,12 @@ impl Event {
 				}
 				Self::RecipientAdded { user, .. } => user.heap_bytes(),
 				Self::History { messages, .. } => messages.iter().map(Message::bytes).sum(),
+				Self::ReplyPreview(event) => event
+					.result
+					.as_ref()
+					.ok()
+					.and_then(Option::as_ref)
+					.map_or(0, |preview| preview.bytes()),
 				Self::Polls(polls::Event::Result { result, .. }) => {
 					result.as_ref().map_or(0, |message| message.bytes())
 				}
@@ -6697,6 +6771,7 @@ mod tests {
 	}
 	pub(super) fn message(id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			reactions: Some(vec![]),

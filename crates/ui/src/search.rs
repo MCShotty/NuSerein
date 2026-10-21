@@ -1612,6 +1612,7 @@ impl SearchUi {
 			.previews
 			.entry(hit.id)
 			.or_insert_with(|| model::Message {
+				reply_preview: None,
 				poll: None,
 				sticker_items: Vec::new(),
 				flags: 0,
