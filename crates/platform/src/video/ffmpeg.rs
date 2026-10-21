@@ -285,6 +285,7 @@ fn decode_result(result: i32) -> Result<bool, &'static str> {
 		0 => Ok(false),
 		-2 => Err(super::UNSUPPORTED),
 		-3 => Err("This video exceeds the safe playback limits"),
+		-4 => Err("Video buffering exceeds the playback memory limit"),
 		_ => Err(super::INVALID),
 	}
 }
@@ -1219,13 +1220,15 @@ impl File {
 				{
 					return Err(super::INVALID);
 				}
-				memory.resize(decoder_bytes(
+				let pictures = decoder_bytes(
 					info.width as usize,
 					info.height as usize,
 					info.depth,
 					1,
 					info.references,
-				)?)
+				)?;
+				// Both compressed track queues share 8 MiB; include their fixed bookkeeping.
+				memory.resize(pictures + 8 * 1024 * 1024 + 2 * 512 * 2 * size_of::<usize>())
 			});
 		if let Err(error) = result {
 			// SAFETY: open returned an owned live context; no sample has been read.

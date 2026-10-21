@@ -6213,8 +6213,8 @@ impl eframe::App for Desktop {
 					self.demo_video_autoplay = None;
 				}
 			}
-			if !player.seen
-				|| (player.active.is_none() && player.provider.is_none())
+			player.update_visibility();
+			if (player.active.is_none() && player.provider.is_none())
 				|| (!self.state.demo && self.state.auth != AuthState::Authenticated)
 			{
 				self.video.stop();

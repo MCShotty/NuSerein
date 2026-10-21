@@ -142,7 +142,8 @@ typedef struct SereinMediaInfo {
 void *serein_media_open(void *reader, SereinMediaRead read, SereinMediaSeek seek,
                         const SereinVideoAdapter *adapter, SereinMediaInfo *info);
 void serein_media_close(void *media);
-/* poll: 1=sample ready, 0=drain sibling track, 2=EOF, negative=safe decode failure. */
+/* poll: 1=sample ready, 0=pending, 2=EOF, -4=compressed queue budget exceeded.
+ * Both tracks together retain at most 8 MiB / 512 compressed packets. */
 int serein_media_poll(void *media, int audio);
 int serein_media_video(void *media, SereinPicture *picture, uint8_t *output, size_t capacity, double *pts);
 int serein_media_audio(void *media, float *output, size_t frames, size_t *written, double *pts);

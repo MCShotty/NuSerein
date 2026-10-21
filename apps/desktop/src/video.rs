@@ -23,6 +23,9 @@ struct Session {
 	volume: Arc<AtomicU32>,
 	seek: Arc<AtomicU64>,
 	update: Mutex<Update>,
+	startup: source::Startup,
+	#[cfg(test)]
+	synthetic_output: bool,
 }
 impl Session {
 	fn new(volume: f32) -> Self {
@@ -31,6 +34,11 @@ impl Session {
 			paused: Arc::new(AtomicBool::new(false)),
 			volume: Arc::new(AtomicU32::new(volume.to_bits())),
 			seek: Arc::new(AtomicU64::new(u64::MAX)),
+			startup: source::Startup::new(
+				std::time::Instant::now() + std::time::Duration::from_secs(30),
+			),
+			#[cfg(test)]
+			synthetic_output: false,
 			update: Mutex::new(Update {
 				state: VideoState::Loading,
 				..Default::default()
@@ -43,6 +51,7 @@ struct Request {
 	output: Option<String>,
 	session: Arc<Session>,
 	url: Option<url::Url>,
+	fallback: Option<url::Url>,
 	size: usize,
 	adapter: Option<model::VideoAdapter>,
 }
@@ -60,6 +69,50 @@ struct PosterDone {
 	frame: Option<(u32, u32, Vec<u8>)>,
 	cancelled: Arc<AtomicBool>,
 }
+fn provider_geometry(
+	full: eframe::egui::Rect,
+	clip: eframe::egui::Rect,
+	scale: f32,
+) -> Option<(
+	platform::embed_player::Bounds,
+	platform::embed_player::Bounds,
+)> {
+	if !full.is_finite() || !clip.is_finite() || !scale.is_finite() || scale <= 0.0 {
+		return None;
+	}
+	let clip = full.intersect(clip);
+	let bounds = |rect: eframe::egui::Rect, clipped: bool| {
+		let edge = |value: f32, near: bool| {
+			let n = value * scale;
+			if clipped {
+				if near { n.ceil() } else { n.floor() }
+			} else {
+				n.round()
+			}
+		};
+		let x = edge(rect.left(), true) as i32;
+		let y = edge(rect.top(), true) as i32;
+		let (width, height) = if clipped {
+			(
+				u32::try_from(i64::from(edge(rect.right(), false) as i32) - i64::from(x)).ok()?,
+				u32::try_from(i64::from(edge(rect.bottom(), false) as i32) - i64::from(y)).ok()?,
+			)
+		} else {
+			(
+				(rect.width() * scale).round() as u32,
+				(rect.height() * scale).round() as u32,
+			)
+		};
+		(width > 0 && height > 0).then_some(platform::embed_player::Bounds {
+			x,
+			y,
+			width,
+			height,
+		})
+	};
+	Some((bounds(full, false)?, bounds(clip, true)?))
+}
+
 struct ProviderSession {
 	generation: u64,
 	message: model::Id,
@@ -121,7 +174,6 @@ impl Video {
 		allowed: bool,
 	) {
 		if !allowed
-			|| !player.seen
 			|| self
 				.provider
 				.as_ref()
@@ -151,8 +203,23 @@ impl Video {
 			self.provider = None;
 			return;
 		}
-		let Some(rect) = request.bounds else { return };
-		if std::mem::take(&mut request.start_requested) {
+		let overlay = eframe::egui::Popup::is_any_open(ctx)
+			|| ctx.memory(|memory| {
+				memory
+					.top_modal_layer()
+					.is_some_and(|layer| layer.id != eframe::egui::Id::unique("provider-video"))
+			});
+		let geometry = request
+			.bounds
+			.zip(request.clip)
+			.and_then(|(full, clip)| provider_geometry(full, clip, ctx.pixels_per_point()));
+		let visible = geometry.is_some()
+			&& player.seen
+			&& request.bounds.is_some()
+			&& request.clip.is_some()
+			&& !overlay;
+		if request.start_requested && visible {
+			request.start_requested = false;
 			self.provider = None;
 			let wake = ctx.clone();
 			match platform::embed_player::ProviderPlayer::open(
@@ -180,16 +247,21 @@ impl Video {
 		let Some(session) = &self.provider else {
 			return;
 		};
-		let scale = ctx.pixels_per_point();
-		let result = session
-			.view
-			.set_bounds(
-				(rect.left() * scale).round() as i32,
-				(rect.top() * scale).round() as i32,
-				(rect.width() * scale).round() as u32,
-				(rect.height() * scale).round() as u32,
-			)
-			.and_then(|_| session.view.poll());
+
+		let result = (|| {
+			if visible && let Some((full, clip)) = geometry {
+				session.view.set_bounds(full, clip)?;
+			}
+			session.view.set_visible(visible)?;
+			session.view.poll()
+		})();
+		request.state = match session.view.status().state {
+			platform::embed_player::PlaybackState::Playing => VideoState::Playing,
+			platform::embed_player::PlaybackState::Paused => VideoState::Paused,
+			platform::embed_player::PlaybackState::Ended => VideoState::Ended,
+			_ => VideoState::Loading,
+		};
+
 		match result {
 			Ok(true) => ctx.request_repaint_after(if cfg!(target_os = "linux") {
 				std::time::Duration::from_millis(20)
@@ -313,15 +385,20 @@ impl Video {
 		if !attachment.is_video() || attachment.size > 100 * 1024 * 1024 {
 			return Err("Video preview limit: 100 MiB");
 		}
-		let url = if demo {
-			None
+		let (url, fallback) = if demo {
+			(None, None)
 		} else if attachment.size == 0 {
 			// Embed videos have no declared size; the worker probes it before decoding.
-			Some(ui::embedded_video_url(&attachment.media).ok_or("Video embed unavailable")?)
+			let mut candidates = ui::embedded_video_candidates(&attachment.media).into_iter();
+			let url = candidates.next().ok_or("Video embed unavailable")?;
+			(Some(url), candidates.next())
 		} else {
-			Some(
-				crate::downloads::original_url(&attachment)
-					.ok_or("Video attachment unavailable")?,
+			(
+				Some(
+					crate::downloads::original_url(&attachment)
+						.ok_or("Video attachment unavailable")?,
+				),
+				None,
 			)
 		};
 		if self.requests.is_none() {
@@ -359,6 +436,7 @@ impl Video {
 			output: self.output.clone(),
 			session: session.clone(),
 			url,
+			fallback,
 			size: attachment.size as usize,
 			adapter: self.adapter,
 		}));
@@ -583,12 +661,54 @@ fn play(
 	runtime: &tokio::runtime::Handle,
 	ctx: &eframe::egui::Context,
 ) -> Result<(), &'static str> {
+	let result = play_candidate(request, runtime, ctx);
+	if result.is_ok() || request.session.cancelled.load(Ordering::Acquire) {
+		return result;
+	}
+	if request.session.startup.expired() {
+		return Err(request.session.startup.timeout_error());
+	}
+	let Some(fallback) = &request.fallback else {
+		return result;
+	};
+	let mut retry = request.clone();
+	retry.url = Some(fallback.clone());
+	retry.fallback = None;
+	let resume = if let Ok(mut update) = request.session.update.lock() {
+		update.state = VideoState::Loading;
+		update.position
+	} else {
+		0.0
+	};
+	if resume > 0.0 {
+		let _ = request.session.seek.compare_exchange(
+			u64::MAX,
+			(resume * 1000.0) as u64,
+			Ordering::AcqRel,
+			Ordering::Acquire,
+		);
+	}
+	ctx.request_repaint();
+	let result = play_candidate(&retry, runtime, ctx);
+	if request.session.startup.expired() && !request.session.cancelled.load(Ordering::Acquire) {
+		Err(request.session.startup.timeout_error())
+	} else {
+		result
+	}
+}
+
+fn play_candidate(
+	request: &Request,
+	runtime: &tokio::runtime::Handle,
+	ctx: &eframe::egui::Context,
+) -> Result<(), &'static str> {
 	let session = &request.session;
-	let source = source::source(
+	let source = source::source_until(
 		request.url.clone(),
 		request.size,
 		session.cancelled.clone(),
 		runtime.clone(),
+		Some(session.startup.clone()),
 	)?;
 	let result = AttachmentDecoder::open(source, request.adapter)
 		.and_then(|decoder| play_decoded(decoder, session, request.output.as_deref(), ctx));
@@ -605,13 +725,19 @@ fn play(
 				0.
 			};
 			ctx.request_repaint();
-			let source = source::source(
+			let source = source::source_until(
 				request.url.clone(),
 				request.size,
 				session.cancelled.clone(),
 				runtime.clone(),
+				Some(session.startup.clone()),
 			)?;
-			let decoder = fallback::open(source, &session.cancelled, request.adapter)?;
+			let decoder = fallback::open(
+				source,
+				&session.cancelled,
+				request.adapter,
+				&session.startup,
+			)?;
 			// A seek made during conversion takes precedence over automatic resumption.
 			let _ = session.seek.compare_exchange(
 				u64::MAX,
@@ -657,24 +783,45 @@ fn play_decoded(
 		let eof = Arc::new(AtomicBool::new(false));
 		let failed = Arc::new(AtomicBool::new(false));
 		let mut output = if info.sample_rate > 0 {
-			Some(output::open(
-				info.sample_rate,
-				selected_output,
-				info.sample_rate as usize,
-				output::Controls {
-					cancelled: session.cancelled.clone(),
-					paused: session.paused.clone(),
-					seek: session.seek.clone(),
-					volume: session.volume.clone(),
-					position: position.clone(),
-					eof: eof.clone(),
-					failed: failed.clone(),
-					revision: Arc::new(AtomicU64::new(0)),
-				},
-			)?)
+			let controls = output::Controls {
+				cancelled: session.cancelled.clone(),
+				paused: session.paused.clone(),
+				seek: session.seek.clone(),
+				volume: session.volume.clone(),
+				position: position.clone(),
+				eof: eof.clone(),
+				failed: failed.clone(),
+				revision: Arc::new(AtomicU64::new(0)),
+			};
+			#[cfg(test)]
+			let synthetic = session.synthetic_output;
+			#[cfg(not(test))]
+			let synthetic = false;
+			if synthetic {
+				#[cfg(test)]
+				{
+					Some(output::synthetic(
+						info.sample_rate,
+						info.sample_rate as usize,
+						controls,
+					))
+				}
+				#[cfg(not(test))]
+				{
+					unreachable!()
+				}
+			} else {
+				Some(output::open(
+					info.sample_rate,
+					selected_output,
+					info.sample_rate as usize,
+					controls,
+				)?)
+			}
 		} else {
 			None
 		};
+
 		let mut frames = VecDeque::new();
 		let mut seek_preview = None;
 		let mut pending_audio: Option<(Vec<[f32; 2]>, usize)> = None;
@@ -682,6 +829,7 @@ fn play_decoded(
 		let mut video_ended = false;
 		let mut audio_ended = output.is_none();
 		let mut preview_needed = true;
+		let preview_started = Instant::now();
 		let mut wall = target;
 		let mut last_tick = Instant::now();
 		let mut last_progress = Instant::now();
@@ -732,8 +880,13 @@ fn play_decoded(
 			} else {
 				wall
 			};
-			if current > previous_position {
+			// A wall clock alone is not decoder progress. Silent video must have a
+			// decoded picture queued before its presentation clock can extend the deadline.
+			if current > previous_position
+				&& ((output.is_some() && !audio_drained) || !frames.is_empty())
+			{
 				last_progress = now;
+				session.startup.progressed();
 				previous_position = current;
 			}
 			let mut frame = None;
@@ -746,6 +899,9 @@ fn play_decoded(
 				preview_needed = false;
 			}
 			let finished = video_ended && audio_drained && frames.is_empty();
+			if finished && preview_needed {
+				return Err("Video has no playable pictures; retry or open the original");
+			}
 			let mut changed = false;
 			if let Ok(mut update) = session.update.lock() {
 				let state = if finished {
@@ -766,6 +922,8 @@ fn play_decoded(
 				update.position = current.min(info.duration);
 				update.duration = info.duration;
 				if frame.is_some() {
+					session.startup.progressed();
+					session.startup.first_picture.store(true, Ordering::Release);
 					update.frame = frame;
 				}
 			}
@@ -776,11 +934,19 @@ fn play_decoded(
 				return Ok(());
 			}
 			if paused && !preview_needed {
+				session.startup.progressed();
 				last_progress = now;
 				std::thread::sleep(Duration::from_millis(20));
 				continue;
 			}
-			if now.duration_since(last_progress) > Duration::from_secs(15) {
+			if session.startup.expired() {
+				return Err(session.startup.timeout_error());
+			}
+			if (preview_needed
+				&& session.startup.first_picture.load(Ordering::Acquire)
+				&& now.duration_since(preview_started) > Duration::from_secs(15))
+				|| (!preview_needed && now.duration_since(last_progress) > Duration::from_secs(15))
+			{
 				return Err("Video buffering stalled; retry or download to play externally");
 			}
 			if let Some((samples, offset)) = &mut pending_audio {
@@ -872,10 +1038,293 @@ fn play_decoded(
 	}
 }
 
-#[cfg(all(test, feature = "demo"))]
+#[cfg(test)]
 mod tests {
 	use super::*;
 	use std::time::{Duration, Instant};
+	#[test]
+	fn provider_clipping_rounds_inward_at_fractional_display_scales() {
+		let full = eframe::egui::Rect::from_min_size(
+			eframe::egui::pos2(-2.25, 10.25),
+			eframe::egui::vec2(640.0, 360.0),
+		);
+		let clip = eframe::egui::Rect::from_min_size(
+			eframe::egui::pos2(0.0, 80.1),
+			eframe::egui::vec2(600.4, 240.3),
+		);
+		for scale in [1.0, 1.25, 1.5, 2.0] {
+			let (page, visible) = provider_geometry(full, clip, scale).unwrap();
+			assert_eq!(page.width, (full.width() * scale).round() as u32);
+			assert!(visible.y as f32 >= clip.top() * scale);
+			assert!(
+				(visible.y + i32::try_from(visible.height).unwrap()) as f32
+					<= clip.bottom() * scale
+			);
+		}
+		assert!(provider_geometry(full, clip, 0.0).is_none());
+	}
+
+	#[test]
+	fn failed_proxy_retries_the_original_once_through_the_production_player() {
+		use std::{
+			io::{Read, Write},
+			net::TcpListener,
+		};
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		listener.set_nonblocking(true).unwrap();
+		let base = format!("http://{}", listener.local_addr().unwrap());
+		let stop = Arc::new(AtomicBool::new(false));
+		let stopped = stop.clone();
+		let server = std::thread::spawn(move || {
+			let deadline = Instant::now() + Duration::from_secs(15);
+			let mut count = 0;
+			while !stopped.load(Ordering::Acquire) && Instant::now() < deadline {
+				let (mut socket, _) = match listener.accept() {
+					Ok(s) => s,
+					Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+						std::thread::sleep(Duration::from_millis(5));
+						continue;
+					}
+					Err(e) => panic!("{e}"),
+				};
+				socket.set_nonblocking(false).unwrap();
+				socket
+					.set_read_timeout(Some(Duration::from_secs(5)))
+					.unwrap();
+				let mut headers = Vec::new();
+				while !headers.ends_with(b"\r\n\r\n") {
+					assert!(headers.len() < 8192);
+					let mut b = [0];
+					socket.read_exact(&mut b).unwrap();
+					headers.push(b[0]);
+				}
+				let wire = String::from_utf8(headers).unwrap();
+				let headers = wire.to_ascii_lowercase();
+				assert!(!headers.contains("authorization:") && !headers.contains("cookie:"));
+				assert!(headers.contains("user-agent: serein/"));
+				count += 1;
+				if headers.starts_with("get /proxy ") {
+					write!(
+						socket,
+						"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+					)
+					.unwrap();
+					continue;
+				}
+				assert!(wire.starts_with("GET /original.mov?sig=synthetic%2Fvalue "));
+				let range = headers
+					.lines()
+					.find_map(|l| l.strip_prefix("range: bytes="))
+					.unwrap();
+				let (start, end) = range.split_once('-').unwrap();
+				let start: usize = start.parse().unwrap();
+				let end: usize = end.parse().unwrap();
+				let movie = include_bytes!("../tests/fixtures/video.mov");
+				write!(socket,"HTTP/1.1 206 Partial Content\r\nContent-Type: video/quicktime\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",movie.len(),end-start+1).unwrap();
+				socket.write_all(&movie[start..=end]).unwrap();
+			}
+			count
+		});
+		let runtime = tokio::runtime::Runtime::new().unwrap();
+		let mut session = Session::new(0.0);
+		session.synthetic_output = true;
+		let session = Arc::new(session);
+		let request = Request {
+			output: None,
+			session: session.clone(),
+			url: Some(url::Url::parse(&format!("{base}/proxy")).unwrap()),
+			fallback: Some(
+				url::Url::parse(&format!("{base}/original.mov?sig=synthetic%2Fvalue")).unwrap(),
+			),
+			size: 0,
+			adapter: None,
+		};
+		let result = play(
+			&request,
+			runtime.handle(),
+			&eframe::egui::Context::default(),
+		);
+		stop.store(true, Ordering::Release);
+		assert_eq!(
+			server.join().unwrap(),
+			3,
+			"one failed proxy and two bounded original ranges"
+		);
+		assert_eq!(result, Ok(()));
+		assert_eq!(session.update.lock().unwrap().state, VideoState::Ended);
+	}
+
+	#[test]
+	fn compressed_packet_queue_exhaustion_is_explicit_and_seek_retires_it() {
+		// Synthetic 32x16 black H.264 at 240fps + silent AAC, generated with FFmpeg:
+		// -f lavfi -i color=c=black:s=32x16:r=240 -f lavfi -i anullsrc=r=48000:cl=mono
+		// -t 3 -c:v libx264 -preset ultrafast -crf 40 -c:a aac -b:a 16k -movflags +faststart
+		let bytes = test_support::reorder_video_fixture(
+			include_bytes!("../../../crates/test-support/fixtures/queued-video.mov"),
+			Some(true),
+		);
+		let mut decoder =
+			AttachmentDecoder::open(Box::new(std::io::Cursor::new(bytes)), None).unwrap();
+		let mut error = None;
+		for _ in 0..128 {
+			if let Err(failure) = decoder.poll_audio() {
+				error = Some(failure);
+				break;
+			}
+		}
+		assert_eq!(
+			error,
+			Some("Video buffering exceeds the playback memory limit")
+		);
+		decoder.seek(0.0).unwrap();
+		assert!(matches!(
+			decoder.poll_video(),
+			Ok(std::task::Poll::Ready(Some(_)))
+		));
+	}
+	#[test]
+	fn oversized_compressed_sample_reports_the_byte_budget() {
+		// Expand one synthetic MOV sample without changing its coded dimensions.
+		fn word(bytes: &[u8], at: usize) -> usize {
+			u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+		}
+		fn tables(
+			bytes: &[u8],
+			start: usize,
+			end: usize,
+			offsets: &mut Vec<usize>,
+			sample: &mut Option<usize>,
+		) {
+			let mut at = start;
+			while at < end {
+				let size = word(bytes, at);
+				assert!(size >= 8 && at + size <= end);
+				match &bytes[at + 4..at + 8] {
+					b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" => {
+						tables(bytes, at + 8, at + size, offsets, sample)
+					}
+					b"stco" => offsets.extend((0..word(bytes, at + 12)).map(|i| at + 16 + i * 4)),
+					b"stsz" if sample.is_none() => {
+						assert_eq!(word(bytes, at + 12), 0);
+						*sample = Some(at + 20);
+					}
+					_ => {}
+				}
+				at += size;
+			}
+		}
+		let mut bytes =
+			include_bytes!("../../../crates/test-support/fixtures/queued-video.mov").to_vec();
+		let (mut offsets, mut sample) = (Vec::new(), None);
+		tables(&bytes, 0, bytes.len(), &mut offsets, &mut sample);
+		let sample = sample.unwrap();
+		let size = word(&bytes, sample);
+		let insertion = word(&bytes, offsets[0]) + size;
+		let padding = 8 * 1024 * 1024;
+		for offset in offsets {
+			let value = word(&bytes, offset);
+			if value >= insertion {
+				bytes[offset..offset + 4]
+					.copy_from_slice(&((value + padding) as u32).to_be_bytes());
+			}
+		}
+		bytes[sample..sample + 4].copy_from_slice(&((size + padding) as u32).to_be_bytes());
+		let mut mdat = 0;
+		while &bytes[mdat + 4..mdat + 8] != b"mdat" {
+			mdat += word(&bytes, mdat);
+		}
+		let size = word(&bytes, mdat) + padding;
+		bytes[mdat..mdat + 4].copy_from_slice(&(size as u32).to_be_bytes());
+		bytes.splice(insertion..insertion, std::iter::repeat_n(0, padding));
+		let mut decoder =
+			AttachmentDecoder::open(Box::new(std::io::Cursor::new(bytes)), None).unwrap();
+		let mut error = None;
+		for _ in 0..32 {
+			if let Err(failure) = decoder.poll_audio() {
+				error = Some(failure);
+				break;
+			}
+		}
+		assert_eq!(
+			error,
+			Some("Video buffering exceeds the playback memory limit")
+		);
+	}
+
+	#[test]
+	fn ffmpeg_packet_layouts_deliver_pictures_audio_and_eof() {
+		for order in [None, Some(true), Some(false)] {
+			let bytes = test_support::video_fixture(order);
+			let mut session = Session::new(0.0);
+			session.synthetic_output = true;
+			let session = Arc::new(session);
+			let playing = session.clone();
+			let worker = std::thread::spawn(move || {
+				let decoder = AttachmentDecoder::open(Box::new(std::io::Cursor::new(bytes)), None)?;
+				play_decoded(decoder, &playing, None, &eframe::egui::Context::default())
+			});
+			let started = Instant::now();
+			let mut saw_picture = false;
+			let mut maximum = 0.0_f64;
+			while !worker.is_finished() && started.elapsed() < Duration::from_secs(8) {
+				let mut update = session.update.lock().unwrap();
+				saw_picture |= update.frame.take().is_some();
+				maximum = maximum.max(update.position);
+				drop(update);
+				std::thread::sleep(Duration::from_millis(10));
+			}
+			if !worker.is_finished() {
+				session.cancelled.store(true, Ordering::Release);
+				let _ = worker.join();
+				panic!("packet layout {order:?} stalled at {maximum}");
+			}
+			assert_eq!(worker.join().unwrap(), Ok(()));
+			let update = session.update.lock().unwrap();
+			assert!(
+				saw_picture && maximum > 2.8,
+				"{order:?}: no presentation progress"
+			);
+			assert_eq!(update.state, VideoState::Ended);
+		}
+	}
+	#[test]
+	fn ffmpeg_synthetic_output_preserves_pause_seek_and_cancellation() {
+		let mut session = Session::new(0.0);
+		session.synthetic_output = true;
+		let session = Arc::new(session);
+		let playing = session.clone();
+		let worker = std::thread::spawn(move || {
+			let decoder = AttachmentDecoder::open(
+				Box::new(std::io::Cursor::new(test_support::video_fixture(Some(
+					true,
+				)))),
+				None,
+			)?;
+			play_decoded(decoder, &playing, None, &eframe::egui::Context::default())
+		});
+		let wait = |predicate: &dyn Fn(&Update) -> bool| {
+			let deadline = Instant::now() + Duration::from_secs(5);
+			loop {
+				if predicate(&session.update.lock().unwrap()) {
+					break;
+				}
+				assert!(Instant::now() < deadline, "playback condition timed out");
+				std::thread::sleep(Duration::from_millis(10));
+			}
+		};
+		wait(&|s| s.position > 0.2 && s.frame.is_some());
+		session.paused.store(true, Ordering::Release);
+		wait(&|s| s.state == VideoState::Paused);
+		let before = session.update.lock().unwrap().position;
+		std::thread::sleep(Duration::from_millis(80));
+		assert!((session.update.lock().unwrap().position - before).abs() < 0.03);
+		session.seek.store(1500, Ordering::Release);
+		wait(&|s| s.position >= 1.5 && s.frame.is_some());
+		session.paused.store(false, Ordering::Release);
+		wait(&|s| s.position > 1.7);
+		session.cancelled.store(true, Ordering::Release);
+		assert_eq!(worker.join().unwrap(), Ok(()));
+	}
 	/// Synthetic local clip only; zero-volume output, no account or microphone access.
 	#[test]
 	#[ignore = "SEREIN_VIDEO_SAMPLE supplies an offline clip; opens muted local output"]
@@ -917,6 +1366,7 @@ mod tests {
 		);
 	}
 
+	#[cfg(feature = "demo")]
 	#[test]
 	#[ignore = "opens the local audio output device at zero volume; explicit offline playback check"]
 	fn inline_video_plays_pauses_seeks_and_cancels() {
@@ -926,6 +1376,7 @@ mod tests {
 			output: None,
 			session: session.clone(),
 			url: None,
+			fallback: None,
 			size: 120000,
 			adapter: None,
 		};

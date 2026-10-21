@@ -48,11 +48,22 @@ pub struct ProviderPlayback {
 	pub target: model::YouTubeVideo,
 	pub source: String,
 	pub bounds: Option<egui::Rect>,
+	pub clip: Option<egui::Rect>,
+	pub expanded: bool,
+	pub state: VideoState,
 	pub start_requested: bool,
 	pub error: Option<&'static str>,
 	pub standalone: bool,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Origin {
+	#[default]
+	Timeline,
+	Search,
+}
 pub struct VideoUi {
+	pub(super) origin: Origin,
+	pub(super) rendering: Origin,
 	pub active: Option<(Id, Id, Attachment)>,
 	pub provider: Option<ProviderPlayback>,
 	pub state: VideoState,
@@ -60,6 +71,7 @@ pub struct VideoUi {
 	pub duration: f64,
 	pub command: Option<VideoCommand>,
 	pub seen: bool,
+	visibility_paused: bool,
 	pub volume: f32,
 	/// Latest frame; usually the desktop's GPU-converted texture, else [`Self::managed`].
 	texture: Option<egui::load::SizedTexture>,
@@ -95,6 +107,8 @@ pub struct VideoUi {
 impl Default for VideoUi {
 	fn default() -> Self {
 		Self {
+			origin: Origin::Timeline,
+			rendering: Origin::Timeline,
 			active: None,
 			provider: None,
 			state: VideoState::Idle,
@@ -102,6 +116,7 @@ impl Default for VideoUi {
 			duration: 0.0,
 			command: None,
 			seen: false,
+			visibility_paused: false,
 			volume: 1.0,
 			texture: None,
 			media: None,
@@ -123,6 +138,7 @@ impl VideoUi {
 	pub fn stop(&mut self) {
 		self.exit_fullscreen();
 		self.active = None;
+		self.origin = Origin::Timeline;
 		self.provider = None;
 		self.texture = None;
 		self.media = None;
@@ -132,6 +148,7 @@ impl VideoUi {
 		self.position = 0.0;
 		self.duration = 0.0;
 		self.seen = false;
+		self.visibility_paused = false;
 		self.command = Some(VideoCommand::Stop);
 	}
 	pub(super) fn exit_fullscreen(&mut self) {
@@ -152,6 +169,7 @@ impl VideoUi {
 		generation: u64,
 	) {
 		self.stop();
+		self.origin = self.rendering;
 		self.provider = Some(ProviderPlayback {
 			generation,
 			channel: message.channel,
@@ -159,88 +177,226 @@ impl VideoUi {
 			target,
 			source,
 			bounds: None,
+			clip: None,
+			expanded: false,
+			state: VideoState::Loading,
 			start_requested: true,
 			error: None,
 			standalone: false,
 		});
 		self.seen = true;
 	}
-	pub(crate) fn show_provider(&mut self, ctx: &egui::Context, opening: &mut Option<String>) {
+	pub(crate) fn provider_matches(&self, message: &Message, target: &model::YouTubeVideo) -> bool {
+		self.provider.as_ref().is_some_and(|p| {
+			p.message == message.id && p.channel == message.channel && &p.target == target
+		})
+	}
+	pub(crate) fn show_provider_card(
+		&mut self,
+		ui: &mut egui::Ui,
+		dimensions: (u32, u32),
+		opening: &mut Option<String>,
+	) {
 		let Some(player) = &mut self.provider else {
 			return;
 		};
-		self.seen = true;
-		player.bounds = None;
-		let screen = ctx.content_rect();
+		if player.expanded {
+			return;
+		}
+		let (width, height) = dimensions;
+		let w = ui.available_width().clamp(1.0, MAX_WIDTH);
+		let ratio = if width > 0 && height > 0 {
+			height as f32 / width as f32
+		} else {
+			9.0 / 16.0
+		};
+		let h = (w * ratio).min(MAX_HEIGHT);
+		let w = h / ratio;
+		let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+		Self::provider_stage(ui, player, rect);
+		self.seen |= ui.is_rect_visible(rect);
 		let mut close = false;
-		let modal = egui::Modal::new(egui::Id::unique("provider-video")).show(ctx, |ui| {
-			let width = (screen.width() - 64.0).clamp(1.0, 960.0);
-			ui.set_width(width);
-			ui.horizontal(|ui| {
-				ui.label(crate::design::medium(ui, "YouTube", 16.0));
-				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					close = crate::design::button(
-						ui,
-						"video-provider-close",
-						crate::design::ButtonKind::Outline,
-					)
-					.clicked();
-				});
-			});
-			let height = (width * 9.0 / 16.0).min((screen.height() - 160.0).max(1.0));
-			let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-			ui.painter().rect_filled(rect, 4, egui::Color32::BLACK);
-			if let Some(error) = player.error {
-				let text = ui.painter().layout(
-					crate::i18n::translate_if_key(error),
-					egui::FontId::proportional(14.0),
-					egui::Color32::WHITE,
-					(rect.width() - 32.0).max(1.0),
-				);
-				ui.painter().galley(
-					rect.center() - text.size() / 2.0,
-					text,
-					egui::Color32::WHITE,
-				);
-			} else {
-				player.bounds = Some(rect);
-				ui.painter().text(
-					rect.center(),
-					egui::Align2::CENTER_CENTER,
-					crate::i18n::translate(if player.standalone {
-						"video-provider-separate-window"
-					} else {
-						"video-provider-loading"
-					}),
-					egui::FontId::proportional(14.0),
-					egui::Color32::WHITE,
-				);
-			}
-			ui.horizontal(|ui| {
-				if player.error.is_some()
-					&& crate::design::button(
-						ui,
-						"video-provider-retry",
-						crate::design::ButtonKind::Outline,
-					)
-					.clicked()
-				{
-					player.error = None;
-					player.start_requested = true;
-				}
-				if crate::design::button(
+		ui.horizontal_wrapped(|ui| {
+			if player.error.is_some()
+				&& crate::design::button(
 					ui,
-					"video-provider-open-original",
+					"video-provider-retry",
 					crate::design::ButtonKind::Outline,
 				)
 				.clicked()
-				{
-					*opening = crate::markdown::external_url(&player.source);
+			{
+				player.error = None;
+				player.state = VideoState::Loading;
+				player.start_requested = true;
+			}
+			if crate::design::button(
+				ui,
+				"video-provider-expand",
+				crate::design::ButtonKind::Neutral,
+			)
+			.clicked()
+			{
+				player.expanded = true;
+			}
+			if crate::design::button(
+				ui,
+				"video-provider-open-original",
+				crate::design::ButtonKind::Neutral,
+			)
+			.clicked()
+			{
+				*opening = crate::markdown::external_url(&player.source);
+			}
+			close = crate::design::button(
+				ui,
+				"video-provider-close",
+				crate::design::ButtonKind::Neutral,
+			)
+			.clicked();
+		});
+		if close {
+			self.stop();
+		}
+	}
+	fn provider_stage(ui: &mut egui::Ui, player: &mut ProviderPlayback, rect: egui::Rect) {
+		ui.painter().rect_filled(rect, 4, egui::Color32::BLACK);
+		let clipped = rect.intersect(ui.clip_rect());
+		if clipped.is_positive() {
+			player.bounds = Some(rect);
+			player.clip = Some(clipped);
+		}
+		let text = if let Some(error) = player.error {
+			crate::i18n::translate_if_key(error)
+		} else {
+			crate::i18n::translate(if player.standalone {
+				"video-provider-separate-window"
+			} else {
+				"video-provider-loading"
+			})
+		};
+		let galley = ui.painter().layout(
+			text,
+			egui::FontId::proportional(14.0),
+			egui::Color32::WHITE,
+			(rect.width() - 24.0).max(1.0),
+		);
+		ui.painter().with_clip_rect(clipped).galley(
+			rect.center() - galley.size() / 2.0,
+			galley,
+			egui::Color32::WHITE,
+		);
+	}
+	/// An enlarged view is opened only by the explicit Expand action.
+	pub(crate) fn show_provider(&mut self, ctx: &egui::Context, opening: &mut Option<String>) {
+		let fullscreen = self.is_fullscreen();
+		let Some(player) = &mut self.provider else {
+			return;
+		};
+		if !player.expanded {
+			return;
+		}
+		self.seen = true;
+		let screen = ctx.content_rect();
+		let mut inline = false;
+		let mut toggle_fullscreen = None;
+		let id = egui::Id::unique("provider-video");
+		let modal = egui::Modal::new(id);
+		let modal = if fullscreen {
+			modal
+				.area(
+					egui::Modal::default_area(id).anchor(egui::Align2::LEFT_TOP, egui::Vec2::ZERO),
+				)
+				.backdrop_color(egui::Color32::BLACK)
+				.frame(egui::Frame::NONE)
+		} else {
+			modal
+		};
+		let response = modal.show(ctx, |ui| {
+			let width = if fullscreen {
+				ui.set_min_size(screen.size());
+				screen.width()
+			} else {
+				(screen.width() - 64.0).clamp(1.0, 960.0)
+			};
+			ui.set_width(width);
+			ui.horizontal_wrapped(|ui| {
+				inline = crate::design::button(
+					ui,
+					"video-provider-return-inline",
+					crate::design::ButtonKind::Outline,
+				)
+				.clicked();
+				if !player.standalone {
+					let button = crate::design::button(
+						ui,
+						if fullscreen {
+							"video-provider-exit-fullscreen"
+						} else {
+							"video-provider-fullscreen"
+						},
+						crate::design::ButtonKind::Outline,
+					);
+					if button.clicked() {
+						toggle_fullscreen = Some(button.id);
+					}
 				}
 			});
+			let height = (width * 9.0 / 16.0).min((screen.height() - 120.0).max(1.0));
+			let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+			Self::provider_stage(ui, player, rect);
+			if player.error.is_some()
+				&& crate::design::button(
+					ui,
+					"video-provider-retry",
+					crate::design::ButtonKind::Outline,
+				)
+				.clicked()
+			{
+				player.error = None;
+				player.state = VideoState::Loading;
+				player.start_requested = true;
+			}
+			if crate::design::button(
+				ui,
+				"video-provider-open-original",
+				crate::design::ButtonKind::Neutral,
+			)
+			.clicked()
+			{
+				*opening = crate::markdown::external_url(&player.source);
+			}
 		});
-		if close || modal.should_close() || opening.is_some() {
-			self.stop();
+		if inline || response.should_close() {
+			player.expanded = false;
+			player.bounds = None;
+			player.clip = None;
+			self.exit_fullscreen();
+		} else if let Some(focus) = toggle_fullscreen {
+			if fullscreen {
+				self.exit_fullscreen();
+			} else {
+				let previous = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+				self.fullscreen = Some((ctx.clone(), previous, focus));
+				self.fullscreen_request = Some(true);
+			}
+		}
+	}
+	/// A viewport pause preserves a manual pause and resumes only an interrupted playing clip.
+	pub fn update_visibility(&mut self) {
+		if self.active.is_none() || self.command.is_some() {
+			return;
+		}
+		if !self.seen
+			&& !self.visibility_paused
+			&& matches!(self.state, VideoState::Playing | VideoState::Loading)
+		{
+			self.visibility_paused = true;
+			self.command = Some(VideoCommand::Pause(true));
+		} else if self.seen && self.visibility_paused {
+			self.visibility_paused = false;
+			if !matches!(self.state, VideoState::Ended | VideoState::Failed(_)) {
+				self.command = Some(VideoCommand::Pause(false));
+			}
 		}
 	}
 	pub(super) fn is_fullscreen(&self) -> bool {
@@ -357,6 +513,7 @@ impl VideoUi {
 		true
 	}
 	fn toggle(&mut self, message: &Message, attachment: &Attachment, state: VideoState) {
+		self.visibility_paused = false;
 		self.command = Some(match state {
 			VideoState::Loading => {
 				self.stop();
@@ -365,6 +522,7 @@ impl VideoUi {
 			VideoState::Playing => VideoCommand::Pause(true),
 			VideoState::Paused => VideoCommand::Pause(false),
 			_ => {
+				self.origin = self.rendering;
 				self.provider = None;
 				self.active = Some((message.channel, message.id, attachment.clone()));
 				self.texture = None;
@@ -1026,12 +1184,26 @@ pub(crate) fn is_embedded(attachment: &Attachment) -> bool {
 /// Extensionless offload/proxy endpoints still require the decoder to validate the container.
 /// Shared with the desktop worker so a visible Play action has the same URL policy as playback.
 pub fn embedded_video_url(media: &model::EmbedMedia) -> Option<url::Url> {
+	embedded_video_candidates(media).into_iter().next()
+}
+/// At most one validated proxy and original, in playback order. Keep signatures opaque.
+pub fn embedded_video_candidates(media: &model::EmbedMedia) -> Vec<url::Url> {
 	[media.proxy_url.as_deref(), media.url.as_deref()]
 		.into_iter()
 		.flatten()
-		.filter(|raw| raw.len() <= 2048 && !raw.contains('\\'))
+		.filter(|raw| {
+			raw.len() <= 2048 && !raw.contains('\\') && !raw.chars().any(char::is_control)
+		})
 		.filter_map(|raw| url::Url::parse(raw).ok())
-		.find(|url| {
+		.map(|mut url| {
+			if url.host_str() == Some("media.discordapp.net")
+				&& url.path().starts_with("/attachments/")
+			{
+				let _ = url.set_host(Some("cdn.discordapp.com"));
+			}
+			url
+		})
+		.filter(|url| {
 			url.scheme() == "https"
 				&& url.port_or_known_default() == Some(443)
 				&& url.username().is_empty()
@@ -1039,12 +1211,43 @@ pub fn embedded_video_url(media: &model::EmbedMedia) -> Option<url::Url> {
 				&& url.fragment().is_none()
 				&& embedded_video_origin(url)
 		})
+		.fold(Vec::with_capacity(2), |mut urls, url| {
+			if !urls.contains(&url) {
+				urls.push(url);
+			}
+			urls
+		})
 }
 fn embedded_video_origin(url: &url::Url) -> bool {
 	let Some(host) = url.host_str() else {
 		return false;
 	};
 	match host {
+		"cdn.discordapp.com" | "media.discordapp.net"
+			if url.path().starts_with("/attachments/") =>
+		{
+			let parts: Vec<_> = url.path().split('/').skip(1).collect();
+			let valid_path = match parts.as_slice() {
+				["attachments", channel, id, file] => {
+					channel.parse::<Id>().is_ok()
+						&& id.parse::<Id>().is_ok()
+						&& video_filename(file)
+				}
+				["attachments", channel, message, id, file] => {
+					[channel, message, id]
+						.iter()
+						.all(|value| value.parse::<Id>().is_ok())
+						&& video_filename(file)
+				}
+				_ => false,
+			};
+			valid_path
+				&& url.query_pairs().all(|(key, value)| match key.as_ref() {
+					"ex" | "is" | "hm" => true,
+					"backend" => matches!(value.as_ref(), "b2" | "b3"),
+					_ => false,
+				})
+		}
 		"media.discordapp.net" | "images-ext-1.discordapp.net" | "images-ext-2.discordapp.net" => {
 			url.path().starts_with("/external/")
 		}
@@ -1064,6 +1267,16 @@ fn embedded_video_origin(url: &url::Url) -> bool {
 				&& url.path().ends_with(".mp4")
 		}
 	}
+}
+fn video_filename(name: &str) -> bool {
+	let name = name.to_ascii_lowercase();
+	!name.contains('\\')
+		&& !["%2f", "%5c", "%00"]
+			.iter()
+			.any(|escape| name.contains(escape))
+		&& [".mp4", ".mov", ".m4v", ".webm", ".mkv"]
+			.iter()
+			.any(|ext| name.ends_with(ext))
 }
 pub(crate) fn embed_stage_height(width: u32, height: u32, available: f32) -> f32 {
 	let known = width > 0 && height > 0;
@@ -1109,6 +1322,199 @@ fn timestamp(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn attachment_links_preserve_signatures_and_media_candidates() {
+		for (host, ext) in [
+			("cdn.discordapp.com", "mov"),
+			("media.discordapp.net", "webm"),
+			("cdn.discordapp.com", "MP4"),
+		] {
+			let original = format!(
+				"https://{host}/attachments/885617127443284024/1561794092579422319/clip.{ext}?ex=6ad7a598&is=6ad65418&hm=synthetic"
+			);
+			let proxy = "https://media.discordapp.net/external/hash/https/example.org/clip.mov";
+			let media = model::EmbedMedia {
+				url: Some(original.clone()),
+				proxy_url: Some(proxy.into()),
+				..Default::default()
+			};
+			let urls = embedded_video_candidates(&media);
+			assert_eq!(urls.len(), 2);
+			assert_eq!(urls[0].as_str(), proxy);
+			assert_eq!(
+				urls[1].as_str(),
+				original.replace("media.discordapp.net", "cdn.discordapp.com")
+			);
+		}
+		for path in [
+			"attachments/x/2/file.mov",
+			"attachments/1/2/file.txt",
+			"attachments/1/2/clip%2f.mov",
+			"attachments/1/2/clip.mov/extra",
+		] {
+			assert!(
+				embedded_video_url(&model::EmbedMedia {
+					url: Some(format!("https://cdn.discordapp.com/{path}")),
+					..Default::default()
+				})
+				.is_none()
+			);
+		}
+	}
+	#[test]
+	fn offscreen_pause_preserves_position_and_manual_pause() {
+		let message = test_support::message(1, Id(2));
+		let attachment = crate::embeds::native_video(&model::Embed {
+			url: Some("https://cdn.discordapp.com/attachments/1/2/clip.mov".into()),
+			..Default::default()
+		})
+		.unwrap();
+		let mut video = VideoUi::default();
+		video.active = Some((message.channel, message.id, attachment));
+		video.state = VideoState::Playing;
+		video.position = 1.25;
+		video.update_visibility();
+		assert!(matches!(
+			video.command.take(),
+			Some(VideoCommand::Pause(true))
+		));
+		video.state = VideoState::Paused;
+		video.update_visibility();
+		assert!(video.command.is_none());
+		video.seen = true;
+		video.update_visibility();
+		assert!(matches!(
+			video.command.take(),
+			Some(VideoCommand::Pause(false))
+		));
+		assert_eq!(video.position, 1.25);
+		video.state = VideoState::Paused;
+		video.seen = false;
+		video.update_visibility();
+		video.seen = true;
+		video.update_visibility();
+		assert!(
+			video.command.is_none(),
+			"manual pause must survive scrolling"
+		);
+	}
+
+	#[test]
+	fn provider_card_is_inline_and_reports_the_scroll_clip_without_resizing_content() {
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let message = test_support::message(1, Id(2));
+		let target = model::YouTubeVideo::new("synthet1c01", 0).unwrap();
+		let mut video = VideoUi::default();
+		video.open_provider(&message, target, "https://youtu.be/synthet1c01".into(), 1);
+		for (width, top) in [(480.0, 80.0), (240.0, 0.0)] {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(width, 700.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					ui.set_clip_rect(egui::Rect::from_min_max(
+						egui::pos2(0.0, top),
+						egui::pos2(width, 700.0),
+					));
+					video.show_provider_card(ui, (1280, 720), &mut None);
+				},
+			)
+			.drop_without_applying_deltas();
+			let player = video.provider.as_ref().unwrap();
+			let full = player.bounds.unwrap();
+			let clip = player.clip.unwrap();
+			assert!((full.width() / full.height() - 16.0 / 9.0).abs() < 0.001);
+			assert!(clip.top() >= top && clip.width() <= full.width());
+			assert!(!player.expanded);
+			assert!(ctx.memory(|m| m.top_modal_layer().is_none()));
+		}
+	}
+
+	#[test]
+	fn provider_fullscreen_requires_an_action_and_escape_restores_inline() {
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let message = test_support::message(1, Id(2));
+		let mut video = VideoUi::default();
+		video.open_provider(
+			&message,
+			model::YouTubeVideo::new("synthet1c01", 0).unwrap(),
+			"https://youtu.be/synthet1c01".into(),
+			1,
+		);
+		assert!(!video.is_fullscreen());
+		assert!(video.take_fullscreen_request().is_none());
+		video.provider.as_mut().unwrap().expanded = true;
+		let mut frame = |events| {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1000.0, 800.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|_| video.show_provider(&ctx, &mut None),
+			)
+		};
+		frame(vec![]).drop_without_applying_deltas();
+		frame(vec![]).drop_without_applying_deltas();
+		let output = frame(vec![]);
+		let label = crate::i18n::translate("video-provider-fullscreen");
+		let button = output
+			.shapes
+			.iter()
+			.find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text) if text.galley.job.text == label => {
+					Some(text.pos + text.galley.rect.center().to_vec2())
+				}
+				_ => None,
+			})
+			.expect("explicit fullscreen action");
+		output.drop_without_applying_deltas();
+		for pressed in [true, false] {
+			frame(vec![
+				egui::Event::PointerMoved(button),
+				egui::Event::PointerButton {
+					pos: button,
+					button: egui::PointerButton::Primary,
+					pressed,
+					modifiers: egui::Modifiers::NONE,
+				},
+			])
+			.drop_without_applying_deltas();
+		}
+		assert!(video.is_fullscreen());
+		assert_eq!(video.take_fullscreen_request(), Some(true));
+		ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(1000.0, 800.0),
+				)),
+				events: vec![egui::Event::Key {
+					key: egui::Key::Escape,
+					physical_key: None,
+					pressed: true,
+					repeat: false,
+					modifiers: egui::Modifiers::NONE,
+				}],
+				..Default::default()
+			},
+			|_| video.show_provider(&ctx, &mut None),
+		)
+		.drop_without_applying_deltas();
+		assert!(!video.is_fullscreen());
+		assert!(!video.provider.as_ref().unwrap().expanded);
+		assert_eq!(video.take_fullscreen_request(), Some(false));
+	}
+
 	#[test]
 	fn embedded_sources_use_only_media_proxies_or_known_public_video_origins() {
 		for host in [

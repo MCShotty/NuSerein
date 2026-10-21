@@ -5478,3 +5478,13 @@ video-provider-separate-window = Playback is open in the video window.
 video-provider-retry = Retry
 video-provider-open-original = Open original…
 video-provider-load-failed = Could not load the video player. Retry or open the original.
+
+video-provider-expand = Enlarge
+video-provider-return-inline = Back to chat
+video-provider-fullscreen = Fullscreen
+video-provider-exit-fullscreen = Exit fullscreen
+video-provider-unavailable = This video is unavailable. Open the original for details.
+video-provider-embedding-disabled = This video cannot play inside other apps. Open the original to watch it.
+video-provider-identity-failed = YouTube could not verify the player. Retry or open the original.
+video-provider-buffering-failed = Video buffering stopped. Retry or open the original.
+video-provider-open-window = Open video player

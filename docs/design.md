@@ -186,9 +186,12 @@ thumbnail galleries; explicit bot thumbnails retain their side placement. Provid
 use the small muted style. Embedded video with unknown dimensions reserves a normal
 16:9 stage, and pictures keep their aspect ratio. Direct media files use the
 native player, including extensionless proxy/offload endpoints. YouTube posters and Play buttons
-open its isolated provider player, with Close, Retry and confirmed Open original actions.
-The native video window is a child surface on Windows/macOS and a separate Serein window
-on Linux. Provider content loads only after Play; source/session/privacy changes retire it.
+open its isolated provider player inside the message card on Windows/macOS. Enlarge and fullscreen are
+explicit; Close, Retry and confirmed Open original remain available. Linux labels its separate
+Serein player action explicitly. Native surfaces follow the card's scroll clip without resizing
+its content, and hide behind client menus/dialogs. Offscreen playback pauses at its current
+position; returning resumes only a clip that was playing. Source/session/privacy changes retire
+playback. Unsupported HTML players show an external-link action rather than an in-app Play icon.
 `profile_preview --demo --page=embeds --media-embeds` exercises synthetic social/video cards;
 `--provider-embed` selects the YouTube fixture without contacting a provider.
 

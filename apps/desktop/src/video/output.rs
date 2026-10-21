@@ -19,7 +19,9 @@ pub struct Controls {
 }
 pub struct Output {
 	pub producer: rtrb::Producer<[f32; 2]>,
-	_stream: cpal::Stream,
+	_stream: Option<cpal::Stream>,
+	#[cfg(test)]
+	_synthetic: Option<Synthetic>,
 }
 struct Playback {
 	frames: rtrb::Consumer<[f32; 2]>,
@@ -152,7 +154,9 @@ pub fn open(
 	stream.play().map_err(|_| "Could not start audio output")?;
 	Ok(Output {
 		producer,
-		_stream: stream,
+		_stream: Some(stream),
+		#[cfg(test)]
+		_synthetic: None,
 	})
 }
 fn output<T: cpal::SizedSample + cpal::FromSample<f32>>(
@@ -173,6 +177,52 @@ fn output<T: cpal::SizedSample + cpal::FromSample<f32>>(
 		},
 		None,
 	)
+}
+
+/// Runs the production ring consumer against a clocked, discarded buffer: no audio device.
+#[cfg(test)]
+struct Synthetic {
+	stop: Arc<AtomicBool>,
+	worker: Option<std::thread::JoinHandle<()>>,
+}
+#[cfg(test)]
+impl Drop for Synthetic {
+	fn drop(&mut self) {
+		self.stop.store(true, Ordering::Release);
+		if let Some(worker) = self.worker.take() {
+			worker.join().unwrap();
+		}
+	}
+}
+#[cfg(test)]
+pub(super) fn synthetic(rate: u32, capacity: usize, controls: Controls) -> Output {
+	let (producer, frames) = rtrb::RingBuffer::new(capacity.clamp(960, rate as usize));
+	let stop = Arc::new(AtomicBool::new(false));
+	let stopped = stop.clone();
+	let worker = std::thread::spawn(move || {
+		let mut playback = Playback {
+			frames,
+			current: None,
+			phase: 0.0,
+			read_frames: 0,
+			rate,
+			revision: controls.revision.load(Ordering::Acquire),
+			controls,
+		};
+		let mut buffer = vec![0.0_f32; 960];
+		while !stopped.load(Ordering::Acquire) {
+			playback.render(&mut buffer, 2, 48000);
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+	});
+	Output {
+		producer,
+		_stream: None,
+		_synthetic: Some(Synthetic {
+			stop,
+			worker: Some(worker),
+		}),
+	}
 }
 
 #[cfg(test)]

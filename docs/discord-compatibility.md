@@ -3280,3 +3280,16 @@ message or microphone was used. Current service acceptance, including unofficial
 and screening writes, still requires the owner-controlled live developer-session gate. Native
 screenshots, full checks and package/performance comparisons are coordinated by the parent parity
 integration; synthetic fixtures are not evidence of live Discord behavior.
+
+## Embedded playback recovery — October 21, 2026
+
+Direct signed Discord video links use the FFmpeg-first player even when video metadata is
+absent. A failed proxy may fall back once to the approved original. Anonymous requests send
+a Serein User-Agent; HTML responses remain external-only. Independent compressed track
+queues prevent video-first media from blocking the audio clock, with explicit byte/packet
+limits and bounded startup/stall failures. YouTube uses its official IFrame API inside the
+message card on Windows/macOS; Linux keeps an explicitly labeled separate window. Scrolling
+pauses playback without losing position; enlargement and fullscreen are explicit. Search/pin
+previews retain their own source/restriction checks. Offline tests and the reported public
+clip's software decode do not establish Windows/macOS provider playback; native acceptance
+is reported separately in the PR.

@@ -164,6 +164,7 @@ jobs:
             env:
               LD_LIBRARY_PATH: ${{ env.FFMPEG_DIR }}/lib
           - run: bun tests/login-handoff.cjs
+          - run: bun tests/embed-player.cjs
           - run: bun tests/xtask-workspace.cjs
           - name: FFmpeg native libraries and packaging regression (offline)
             run: python packaging/ffmpeg/test_bundle.py

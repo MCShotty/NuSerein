@@ -1458,14 +1458,22 @@ An explicitly played embed with unknown length may accept one complete response 
 the server ignores Range, capped at 256 KiB and retained inside the same source cache.
 Larger responses still require range support. This fallback has the same cancellation
 checks and request timeout; it does not create a file cache. Explicit embed playback prefers
-Discord's external media proxy. Without one, it admits only Twitter's public MP4 paths,
-OGInstagram's offload endpoint and MP4 files on Instagram's public CDNs. At most three
+Discord's external media proxy and retains at most two validated candidates for one
+proxy-to-original retry. Signed Discord attachment URLs, Twitter public MP4 paths,
+OGInstagram offloads and Instagram CDN MP4 files are admitted. Attachment-host normalization
+preserves signatures. Requests identify Serein without sending a message URL or credentials. At most three
 redirects may stay within these approved HTTPS media origins; credentials, arbitrary hosts,
 loopback URLs and provider HTML pages are refused. Signed queries remain opaque and unlogged.
-The application queues at most two decoded frames (1080p NV12 on macOS and Linux,
-RGBA on Windows), one replaceable display frame, one GPU texture with its planes, one second of stereo float PCM (at most 768,000 bytes), and one decoded
-audio packet plus at most two seconds of timestamp-gap silence. Each native decoded
-sample is rejected above 16 MiB before copying. OS decoder/GPU allocations are additional
+FFmpeg demuxing retains at most 8 MiB and 512 compressed packets across independently
+drainable audio/video queues. Their buffers, padding and side data count against that
+budget, and the shared media reservation includes it. Seek, software restart and teardown
+release both queues. Exhaustion fails explicitly. The application retains two byte-accounted
+decoded pictures, one replaceable display frame, one GPU texture with its planes, one second
+of stereo float PCM (at most 768,000 bytes), and one decoded audio packet plus at most two
+seconds of timestamp-gap silence. FFmpeg pictures use shared surface/reference admission;
+legacy platform fallback samples retain their 16-MiB pre-copy limit. Initial picture delivery
+has a 30-second budget across fallback candidates, and subsequent stalls have a 15-second
+budget. Cancellation interrupts stalled HTTP bodies. HTML responses never enter a decoder. OS decoder/GPU allocations are additional
 and are released with the player. No file cache or media URL/byte diagnostics are written.
 
 
@@ -1678,7 +1686,8 @@ No author lookup results are persisted and no complete guild directory is fetche
 
 On macOS, formats rejected by the native decoder can use an installed FFmpeg helper.
 This explicit-playback fallback stages one input (100 MiB maximum) and converted MP4
-in a randomized mode-0700 temporary directory. Conversion has a two-minute deadline,
+in a randomized mode-0700 temporary directory. Conversion has a two-minute outer deadline
+and also observes playback's shared 30-second startup / 15-second progress deadline,
 a 100 MiB output acceptance limit and an OS-enforced 128 MiB per-file ceiling.
 Cancellation kills/reaps the helper; normal cleanup unlinks both files before playback,
 while the native decoder retains an open descriptor. Forced termination or filesystem
@@ -2163,18 +2172,22 @@ downloads a model or contacts a speech service.
 
 One user-selected YouTube player may exist at a time. Its request retains one public
 video ID, start time, source link (at most 2048 bytes), message/channel/generation IDs
-and one viewport rectangle. These fields are session-only and not written to the client
+and full-content / visible-clip rectangles. These fields are session-only and not written to the client
 cache or diagnostics. Native playback stops when the request is dismissed, loses its
-message/source/reveal permission, changes session, is hidden/minimized or logs out.
+message/source/reveal permission, changes session, the application is hidden/minimized, or logs out.
 Demo and synthetic application fixtures never create an external provider view.
 
-The official privacy-enhanced YouTube player receives only its selected video/start
-parameters and a fixed Serein project referrer. It has no Discord token, login IPC,
+The official privacy-enhanced YouTube player receives its selected video/start parameters
+and a fixed application origin: an in-memory virtual host on Windows and a project base
+URL on WebKit. The owned wrapper uses the official IFrame API and admits only bounded
+playback/error messages; no service URL or command arrives through that bridge. It has no Discord token, login IPC,
 account identifiers, cached browser profile or authenticated HTTP client. Playback
 loads provider-managed scripts/media after the explicit click; it uses the native web
 engine rather than FFmpeg's anonymous range reader. Navigation is pinned to that
-player and popups, downloads and permission requests are denied. Reported startup failures
-or a 30-second load timeout expose Retry/Open original without an automatic retry loop.
+player/owned wrapper and popups, downloads and permission requests are denied. Reported
+player errors, a 30-second startup timeout or 15 seconds without playback progress expose
+Retry/Open original without an automatic retry loop. Offscreen/menu pauses preserve the
+position and manual pause state; channel/account/source changes release the view.
 Other provider-only HTML players keep the existing confirmed browser action.
 
 Windows/macOS use a dedicated incognito WebContext; an owner-private temporary directory

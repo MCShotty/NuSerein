@@ -1926,50 +1926,97 @@ impl TimelineView {
 				.allows(state, crate::restricted::Key::message(message))
 		})
 	}
-	pub(super) fn show_fullscreen_video(&mut self, ctx: &egui::Context, state: &State) -> bool {
-		if let Some(provider) = &self.video.provider {
-			let valid = provider.generation == state.generation
-				&& display_message(state, provider.message).is_some_and(|message| {
-					state.selected == Some(provider.channel)
-						&& message.channel == provider.channel
-						&& self
-							.restricted
-							.allows(state, crate::restricted::Key::message(message))
-						&& !message.embeds_suppressed
-						&& (!crate::embeds::has_media_spoilers(message)
-							|| self
-								.revealed
-								.get(&message.id)
-								.is_some_and(|reveal| reveal.media && reveal.matches(message)))
-						&& message.embeds.iter().any(|embed| {
-							crate::embeds::youtube_video(embed).as_ref() == Some(&provider.target)
-								&& crate::embeds::provider_source(embed).as_deref()
-									== Some(provider.source.as_str())
-						})
-				});
-			if valid {
-				self.video.show_provider(ctx, &mut self.opening);
-			} else {
-				self.video.stop();
-			}
-			return valid;
+	pub(super) fn show_search_video(
+		&mut self,
+		ctx: &egui::Context,
+		message: Option<&model::Message>,
+		demo: bool,
+	) -> bool {
+		let Some(message) = message else {
+			self.video.stop();
+			return false;
+		};
+		if self.video.provider.as_ref().is_some_and(|p| p.expanded) {
+			self.video.show_provider(ctx, &mut self.opening);
+			return true;
 		}
-		if self.video.is_fullscreen() {
+		if !self.video.is_fullscreen() {
+			return false;
+		}
+		let Some((_, _, attachment)) = self.video.active.as_ref() else {
+			return false;
+		};
+		let attachment = attachment.clone();
+		let original = if crate::video::is_embedded(&attachment) {
+			message
+				.embeds
+				.iter()
+				.find(|e| crate::embeds::native_video(e).as_ref() == Some(&attachment))
+				.and_then(|e| e.url.as_deref())
+		} else {
+			attachment.media.url.as_deref()
+		};
+		self.video.show_fullscreen(
+			ctx,
+			message,
+			&attachment,
+			original,
+			&mut self.download,
+			&mut self.opening,
+			demo,
+		);
+		true
+	}
+
+	pub(super) fn show_fullscreen_video(&mut self, ctx: &egui::Context, state: &State) -> bool {
+		if self.video.origin == crate::video::Origin::Search {
+			return false;
+		}
+		if let Some(provider) = &self.video.provider {
+			let valid =
+				provider.generation == state.generation
+					&& display_message(state, provider.message)
+						.or_else(|| {
+							state
+								.thread_starter()
+								.filter(|message| message.id == provider.message)
+						})
+						.is_some_and(|message| {
+							state.selected == Some(provider.channel)
+								&& message.channel == provider.channel
+								&& self
+									.restricted
+									.allows(state, crate::restricted::Key::message(message))
+								&& !message.embeds_suppressed
+								&& (!crate::embeds::has_media_spoilers(message)
+									|| self.revealed.get(&message.id).is_some_and(|reveal| {
+										reveal.media && reveal.matches(message)
+									})) && message.embeds.iter().any(|embed| {
+								crate::embeds::youtube_video(embed).as_ref()
+									== Some(&provider.target) && crate::embeds::provider_source(embed)
+									.as_deref() == Some(
+									provider.source.as_str(),
+								)
+							})
+						});
+			if !valid {
+				self.video.stop();
+				return false;
+			}
+			if self.video.provider.as_ref().is_some_and(|p| p.expanded) {
+				self.video.show_provider(ctx, &mut self.opening);
+				return true;
+			}
+			return false;
+		}
+		if self.video.active.is_some() {
 			let current = self
 				.video
 				.active
 				.as_ref()
 				.and_then(|(channel, id, attachment)| {
-					state
-						.timeline
-						.get(*id)
-						.or_else(|| {
-							state
-								.interactions
-								.ephemeral
-								.iter()
-								.find(|message| message.id == *id)
-						})
+					display_message(state, *id)
+						.or_else(|| state.thread_starter().filter(|message| message.id == *id))
 						.filter(|message| {
 							state.selected == Some(*channel)
 								&& self
@@ -1996,6 +2043,9 @@ impl TimelineView {
 						.map(|message| (message, attachment.clone()))
 				});
 			if let Some((message, attachment)) = current {
+				if !self.video.is_fullscreen() {
+					return false;
+				}
 				let original = if crate::video::is_embedded(&attachment) {
 					message
 						.embeds
@@ -5722,7 +5772,11 @@ mod tests {
 				.drop_without_applying_deltas();
 				shown
 			};
-			assert!(render(&mut view, &state, vec![]));
+			assert!(
+				!render(&mut view, &state, vec![]),
+				"normal playback must leave chat interactive"
+			);
+			view.video.provider.as_mut().unwrap().expanded = true;
 			assert!(render(&mut view, &state, vec![]));
 			assert!(view.video.provider.as_ref().unwrap().bounds.is_some());
 			match reason {
@@ -5761,7 +5815,14 @@ mod tests {
 				vec![]
 			};
 			render(&mut view, &state, events);
-			assert!(view.video.provider.is_none(), "retirement reason {reason}");
+			if reason == 8 {
+				assert!(
+					!view.video.provider.as_ref().unwrap().expanded,
+					"Escape returns playback to its card"
+				);
+			} else {
+				assert!(view.video.provider.is_none(), "retirement reason {reason}");
+			}
 		}
 	}
 

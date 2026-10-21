@@ -1,6 +1,12 @@
 //! WebKitGTK owns a separate video window; it never borrows login's network session or bridge.
-use super::{Arc, Instant, LOAD_TIMEOUT, REFERRER, YouTubeVideo, allowed_navigation};
-use std::{cell::Cell, rc::Rc};
+use super::{
+	APP_BASE, Arc, Bounds, Instant, PlaybackStatus, Progress, YouTubeVideo, allowed_navigation,
+	player_html, status_message,
+};
+use std::{
+	cell::{Cell, RefCell},
+	rc::Rc,
+};
 use webkit6::{glib, prelude::*};
 
 #[derive(Default)]
@@ -8,13 +14,16 @@ struct Status {
 	closed: Cell<bool>,
 	failed: Cell<bool>,
 	loaded: Cell<bool>,
+	playback: Cell<PlaybackStatus>,
 }
 pub struct ProviderPlayer {
 	view: webkit6::WebView,
 	window: gtk4::Window,
 	display: gtk4::gdk::Display,
 	status: Rc<Status>,
-	opened: Instant,
+	progress: RefCell<Progress>,
+	visible: Cell<bool>,
+	visibility_applied: Cell<bool>,
 }
 impl ProviderPlayer {
 	pub fn open(
@@ -48,8 +57,14 @@ impl ProviderPlayer {
 		settings.set_javascript_can_access_clipboard(false);
 		settings.set_enable_media_stream(false);
 		settings.set_enable_webrtc(false);
+		settings.set_media_playback_requires_user_gesture(false);
+		let manager = webkit6::UserContentManager::new();
+		if !manager.register_script_message_handler("sereinPlayer", None) {
+			return Err("video-provider-load-failed");
+		}
 		let view = webkit6::WebView::builder()
 			.network_session(&session)
+			.user_content_manager(&manager)
 			.settings(&settings)
 			.build();
 		let selected = target.clone();
@@ -100,6 +115,22 @@ impl ProviderPlayer {
 		view.connect_print(|_, _| true);
 		view.connect_show_notification(|_, _| true);
 		let status = Rc::new(Status::default());
+		let events = Rc::downgrade(&status);
+		let document = view.downgrade();
+		manager.connect_script_message_received(Some("sereinPlayer"), move |_, value| {
+			if !document
+				.upgrade()
+				.and_then(|v| v.uri())
+				.is_some_and(|uri| uri.as_str() == APP_BASE)
+			{
+				return;
+			}
+			if let Some(status) = events.upgrade()
+				&& let Some(update) = status_message(value.to_str().as_str())
+			{
+				status.playback.set(update);
+			}
+		});
 		let loaded = Rc::downgrade(&status);
 		view.connect_load_changed(move |_, event| {
 			if event == webkit6::LoadEvent::Finished
@@ -141,14 +172,11 @@ impl ProviderPlayer {
 			glib::Propagation::Proceed
 		});
 		if let Some(html) = fixture {
-			view.load_html(html, Some(&target.embed_url()));
+			view.load_html(html, Some(APP_BASE));
 		} else {
-			let request = webkit6::URIRequest::new(&target.embed_url());
-			if let Some(headers) = request.http_headers() {
-				headers.replace("Referer", REFERRER);
-			}
-			view.load_request(&request);
+			view.load_html(&player_html(target), Some(APP_BASE));
 		}
+
 		window.present();
 		let display = gtk4::prelude::WidgetExt::display(&window);
 		Ok(Self {
@@ -156,11 +184,39 @@ impl ProviderPlayer {
 			window,
 			display,
 			status,
-			opened: Instant::now(),
+			progress: Default::default(),
+			visible: Cell::new(true),
+			visibility_applied: Cell::new(false),
 		})
 	}
-	pub fn set_bounds(&self, _: i32, _: i32, _: u32, _: u32) -> Result<(), &'static str> {
+	pub fn set_bounds(&self, _: Bounds, _: Bounds) -> Result<(), &'static str> {
 		Ok(())
+	}
+	pub fn set_visible(&self, visible: bool) -> Result<(), &'static str> {
+		let ready = self.status().state != super::PlaybackState::Loading;
+		let changed = self.visible.replace(visible) != visible;
+		if changed || (ready && !self.visibility_applied.get()) {
+			self.view.evaluate_javascript(
+				if visible {
+					"window.sereinVisibility?.(true)"
+				} else {
+					"window.sereinVisibility?.(false)"
+				},
+				None,
+				None,
+				None::<&gtk4::gio::Cancellable>,
+				|_| {},
+			);
+			self.visibility_applied.set(ready);
+		}
+		if changed {
+			self.window.set_visible(visible);
+		}
+		Ok(())
+	}
+
+	pub fn status(&self) -> PlaybackStatus {
+		self.status.playback.get()
 	}
 	pub fn poll(&self) -> Result<bool, &'static str> {
 		let context = glib::MainContext::default();
@@ -173,11 +229,14 @@ impl ProviderPlayer {
 		self.display.flush();
 		if self.status.closed.get() {
 			Ok(false)
-		} else if self.status.failed.get()
-			|| (!self.status.loaded.get() && self.opened.elapsed() >= LOAD_TIMEOUT)
-		{
+		} else if self.status.failed.get() {
 			Err("video-provider-load-failed")
 		} else {
+			let mut progress = self.progress.borrow_mut();
+			if !self.visible.get() {
+				progress.suspend(Instant::now());
+			}
+			progress.check(self.status(), Instant::now())?;
 			Ok(true)
 		}
 	}
@@ -212,13 +271,43 @@ mod tests {
 			return;
 		}
 		let target = YouTubeVideo::new("synthet1c01", 0).unwrap();
-		let player = ProviderPlayer::build(&target, || {}, Some("<!doctype html><meta http-equiv=Content-Security-Policy content=\"default-src 'none'\"><p>Offline synthetic provider player</p>")).unwrap();
+		// The shipping document and host bridge, with an offline API double and no remote resources.
+		let stub = r#"<script nonce="serein-player">
+   let fixtureEvents;
+   window.YT={Player:function(_,options){fixtureEvents=options.events;setTimeout(()=>fixtureEvents.onReady(),0);return {getCurrentTime:()=>1,pauseVideo:()=>fixtureEvents.onStateChange({data:2}),playVideo:()=>fixtureEvents.onStateChange({data:1})};}};
+   window.onYouTubeIframeAPIReady();
+  </script>"#;
+		let fixture = player_html(&target)
+			.replace(" https://www.youtube.com", "")
+			.replace(
+				"frame-src https://www.youtube-nocookie.com",
+				"frame-src 'none'",
+			)
+			.replace(
+				r#"<script src="https://www.youtube.com/iframe_api"></script>"#,
+				stub,
+			);
+		let player = ProviderPlayer::build(&target, || {}, Some(&fixture)).unwrap();
+		player.set_visible(true).unwrap();
 		let weak = player.view.downgrade();
 		let status = Rc::downgrade(&player.status);
 		let deadline = Instant::now() + std::time::Duration::from_secs(10);
-		while !player.status.loaded.get() {
+		while player.status().state != super::super::PlaybackState::Playing {
+			player.set_visible(true).unwrap();
 			assert!(player.poll().unwrap());
 			assert!(Instant::now() < deadline, "offline player did not load");
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+		player.set_visible(false).unwrap();
+		while player.status().state != super::super::PlaybackState::Paused {
+			assert!(player.poll().unwrap());
+			assert!(Instant::now() < deadline);
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+		player.set_visible(true).unwrap();
+		while player.status().state != super::super::PlaybackState::Playing {
+			assert!(player.poll().unwrap());
+			assert!(Instant::now() < deadline);
 			std::thread::sleep(std::time::Duration::from_millis(10));
 		}
 		player.window.close();

@@ -16,7 +16,9 @@ mod role_names;
 mod server_profile;
 pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
-pub use video::{MediaView, VideoCommand, VideoState, VideoUi, embedded_video_url};
+pub use video::{
+	MediaView, VideoCommand, VideoState, VideoUi, embedded_video_candidates, embedded_video_url,
+};
 mod attachments;
 pub mod external_upload;
 pub mod voice_messages;
@@ -4325,6 +4327,10 @@ impl MessagingUi {
 		}
 		self.timeline.audio.seen = false;
 		self.timeline.video.seen = false;
+		if let Some(player) = &mut self.timeline.video.provider {
+			player.bounds = None;
+			player.clip = None;
+		}
 		let side = self.drain_side_press();
 		let mut commands = Vec::new();
 		commands.extend(state.request_voice_channel_statuses());
@@ -4398,7 +4404,14 @@ impl MessagingUi {
 				.rect_filled(ui.max_rect(), 0, egui::Color32::BLACK);
 			return commands;
 		}
-		if self.timeline.show_fullscreen_video(ui.ctx(), state) {
+		let expanded_video = if self.timeline.video.origin == video::Origin::Search {
+			let message = self.search.playback_message(state, &self.timeline.video);
+			self.timeline
+				.show_search_video(ui.ctx(), message, state.demo)
+		} else {
+			self.timeline.show_fullscreen_video(ui.ctx(), state)
+		};
+		if expanded_video {
 			ui.painter()
 				.rect_filled(ui.max_rect(), 0, egui::Color32::BLACK);
 			return commands;
