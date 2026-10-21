@@ -49,15 +49,19 @@ impl State {
 
 	pub(super) fn filter_view_revisions(&mut self, event: &Event) {
 		let guild_message = matches!(event, Event::Message(message)
-			if self.channel(message.channel).is_some_and(|channel| {
-				channel.guild.is_some()
-					// Existing pings reorder active threads; our own messages acknowledge
-					// their conversation. Ordinary text-channel traffic changes neither.
-					&& (self.mention_count(message.channel) == 0
-						|| (!matches!(channel.kind, 10..=12)
-							&& self.user.as_ref().is_none_or(|owner| message.author.id != owner.id)))
-			})
-				&& !self.counts_toward_mention_badge(message));
+		if self.channel(message.channel).is_some_and(|channel| {
+			channel.guild.is_some()
+				// Existing pings reorder active threads; our own messages acknowledge
+				// their conversation. Ordinary text-channel traffic changes neither.
+				&& ((!matches!(channel.kind, 10..=12)
+					&& self.user.as_ref().is_none_or(|owner| message.author.id != owner.id))
+					|| self.mention_count(message.channel) == 0)
+				// An ordinary guild message has no badge work to repeat here.
+				&& ((message.mentions.is_empty()
+					&& !message.mention_everyone
+					&& message.mention_roles.is_empty())
+					|| !self.counts_toward_mention_badge(message))
+		}));
 		let revisions = &mut self.navigation_index.view_revisions;
 		// These events cannot replace guild catalogs or channel/role labels. Message
 		// arrival still changes unread badges and DM sorting; member lists affect text
