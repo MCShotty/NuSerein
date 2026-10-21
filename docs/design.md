@@ -1,5 +1,32 @@
 # Serein interface direction
 
+## Conversation navigation and local time
+
+Mention badges remain visible on pinged channels and posts, including through collapsed
+categories and Hide muted channels. Parent badges include child-thread mentions; server
+totals count each conversation once. The selected thread comes first, followed by pinged
+threads and up to four other recent threads. Forum list and gallery cards reserve title
+space for mention counts.
+
+Member rows show the highest-ranked assigned role icon independently of role color.
+Composer suggestions separate Members, Roles and permitted special mentions. Nicknames
+remain primary; a differing service-provided username distinguishes members in the picker.
+
+Reply previews use service-provided summaries or bounded visible-only reads, independently
+of the loaded history page. A jump keeps the current view until its target page succeeds;
+Back restores the preceding reading position. Deleted, inaccessible and failed originals
+have distinct outcomes, with Retry for temporary preview failures.
+
+Language & Time keeps Auto, 12-hour and 24-hour clock styles and adds System or Custom
+timezone. Custom accepts named IANA regions, with daylight-saving rules for each instant,
+or fixed UTC offsets. These device-local preferences update absolute timestamps and date
+grouping together while preserving the reading anchor. Relative durations and explicitly
+labelled UTC inputs retain their meaning.
+
+Wheel smoothing completes within 150 ms of the last discrete input; precision scrolling
+uses the operating system's movement directly. Input reversal and another interaction
+retire old motion, and a gesture cannot continue in a different conversation or overlay.
+
 Serein follows the familiar three-column messaging layout and density of a modern desktop chat
 client, but it is not a visual clone: it uses its own cool blue-grey neutrals, the Serein azure
 accent, softer corner radii and its own server-rail selection language. The palette, typography

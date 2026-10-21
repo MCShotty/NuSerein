@@ -358,9 +358,9 @@ fn result_jump_and_numeric_pager_keep_scope_and_allow_explicit_retry() {
 	let commands = click(&ctx, &mut view, &mut state, jump);
 	assert!(commands.iter().any(|command| matches!(
 		command,
-		Command::History {
+		Command::HistoryAround {
 			channel: Id(10),
-			before: Some(Id(91)),
+			target: Id(90),
 			..
 		}
 	)));

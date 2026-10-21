@@ -57,6 +57,9 @@ small synthetic guild channels. Operations select/history/load/patch/delete, rep
 requests or generations, revoke/restore permissions, reconnect, logout/re-READY and clear caches.
 Flags generate null/absent patches, reply-deletion markers and page/bulk-delete pressure. Payload
 expansion is limited to 24 MiB per iteration and reaches real message/window eviction boundaries.
+Reply operations also retain one-level summaries, schedule visible lookups, apply successful,
+failed or stale outcomes, jump to originals and return to the preceding window. A synthetic
+decoder seed includes an embedded original with a nested reply that must be ignored.
 Oracles check scoped ordered unique rows, deleted-body safety, 500 rows/4 MiB per timeline,
 two dormant windows, 1,475 aggregate rows/16 MiB, permission visibility and stale-state isolation.
 See the operation encoding in the target when creating a seed; no real clock is manipulated.

@@ -1,5 +1,28 @@
 # Local storage policy and audit
 
+## Reply previews and local time preferences (October 21, 2026)
+
+Reply summaries are session-only and deduplicated by conversation/message. At most 128
+summaries, 8 KiB each and 1 MiB combined, share the existing 16 MiB conversation budget.
+Only visible/overscan references enter the 32-target queue, with two reads in flight.
+Summaries retain no nested reply chains or media URLs and never become actionable history
+rows. A single Back window shares the conversation row/byte limits and is retired on
+relevant live changes, permission changes, reconnect, expiry or history-cache clearing.
+Account generation and request IDs fence late outcomes. Logout releases these records.
+
+Actual usernames and role-icon metadata remain bounded session display data, included in
+entity byte accounting. Username additions are omitted from existing disk serialization.
+Role images use the existing restricted, budgeted cosmetic cache.
+
+Timezone selection is an account-independent device preference alongside the clock format.
+It stores System, a bounded IANA zone name, or a validated fixed offset in minutes. Older
+preferences default to System; invalid saved zone selections recover without discarding
+other preferences. Message timestamps and UTC deadlines are not rewritten. One active and
+one pending resolved-zone snapshot are retained; parsed-zone auxiliary caches are cleared
+after resolution, and each resolved zone is limited to 1 MiB. Native discovery runs outside
+rendering. The bundled timezone database is immutable application data, documented with its
+source/license provenance in `assets/licenses/files/timezone-PROVENANCE.md`.
+
 Owned cosmetic editing retains at most 256 inventory items / 128 KiB plus 16 equipped profile
 entries in session RAM. Fresh own-profile/inventory wire responses are capped at 256 KiB / 2 MiB
 and zeroized after typed projection. Unknown equipped IDs remain in replacement writes; no
