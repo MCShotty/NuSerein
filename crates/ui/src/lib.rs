@@ -4264,12 +4264,9 @@ impl MessagingUi {
 		self.avatars.cosmetics = self.cosmetics;
 		name_styles::set_enabled(self.cosmetics.name_styles);
 		let cosmetics_refresh = state.set_profile_cosmetics(self.cosmetics);
-		self.timeline.download.gif_favorites = state
-			.gifs
-			.favorites
-			.iter()
-			.map(|gif| gif.url.clone())
-			.collect();
+		self.timeline
+			.download
+			.sync_gif_favorites(&state.gifs.favorites);
 		crate::scroll::apply_preferences_in(
 			ui.ctx(),
 			self.reading_preferences,

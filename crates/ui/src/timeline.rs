@@ -122,7 +122,7 @@ pub struct TimelineView {
 	copy_feedback: Option<(egui::Id, f64)>,
 	heights: BTreeMap<Id, (u64, f32)>,
 	// Heights can remain resize estimates; only these bounded active-row IDs were
-	// measured with the current dimensions and state revision.
+	// measured with the current dimensions and layout fingerprint.
 	measured_rows: BTreeSet<Id>,
 	#[cfg(test)]
 	leading_rendered: usize,
@@ -2442,7 +2442,7 @@ impl TimelineView {
 				.is_some_and(|key| self.heights.get(&INTRO).is_some_and(|(old, _)| *old != key));
 		self.starter_row = starter_id;
 		self.intro_row = intro.is_some();
-		if changed || self.revision != state.revision || self.width != width {
+		if changed || self.width != width {
 			self.measured_rows.clear();
 		}
 		let mut offset = None;
@@ -10452,6 +10452,19 @@ mod tests {
 			assert_eq!(
 				view.leading_rendered, 0,
 				"Settled hidden text needs no layout"
+			);
+			let anchor = view.anchor;
+			// Presence and unrelated account updates advance the broad state revision
+			// without changing any message's geometry or presentation fingerprint.
+			state.revision += 1;
+			overscan_frame(&ctx, &mut view, &mut state, &mut avatars, width, vec![]);
+			assert_eq!(
+				view.leading_rendered, 0,
+				"Unrelated updates reuse settled text"
+			);
+			assert_eq!(
+				view.anchor, anchor,
+				"Unrelated updates preserve the reading anchor"
 			);
 		}
 		// Pointer selection must retain the complete label registration path.

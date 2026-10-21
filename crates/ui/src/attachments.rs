@@ -671,6 +671,23 @@ fn media_menu(
 	action
 }
 impl DownloadUi {
+	/// Stable favorites are read every frame; only a real change needs owned URL copies.
+	pub(crate) fn sync_gif_favorites(&mut self, favorites: &[model::Gif]) {
+		let favorites = &favorites[..favorites.len().min(model::MAX_GIF_FAVORITES)];
+		if self.gif_favorites.len() == favorites.len()
+			&& self
+				.gif_favorites
+				.iter()
+				.zip(favorites)
+				.all(|(url, gif)| url == &gif.url)
+		{
+			return;
+		}
+		self.gif_favorites.clear();
+		self.gif_favorites
+			.extend(favorites.iter().map(|gif| gif.url.clone()));
+	}
+
 	pub(crate) fn view_embed(&mut self, message: Id, media: &model::EmbedMedia) {
 		if media.valid() && media.bytes() <= 8 * 1024 {
 			self.embed_view_request = Some((message, media.clone()));
@@ -1265,6 +1282,59 @@ pub fn estimated_height(attachments: &[Attachment], width: f32) -> f32 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn favorite_stars_follow_replacements_removals_and_logout() {
+		let mut download = DownloadUi::default();
+		let mut favorites = test_support::gif_page(None).gifs;
+		download.sync_gif_favorites(&favorites);
+		assert!(
+			favorites
+				.iter()
+				.all(|gif| download.gif_favorites.contains(&gif.url))
+		);
+		let removed = favorites.remove(0).url;
+		favorites[0].url = "https://tenor.com/view/changed-favorite".into();
+		download.sync_gif_favorites(&favorites);
+		assert!(!download.gif_favorites.contains(&removed));
+		assert!(download.gif_favorites.contains(&favorites[0].url));
+		download.sync_gif_favorites(&[]);
+		assert!(download.gif_favorites.is_empty());
+	}
+
+	#[test]
+	#[ignore = "release performance workload"]
+	fn favorite_snapshot_benchmark() {
+		let template = test_support::gif_page(None).gifs.remove(0);
+		let favorites: Vec<_> = (0..model::MAX_GIF_FAVORITES)
+			.map(|index| model::Gif {
+				url: format!("https://tenor.com/view/synthetic-favorite-{index}"),
+				..template.clone()
+			})
+			.collect();
+		let mut download = DownloadUi::default();
+		download.sync_gif_favorites(&favorites);
+		for sample in 0..6 {
+			let started = std::time::Instant::now();
+			for _ in 0..10_000 {
+				let previous: Vec<_> = std::hint::black_box(&favorites)
+					.iter()
+					.map(|gif| gif.url.clone())
+					.collect();
+				std::hint::black_box(previous);
+			}
+			let previous = started.elapsed().as_secs_f64() * 1000.0;
+			let started = std::time::Instant::now();
+			for _ in 0..10_000 {
+				download.sync_gif_favorites(std::hint::black_box(&favorites));
+				std::hint::black_box(&download.gif_favorites);
+			}
+			println!(
+				"favorite_snapshot sample={sample} previous_ms={previous} after_ms={}",
+				started.elapsed().as_secs_f64() * 1000.0
+			);
+		}
+	}
 
 	#[test]
 	fn large_image_galleries_use_three_square_columns_and_narrow_layouts_fit() {
