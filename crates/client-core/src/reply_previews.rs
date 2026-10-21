@@ -45,6 +45,8 @@ struct Entry {
 pub struct Previews {
 	entries: VecDeque<Entry>,
 	visible: Vec<Id>,
+	// Completed reads must not restart on repaint merely because their bodies were evicted.
+	attempted: Vec<Id>,
 	queued: Vec<Id>,
 	inflight: Vec<(Id, Id, u64)>,
 	cancel_requested: bool,
@@ -54,22 +56,29 @@ pub struct Previews {
 impl Previews {
 	pub(crate) fn cancel_pending(&mut self) {
 		self.cancel_requested |= !self.inflight.is_empty();
+		self.attempted
+			.retain(|id| !self.inflight.iter().any(|(_, pending, _)| pending == id));
 		self.inflight.clear();
 	}
 	pub(crate) fn clear(&mut self) {
 		self.cancel_pending();
 		self.entries = VecDeque::new();
 		self.visible = Vec::new();
+		self.attempted = Vec::new();
 		self.queued = Vec::new();
 		self.channel = None;
 		// Preserve next: queued responses from before clearing must never match a new read.
 	}
-	pub(crate) fn bytes(&self) -> usize {
+	fn metadata_bytes(&self) -> usize {
 		std::mem::size_of::<Self>()
 			+ self.entries.capacity() * std::mem::size_of::<Entry>()
 			+ self.visible.capacity() * std::mem::size_of::<Id>()
+			+ self.attempted.capacity() * std::mem::size_of::<Id>()
 			+ self.queued.capacity() * std::mem::size_of::<Id>()
 			+ self.inflight.capacity() * std::mem::size_of::<(Id, Id, u64)>()
+	}
+	pub(crate) fn bytes(&self) -> usize {
+		self.metadata_bytes()
 			+ self
 				.entries
 				.iter()
@@ -78,6 +87,15 @@ impl Previews {
 					_ => 0,
 				})
 				.sum::<usize>()
+	}
+	fn remember_attempt(&mut self, channel: Id, id: Id) {
+		if self.channel == Some(channel)
+			&& self.visible.contains(&id)
+			&& !self.attempted.contains(&id)
+			&& self.attempted.len() < MAX_VISIBLE_REPLIES
+		{
+			self.attempted.push(id);
+		}
 	}
 	fn insert(&mut self, channel: Id, id: Id, value: Value) {
 		self.entries
@@ -150,15 +168,27 @@ impl State {
 			.entries
 			.iter()
 			.find(|entry| entry.channel == channel && entry.id == id)
-			.map_or(Status::Unrequested, |entry| match &entry.value {
-				Value::Ready(_) => Status::Ready,
-				Value::Unavailable => Status::Unavailable,
-				Value::Forbidden => Status::Forbidden,
-				Value::Failed => Status::Failed,
-			})
+			.map_or_else(
+				|| {
+					if self.reply_previews.channel == Some(channel)
+						&& self.reply_previews.attempted.contains(&id)
+					{
+						Status::Failed
+					} else {
+						Status::Unrequested
+					}
+				},
+				|entry| match &entry.value {
+					Value::Ready(_) => Status::Ready,
+					Value::Unavailable => Status::Unavailable,
+					Value::Forbidden => Status::Forbidden,
+					Value::Failed => Status::Failed,
+				},
+			)
 	}
 	/// Called once after painting with visible and overscan reply target IDs, never all history.
 	pub fn sync_visible_reply_previews(&mut self, targets: &[Id]) -> Vec<Command> {
+		let previous_metadata = self.reply_previews.metadata_bytes();
 		let mut commands = Vec::new();
 		let channel = self
 			.selected
@@ -174,7 +204,8 @@ impl State {
 				}
 				ids
 			});
-		if self.reply_previews.channel != channel
+		let channel_changed = self.reply_previews.channel != channel;
+		if channel_changed
 			|| self
 				.reply_previews
 				.inflight
@@ -186,6 +217,13 @@ impl State {
 		if std::mem::take(&mut self.reply_previews.cancel_requested) {
 			commands.push(Command::CancelReplyPreviews);
 		}
+		if channel_changed {
+			self.reply_previews.attempted.clear();
+		} else {
+			self.reply_previews
+				.attempted
+				.retain(|id| visible.contains(id));
+		}
 		self.reply_previews.channel = channel;
 		self.reply_previews.visible = visible;
 		self.reply_previews.queued.clear();
@@ -194,10 +232,10 @@ impl State {
 			|| self.freshness != Freshness::Fresh
 			|| self.history_pending
 		{
-			return commands;
+			return self.finish_reply_preview_sync(previous_metadata, commands);
 		}
 		let Some(channel) = channel else {
-			return commands;
+			return self.finish_reply_preview_sync(previous_metadata, commands);
 		};
 		let visible = self.reply_previews.visible.clone();
 		for id in visible {
@@ -223,12 +261,25 @@ impl State {
 			let id = self.reply_previews.queued.remove(0);
 			self.reply_previews.next = self.reply_previews.next.wrapping_add(1);
 			let request = self.reply_previews.next;
+			self.reply_previews.remember_attempt(channel, id);
 			self.reply_previews.inflight.push((channel, id, request));
 			commands.push(Command::ReplyPreview {
 				channel,
 				message: id,
 				request,
 			});
+		}
+		self.finish_reply_preview_sync(previous_metadata, commands)
+	}
+	fn finish_reply_preview_sync(
+		&mut self,
+		previous_metadata: usize,
+		commands: Vec<Command>,
+	) -> Vec<Command> {
+		// Painting allocates this metadata outside apply(), which normally enforces the
+		// shared budget. The constant-time charge avoids scanning it again on every repaint.
+		if self.reply_previews.metadata_bytes() > previous_metadata {
+			self.enforce_resident_budget();
 		}
 		commands
 	}
@@ -238,6 +289,9 @@ impl State {
 		};
 		if self.reply_preview_status(id) == Status::Deleted {
 			return Vec::new();
+		}
+		if self.reply_previews.channel == Some(channel) {
+			self.reply_previews.attempted.retain(|target| *target != id);
 		}
 		self.reply_previews
 			.entries
@@ -271,6 +325,8 @@ impl State {
 			{
 				self.reply_previews.cancel_pending();
 			}
+			self.reply_previews
+				.remember_attempt(message.channel, preview.message().id);
 			self.reply_previews.insert(
 				message.channel,
 				preview.message().id,
@@ -336,6 +392,9 @@ impl State {
 				}) {
 				self.reply_previews.cancel_pending();
 			}
+			if self.reply_previews.channel == Some(channel) {
+				self.reply_previews.attempted.retain(|target| *target != id);
+			}
 			self.reply_previews
 				.entries
 				.retain(|entry| entry.channel != channel || entry.id != id);
@@ -350,6 +409,11 @@ impl State {
 				}) {
 				self.reply_previews.cancel_pending();
 			}
+			if self.reply_previews.channel == Some(*channel) {
+				self.reply_previews
+					.attempted
+					.retain(|target| !ids.contains(target));
+			}
 			self.reply_previews
 				.entries
 				.retain(|entry| entry.channel != *channel || !ids.contains(&entry.id));
@@ -357,6 +421,7 @@ impl State {
 		if event.changes_access() || matches!(event, Event::Disconnected | Event::Resumed) {
 			self.reply_previews.entries.clear();
 			self.reply_previews.cancel_pending();
+			self.reply_previews.attempted.clear();
 		}
 		// A return window is only a cache: changes revalidate it instead of retaining stale content.
 		if let Some((channel, _)) = key {

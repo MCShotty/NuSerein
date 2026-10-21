@@ -1032,6 +1032,191 @@ mod tests {
 	}
 
 	#[test]
+	fn every_visible_original_is_read_once_even_after_the_128_body_cache_rolls_over() {
+		use crate::reply_previews::{MAX_VISIBLE_REPLIES, ResultEvent, Status};
+		let mut state = state();
+		state.timeline.clear();
+		let visible: Vec<_> = (1..=MAX_VISIBLE_REPLIES as u64).map(Id).collect();
+		state
+			.timeline
+			.seed_cache(
+				visible
+					.iter()
+					.map(|id| {
+						let mut source = message(1000 + id.0);
+						source.reply_to = Some(*id);
+						source
+					})
+					.collect(),
+			)
+			.unwrap();
+		let mut reads = vec![0; MAX_VISIBLE_REPLIES];
+		for _ in 0..=MAX_VISIBLE_REPLIES / 2 {
+			let commands = state.sync_visible_reply_previews(&visible);
+			for command in commands {
+				let Command::ReplyPreview {
+					channel,
+					message: id,
+					request,
+				} = command
+				else {
+					panic!("the unchanged viewport must not cancel work")
+				};
+				reads[id.0 as usize - 1] += 1;
+				apply(
+					&mut state,
+					Event::ReplyPreview(ResultEvent {
+						channel,
+						message: id,
+						request,
+						result: Ok(Some(Box::new(
+							model::ReplyPreview::from_message(message(id.0)).unwrap(),
+						))),
+					}),
+				);
+			}
+		}
+		assert!(
+			reads.iter().all(|reads| *reads == 1),
+			"evicted bodies must not restart service reads or starve later replies"
+		);
+		assert_eq!(
+			visible
+				.iter()
+				.filter(|id| state.reply_preview_status(**id) == Status::Ready)
+				.count(),
+			128
+		);
+		assert_eq!(state.reply_preview_status(Id(1)), Status::Failed);
+		for _ in 0..5 {
+			assert!(state.sync_visible_reply_previews(&visible).is_empty());
+		}
+		let retry = state.retry_reply_preview(Id(1));
+		assert!(matches!(
+			retry.as_slice(),
+			[Command::ReplyPreview { message: Id(1), .. }]
+		));
+		state.command_rejected(retry.into_iter().next().unwrap());
+		assert_eq!(state.reply_preview_status(Id(1)), Status::Failed);
+		assert!(state.sync_visible_reply_previews(&visible).is_empty());
+		assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+	}
+
+	#[test]
+	fn preview_attempts_reset_for_real_cancellation_edits_visibility_and_access() {
+		use crate::reply_previews::Status;
+		let mut state = state();
+		let mut second = message(101);
+		second.reply_to = Some(Id(51));
+		state.timeline.insert(second, false, false).unwrap();
+		for command in state.sync_visible_reply_previews(&[Id(50), Id(51)]) {
+			state.command_rejected(command);
+		}
+		while state.reply_previews.evict() {}
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Failed);
+		assert_eq!(state.reply_preview_status(Id(51)), Status::Failed);
+		apply(
+			&mut state,
+			Event::Patch(model::MessagePatch {
+				id: Id(50),
+				channel: Id(1),
+				content: model::Patch::Value("Edited original".into()),
+				poll: model::Patch::Absent,
+				sticker_items: model::Patch::Absent,
+				flags: model::Patch::Absent,
+				components: model::Patch::Absent,
+				application_id: model::Patch::Absent,
+				extra_content: Default::default(),
+				reactions: model::Patch::Absent,
+				mentions: model::Patch::Absent,
+				edited: model::Patch::Absent,
+				embeds: model::Patch::Absent,
+				embeds_suppressed: model::Patch::Absent,
+				attachments: model::Patch::Absent,
+			}),
+		);
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Unrequested);
+		assert_eq!(
+			state.reply_preview_status(Id(51)),
+			Status::Failed,
+			"an edit must invalidate only its own attempt"
+		);
+		assert!(matches!(
+			state
+				.sync_visible_reply_previews(&[Id(50), Id(51)])
+				.as_slice(),
+			[Command::ReplyPreview {
+				message: Id(50),
+				..
+			}]
+		));
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[]).as_slice(),
+			[Command::CancelReplyPreviews]
+		));
+		let pending = state.sync_visible_reply_previews(&[Id(50), Id(51)]);
+		assert_eq!(
+			pending.len(),
+			2,
+			"canceled and no-longer-visible attempts may start again"
+		);
+		for command in pending {
+			state.command_rejected(command);
+		}
+		while state.reply_previews.evict() {}
+		apply(&mut state, Event::PermissionsChanged);
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Unrequested);
+		let mut source = message(100);
+		source.reply_to = Some(Id(50));
+		state.history(None);
+		let request = state.request;
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![source],
+			},
+		);
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[Id(50)]).as_slice(),
+			[Command::ReplyPreview {
+				message: Id(50),
+				..
+			}]
+		));
+		state.select(Id(2)).unwrap();
+		let mut source = message(200);
+		source.channel = Id(2);
+		source.reply_to = Some(Id(50));
+		let request = state.request;
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(2),
+				request,
+				older: false,
+				messages: vec![source],
+			},
+		);
+		assert!(
+			state
+				.sync_visible_reply_previews(&[Id(50)])
+				.iter()
+				.any(|command| matches!(
+					command,
+					Command::ReplyPreview {
+						channel: Id(2),
+						message: Id(50),
+						..
+					}
+				)),
+			"attempt IDs must not cross channels"
+		);
+	}
+
+	#[test]
 	fn visible_reply_work_is_bounded_and_failures_require_a_deliberate_retry() {
 		use crate::reply_previews::{ResultEvent, Status};
 		let mut state = state();
@@ -1223,15 +1408,15 @@ mod tests {
 			original.content = "p".repeat(4096);
 			let preview = Box::new(model::ReplyPreview::from_message(original).unwrap());
 			assert!(preview.bytes() > 1024);
+			let request = state
+				.sync_visible_reply_previews(&[Id(50)])
+				.into_iter()
+				.find_map(|command| match command {
+					Command::ReplyPreview { request, .. } => Some(request),
+					_ => None,
+				})
+				.unwrap();
 			if path == "fetched" {
-				let request = state
-					.sync_visible_reply_previews(&[Id(50)])
-					.into_iter()
-					.find_map(|command| match command {
-						Command::ReplyPreview { request, .. } => Some(request),
-						_ => None,
-					})
-					.unwrap();
 				apply(
 					&mut state,
 					Event::ReplyPreview(ResultEvent {
@@ -1278,6 +1463,77 @@ mod tests {
 				state.reply_original(Id(50)).is_none(),
 				"the over-budget {path} preview must be evicted"
 			);
+			assert_eq!(state.freshness, Freshness::Fresh);
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				crate::reply_previews::Status::Failed,
+				"{path}"
+			);
+			for _ in 0..5 {
+				assert!(
+					!state
+						.sync_visible_reply_previews(&[Id(50)])
+						.iter()
+						.any(|command| matches!(command, Command::ReplyPreview { .. })),
+					"memory pressure must not trigger {path} reads on repaint"
+				);
+			}
+			let retry = state.retry_reply_preview(Id(50));
+			assert!(retry.iter().any(|command| matches!(
+				command,
+				Command::ReplyPreview {
+					message: Id(50),
+					..
+				}
+			)));
+			for command in retry {
+				state.command_rejected(command);
+			}
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				crate::reply_previews::Status::Failed
+			);
+			assert!(state.sync_visible_reply_previews(&[Id(50)]).is_empty());
+		}
+	}
+
+	#[test]
+	fn visible_reply_metadata_and_direct_queue_failures_obey_the_shared_budget() {
+		{
+			let mut state = byte_limited_reply_state();
+			let content = state.timeline.get(Id(40000)).unwrap().content.clone();
+			let visible: Vec<_> = (1..=crate::reply_previews::MAX_VISIBLE_REPLIES as u64)
+				.map(Id)
+				.collect();
+			state.sync_visible_reply_previews(&visible);
+			assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+			assert_eq!(
+				state.resident_window_count(),
+				2,
+				"new visible metadata is charged outside Event::apply"
+			);
+			assert_eq!(state.timeline.get(Id(40000)).unwrap().content, content);
+		}
+		{
+			let mut state = byte_limited_reply_state();
+			let request = state
+				.sync_visible_reply_previews(&[Id(50)])
+				.into_iter()
+				.find(|command| matches!(command, Command::ReplyPreview { .. }))
+				.unwrap();
+			let mut source = state.timeline.get(Id(40001)).unwrap().clone();
+			let remaining = SHARED_HISTORY_BYTES - state.resident_history_bytes() - 64;
+			source.content = "x".repeat(source.content.capacity() + remaining);
+			assert!(Timeline::valid_message(&source));
+			apply(&mut state, Event::Message(source));
+			assert_eq!(state.resident_history_bytes(), SHARED_HISTORY_BYTES - 64);
+			state.command_rejected(request);
+			assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				crate::reply_previews::Status::Failed
+			);
+			assert!(state.sync_visible_reply_previews(&[Id(50)]).is_empty());
 			assert_eq!(state.freshness, Freshness::Fresh);
 		}
 	}

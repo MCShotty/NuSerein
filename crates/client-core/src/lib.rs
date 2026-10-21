@@ -2790,6 +2790,8 @@ impl State {
 				request: *request,
 				result: Err(auth::Failure::ProtocolAt("Preview queue is full; retry")),
 			});
+			// This result bypasses apply(), but its negative cache entry still allocates.
+			self.enforce_resident_budget();
 			return;
 		}
 		if let Command::History {
