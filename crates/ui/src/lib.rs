@@ -1429,6 +1429,7 @@ impl MessagingUi {
 							.add_enabled_ui(
 								self.settings.open
 									|| self.server_settings.is_open()
+									|| state.can_return_from_reply()
 									|| state.trail.can_go_back(),
 								|ui| icons::button(ui, icons::Icon::ArrowLeft, 28.0, "Back"),
 							)
@@ -4259,6 +4260,7 @@ impl MessagingUi {
 	}
 
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
+		self.timeline.visible_replies.clear();
 		self.avatars.cosmetics = self.cosmetics;
 		name_styles::set_enabled(self.cosmetics.name_styles);
 		let cosmetics_refresh = state.set_profile_cosmetics(self.cosmetics);
@@ -5328,11 +5330,14 @@ impl MessagingUi {
 							ctx.request_repaint();
 						}
 						if let Some(target) = self.timeline.reply_target.take() {
+							crate::scroll::reset_wheel(&ctx);
+							self.timeline.remember_position(state);
 							if let Some(command) = state.open_reply_target(target) {
 								commands.push(command);
 							}
 							ctx.request_repaint();
 						} else if std::mem::take(&mut self.timeline.unread_jump) {
+							crate::scroll::reset_wheel(&ctx);
 							if let Some(command) = state.open_unread() {
 								commands.push(command);
 							}
@@ -5358,6 +5363,10 @@ impl MessagingUi {
 						}
 					});
 			});
+		if let Some(target) = self.timeline.reply_retry.take() {
+			commands.extend(state.retry_reply_preview(target));
+		}
+		commands.extend(state.sync_visible_reply_previews(&self.timeline.visible_replies));
 		if state
 			.archives
 			.as_ref()
@@ -5994,7 +6003,7 @@ mod composer_tests {
 			.open_notification(&mut state, direct, Some(target))
 			.unwrap();
 		assert!(
-			matches!(command, Command::History { channel, before: Some(before), .. } if channel == direct && before == Id(target.0 + 1))
+			matches!(command, Command::HistoryAround { channel, target: requested, .. } if channel == direct && requested == target)
 		);
 		assert_eq!(state.selected, Some(direct));
 		assert_eq!(view.guild, None);
@@ -7460,9 +7469,30 @@ mod composer_tests {
 			commands.extend(frame(&mut view, &mut state, vec![]).1);
 			assert_eq!(state.selected, Some(Id(11)), "source: {source}");
 			assert_eq!(view.guild, Some(Id(100)));
-			assert_eq!(state.search_target, target_message);
+			assert!(
+				state.search_target.is_none(),
+				"Remote targets are published only after a validated page succeeds"
+			);
 			assert_eq!(state.drafts, drafts);
-			assert_eq!(commands.iter().filter(|command| matches!(command, Command::History { channel: Id(11), before, .. } if *before == target_message.map(|id| Id(id.0 + 1)))).count(), 1);
+			assert_eq!(
+				commands
+					.iter()
+					.filter(|command| match command {
+						Command::HistoryAround {
+							channel: Id(11),
+							target,
+							..
+						} => Some(*target) == target_message,
+						Command::History {
+							channel: Id(11),
+							before: None,
+							..
+						} => target_message.is_none(),
+						_ => false,
+					})
+					.count(),
+				1
+			);
 			assert!(!commands.iter().any(|command| matches!(
 				command,
 				Command::Send { .. } | Command::Edit { .. } | Command::Delete { .. }
@@ -8387,7 +8417,7 @@ mod composer_tests {
 	}
 
 	#[test]
-	fn reply_controls_are_inert_when_deleted_loading_stale_or_unavailable() {
+	fn reply_controls_are_inert_when_deleted_stale_or_unavailable() {
 		fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
 			match shape {
 				egui::Shape::Text(text) => labels.push((
@@ -8402,7 +8432,7 @@ mod composer_tests {
 				_ => {}
 			}
 		}
-		for blocked in 0..5 {
+		for blocked in [0, 1, 3, 4] {
 			let ctx = egui::Context::default();
 			let mut view = MessagingUi::default();
 			let mut state = edit_state();
@@ -8612,6 +8642,7 @@ mod composer_tests {
 					text == "@Alex  Spoiler"
 				} else {
 					text == "Earlier message \u{b7} View original"
+						|| text == "Loading earlier message…"
 				}
 			};
 			let (labels, _) = frame(&mut view, &mut state, vec![]);
@@ -8684,8 +8715,8 @@ mod composer_tests {
 			assert_eq!(state.reply_target(), Some(Id(19)));
 			assert_eq!(state.drafts, draft);
 			assert!(view.draft_changes.is_empty());
-			assert_eq!(state.search_target, Some(Id(19)));
 			if loaded {
+				assert_eq!(state.search_target, Some(Id(19)));
 				assert_eq!(state.request, request);
 				assert!(
 					!commands
@@ -8697,14 +8728,18 @@ mod composer_tests {
 				}
 				assert!(state.search_target.is_none());
 			} else {
+				assert!(
+					state.search_target.is_none(),
+					"A pending remote jump must not change the visible window"
+				);
 				assert_eq!(
 					commands
 						.iter()
 						.filter(|command| matches!(
 							command,
-							Command::History {
+							Command::HistoryAround {
 								channel: Id(10),
-								before: Some(Id(20)),
+								target: Id(19),
 								..
 							}
 						))
@@ -8712,7 +8747,11 @@ mod composer_tests {
 					1
 				);
 				assert!(state.history_pending);
-				assert_eq!(state.freshness, Freshness::Loading);
+				assert_eq!(
+					state.freshness,
+					Freshness::Fresh,
+					"The source window stays usable during a remote jump"
+				);
 				for _ in 0..3 {
 					let (_, commands) = frame(&mut view, &mut state, vec![]);
 					assert!(

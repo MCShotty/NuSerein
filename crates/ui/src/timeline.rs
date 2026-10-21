@@ -63,6 +63,8 @@ pub struct TimelineView {
 	pub(super) channel_reference_load: Option<Id>,
 	pub(super) pending_channel_reference: Option<Id>,
 	pub(super) reply_target: Option<Id>,
+	pub(super) reply_retry: Option<Id>,
+	pub(super) visible_replies: Vec<Id>,
 	pending_reveal: Option<TargetReveal>,
 	reveal_scroll: Option<RevealScroll>,
 	/// Animated return to the live edge: offset it started from and elapsed seconds.
@@ -1080,7 +1082,7 @@ fn row_key(
 		.hash(&mut key);
 	message
 		.reply_to
-		.and_then(|reply| state.timeline.get(reply))
+		.and_then(|reply| state.reply_original(reply))
 		.and_then(|original| state.user_content_restriction(original.author.id))
 		.hash(&mut key);
 	grouped(previous, message, boundary).hash(&mut key);
@@ -2163,11 +2165,38 @@ impl TimelineView {
 	pub(super) fn request_reply_target(&mut self, id: Id) {
 		self.present_scroll = None;
 		self.reply_target = Some(id);
-		self.pending_reveal = Some(if self.following && self.at_current_latest {
-			TargetReveal::StayIfVisible
-		} else {
-			TargetReveal::Center
-		});
+		self.pending_reveal = Some(
+			if self.following
+				&& self.at_current_latest
+				&& self.rows.iter().any(|(loaded, _)| *loaded == id)
+			{
+				TargetReveal::StayIfVisible
+			} else {
+				TargetReveal::Center
+			},
+		);
+	}
+	pub(super) fn remember_position(&self, state: &mut State) {
+		if let Some(channel) = self
+			.channel
+			.filter(|channel| Some(*channel) == state.selected)
+		{
+			state.remember_reading(
+				channel,
+				client_core::ReadingCursor {
+					message: if self.following {
+						None
+					} else {
+						self.anchor.map(|(id, _)| id)
+					},
+					inset: if self.following {
+						0.0
+					} else {
+						self.anchor.map_or(0.0, |(_, inset)| inset)
+					},
+				},
+			);
+		}
 	}
 	#[cfg(test)]
 	pub fn show(
@@ -2209,6 +2238,7 @@ impl TimelineView {
 		session: &mut crate::scroll::Session,
 	) {
 		let width = ui.available_width();
+		self.visible_replies.clear();
 		let channel_changed = self.channel != state.selected;
 		if channel_changed {
 			if let Some(previous) = self.channel {
@@ -2697,6 +2727,14 @@ impl TimelineView {
 					state.status =
 						"Message was not returned; it may have been removed or become unavailable";
 				}
+			} else if state.restore_scroll
+				&& state
+					.selected
+					.and_then(|channel| state.reading(channel))
+					.is_some_and(|cursor| cursor.message.is_none())
+			{
+				state.restore_scroll = false;
+				self.follow_latest(state);
 			} else {
 				state.restore_scroll = false;
 			}
@@ -2967,6 +3005,11 @@ impl TimelineView {
 				let Some(message) = display_message(state, id) else {
 					continue;
 				};
+				if let Some(target) = message.reply_to.filter(|_| !message.reply_deleted && message.kind != 46)
+					&& !self.visible_replies.contains(&target)
+				{
+					self.visible_replies.push(target);
+				}
 				if !message.author.webhook
 					&& self.visible_authors.len() < client_core::member_search::LIMIT
 					&& !self.visible_authors.contains(&message.author.id)
@@ -3124,8 +3167,9 @@ impl TimelineView {
 									ui.spacing_mut().interact_size.y = 18.0;
 									ui.spacing_mut().item_spacing.x = 6.0;
 									reference_spine(ui, &colors);
-									// Reuse only loaded content; never fetch a thread while painting.
-									if message.reply_deleted || state.timeline.is_deleted(reply) {
+									// Rendering reads bounded previews. The host schedules visible lookups
+									// after layout, without inserting their originals into this window.
+									if message.reply_deleted || state.reply_preview_status(reply) == client_core::reply_previews::Status::Deleted {
 										let deleted = ui.add(
 											egui::Label::new(
 												RichText::new(crate::i18n::translate(
@@ -3139,7 +3183,7 @@ impl TimelineView {
 										);
 										surface.keep(&deleted);
 									} else if let Some(restriction) =
-										state.timeline.get(reply).and_then(|original| {
+										state.reply_original(reply).and_then(|original| {
 											state.user_content_restriction(original.author.id)
 										}) {
 										let response =
@@ -3160,7 +3204,7 @@ impl TimelineView {
 													let mut preview_emojis = Vec::new();
 													let mut attachment_icon = None;
 													if let Some(original) =
-														state.timeline.get(reply)
+														state.reply_original(reply)
 													{
 														let reply_avatar = avatars.show(
 															ui,
@@ -3265,7 +3309,13 @@ impl TimelineView {
 														}
 													} else {
 														preview.append(
-															"Earlier message · View original",
+															&crate::i18n::translate(match state.reply_preview_status(reply) {
+																client_core::reply_previews::Status::Loading => "reply-preview-loading",
+																client_core::reply_previews::Status::Failed => "reply-preview-failed",
+																client_core::reply_previews::Status::Forbidden => "reply-preview-forbidden",
+																client_core::reply_previews::Status::Unavailable => "reply-preview-unavailable",
+																_ => "reply-preview-unrequested",
+															}),
 															0.0,
 															egui::TextFormat {
 																font_id: egui::FontId::proportional(
@@ -3282,7 +3332,14 @@ impl TimelineView {
 													);
 													// Keep room for the trailing attachment glyph when truncating.
 													let icon_size = 16.0;
+													let retry_label = crate::i18n::translate("reply-preview-retry");
+													let failed = state.reply_preview_status(reply) == client_core::reply_previews::Status::Failed;
+													let retry_width = if failed {
+														ui.painter().layout_no_wrap(retry_label.clone(), egui::TextStyle::Button.resolve(ui.style()), colors.muted).size().x
+															+ ui.spacing().button_padding.x * 2.0 + ui.spacing().item_spacing.x
+													} else { 0.0 };
 													let label_width = ui.available_width()
+														- retry_width
 														- attachment_icon.map_or(0.0, |_| {
 															icon_size + ui.spacing().item_spacing.x
 														});
@@ -3344,6 +3401,11 @@ impl TimelineView {
 															),
 														);
 													surface.keep(&reply_preview);
+													if failed {
+														let retry = ui.small_button(retry_label);
+														if retry.clicked() { self.reply_retry = Some(reply); }
+														surface.keep(&retry);
+													}
 													if reply_preview.clicked() {
 														self.request_reply_target(reply);
 													}
@@ -5638,6 +5700,141 @@ mod tests {
 			state.timeline.insert(message, false, false).unwrap();
 		}
 		state
+	}
+
+	#[test]
+	fn embedded_old_reply_renders_without_inserting_the_original_into_history() {
+		let mut state = loading_unread_channel(false);
+		state.freshness = model::Freshness::Fresh;
+		state.history_pending = false;
+		let mut original = text_message(9);
+		original.content = "An original outside the loaded history window".into();
+		let mut reply = text_message(20);
+		reply.kind = 19;
+		reply.reply_to = Some(original.id);
+		reply.reply_preview = Some(Box::new(
+			model::ReplyPreview::from_message(original).unwrap(),
+		));
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Message(reply),
+		});
+		let ctx = egui::Context::default();
+		let mut view = TimelineView::default();
+		let mut labels = Vec::new();
+		for _ in 0..5 {
+			labels = banner_frame(&ctx, &mut view, &mut state, vec![], false);
+		}
+		assert!(
+			labels
+				.iter()
+				.any(|(label, _)| label.contains("An original outside the loaded history window")),
+			"{labels:?}"
+		);
+		assert!(state.timeline.get(Id(9)).is_none());
+		assert_eq!(view.visible_replies, vec![Id(9)]);
+		assert!(
+			state
+				.sync_visible_reply_previews(&view.visible_replies)
+				.is_empty()
+		);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Delete {
+				channel: Id(20),
+				id: Id(9),
+			},
+		});
+		let labels = banner_frame(&ctx, &mut view, &mut state, vec![], false);
+		assert!(
+			labels
+				.iter()
+				.any(|(label, _)| label.contains("Message deleted")),
+			"{labels:?}"
+		);
+		assert!(
+			!labels
+				.iter()
+				.any(|(label, _)| label.contains("An original outside"))
+		);
+	}
+
+	#[test]
+	fn missing_reply_shows_network_failure_and_a_working_retry_in_a_narrow_timeline() {
+		let mut state = loading_unread_channel(true);
+		state.freshness = model::Freshness::Fresh;
+		state.history_pending = false;
+		let ctx = egui::Context::default();
+		let mut view = TimelineView::default();
+		for _ in 0..5 {
+			banner_frame_bounds_width(&ctx, &mut view, &mut state, vec![], false, false, 360.0);
+		}
+		let requests = state.sync_visible_reply_previews(&view.visible_replies);
+		let request = requests
+			.iter()
+			.find_map(|command| {
+				if let client_core::Command::ReplyPreview { request, .. } = command {
+					Some(*request)
+				} else {
+					None
+				}
+			})
+			.unwrap();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ReplyPreview(client_core::reply_previews::ResultEvent {
+				channel: Id(20),
+				message: Id(9),
+				request,
+				result: Err(client_core::auth::Failure::Network),
+			}),
+		});
+		let mut labels = Vec::new();
+		for _ in 0..3 {
+			labels =
+				banner_frame_bounds_width(&ctx, &mut view, &mut state, vec![], false, false, 360.0);
+		}
+		assert!(
+			labels
+				.iter()
+				.any(|(label, _)| label.contains("Could not load preview")),
+			"{labels:?}"
+		);
+		let retry = labels.iter().find(|(label, _)| label == "Retry").unwrap().1;
+		assert!(
+			retry.right() <= 360.0,
+			"Retry must fit inside the viewport: {retry:?}"
+		);
+		for pressed in [true, false] {
+			banner_frame_bounds_width(
+				&ctx,
+				&mut view,
+				&mut state,
+				vec![
+					egui::Event::PointerMoved(retry.center()),
+					egui::Event::PointerButton {
+						pos: retry.center(),
+						button: egui::PointerButton::Primary,
+						pressed,
+						modifiers: egui::Modifiers::NONE,
+					},
+				],
+				false,
+				false,
+				360.0,
+			);
+		}
+		assert_eq!(view.reply_retry.take(), Some(Id(9)));
+		assert!(
+			state
+				.retry_reply_preview(Id(9))
+				.iter()
+				.any(|command| matches!(
+					command,
+					client_core::Command::ReplyPreview { message: Id(9), .. }
+				))
+		);
+		assert!(state.timeline.get(Id(9)).is_none());
 	}
 
 	#[test]
