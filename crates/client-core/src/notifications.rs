@@ -668,7 +668,11 @@ impl State {
 					.iter()
 					.map(|notification| notification.channel),
 			)
-			.filter(|channel| !self.can_view(*channel))
+			// READY includes read cursors for unjoined posts whose metadata arrives
+			// later through the bounded forum loader. Unknown is not a known revoke:
+			// retain those inert counts until metadata validates access or an explicit
+			// removal calls ReadState::forget. They remain hidden by mention_count.
+			.filter(|channel| self.channel(*channel).is_some() && !self.can_view(*channel))
 			.collect();
 		for channel in revoked {
 			self.read_state.activity.revoke(channel);
@@ -1094,6 +1098,133 @@ mod tests {
 	use super::*;
 
 	use model::{Channel, Guild, Patch, User, permissions as p};
+
+	#[test]
+	fn unknown_post_counts_survive_unrelated_permissions_until_bounded_metadata_arrives() {
+		let mut state = notification_state();
+		state.channels[0].kind = 15;
+		state.invalidate_navigation();
+		let mut everyone = state.guild_roles(Id(1)).unwrap()[0].clone();
+		everyone.bits |= p::READ_MESSAGE_HISTORY;
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::Permissions(crate::permissions::Event::Role {
+				guild: Id(1),
+				role: everyone,
+			}),
+		});
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::ReadState(crate::read_state::Event::Snapshot {
+				entries: Some(vec![(Id(30), Some(Id(30)), 3), (Id(31), Some(Id(31)), 2)]),
+				version: None,
+				partial: true,
+			}),
+		});
+		assert!(state.channel(Id(30)).is_none());
+		assert!(!state.can_view(Id(30)));
+		assert_eq!(state.mention_count(Id(30)), 0);
+		assert!(
+			state.channel_mention_counts().is_empty(),
+			"unknown metadata cannot reveal a post or its parent"
+		);
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::Permissions(crate::permissions::Event::Channel {
+				channel: Id(21),
+				guild: Some(Id(1)),
+				overwrites: Patch::Value(vec![]),
+			}),
+		});
+		assert_eq!(state.read_state.activity.count(Id(30), true), 3);
+		assert_eq!(
+			state.mention_count(Id(30)),
+			0,
+			"an unrelated permission event does not authorize unknown metadata"
+		);
+		let crate::Command::ForumPosts {
+			parent, request, ..
+		} = state.request_sidebar_forum_posts(Some(Id(1))).unwrap()
+		else {
+			panic!("expected the existing bounded forum metadata request");
+		};
+		let mut post = state.channels[0].clone();
+		post.id = Id(30);
+		post.kind = 11;
+		post.parent_id = Some(parent);
+		post.last_message = Some(Id(32));
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::ForumPosts {
+				parent,
+				request,
+				result: Ok(model::forum::Page {
+					threads: vec![post],
+					more: false,
+					previews: vec![],
+				}),
+			},
+		});
+		assert!(state.can_view(Id(30)));
+		assert_eq!(state.mention_count(Id(30)), 3);
+		assert_eq!(state.channel_mention_counts().get(&parent), Some(&3));
+		assert_eq!(
+			state.mention_count(Id(31)),
+			0,
+			"other unresolved IDs remain hidden"
+		);
+		for id in [Id(30), Id(31)] {
+			state.apply(crate::Envelope {
+				generation: state.generation,
+				event: crate::Event::Unavailable(id),
+			});
+			assert_eq!(
+				state.read_state.activity.count(id, true),
+				0,
+				"explicit removal forgets known and unresolved counts"
+			);
+		}
+		assert!(state.channel_mention_counts().is_empty());
+	}
+
+	#[test]
+	fn known_permission_revocation_discards_mentions_without_resurrecting_on_restore() {
+		let mut state = notification_state();
+		let mut post = state.channels[0].clone();
+		post.id = Id(30);
+		post.kind = 11;
+		post.parent_id = Some(Id(20));
+		state.channels.push(post);
+		state.invalidate_navigation();
+		state.read_state.activity.set_count(Id(20), 2);
+		state.read_state.activity.set_count(Id(30), 3);
+		assert_eq!(state.channel_mention_counts().get(&Id(20)), Some(&5));
+		for overwrites in [
+			vec![p::Overwrite {
+				id: Id(1),
+				kind: 0,
+				allow: 0,
+				deny: p::VIEW_CHANNEL,
+			}],
+			vec![],
+		] {
+			state.apply(crate::Envelope {
+				generation: state.generation,
+				event: crate::Event::Permissions(crate::permissions::Event::Channel {
+					channel: Id(20),
+					guild: Some(Id(1)),
+					overwrites: Patch::Value(overwrites),
+				}),
+			});
+			assert_eq!(state.read_state.activity.count(Id(20), true), 0);
+			assert_eq!(state.read_state.activity.count(Id(30), true), 0);
+			assert!(state.channel_mention_counts().is_empty());
+		}
+		assert!(
+			state.can_view(Id(30)),
+			"permission restoration still restores normal visibility"
+		);
+	}
 
 	#[test]
 	fn mentioned_text_traffic_reuses_rows_but_thread_activity_and_own_ack_refresh() {
