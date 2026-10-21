@@ -732,12 +732,12 @@ fn play_candidate(
 				runtime.clone(),
 				Some(session.startup.clone()),
 			)?;
-			let decoder = fallback::open(
-				source,
-				&session.cancelled,
-				request.adapter,
-				&session.startup,
-			)?;
+			let decoder = fallback::open(source, &session.cancelled, request.adapter, || {
+				session
+					.startup
+					.expired()
+					.then(|| session.startup.timeout_error())
+			})?;
 			// A seek made during conversion takes precedence over automatic resumption.
 			let _ = session.seek.compare_exchange(
 				u64::MAX,

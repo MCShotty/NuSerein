@@ -62,6 +62,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		Box::new(std::io::Cursor::new(bytes)),
 		&AtomicBool::new(false),
 		None,
+		// No playback session: retain this offline probe's existing conversion deadline.
+		|| None,
 	)?;
 	first_video(&mut decoder)?;
 	let mut mov = fallback::open(
@@ -70,6 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		))),
 		&AtomicBool::new(false),
 		None,
+		|| None,
 	)?;
 	first_video(&mut mov)?;
 	assert!(fallback::eligible(platform::video::TOO_LARGE));
