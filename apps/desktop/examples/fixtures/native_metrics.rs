@@ -37,8 +37,13 @@ impl NativeMetrics {
 				.expect("write offline preview measurements");
 			self.written = true;
 		} else {
-			// Ensure the report is flushed even for an otherwise idle preview.
-			ctx.request_repaint_after(Duration::from_secs_f64(8.0 - elapsed));
+			// Opt-in active sampling only; process-idle measurements omit --metrics.
+			let delay = if elapsed < 3.0 {
+				3.0 - elapsed
+			} else {
+				0.1_f64.min(8.0 - elapsed)
+			};
+			ctx.request_repaint_after(Duration::from_secs_f64(delay));
 		}
 	}
 }
