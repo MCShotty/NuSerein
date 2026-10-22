@@ -5762,7 +5762,7 @@ mod tests {
 		assert!(
 			labels
 				.iter()
-				.any(|(label, _)| label == &crate::i18n::translate("message-menu-copy")),
+				.any(|(label, _)| label == &crate::i18n::translate("menu-copy-text")),
 			"Control-click must open the message menu: {labels:?}"
 		);
 		assert!(!view.reply_started && state.reply.is_none());
@@ -8460,7 +8460,7 @@ mod tests {
 						egui::RawInput {
 							screen_rect: Some(egui::Rect::from_min_size(
 								egui::Pos2::ZERO,
-								egui::vec2(width, 600.0),
+								egui::vec2(width, 1100.0),
 							)),
 							events,
 							..Default::default()
@@ -8537,16 +8537,16 @@ mod tests {
 				state.reply.take(),
 				Some(client_core::Reply::to(Id(60_000 << 22)))
 			);
-			// Both entry points share the same menu, including on selectable text,
-			// row whitespace, and Shift+right-click (which must not quick-delete).
+			// Shared actions keep their order on selectable text, row whitespace and
+			// Shift+right-click. Extra Serein actions belong only to toolbar overflow.
 			let menu_labels = [
-				"Copy message",
+				"Edit Message",
 				"Reply",
-				"Mark read through here",
+				"Copy Text",
+				"Pin Message",
 				"Mark Unread",
-				"Pin message",
-				"Edit message",
-				"Delete message\u{2026}",
+				"Mark read through here",
+				"Delete Message",
 			];
 			for (button, point, modifiers) in [
 				(
@@ -8590,7 +8590,11 @@ mod tests {
 							.contains(&label.as_str())
 							.then_some(label.as_str()))
 						.collect::<Vec<_>>(),
-					menu_labels,
+					menu_labels
+						.into_iter()
+						.filter(|label| *label != "Mark read through here"
+							|| button == egui::PointerButton::Primary)
+						.collect::<Vec<_>>(),
 				);
 				let reply = labels
 					.iter()
@@ -8924,7 +8928,7 @@ mod tests {
 		);
 		render(&mut view, &mut state, vec![]);
 		let labels = render(&mut view, &mut state, vec![]);
-		for menu in ["Copy message", "Reply", "Pin message"] {
+		for menu in ["Copy Text", "Reply", "Pin Message"] {
 			assert!(
 				!labels.iter().any(|(label, _)| label == menu),
 				"Reaction right click also opened the message menu: {labels:?}"

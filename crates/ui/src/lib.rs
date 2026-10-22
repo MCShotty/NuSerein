@@ -8988,7 +8988,7 @@ mod composer_tests {
 				let mut activated = false;
 				for _ in 0..80 {
 					let labels = frame(&mut view, &mut state, vec![edit_key(egui::Key::Tab)]);
-					if labels.iter().any(|(text, _)| text == "Edit message") {
+					if labels.iter().any(|(text, _)| text == "Edit Message") {
 						frame(&mut view, &mut state, vec![edit_key(egui::Key::Enter)]);
 						activated = true;
 						break;

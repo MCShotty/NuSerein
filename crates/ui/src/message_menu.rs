@@ -704,7 +704,7 @@ pub(crate) fn submenu<R>(
 			glyph(key, icon, colors.text),
 			design::medium(ui, crate::i18n::translate_if_key(key), 14.0).color(colors.text),
 		),
-		add,
+		|ui| content(ui, add),
 	)
 }
 
