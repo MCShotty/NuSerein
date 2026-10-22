@@ -4160,10 +4160,11 @@ impl State {
 			}
 			Event::Message(mut m) => {
 				self.ingest_reply_preview(&mut m);
-				if self.timeline.get(m.id).is_some_and(|old| {
-					old.edited_at
-						.is_none_or(|at| m.edited_at.is_some_and(|new| new >= at))
-				}) {
+				if self.message_actions.edit_pending(m.channel, m.id)
+					&& self.timeline.get(m.id).is_some_and(|old| {
+						old.edited_at
+							.is_none_or(|at| m.edited_at.is_some_and(|new| new >= at))
+					}) {
 					self.message_actions.observe_content(m.channel, m.id);
 				}
 				self.typing_message(&m);
@@ -4215,6 +4216,7 @@ impl State {
 			}
 			Event::Patch(mut p) => {
 				if !matches!(p.content, Patch::Absent)
+					&& self.message_actions.edit_pending(p.channel, p.id)
 					&& self.timeline.get(p.id).is_some_and(
 						|old| !matches!(p.edited, Patch::Value(at) if old.edited_at.is_some_and(|old| at < old)),
 					) {
