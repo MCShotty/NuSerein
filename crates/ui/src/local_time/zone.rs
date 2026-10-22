@@ -2,7 +2,7 @@
 //! Native discovery runs in the host's blocking worker; only begin_frame publishes its result.
 use jiff::tz::{TimeZone, TimeZoneDatabase};
 use model::TimeZonePreference;
-use std::sync::{Mutex, MutexGuard, OnceLock, atomic::Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 struct Snapshot {
 	zone: TimeZone,
@@ -136,7 +136,7 @@ pub fn begin_frame() -> Option<TimeZonePreference> {
 		recovery = (state.desired != result.preference).then(|| result.preference.clone());
 		state.desired = result.preference.clone();
 		if state.active.zone != result.zone || state.active.preference != result.preference {
-			super::FORMAT_REVISION.fetch_add(1, Ordering::Relaxed);
+			super::invalidate_format();
 		}
 		state.active = result;
 	}
@@ -145,7 +145,7 @@ pub fn begin_frame() -> Option<TimeZonePreference> {
 		let local = convert(&state.active.zone, utc);
 		#[cfg(not(test))]
 		if frame.borrow().local.date() != local.date() {
-			super::FORMAT_REVISION.fetch_add(1, Ordering::Relaxed);
+			super::invalidate_format();
 		}
 		*frame.borrow_mut() = FrameSnapshot {
 			zone: state.active.zone.clone(),
