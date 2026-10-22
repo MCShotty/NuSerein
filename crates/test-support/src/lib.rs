@@ -3,6 +3,52 @@ use client_core::{Envelope, Event, State};
 use model::*;
 mod community;
 pub use community::community_state;
+
+/// Entirely offline report adapter. It never reaches Discord's reporting service.
+pub fn report_demo(request: client_core::reporting::Request) -> client_core::Event {
+	use model::reporting::{Button, Menu, Node};
+	let result = if request.submission.is_some() {
+		client_core::reporting::Outcome::Sent(Id(12345))
+	} else {
+		client_core::reporting::Outcome::Menu(Box::new(Menu {
+			version: "1.0".into(),
+			variant: "synthetic".into(),
+			language: "en".into(),
+			root: 1,
+			nodes: [
+				(
+					1,
+					Node {
+						header: "What are you reporting?".into(),
+						detail: "Synthetic demonstration. Nothing will be sent to Discord.".into(),
+						children: vec![("Spam".into(), 2), ("Harassment".into(), 2)],
+						elements: vec![],
+						button: Button::None,
+						required: false,
+					},
+				),
+				(
+					2,
+					Node {
+						header: "Review this synthetic report".into(),
+						detail: "Confirm only to exercise the offline adapter.".into(),
+						children: vec![],
+						elements: vec![],
+						button: Button::Submit,
+						required: false,
+					},
+				),
+			]
+			.into_iter()
+			.collect(),
+		}))
+	};
+	client_core::Event::Report(client_core::reporting::Event {
+		target: request.target,
+		request: request.request,
+		result: Ok(result),
+	})
+}
 mod message_links;
 pub use message_links::{load_message_link_page, message_links_demo_state};
 /// Synthetic Tenor-shaped results. Previews under `/synthetic/` are painted locally; no request.

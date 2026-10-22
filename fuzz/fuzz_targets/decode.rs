@@ -53,6 +53,14 @@ fuzz_target!(|data: &[u8]| {
 		let _ = black_box(discord_protocol::soundboard::changed_guild(payload));
 		return;
 	}
+	if selector == 15 {
+		if let Ok(menu) = discord_protocol::reporting::menu(payload) {
+			assert!(menu.valid());
+			assert!(menu.bytes() <= model::reporting::MAX_BYTES);
+			let _ = black_box(menu.validate_values(&[menu.root], &Default::default()));
+		}
+		return;
+	}
 	// These are the same public decode/normalization boundaries used by the API
 	// and Gateway. A decoded message need not pass the separate timeline policy.
 	if selector == 9 {

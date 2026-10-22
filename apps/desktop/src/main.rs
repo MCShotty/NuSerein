@@ -3298,6 +3298,12 @@ impl Desktop {
 	}
 	/// Dispatches one queued command to the demo or live transport.
 	fn command(&mut self, command: Command) {
+		if let Command::Report(request) = &command
+			&& !self.state.report_command_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::Soundboard(request) = &command
 			&& !self.state.soundboard_command_allowed(request)
 		{
@@ -3931,6 +3937,7 @@ impl Desktop {
 				| Command::CancelAutocomplete
 				| Command::CancelMentions
 				| Command::Prefetch(_) => return,
+				Command::Report(request) => test_support::report_demo(*request),
 				command @ (Command::InboxAction { .. } | Command::Mentions { .. }) => {
 					self.inbox_demo.execute(&self.state, command)
 				}

@@ -139,6 +139,7 @@ impl eframe::App for Preview {
 					change,
 				),
 
+				client_core::Command::Report(request) => test_support::report_demo(*request),
 				command @ (client_core::Command::Mentions { .. }
 				| client_core::Command::InboxAction { .. }) => self.inbox_demo.execute(&self.state, command),
 				client_core::Command::ApplicationCommands {

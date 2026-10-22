@@ -37,6 +37,7 @@ mod reactions;
 pub mod read_state;
 pub mod ready;
 pub mod relationships;
+pub mod reporting;
 pub mod rpc;
 pub mod search;
 pub mod server_admin;

@@ -11,6 +11,7 @@ pub mod inbox;
 pub mod polls;
 pub mod public_upload;
 pub mod registered_games;
+pub mod reporting;
 pub use image_sharing::ImageShare;
 pub mod archives;
 mod channel_preferences;

@@ -28,6 +28,7 @@ mod inbox;
 pub mod proxy;
 #[cfg(test)]
 mod proxy_tests;
+mod reporting;
 pub mod rpc;
 mod server_actions;
 mod server_admin;
@@ -1000,6 +1001,11 @@ impl DiscordApi {
 	}
 	pub async fn execute(&self, command: Command) -> Event {
 		match command {
+			Command::Report(request) => Event::Report(client_core::reporting::Event {
+				target: request.target,
+				request: request.request,
+				result: self.report(&request).await,
+			}),
 			Command::CancelAutocomplete => Event::Autocomplete(
 				client_core::application_commands::CompletionEvent::Submitted {
 					nonce: String::new(),

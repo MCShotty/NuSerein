@@ -13,6 +13,7 @@ pub mod guild_creation;
 pub mod guild_folders;
 pub mod inbox;
 pub mod permissions;
+pub mod reporting;
 pub mod soundboard;
 pub mod stickers;
 pub use permissions::ChannelAccess;
@@ -102,6 +103,7 @@ pub enum Command {
 		request: u64,
 		action: inbox::Action,
 	},
+	Report(Box<reporting::Request>),
 	Polls(polls::Request),
 	Soundboard(soundboard::Request),
 	StickerPacks,
@@ -625,6 +627,7 @@ pub enum Event {
 		result: Result<inbox::Outcome, auth::Failure>,
 	},
 	InboxInvalidated,
+	Report(reporting::Event),
 	Gifs {
 		request: u64,
 		result: Result<model::GifPage, auth::Failure>,
@@ -850,6 +853,7 @@ pub struct State {
 	pub thread_starter: thread_starter::Starter,
 	pub search: Option<search::SearchView>,
 	pub inbox: inbox::View,
+	pub reporting: reporting::View,
 	pub search_request: u64,
 	pub gifs: gifs::Gifs,
 	/// A pin changed in this channel; the pins view should be reloaded once.
@@ -1096,6 +1100,7 @@ impl Default for State {
 			thread_starter: Default::default(),
 			search: None,
 			inbox: Default::default(),
+			reporting: Default::default(),
 			search_request: 0,
 			gifs: gifs::Gifs::default(),
 			pins_changed: None,
@@ -2190,6 +2195,16 @@ impl State {
 	}
 	/// Reports a command the transport could not accept as a bounded outcome error.
 	pub fn command_rejected(&mut self, command: Command) {
+		if let Command::Report(request) = command {
+			self.apply_report(reporting::Event {
+				target: request.target,
+				request: request.request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Report queue is full; retry explicitly",
+				)),
+			});
+			return;
+		}
 		if matches!(command, Command::CancelReplyPreviews) {
 			// Core retired these request IDs before asking the worker to cancel. A full
 			// queue cannot make their late results current or invalidate this conversation.
@@ -3751,6 +3766,10 @@ impl State {
 			Event::MemberPresence { .. } | Event::DirectPresence(_) => {
 				unreachable!("presence handled before timeline revision")
 			}
+			Event::Report(event) => {
+				self.apply_report(event);
+				Ok(())
+			}
 			Event::InboxInvalidated => {
 				// Gateway echoes can precede or follow REST confirmation. Retain both
 				// its correlation and the visible page; Refresh reconciles other clients.
@@ -4578,6 +4597,7 @@ impl State {
 			}
 		}
 		self.reconcile_member_guide_access();
+		self.sync_reporting();
 		self.enforce_resident_budget();
 	}
 	fn invalidate_members(&mut self) {
@@ -4808,6 +4828,7 @@ impl Event {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				Self::Report(event) => event.result.as_ref().map_or(0, reporting::Outcome::bytes),
 				Self::Interaction(event) => event.bytes(),
 				Self::Autocomplete(event) => event.bytes(),
 				Self::ApplicationCommands { result, .. } => result.as_ref().map_or(0, |commands| {

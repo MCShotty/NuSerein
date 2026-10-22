@@ -1844,6 +1844,147 @@ mod tests {
 	}
 
 	#[test]
+	fn report_navigation_submits_only_explicitly_and_rejects_stale_or_duplicate_results() {
+		use crate::reporting::{Event as ReportEvent, Outcome};
+		use model::reporting::{Button, Menu, Node, Target};
+		let mut state = state();
+		let mut original = message(100);
+		original.author.id = Id(10);
+		apply(&mut state, Event::Message(original));
+		let target = Target {
+			channel: Id(1),
+			message: Id(100),
+		};
+		let Command::Report(read) = state.open_report(target).unwrap() else {
+			panic!()
+		};
+		assert!(state.report_command_allowed(&read));
+		assert!(state.submit_report().is_none());
+		let menu = Menu {
+			version: "1.0".into(),
+			variant: "test".into(),
+			language: "en".into(),
+			root: 1,
+			nodes: [
+				(
+					1,
+					Node {
+						header: "Reason".into(),
+						detail: String::new(),
+						children: vec![("Spam".into(), 2)],
+						elements: vec![],
+						button: Button::None,
+						required: false,
+					},
+				),
+				(
+					2,
+					Node {
+						header: "Confirm".into(),
+						detail: String::new(),
+						children: vec![],
+						elements: vec![],
+						button: Button::Submit,
+						required: false,
+					},
+				),
+			]
+			.into_iter()
+			.collect(),
+		};
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: read.request,
+				result: Ok(Outcome::Menu(Box::new(menu.clone()))),
+			}),
+		);
+		assert!(
+			state.submit_report().is_none(),
+			"opening or choosing a reason never submits"
+		);
+		state.choose_report_node(999);
+		assert_eq!(state.reporting.breadcrumbs, [1]);
+		state.choose_report_node(2);
+		assert_eq!(state.reporting.breadcrumbs, [1, 2]);
+		state.report_back();
+		assert_eq!(state.reporting.breadcrumbs, [1]);
+		state.choose_report_node(2);
+		let Command::Report(write) = state.submit_report().unwrap() else {
+			panic!()
+		};
+		assert!(state.report_command_allowed(&write));
+		assert!(state.submit_report().is_none());
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: write.request,
+				result: Err(Failure::Ambiguous),
+			}),
+		);
+		assert!(
+			state.submit_report().is_none(),
+			"uncertain reports must not be repeated"
+		);
+		state.reporting.close();
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: write.request,
+				result: Ok(Outcome::Sent(Id(99))),
+			}),
+		);
+		assert!(state.reporting.target.is_none() && state.reporting.sent.is_none());
+		let Command::Report(read) = state.open_report(target).unwrap() else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: read.request,
+				result: Ok(Outcome::Menu(Box::new(menu))),
+			}),
+		);
+		state.choose_report_node(2);
+		let Command::Report(write) = state.submit_report().unwrap() else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: write.request,
+				result: Ok(Outcome::Sent(Id(99))),
+			}),
+		);
+		assert_eq!(state.reporting.sent, Some(Id(99)));
+		assert!(state.submit_report().is_none());
+		apply(
+			&mut state,
+			Event::Delete {
+				channel: Id(1),
+				id: Id(100),
+			},
+		);
+		assert!(state.reporting.target.is_none());
+		assert!(state.open_report(target).is_none());
+		let own = message(101);
+		apply(&mut state, Event::Message(own));
+		assert!(
+			state
+				.open_report(Target {
+					channel: Id(1),
+					message: Id(101)
+				})
+				.is_none()
+		);
+	}
+
+	#[test]
 	fn missing_target_never_replaces_current_history_and_new_jump_supersedes_pagination() {
 		let mut state = state();
 		let _ = state.history(Some(Id(100)));
