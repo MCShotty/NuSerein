@@ -3084,6 +3084,7 @@ impl TimelineView {
 			let keyboard_focus = ui
 				.memory(|m| m.focused())
 				.and_then(|id| ui.ctx().read_response(id));
+			let context_key = crate::message_menu::keyboard_requested(ui.ctx());
 			let retained_toolbar = self.toolbar.filter(|(_, rect)| {
 				egui::Popup::is_any_open(ui.ctx())
 					|| keyboard_focus
@@ -4395,11 +4396,19 @@ impl TimelineView {
 					if hovered {
 						self.name_hover = Some(id);
 					}
-					let context_menu = (ui.rect_contains_pointer(rect) || toolbar_hover)
-						&& !other_toolbar_hover
-						&& !reaction_menu && !egui::Popup::is_any_open(ui.ctx())
-						&& (ui.input(|i| i.pointer.secondary_clicked())
-							|| crate::select::open_menu(ui.ctx()));
+					let owner = crate::message_menu::Owner { generation: state.generation, channel: message.channel, message: id };
+					let keyboard_context = !deleted && context_key
+						&& (focus.has_focus()
+							|| crate::message_menu::has_hit(ui.ctx(), owner)
+							|| retained_toolbar.is_some_and(|(active, toolbar)| active == id
+								&& keyboard_focus.as_ref().is_some_and(|r| toolbar.contains_rect(r.rect))));
+					let context_menu = !reaction_menu && !egui::Popup::is_any_open(ui.ctx())
+						&& (keyboard_context || ((ui.rect_contains_pointer(rect) || toolbar_hover)
+							&& !other_toolbar_hover
+							&& (ui.input(|i| i.pointer.secondary_clicked()) || crate::select::open_menu(ui.ctx()))));
+					if keyboard_context && context_menu {
+						ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
+					}
 					if context_menu
 						|| hovered || focus.has_focus()
 						|| keyboard_focus.as_ref().is_some_and(|r| r.id == focus.id)
@@ -4724,17 +4733,19 @@ impl TimelineView {
 								state.generation,
 								id,
 							)));
+							let target = crate::message_menu::target(ui.ctx(), popup.get_id(), owner, context_menu, menu.clicked(), keyboard_context.then(|| keyboard_focus.as_ref().map_or((focus.id, rect.right_bottom()), |r| (r.id, r.rect.right_bottom()))));
 							if context_menu {
 								popup = popup.open_memory(Some(egui::SetOpenCommand::Bool(true)));
 							}
-							if context_menu
+							if let Some((widget, anchor)) = crate::message_menu::anchor(ui.ctx(), popup.get_id(), owner) {
+								popup = popup.anchor_widget(widget).at_position(anchor);
+							} else if context_menu
 								|| (!menu.clicked()
 									&& egui::Popup::position_of_id(toolbar.ctx(), popup.get_id())
 										.is_some())
 							{
 								popup = popup.at_pointer_fixed();
 							}
-							let target = crate::message_menu::target(ui.ctx(), popup.get_id(), crate::message_menu::Owner { generation: state.generation, channel: message.channel, message: id }, context_menu, menu.clicked());
 							popup = popup.frame(crate::message_menu::frame(ui.ctx()));
 							message_actions(
 								popup,
@@ -7143,6 +7154,168 @@ mod tests {
 					.iter()
 					.any(|text| text.contains("Unsupported message"))
 			);
+		}
+	}
+
+	#[test]
+	fn keyboard_message_and_link_menus_follow_focus_instead_of_the_pointer() {
+		let url = "https://example.com/?signed=a%2Fb";
+		for link_focus in [false, true] {
+			let ctx = egui::Context::default();
+			crate::design::apply(&ctx);
+			let mut state = test_support::chat_demo_state();
+			state.timeline.clear();
+			state.read_state.reset();
+			for (id, text) in [(777, url), (778, "https://example.org/other")] {
+				let mut message = test_support::message(id, Id(20));
+				message.author.cosmetics = None;
+				message.author.primary_guild = None;
+				message.content = text.into();
+				state.timeline.insert(message, false, false).unwrap();
+			}
+			let mut view = TimelineView {
+				channel: state.selected,
+				..Default::default()
+			};
+			let key = |key, modifiers| egui::Event::Key {
+				key,
+				physical_key: None,
+				pressed: true,
+				repeat: false,
+				modifiers,
+			};
+			let mut labels = Vec::new();
+			for _ in 0..3 {
+				labels = banner_frame(
+					&ctx,
+					&mut view,
+					&mut state,
+					vec![egui::Event::PointerGone],
+					false,
+				);
+			}
+			let point = labels
+				.iter()
+				.find(|(text, _)| text == url)
+				.unwrap()
+				.1
+				.center();
+			let other = labels
+				.iter()
+				.find(|(text, _)| text == "https://example.org/other")
+				.unwrap()
+				.1
+				.center();
+			let mut found = false;
+			for _ in 0..40 {
+				banner_frame(
+					&ctx,
+					&mut view,
+					&mut state,
+					vec![key(egui::Key::Tab, egui::Modifiers::NONE)],
+					false,
+				);
+				if ctx
+					.memory(|m| m.focused())
+					.and_then(|id| ctx.read_response(id))
+					.is_some_and(|r| {
+						r.rect.contains(point)
+							&& r.rect.width() > 80.0
+							&& r.sense.senses_click() == link_focus
+					}) {
+					found = true;
+					break;
+				}
+			}
+			assert!(
+				found,
+				"keyboard must reach the requested target: link={link_focus}"
+			);
+			banner_frame(
+				&ctx,
+				&mut view,
+				&mut state,
+				vec![egui::Event::PointerMoved(other)],
+				false,
+			);
+			banner_frame(
+				&ctx,
+				&mut view,
+				&mut state,
+				vec![key(egui::Key::F10, egui::Modifiers::SHIFT)],
+				false,
+			);
+			for _ in 0..3 {
+				labels = banner_frame(&ctx, &mut view, &mut state, vec![], false);
+			}
+			assert_eq!(
+				labels
+					.iter()
+					.filter(|(text, _)| text == "Copy Text")
+					.count(),
+				1
+			);
+			assert_eq!(
+				labels.iter().any(|(text, _)| text == "Copy Link"),
+				link_focus
+			);
+			assert!(view.opening.is_none());
+			let popup = egui::Id::unique(("message-menu", state.generation, Id(777)));
+			let owner = crate::message_menu::Owner {
+				generation: state.generation,
+				channel: Id(20),
+				message: Id(777),
+			};
+			let expected = if link_focus {
+				crate::message_menu::Target::Link(url.into())
+			} else {
+				crate::message_menu::Target::Message
+			};
+			assert_eq!(
+				crate::message_menu::target(&ctx, popup, owner, false, false, None),
+				Some(expected)
+			);
+			let anchor = crate::message_menu::anchor(&ctx, popup, owner);
+			assert!(anchor.is_some());
+			let mut replied = false;
+			for _ in 0..24 {
+				banner_frame(
+					&ctx,
+					&mut view,
+					&mut state,
+					vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)],
+					false,
+				);
+				labels = banner_frame(&ctx, &mut view, &mut state, vec![], false);
+				assert_eq!(crate::message_menu::anchor(&ctx, popup, owner), anchor);
+				let reply = labels
+					.iter()
+					.find(|(text, _)| text == "Reply")
+					.unwrap()
+					.1
+					.center();
+				if ctx
+					.memory(|m| m.focused())
+					.and_then(|id| ctx.read_response(id))
+					.is_some_and(|r| r.rect.contains(reply))
+				{
+					banner_frame(
+						&ctx,
+						&mut view,
+						&mut state,
+						vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+						false,
+					);
+					replied = true;
+					break;
+				}
+			}
+			assert!(
+				replied,
+				"arrows and Enter must dispatch Reply from the focused menu"
+			);
+			assert_eq!(state.reply, Some(client_core::Reply::to(Id(777))));
+			assert!(!egui::Popup::is_any_open(&ctx));
 		}
 	}
 

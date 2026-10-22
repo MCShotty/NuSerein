@@ -548,6 +548,7 @@ struct OpenMenu {
 	popup: egui::Id,
 	owner: Owner,
 	target: Option<Target>,
+	anchor: Option<(egui::Id, egui::Pos2)>,
 }
 
 pub(crate) fn set_owner(ctx: &egui::Context, owner: Owner) {
@@ -560,6 +561,7 @@ pub(crate) fn owner(ctx: &egui::Context) -> Option<Owner> {
 
 pub(crate) fn register_hit(response: &egui::Response, target: Target) {
 	if ((response.contains_pointer() && response.ctx.input(|i| i.pointer.secondary_clicked()))
+		|| (response.has_focus() && keyboard_requested(&response.ctx))
 		|| ((response.contains_pointer() || response.has_focus())
 			&& crate::select::open_menu(&response.ctx)))
 		&& let Some(owner) = owner(&response.ctx)
@@ -575,6 +577,32 @@ pub(crate) fn register_hit(response: &egui::Response, target: Target) {
 	}
 }
 
+pub(crate) fn keyboard_requested(ctx: &egui::Context) -> bool {
+	ctx.input(|input| {
+		input.events.iter().any(|event| {
+			matches!(event,
+				egui::Event::Key { key: egui::Key::F10, pressed: true, modifiers, .. }
+					if *modifiers == egui::Modifiers::SHIFT
+			)
+		})
+	})
+}
+
+pub(crate) fn has_hit(ctx: &egui::Context, owner: Owner) -> bool {
+	ctx.data(|data| data.get_temp::<Hit>(egui::Id::unique("message-menu-hit")))
+		.is_some_and(|hit| hit.owner == owner && hit.frame == ctx.cumulative_frame_nr())
+}
+
+pub(crate) fn anchor(
+	ctx: &egui::Context,
+	popup: egui::Id,
+	owner: Owner,
+) -> Option<(egui::Id, egui::Pos2)> {
+	ctx.data(|data| data.get_temp::<OpenMenu>(egui::Id::unique("message-menu-active")))
+		.filter(|open| open.popup == popup && open.owner == owner)
+		.and_then(|open| open.anchor)
+}
+
 /// Remember a context target while its popup is open. Toolbar overflow stays distinct.
 pub(crate) fn target(
 	ctx: &egui::Context,
@@ -582,6 +610,7 @@ pub(crate) fn target(
 	owner: Owner,
 	context: bool,
 	toolbar: bool,
+	anchor: Option<(egui::Id, egui::Pos2)>,
 ) -> Option<Target> {
 	let key = egui::Id::unique("message-menu-active");
 	if context {
@@ -596,6 +625,7 @@ pub(crate) fn target(
 					popup,
 					owner,
 					target: Some(hit),
+					anchor,
 				},
 			)
 		});
@@ -607,6 +637,7 @@ pub(crate) fn target(
 					popup,
 					owner,
 					target: None,
+					anchor: None,
 				},
 			)
 		});
@@ -838,11 +869,18 @@ mod tests {
 			)
 		});
 		assert_eq!(
-			target(&ctx, popup, owner, true, false),
+			target(
+				&ctx,
+				popup,
+				owner,
+				true,
+				false,
+				Some((egui::Id::unique("focused-source"), egui::pos2(50.0, 60.0)))
+			),
 			Some(Target::Link(url.into()))
 		);
 		assert_eq!(
-			target(&ctx, popup, owner, false, false),
+			target(&ctx, popup, owner, false, false, None),
 			Some(Target::Link(url.into()))
 		);
 		assert_eq!(
@@ -854,12 +892,13 @@ mod tests {
 					..owner
 				},
 				false,
-				false
+				false,
+				None
 			),
 			None
 		);
 		assert_eq!(
-			target(&ctx, popup, owner, false, true),
+			target(&ctx, popup, owner, false, true, None),
 			None,
 			"toolbar overflow does not inherit a link"
 		);
@@ -878,7 +917,14 @@ mod tests {
 		};
 		controls.custom_reminder = Some(owner);
 		controls.reminder_text = "2026-12-25 12:00".into();
-		target(&ctx, egui::Id::unique("test-menu"), owner, true, false);
+		target(
+			&ctx,
+			egui::Id::unique("test-menu"),
+			owner,
+			true,
+			false,
+			None,
+		);
 		controls.record(&model::ReactionEmoji {
 			id: None,
 			name: Some("🔥".into()),
