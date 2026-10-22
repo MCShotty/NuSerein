@@ -711,14 +711,14 @@ pub(crate) fn row(
 ) -> egui::Response {
 	let colors = design::palette(ui);
 	let color = if danger { colors.danger } else { colors.text };
-	let mut button = egui::Button::new(())
-		.left_text((
-			glyph(key, icon, color),
-			design::medium(ui, crate::i18n::translate_if_key(key), 14.0).color(color),
-		))
-		.min_size(egui::vec2(ui.available_width(), 36.0))
-		.frame_when_inactive(false)
-		.corner_radius(4);
+	let mut button = egui::Button::new((
+		glyph(key, icon, color),
+		design::medium(ui, crate::i18n::translate_if_key(key), 14.0).color(color),
+		egui::Atom::grow(),
+	))
+	.min_size(egui::vec2(ui.available_width(), 36.0))
+	.frame_when_inactive(false)
+	.corner_radius(4);
 	if matches!(key, "menu-open-link" | "menu-open-media-link") {
 		button = button.right_text(icons::atom(Icon::External, 14.0, color));
 	}
@@ -847,6 +847,92 @@ pub(crate) fn quick_button(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn action_icons_precede_aligned_labels_and_external_arrows_stay_on_the_right() {
+		fn collect(
+			shape: &egui::Shape,
+			text: &mut Vec<(String, egui::Rect)>,
+			images: &mut Vec<egui::Rect>,
+		) {
+			match shape {
+				egui::Shape::Text(value) => text.push((
+					value.galley.job.text.clone(),
+					value.galley.rect.translate(value.pos.to_vec2()),
+				)),
+				egui::Shape::Mesh(mesh) => images.push(mesh.calc_bounds()),
+				egui::Shape::Vec(shapes) => {
+					for shape in shapes {
+						collect(shape, text, images);
+					}
+				}
+				_ => {}
+			}
+		}
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut rows = Vec::new();
+		let mut labels = Vec::new();
+		let mut images = Vec::new();
+		for _ in 0..2 {
+			rows.clear();
+			labels.clear();
+			images.clear();
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(400.0, 400.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					content(ui, |ui| {
+						rows.push(row(ui, "menu-copy-text", Icon::Copy, true, false).rect);
+						row(ui, "menu-bookmark", Icon::Pin, true, false);
+						submenu(ui, "menu-create-reminder", Icon::Calendar, |_ui| {});
+						rows.push(row(ui, "menu-open-link", Icon::Globe, true, false).rect);
+					});
+				},
+			);
+			for shape in &output.shapes {
+				collect(&shape.shape, &mut labels, &mut images);
+			}
+			output.drop_without_applying_deltas();
+		}
+		let texts: Vec<_> = [
+			"Copy Text",
+			"Bookmark Message",
+			"Create Reminder",
+			"Open Link",
+		]
+		.map(|label| labels.iter().find(|(text, _)| text == label).unwrap().1)
+		.into();
+		assert!(
+			texts
+				.iter()
+				.all(|rect| (rect.left() - texts[0].left()).abs() < 1.0),
+			"menu labels must share one column: {texts:?}"
+		);
+		for (row, label) in rows.iter().zip([texts[0], texts[3]]) {
+			let icons: Vec<_> = images
+				.iter()
+				.filter(|rect| (rect.center().y - row.center().y).abs() < 2.0)
+				.collect();
+			assert!(
+				icons.iter().any(|icon| icon.right() < label.left()),
+				"missing leading icon for {label:?}: {icons:?}"
+			);
+			assert!((row.height() - 36.0).abs() < 1.0);
+		}
+		assert!(
+			images
+				.iter()
+				.any(|icon| (icon.center().y - rows[1].center().y).abs() < 2.0
+					&& icon.left() > texts[3].right()),
+			"external arrow must stay after the label"
+		);
+	}
+
 	#[test]
 	fn one_active_target_keeps_signed_links_exact_and_never_crosses_messages() {
 		let ctx = egui::Context::default();
