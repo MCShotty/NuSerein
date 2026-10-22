@@ -7,7 +7,7 @@ pub(crate) use zone::names as timezone_names;
 pub(crate) use zone::pin_timezone;
 pub use zone::{
 	TimezoneRequest, begin_frame, minute_deadline, refresh_system_timezone, set_timezone,
-	take_timezone_request, timezone_label, timezone_status,
+	take_timezone_request, timezone_label, timezone_status, wall_time,
 };
 
 static FORMAT_REVISION: AtomicU64 = AtomicU64::new(1);
@@ -171,7 +171,10 @@ pub fn now() -> time::OffsetDateTime {
 	if let Some(now) = TEST_NOW.get() {
 		return local(now);
 	}
-	local(zone::frame_now())
+	#[cfg(test)]
+	return local(zone::frame_now());
+	#[cfg(not(test))]
+	zone::local_now()
 }
 
 #[cfg(test)]

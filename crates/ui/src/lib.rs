@@ -106,6 +106,8 @@ pub mod dialog;
 mod join_server;
 mod keybinds;
 mod member_guide;
+mod message_menu;
+pub use message_menu::MessageSpeech;
 mod name_styles;
 mod onboarding;
 mod polls;
@@ -245,6 +247,8 @@ struct SubmittedEdit {
 
 #[derive(Default)]
 pub struct MessagingUi {
+	message_speech: Option<message_menu::MessageSpeech>,
+	message_speech_error: Option<&'static str>,
 	poll_creator: polls::Creator,
 	pub language: i18n::Language,
 	forwarding: forwarding::ForwardDialog,
@@ -4262,6 +4266,15 @@ impl MessagingUi {
 	}
 
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
+		message_menu::set_owner(
+			ui.ctx(),
+			message_menu::Owner {
+				generation: state.generation,
+				channel: state.selected.unwrap_or(Id(0)),
+				message: Id(0),
+			},
+		);
+		self.timeline.menu.sync(ui.ctx(), state);
 		self.timeline.visible_replies.clear();
 		self.avatars.cosmetics = self.cosmetics;
 		name_styles::set_enabled(self.cosmetics.name_styles);
@@ -5611,6 +5624,22 @@ impl MessagingUi {
 		if let Some(text) = self.timeline.quick_reaction_used.take() {
 			self.reaction_picker.record(text);
 		}
+		if let Some((message, emoji)) = self.timeline.menu.reaction.take() {
+			self.timeline.reaction = Some((message, Some(emoji)));
+		}
+		if let Some(picker) = self.timeline.menu.picker.take() {
+			self.timeline.reaction_picker = Some(picker);
+		}
+		if let Some(url) = ctx
+			.data_mut(|data| data.remove_temp::<String>(egui::Id::unique("message-menu-open-link")))
+		{
+			self.timeline.opening = Some(url);
+		}
+		if let Some(action) = self.timeline.menu.save.take()
+			&& let Some(command) = state.request_inbox_action(action)
+		{
+			commands.push(command);
+		}
 		if let Some((message, emoji)) = self.timeline.reaction.take() {
 			if let Some(emoji) = emoji {
 				if let Some(command) = state.prepare_reaction(message, emoji) {
@@ -5620,6 +5649,17 @@ impl MessagingUi {
 				state.refresh_reactions(message);
 			}
 		}
+		for command in &commands {
+			if let Command::Reactions(client_core::reactions::Command::Set {
+				emoji,
+				add: true,
+				..
+			}) = command
+			{
+				self.timeline.menu.record(emoji);
+			}
+		}
+		self.sync_message_actions(&ctx, state, &mut commands);
 		self.group_menu
 			.show(&ctx, state, &mut self.avatars, &mut commands);
 		self.group_create.show(&ctx, state, &mut commands);

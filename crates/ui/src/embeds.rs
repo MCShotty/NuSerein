@@ -52,6 +52,10 @@ fn link(
 		egui::Sense::hover()
 	}));
 	if let Some(target) = target {
+		crate::message_menu::register_hit(
+			&response,
+			crate::message_menu::Target::Link(target.clone()),
+		);
 		response
 			.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, ui.is_enabled(), label));
 		if response
@@ -824,6 +828,14 @@ pub fn show(
 	card_surface: crate::design::MessageCardSurface,
 	hide_media_links: bool,
 ) -> Option<Gif> {
+	crate::message_menu::set_owner(
+		ui.ctx(),
+		crate::message_menu::Owner {
+			generation: state.generation,
+			channel: message.channel,
+			message: message.id,
+		},
+	);
 	if message.embeds_suppressed {
 		return None;
 	}
@@ -1786,11 +1798,7 @@ mod tests {
 					.drop_without_applying_deltas();
 				}
 				let output = frame(vec![]);
-				let label = if copy {
-					"Copy image"
-				} else {
-					"Save image as…"
-				};
+				let label = if copy { "Copy Image" } else { "Save Image" };
 				let target = output
 					.shapes
 					.iter()

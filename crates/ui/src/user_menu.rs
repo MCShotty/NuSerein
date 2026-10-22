@@ -156,55 +156,60 @@ pub(super) fn application_menu(
 	if !state.application_target_known(channel, kind, target) {
 		return;
 	}
-	ui.menu_button(crate::i18n::translate("application-menu-title"), |ui| {
-		if state.application_commands.loading {
-			ui.spinner();
-		}
-		if let Some(error) = state.application_commands.error {
-			ui.weak(error);
-		}
-		let mut found = false;
-		if state.application_commands_cover(channel)
-			&& !state.application_commands.loading
-			&& state.application_commands.error.is_none()
-		{
-			for command in state
-				.application_commands
-				.commands
-				.iter()
-				.filter(|command| {
-					command.kind == kind && state.can_use_application_command(channel, command)
-				})
-				.take(64)
+	crate::message_menu::submenu(
+		ui,
+		"application-menu-title",
+		crate::icons::Icon::Activities,
+		|ui| {
+			if state.application_commands.loading {
+				ui.spinner();
+			}
+			if let Some(error) = state.application_commands.error {
+				ui.weak(error);
+			}
+			let mut found = false;
+			if state.application_commands_cover(channel)
+				&& !state.application_commands.loading
+				&& state.application_commands.error.is_none()
 			{
-				found = true;
-				if ui
-					.button(format!("{} · {}", command.application_name, command.name))
-					.clicked()
+				for command in state
+					.application_commands
+					.commands
+					.iter()
+					.filter(|command| {
+						command.kind == kind && state.can_use_application_command(channel, command)
+					})
+					.take(64)
 				{
-					*action = Some(Action::ApplicationCommand {
-						command: command.id,
-						target,
-						kind,
-					});
-					ui.close();
+					found = true;
+					if ui
+						.button(format!("{} · {}", command.application_name, command.name))
+						.clicked()
+					{
+						*action = Some(Action::ApplicationCommand {
+							command: command.id,
+							target,
+							kind,
+						});
+						ui.close();
+					}
+				}
+				if !found {
+					ui.weak(crate::i18n::translate("application-menu-empty"));
 				}
 			}
-			if !found {
-				ui.weak(crate::i18n::translate("application-menu-empty"));
+			if ui
+				.add_enabled(
+					!state.application_commands.loading,
+					egui::Button::new(crate::i18n::translate("application-menu-refresh")),
+				)
+				.clicked()
+			{
+				*action = Some(Action::RefreshCommands);
+				ui.close();
 			}
-		}
-		if ui
-			.add_enabled(
-				!state.application_commands.loading,
-				egui::Button::new(crate::i18n::translate("application-menu-refresh")),
-			)
-			.clicked()
-		{
-			*action = Some(Action::RefreshCommands);
-			ui.close();
-		}
-	});
+		},
+	);
 }
 
 const VOICE_AVAILABLE: &str = "user-menu-voice-available";

@@ -4,6 +4,38 @@ use crate::{MessagingUi, design, i18n::Language, icons};
 use client_core::State;
 use egui::RichText;
 
+#[cfg(test)]
+mod clock_tests {
+	#[test]
+	fn settled_language_page_wakes_at_the_next_minute_and_suspends_its_timer_when_minimized() {
+		let ctx = egui::Context::default();
+		let _zone = crate::local_time::pin_timezone("UTC");
+		let _now =
+			crate::local_time::pin_now(time::OffsetDateTime::from_unix_timestamp(30).unwrap());
+		let mut app = crate::MessagingUi::default();
+		let mut frame = |minimized| {
+			let mut input = egui::RawInput::default();
+			input
+				.viewports
+				.get_mut(&egui::ViewportId::ROOT)
+				.unwrap()
+				.minimized = Some(minimized);
+			let output = ctx.run_ui(input, |ui| app.language_time_settings(ui));
+			let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+			output.drop_without_applying_deltas();
+			delay
+		};
+		for _ in 0..3 {
+			frame(false);
+		}
+		assert_eq!(frame(false), std::time::Duration::from_secs(30));
+		for _ in 0..3 {
+			frame(true);
+		}
+		assert_eq!(frame(true), std::time::Duration::MAX);
+	}
+}
+
 #[derive(Default)]
 pub(super) struct Settings {
 	pub open: bool,

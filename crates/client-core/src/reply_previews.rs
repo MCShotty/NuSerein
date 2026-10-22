@@ -403,6 +403,7 @@ impl State {
 		if self.reply_previews.entries.is_empty()
 			&& self.reply_previews.attempted.is_empty()
 			&& self.reply_previews.inflight.is_empty()
+			&& self.reply_previews.queued.is_empty()
 			&& self.history_navigation.bytes() == 0
 		{
 			return;

@@ -815,6 +815,48 @@ const QUOTE_RAIL: i8 = 4;
 const QUOTE_GAP: i8 = 8;
 
 impl Formatted {
+	/// Speak visible text without unrevealed spoilers or raw mention identifiers.
+	pub(crate) fn speech_text(
+		&self,
+		state: &client_core::State,
+		message: &model::Message,
+		revealed: u32,
+	) -> String {
+		let source = crate::mentions::MentionSource {
+			state,
+			channel: message.channel,
+		};
+		let mut output = String::new();
+		for (text, style) in &self.spans {
+			if style.spoiler.is_some_and(|index| {
+				revealed & 1_u32.checked_shl(u32::from(index)).unwrap_or(0) == 0
+			}) {
+				continue;
+			}
+			let part = if let Some(id) = style.mention {
+				crate::mentions::mention_label(id, &message.mentions, Some(&source))
+			} else if let Some(id) = style.role {
+				crate::mentions::known_roles(state, message.channel)
+					.iter()
+					.find(|role| role.id == id)
+					.map_or_else(|| "role".into(), |role| format!("@{}", role.name))
+			} else if let Some(id) = style.channel {
+				state
+					.channel(id)
+					.map_or_else(|| "channel".into(), |channel| format!("#{}", channel.name))
+			} else if let Some((seconds, kind)) = style.timestamp {
+				crate::local_time::discord_timestamp(seconds, kind).unwrap_or_default()
+			} else {
+				text.clone()
+			};
+			if output.len() + part.len() > 64 * 1024 {
+				break;
+			}
+			output.push_str(&part);
+		}
+		output.retain(|c| !c.is_control() || matches!(c, '\n' | '\t'));
+		output
+	}
 	/// Offline debug assertions for quote escaping and bounded literal fallbacks.
 	#[cfg(all(debug_assertions, feature = "demo"))]
 	pub fn debug_quote_regressions() {
@@ -2036,6 +2078,10 @@ impl Formatted {
 									.map_or_else(|| label.clone(), |pill| pill.label()),
 							)
 						});
+						crate::message_menu::register_hit(
+							&response,
+							crate::message_menu::Target::Link(url.clone()),
+						);
 						if response.clicked() {
 							*render.opening = Some(url.clone());
 						}

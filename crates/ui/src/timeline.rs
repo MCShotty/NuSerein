@@ -106,6 +106,7 @@ pub struct TimelineView {
 	pub(super) pin_request: Option<(Id, Id, bool)>,
 	pub(super) publish_request: Option<(Id, Id)>,
 	pub(super) bookmark_request: Option<(Id, Id)>,
+	pub(super) menu: crate::message_menu::Controls,
 	/// Requested new thread: parent channel and the message that starts it.
 	pub(super) thread_request: Option<(Id, Id)>,
 	/// Channel whose Threads dialog a system row asked to open.
@@ -1393,199 +1394,384 @@ fn message_actions(
 		model::ReactionEmoji,
 		&mut Option<(Id, model::ReactionEmoji, bool)>,
 	)>,
+	menu: (
+		Option<crate::message_menu::Target>,
+		&mut crate::message_menu::Controls,
+		&mut crate::avatars::Avatars,
+		[&str; 3],
+	),
 ) {
+	use crate::{
+		icons::Icon,
+		message_menu::{self as menu_ui, Target},
+	};
 	let (mark_read, mark_unread, reply) = selection;
 	let (editing, edit_started) = editing;
 	let (own, can_reply, can_edit, can_delete) = actions;
 	let (can_pin, pinned, pin_request) = pin;
 	let (can_thread, thread_request) = thread;
+	let (target, controls, images, defaults) = menu;
+	let state = application.as_ref().map(|(state, _)| *state);
+	let owner = crate::message_menu::Owner {
+		generation: state.map_or(0, |s| s.generation),
+		channel: message.channel,
+		message: message.id,
+	};
+	let context = target.is_some();
 	popup.show(|ui| {
-		ui.set_min_width(160.0);
-		if !message.ephemeral
-			&& let Some((state, action)) = application
-		{
-			crate::user_menu::application_menu(ui, state, 3, message.id, action);
-		}
-		if !extension_actions.is_empty() {
-			ui.menu_button(
-				crate::i18n::translate("timeline-message-actions-extensions"),
-				|ui| {
-					for action in extension_actions {
-						if ui.button(&action.label).clicked() {
-							*extension_request =
-								Some((action.clone(), message.display_text().into_owned()));
+		menu_ui::content(ui, |ui| {
+			if !message.ephemeral
+				&& let Some(state) = state
+			{
+				let quick = controls.quick(state, message, defaults);
+				ui.horizontal(|ui| {
+					ui.spacing_mut().item_spacing.x = 6.0;
+					for emoji in quick {
+						if menu_ui::quick_button(ui, state, &emoji, images).clicked()
+							&& !state.reactions.busy()
+						{
+							controls.record(&emoji);
+							controls.reaction = Some((message.id, emoji));
 							ui.close();
 						}
 					}
-				},
-			);
-			ui.separator();
-		}
-		if crate::select::has_selection(ui.ctx())
-			&& ui
-				.button(crate::i18n::translate("timeline-message-actions-copy"))
+				});
+				if menu_ui::row(
+					ui,
+					"menu-add-reaction",
+					Icon::Smile,
+					state.can_react(message.id, None, true) && !state.reactions.busy(),
+					false,
+				)
 				.clicked()
-		{
-			crate::select::request_copy(ui.ctx());
-			ui.close();
-		}
-		if ui
-			.button(crate::i18n::translate("message-menu-copy"))
-			.clicked()
-		{
-			ui.ctx()
-				.copy_text(crate::i18n::message_text(message).into_owned());
-			ui.close();
-		}
-		if let Some(link) = link
-			&& ui
-				.button(crate::i18n::translate(
-					"timeline-message-actions-copy-message-link",
-				))
-				.clicked()
-		{
-			ui.ctx().copy_text(link.to_owned());
-			ui.close();
-		}
-		if ui
-			.button(crate::i18n::translate(
-				"timeline-message-actions-copy-message-id",
-			))
-			.clicked()
-		{
-			ui.ctx().copy_text(message.id.to_string());
-			ui.close();
-		}
-		if ui
-			.add_enabled(
-				can_reply,
-				egui::Button::new(crate::i18n::translate("timeline-message-actions-reply")),
-			)
-			.clicked()
-		{
-			*reply = Some(message.id);
-			ui.close();
-		}
-		if ui
-			.add_enabled(
-				forward.0,
-				egui::Button::new(crate::i18n::translate("timeline-message-actions-forward")),
-			)
-			.clicked()
-		{
-			*forward.1 = Some(message.id);
-			ui.close();
-		}
-		if can_thread
-			&& ui
-				.button(crate::i18n::translate(
-					"timeline-message-actions-create-thread",
-				))
-				.clicked()
-		{
-			*thread_request = Some((message.channel, message.id));
-			ui.close();
-		}
-		if publish.0
-			&& ui
-				.button(crate::i18n::translate("announcement-publish"))
-				.clicked()
-		{
-			*publish.1 = Some((message.channel, message.id));
-			ui.close();
-		}
-		if let Some((emoji, view)) = view_reactions
-			&& ui
-				.button(crate::i18n::translate(
-					"timeline-message-actions-view-reactions",
-				))
-				.clicked()
-		{
-			*view = Some((message.id, emoji, true));
-			ui.close();
-		}
-		if ui
-			.add_enabled(
-				mark_read.is_some(),
-				egui::Button::new(crate::i18n::translate(
-					"timeline-message-actions-mark-read-through-here",
-				)),
-			)
-			.clicked()
-		{
-			if let Some(mark_read) = mark_read {
-				*mark_read = Some(message.id);
+				{
+					controls.picker = Some((
+						message.id,
+						ui.min_rect(),
+						ui.scope_id().with("menu-reaction-picker"),
+					));
+					ui.close();
+				}
+				menu_ui::separator(ui);
 			}
-			ui.close();
-		}
-		if ui
-			.add_enabled(
-				mark_unread.is_some(),
-				egui::Button::new(crate::i18n::translate(
-					"timeline-message-actions-mark-unread",
-				)),
-			)
-			.clicked()
-		{
-			if let Some(mark_unread) = mark_unread {
-				*mark_unread = Some(message.id);
-			}
-			ui.close();
-		}
-		if ui
-			.add_enabled(
-				can_pin,
-				egui::Button::new(crate::i18n::translate_if_key(if pinned {
-					"timeline-message-actions-unpin-message"
-				} else {
-					"timeline-message-actions-pin-message"
-				})),
-			)
-			.clicked()
-		{
-			*pin_request = Some((message.channel, message.id, !pinned));
-			ui.close();
-		}
-		if ui
-			.add_enabled(
-				bookmark.0,
-				egui::Button::new(crate::i18n::translate("inbox-bookmark")),
-			)
-			.clicked()
-		{
-			*bookmark.1 = Some((message.channel, message.id));
-			ui.close();
-		}
-		if own || can_delete {
-			ui.separator();
-		}
-		if own
-			&& ui
-				.add_enabled(
+			if own
+				&& menu_ui::row(
+					ui,
+					"timeline-message-actions-edit-message",
+					Icon::Pencil,
 					can_edit,
-					egui::Button::new(crate::i18n::translate(
-						"timeline-message-actions-edit-message",
-					)),
+					false,
 				)
 				.clicked()
-		{
-			*editing = Some((message.channel, message.id, message.content.clone()));
-			*edit_started = true;
-			ui.close();
-		}
-		if (own || can_delete)
-			&& ui
-				.add_enabled(
-					can_delete,
-					egui::Button::new(crate::i18n::translate(
+			{
+				*editing = Some((message.channel, message.id, message.content.clone()));
+				*edit_started = true;
+				ui.close();
+			}
+			if menu_ui::row(
+				ui,
+				"timeline-message-actions-reply",
+				Icon::Reply,
+				can_reply,
+				false,
+			)
+			.clicked()
+			{
+				*reply = Some(message.id);
+				ui.close();
+			}
+			if menu_ui::row(
+				ui,
+				"timeline-message-actions-forward",
+				Icon::Forward,
+				forward.0,
+				false,
+			)
+			.clicked()
+			{
+				*forward.1 = Some(message.id);
+				ui.close();
+			}
+			if can_thread
+				&& menu_ui::row(
+					ui,
+					"timeline-message-actions-create-thread",
+					Icon::Thread,
+					true,
+					false,
+				)
+				.clicked()
+			{
+				*thread_request = Some((message.channel, message.id));
+				ui.close();
+			}
+			menu_ui::separator(ui);
+			if menu_ui::row(ui, "menu-copy-text", Icon::Copy, true, false).clicked() {
+				ui.ctx()
+					.copy_text(crate::i18n::message_text(message).into_owned());
+				ui.close();
+			}
+			if (can_pin || pinned)
+				&& menu_ui::row(
+					ui,
+					if pinned {
+						"timeline-message-actions-unpin-message"
+					} else {
+						"timeline-message-actions-pin-message"
+					},
+					Icon::Pin,
+					can_pin,
+					false,
+				)
+				.clicked()
+			{
+				*pin_request = Some((message.channel, message.id, !pinned));
+				ui.close();
+			}
+			if !message.ephemeral {
+				let saved = state.is_some_and(|state| {
+					state.inbox.saved.iter().any(|saved| {
+						saved.channel == message.channel && saved.message == message.id
+					})
+				});
+				if menu_ui::row(
+					ui,
+					if saved {
+						"menu-remove-bookmark"
+					} else {
+						"menu-bookmark"
+					},
+					Icon::Inbox,
+					bookmark.0,
+					false,
+				)
+				.clicked()
+				{
+					if saved {
+						controls.save = Some(client_core::inbox::Action::Unsave {
+							channel: message.channel,
+							message: message.id,
+						});
+					} else {
+						*bookmark.1 = Some((message.channel, message.id));
+					}
+					ui.close();
+				}
+				ui.add_enabled_ui(bookmark.0, |ui| {
+					menu_ui::submenu(ui, "menu-create-reminder", Icon::Bell, |ui| {
+						for (seconds, key) in [
+							(3600, "inbox-in-hour"),
+							(86400, "inbox-in-day"),
+							(604800, "inbox-in-week"),
+						] {
+							if ui.button(crate::i18n::translate(key)).clicked() {
+								controls.save = Some(client_core::inbox::Action::Save {
+									channel: message.channel,
+									message: message.id,
+									due_at: Some(
+										(time::OffsetDateTime::now_utc().unix_timestamp_nanos())
+											+ seconds * 1_000_000_000_i128,
+									),
+								});
+								ui.close();
+							}
+						}
+						if ui
+							.button(crate::i18n::translate("menu-reminder-custom"))
+							.clicked()
+						{
+							controls.custom_reminder = Some(owner);
+							ui.close();
+						}
+					});
+				});
+			}
+			if !message.ephemeral
+				&& let Some((state, action)) = application
+			{
+				crate::user_menu::application_menu(ui, state, 3, message.id, action);
+			}
+			if menu_ui::row(
+				ui,
+				"timeline-message-actions-mark-unread",
+				Icon::Inbox,
+				mark_unread.is_some(),
+				false,
+			)
+			.clicked()
+			{
+				if let Some(mark_unread) = mark_unread {
+					*mark_unread = Some(message.id);
+				}
+				ui.close();
+			}
+			if let Some(link) = link
+				&& menu_ui::row(
+					ui,
+					"timeline-message-actions-copy-message-link",
+					Icon::Link,
+					true,
+					false,
+				)
+				.clicked()
+			{
+				ui.ctx().copy_text(link.to_owned());
+				ui.close();
+			}
+			if !message.display_text().is_empty()
+				&& menu_ui::row(
+					ui,
+					if controls.speaking == Some(owner) {
+						"menu-stop-speaking"
+					} else {
+						"menu-speak-message"
+					},
+					Icon::Speaker,
+					state.is_some(),
+					false,
+				)
+				.clicked()
+			{
+				controls.speech = Some(owner);
+				ui.close();
+			}
+			if let Some(interaction) = &message.interaction {
+				menu_ui::submenu(ui, "menu-interaction-info", Icon::Help, |ui| {
+					ui.label(&interaction.user.name);
+					if let Some(username) = &interaction.user.username {
+						ui.weak(username.as_ref());
+					}
+					if !interaction.command.is_empty() {
+						ui.label(format!("/{}", interaction.command));
+					}
+					if let Some(application) = message.application_id {
+						ui.label(format!(
+							"{}: {application}",
+							crate::i18n::translate("menu-application")
+						));
+					}
+				});
+			}
+			if !context {
+				menu_ui::separator(ui);
+				if menu_ui::row(
+					ui,
+					"timeline-message-actions-mark-read-through-here",
+					Icon::Check,
+					mark_read.is_some(),
+					false,
+				)
+				.clicked()
+				{
+					if let Some(mark_read) = mark_read {
+						*mark_read = Some(message.id);
+					}
+					ui.close();
+				}
+				if let Some((emoji, view)) = view_reactions
+					&& menu_ui::row(
+						ui,
+						"timeline-message-actions-view-reactions",
+						Icon::Smile,
+						true,
+						false,
+					)
+					.clicked()
+				{
+					*view = Some((message.id, emoji, true));
+					ui.close();
+				}
+				if publish.0
+					&& menu_ui::row(ui, "announcement-publish", Icon::Megaphone, true, false)
+						.clicked()
+				{
+					*publish.1 = Some((message.channel, message.id));
+					ui.close();
+				}
+				if !extension_actions.is_empty() {
+					menu_ui::submenu(
+						ui,
+						"timeline-message-actions-extensions",
+						Icon::Activities,
+						|ui| {
+							for action in extension_actions {
+								if ui.button(&action.label).clicked() {
+									*extension_request =
+										Some((action.clone(), message.display_text().into_owned()));
+									ui.close();
+								}
+							}
+						},
+					);
+				}
+			}
+			if own
+				|| can_delete
+				|| state.is_some_and(|s| {
+					s.user.as_ref().is_some_and(|u| u.id != message.author.id) && !message.ephemeral
+				}) {
+				menu_ui::separator(ui);
+				if (own || can_delete)
+					&& menu_ui::row(
+						ui,
 						"timeline-message-actions-delete-message",
-					)),
-				)
-				.clicked()
-		{
-			*deleting = Some((message.channel, message.id));
-			ui.close();
-		}
+						Icon::Trash,
+						can_delete,
+						true,
+					)
+					.clicked()
+				{
+					*deleting = Some((message.channel, message.id));
+					ui.close();
+				}
+				if !own
+					&& !message.ephemeral
+					&& state.is_some()
+					&& menu_ui::row(
+						ui,
+						"menu-report-message",
+						Icon::ShieldWarning,
+						state.is_some_and(|state| {
+							state.can_report_message(model::reporting::Target {
+								channel: message.channel,
+								message: message.id,
+							})
+						}),
+						true,
+					)
+					.clicked()
+				{
+					controls.report = Some(owner);
+					ui.close();
+				}
+			}
+			if let Some(Target::Link(url)) = target {
+				menu_ui::separator(ui);
+				if menu_ui::row(ui, "menu-copy-link", Icon::Link, true, false).clicked() {
+					ui.ctx().copy_text(url.clone());
+					ui.close();
+				}
+				if menu_ui::row(ui, "menu-open-link", Icon::Globe, true, false).clicked() {
+					ui.ctx().data_mut(|data| {
+						data.insert_temp(egui::Id::unique("message-menu-open-link"), url.clone())
+					});
+					ui.close();
+				}
+			}
+			menu_ui::separator(ui);
+			if menu_ui::row(
+				ui,
+				"timeline-message-actions-copy-message-id",
+				Icon::FileText,
+				true,
+				false,
+			)
+			.clicked()
+			{
+				ui.ctx().copy_text(message.id.to_string());
+				ui.close();
+			}
+		});
 	});
 }
 /// Flat strip painted over the timeline edge; `add` lays out its contents left to right.
@@ -1923,6 +2109,28 @@ fn show_system(
 	}
 }
 impl TimelineView {
+	pub(crate) fn speech_allowed(&self, state: &State, id: Id) -> bool {
+		display_message(state, id).is_some_and(|message| {
+			self.restricted
+				.allows(state, crate::restricted::Key::message(message))
+		})
+	}
+	pub(crate) fn speech_text(&self, state: &State, id: Id) -> Option<String> {
+		let message = display_message(state, id)?;
+		if !self
+			.restricted
+			.allows(state, crate::restricted::Key::message(message))
+		{
+			return None;
+		}
+		let revealed = self
+			.revealed
+			.get(&id)
+			.filter(|reveal| reveal.matches(message))
+			.map_or(0, |reveal| reveal.text);
+		let text = Formatted::parse(&message.display_text()).speech_text(state, message, revealed);
+		(!text.trim().is_empty()).then_some(text)
+	}
 	pub(super) fn message_visible(&self, state: &State, message: Id) -> bool {
 		display_message(state, message).is_some_and(|message| {
 			self.restricted
@@ -2920,6 +3128,9 @@ impl TimelineView {
 				}
 				let source = display_message(state, id)
 					.or_else(|| state.thread_starter().filter(|message| message.id == id));
+				if let Some(message) = source {
+					crate::message_menu::set_owner(ui.ctx(), crate::message_menu::Owner { generation: state.generation, channel: message.channel, message: id });
+				}
 				if let Some(message) = source
 					&& !self
 						.restricted
@@ -4523,6 +4734,8 @@ impl TimelineView {
 							{
 								popup = popup.at_pointer_fixed();
 							}
+							let target = crate::message_menu::target(ui.ctx(), popup.get_id(), crate::message_menu::Owner { generation: state.generation, channel: message.channel, message: id }, context_menu, menu.clicked());
+							popup = popup.frame(crate::message_menu::frame(ui.ctx()));
 							message_actions(
 								popup,
 								Some((state, &mut self.user_action)),
@@ -4571,6 +4784,7 @@ impl TimelineView {
 									.map(|reaction| {
 										(reaction.emoji.clone(), &mut self.reaction_users)
 									}),
+								(target, &mut self.menu, avatars, self.quick_reactions.unwrap_or(crate::reactions::QUICK_DEFAULTS)),
 							);
 							self.toolbar = Some((id, toolbar_rect));
 						}
@@ -5046,6 +5260,14 @@ impl TimelineView {
 								.get(message)
 								.is_some_and(|reveal| reveal.media && reveal.matches(source)))
 				});
+			crate::message_menu::set_owner(
+				ui.ctx(),
+				crate::message_menu::Owner {
+					generation: state.generation,
+					channel: state.selected.unwrap_or(Id(0)),
+					message: *message,
+				},
+			);
 			if !allowed
 				|| crate::attachments::viewer(
 					ui,
@@ -5094,6 +5316,14 @@ impl TimelineView {
 					}
 				});
 			self.viewing = message.and_then(|m| {
+				crate::message_menu::set_owner(
+					ui.ctx(),
+					crate::message_menu::Owner {
+						generation: state.generation,
+						channel: m.channel,
+						message: m.id,
+					},
+				);
 				crate::attachments::viewer(
 					ui,
 					if self.component_viewing.is_some() {
@@ -6915,6 +7145,110 @@ mod tests {
 			);
 		}
 	}
+
+	#[test]
+	fn context_menu_groups_follow_the_reference_and_keep_link_actions_above_the_id() {
+		fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+			match shape {
+				egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+				egui::Shape::Vec(shapes) => {
+					for shape in shapes {
+						collect(shape, out);
+					}
+				}
+				_ => {}
+			}
+		}
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut state = test_support::chat_demo_state();
+		let mut message = test_support::message(777, Id(20));
+		message.author = state.user.clone().unwrap();
+		state
+			.timeline
+			.insert(message.clone(), false, false)
+			.unwrap();
+		let mut controls = crate::message_menu::Controls::default();
+		let mut images = crate::avatars::Avatars::default();
+		let mut painted = Vec::new();
+		for _ in 0..3 {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(900.0, 1200.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					let trigger = ui.button("Synthetic trigger");
+					message_actions(
+						egui::Popup::menu(&trigger).open(true),
+						Some((&state, &mut None)),
+						(
+							&message,
+							Some("https://discord.com/channels/10/20/777"),
+							&[],
+							&mut None,
+						),
+						(true, true, true, true),
+						(Some(&mut None), Some(&mut None), &mut None),
+						(&mut None, &mut false),
+						&mut None,
+						(true, false, &mut None),
+						(true, &mut None),
+						(false, &mut None),
+						(true, &mut None),
+						(true, &mut None),
+						None,
+						(
+							Some(crate::message_menu::Target::Link(
+								"https://example.com/?signed=a%2Fb".into(),
+							)),
+							&mut controls,
+							&mut images,
+							crate::reactions::QUICK_DEFAULTS,
+						),
+					);
+				},
+			);
+			painted.clear();
+			for shape in &output.shapes {
+				collect(&shape.shape, &mut painted);
+			}
+			output.drop_without_applying_deltas();
+		}
+		let expected = [
+			"Add Reaction",
+			"Edit Message",
+			"Reply",
+			"Forward",
+			"Create Thread",
+			"Copy Text",
+			"Pin Message",
+			"Bookmark Message",
+			"Create Reminder",
+			"Mark Unread",
+			"Copy Message Link",
+			"Speak Message",
+			"Delete Message",
+			"Copy Link",
+			"Open Link",
+			"Copy Message ID",
+		];
+		let mut last = 0;
+		for label in expected {
+			let index = painted
+				.iter()
+				.position(|text| text == label)
+				.unwrap_or_else(|| panic!("Missing {label}: {painted:?}"));
+			assert!(index >= last, "{label} is out of order: {painted:?}");
+			last = index;
+		}
+		assert!(!painted.iter().any(|text| text == "Mark read through here"
+			|| text == "Extensions"
+			|| text == "Report Message"));
+	}
 	#[test]
 	fn message_menu_allows_authorized_delete_without_exposing_other_authors_edit() {
 		fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
@@ -6945,7 +7279,7 @@ mod tests {
 						events,
 						screen_rect: Some(egui::Rect::from_min_size(
 							egui::Pos2::ZERO,
-							egui::vec2(320.0, 400.0),
+							egui::vec2(400.0, 1100.0),
 						)),
 						..Default::default()
 					},
@@ -6965,6 +7299,12 @@ mod tests {
 							(own, &mut thread_request),
 							(false, &mut None),
 							None,
+							(
+								None,
+								&mut crate::message_menu::Controls::default(),
+								&mut crate::avatars::Avatars::default(),
+								crate::reactions::QUICK_DEFAULTS,
+							),
 						)
 					},
 				);
@@ -7000,7 +7340,7 @@ mod tests {
 			}
 			frame(vec![]);
 			let labels = frame(vec![]);
-			assert!(labels.iter().any(|(label, _)| label == "Copy message"));
+			assert!(labels.iter().any(|(label, _)| label == "Copy Text"));
 			assert_eq!(
 				labels
 					.iter()
@@ -7008,13 +7348,13 @@ mod tests {
 				own,
 				"Create Thread appears only where a thread may be started"
 			);
-			assert_eq!(labels.iter().any(|(label, _)| label == "Edit message"), own);
+			assert_eq!(labels.iter().any(|(label, _)| label == "Edit Message"), own);
 			let delete = labels
 				.iter()
-				.find(|(label, _)| label.starts_with("Delete message"));
+				.find(|(label, _)| label.starts_with("Delete Message"));
 			assert_eq!(delete.is_some(), own || can_delete);
 			let action = if own {
-				labels.iter().find(|(label, _)| label == "Edit message")
+				labels.iter().find(|(label, _)| label == "Edit Message")
 			} else {
 				delete
 			};

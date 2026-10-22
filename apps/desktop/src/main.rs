@@ -42,6 +42,7 @@ mod group_icon;
 mod inbox_demo;
 mod interaction_uploads;
 mod media_output;
+mod message_speech;
 mod notification_runtime;
 mod notification_sounds;
 mod ogg_opus;
@@ -1025,6 +1026,8 @@ struct Desktop {
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,
 	monitor_period: Option<Duration>,
 	frame_metrics: FrameMetrics,
+	message_speaker: Option<platform::message_speech::Speaker>,
+	message_speech_target: Option<(u64, model::Id, model::Id)>,
 	timezone_focused: bool,
 	timezone_checked: std::time::Instant,
 	#[cfg(feature = "demo")]
@@ -2416,6 +2419,8 @@ impl Desktop {
 			monitor_geometry: None,
 			monitor_period: None,
 			frame_metrics: FrameMetrics::new(frame_sample),
+			message_speaker: None,
+			message_speech_target: None,
 			timezone_focused: false,
 			timezone_checked: std::time::Instant::now(),
 			#[cfg(feature = "demo")]
@@ -5548,6 +5553,7 @@ impl eframe::App for Desktop {
 		);
 		self.messaging.sync_reading_zoom(ctx);
 		self.poll(ctx);
+		self.sync_message_speech(ctx);
 		self.sync_fonts(ctx);
 		self.hotkeys.sync(&self.messaging.keybinds, &self.runtime);
 		self.messaging.global_keybind_status = self.hotkeys.status();
@@ -6192,6 +6198,7 @@ impl eframe::App for Desktop {
 				self.messaging.notification_sound_status = "Could not save device notification settings. Changes apply only until restart.";
 			}
 			let mut commands = self.messaging.show(ui, &mut self.state);
+			self.sync_message_speech(&ctx);
 			self.extensions.cancel_stale_message_events(&self.state);
 			self.choose_interaction_files(&ctx);
 			if let Some(command) = self.captcha.sync(

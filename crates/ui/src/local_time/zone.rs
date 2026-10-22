@@ -13,13 +13,16 @@ struct Snapshot {
 struct FrameSnapshot {
 	zone: TimeZone,
 	utc: time::OffsetDateTime,
+	local: time::OffsetDateTime,
 	status: Option<&'static str>,
 }
 impl Default for FrameSnapshot {
 	fn default() -> Self {
+		let now = time::OffsetDateTime::now_utc();
 		Self {
 			zone: TimeZone::UTC,
-			utc: time::OffsetDateTime::now_utc(),
+			utc: now,
+			local: now,
 			status: None,
 		}
 	}
@@ -138,9 +141,16 @@ pub fn begin_frame() -> Option<TimeZonePreference> {
 		state.active = result;
 	}
 	FRAME.with(|frame| {
+		let utc = time::OffsetDateTime::now_utc();
+		let local = convert(&state.active.zone, utc);
+		#[cfg(not(test))]
+		if frame.borrow().local.date() != local.date() {
+			super::FORMAT_REVISION.fetch_add(1, Ordering::Relaxed);
+		}
 		*frame.borrow_mut() = FrameSnapshot {
 			zone: state.active.zone.clone(),
-			utc: time::OffsetDateTime::now_utc(),
+			utc,
+			local,
 			status: if state.running || state.queued.is_some() {
 				Some("timezone-updating")
 			} else {
@@ -226,10 +236,45 @@ pub(super) fn frame_now() -> time::OffsetDateTime {
 	FRAME.with(|frame| frame.borrow().utc)
 }
 
+#[cfg(not(test))]
+pub(super) fn local_now() -> time::OffsetDateTime {
+	FRAME.with(|frame| frame.borrow().local)
+}
+
 /// The next minute boundary is the next change to the settings' seconds-free example.
 pub fn minute_deadline(at: time::OffsetDateTime) -> std::time::Duration {
 	let remaining = 60_000_000_000_i128 - at.unix_timestamp_nanos().rem_euclid(60_000_000_000);
 	std::time::Duration::from_nanos(remaining as u64)
+}
+
+/// Resolve local input without guessing across a daylight-saving gap or fold.
+pub fn wall_time(value: &str) -> Vec<time::OffsetDateTime> {
+	if value.len() != 16 {
+		return Vec::new();
+	}
+	let Ok(civil) = value.replace(' ', "T").parse::<jiff::civil::DateTime>() else {
+		return Vec::new();
+	};
+	let zone = display_zone();
+	let ambiguous = zone.to_ambiguous_zoned(civil);
+	let mut result = Vec::with_capacity(2);
+	for resolved in [ambiguous.clone().earlier(), ambiguous.later()]
+		.into_iter()
+		.flatten()
+	{
+		if resolved.datetime() != civil {
+			continue;
+		}
+		if let Ok(utc) =
+			time::OffsetDateTime::from_unix_timestamp_nanos(resolved.timestamp().as_nanosecond())
+		{
+			let at = convert(&zone, utc);
+			if !result.contains(&at) {
+				result.push(at);
+			}
+		}
+	}
+	result
 }
 
 pub(super) fn convert(zone: &TimeZone, instant: time::OffsetDateTime) -> time::OffsetDateTime {
@@ -325,10 +370,29 @@ mod tests {
 	}
 
 	#[test]
+	fn reminder_wall_times_distinguish_dst_gaps_and_folds() {
+		let _zone = pin_timezone("Europe/London");
+		assert!(wall_time("2026-03-29 01:30").is_empty());
+		let fold = wall_time("2026-10-25 01:30");
+		assert_eq!(fold.len(), 2);
+		assert_eq!((fold[1] - fold[0]).whole_hours(), 1);
+		assert_eq!(wall_time("2026-10-25 12:30").len(), 1);
+		assert!(wall_time("invalid time").is_empty());
+	}
+
+	#[test]
 	fn frame_clock_is_stable_between_paints_and_is_retired_at_the_boundary() {
 		let old = FRAME.with(|frame| frame.borrow().clone());
 		let at = instant("2026-10-22T23:59:59Z");
-		FRAME.with(|frame| frame.borrow_mut().utc = at);
+		FRAME.with(|frame| {
+			let mut frame = frame.borrow_mut();
+			frame.utc = at;
+			frame.local = convert(&frame.zone, at);
+		});
+		assert_eq!(
+			FRAME.with(|frame| frame.borrow().local.unix_timestamp()),
+			at.unix_timestamp()
+		);
 		assert_eq!(frame_now(), at);
 		assert_eq!(frame_now(), frame_now());
 		FRAME.with(|frame| *frame.borrow_mut() = old);
