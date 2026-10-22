@@ -257,9 +257,31 @@ mod linux {
 		done: bool,
 		lines: usize,
 	}
+	pub(super) fn connect_socket(path: &std::path::Path, deadline: Instant) -> Result<UnixStream> {
+		// A local daemon with a full accept queue can block a synchronous connect forever.
+		// Keep connection setup inside the same deadline as the SSIP handshake.
+		let runtime = tokio::runtime::Builder::new_current_thread()
+			.enable_io()
+			.enable_time()
+			.build()
+			.map_err(|_| UNAVAILABLE)?;
+		let stream = runtime.block_on(async {
+			tokio::time::timeout_at(
+				tokio::time::Instant::from_std(deadline),
+				tokio::net::UnixStream::connect(path),
+			)
+			.await
+			.map_err(|_| UNAVAILABLE)?
+			.map_err(|_| UNAVAILABLE)
+		})?;
+		let stream = stream.into_std().map_err(|_| FAILED)?;
+		stream.set_nonblocking(false).map_err(|_| FAILED)?;
+		Ok(stream)
+	}
 	impl Speech {
 		pub fn connect(path: &std::path::Path, text: &str) -> Result<Self> {
-			let stream = UnixStream::connect(path).map_err(|_| UNAVAILABLE)?;
+			let deadline = Instant::now() + Duration::from_secs(2);
+			let stream = connect_socket(path, deadline)?;
 			stream
 				.set_read_timeout(Some(Duration::from_millis(40)))
 				.map_err(|_| FAILED)?;
@@ -272,7 +294,6 @@ mod linux {
 				done: false,
 				lines: 0,
 			};
-			let deadline = Instant::now() + Duration::from_secs(2);
 			for command in [
 				"SET SELF CLIENT_NAME serein:message:reader\r\n",
 				"SET SELF SSML_MODE off\r\n",
@@ -445,6 +466,42 @@ mod tests {
 		reads.recv_timeout(Duration::from_secs(2)).unwrap();
 		drop(speaker);
 		assert_eq!(alive.load(Ordering::SeqCst), 0);
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn speech_daemon_full_accept_queue_cannot_block_reader_teardown() {
+		use std::time::Instant;
+		let directory = tempfile::tempdir().unwrap();
+		let path = directory.path().join("speech.sock");
+		let _listener = {
+			let runtime = tokio::runtime::Builder::new_current_thread()
+				.enable_io()
+				.build()
+				.unwrap();
+			let _entered = runtime.enter();
+			let socket = tokio::net::UnixSocket::new_stream().unwrap();
+			socket.bind(&path).unwrap();
+			socket.listen(1).unwrap().into_std().unwrap()
+		};
+		let mut connections = Vec::new();
+		let mut saturated = false;
+		for _ in 0..8 {
+			match linux::connect_socket(&path, Instant::now() + Duration::from_millis(25)) {
+				Ok(stream) => connections.push(stream),
+				Err(_) => {
+					saturated = true;
+					break;
+				}
+			}
+		}
+		assert!(
+			saturated,
+			"exercise a local daemon that stops accepting connections"
+		);
+		let start = Instant::now();
+		assert!(linux::Speech::connect(&path, "synthetic text").is_err());
+		assert!(start.elapsed() < Duration::from_secs(3));
 	}
 
 	#[cfg(target_os = "linux")]
