@@ -808,6 +808,7 @@ pub struct NavigationIndex {
 	bytes: std::cell::Cell<Option<(usize, usize, usize)>>,
 	channels: std::cell::RefCell<BTreeMap<Id, usize>>,
 	channel_stamp: std::cell::Cell<Option<(usize, usize)>>,
+	last_channel: std::cell::Cell<Option<(Id, usize)>>,
 	guilds: std::cell::RefCell<BTreeMap<Id, usize>>,
 	guild_stamp: std::cell::Cell<Option<(usize, usize)>>,
 }
@@ -1215,12 +1216,26 @@ impl State {
 	pub fn channel_index(&self, id: Id) -> Option<usize> {
 		let stamp = self.channel_stamp();
 		if self.navigation_index.channel_stamp.get() == Some(stamp) {
+			// Message processing asks several subsystems about the same channel. Reuse
+			// that lookup, while still checking the current slice and exact identity.
+			if let Some((last, index)) = self.navigation_index.last_channel.get()
+				&& last == id
+				&& self
+					.channels
+					.get(index)
+					.is_some_and(|channel| channel.id == id)
+			{
+				return Some(index);
+			}
 			let cached = self.navigation_index.channels.borrow().get(&id).copied();
 			if cached.is_none_or(|index| {
 				self.channels
 					.get(index)
 					.is_some_and(|channel| channel.id == id)
 			}) {
+				self.navigation_index
+					.last_channel
+					.set(cached.map(|index| (id, index)));
 				return cached;
 			}
 		}
@@ -1233,7 +1248,11 @@ impl State {
 			.map(|(index, channel)| (channel.id, index))
 			.collect();
 		self.navigation_index.channel_stamp.set(Some(stamp));
-		index.get(&id).copied()
+		let found = index.get(&id).copied();
+		self.navigation_index
+			.last_channel
+			.set(found.map(|index| (id, index)));
+		found
 	}
 	pub fn channel(&self, id: Id) -> Option<&Channel> {
 		self.channel_index(id)
@@ -1245,6 +1264,7 @@ impl State {
 			.invalidations
 			.set(self.navigation_index.invalidations.get().wrapping_add(1));
 		self.navigation_index.channel_stamp.set(None);
+		self.navigation_index.last_channel.set(None);
 		self.navigation_index.guild_stamp.set(None);
 		self.navigation_index.guilds.borrow_mut().clear();
 		self.navigation_index.bytes.set(None);

@@ -893,9 +893,8 @@ impl State {
 				version,
 			} => {
 				if !self
-					.channels
-					.iter()
-					.any(|c| c.id == channel && (c.supports_text() || matches!(c.kind, 15 | 16)))
+					.channel(channel)
+					.is_some_and(|c| c.supports_text() || matches!(c.kind, 15 | 16))
 					|| matches!((self.read_state.version,version),(Some(old),Some(new)) if new<old)
 				{
 					return Ok(());
@@ -976,7 +975,7 @@ impl State {
 				}
 				match result {
 					Ok(()) => {
-						if self.channels.iter().any(|c| c.id == channel)
+						if self.channel(channel).is_some()
 							&& self
 								.read_state
 								.entries
@@ -1219,6 +1218,51 @@ mod navigation_tests {
 		state.reply = Some(Reply::to(Id(500)));
 		state
 	}
+	#[test]
+	fn indexed_acknowledgements_validate_current_channel_identity_and_kind() {
+		let mut state = state(Some(Id(100)));
+		let target = state.channels[0].clone();
+		state.channels = (1000..21_000)
+			.map(|id| {
+				let mut channel = target.clone();
+				channel.id = Id(id);
+				channel
+			})
+			.chain([target.clone()])
+			.collect();
+		state.invalidate_navigation();
+		assert!(state.channel(Id(1)).is_some()); // Warm the ordinary navigation index.
+		let ack = |channel, message| Event::Ack {
+			channel,
+			message: Some(Id(message)),
+			manual: false,
+			mention_count: Some(3),
+			version: None,
+		};
+		state.apply_read_state(ack(Id(1), 501)).unwrap();
+		assert_eq!(state.read_marker(Id(1)), Some(Some(Id(501))));
+		assert_eq!(state.mention_count(Id(1)), 3);
+		let last = state.channels.len() - 1;
+		state.channels.swap(0, last);
+		assert_eq!(state.channel_index(Id(1)), Some(0));
+		state.channels.swap(0, last); // Same allocation/length; the cached ID must still be checked.
+		state.channels.last_mut().unwrap().kind = 4;
+		state.apply_read_state(ack(Id(1), 502)).unwrap();
+		assert!(state.read_marker(Id(1)).is_none());
+		assert_eq!(state.read_state.entries[&Id(1)].0, Some(Id(501)));
+		let last = state.channels.last_mut().unwrap();
+		last.id = Id(777);
+		last.kind = 1;
+		state.invalidate_navigation();
+		state.apply_read_state(ack(Id(1), 503)).unwrap();
+		assert!(state.read_marker(Id(1)).is_none());
+		assert_eq!(state.read_state.entries[&Id(1)].0, Some(Id(501)));
+		state.apply_read_state(ack(Id(777), 504)).unwrap();
+		assert_eq!(state.read_marker(Id(777)), Some(Some(Id(504))));
+		state.logout();
+		assert!(state.channel_index(Id(777)).is_none());
+	}
+
 	#[test]
 	fn explicit_unread_navigation_replaces_pending_targets_without_ack_or_draft_loss() {
 		let mut state = state(Some(Id(100)));
