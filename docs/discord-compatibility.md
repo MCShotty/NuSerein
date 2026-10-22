@@ -3296,6 +3296,22 @@ is reported separately in the PR.
 
 ## Message menus and reporting — October 22, 2026
 
+Quick reactions in the hover bar and context menu use the same account ranking,
+including joined-server custom emoji. A bounded read of the unofficial
+`GET /users/@me/settings-proto/2` imports reaction frecency (field 13, falling back
+to legacy emoji frecency in field 6). Account settings updates trigger coalesced
+refreshes; this is read-only synchronization, not an implementation of Discord's
+undocumented score updates. Local session usage takes precedence, with existing
+current-server priority, permission and Nitro restrictions. Unknown or unavailable
+custom emoji are skipped; defaults fill only unused slots. The schema reference is
+[`FrecencyUserSettings.proto` at `8fabce4`](https://github.com/discord-userdoccers/discord-protos/blob/8fabce4ed1e59b81ce27346f471174c7a1434b9e/discord_protos/discord_users/v1/FrecencyUserSettings.proto).
+
+Author membership reads follow visible timeline rows instead of competing with a
+newest-message batch. Bounded prior lookup results remain available while another
+batch loads, and subsequent messages reuse those guild nicknames. Loaded member
+metadata, including explicit nickname removal, takes precedence over embedded labels.
+Offline fixtures verify these paths; live account synchronization remains unverified.
+
 Message and link context menus share ordered reaction, message, utility, destructive and
 identifier groups. Link actions retain the exact clicked URL, including signed parameters.
 Image cards and viewers use the shorter copy/save/media-link/message-ID menu. Message identity,

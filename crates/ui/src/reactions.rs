@@ -43,11 +43,19 @@ fn reaction_button(
 	let label = emoji.label();
 	let count = count.to_string();
 	match emoji.id {
-		None => crate::emoji::button(ctx, &label, count),
+		None => {
+			if let Some(image) =
+				crate::emoji::lookup(&label).and_then(|cell| avatars.unicode_image(ctx, cell, 22.0))
+			{
+				egui::Button::image_and_text(image, count).image_tint_follows_text_color(false)
+			} else {
+				crate::emoji::button_sized(ctx, &label, count, 22.0)
+			}
+		}
 		Some(id) => {
 			let image = avatars
-				.custom_image(ctx, id, 18.0, demo)
-				.unwrap_or_else(|| crate::emoji::blank(ctx, 18.0));
+				.custom_image(ctx, id, 22.0, demo)
+				.unwrap_or_else(|| crate::emoji::blank(ctx, 22.0));
 			egui::Button::image_and_text(image.alt_text(label), count)
 				.image_tint_follows_text_color(false)
 		}
@@ -61,7 +69,7 @@ pub fn estimated_height(ui: &egui::Ui, reactions: Option<&[Reaction]>, width: f3
 		return 0.0;
 	};
 	let width = width.max(40.0);
-	let font = egui::TextStyle::Button.resolve(ui.style());
+	let font = egui::FontId::proportional(14.0);
 	let mut rows = 1u32;
 	let mut used = 0.0_f32;
 	for reaction in reactions {
@@ -74,7 +82,7 @@ pub fn estimated_height(ui: &egui::Ui, reactions: Option<&[Reaction]>, width: f3
 			)
 			.size()
 			.x;
-		let pill = 34.0 + text_width;
+		let pill = 38.0 + text_width;
 		if used > 0.0 && used + 4.0 + pill > width {
 			rows += 1;
 			used = pill;
@@ -82,7 +90,7 @@ pub fn estimated_height(ui: &egui::Ui, reactions: Option<&[Reaction]>, width: f3
 			used = if used == 0.0 { pill } else { used + 4.0 + pill };
 		}
 	}
-	6.0 + rows as f32 * 30.0
+	6.0 + rows as f32 * 32.0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -104,9 +112,12 @@ pub fn show(
 	}
 	let mut action = None;
 	ui.horizontal_wrapped(|ui| {
+		ui.style_mut()
+			.text_styles
+			.insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
 		ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
 		ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
-		ui.spacing_mut().interact_size.y = 26.0;
+		ui.spacing_mut().interact_size.y = 28.0;
 		let Some(reactions) = reactions else {
 			ui.weak(crate::i18n::translate(
 				"reactions-show-reactions-unavailable",
@@ -135,8 +146,21 @@ pub fn show(
 					&& !refreshing && reaction.emoji.name.is_some()
 					&& can_react(&reaction.emoji, !reaction.me),
 				button
+					.fill(if reaction.me {
+						crate::design::palette(ui).accent.gamma_multiply(0.14)
+					} else {
+						crate::design::palette(ui).raised
+					})
+					.stroke(egui::Stroke::new(
+						1.0,
+						if reaction.me {
+							crate::design::palette(ui).accent
+						} else {
+							crate::design::palette(ui).border
+						},
+					))
 					.gap(4.0)
-					.min_size(egui::vec2(0.0, 26.0))
+					.min_size(egui::vec2(0.0, 28.0))
 					.corner_radius(6)
 					.selected(reaction.me),
 			);
@@ -292,7 +316,13 @@ pub fn add_button(
 pub const QUICK_DEFAULTS: [&str; 3] = ["👍", "❤️", "😂"];
 
 /// One quick reaction in the message hover bar, sized like its icon buttons.
-pub fn quick_button(ui: &mut egui::Ui, emoji: &str, reacted: bool) -> egui::Response {
+pub fn quick_button(
+	ui: &mut egui::Ui,
+	emoji: &ReactionEmoji,
+	reacted: bool,
+	avatars: &mut crate::avatars::Avatars,
+	demo: bool,
+) -> egui::Response {
 	let colors = crate::design::palette(ui);
 	let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(28.0), egui::Sense::click());
 	if reacted || response.hovered() || response.has_focus() {
@@ -307,9 +337,9 @@ pub fn quick_button(ui: &mut egui::Ui, emoji: &str, reacted: bool) -> egui::Resp
 		);
 	}
 	let size = if response.hovered() && ui.is_enabled() {
-		20.0
+		24.0
 	} else {
-		18.0
+		22.0
 	};
 	let target = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size));
 	let tint = if ui.is_enabled() {
@@ -317,18 +347,31 @@ pub fn quick_button(ui: &mut egui::Ui, emoji: &str, reacted: bool) -> egui::Resp
 	} else {
 		egui::Color32::WHITE.gamma_multiply(0.4)
 	};
-	if let Some(image) = crate::emoji::image(ui.ctx(), emoji, size) {
+	let image = match emoji.id {
+		Some(id) => avatars.custom_image(ui.ctx(), id, size, demo),
+		None => emoji.name.as_deref().and_then(|name| {
+			crate::emoji::lookup(name)
+				.and_then(|cell| avatars.unicode_image(ui.ctx(), cell, size))
+				.or_else(|| crate::emoji::image(ui.ctx(), name, size))
+		}),
+	};
+	if let Some(image) = image {
 		image.tint(tint).paint_at(ui, target);
 	} else {
 		ui.painter().text(
 			rect.center(),
 			egui::Align2::CENTER_CENTER,
-			emoji,
+			emoji
+				.name
+				.as_deref()
+				.filter(|_| emoji.id.is_none())
+				.unwrap_or("◌"),
 			egui::FontId::proportional(16.0),
 			colors.text_strong.gamma_multiply(tint.a() as f32 / 255.0),
 		);
 	}
-	let label = crate::i18n::translate_args("reactions-quick-react", &[("emoji", emoji)]);
+	let label =
+		crate::i18n::translate_args("reactions-quick-react", &[("emoji", &summary_name(emoji))]);
 	response.widget_info(|| {
 		egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), reacted, &label)
 	});

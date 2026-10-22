@@ -255,6 +255,8 @@ pub struct Renderer {
     /// Read by the shader when `predictable_texture_filtering` is on.
     texture_flag_buffers: [wgpu::Buffer; NUM_TEXTURE_FLAGS],
 
+    mipmaps: Option<Mipmaps>,
+
     /// Map of egui texture IDs to textures and their associated bindgroups (texture view +
     /// sampler). The texture may be None if the `TextureId` is just a handle to a user-provided
     /// sampler.
@@ -459,6 +461,7 @@ impl Renderer {
             uniform_bind_group,
             texture_bind_group_layout,
             texture_flag_buffers,
+            mipmaps: None,
             textures: HashMap::default(),
             next_user_texture_id: 0,
             samplers: HashMap::default(),
@@ -671,8 +674,24 @@ impl Renderer {
                 .textures
                 .remove(&id)
                 .expect("Tried to update a texture that has not been allocated yet.");
-            let texture = texture.expect("Tried to update user texture.");
+            let mut texture = texture.expect("Tried to update user texture.");
             let options = options.expect("Tried to update user texture.");
+            // TextureHandle::set_partial may enable mip filtering after the initial upload.
+            // Preserve the complete base level, including pixels outside this delta.
+            if image_delta.options.mipmap_mode.is_some()
+                && texture.mip_level_count() == 1
+                && texture.width().max(texture.height()) > 1
+            {
+                let replacement = allocate_texture(device, label, texture.size(), true);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                encoder.copy_texture_to_texture(
+                    texture.as_image_copy(),
+                    replacement.as_image_copy(),
+                    texture.size(),
+                );
+                queue.submit([encoder.finish()]);
+                texture = replacement;
+            }
             let origin = wgpu::Origin3d {
                 x: pos[0] as u32,
                 y: pos[1] as u32,
@@ -694,16 +713,12 @@ impl Renderer {
             // allocate a new texture
             let texture = {
                 profiling::scope!("create_texture");
-                device.create_texture(&wgpu::TextureDescriptor {
+                allocate_texture(
+                    device,
                     label,
                     size,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
-                })
+                    image_delta.options.mipmap_mode.is_some(),
+                )
             };
             let origin = wgpu::Origin3d::ZERO;
             (texture, origin, None)
@@ -741,6 +756,12 @@ impl Renderer {
         });
 
         queue_write_data_to_texture(&texture, origin);
+
+        if image_delta.options.mipmap_mode.is_some() && texture.mip_level_count() > 1 {
+            self.mipmaps
+                .get_or_insert_with(|| Mipmaps::new(device))
+                .generate(device, queue, &texture);
+        }
 
         // A full update must (re)create the texture at exactly the delta's size,
         // or glyph UVs (normalized by the CPU atlas size) will sample the wrong rows.
@@ -1170,10 +1191,181 @@ fn create_sampler(
         )),
         mag_filter,
         min_filter,
+        mipmap_filter: if options.mipmap_mode == Some(epaint::textures::TextureFilter::Linear) {
+            wgpu::MipmapFilterMode::Linear
+        } else {
+            wgpu::MipmapFilterMode::Nearest
+        },
+        lod_max_clamp: if options.mipmap_mode.is_some() {
+            32.0
+        } else {
+            0.0
+        },
         address_mode_u: address_mode,
         address_mode_v: address_mode,
         ..Default::default()
     })
+}
+
+fn allocate_texture(
+    device: &wgpu::Device,
+    label: Option<&str>,
+    size: wgpu::Extent3d,
+    mipmaps: bool,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label,
+        size,
+        mip_level_count: if mipmaps {
+            size.width.max(size.height).max(1).ilog2() + 1
+        } else {
+            1
+        },
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC
+            | if mipmaps {
+                wgpu::TextureUsages::RENDER_ATTACHMENT
+            } else {
+                wgpu::TextureUsages::empty()
+            },
+        view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+    })
+}
+
+/// Opt-in minification only. No CPU image copies are retained; partial uploads rebuild the chain.
+struct Mipmaps {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+impl Mipmaps {
+    fn new(device: &wgpu::Device) -> Self {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("egui mipmap inputs"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("egui mipmap shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(
+                r#"
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var filtering: sampler;
+struct Vertex { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> }
+@vertex fn vs(@builtin(vertex_index) index: u32) -> Vertex {
+    let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    return Vertex(vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0), uv);
+}
+@fragment fn fs(input: Vertex) -> @location(0) vec4<f32> {
+    return textureSampleLevel(source, filtering, input.uv, 0.0);
+}
+"#,
+            )),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("egui mipmap layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("egui mipmaps"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        Self {
+            pipeline,
+            layout,
+            sampler,
+        }
+    }
+    fn generate(&self, device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("egui mipmap generation"),
+        });
+        for level in 1..texture.mip_level_count() {
+            let view = |level| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    ..Default::default()
+                })
+            };
+            let source = view(level - 1);
+            let destination = view(level);
+            let inputs = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("egui mipmap inputs"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui mipmap level"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &destination,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &inputs, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit([encoder.finish()]);
+    }
 }
 
 fn create_vertex_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {

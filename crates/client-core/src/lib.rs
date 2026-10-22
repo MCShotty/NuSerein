@@ -246,6 +246,9 @@ pub enum Command {
 		request: u64,
 		change: Option<(model::Gif, bool)>,
 	},
+	ReactionPreferences {
+		request: u64,
+	},
 	MarkRead {
 		channel: Id,
 		message: Id,
@@ -636,6 +639,11 @@ pub enum Event {
 		request: u64,
 		result: Result<Vec<model::Gif>, auth::Failure>,
 	},
+	ReactionPreferences {
+		request: u64,
+		result: Result<Vec<String>, auth::Failure>,
+	},
+	ReactionPreferencesChanged,
 	ReadState(read_state::Event),
 	NotificationPreferences(notifications::Event),
 	Reactions(reactions::Event),
@@ -877,6 +885,7 @@ pub struct State {
 	pub startup_warnings: model::account::Warnings,
 	pub notification_preferences: notifications::Preferences,
 	pub reactions: reactions::Reactions,
+	pub reaction_preferences: reactions::Preferences,
 	pub profile: Option<profile::ProfileView>,
 	pub profile_request: u64,
 	pub profile_cache: profile::ProfileCache,
@@ -1118,6 +1127,7 @@ impl Default for State {
 			startup_warnings: Default::default(),
 			notification_preferences: notifications::Preferences::default(),
 			reactions: reactions::Reactions::default(),
+			reaction_preferences: Default::default(),
 			profile: None,
 			profile_request: 0,
 			profile_cache: Default::default(),
@@ -2593,6 +2603,10 @@ impl State {
 			self.apply_gif_favorites(request, Err(auth::Failure::Capacity));
 			return;
 		}
+		if let Command::ReactionPreferences { request } = command {
+			self.apply_reaction_preferences(request, Err(auth::Failure::Capacity));
+			return;
+		}
 		if let Command::Edit {
 			channel,
 			message,
@@ -2954,6 +2968,7 @@ impl State {
 				self.set_premium_type(0);
 			}
 			self.interrupt_preloads();
+			self.interrupt_reaction_preferences();
 			self.interrupt_stickers();
 			self.interrupt_soundboard();
 			self.posts.clear_summaries();
@@ -3193,6 +3208,15 @@ impl State {
 			}
 			Event::AccountSettings { folders, .. } => {
 				self.folders_stale |= folders && self.guild_folders.is_some();
+				Ok(())
+			}
+			Event::ReactionPreferencesChanged => {
+				self.reaction_preferences.dirty = true;
+				self.reaction_preferences.failures = 0;
+				Ok(())
+			}
+			Event::ReactionPreferences { request, result } => {
+				self.apply_reaction_preferences(request, result);
 				Ok(())
 			}
 			Event::Typing(_) => unreachable!("typing is handled before timeline invalidation"),
@@ -3974,6 +3998,7 @@ impl State {
 				self.own_server_profile.reset();
 				self.retain_owned_cosmetic_session(user.id);
 				self.retain_account_settings_session(user.id);
+				self.retain_reaction_preferences(user.id);
 				self.user = Some(user);
 				self.guilds = guilds;
 				self.channels = channels;
@@ -5022,6 +5047,12 @@ impl Event {
 				Self::Gifs {
 					result: Ok(page), ..
 				} => page.bytes(),
+				Self::ReactionPreferences {
+					result: Ok(keys), ..
+				} => {
+					keys.capacity() * size_of::<String>()
+						+ keys.iter().map(String::capacity).sum::<usize>()
+				}
 				Self::GifFavorites {
 					result: Ok(favorites),
 					..

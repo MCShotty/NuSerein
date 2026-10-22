@@ -1333,6 +1333,10 @@ impl DiscordApi {
 				request,
 				result: self.gif_favorites(change).await,
 			},
+			Command::ReactionPreferences { request } => Event::ReactionPreferences {
+				request,
+				result: self.reaction_preferences().await,
+			},
 			Command::MarkRead {
 				channel,
 				message,

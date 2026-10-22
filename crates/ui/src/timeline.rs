@@ -1176,6 +1176,13 @@ fn quick_reaction(
 		id: None,
 		name: Some(text.to_owned()),
 	};
+	quick_reaction_emoji(state, message, emoji)
+}
+fn quick_reaction_emoji(
+	state: &State,
+	message: &Message,
+	emoji: model::ReactionEmoji,
+) -> (model::ReactionEmoji, bool, bool) {
 	let reactions = state.reactions.display(message);
 	let reacted = reactions
 		.and_then(|items| items.iter().find(|r| r.emoji.same(&emoji)))
@@ -4565,27 +4572,26 @@ impl TimelineView {
 								egui::StrokeKind::Inside,
 							);
 							if react && !shift {
-								let quick = self
-									.quick_reactions
-									.unwrap_or(crate::reactions::QUICK_DEFAULTS);
+								let quick = self.menu.quick(state, message, self.quick_reactions.unwrap_or(crate::reactions::QUICK_DEFAULTS));
 								let mut last = egui::Rect::NOTHING;
-								for (index, text) in quick.into_iter().enumerate() {
+								for (index, emoji) in quick.into_iter().take(3).enumerate() {
 									let (emoji, reacted, enabled) =
-										quick_reaction(state, message, text);
+										quick_reaction_emoji(state, message, emoji);
 									let response = toolbar
 										.push_id(("quick-reaction", index), |ui| {
 											ui.add_enabled_ui(enabled, |ui| {
-												crate::reactions::quick_button(ui, text, reacted)
+												crate::reactions::quick_button(ui, &emoji, reacted, avatars, state.demo)
 											})
 											.inner
 										})
 										.inner;
 									last = response.rect;
 									if response.clicked() {
-										self.reaction = Some((id, Some(emoji)));
-										if !reacted {
-											self.quick_reaction_used = Some(text);
+										if !reacted && emoji.id.is_none() {
+											self.quick_reaction_used = crate::emoji_picker::standard().iter()
+												.find(|(text, _)| Some(*text) == emoji.name.as_deref()).map(|(text, _)| *text);
 										}
+										self.reaction = Some((id, Some(emoji)));
 									}
 								}
 								let x = last.right() + 1.0;

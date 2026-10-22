@@ -54,6 +54,8 @@ fuzz_target!(|data: &[u8]| {
 		return;
 	}
 	if selector == 15 {
+		let _ = black_box(discord_protocol::reaction_preferences(payload));
+		let _ = black_box(discord_protocol::settings_update::reactions_changed(payload));
 		if let Ok(menu) = discord_protocol::reporting::menu(payload) {
 			assert!(menu.valid());
 			assert!(menu.bytes() <= model::reporting::MAX_BYTES);

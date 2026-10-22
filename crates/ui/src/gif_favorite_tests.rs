@@ -86,7 +86,12 @@ fn message_gif_stars_report_busy_sync_and_accept_explicit_retries() {
 				for _ in 0..5 {
 					let output = frame(&mut state, &mut view, vec![]);
 					hover = output.shapes.iter().find_map(|s| match &s.shape {
-						egui::Shape::Text(text) if text.galley.text() == "GIF" => {
+						egui::Shape::Text(text)
+							if text.galley.text() == "GIF"
+								&& view.emoji_picker.gif_trigger.is_none_or(|rect| {
+									!rect.contains(text.pos + text.galley.size() * 0.5)
+								}) =>
+						{
 							Some(text.pos + text.galley.size() * 0.5)
 						}
 						_ => None,

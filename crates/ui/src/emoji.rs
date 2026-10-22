@@ -89,7 +89,10 @@ pub fn install(ctx: &Context) -> Result<(), image::ImageError> {
 	let texture = ctx.load_texture(
 		"Twemoji 17.0.3",
 		decode_atlas()?,
-		egui::TextureOptions::LINEAR,
+		egui::TextureOptions {
+			mipmap_mode: Some(egui::TextureFilter::Linear),
+			..egui::TextureOptions::LINEAR
+		},
 	);
 	ctx.data_mut(|data| data.insert_temp(egui::Id::unique("twemoji"), texture));
 	entries();
@@ -168,8 +171,13 @@ pub(crate) fn image_cell(
 		.alt_text(text)
 }
 
-pub(crate) fn button(ctx: &Context, emoji: &str, text: String) -> egui::Button<'static> {
-	if let Some(image) = image(ctx, emoji, 18.0) {
+pub(crate) fn button_sized(
+	ctx: &Context,
+	emoji: &str,
+	text: String,
+	size: f32,
+) -> egui::Button<'static> {
+	if let Some(image) = image(ctx, emoji, size) {
 		egui::Button::image_and_text(image, text).image_tint_follows_text_color(false)
 	} else {
 		egui::Button::new(format!("{emoji} {text}"))

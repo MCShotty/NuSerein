@@ -15,3 +15,8 @@ reference white and display headroom; tone mapping remains the media renderer's 
 The parent's October 2026 egui update leaves egui-wgpu sources and licenses
 unchanged. The standalone dependency pins follow that update, retaining the
 HDR patch without a second egui/epaint revision.
+
+The renderer also honors opt-in mipmap filtering for downscaled icon/emoji artwork.
+It allocates and rebuilds GPU mip levels, including after partial uploads, and
+preserves unchanged pixels when a partial upload first enables mipmaps. Ordinary
+textures retain their single-level path. No CPU copy of uploaded images is retained.

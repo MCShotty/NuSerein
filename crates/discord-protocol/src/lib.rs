@@ -58,6 +58,7 @@ pub mod typing;
 use attachments::AttachmentList;
 use embeds::EmbedList;
 use model::{Channel, Guild, Id, Message, MessagePatch, Patch, User};
+pub use reactions::account_frecency as reaction_preferences;
 pub use reactions::{GuildEmojisUpdate, ReactionDelta, ReactionEmojiTarget, ReactionTarget};
 use serde::Deserialize;
 use serde_json::value::RawValue;

@@ -4,6 +4,141 @@ use serde::{
 	de::{SeqAccess, Visitor},
 };
 
+/// Unofficial FrecencyUserSettings: reaction-specific ranking (13), or legacy emoji ranking (6).
+/// Keys are Discord friendly names or custom-emoji snowflakes, resolved by the UI catalog.
+pub fn account_frecency(bytes: &[u8]) -> Result<Vec<String>, crate::DecodeError> {
+	use crate::{DecodeError, guild_folders::fields};
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	#[derive(Deserialize)]
+	struct Response {
+		settings: String,
+		#[serde(default)]
+		out_of_date: bool,
+	}
+	if bytes.len() > crate::gif_favorites::MAX_RESPONSE {
+		return Err(DecodeError);
+	}
+	let response: Response = serde_json::from_slice(bytes).map_err(|_| DecodeError)?;
+	if response.out_of_date {
+		return Err(DecodeError);
+	}
+	let wire = STANDARD
+		.decode(response.settings)
+		.map_err(|_| DecodeError)?;
+	let mut reactions = None;
+	let mut legacy = None;
+	for field in fields(&wire)? {
+		let target = match field.number {
+			13 => &mut reactions,
+			6 => &mut legacy,
+			_ => continue,
+		};
+		if target.is_some() {
+			return Err(DecodeError);
+		}
+		*target = Some(field.message()?);
+	}
+	let source = reactions.or(legacy).unwrap_or_default();
+	if source.len() > 512 * 1024 {
+		return Err(DecodeError);
+	}
+	let mut ranked = Vec::new();
+	let mut keys = std::collections::BTreeSet::new();
+	for field in fields(source)? {
+		if field.number != 1 {
+			continue;
+		}
+		if ranked.len() >= 2048 {
+			return Err(DecodeError);
+		}
+		let entry = field.message()?;
+		if entry.len() > 2048 {
+			return Err(DecodeError);
+		}
+		let (mut key, mut value) = (None, None);
+		for field in fields(entry)? {
+			match field.number {
+				1 if key.is_none() => {
+					key = Some(std::str::from_utf8(field.message()?).map_err(|_| DecodeError)?)
+				}
+				2 if value.is_none() => value = Some(field.message()?),
+				1 | 2 => return Err(DecodeError),
+				_ => {}
+			}
+		}
+		let key = key.ok_or(DecodeError)?;
+		if key.is_empty()
+			|| key.len() > 128
+			|| key.chars().any(char::is_control)
+			|| !keys.insert(key)
+		{
+			return Err(DecodeError);
+		}
+		let (mut total, mut last, mut frecency, mut score) = (0u32, 0u64, None, None);
+		let mut seen = 0u8;
+		for field in fields(value.unwrap_or_default())? {
+			if matches!(field.number, 1 | 3 | 4) {
+				let bit = 1 << field.number;
+				if seen & bit != 0 {
+					return Err(DecodeError);
+				}
+				seen |= bit;
+			}
+			match field.number {
+				1 => total = u32::try_from(field.integer()?).map_err(|_| DecodeError)?,
+				2 => {
+					if let Ok(mut packed) = field.message() {
+						if packed.len() > 640 {
+							return Err(DecodeError);
+						}
+						while !packed.is_empty() {
+							last = last.max(frecency_varint(&mut packed)?);
+						}
+					} else {
+						last = last.max(field.integer()?);
+					}
+				}
+				3 => frecency = Some(field.integer()? as u32 as i32),
+				4 => score = Some(field.integer()? as u32 as i32),
+				_ => {}
+			}
+		}
+		ranked.push((
+			key,
+			score.or(frecency.filter(|v| *v >= 0)).unwrap_or(0),
+			last,
+			total,
+		));
+	}
+	ranked.sort_by(|a, b| {
+		b.1.cmp(&a.1)
+			.then(b.2.cmp(&a.2))
+			.then(b.3.cmp(&a.3))
+			.then(a.0.cmp(b.0))
+	});
+	Ok(ranked
+		.into_iter()
+		.take(128)
+		.map(|(key, ..)| key.to_owned())
+		.collect())
+}
+
+fn frecency_varint(bytes: &mut &[u8]) -> Result<u64, crate::DecodeError> {
+	let mut result = 0;
+	for shift in (0..70).step_by(7) {
+		let (&byte, rest) = bytes.split_first().ok_or(crate::DecodeError)?;
+		*bytes = rest;
+		if shift == 63 && byte > 1 {
+			return Err(crate::DecodeError);
+		}
+		result |= u64::from(byte & 0x7f) << shift;
+		if byte & 0x80 == 0 {
+			return Ok(result);
+		}
+	}
+	Err(crate::DecodeError)
+}
+
 #[derive(Default)]
 pub struct ReactionList(pub Vec<Reaction>);
 impl<'de> Deserialize<'de> for ReactionList {
@@ -106,6 +241,58 @@ mod tests {
 	use crate::{MessageDto, PatchDto, decode};
 	use model::{Id, Patch};
 	use serde_json::json;
+
+	#[test]
+	fn account_reaction_ranking_uses_synced_scores_and_preserves_legacy_fallback() {
+		use crate::guild_folders::message;
+		use base64::{Engine as _, engine::general_purpose::STANDARD};
+		let entry = |key: &str, score: u8| {
+			let mut e = Vec::new();
+			message(1, key.as_bytes(), &mut e);
+			message(2, &[8, 4, 18, 2, 42, 80, 24, 1, 32, score], &mut e);
+			let mut map = Vec::new();
+			message(1, &e, &mut map);
+			map
+		};
+		let response =
+			|wire: &[u8]| serde_json::to_vec(&json!({"settings": STANDARD.encode(wire)})).unwrap();
+		let mut wire = Vec::new();
+		message(6, &entry("fire", 110), &mut wire);
+		assert_eq!(super::account_frecency(&response(&wire)).unwrap(), ["fire"]);
+		let reactions = [entry("skull_crossbones", 20), entry("9001", 80)].concat();
+		message(13, &reactions, &mut wire);
+		assert_eq!(
+			super::account_frecency(&response(&wire)).unwrap(),
+			["9001", "skull_crossbones"]
+		);
+		let mut empty = Vec::new();
+		message(13, &[], &mut empty);
+		assert!(
+			super::account_frecency(&response(&empty))
+				.unwrap()
+				.is_empty()
+		);
+		let mut duplicate = Vec::new();
+		message(
+			13,
+			&[entry("9001", 1), entry("9001", 2)].concat(),
+			&mut duplicate,
+		);
+		assert!(super::account_frecency(&response(&duplicate)).is_err());
+		let mut invalid = Vec::new();
+		message(13, &entry("bad\nkey", 2), &mut invalid);
+		assert!(super::account_frecency(&response(&invalid)).is_err());
+		assert!(super::account_frecency(br#"{"settings":"!"}"#).is_err());
+		assert!(super::account_frecency(br#"{"settings":"","out_of_date":true}"#).is_err());
+		assert!(super::account_frecency(&vec![0; crate::gif_favorites::MAX_RESPONSE + 1]).is_err());
+		let many: Vec<_> = (1..=200).flat_map(|i| entry(&format!("{i}"), 1)).collect();
+		let mut bounded = Vec::new();
+		message(13, &many, &mut bounded);
+		assert_eq!(
+			super::account_frecency(&response(&bounded)).unwrap().len(),
+			128
+		);
+	}
 
 	#[test]
 	fn reaction_deltas_validate_type_identity_and_bounded_emoji() {

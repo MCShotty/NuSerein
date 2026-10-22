@@ -4,6 +4,18 @@ use model::Gif;
 use reqwest::Method;
 
 impl DiscordApi {
+	/// Read account reaction history without modifying any frecency or favorite settings.
+	pub async fn reaction_preferences(&self) -> Result<Vec<String>, Failure> {
+		let bytes = self
+			.request_limited(
+				Method::GET,
+				"/users/@me/settings-proto/2",
+				None,
+				MAX_RESPONSE,
+			)
+			.await?;
+		discord_protocol::reaction_preferences(&bytes).map_err(|_| Failure::Protocol)
+	}
 	async fn read_gif_favorites(&self) -> Result<Decoded, Failure> {
 		let bytes = self
 			.request_limited(
@@ -96,6 +108,8 @@ mod tests {
 				let mut outdated: serde_json::Value = serde_json::from_str(SAVED).unwrap();
 				outdated["out_of_date"] = true.into();
 				let outdated = outdated.to_string();
+				use base64::{Engine as _, engine::general_purpose::STANDARD};
+				let reactions = serde_json::json!({"settings": STANDARD.encode([106,12,10,10,10,4,b'9',b'0',b'0',b'1',18,2,32,10])}).to_string();
 				for (method, patch, version, response) in [
 					("GET", None, 0, BASE),
 					("GET", None, 0, BASE),
@@ -107,6 +121,7 @@ mod tests {
 					("GET", None, 0, BASE),
 					("GET", None, 0, BASE),
 					("PATCH", Some(ADD_PATCH), 7, PARTIAL),
+					("GET", None, 0, reactions.as_str()),
 				] {
 					let (mut socket, _) = listener.accept().await.unwrap();
 					let mut request = Vec::new();
@@ -189,6 +204,7 @@ mod tests {
 			let mut invalid = gif(2000);
 			invalid.preview = "https://example.invalid/file.gif".into();
 			assert!(api.gif_favorites(Some((invalid, true))).await.is_err());
+			assert_eq!(api.reaction_preferences().await.unwrap(), ["9001"]);
 			server.await.unwrap();
 		})
 		.await

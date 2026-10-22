@@ -3641,10 +3641,10 @@ impl MessagingUi {
                         column(ui, &mut |ui| {
                         let send_button = ui
                             .add_enabled_ui(can_send, |ui| {
-                                icons::button(
+                                icons::composer(
                                     ui,
                                     icons::Icon::Send,
-                                    28.0,
+                                    false,
                                     &crate::i18n::translate_if_key(if editing_here { "lib-ime-updates-text-save-edit" } else if application_command { "lib-ime-updates-text-send-command" } else { "lib-ime-updates-text-send-message" }),
                                 )
                             })
@@ -5191,19 +5191,6 @@ impl MessagingUi {
 						self.timeline.extension_actions = self.extensions.message_actions();
 						self.timeline.quick_reactions =
 							Some(self.reaction_picker.quick_reactions());
-						let mut seen = std::collections::BTreeSet::new();
-						let author_lookup: Vec<_> = state
-							.timeline
-							.iter()
-							.rev()
-							.filter(|message| !message.author.webhook)
-							.map(|message| message.author.id)
-							.filter(|id| seen.insert(*id))
-							.take(client_core::member_search::LIMIT)
-							.collect();
-						if let Some(command) = state.request_author_members(&author_lookup) {
-							commands.push(command);
-						}
 						self.timeline.show_with_scroll(
 							ui,
 							state,

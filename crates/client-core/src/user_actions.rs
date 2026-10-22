@@ -299,27 +299,16 @@ impl State {
 		if message.author.webhook {
 			return &message.author.name;
 		}
-		if let Some(guild) = self
+		if self
 			.channel(message.channel)
 			.and_then(|channel| channel.guild)
+			.is_some()
 		{
-			let member = self
-				.members
-				.as_ref()
-				.filter(|list| list.guild == Some(guild))
-				.and_then(|list| {
-					list.slots
-						.iter()
-						.flatten()
-						.filter_map(|slot| match slot {
-							model::MemberSlot::Person(m) => Some(m),
-							_ => None,
-						})
-						.find(|m| m.user.id == message.author.id)
-				});
-			let nick = member
-				.and_then(|m| m.nick.as_deref().filter(|nick| !nick.is_empty()))
-				.or(message.author_nick.as_deref());
+			let member = self.display_member(message.channel, message.author.id);
+			let nick = match member {
+				Some(member) => member.nick.as_deref(),
+				None => message.author_nick.as_deref(),
+			};
 			if let Some(nick) = nick.filter(|nick| !nick.is_empty()) {
 				return nick;
 			}

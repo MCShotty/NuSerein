@@ -138,6 +138,7 @@ impl State {
 			.iter()
 			.copied()
 			.filter(|id| id.0 != 0)
+			.filter(|id| self.display_member(channel, *id).is_none())
 			.take(LIMIT)
 			.collect();
 		users.sort_unstable();
@@ -160,17 +161,21 @@ impl State {
 			nonce: self.member_search_nonce,
 			slot: 1,
 		};
-		let rows = if view
+		let (rows, retained) = if view
 			.request
 			.as_ref()
 			.is_some_and(|old| old.channel == channel && old.guild == guild)
 		{
-			std::mem::take(&mut self.member_search[1].rows)
+			(
+				std::mem::take(&mut self.member_search[1].rows),
+				std::mem::take(&mut self.member_search[1].retained),
+			)
 		} else {
-			vec![]
+			(vec![], vec![])
 		};
 		self.member_search[1] = View {
 			rows,
+			retained,
 			request: Some(request.clone()),
 			..Default::default()
 		};
@@ -210,7 +215,15 @@ impl State {
 						);
 					}
 				}
-				self.member_search[request.slot].rows = rows;
+				let view = &mut self.member_search[request.slot];
+				for member in std::mem::replace(&mut view.rows, rows) {
+					view.retained.retain(|old| old.user.id != member.user.id);
+					view.retained.push(member);
+				}
+				let mut bytes = view.retained.iter().map(Member::bytes).sum::<usize>();
+				while view.retained.len() > LIMIT || bytes > MAX_BYTES {
+					bytes -= view.retained.remove(0).bytes();
+				}
 			}
 			Ok(_) => {
 				self.member_search[request.slot].error =

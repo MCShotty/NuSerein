@@ -163,7 +163,8 @@ advancing animation frames. Accepted worker results get a fresh
 minute. The existing maintenance deadline includes both artwork pools, so an
 idle window can trim them. Expiry updates byte accounting and removes associated
 animation/playback state. Existing 512-item / 64-MiB artwork and 1,024-item /
-16-MiB emoji ceilings remain. Unicode's shared low-resolution atlas is unchanged.
+16-MiB emoji ceilings remain. Filtered emoji textures count every GPU mip level
+against the emoji ceiling; ordinary avatar/media textures keep their existing path.
 Returning to expired artwork uses the existing bounded worker and disk cache;
 a disk miss may fetch again. GPU resources may stay reserved in the driver after
 the handle is released. No persisted data, credentials or preferences are removed.
@@ -1058,12 +1059,22 @@ item/byte limits and persistence remain unchanged; no queue or budget is added.
 
 Twemoji artwork is public bundled data, not an account cache: one 5,225,108-byte PNG
 and a fixed 4,009-entry Unicode index are embedded in the executable. A startup worker
-decodes one 2,048×2,016 RGBA atlas (15.75 MiB); the GPU texture has the same pixel
-payload, with driver overhead additional. The decoder writes directly into the final
+decodes one 2,048×2,016 RGBA atlas (15.75 MiB); filtered GPU mip levels add approximately
+one third to that fixed GPU payload, with driver overhead additional. The decoder writes directly into the final
 CPU pixel buffer and premultiplies alpha in place; decoder scratch and upload staging
 can add temporary storage. The context retains the single atlas until exit,
 including across logout; there are no emoji downloads, disk writes, or growing texture
 queues. Unknown sequences and explicit text-presentation selectors remain font text.
+
+Account reaction preferences retain at most 128 keys / 32 KiB in session RAM,
+with no new disk record or settings writes. Reads reuse the bounded 6-MiB settings
+response, admit at most a 512-KiB frecency subtree / 2,048 wire entries and release
+the raw response in the worker. Only one read is pending; refreshes are coalesced
+to five seconds, with three failed attempts before another service update or reconnect.
+Account/session matching rejects stale results; logout releases the projection.
+The shared quick-reaction projection holds at most those 128 resolved entries plus
+32 session-recent reactions and is rebuilt only when its identity/catalog/ranking
+changes. Existing permission and Nitro checks still run when a reaction is offered.
 
 GIF search and trending results retain at most eight session-memory pages / 768 KiB for ten
 minutes. Reopening a fresh query reuses its page without a REST request; least-recently-used

@@ -336,7 +336,11 @@ pub(crate) struct Controls {
 	reminder_revision: u64,
 	scope: Option<(u64, Option<Id>)>,
 	recent: std::collections::VecDeque<model::ReactionEmoji>,
+	recent_revision: u64,
+	preferred: Option<(PreferredReactionKey, Vec<model::ReactionEmoji>)>,
 }
+
+type PreferredReactionKey = (u64, Option<Id>, u64, u64, u64, Option<Id>);
 
 impl Controls {
 	pub(crate) fn reminder_dialog(&mut self, ctx: &egui::Context, state: &client_core::State) {
@@ -439,6 +443,7 @@ impl Controls {
 		if self.scope != Some(scope) {
 			if self.scope.is_some_and(|old| old.0 != scope.0) {
 				self.recent.clear();
+				self.preferred = None;
 			}
 			self.custom_reminder = None;
 			self.reminder_text.clear();
@@ -474,10 +479,11 @@ impl Controls {
 		self.recent.retain(|old| !old.same(emoji));
 		self.recent.push_front(emoji.clone());
 		self.recent.truncate(32);
+		self.recent_revision = self.recent_revision.wrapping_add(1);
 	}
 
 	pub(crate) fn quick(
-		&self,
+		&mut self,
 		state: &client_core::State,
 		message: &model::Message,
 		defaults: [&str; 3],
@@ -485,16 +491,41 @@ impl Controls {
 		let guild = state
 			.channel(message.channel)
 			.and_then(|channel| channel.guild);
-		let mut recent: Vec<_> = self.recent.iter().collect();
-		recent.sort_by_key(|emoji| {
-			!emoji
-				.id
-				.and_then(|id| state.custom_emoji(id))
-				.is_some_and(|(server, _)| Some(server.id) == guild)
-		});
+		let key = (
+			state.generation,
+			state.user.as_ref().map(|user| user.id),
+			state.catalog_revision(),
+			state.reaction_preferences.revision,
+			self.recent_revision,
+			guild,
+		);
+		if self.preferred.as_ref().is_none_or(|(old, _)| *old != key) {
+			let mut recent: Vec<_> = self
+				.recent
+				.iter()
+				.cloned()
+				.chain(
+					state
+						.reaction_preferences
+						.ranked
+						.iter()
+						.filter_map(|key| crate::emoji_picker::synced_reaction(state, key)),
+				)
+				.collect();
+			recent.sort_by_key(|emoji| {
+				!emoji
+					.id
+					.and_then(|id| state.custom_emoji(id))
+					.is_some_and(|(server, _)| Some(server.id) == guild)
+			});
+			self.preferred = Some((key, recent));
+		}
 		let mut result: Vec<model::ReactionEmoji> = Vec::with_capacity(4);
-		for emoji in recent
+		for emoji in self
+			.preferred
+			.as_ref()
 			.into_iter()
+			.flat_map(|(_, recent)| recent.iter())
 			.cloned()
 			.chain(
 				defaults
@@ -830,7 +861,9 @@ pub(crate) fn quick_button(
 			icons::paint(ui.painter(), Icon::Smile, target, colors.muted);
 		}
 	} else if let Some(name) = &emoji.name
-		&& let Some(image) = crate::emoji::image(ui.ctx(), name, 26.0)
+		&& let Some(image) = crate::emoji::lookup(name)
+			.and_then(|cell| images.unicode_image(ui.ctx(), cell, 26.0))
+			.or_else(|| crate::emoji::image(ui.ctx(), name, 26.0))
 	{
 		image.paint_at(ui, target);
 	}
@@ -1066,6 +1099,34 @@ mod tests {
 			quick.iter().all(|emoji| emoji.id.is_none()),
 			"unknown or removed custom emojis never leak back into the menu"
 		);
+	}
+
+	#[test]
+	fn synced_account_choices_reach_both_quick_reaction_surfaces() {
+		let mut state = test_support::demo_state();
+		let message = state.timeline.iter().next().unwrap().clone();
+		state.reaction_preferences.ranked =
+			vec!["9001".into(), "skull_crossbones".into(), "rocket".into()];
+		state.reaction_preferences.revision += 1;
+		let mut controls = Controls::default();
+		let quick = controls.quick(&state, &message, crate::reactions::QUICK_DEFAULTS);
+		assert!(
+			quick
+				.iter()
+				.any(|e| e.name.as_deref() == Some("☠️") || e.name.as_deref() == Some("☠"))
+		);
+		assert!(quick.iter().any(|e| e.name.as_deref() == Some("🚀")));
+		let remembered = controls.preferred.as_ref().unwrap().1.as_ptr();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Message(test_support::message(778, state.selected.unwrap())),
+		});
+		let _ = controls.quick(&state, &message, crate::reactions::QUICK_DEFAULTS);
+		assert_eq!(remembered, controls.preferred.as_ref().unwrap().1.as_ptr());
+		state.reaction_preferences.ranked = vec!["fire".into()];
+		state.reaction_preferences.revision += 1;
+		let quick = controls.quick(&state, &message, crate::reactions::QUICK_DEFAULTS);
+		assert_eq!(quick[0].name.as_deref(), Some("🔥"));
 	}
 
 	#[test]

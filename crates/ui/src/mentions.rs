@@ -1643,6 +1643,56 @@ mod tests {
 	}
 
 	#[test]
+	fn future_messages_and_revisited_authors_reuse_known_nicknames_and_explicit_clears() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		for id in [90003, 90004, 90005] {
+			let client_core::Command::MemberSearch(request) =
+				state.request_author_members(&[Id(id)]).unwrap()
+			else {
+				panic!("author lookup")
+			};
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::MemberSearch {
+					request,
+					result: Ok(vec![model::Member {
+						user: user(id, "Account"),
+						nick: Some(format!("Nickname {id}")),
+						roles: vec![],
+						status: None,
+						custom_status: None,
+						activities: vec![],
+						clients: Default::default(),
+					}]),
+				},
+			});
+		}
+		assert!(
+			state.request_author_members(&[Id(90003)]).is_none(),
+			"revisiting a resolved author must not start another batch"
+		);
+		let mut message = test_support::message(777, channel);
+		message.author = user(90003, "Account");
+		assert_eq!(state.message_author_name(&message), "Nickname 90003");
+		message.author_nick = Some("Stale nickname".into());
+		state.member_search[1]
+			.retained
+			.iter_mut()
+			.find(|member| member.user.id == Id(90003))
+			.unwrap()
+			.nick = None;
+		assert_eq!(
+			state.message_author_name(&message),
+			"Account",
+			"an explicit nickname removal wins over old message metadata"
+		);
+	}
+
+	#[test]
 	fn game_empty_search_keeps_editor_keys_unless_retrying() {
 		use client_core::game_mentions::Status;
 		for status in [

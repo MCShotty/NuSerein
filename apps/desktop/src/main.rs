@@ -4220,6 +4220,10 @@ impl Desktop {
 					request,
 					result: Ok(self.state.gifs.favorites.clone()),
 				},
+				Command::ReactionPreferences { request } => Event::ReactionPreferences {
+					request,
+					result: Ok(self.state.reaction_preferences.ranked.clone()),
+				},
 				Command::CreateGuild { sequence, .. } => Event::GuildCreated {
 					sequence,
 					result: Err(Failure::ProtocolAt("Server creation unavailable offline")),
@@ -6791,6 +6795,20 @@ impl eframe::App for Desktop {
 			}
 			if let Some(command) = self.state.take_gif_favorites_command() {
 				commands.push(command);
+			}
+			if let Some(command) = self
+				.state
+				.next_reaction_preferences_read(std::time::Instant::now())
+			{
+				commands.push(command);
+			}
+			if self.state.gateway_connected
+				&& !self.state.demo
+				&& let Some(delay) = self
+					.state
+					.reaction_preferences_delay(std::time::Instant::now())
+			{
+				ctx.request_repaint_after(delay);
 			}
 			commands.extend(self.state.take_preload_retries());
 			for command in commands {
