@@ -19,6 +19,9 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      # Keep this follow-up's original PR head in the same native comparison as main/nightly.
+      SEREIN_REPLAY_CHECKPOINT: ${{ github.repository == 'MCShotty/Serein' && github.event.pull_request.head.ref == 'feat/conversation-qol' && '3179696b37ef85a5d9aebf1a3cf026b0ea488ef7' || '' }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -28,13 +31,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/integration/desktop-parity-20261017' && 'f9e39f792b2fe0af02f2c1e791e1516147084824') || github.event.before }}
-        run: python scripts/compare-replay.py --fork-base "$env:SEREIN_REPLAY_BASE" --output target/parity-replay.json
+        run: python scripts/compare-replay.py --fork-base "$env:SEREIN_REPLAY_BASE" --checkpoint "$env:SEREIN_REPLAY_CHECKPOINT" --output target/parity-replay.json
         if: runner.os == 'Windows'
       - name: Compare current nightly and previous fork (offline workload)
         env:
           GH_TOKEN: ${{ github.token }}
           SEREIN_REPLAY_BASE: ${{ github.event.pull_request.base.sha || (github.ref == 'refs/heads/integration/desktop-parity-20261017' && 'f9e39f792b2fe0af02f2c1e791e1516147084824') || github.event.before }}
-        run: python3 scripts/compare-replay.py --fork-base "$SEREIN_REPLAY_BASE" --output target/parity-replay.json
+        run: python3 scripts/compare-replay.py --fork-base "$SEREIN_REPLAY_BASE" --checkpoint "$SEREIN_REPLAY_CHECKPOINT" --output target/parity-replay.json
         if: runner.os != 'Windows'
       - uses: actions/upload-artifact@v7.0.1
         with:
