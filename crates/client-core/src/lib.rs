@@ -3873,6 +3873,7 @@ impl State {
 					}
 				} else {
 					let kept_ranges = self.members.as_ref().map(|m| m.ranges.clone());
+					self.refresh_member_labels(&list);
 					for slot in list.slots.iter().flatten() {
 						if let MemberSlot::Person(member) = slot {
 							self.timeline.apply_author_membership(

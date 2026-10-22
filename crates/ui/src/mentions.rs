@@ -1679,12 +1679,32 @@ mod tests {
 		message.author = user(90003, "Account");
 		assert_eq!(state.message_author_name(&message), "Nickname 90003");
 		message.author_nick = Some("Stale nickname".into());
-		state.member_search[1]
+		let mut member = state.member_search[1]
 			.retained
-			.iter_mut()
+			.iter()
 			.find(|member| member.user.id == Id(90003))
 			.unwrap()
-			.nick = None;
+			.clone();
+		state.request_members();
+		for nick in [Some("Updated nickname"), None] {
+			member.nick = nick.map(str::to_owned);
+			let mut list = state.members.as_ref().unwrap().clone();
+			list.slots = vec![Some(model::MemberSlot::Person(member.clone()))];
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::Members(list.clone()),
+			});
+			// Moving the sidebar away must not reveal the older lookup result again.
+			list.slots.clear();
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::Members(list),
+			});
+			assert_eq!(
+				state.message_author_name(&message),
+				nick.unwrap_or("Account")
+			);
+		}
 		assert_eq!(
 			state.message_author_name(&message),
 			"Account",

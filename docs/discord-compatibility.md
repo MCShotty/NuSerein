@@ -3309,7 +3309,8 @@ custom emoji are skipped; defaults fill only unused slots. The schema reference 
 Author membership reads follow visible timeline rows instead of competing with a
 newest-message batch. Bounded prior lookup results remain available while another
 batch loads, and subsequent messages reuse those guild nicknames. Loaded member
-metadata, including explicit nickname removal, takes precedence over embedded labels.
+metadata refreshes matching cached labels, including nickname removal, so moving
+the sidebar away cannot restore an older name. It takes precedence over embedded labels.
 Offline fixtures verify these paths; live account synchronization remains unverified.
 
 Message and link context menus share ordered reaction, message, utility, destructive and

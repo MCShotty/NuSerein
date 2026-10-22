@@ -46,6 +46,44 @@ pub struct View {
 	pub error: Option<&'static str>,
 }
 impl State {
+	pub(crate) fn refresh_member_labels(&mut self, list: &model::MemberList) {
+		if self
+			.member_search
+			.iter()
+			.all(|view| view.rows.is_empty() && view.retained.is_empty())
+		{
+			return;
+		}
+		let updates: std::collections::BTreeMap<_, _> = list
+			.slots
+			.iter()
+			.flatten()
+			.filter_map(|slot| match slot {
+				model::MemberSlot::Person(member) => Some((member.user.id, member)),
+				_ => None,
+			})
+			.collect();
+		for view in &mut self.member_search {
+			if view.request.as_ref().is_none_or(|request| {
+				request.channel != list.channel || Some(request.guild) != list.guild
+			}) {
+				continue;
+			}
+			for rows in [&mut view.rows, &mut view.retained] {
+				for member in rows.iter_mut() {
+					if let Some(updated) = updates.get(&member.user.id) {
+						*member = (*updated).clone();
+					}
+				}
+				let mut bytes = rows.iter().map(Member::bytes).sum::<usize>();
+				while bytes > MAX_BYTES {
+					bytes -= rows.remove(0).bytes();
+				}
+				rows.shrink_to(LIMIT);
+			}
+		}
+	}
+
 	/// Presentation metadata only; callers must use the permission state to authorize actions.
 	pub fn display_member(&self, channel: Id, user: Id) -> Option<&Member> {
 		let guild = self.channel(channel)?.guild?;
