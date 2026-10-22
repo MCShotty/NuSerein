@@ -390,7 +390,13 @@ impl Controls {
 				let chosen =
 					chosen.filter(|at| **at > now && **at - now <= time::Duration::days(366));
 				if !self.reminder_text.is_empty() && chosen.is_none() {
-					ui.weak(crate::i18n::translate("menu-reminder-invalid"));
+					ui.weak(crate::i18n::translate(
+						if crate::local_time::timezone_status() == Some("timezone-updating") {
+							"timezone-updating"
+						} else {
+							"menu-reminder-invalid"
+						},
+					));
 				}
 				if ui
 					.add_enabled(

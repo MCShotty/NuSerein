@@ -249,7 +249,7 @@ pub fn minute_deadline(at: time::OffsetDateTime) -> std::time::Duration {
 
 /// Resolve local input without guessing across a daylight-saving gap or fold.
 pub fn wall_time(value: &str) -> Vec<time::OffsetDateTime> {
-	if value.len() != 16 {
+	if value.len() != 16 || timezone_status() == Some("timezone-updating") {
 		return Vec::new();
 	}
 	let Ok(civil) = value.replace(' ', "T").parse::<jiff::civil::DateTime>() else {
@@ -372,6 +372,9 @@ mod tests {
 	#[test]
 	fn reminder_wall_times_distinguish_dst_gaps_and_folds() {
 		let _zone = pin_timezone("Europe/London");
+		FRAME.with(|frame| frame.borrow_mut().status = Some("timezone-updating"));
+		assert!(wall_time("2026-10-25 12:30").is_empty());
+		FRAME.with(|frame| frame.borrow_mut().status = None);
 		assert!(wall_time("2026-03-29 01:30").is_empty());
 		let fold = wall_time("2026-10-25 01:30");
 		assert_eq!(fold.len(), 2);
