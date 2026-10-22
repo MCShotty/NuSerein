@@ -73,7 +73,7 @@ def counters(path):
     return struct.unpack('=5Q', path.read_bytes())
 
 
-def sample(binary, workload, output, preload=None):
+def sample(binary, workload, output, preload=None, reaction_history=False):
     page = 'conversation' if workload.startswith('conversation-') else workload
     active = workload in ('conversation-churn', 'gif-favorites')
     metrics = output.with_suffix('.metrics.json')
@@ -85,6 +85,8 @@ def sample(binary, workload, output, preload=None):
         env['SEREIN_ALLOC_PROFILE'] = str(allocation)
     arguments = [str(binary), '--demo', '--interactive', '--page=' + page,
                  '--width=1120', '--height=760']
+    if reaction_history:
+        arguments.append('--reaction-history')
     if active:
         arguments.append('--metrics=' + str(metrics))
     if workload == 'conversation-churn':
@@ -106,6 +108,10 @@ def sample(binary, workload, output, preload=None):
                 raise RuntimeError('No visible preview; see ' + str(log_path))
             window = windows[-1]
             subprocess.run(['xdotool', 'windowfocus', '--sync', window], check=True, timeout=5)
+            if reaction_history:
+                subprocess.run(['xdotool', 'mousemove', '--window', window, '600', '400'],
+                               check=True, timeout=5)
+                time.sleep(.5)
             before = counters(allocation) if preload else None
             cpu = process.cpu_times()
             cpu_start = cpu.user + cpu.system
@@ -162,6 +168,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--only', choices=['language', 'gif-favorites', 'conversation-idle', 'conversation-churn'], required=True)
+    parser.add_argument('--reaction-history', action='store_true', help='Hover the conversation with synthetic account ranking; older previews lack this fixture')
     parser.add_argument('--allocation-profile', action='store_true', help='One instrumented GIF diagnostic per build; never use its CPU timings for acceptance')
     parser.add_argument('binaries', nargs='+', help='LABEL=FROZEN_EXECUTABLE')
     args = parser.parse_args()
@@ -186,6 +193,8 @@ def main():
     result = dict(environment=dict(os=platform.platform(), viewport=[1120, 760], scale=1,
                                    warmup_seconds=3, sample_seconds=5, settle_seconds=2, sample_interval_seconds=.1,
                                    affinity='one inherited logical CPU', display=os.environ['DISPLAY'],
+                                   reaction_history=args.reaction_history,
+                                   hover_settle_seconds=.5 if args.reaction_history else 0,
                                    method='Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency'),
                   binaries=metadata, workloads={})
     with tempfile.TemporaryDirectory(prefix='serein-allocation-profile-') as temporary:
@@ -203,8 +212,8 @@ def main():
             result['environment'].update(warmup_runs=1, measured_runs=5)
             if args.output.exists():
                 previous = json.loads(args.output.read_text())
-                if previous['binaries'] != metadata:
-                    raise RuntimeError('Resuming requires the same frozen binaries')
+                if previous['binaries'] != metadata or previous['environment'].get('reaction_history', False) != args.reaction_history:
+                    raise RuntimeError('Resuming requires the same frozen binaries and fixture flags')
                 result = previous
             if args.only in result['workloads']:
                 return
@@ -213,7 +222,7 @@ def main():
         for iteration in range(1 if preload else 6):
             offset = iteration % len(labels)
             for label in labels[offset:] + labels[:offset]:
-                row = sample(binaries[label], args.only, traces / f'{args.only}-{label}-{iteration}.json', preload)
+                row = sample(binaries[label], args.only, traces / f'{args.only}-{label}-{iteration}.json', preload, args.reaction_history)
                 if preload or iteration:
                     records[label].append(row)
         result['workloads'][args.only] = {

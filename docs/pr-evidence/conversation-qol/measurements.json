@@ -5275,5 +5275,1426 @@
       "Real SAPI/macOS speech/Speech Dispatcher and live Discord reporting/permission behavior remain owner-controlled checks. No live reports submitted.",
       "SDK canonical documentation is corrected; generated wiki pages are checked locally only. Parent wiki remains untouched."
     ]
+  },
+  "account_reactions_2026_10_22": {
+    "runtime_source_revision": "26e87fd5908e15dc8f11efd04e57030efb70c731",
+    "starting_revision": "dd6d65d728d0e01dc253bd09b776bc49b416ea00",
+    "frozen_baseline_note": "Verified source-equivalent 9c42d04b application/UI artifacts and d248de43 core artifact (client-core tree e9b87fb7950eea215631fbe5eec253065857b782) reused; later dd6d65d7 changes only documentation and the sampler.",
+    "fork_baseline": "bc35a629eeed1d80708baf66152bbb0a91005989",
+    "nightly": {
+      "tag": "v1.0.0-nightly.20261022.61",
+      "revision": "c2842aa762ca633e0ed4ba986c460a59ce6435fe",
+      "latest_release_checked": "2026-10-22",
+      "common_benchmark_blob": "7da6bba511427447f150fed3fb35522284566de4"
+    },
+    "environment": {
+      "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "reported_ram_bytes": 18882674688,
+      "cgroup_memory_limit_bytes": 17179869184,
+      "cgroup_cpu_quota": "400000 100000",
+      "rust": "1.98.1",
+      "lockfile": "unchanged",
+      "renderer": "Linux X11 / OpenGL llvmpipe (LLVM 19.1.7, Mesa 25.0.7); active samples log the adapter, idle uses the same configuration without the adapter log",
+      "comparison_note": "Frozen release binaries; no concurrent task compilation/fuzz/soak during timed comparisons. UI callbacks are not presented frames or physical input latency."
+    },
+    "validation": {
+      "full_workspace": {
+        "revision": "273dacaa0ab274e163c9abd089dcd67dc6cef25e",
+        "command": "cargo xtask check",
+        "passed": 2097,
+        "ignored": 36
+      },
+      "final_scope": {
+        "core_passed": 306,
+        "ui_passed": 706,
+        "core_ignored": 2,
+        "ui_ignored": 10,
+        "commands": [
+          "cargo test --locked -p client-core",
+          "cargo test --locked -p ui",
+          "cargo clippy --workspace --all-targets --locked -- -D warnings",
+          "cargo check --locked -p serein --no-default-features"
+        ]
+      },
+      "gpu": {
+        "passed": 1,
+        "case": "media_shader_preserves_sdr_rotation_and_pq_hlg_highlights",
+        "note": "Includes new mip generation and partial-update preservation assertions; renderer unchanged after 273dacaa."
+      },
+      "supporting": [
+        "login-handoff",
+        "cached xtask workspace",
+        "cached xtask packager",
+        "license policy",
+        "normal and fuzz license graphs",
+        "Linux, FFmpeg and Flatpak packaging fixtures",
+        "separate fuzz-workspace formatting"
+      ],
+      "fuzz": {
+        "decoder_executions": 175406,
+        "state_executions": 9987,
+        "seconds_per_target": 31,
+        "tools": "pinned nightly-2026-09-09 / cargo-fuzz 0.13.2",
+        "result": "passed"
+      },
+      "soak": {
+        "command": "cargo replay --soak 120",
+        "output": "Synthetic lifecycle soak: 2789 passes, 89248 channel visits, 53548800 live inserts in 120.014156741s; row-pressure visits 44624, byte-pressure visits 44624, logout cycles 11. Steady retained history estimates: small (967116, 14364789), large (6400371, 14364789) bytes. No network, storage, renderer or audio devices; not process RSS, native scrolling or live compatibility.",
+        "note": "Functional pressure, not a timing comparison."
+      }
+    },
+    "package": {
+      "baseline": {
+        "revision": "9c42d04be06e08a9d458a05de90c78d31ee478c3",
+        "command": "cargo xtask package --format dir",
+        "rust": "1.98.1",
+        "profile": "standard release (fat LTO)",
+        "executable_bytes": 97123400,
+        "executable_sha256": "997d6f094ea5790be18225a417ff2c3d2fbf2e1b03db4d17d8023c0b54f4a66f",
+        "installed_bytes": 225882419,
+        "installed_files": 303,
+        "zip_deflate6_bytes": 155120426,
+        "archive_sha256": "c64d0cba42a7b0acdc12aee55eb978a94be2afae203cde4548d90d246676f0d4"
+      },
+      "after": {
+        "revision": "26e87fd5908e15dc8f11efd04e57030efb70c731",
+        "command": "cargo xtask package --format dir",
+        "rust": "1.98.1",
+        "profile": "standard release (fat LTO)",
+        "executable_bytes": 97186568,
+        "executable_sha256": "c20ed12432cf482c470ec88645dacb6acb21c458b92d42c56a20c46fc391fe88",
+        "installed_bytes": 225945587,
+        "installed_files": 303,
+        "zip_deflate6_bytes": 155151237,
+        "archive_sha256": "8f56e288671b27372dce0136e13c8f74353ca01708d4593797cebafa1ed63e31"
+      },
+      "clean_launch": {
+        "executable_sha256": "c20ed12432cf482c470ec88645dacb6acb21c458b92d42c56a20c46fc391fe88",
+        "development_ffmpeg_removed": true,
+        "manual_staging_repair": false,
+        "rpaths": [
+          "0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/lib:$ORIGIN/../lib/serein]"
+        ],
+        "packaged_private_libraries": [
+          "libavcodec-serein.so.61 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libavcodec-serein.so.61 (0x00007fd862511000)",
+          "libavutil-serein.so.59 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libavutil-serein.so.59 (0x00007fd86137d000)",
+          "libavformat-serein.so.61 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libavformat-serein.so.61 (0x00007fd861301000)",
+          "libswscale-serein.so.8 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libswscale-serein.so.8 (0x00007fd86125c000)",
+          "libswresample-serein.so.5 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libswresample-serein.so.5 (0x00007fd86123b000)",
+          "libopenh264-serein.so.8 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libopenh264-serein.so.8 (0x00007fd8580ea000)"
+        ],
+        "results": [
+          {
+            "check": "encoder-query",
+            "exit_code": 0,
+            "seconds": 0.16442620899761096
+          },
+          {
+            "check": "synthetic-speech-worker",
+            "exit_code": 0,
+            "seconds": 2.2697150810017774
+          }
+        ]
+      },
+      "cached_launch": {
+        "executable_sha256": "c20ed12432cf482c470ec88645dacb6acb21c458b92d42c56a20c46fc391fe88",
+        "development_ffmpeg_removed": true,
+        "manual_staging_repair": false,
+        "rpaths": [
+          "0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/lib:$ORIGIN/../lib/serein]"
+        ],
+        "packaged_private_libraries": [
+          "libavcodec-serein.so.61 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libavcodec-serein.so.61 (0x00007f3ab34cc000)",
+          "libavutil-serein.so.59 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libavutil-serein.so.59 (0x00007f3ab2338000)",
+          "libavformat-serein.so.61 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libavformat-serein.so.61 (0x00007f3ab22bc000)",
+          "libswscale-serein.so.8 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libswscale-serein.so.8 (0x00007f3ab2217000)",
+          "libswresample-serein.so.5 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libswresample-serein.so.5 (0x00007f3ab21f6000)",
+          "libopenh264-serein.so.8 => /workspace/scratch/conversation-qol-20261021/worktree/dist/linux-root/usr/bin/../lib/serein/libopenh264-serein.so.8 (0x00007f3aa90a5000)"
+        ],
+        "results": [
+          {
+            "check": "encoder-query",
+            "exit_code": 0,
+            "seconds": 0.1663699529999576
+          },
+          {
+            "check": "synthetic-speech-worker",
+            "exit_code": 0,
+            "seconds": 2.323577020997618
+          }
+        ]
+      },
+      "staged_files": 592,
+      "clean_cached": "All file hashes and modes match; no manual staging repair"
+    },
+    "build_memory_recovery": {
+      "reason": "Confirmed cgroup memory.events oom_kill=1 at the 16-GiB limit",
+      "removed_generated_symlinks": 1565,
+      "removed_cache_roots": [
+        "/dev/shm/serein-pr20-menus-20261022",
+        "/dev/shm/serein-account-reactions-fuzz-20261022"
+      ],
+      "preserved_frozen_binaries": {
+        "/workspace/scratch/account-reactions-20261022/baseline-bin/profile_preview": "10bc0be31d11e36bb909e5e8fb351ad2c63f810348e7581781d487b7a72b5b78",
+        "/workspace/scratch/account-reactions-20261022/baseline-bin/serein": "997d6f094ea5790be18225a417ff2c3d2fbf2e1b03db4d17d8023c0b54f4a66f",
+        "/workspace/scratch/account-reactions-20261022/baseline-bin/replay-bench": "269e0dd85350209f55a42426982ab171bee855777cccb6e2021cbb21c366bdf3",
+        "/workspace/scratch/account-reactions-20261022/new-bin/profile_preview": "b0f4bfdda9ffb86b2b522845ce843d46ef117e859785d1a87e663de15f2b7a26",
+        "/workspace/scratch/account-reactions-20261022/new-bin/replay-bench": "ce693649254e332ceddc199201a3d1b1c0630b47dd970f71f05f6d6af2b52a85",
+        "/workspace/scratch/conversation-qol-20261021/baseline-bin/replay-bench": "8a2b324a2c363905ed0717fae37509d8c3079c46292ac85d9202dfe6300946a4",
+        "/workspace/scratch/conversation-menus-20261022/nightly-target/release/replay-bench": "bf9da4b4cf933d6fb0a5d54bd29a069575b95e0308181c0b60ba83b21e6b2fd0"
+      }
+    },
+    "native_binaries": {
+      "before": {
+        "bytes": 64762448,
+        "sha256": "10bc0be31d11e36bb909e5e8fb351ad2c63f810348e7581781d487b7a72b5b78"
+      },
+      "after": {
+        "bytes": 64827144,
+        "sha256": "b0f4bfdda9ffb86b2b522845ce843d46ef117e859785d1a87e663de15f2b7a26"
+      }
+    },
+    "native": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "viewport": [
+          1120,
+          760
+        ],
+        "scale": 1,
+        "warmup_seconds": 3,
+        "sample_seconds": 5,
+        "settle_seconds": 2,
+        "sample_interval_seconds": 0.1,
+        "affinity": "one inherited logical CPU",
+        "display": ":98",
+        "reaction_history": true,
+        "hover_settle_seconds": 0.5,
+        "method": "Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency",
+        "warmup_runs": 1,
+        "measured_runs": 5
+      },
+      "binaries": {
+        "before": {
+          "path": "/workspace/scratch/account-reactions-20261022/baseline-bin/profile_preview",
+          "sha256": "10bc0be31d11e36bb909e5e8fb351ad2c63f810348e7581781d487b7a72b5b78"
+        },
+        "after": {
+          "path": "/workspace/scratch/account-reactions-20261022/new-bin/profile_preview",
+          "sha256": "b0f4bfdda9ffb86b2b522845ce843d46ef117e859785d1a87e663de15f2b7a26"
+        }
+      },
+      "workloads": {
+        "conversation-idle": {
+          "before": {
+            "samples": [
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 5.330469467142747,
+                "peak_rss_bytes": 145047552,
+                "settled_rss_bytes": 145047552.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.0652198960015085
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 6.097546705626149,
+                "peak_rss_bytes": 145850368,
+                "settled_rss_bytes": 145850368.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.084011897997698
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 6.303791202053182,
+                "peak_rss_bytes": 146833408,
+                "settled_rss_bytes": 146833408.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.076310266998917
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 6.132276810246673,
+                "peak_rss_bytes": 145158144,
+                "settled_rss_bytes": 145158144.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.055218633999175
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 7.073549600031585,
+                "peak_rss_bytes": 145760256,
+                "settled_rss_bytes": 145760256.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.089382564001426
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 0,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 6.132276810246673,
+              "peak_rss_bytes": 145760256,
+              "settled_rss_bytes": 145760256.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 50,
+              "elapsed_seconds": 5.076310266998917
+            }
+          },
+          "after": {
+            "samples": [
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 5.323778018843006,
+                "peak_rss_bytes": 156708864,
+                "settled_rss_bytes": 156708864.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.071586362999369
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 6.5702773608754965,
+                "peak_rss_bytes": 159272960,
+                "settled_rss_bytes": 159272960.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.022619014001975
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 5.328607120380196,
+                "peak_rss_bytes": 152997888,
+                "settled_rss_bytes": 152997888.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.066990188999625
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 7.389735998104055,
+                "peak_rss_bytes": 154652672,
+                "settled_rss_bytes": 154652672.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.006944769000256
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 6.478869505971254,
+                "peak_rss_bytes": 153628672,
+                "settled_rss_bytes": 153628672.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.09348119599963
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 0,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 6.478869505971254,
+              "peak_rss_bytes": 154652672,
+              "settled_rss_bytes": 154652672.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 50,
+              "elapsed_seconds": 5.066990188999625
+            }
+          }
+        },
+        "conversation-churn": {
+          "before": {
+            "samples": [
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 172,
+                "ui_callback_p50_ms": 1.061535,
+                "ui_callback_p95_ms": 2.005814,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.48730576825035,
+                "peak_rss_bytes": 146821120,
+                "settled_rss_bytes": 146821120.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.017278348001128
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 146,
+                "ui_callback_p50_ms": 1.095269,
+                "ui_callback_p95_ms": 2.193086,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.02427932797873,
+                "peak_rss_bytes": 146173952,
+                "settled_rss_bytes": 146173952.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.0875164280005265
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 189,
+                "ui_callback_p50_ms": 1.012568,
+                "ui_callback_p95_ms": 1.34111,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 91.64964368734883,
+                "peak_rss_bytes": 147689472,
+                "settled_rss_bytes": 147689472.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.095491714000673
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 143,
+                "ui_callback_p50_ms": 1.166612,
+                "ui_callback_p95_ms": 3.843138,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.67252684449556,
+                "peak_rss_bytes": 147460096,
+                "settled_rss_bytes": 147460096.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.051144110999303
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 191,
+                "ui_callback_p50_ms": 0.965451,
+                "ui_callback_p95_ms": 1.274237,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 91.6426378971446,
+                "peak_rss_bytes": 146743296,
+                "settled_rss_bytes": 146743296.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.008585637999204
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 172,
+              "ui_callback_p50_ms": 1.061535,
+              "ui_callback_p95_ms": 2.005814,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 90.67252684449556,
+              "peak_rss_bytes": 146821120,
+              "settled_rss_bytes": 146821120.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 49,
+              "elapsed_seconds": 5.051144110999303
+            }
+          },
+          "after": {
+            "samples": [
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 164,
+                "ui_callback_p50_ms": 1.046642,
+                "ui_callback_p95_ms": 1.897904,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.66625978725084,
+                "peak_rss_bytes": 154705920,
+                "settled_rss_bytes": 154705920.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.029434334999678
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 188,
+                "ui_callback_p50_ms": 1.026963,
+                "ui_callback_p95_ms": 1.421943,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 91.95737096426448,
+                "peak_rss_bytes": 154066944,
+                "settled_rss_bytes": 154066944.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.100189306001994
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 186,
+                "ui_callback_p50_ms": 1.022785,
+                "ui_callback_p95_ms": 1.385465,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 92.17828223064147,
+                "peak_rss_bytes": 155369472,
+                "settled_rss_bytes": 155369472.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 50,
+                "elapsed_seconds": 5.098814911998488
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 183,
+                "ui_callback_p50_ms": 1.056356,
+                "ui_callback_p95_ms": 1.3723,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 91.15227279759188,
+                "peak_rss_bytes": 155119616,
+                "settled_rss_bytes": 155119616.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.0026179929991486
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 178,
+                "ui_callback_p50_ms": 1.087304,
+                "ui_callback_p95_ms": 1.603184,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 89.9041128162661,
+                "peak_rss_bytes": 154857472,
+                "settled_rss_bytes": 154857472.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.016455709002912
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 183,
+              "ui_callback_p50_ms": 1.046642,
+              "ui_callback_p95_ms": 1.421943,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 91.15227279759188,
+              "peak_rss_bytes": 154857472,
+              "settled_rss_bytes": 154857472.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 49,
+              "elapsed_seconds": 5.029434334999678
+            }
+          }
+        }
+      }
+    },
+    "local_replay": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "affinity_cpu": 0,
+        "warmup_runs": 1,
+        "measured_runs": 5,
+        "method": "Core-reported elapsed time; not process RSS, frame time or input latency"
+      },
+      "binaries": {
+        "fork": {
+          "path": "/workspace/scratch/conversation-qol-20261021/baseline-bin/replay-bench",
+          "sha256": "8a2b324a2c363905ed0717fae37509d8c3079c46292ac85d9202dfe6300946a4"
+        },
+        "before": {
+          "path": "/workspace/scratch/account-reactions-20261022/baseline-bin/replay-bench",
+          "sha256": "269e0dd85350209f55a42426982ab171bee855777cccb6e2021cbb21c366bdf3"
+        },
+        "nightly": {
+          "path": "/workspace/scratch/conversation-menus-20261022/nightly-target/release/replay-bench",
+          "sha256": "bf9da4b4cf933d6fb0a5d54bd29a069575b95e0308181c0b60ba83b21e6b2fd0"
+        },
+        "after": {
+          "path": "/workspace/scratch/account-reactions-20261022/new-bin/replay-bench",
+          "sha256": "ce693649254e332ceddc199201a3d1b1c0630b47dd970f71f05f6d6af2b52a85"
+        }
+      },
+      "workloads": {
+        "reducer": {
+          "fork": {
+            "output": [
+              "Synthetic reducer replay: 100000 events in 84.065583ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 83.790033ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 85.43355ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 81.864594ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 84.499218ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility."
+            ],
+            "samples_ms": [
+              84.065583,
+              83.790033,
+              85.43355,
+              81.864594,
+              84.499218
+            ],
+            "median_ms": 84.065583,
+            "min_ms": 81.864594,
+            "max_ms": 85.43355
+          },
+          "before": {
+            "output": [
+              "Synthetic reducer replay: 100000 events in 81.21915ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 83.196395ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 82.350179ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 84.682536ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 83.62958ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility."
+            ],
+            "samples_ms": [
+              81.21915,
+              83.196395,
+              82.350179,
+              84.682536,
+              83.62958
+            ],
+            "median_ms": 83.196395,
+            "min_ms": 81.21915,
+            "max_ms": 84.682536
+          },
+          "nightly": {
+            "output": [
+              "Synthetic reducer replay: 100000 events in 80.873345ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 79.511126ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 76.774833ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 74.968032ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 75.680005ms; retained timeline 401492..401977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility."
+            ],
+            "samples_ms": [
+              80.873345,
+              79.511126,
+              76.774833,
+              74.968032,
+              75.680005
+            ],
+            "median_ms": 76.774833,
+            "min_ms": 74.968032,
+            "max_ms": 80.873345
+          },
+          "after": {
+            "output": [
+              "Synthetic reducer replay: 100000 events in 80.615781ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 82.46441ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 84.002606ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 81.750459ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility.",
+              "Synthetic reducer replay: 100000 events in 81.184979ms; retained timeline 409492..409977 estimated bytes, 500 records. This is not process RSS, UI frame time, or live compatibility."
+            ],
+            "samples_ms": [
+              80.615781,
+              82.46441,
+              84.002606,
+              81.750459,
+              81.184979
+            ],
+            "median_ms": 81.750459,
+            "min_ms": 80.615781,
+            "max_ms": 84.002606
+          }
+        },
+        "wide_channels": {
+          "fork": {
+            "output": [
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 111.908423ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 104.107289ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 101.637357ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 104.057889ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 100.135205ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility."
+            ],
+            "samples_ms": [
+              111.908423,
+              104.107289,
+              101.637357,
+              104.057889,
+              100.135205
+            ],
+            "median_ms": 104.057889,
+            "min_ms": 100.135205,
+            "max_ms": 111.908423
+          },
+          "before": {
+            "output": [
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 10.256985ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 9.185348ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 8.157921ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 8.428386ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 9.076961ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility."
+            ],
+            "samples_ms": [
+              10.256985,
+              9.185348,
+              8.157921,
+              8.428386,
+              9.076961
+            ],
+            "median_ms": 9.076961,
+            "min_ms": 8.157921,
+            "max_ms": 10.256985
+          },
+          "nightly": {
+            "output": [
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 91.126287ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 93.082942ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 128.839217ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 116.876389ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 106.5629ms; 500 retained records / 401977 estimated bytes. Excludes startup, RSS, UI and live compatibility."
+            ],
+            "samples_ms": [
+              91.126287,
+              93.082942,
+              128.839217,
+              116.876389,
+              106.5629
+            ],
+            "median_ms": 106.5629,
+            "min_ms": 91.126287,
+            "max_ms": 128.839217
+          },
+          "after": {
+            "output": [
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 9.321145ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 8.915982ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 9.113759ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 8.566163ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility.",
+              "Synthetic wide-channel reducer: 10000 messages into the last of 20001 channels in 8.822861ms; 500 retained records / 409977 estimated bytes. Excludes startup, RSS, UI and live compatibility."
+            ],
+            "samples_ms": [
+              9.321145,
+              8.915982,
+              9.113759,
+              8.566163,
+              8.822861
+            ],
+            "median_ms": 8.915982,
+            "min_ms": 8.566163,
+            "max_ms": 9.321145
+          }
+        },
+        "navigation": {
+          "fork": {
+            "output": [
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 306ns, p95 332ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 305ns, p95 338ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 313ns, p95 349ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 306ns, p95 344ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 307ns, p95 334ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS)."
+            ],
+            "selection_samples": [
+              {
+                "median_us": 0.306,
+                "p95_us": 0.332
+              },
+              {
+                "median_us": 0.305,
+                "p95_us": 0.338
+              },
+              {
+                "median_us": 0.313,
+                "p95_us": 0.34900000000000003
+              },
+              {
+                "median_us": 0.306,
+                "p95_us": 0.34400000000000003
+              },
+              {
+                "median_us": 0.307,
+                "p95_us": 0.334
+              }
+            ],
+            "selection_median_us": 0.306,
+            "selection_p95_us": 0.338
+          },
+          "before": {
+            "output": [
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 306ns, p95 335ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 304ns, p95 338ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 305ns, p95 339ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 307ns, p95 338ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 305ns, p95 339ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS)."
+            ],
+            "selection_samples": [
+              {
+                "median_us": 0.306,
+                "p95_us": 0.335
+              },
+              {
+                "median_us": 0.304,
+                "p95_us": 0.338
+              },
+              {
+                "median_us": 0.305,
+                "p95_us": 0.339
+              },
+              {
+                "median_us": 0.307,
+                "p95_us": 0.338
+              },
+              {
+                "median_us": 0.305,
+                "p95_us": 0.339
+              }
+            ],
+            "selection_median_us": 0.305,
+            "selection_p95_us": 0.338
+          },
+          "nightly": {
+            "output": [
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 298ns, p95 327ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 286ns, p95 321ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 290ns, p95 320ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 286ns, p95 318ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 287ns, p95 319ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 330612 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 991137 estimated retained bytes (not RSS)."
+            ],
+            "selection_samples": [
+              {
+                "median_us": 0.298,
+                "p95_us": 0.327
+              },
+              {
+                "median_us": 0.28600000000000003,
+                "p95_us": 0.321
+              },
+              {
+                "median_us": 0.29,
+                "p95_us": 0.32
+              },
+              {
+                "median_us": 0.28600000000000003,
+                "p95_us": 0.318
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.319
+              }
+            ],
+            "selection_median_us": 0.28700000000000003,
+            "selection_p95_us": 0.32
+          },
+          "after": {
+            "output": [
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 306ns, p95 334ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 307ns, p95 336ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 326ns, p95 360ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 306ns, p95 349ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS).",
+              "Synthetic navigation: 10000 selections across three 50-message conversations; immediate previews 10000/10000; revalidation requests 0; select median 308ns, p95 342ns. Measures core selection only, not native display latency, RSS or Discord compatibility.\nNavigation retained: 2 dormant windows; 150 active plus dormant rows; 339564 estimated retained bytes (not RSS).\nSynthetic hover navigation: 12 first visits rested on for the dwell then clicked: 12/12 opened without waiting, 12 history requests (a click-only first visit sends 1 each); a 28-row sweep without clicks sent 12 preloads (cap 12/min). Synthetic responses arrive before the click; excludes network latency and Discord compatibility.\nHover navigation retained: 8 dormant windows; 1017657 estimated retained bytes (not RSS)."
+            ],
+            "selection_samples": [
+              {
+                "median_us": 0.306,
+                "p95_us": 0.334
+              },
+              {
+                "median_us": 0.307,
+                "p95_us": 0.336
+              },
+              {
+                "median_us": 0.326,
+                "p95_us": 0.36
+              },
+              {
+                "median_us": 0.306,
+                "p95_us": 0.34900000000000003
+              },
+              {
+                "median_us": 0.308,
+                "p95_us": 0.342
+              }
+            ],
+            "selection_median_us": 0.307,
+            "selection_p95_us": 0.342
+          }
+        }
+      }
+    },
+    "ci_replay": {
+      "linux": {
+        "revisions": {
+          "nightly": "c2842aa762ca633e0ed4ba986c460a59ce6435fe",
+          "previous_fork": "bc35a629eeed1d80708baf66152bbb0a91005989",
+          "starting_pr": "3179696b37ef85a5d9aebf1a3cf026b0ea488ef7",
+          "after": "26e87fd5908e15dc8f11efd04e57030efb70c731"
+        },
+        "nightly_tag": "v1.0.0-nightly.20261022.61",
+        "os": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+        "cpu": "x86_64",
+        "logical_cpus": 4,
+        "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "release_settings": {
+          "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+          "CARGO_PROFILE_RELEASE_LTO": "thin",
+          "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+          "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+          "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+          "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+          "CARGO_PROFILE_RELEASE_PANIC": "abort",
+          "CARGO_BUILD_JOBS": "2"
+        },
+        "samples": 5,
+        "warmup_runs": 1,
+        "workloads": {
+          "reducer": {
+            "nightly": {
+              "median_ms": 78.28374,
+              "min_ms": 77.931211,
+              "max_ms": 78.723401,
+              "samples_ms": [
+                78.48724,
+                78.723401,
+                78.119023,
+                78.28374,
+                77.931211
+              ]
+            },
+            "previous_fork": {
+              "median_ms": 82.515235,
+              "min_ms": 81.616997,
+              "max_ms": 83.600543,
+              "samples_ms": [
+                83.387414,
+                81.616997,
+                83.600543,
+                82.381666,
+                82.515235
+              ]
+            },
+            "starting_pr": {
+              "median_ms": 92.498817,
+              "min_ms": 91.364498,
+              "max_ms": 93.636783,
+              "samples_ms": [
+                91.878679,
+                93.048183,
+                91.364498,
+                93.636783,
+                92.498817
+              ]
+            },
+            "after": {
+              "median_ms": 83.852834,
+              "min_ms": 83.131336,
+              "max_ms": 84.96378,
+              "samples_ms": [
+                83.131336,
+                84.57282,
+                84.96378,
+                83.852834,
+                83.687795
+              ]
+            }
+          },
+          "wide_channels": {
+            "nightly": {
+              "median_ms": 217.78159,
+              "min_ms": 217.212147,
+              "max_ms": 219.583306,
+              "samples_ms": [
+                217.47632,
+                218.425604,
+                219.583306,
+                217.78159,
+                217.212147
+              ]
+            },
+            "previous_fork": {
+              "median_ms": 194.468207,
+              "min_ms": 193.279246,
+              "max_ms": 196.471899,
+              "samples_ms": [
+                193.279246,
+                195.617273,
+                194.344665,
+                196.471899,
+                194.468207
+              ]
+            },
+            "starting_pr": {
+              "median_ms": 218.938091,
+              "min_ms": 217.774327,
+              "max_ms": 220.678402,
+              "samples_ms": [
+                219.239474,
+                218.938091,
+                220.678402,
+                217.973619,
+                217.774327
+              ]
+            },
+            "after": {
+              "median_ms": 9.124507,
+              "min_ms": 9.08361,
+              "max_ms": 9.402706,
+              "samples_ms": [
+                9.208654,
+                9.402706,
+                9.118405,
+                9.124507,
+                9.08361
+              ]
+            }
+          }
+        },
+        "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+        "sampling_affinity": "logical CPU 0"
+      },
+      "windows": {
+        "revisions": {
+          "nightly": "c2842aa762ca633e0ed4ba986c460a59ce6435fe",
+          "previous_fork": "bc35a629eeed1d80708baf66152bbb0a91005989",
+          "starting_pr": "3179696b37ef85a5d9aebf1a3cf026b0ea488ef7",
+          "after": "26e87fd5908e15dc8f11efd04e57030efb70c731"
+        },
+        "nightly_tag": "v1.0.0-nightly.20261022.61",
+        "os": "Windows-2025Server-10.0.26100-SP0",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "logical_cpus": 4,
+        "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "release_settings": {
+          "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+          "CARGO_PROFILE_RELEASE_LTO": "thin",
+          "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+          "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+          "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+          "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+          "CARGO_PROFILE_RELEASE_PANIC": "abort",
+          "CARGO_BUILD_JOBS": "2"
+        },
+        "samples": 5,
+        "warmup_runs": 1,
+        "workloads": {
+          "reducer": {
+            "nightly": {
+              "median_ms": 107.1229,
+              "min_ms": 106.0684,
+              "max_ms": 121.4247,
+              "samples_ms": [
+                106.5475,
+                121.4247,
+                107.1229,
+                106.0684,
+                119.7394
+              ]
+            },
+            "previous_fork": {
+              "median_ms": 110.9105,
+              "min_ms": 110.0698,
+              "max_ms": 111.9681,
+              "samples_ms": [
+                110.0698,
+                111.3571,
+                111.9681,
+                110.5165,
+                110.9105
+              ]
+            },
+            "starting_pr": {
+              "median_ms": 122.5402,
+              "min_ms": 122.2293,
+              "max_ms": 122.8368,
+              "samples_ms": [
+                122.5402,
+                122.4886,
+                122.8368,
+                122.6763,
+                122.2293
+              ]
+            },
+            "after": {
+              "median_ms": 112.3129,
+              "min_ms": 110.6619,
+              "max_ms": 113.1311,
+              "samples_ms": [
+                112.3129,
+                111.1261,
+                110.6619,
+                112.8692,
+                113.1311
+              ]
+            }
+          },
+          "wide_channels": {
+            "nightly": {
+              "median_ms": 230.2481,
+              "min_ms": 229.1074,
+              "max_ms": 235.7126,
+              "samples_ms": [
+                230.163,
+                230.9164,
+                229.1074,
+                235.7126,
+                230.2481
+              ]
+            },
+            "previous_fork": {
+              "median_ms": 234.5716,
+              "min_ms": 230.7745,
+              "max_ms": 243.4353,
+              "samples_ms": [
+                243.4353,
+                237.9006,
+                233.2347,
+                230.7745,
+                234.5716
+              ]
+            },
+            "starting_pr": {
+              "median_ms": 229.1665,
+              "min_ms": 227.9581,
+              "max_ms": 234.7357,
+              "samples_ms": [
+                234.7357,
+                233.4248,
+                229.1665,
+                228.2535,
+                227.9581
+              ]
+            },
+            "after": {
+              "median_ms": 11.7383,
+              "min_ms": 11.6798,
+              "max_ms": 19.969,
+              "samples_ms": [
+                11.8062,
+                11.7383,
+                11.6798,
+                19.969,
+                11.7094
+              ]
+            }
+          }
+        },
+        "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+        "sampling_affinity": "logical CPU mask 1"
+      },
+      "macos": {
+        "revisions": {
+          "nightly": "c2842aa762ca633e0ed4ba986c460a59ce6435fe",
+          "previous_fork": "bc35a629eeed1d80708baf66152bbb0a91005989",
+          "starting_pr": "3179696b37ef85a5d9aebf1a3cf026b0ea488ef7",
+          "after": "26e87fd5908e15dc8f11efd04e57030efb70c731"
+        },
+        "nightly_tag": "v1.0.0-nightly.20261022.61",
+        "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+        "cpu": "arm",
+        "logical_cpus": 3,
+        "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "release_settings": {
+          "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+          "CARGO_PROFILE_RELEASE_LTO": "thin",
+          "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+          "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+          "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+          "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+          "CARGO_PROFILE_RELEASE_PANIC": "abort",
+          "CARGO_BUILD_JOBS": "2"
+        },
+        "samples": 5,
+        "warmup_runs": 1,
+        "workloads": {
+          "reducer": {
+            "nightly": {
+              "median_ms": 83.257167,
+              "min_ms": 61.882375,
+              "max_ms": 89.254,
+              "samples_ms": [
+                80.774208,
+                89.254,
+                88.439333,
+                61.882375,
+                83.257167
+              ]
+            },
+            "previous_fork": {
+              "median_ms": 80.579917,
+              "min_ms": 63.631458,
+              "max_ms": 93.482334,
+              "samples_ms": [
+                63.631458,
+                93.482334,
+                71.488167,
+                89.348584,
+                80.579917
+              ]
+            },
+            "starting_pr": {
+              "median_ms": 91.730459,
+              "min_ms": 79.193208,
+              "max_ms": 99.511708,
+              "samples_ms": [
+                79.193208,
+                91.730459,
+                80.60875,
+                99.511708,
+                91.957709
+              ]
+            },
+            "after": {
+              "median_ms": 78.433833,
+              "min_ms": 64.646084,
+              "max_ms": 89.997791,
+              "samples_ms": [
+                78.433833,
+                81.24925,
+                89.997791,
+                66.762875,
+                64.646084
+              ]
+            }
+          },
+          "wide_channels": {
+            "nightly": {
+              "median_ms": 138.605917,
+              "min_ms": 118.973291,
+              "max_ms": 153.73125,
+              "samples_ms": [
+                129.093917,
+                138.605917,
+                118.973291,
+                148.059625,
+                153.73125
+              ]
+            },
+            "previous_fork": {
+              "median_ms": 131.83675,
+              "min_ms": 128.751083,
+              "max_ms": 155.172167,
+              "samples_ms": [
+                128.751083,
+                155.172167,
+                130.781083,
+                139.002791,
+                131.83675
+              ]
+            },
+            "starting_pr": {
+              "median_ms": 136.136958,
+              "min_ms": 111.411208,
+              "max_ms": 160.664167,
+              "samples_ms": [
+                138.143166,
+                160.664167,
+                136.136958,
+                111.411208,
+                111.82475
+              ]
+            },
+            "after": {
+              "median_ms": 9.188417,
+              "min_ms": 7.905583,
+              "max_ms": 17.610875,
+              "samples_ms": [
+                7.905583,
+                17.610875,
+                12.425875,
+                8.523042,
+                9.188417
+              ]
+            }
+          }
+        },
+        "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+        "sampling_affinity": "unavailable; platform scheduler"
+      }
+    },
+    "captures": {
+      "published_pair": [
+        "before-conversation.png",
+        "after-conversation.png"
+      ],
+      "baseline_flags": "--demo --interactive --page=conversation --conversation-qol",
+      "after_addition": "--reaction-history (synthetic bounded account settings decoded in production path)",
+      "inspected": [
+        "dark 1440x1100 scale1",
+        "light 1440x1100 scale1",
+        "dark 900x900 scale1",
+        "dark 1120x800 scale1.25",
+        "ordinary reaction-chip fixture"
+      ],
+      "note": "Custom emoji uses original striped fixture artwork. No live account or owner data."
+    },
+    "ci_at_collection": {
+      "source_run": "https://github.com/MCShotty/Serein/actions/runs/39854776241",
+      "note": "Initial fuzz job stopped at formatting; the omitted separate-workspace line wrapping was corrected and checked locally. Runtime code is unchanged. Inspect PR checks for the final-head result."
+    },
+    "source_ci_snapshot": {
+      "runtime_revision": "26e87fd5908e15dc8f11efd04e57030efb70c731",
+      "snapshot_utc": "2026-10-22 21:42 UTC",
+      "native_client": {
+        "run_id": 39854776241,
+        "jobs": [
+          {
+            "id": 120090012978,
+            "name": "fuzz",
+            "status": "completed",
+            "conclusion": "failure",
+            "gates": []
+          },
+          {
+            "id": 120090013178,
+            "name": "replay comparison (macos-latest)",
+            "status": "completed",
+            "conclusion": "success",
+            "gates": []
+          },
+          {
+            "id": 120090013193,
+            "name": "native (macos-latest)",
+            "status": "in_progress",
+            "conclusion": null,
+            "gates": [
+              {
+                "name": "Run cargo xtask check",
+                "status": "completed",
+                "conclusion": "skipped"
+              },
+              {
+                "name": "Run cargo xtask check with native library paths",
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ]
+          },
+          {
+            "id": 120090013210,
+            "name": "licenses",
+            "status": "completed",
+            "conclusion": "success",
+            "gates": []
+          },
+          {
+            "id": 120090013226,
+            "name": "replay comparison (windows-latest)",
+            "status": "completed",
+            "conclusion": "success",
+            "gates": []
+          },
+          {
+            "id": 120090013255,
+            "name": "native (windows-latest)",
+            "status": "in_progress",
+            "conclusion": null,
+            "gates": [
+              {
+                "name": "Run cargo xtask check",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Run cargo xtask check with native library paths",
+                "status": "completed",
+                "conclusion": "skipped"
+              }
+            ]
+          },
+          {
+            "id": 120090013273,
+            "name": "security",
+            "status": "completed",
+            "conclusion": "success",
+            "gates": []
+          },
+          {
+            "id": 120090013351,
+            "name": "replay comparison (ubuntu-latest)",
+            "status": "completed",
+            "conclusion": "success",
+            "gates": []
+          },
+          {
+            "id": 120090013372,
+            "name": "extension-sdk",
+            "status": "completed",
+            "conclusion": "success",
+            "gates": []
+          },
+          {
+            "id": 120090013399,
+            "name": "native (windows-11-arm)",
+            "status": "in_progress",
+            "conclusion": null,
+            "gates": [
+              {
+                "name": "Run cargo xtask check",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Run cargo xtask check with native library paths",
+                "status": "completed",
+                "conclusion": "skipped"
+              }
+            ]
+          },
+          {
+            "id": 120090013729,
+            "name": "native (ubuntu-latest)",
+            "status": "in_progress",
+            "conclusion": null,
+            "gates": [
+              {
+                "name": "Run cargo xtask check",
+                "status": "completed",
+                "conclusion": "skipped"
+              },
+              {
+                "name": "Run cargo xtask check with native library paths",
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ]
+          }
+        ]
+      },
+      "nix": {
+        "run_id": 39854776340,
+        "jobs": [
+          {
+            "id": 120090016963,
+            "name": "build (macos-latest)",
+            "status": "in_progress",
+            "conclusion": null,
+            "gates": []
+          },
+          {
+            "id": 120090017547,
+            "name": "build (ubuntu-latest)",
+            "status": "in_progress",
+            "conclusion": null,
+            "gates": []
+          }
+        ]
+      }
+    },
+    "limitations": [
+      "Live account reaction preferences and nickname updates unverified",
+      "Physical Windows/macOS DPI and native display checks unavailable",
+      "No current Windows/macOS GUI CPU/RSS or package-size comparison",
+      "Provider/helper RSS is separate; these workloads start no helpers",
+      "No new media, connected-account CPU or overall application speedup claim"
+    ]
   }
 }

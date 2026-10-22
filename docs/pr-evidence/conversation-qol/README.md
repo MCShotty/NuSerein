@@ -1,5 +1,77 @@
 # Conversation and message-menu evidence
 
+## Account reactions, artwork and nicknames — October 22, 2026
+
+The runtime source is `26e87fd5` (see the full revision in the measurement JSON),
+starting from `dd6d65d7`. The frozen before binaries are verified source-equivalent
+artifacts from `9c42d04b`; no unverified staging executable is used as a baseline.
+Both quick-reaction surfaces now import the account's reaction ranking, including
+available custom emoji, while retaining server priority and Nitro/permission checks.
+This synchronization is read-only; local session usage remains separate.
+
+Reaction artwork is larger, composer controls use larger targets and a readable
+filled GIF icon, and the renderer now generates and samples opt-in GPU mip levels.
+Emoji cache accounting includes those levels. The fixed Unicode atlas adds
+approximately one third of its base GPU payload; this is a quality/resource tradeoff,
+not a memory optimization. Ordinary media textures keep their existing path.
+
+Author lookups follow visible rows instead of competing with a newest-message batch.
+Prior bounded lookup results remain available for subsequent messages and revisits.
+Accepted member updates refresh cached labels, including nickname removals, before
+the member sidebar moves away.
+
+### Native captures
+
+These matched Linux/X11 native windows use the same conversation fixture, Inter,
+dark appearance, scale 1 and 1440 × 1100 viewport. The after capture additionally
+uses `--reaction-history`: bounded synthetic account settings passed through the
+production decoder. The striped custom emoji is original fixture artwork, not an
+owner account's emoji or evidence of live synchronization.
+
+| Starting runtime | New runtime |
+| --- | --- |
+| ![Quick reactions and composer before](before-conversation.png) | ![Account reactions and larger composer controls](after-conversation.png) |
+
+Light appearance, 900 × 900 windows, 125% scaling and the ordinary reaction-chip
+fixture were also captured and inspected locally. Physical Windows/macOS DPI,
+live account reaction settings and live guild nickname updates remain unverified.
+
+### Checks
+
+Runtime `26e87fd5` passed the full `cargo xtask check` gate in native CI on Linux,
+macOS and Windows x64/ARM64. The local full run at `273dacaa` passed 2,097 tests;
+after the member-cache correction, all 306 core and 706 UI tests, strict all-target
+workspace Clippy and the minimal application check passed again. The software-GPU
+regression passed, verifying
+mip generation, partial-update preservation and the existing SDR/PQ/HLG media path;
+rendering code is unchanged by the member-cache correction. Login-handoff, cached
+workspace/packager fixtures, license policy, normal/fuzz licenses and Linux,
+FFmpeg and Flatpak packaging fixtures passed. The final fuzz smoke completed
+175,406 decoder and 9,987 state-transition executions, 31 seconds each.
+
+Clean/cached normal Linux packages match all 592 staged files and modes. Both
+launch probes pass without development FFmpeg paths; no staging repair was used.
+The first link hit the container memory limit. Verified generated RAM caches were
+removed while preserving/rechecking all frozen binaries, then normal packaging was
+rerun from empty output. The initial CI fuzz job caught separate-workspace formatting;
+that whitespace-only correction now passes its formatting check locally. Final-head
+CI status is reported separately on the PR.
+
+Release measurements and package/lifecycle checks are recorded in
+`account_reactions_2026_10_22` in the [measurement JSON](measurements.json);
+earlier measurements below retain their original revisions.
+
+The current release UI comparison uses the existing sampler with the new fixture:
+
+```sh
+python scripts/profile-native-ui.py --output /tmp/reactions.json \
+  --only conversation-idle --reaction-history before=/path/to/before/profile_preview \
+  after=/path/to/after/profile_preview
+```
+
+Repeat with `--only conversation-churn`, the same frozen binaries and fixture flag.
+The sampler rejects mixed fixture flags when resuming an output file.
+
 ## Message menus and performance follow-up — October 22, 2026
 
 The frozen runtime source is `9c42d04be06e08a9d458a05de90c78d31ee478c3`,
@@ -26,7 +98,7 @@ starting-PR and final release previews, dark appearance, Inter fonts, scale 1 an
 
 | Starting PR | Final runtime |
 | --- | --- |
-| ![Message menu before](before-conversation.png) | ![Message menu after](after-conversation.png) |
+| ![Historical message menu before](https://github.com/MCShotty/Serein/blob/dd6d65d728d0e01dc253bd09b776bc49b416ea00/docs/pr-evidence/conversation-qol/before-conversation.png?raw=true) | ![Historical message menu after](https://github.com/MCShotty/Serein/blob/dd6d65d728d0e01dc253bd09b776bc49b416ea00/docs/pr-evidence/conversation-qol/after-conversation.png?raw=true) |
 | ![Link menu before](before-link.png) | ![Link menu after](after-link.png) |
 | ![Image without a menu before](before-image.png) | ![Image menu after](after-image.png) |
 

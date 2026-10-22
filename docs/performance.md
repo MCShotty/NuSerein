@@ -3125,3 +3125,133 @@ A separate macOS Nix link failure refers to `___isPlatformVersionAtLeast` in
 unchanged capture code and remains disclosed. Real platform speech, live reports,
 live Discord permissions, physical input/displays and OS timezone changes remain
 owner-controlled checks. No live report was submitted during validation.
+
+## Account reactions and nickname follow-up (October 22, 2026)
+
+The runtime source is `26e87fd5908e15dc8f11efd04e57030efb70c731`, starting
+from `dd6d65d7`. Verified source-equivalent `9c42d04b` UI/application binaries
+and the artifact with the unchanged `e9b87fb7` client-core tree supply the before measurements;
+they are frozen independently of the new outputs. The original fork baseline
+remains `bc35a629`. The latest published upstream nightly checked on October 22
+is `v1.0.0-nightly.20261022.61`, commit `c2842aa7`; its frozen benchmark is
+reused, with the same benchmark source blob as the other core comparisons.
+
+This pass reads account reaction ranking, shares it between reaction bars,
+enlarges reaction/composer artwork and fixes visible-author nickname lookup
+and cache refresh. Account ranking has a 128-key / 32-KiB session projection
+and no settings writes. Opt-in mip filtering now produces and samples real
+GPU mip levels. Emoji textures count every level within the existing cache
+ceiling. The separate fixed Unicode atlas adds approximately one third of
+its base GPU payload; improved sampling is a quality/resource tradeoff.
+Ordinary avatar/media textures keep their prior sampling path.
+
+Measurements use Rust 1.98.1 and the unchanged lockfile. Standard application
+packages and core replay retain fat LTO; both native previews use matching
+release/demo/no-default-feature settings with the same thin-LTO override.
+The Linux host reports an Intel Xeon Platinum 8573C, 18,882,674,688 bytes RAM,
+a 16-GiB container limit and a four-CPU quota. Native sampling uses one inherited
+logical CPU, Linux X11/OpenGL llvmpipe, a 1120 × 760 viewport and scale 1.
+Active samples log LLVM 19.1.7 / Mesa 25.0.7; idle uses the same configuration
+without the adapter log. The separate GPU regression uses software Vulkan.
+Each comparison has one warmup and five rotated repetitions; no task compilation,
+fuzz or functional soak runs during the timed comparisons. Native processes
+warm for three seconds, prepare the same hover target for another half second,
+sample CPU/RSS every 100 ms for five seconds and settle
+for two seconds. Callback timings describe `MessagingUi::show`, not presented
+frames or physical input latency. Offline fixtures do not establish connected
+account behavior or provider/media-worker performance.
+
+The timed conversation fixture enables `--reaction-history` and hovers the same
+message on both builds. The old preview accepts but ignores this new fixture flag;
+only the after build imports the synthetic account ranking. This includes its
+bounded projection and shortcode lookup in the sampled process, rather than
+measuring only the default toolbar. It is not live account data.
+
+### Current local measurements
+
+| Synthetic native UI metric | Starting runtime | New runtime | Delta |
+| --- | ---: | ---: | ---: |
+| Hover CPU, % of one core | 6.13 | 6.48 | +0.35 points |
+| Hover settled RSS, MiB | 139.01 | 147.49 | +8.48 MiB |
+| Active timeline CPU, % of one core | 90.67 | 91.15 | +0.48 points |
+| Active callback p50, ms | 1.062 | 1.047 | -0.015 ms |
+| Active callback p95, ms | 2.006 | 1.422 | -0.584 ms |
+
+The observed hover CPU difference is small. Higher sampled RSS includes the new
+filtered artwork and account-ranking fixture in the software renderer. It does
+not measure dedicated hardware VRAM. Helper RSS was zero; no provider player
+was started. Callback counts differ (median 172 versus 183); these are callback observations,
+not a presented-frame or whole-application speedup claim. All five repetitions
+are retained, including variable p95 samples.
+
+The before callback-p95 range was 1.274–3.843 ms.
+The after callback-p95 range was 1.372–1.898 ms.
+
+| Local fat-LTO core workload, ms | Fork baseline | Starting runtime | Current nightly | New runtime |
+| --- | ---: | ---: | ---: | ---: |
+| Reducer | 84.066 | 83.196 | 76.775 | 81.750 |
+| Wide channels | 104.058 | 9.077 | 106.563 | 8.916 |
+
+The large wide-channel difference against fork/nightly comes from the earlier
+resident-accounting optimization retained in this PR. The current follow-up
+has a small local core difference against its starting runtime; no new reducer
+speedup is attributed to artwork or nickname changes. Local fat-LTO results
+remain separate from the thin-LTO native CI comparisons.
+
+### Current native CI core comparisons
+
+These are separate hosted-runner comparisons at `26e87fd5`, Rust 1.98.1,
+matching opt-level 3, thin LTO, one codegen unit, stripped symbols and aborting
+panics. Each platform uses one warmup and five rotated repetitions; results
+are not pooled across hosts or with the local fat-LTO runs. Fork means
+`bc35a629`; starting PR means `3179696b`. Nightly remains the published `.61`
+revision above.
+
+| Platform / core workload, ms | Nightly | Fork | Starting PR | Current runtime |
+| --- | ---: | ---: | ---: | ---: |
+| Linux reducer | 78.284 | 82.515 | 92.499 | 83.853 |
+| Linux wide channels | 217.782 | 194.468 | 218.938 | 9.125 |
+| Windows reducer | 107.123 | 110.910 | 122.540 | 112.313 |
+| Windows wide channels | 230.248 | 234.572 | 229.167 | 11.738 |
+| macOS reducer | 83.257 | 80.580 | 91.730 | 78.434 |
+| macOS wide channels | 138.606 | 131.837 | 136.137 | 9.188 |
+
+Reducer medians versus fork are +1.62% on Linux, +1.26% on Windows and
+−2.66% on macOS. These meet the earlier 3% target against fork in this run.
+The macOS reducer ranges overlap broadly (fork 63.63–93.48 ms, current
+64.65–90.00 ms); its median is not proof of a platform speedup. Nightly
+comparisons remain visible rather than being replaced with upstream main.
+The full native application/package jobs are independent of these core-only
+results. Source comparison run: <https://github.com/MCShotty/Serein/actions/runs/39854776241>.
+
+### Normal package verification
+
+Both runs use the normal directory packager, standard fat-LTO profile and
+the same sorted-path, fixed-metadata, deflate-level-6 ZIP measurement method
+as the frozen baseline.
+
+| Linux package size | Starting runtime | New runtime | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 97,123,400 B | 97,186,568 B | +63,168 B (+0.065%) |
+| Installed payload | 225,882,419 B | 225,945,587 B | +63,168 B (+0.028%) |
+| Normalized ZIP | 155,120,426 B | 155,151,237 B | +30,811 B (+0.020%) |
+
+The first release link reached the 16-GiB container limit while generated
+RAM-backed compiler caches occupied approximately 6.3 GiB. Only verified
+task-owned generated caches were removed; all seven frozen comparison binaries
+were rehashed and retained. The normal packager was then rerun from empty output.
+The successful clean/cached packages match all 592 staged files and modes,
+with 303 installed regular files. No manual staging repair was used. Both
+launch probes resolve the six private media libraries from the installed tree
+with development FFmpeg paths removed. Encoder query and the packaged synthetic
+LavaSRv2 worker pass; these do not exercise a microphone or platform message TTS.
+
+Runtime-source native workspace gates passed on Linux, macOS and Windows
+x64/ARM64; source packaging/Nix jobs were still running at the recorded CI
+snapshot. The first source CI fuzz job stopped at separate-workspace formatting;
+the line wrapping is corrected and its formatting check passes locally. The
+functional fuzz runs passed before this whitespace-only correction. Final-head
+CI is reported on the PR, separately from the frozen runtime and measurement
+revisions. Live Discord account settings/nickname updates, physical DPI/input,
+real speech engines and Windows/macOS GUI CPU/RSS or comparative package-size
+measurements remain unverified or unavailable. No overall app speedup is claimed.
