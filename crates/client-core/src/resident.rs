@@ -152,18 +152,38 @@ impl State {
 	}
 	/// Also call after direct disk hydration of the public active timeline.
 	pub fn enforce_resident_budget(&mut self) {
-		if self.resident_history_bytes() > MAX_BYTES || self.resident_history_rows() > MAX_ROWS {
+		let mut bytes = self.resident_history_bytes();
+		let mut rows = self.resident_history_rows();
+		if bytes > MAX_BYTES || rows > MAX_ROWS {
+			let before = self.history_navigation.bytes();
+			let before_rows = self.history_navigation.rows();
 			self.history_navigation.evict_back();
+			bytes -= before - self.history_navigation.bytes();
+			rows -= before_rows - self.history_navigation.rows();
 		}
-		while self.resident_history_bytes() > MAX_BYTES && self.reply_previews.evict() {}
+		while bytes > MAX_BYTES {
+			let before = self.reply_previews.bytes();
+			if !self.reply_previews.evict() {
+				break;
+			}
+			bytes -= before - self.reply_previews.bytes();
+		}
 		if self.timeline.older_evicted() {
 			self.older_exhausted = false;
 		}
-		while !self.resident.entries.is_empty()
-			&& (self.resident_history_rows() > MAX_ROWS
-				|| self.resident_history_bytes() > MAX_BYTES)
-		{
-			self.evict_resident(false);
+		while !self.resident.entries.is_empty() && (rows > MAX_ROWS || bytes > MAX_BYTES) {
+			let window = self
+				.resident
+				.evict(false)
+				.expect("nonempty resident windows");
+			bytes -= window
+				.timeline
+				.retained_bytes()
+				.saturating_sub(size_of::<Timeline>());
+			rows -= window.timeline.row_count();
+			if window.speculative {
+				self.preload.conversations.forget(window.identity.id);
+			}
 		}
 	}
 	/// Evicts one window, preloaded ones first. An evicted preload may be loaded again later.

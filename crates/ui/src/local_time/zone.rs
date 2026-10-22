@@ -9,6 +9,24 @@ struct Snapshot {
 	preference: TimeZonePreference,
 	status: Option<&'static str>,
 }
+#[derive(Clone)]
+struct FrameSnapshot {
+	zone: TimeZone,
+	utc: time::OffsetDateTime,
+	status: Option<&'static str>,
+}
+impl Default for FrameSnapshot {
+	fn default() -> Self {
+		Self {
+			zone: TimeZone::UTC,
+			utc: time::OffsetDateTime::now_utc(),
+			status: None,
+		}
+	}
+}
+thread_local! {
+	static FRAME: std::cell::RefCell<FrameSnapshot> = std::cell::RefCell::new(FrameSnapshot::default());
+}
 impl Default for Snapshot {
 	fn default() -> Self {
 		Self {
@@ -108,16 +126,28 @@ impl TimezoneRequest {
 /// Publish only between frames. Returns a recovered preference for persistence when necessary.
 pub fn begin_frame() -> Option<TimeZonePreference> {
 	let mut state = service();
-	let (generation, result) = state.pending.take()?;
-	if generation != state.generation {
-		return None;
+	let mut recovery = None;
+	if let Some((generation, result)) = state.pending.take()
+		&& generation == state.generation
+	{
+		recovery = (state.desired != result.preference).then(|| result.preference.clone());
+		state.desired = result.preference.clone();
+		if state.active.zone != result.zone || state.active.preference != result.preference {
+			super::FORMAT_REVISION.fetch_add(1, Ordering::Relaxed);
+		}
+		state.active = result;
 	}
-	let recovery = (state.desired != result.preference).then(|| result.preference.clone());
-	state.desired = result.preference.clone();
-	if state.active.zone != result.zone || state.active.preference != result.preference {
-		super::FORMAT_REVISION.fetch_add(1, Ordering::Relaxed);
-	}
-	state.active = result;
+	FRAME.with(|frame| {
+		*frame.borrow_mut() = FrameSnapshot {
+			zone: state.active.zone.clone(),
+			utc: time::OffsetDateTime::now_utc(),
+			status: if state.running || state.queued.is_some() {
+				Some("timezone-updating")
+			} else {
+				state.active.status
+			},
+		}
+	});
 	recovery
 }
 
@@ -165,19 +195,16 @@ fn resolve(
 }
 
 pub fn timezone_status() -> Option<&'static str> {
-	let state = service();
-	if state.running || state.queued.is_some() || state.pending.is_some() {
-		Some("timezone-updating")
-	} else {
-		state.active.status
-	}
+	FRAME.with(|frame| frame.borrow().status)
 }
 
 pub fn timezone_label() -> String {
-	let state = service();
-	let offset = state.active.zone.to_offset(jiff::Timestamp::now());
+	let zone = display_zone();
+	let offset = zone.to_offset(
+		jiff::Timestamp::from_second(frame_now().unix_timestamp()).expect("current timestamp"),
+	);
 	let label = TimeZonePreference::fixed_label((offset.seconds() / 60) as i16);
-	if let Some(name) = state.active.zone.iana_name() {
+	if let Some(name) = zone.iana_name() {
 		format!("{name} · {label}")
 	} else {
 		label
@@ -191,8 +218,18 @@ pub(super) fn display_zone() -> TimeZone {
 	}
 	#[cfg(not(test))]
 	{
-		service().active.zone.clone()
+		FRAME.with(|frame| frame.borrow().zone.clone())
 	}
+}
+
+pub(super) fn frame_now() -> time::OffsetDateTime {
+	FRAME.with(|frame| frame.borrow().utc)
+}
+
+/// The next minute boundary is the next change to the settings' seconds-free example.
+pub fn minute_deadline(at: time::OffsetDateTime) -> std::time::Duration {
+	let remaining = 60_000_000_000_i128 - at.unix_timestamp_nanos().rem_euclid(60_000_000_000);
+	std::time::Duration::from_nanos(remaining as u64)
 }
 
 pub(super) fn convert(zone: &TimeZone, instant: time::OffsetDateTime) -> time::OffsetDateTime {
@@ -270,6 +307,32 @@ pub(crate) fn pin_timezone(name: &str) -> impl Drop {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn settings_deadline_tracks_the_next_displayed_minute_without_polling() {
+		assert_eq!(
+			minute_deadline(instant("2026-10-22T12:34:00Z")),
+			std::time::Duration::from_secs(60)
+		);
+		assert_eq!(
+			minute_deadline(instant("2026-10-22T12:34:59.875Z")),
+			std::time::Duration::from_millis(125)
+		);
+		assert_eq!(
+			minute_deadline(instant("1969-12-31T23:59:59.999Z")),
+			std::time::Duration::from_millis(1)
+		);
+	}
+
+	#[test]
+	fn frame_clock_is_stable_between_paints_and_is_retired_at_the_boundary() {
+		let old = FRAME.with(|frame| frame.borrow().clone());
+		let at = instant("2026-10-22T23:59:59Z");
+		FRAME.with(|frame| frame.borrow_mut().utc = at);
+		assert_eq!(frame_now(), at);
+		assert_eq!(frame_now(), frame_now());
+		FRAME.with(|frame| *frame.borrow_mut() = old);
+	}
 
 	fn instant(value: &str) -> time::OffsetDateTime {
 		time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).unwrap()

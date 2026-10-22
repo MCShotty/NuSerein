@@ -1816,6 +1816,34 @@ mod tests {
 	}
 
 	#[test]
+	fn preview_accounting_survives_live_replacement_eviction_and_deletion() {
+		let mut state = state();
+		for id in 1..=180 {
+			let mut source = message(1000 + id);
+			source.reply_to = Some(Id(id));
+			let mut original = message(id);
+			original.content = "Bounded preview. ".repeat((id % 20 + 1) as usize);
+			source.reply_preview = Some(Box::new(
+				model::ReplyPreview::from_message(original).unwrap(),
+			));
+			apply(&mut state, Event::Message(source));
+			state.reply_previews.assert_accounting();
+		}
+		for id in [60, 100, 180] {
+			apply(
+				&mut state,
+				Event::Delete {
+					channel: Id(1),
+					id: Id(id),
+				},
+			);
+			state.reply_previews.assert_accounting();
+		}
+		state.clear_cached_history();
+		state.reply_previews.assert_accounting();
+	}
+
+	#[test]
 	fn missing_target_never_replaces_current_history_and_new_jump_supersedes_pagination() {
 		let mut state = state();
 		let _ = state.history(Some(Id(100)));

@@ -16,6 +16,7 @@ pub(super) struct Settings {
 	timezone_fixed: String,
 	timezone_fixed_for: Option<i16>,
 	custom_timezone: Option<model::TimeZonePreference>,
+	clock_preview: Option<(i64, u64, String, String)>,
 	pub(super) editor: crate::profile_edit::Editor,
 	pub(super) server_editor: crate::server_profile::Editor,
 	pub(super) account: crate::account_settings::AccountUi,
@@ -1104,11 +1105,29 @@ impl MessagingUi {
 			crate::local_time::set_timezone(&self.time_zone);
 			self.settings.language_time_format = Some(format);
 		}
-		design::hint(ui, &crate::local_time::timezone_label());
-		ui.label(crate::local_time::full(time::OffsetDateTime::now_utc()));
-		if !ui.input(|input| input.viewport().minimized.unwrap_or(false)) {
+		let now = crate::local_time::now();
+		let minute = now.unix_timestamp().div_euclid(60);
+		let revision = crate::local_time::format_revision();
+		if self
+			.settings
+			.clock_preview
+			.as_ref()
+			.is_none_or(|cached| (cached.0, cached.1) != (minute, revision))
+		{
+			self.settings.clock_preview = Some((
+				minute,
+				revision,
+				crate::local_time::timezone_label(),
+				crate::local_time::full(now),
+			));
+		}
+		if let Some((_, _, label, example)) = &self.settings.clock_preview {
+			design::hint(ui, label);
+			ui.label(example);
+		}
+		if ui.is_visible() && !ui.input(|input| input.viewport().minimized.unwrap_or(false)) {
 			ui.ctx()
-				.request_repaint_after(std::time::Duration::from_secs(1));
+				.request_repaint_after(crate::local_time::minute_deadline(now));
 		}
 		if let Some(status) = crate::local_time::timezone_status() {
 			design::hint(ui, &language.text(status));

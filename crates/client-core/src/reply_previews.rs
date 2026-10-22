@@ -41,9 +41,18 @@ struct Entry {
 	id: Id,
 	value: Value,
 }
+impl Entry {
+	fn payload_bytes(&self) -> usize {
+		match &self.value {
+			Value::Ready(preview) => preview.bytes(),
+			_ => 0,
+		}
+	}
+}
 #[derive(Default)]
 pub struct Previews {
 	entries: VecDeque<Entry>,
+	payload_bytes: usize,
 	visible: Vec<Id>,
 	// Completed reads must not restart on repaint merely because their bodies were evicted.
 	attempted: Vec<Id>,
@@ -54,6 +63,15 @@ pub struct Previews {
 	next: u64,
 }
 impl Previews {
+	#[cfg(test)]
+	pub(crate) fn assert_accounting(&self) {
+		assert_eq!(
+			self.payload_bytes,
+			self.entries.iter().map(Entry::payload_bytes).sum::<usize>()
+		);
+		assert!(self.entries.len() <= MAX_ENTRIES);
+		assert!(self.bytes() <= MAX_BYTES);
+	}
 	pub(crate) fn cancel_pending(&mut self) {
 		self.cancel_requested |= !self.inflight.is_empty();
 		self.attempted
@@ -63,6 +81,7 @@ impl Previews {
 	pub(crate) fn clear(&mut self) {
 		self.cancel_pending();
 		self.entries = VecDeque::new();
+		self.payload_bytes = 0;
 		self.visible = Vec::new();
 		self.attempted = Vec::new();
 		self.queued = Vec::new();
@@ -78,15 +97,26 @@ impl Previews {
 			+ self.inflight.capacity() * std::mem::size_of::<(Id, Id, u64)>()
 	}
 	pub(crate) fn bytes(&self) -> usize {
-		self.metadata_bytes()
-			+ self
-				.entries
-				.iter()
-				.map(|entry| match &entry.value {
-					Value::Ready(preview) => preview.bytes(),
-					_ => 0,
-				})
-				.sum::<usize>()
+		self.metadata_bytes() + self.payload_bytes
+	}
+	fn retain(&mut self, mut keep: impl FnMut(&Entry) -> bool) {
+		self.entries.retain(|entry| {
+			if keep(entry) {
+				true
+			} else {
+				self.payload_bytes -= entry.payload_bytes();
+				false
+			}
+		});
+	}
+	fn clear_entries(&mut self) {
+		self.entries.clear();
+		self.payload_bytes = 0;
+	}
+	fn pop_front(&mut self) -> Option<Entry> {
+		let entry = self.entries.pop_front()?;
+		self.payload_bytes -= entry.payload_bytes();
+		Some(entry)
 	}
 	fn remember_attempt(&mut self, channel: Id, id: Id) {
 		if self.channel == Some(channel)
@@ -98,15 +128,16 @@ impl Previews {
 		}
 	}
 	fn insert(&mut self, channel: Id, id: Id, value: Value) {
-		self.entries
-			.retain(|entry| entry.channel != channel || entry.id != id);
-		self.entries.push_back(Entry { channel, id, value });
+		self.retain(|entry| entry.channel != channel || entry.id != id);
+		let entry = Entry { channel, id, value };
+		self.payload_bytes += entry.payload_bytes();
+		self.entries.push_back(entry);
 		while self.entries.len() > MAX_ENTRIES || self.bytes() > MAX_BYTES {
-			self.entries.pop_front();
+			self.pop_front();
 		}
 	}
 	pub(crate) fn evict(&mut self) -> bool {
-		self.entries.pop_front().is_some()
+		self.pop_front().is_some()
 	}
 }
 
@@ -294,7 +325,6 @@ impl State {
 			self.reply_previews.attempted.retain(|target| *target != id);
 		}
 		self.reply_previews
-			.entries
 			.retain(|entry| entry.channel != channel || entry.id != id);
 		let mut visible = self.reply_previews.visible.clone();
 		if visible.contains(&id) {
@@ -309,7 +339,6 @@ impl State {
 			&& let Some(id) = message.reply_to
 		{
 			self.reply_previews
-				.entries
 				.retain(|entry| entry.channel != message.channel || entry.id != id);
 		}
 		if let Some(preview) = message.reply_preview.take()
@@ -370,6 +399,14 @@ impl State {
 			.insert(event.channel, event.message, value);
 	}
 	pub(crate) fn invalidate_reply_previews(&mut self, event: &Event) {
+		// Ordinary traffic has no preview or return payload to invalidate in most sessions.
+		if self.reply_previews.entries.is_empty()
+			&& self.reply_previews.attempted.is_empty()
+			&& self.reply_previews.inflight.is_empty()
+			&& self.history_navigation.bytes() == 0
+		{
+			return;
+		}
 		let key = match event {
 			Event::Delete { channel, id } => Some((*channel, *id)),
 			Event::Patch(patch) => Some((patch.channel, patch.id)),
@@ -396,7 +433,6 @@ impl State {
 				self.reply_previews.attempted.retain(|target| *target != id);
 			}
 			self.reply_previews
-				.entries
 				.retain(|entry| entry.channel != channel || entry.id != id);
 		}
 		if let Event::DeleteBulk { channel, ids } = event {
@@ -415,11 +451,10 @@ impl State {
 					.retain(|target| !ids.contains(target));
 			}
 			self.reply_previews
-				.entries
 				.retain(|entry| entry.channel != *channel || !ids.contains(&entry.id));
 		}
 		if event.changes_access() || matches!(event, Event::Disconnected | Event::Resumed) {
-			self.reply_previews.entries.clear();
+			self.reply_previews.clear_entries();
 			self.reply_previews.cancel_pending();
 			self.reply_previews.attempted.clear();
 		}
