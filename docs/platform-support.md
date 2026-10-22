@@ -508,3 +508,17 @@ playback or microphone runtime requirement. Native microphone quality/latency
 checks remain owner operated; synthetic inference alone does not establish
 Discord interoperability. Unsupported or overloaded enhancement falls back to
 RNNoise without disabling microphone capture.
+
+## Local message speech
+
+Speak Message uses Windows SAPI through a fixed hidden PowerShell invocation, macOS's
+native `say` service, or Linux Speech Dispatcher over its local Unix socket when available.
+Message text is stdin/plain-text protocol data, never command source or SSML. Linux accepts
+the configured `unix_socket:` Speech Dispatcher address or its XDG runtime socket; it does
+not open a remote speech connection or install/start a daemon.
+
+One worker retains at most one active utterance and one replacement, with a 64-KiB text
+limit. Stop, replacement, navigation and permission loss retire the current reader. Speech
+stays separate from microphone enhancement and voice transmission. Missing engines produce
+an explanation. Offline engine/socket adapters cover lifecycle and text escaping; physical
+Windows/macOS/Linux speech output remains unverified.

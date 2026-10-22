@@ -3293,3 +3293,30 @@ pauses playback without losing position; enlargement and fullscreen are explicit
 previews retain their own source/restriction checks. Offline tests and the reported public
 clip's software decode do not establish Windows/macOS provider playback; native acceptance
 is reported separately in the PR.
+
+## Message menus and reporting — October 22, 2026
+
+Message and link context menus share ordered reaction, message, utility, destructive and
+identifier groups. Link actions retain the exact clicked URL, including signed parameters.
+Image cards and viewers use the shorter copy/save/media-link/message-ID menu. Message identity,
+session generation and access are checked again before actions; toolbar overflow retains
+Mark Read Through Here, View Reactions, Publish and extension actions.
+
+Reminders reuse saved messages. Custom local times use the selected timezone, reject DST
+gaps and require an explicit offset for folds. Apps reuses the received message-command index
+and existing invocation checks. Interaction details show only received identifiers, user and
+command information. Speak Message is local system speech; it excludes unrevealed spoilers,
+resolves known mentions and stops after conversation/account changes or lost access.
+
+Reporting follows the service-provided reason graph from the **unofficial**
+`GET /reporting/menu/message` interface. Only an explicit final Submit posts to the fixed
+`POST /reporting/message` endpoint; the menu cannot choose another submission URL. Forms are
+session-only, expire after ten minutes and cap wire/retained data at 256/512 KiB, nodes at 256
+and navigation at 64 steps. Checkbox, dropdown, plain-text and preview elements are supported;
+unsupported validation/forms offer Open in Discord. An uncertain submission is never retried
+automatically. Closing the flow cannot undo an already submitted report.
+
+References: [Discord reporting guidance](https://discord.com/safety/360044103651-reporting-abusive-behavior-to-discord)
+and [unofficial reports reference](https://docs.discord.food/topics/reports). Offline loopback,
+decoder and state fixtures exercise confirmation, cancellation, stale responses and failures.
+They submit no live reports and do not establish current service acceptance.
