@@ -1,4 +1,103 @@
-# Conversation navigation and time preferences
+# Conversation and message-menu evidence
+
+## Message menus and performance follow-up — October 22, 2026
+
+The frozen runtime source is `9c42d04be06e08a9d458a05de90c78d31ee478c3`,
+compared with the starting PR at `3179696b`, fork baseline `bc35a629` and
+published upstream nightly `v1.0.0-nightly.20261022.61` (`c2842aa7`). Later
+evidence-only commits do not change the measured runtime. The original mention,
+reply, scrolling and time-preference features remain in this PR.
+
+Message, link and image menus now share owner-bound target validation and compact
+rows. Link actions retain the exact clicked URL, including signed parameters;
+image identifiers refer to their owning message. Message actions use the requested
+groups, with additional tools in toolbar overflow. Reminders and Apps reuse the
+existing implementations. Message speech is local and independent of microphone
+processing. Reporting uses the service-provided, **unofficial** menu and requires
+an explicit final Submit; uncertain submissions are not automatically retried.
+
+### Matched native menus
+
+These are synthetic Linux/X11 application-window captures, using the verified
+starting-PR and final release previews, dark appearance, Inter fonts, scale 1 and
+1440 × 1100 windows. Conversation fixtures use `--demo --interactive
+--page=conversation --conversation-qol`; link/image fixtures use `--page=embeds
+--media-embeds`. Right-click coordinates match within each pair.
+
+| Starting PR | Final runtime |
+| --- | --- |
+| ![Message menu before](before-conversation.png) | ![Message menu after](after-conversation.png) |
+| ![Link menu before](before-link.png) | ![Link menu after](after-link.png) |
+| ![Image without a menu before](before-image.png) | ![Image menu after](after-image.png) |
+
+The image baseline has no image menu; this absence is intentional evidence.
+Matched light appearance and narrow 600 × 700-point windows at scale 1.5 were
+also captured and inspected locally. Native keyboard checks opened the Reminder
+submenu and the image-viewer menu. Offline Copy/Save are unavailable in this
+fixture; these images do not establish real clipboard or file-transfer behavior.
+Physical displays and Windows/macOS menu rendering remain unverified.
+
+### Results and method
+
+The [performance follow-up](../../performance.md#message-menus-and-performance-follow-up-october-22-2026)
+contains separate Linux, Windows and macOS reducer comparisons, local UI/memory
+results, package sizes and limitations. The existing [measurement JSON](measurements.json),
+under `followup_2026_10_22`, preserves all five repetitions, artifact hashes,
+profiles, package probes and revision labels. Earlier top-level results are
+historical and are not pooled with the new runs.
+
+Language & Time now schedules the next displayed minute, reuses the frame's clock
+snapshot and caches its label/example. Reply/resident byte accounting is incremental;
+acknowledgements reuse validated channel lookups, and messages skip edit-only work
+when no edit is pending. Native settings CPU is within the two-percentage-point
+target, and all three CI reducer medians meet the 3% target against matched fork
+baselines. GIF p50 remains slightly higher; p95 is noisy. No overall app speedup
+or new GIF allocation improvement is claimed.
+
+The reproducible Linux sampler is [scripts/profile-native-ui.py](../../../scripts/profile-native-ui.py).
+For example, in a controlled X11 session with `psutil` and `xdotool` available:
+
+```sh
+python scripts/profile-native-ui.py --output /tmp/native.json --only language \
+  fork=/path/to/frozen-fork/profile_preview \
+  starting_pr=/path/to/frozen-starting-pr/profile_preview \
+  after=/path/to/frozen-final/profile_preview
+```
+
+Repeat with `--only gif-favorites` and the same output to add that workload. Each
+uses one warmup and five rotated measured runs. `--allocation-profile` requires
+glibc and a separate output; its instrumented timings are diagnostics only.
+The sampler fails if a preview exits during warmup or sampling and identifies its log.
+
+### Verification and remaining checks
+
+Local `cargo xtask check` passed at `d248de43`. The final icon-layout correction
+then passed 704 UI tests, strict all-target UI Clippy, workspace formatting and
+the production application check. At the frozen runtime revision, native CI
+workspace gates passed on Linux, Windows x64/ARM64 and macOS. Login-handoff,
+workspace, packaging and speech-asset fixtures, replay, the 120-second soak,
+fuzz, licenses, dependency audit and SDK checks passed. See
+[runtime-source CI](https://github.com/MCShotty/Serein/actions/runs/39821328166)
+for native package status; the JSON records the inspected snapshot separately.
+
+Normal clean/cached Linux packages matched all 592 staged files and modes. Both
+launch probes passed with development FFmpeg paths removed and without staging
+repair. The packaged LavaSRv2 self-test does not exercise message text-to-speech.
+The separate [macOS Nix build](https://github.com/MCShotty/Serein/actions/runs/39821328142)
+failed to link `___isPlatformVersionAtLeast` from unchanged capture code; this
+toolchain failure is not claimed fixed.
+
+Real platform speech, physical input/display behavior, live OS timezone changes
+and live Discord report/permission checks remain unavailable. No live report or
+owner session was used. Windows/macOS GUI CPU/RSS and comparative package sizes
+remain unmeasured. Canonical extension documentation now identifies toolbar
+overflow; wiki generation is checked locally only, leaving the parent wiki untouched.
+
+## Historical initial implementation — October 21, 2026
+
+The sections below describe the earlier implementation and its checks at their
+original revisions. Their screenshots are pinned to the original commit; they
+must not be read as final menu captures or current-head CI status.
 
 The implementation baseline is fork `main` at
 `bc35a629eeed1d80708baf66152bbb0a91005989`. The upstream-nightly comparison is
@@ -20,8 +119,8 @@ and settings are 1120 × 920. Images contain only the synthetic application wind
 
 | Before, fork baseline | After, implementation source |
 | --- | --- |
-| ![Conversation before](before-conversation.png) | ![Conversation after](after-conversation.png) |
-| ![Language and Time before](before-language.png) | ![Language and Time after](after-language.png) |
+| ![Conversation before](https://github.com/MCShotty/Serein/blob/3179696b37ef85a5d9aebf1a3cf026b0ea488ef7/docs/pr-evidence/conversation-qol/before-conversation.png?raw=true) | ![Conversation after](https://github.com/MCShotty/Serein/blob/3179696b37ef85a5d9aebf1a3cf026b0ea488ef7/docs/pr-evidence/conversation-qol/after-conversation.png?raw=true) |
+| ![Language and Time before](https://github.com/MCShotty/Serein/blob/3179696b37ef85a5d9aebf1a3cf026b0ea488ef7/docs/pr-evidence/conversation-qol/before-language.png?raw=true) | ![Language and Time after](https://github.com/MCShotty/Serein/blob/3179696b37ef85a5d9aebf1a3cf026b0ea488ef7/docs/pr-evidence/conversation-qol/after-language.png?raw=true) |
 
 Light appearance and a 900 × 900 conversation were also inspected for clipping and contrast.
 Native controls were checked for 12/24-hour switching, Custom timezone activation and region

@@ -2973,3 +2973,155 @@ Current-source native application/package CI passed on Linux and Windows x64/ARM
 The macOS jobs were cancelled before starting. Physical wheel/touchpad behavior, live
 OS timezone changes and live Discord permissions/navigation remain owner-controlled
 checks. Windows/macOS GUI and memory comparisons are unavailable locally.
+
+## Message menus and performance follow-up (October 22, 2026)
+
+This follow-up retains the conversation features and replaces the measured runtime
+with `9c42d04be06e08a9d458a05de90c78d31ee478c3`. Comparisons use the frozen starting
+PR `3179696b`, fork baseline `bc35a629` and published upstream nightly
+`v1.0.0-nightly.20261022.61` (`c2842aa7`). The preceding section remains historical;
+its samples are not pooled with these new runs. Raw repetitions, hashes, methods
+and CI snapshots are in
+[`followup_2026_10_22`](pr-evidence/conversation-qol/measurements.json), with
+[matched menu captures](pr-evidence/conversation-qol/README.md).
+
+### Changes supported by profiling
+
+Reply previews maintain cached payload-byte totals on mutation. Resident-budget
+enforcement calculates totals once and subtracts evictions, retaining enforcement
+after operations that grow state. Empty reply state avoids invalidation scans.
+Clock formatting reuses one immutable frame snapshot; Language & Time caches its
+label/example and schedules the next displayed minute instead of each second.
+Its page-specific timer is absent while hidden or minimized.
+
+A bounded ptrace sample profile of the wide-channel workload attributed 2,662 of
+2,977 executable leaf samples to `apply_read_state`. Acknowledgements now reuse a
+validated channel lookup instead of rescanning the roster. Messages and patches
+also skip edit-only timeline lookups when there is no pending optimistic edit.
+The profiler used 40 controlled children, 2-ms instruction-pointer samples and
+inline symbolization. Instrumentation distorts duration: these profiles identify
+work, while the uninstrumented comparisons below establish elapsed-time results.
+
+### Separate native CI core comparisons
+
+All four revisions run the identical benchmark source in each job, with Rust
+1.98.1, committed lockfiles, O3, thin LTO, one codegen unit, abort-on-panic and
+symbol stripping. Each binary is built once, followed by one warmup and five
+rotated measured repetitions. Linux and Windows use one logical CPU; macOS
+affinity is unavailable and uses its scheduler. Environments are Linux Azure
+x86-64, Windows Server 2025 x86-64 and macOS 26.6.2 ARM64 respectively; full host
+metadata and ranges are retained in the JSON. Do not compare absolute timings
+across these different hosts or pool results from separate CI runs.
+
+| Core median, ms | Upstream nightly | Fork baseline | Starting PR | Final runtime | Final vs fork |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Linux, 100,000-event reducer | 73.613 | 75.994 | 82.314 | 75.958 | −0.05% |
+| Windows, 100,000-event reducer | 81.883 | 87.913 | 90.288 | 82.328 | −6.35% |
+| macOS, 100,000-event reducer | 68.193 | 67.954 | 72.854 | 64.821 | −4.61% |
+| Linux, 10,000-event wide-channel reducer | 118.632 | 111.770 | 116.086 | 8.568 | −92.33% |
+| Windows, 10,000-event wide-channel reducer | 72.555 | 75.279 | 51.658 | 8.879 | −88.21% |
+| macOS, 10,000-event wide-channel reducer | 120.783 | 132.142 | 103.203 | 7.874 | −94.04% |
+
+The reducer medians meet the plan's maximum 3% cost against their matched fork
+baselines. Final ordinary-reducer ranges are 75.570–92.202 ms (Linux),
+82.049–101.647 ms (Windows) and 59.279–69.103 ms (macOS). The large wide-channel
+change is specific to repeated acknowledgements in a large roster; it is not an
+overall application speedup. Earlier independently matched follow-ups also met
+the ordinary-reducer target; their results are not combined with this table.
+
+The separate local fat-LTO comparison uses the same four source revisions, one
+logical CPU, one warmup and five rotated repetitions. Its ordinary-reducer
+medians are 91.750 ms nightly, 92.343 ms fork, 101.129 ms starting PR and
+87.711 ms final. Wide-channel medians are 128.865, 137.743, 133.516 and 9.130 ms.
+Core-selection medians are 0.286, 0.306, 0.323 and 0.306 µs respectively. These
+core timings exclude native presentation, media and network latency. The final
+local binary was reused after UI-only fixes; its core/model/benchmark sources
+are identical to the measured runtime revision.
+
+### Native UI, memory and remaining variability
+
+The three Linux previews use O3, one codegen unit and the same thin-LTO override
+with `--no-default-features --features demo`, Inter fonts, dark appearance,
+1120 × 760 and scale 1. The host remains Linux 6.18.55/glibc 2.41 on Xeon
+Platinum 8573C, with a 16-GiB process-group limit. All inherit one logical CPU,
+using wgpu GL on llvmpipe LLVM 19.1.7 / Mesa 25.0.7-2+deb13u1. Verified baseline
+artifacts were reused. Compilation and packaging had stopped before sampling.
+
+Each workload has one warmup and five rotated measured repetitions, each with
+three seconds of startup warmup, five seconds of 100-ms CPU/RSS samples and two
+seconds of settling. CPU is process user+system time as a percentage of one
+core. Peak RSS is sampled after warmup, including settling; settled RSS is its
+two-second median. At-rest runs omit callback instrumentation. GIF runs measure
+`MessagingUi::show` callbacks and inject the same alternating wheel schedule;
+callback counts vary with scheduling. Percentiles below are medians of per-run
+percentiles, not pooled samples or presented-frame/input latency.
+
+| Native synthetic median | Fork baseline | Starting PR | Final runtime |
+| --- | ---: | ---: | ---: |
+| Language & Time at rest, CPU (% of one core) | 4.16 | 11.35 | 3.75 |
+| Language & Time, sampled peak/settled RSS (MiB) | 140.68 | 141.31 | 142.89 |
+| GIF scrolling, CPU (% of one core) | 90.90 | 90.52 | 90.98 |
+| GIF scrolling, sampled peak/settled RSS (MiB) | 143.98 | 143.42 | 145.26 |
+| GIF scrolling, callback p50 (ms) | 0.941 | 1.170 | 1.050 |
+| GIF scrolling, callback p95 (ms) | 2.062 | 3.137 | 2.076 |
+
+Settings CPU meets the target of at most two percentage points above fork
+baseline: the observed difference is −0.41 points. The demo can still repaint
+for fixture/loading/animation activity; removing the page timer does not remove
+those sources. All repetitions remain in the data, including a 27.65% final
+settings sample and a 29.66% starting-PR sample. No idle connected-account CPU
+claim is made.
+
+GIF p50 remains +0.110 ms (+11.7%) against fork. Its p95 median is +0.014 ms
+(+0.7%), with broad overlapping ranges: fork 1.560–3.175 ms, starting PR
+2.063–4.690 ms and final 1.412–8.173 ms. That final outlier is retained. These
+samples establish neither a broad GIF improvement nor an isolated cause for
+the earlier p95 regression. No speculative GIF optimization was retained.
+
+The reproducible sampler also supports a separate glibc allocation diagnostic.
+A quiet diagnostic observed 122/114/111 callbacks for fork/starting/final and
+714.6/656.1/651.4 MB of requested allocation traffic over the sampling window.
+Traffic per callback is similar; unequal counts and differing callback/sample
+windows prevent interpreting raw totals as an allocation improvement. An earlier
+instrumented attempt under other task activity had especially unequal counts
+and is retained separately. Interposition covers malloc/calloc/realloc/free,
+including native libraries, but excludes aligned/direct allocation paths.
+Requested bytes are not live heap, and instrumented CPU is not acceptance data.
+
+The fixtures started no provider/helper process; observed helper RSS was zero.
+Provider/media-worker CPU/RSS, native GPU memory, physical input latency and
+Windows/macOS GUI comparisons remain unmeasured. Existing cache/queue/lifecycle
+bounds remain covered by production-path tests and the functional soak.
+
+### Normal Linux packages and functional checks
+
+All three package records use the standard fat-LTO release profile, normal
+directory packaging and the same normalized ZIP procedure: sorted paths, fixed
+timestamps/modes and deflate level 6 on the same Python/zlib installation.
+
+| Linux package size | Fork baseline | Starting PR | Final runtime | Final vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Executable | 96,030,920 B | 96,789,832 B | 97,123,400 B | +1,092,480 B (+1.138%) |
+| Installed regular files | 224,781,530 B | 225,548,851 B | 225,882,419 B | +1,100,889 B (+0.490%) |
+| Normalized ZIP | 154,695,813 B | 154,975,101 B | 155,120,426 B | +424,613 B (+0.274%) |
+
+Current `xtask` was rebuilt before packaging into empty task-owned output, then
+reused for the cached run with empty output. All 592 staged files and modes
+matched, with 303 installed regular files. Both launch probes resolved the six
+private media libraries from the installed tree using `$ORIGIN`, with development
+FFmpeg paths removed and no manual staging repair. Encoder query and the packaged
+LavaSRv2 synthetic worker passed; neither exercises physical hardware or the new
+platform message-speech engines. Windows/macOS package-size comparisons remain
+unavailable.
+
+The local 120-second functional release soak passed with 87,808 conversation
+visits, 52,684,800 live inserts and 11 logout cycles, within shipping row/byte
+bounds. It ran alongside package compilation: its iteration count is not a
+throughput comparison. Full workspace gates, focused menu/clock/cache tests,
+replay, fuzz, licenses and packaging fixtures are recorded in the evidence.
+Native CI workspace gates passed on all supported desktop platforms at the
+frozen runtime source; package jobs were still running at the recorded snapshot.
+A separate macOS Nix link failure refers to `___isPlatformVersionAtLeast` in
+unchanged capture code and remains disclosed. Real platform speech, live reports,
+live Discord permissions, physical input/displays and OS timezone changes remain
+owner-controlled checks. No live report was submitted during validation.
