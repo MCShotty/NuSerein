@@ -8543,7 +8543,6 @@ mod tests {
 				"Edit Message",
 				"Reply",
 				"Copy Text",
-				"Pin Message",
 				"Mark Unread",
 				"Mark read through here",
 				"Delete Message",
