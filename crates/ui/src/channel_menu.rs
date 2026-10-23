@@ -520,6 +520,11 @@ impl ChannelMenu {
 					}
 				}
 				Intent::Dialog(kind) => {
+					let name = if matches!(kind, Kind::Create | Kind::CreateCategory) {
+						String::new()
+					} else {
+						channel.name.chars().take(100).collect()
+					};
 					if let Some(previous) = &self.dialog {
 						state.retire_channel_settings_read(previous.channel);
 					}
@@ -529,11 +534,7 @@ impl ChannelMenu {
 						kind,
 						create_kind: CreateKind::Text,
 						draft: Edit {
-							name: if matches!(kind, Kind::Create | Kind::CreateCategory) {
-								String::new()
-							} else {
-								channel.name.chars().take(100).collect()
-							},
+							name,
 							topic: String::new(),
 							slowmode: 0,
 							nsfw: false,
