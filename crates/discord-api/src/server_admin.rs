@@ -10,7 +10,9 @@ use serde_json::json;
 
 impl DiscordApi {
 	pub(super) async fn server_admin(&self, guild: Id, request: u64, action: &Action) -> Event {
-		let result = self.server_admin_action(guild, action).await;
+		let result = self
+			.server_admin_action_scoped(guild, action, Some(request))
+			.await;
 		Event {
 			guild,
 			request,
@@ -89,7 +91,16 @@ impl DiscordApi {
 			.await?;
 		wire::member(&bytes, user).map_err(|_| Failure::Protocol)
 	}
+	#[cfg(test)]
 	async fn server_admin_action(&self, guild: Id, action: &Action) -> Result<Outcome, Failure> {
+		self.server_admin_action_scoped(guild, action, None).await
+	}
+	async fn server_admin_action_scoped(
+		&self,
+		guild: Id,
+		action: &Action,
+		request: Option<u64>,
+	) -> Result<Outcome, Failure> {
 		if guild.0 == 0 || !action.valid() {
 			return Err(Failure::Protocol);
 		}
@@ -108,7 +119,7 @@ impl DiscordApi {
 				.map(Outcome::Community),
 			Action::AutoMod(action) => self.automod(guild, action).await.map(Outcome::AutoMod),
 			Action::Moderation(action) => self
-				.moderation_progress(guild, action, Some(request))
+				.moderation_progress(guild, action, request)
 				.await
 				.map(Outcome::Moderation),
 			Action::Voice { user, change, .. } => {
