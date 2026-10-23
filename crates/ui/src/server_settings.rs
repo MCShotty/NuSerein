@@ -969,10 +969,9 @@ impl Editor {
 			Page::Access => Some(crate::server_access::Page::Access),
 			Page::Safety => Some(crate::server_access::Page::Safety),
 			_ => None,
-		} {
-			if let Some(command) = self.access.load(state, guild, page) {
-				commands.push(command);
-			}
+		} && let Some(command) = self.access.load(state, guild, page)
+		{
+			commands.push(command);
 		}
 		self.invites.sync(state, guild);
 		if self.page == Page::AuditLog
@@ -1257,18 +1256,18 @@ impl Editor {
 		} else {
 			self.destination_rows(ui, state, guild, &results, search.has_focus(), &mut chosen);
 		}
-		if let Some(target) = chosen {
-			if self.select_page(target.page, state) {
-				if let Some(anchor) = target.anchor {
-					ui.ctx().data_mut(|data| {
-						data.insert_temp(
-							egui::Id::unique(("server-settings-search-anchor", guild)),
-							anchor,
-						)
-					});
-				}
-				search.surrender_focus();
+		if let Some(target) = chosen
+			&& self.select_page(target.page, state)
+		{
+			if let Some(anchor) = target.anchor {
+				ui.ctx().data_mut(|data| {
+					data.insert_temp(
+						egui::Id::unique(("server-settings-search-anchor", guild)),
+						anchor,
+					)
+				});
 			}
+			search.surrender_focus();
 		}
 		if let Some(error) = self.navigation_error {
 			dialog::notice(ui, dialog::Level::Warning, error);

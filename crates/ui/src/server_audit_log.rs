@@ -573,13 +573,11 @@ fn details(ui: &mut egui::Ui, entry: &Entry, state: &State, page: &Page) -> Opti
 		if let Some(actor) = entry
 			.user_id
 			.filter(|id| page.users.iter().any(|user| user.id == *id))
-		{
-			if ui
+			&& ui
 				.link(crate::i18n::translate("server-audit-view-actor"))
 				.clicked()
-			{
-				target = Some(Target::User(actor));
-			}
+		{
+			target = Some(Target::User(actor));
 		}
 		if let Some(id) = entry
 			.target_id
@@ -603,10 +601,10 @@ fn details(ui: &mut egui::Ui, entry: &Entry, state: &State, page: &Page) -> Opti
 				}
 				_ => None,
 			};
-			if let Some((label, destination)) = destination {
-				if ui.link(crate::i18n::translate(label)).clicked() {
-					target = Some(destination);
-				}
+			if let Some((label, destination)) = destination
+				&& ui.link(crate::i18n::translate(label)).clicked()
+			{
+				target = Some(destination);
 			}
 			if ui
 				.link(crate::i18n::translate("server-audit-copy-target-id"))
