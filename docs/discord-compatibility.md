@@ -63,8 +63,8 @@ any member in two-factor authentication.
 Member applications use the **unofficial** [join-request interfaces](https://docs.discord.food/resources/guild#guild-join-request-object),
 with separate pending/approved/rejected views, bounded answers, explicit decisions and interview
 creation. Requests use their canonical request IDs. Opening an interview sends no message.
-Application review is distinct from rules acceptance. Queues load on demand; Members and
-Applications badges reflect the loaded pending count, becoming a neutral update marker when
+Application review is distinct from rules acceptance. Queues load on demand; Applications
+shows the loaded pending count. Members and Applications show a neutral update marker when
 Gateway changes make that count unknown. They do not scan unopened servers or infer counts.
 Gateway changes fence late reads so a withdrawn application cannot be restored by an older response.
 Onboarding, screening and Guide previews display the unsaved draft without submitting answers.
