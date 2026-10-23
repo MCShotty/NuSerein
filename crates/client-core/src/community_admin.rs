@@ -331,6 +331,8 @@ pub(crate) mod tests {
 	};
 	fn role(id: u64, bits: u128, position: i32) -> p::Role {
 		p::Role {
+			icon: None,
+			unicode_emoji: None,
 			id: Id(id),
 			name: format!("Role {id}"),
 			bits,
@@ -346,6 +348,7 @@ pub(crate) mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),
 				avatar: None,

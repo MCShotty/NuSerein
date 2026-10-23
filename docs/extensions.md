@@ -377,7 +377,7 @@ Forum tags remain unavailable. All three inspector/toolbox observers stay passiv
 
 ### Existing tools and message events
 
-Actions are invoked by a message context-menu item, composer tool or panel
+Actions are invoked from the message toolbar's overflow menu, a composer tool or panel
 button. A plugin may also declare one `activation` action that runs in the worker
 on enable/account load. An enabled plugin with granted `deleted_messages` capability
 keeps already loaded deleted messages in the session window. Without that opt-in,

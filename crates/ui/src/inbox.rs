@@ -1107,7 +1107,11 @@ mod tests {
 		}
 		assert!(!view.inbox_open && state.inbox.messages.is_empty());
 		assert_eq!(state.selected, Some(Id(20)));
-		assert_eq!(state.search_target, Some(Id(80)));
+		assert!(
+			state.search_target.is_none(),
+			"Keep the source window until the centred page succeeds"
+		);
+		assert!(state.history_pending);
 		view.inbox_open = true;
 		state.inbox.loaded = true;
 		frame(&mut view, &mut state, vec![]);

@@ -1272,6 +1272,7 @@ mod invite_tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),
@@ -1301,6 +1302,8 @@ mod invite_tests {
 					timeout_until: None,
 				}),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(2),
 					name: "@everyone".into(),
 					bits: p::MANAGE_GUILD | p::MANAGE_ROLES,
@@ -1426,6 +1429,7 @@ mod sticker_tests {
 
 	fn user(id: u64, name: &str) -> model::User {
 		model::User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(id),
@@ -1476,6 +1480,8 @@ mod sticker_tests {
 					timeout_until: None,
 				}),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(2),
 					name: "@everyone".into(),
 					bits,
@@ -1577,6 +1583,7 @@ mod sound_tests {
 
 	fn user(id: u64) -> model::User {
 		model::User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(id),
@@ -1626,6 +1633,8 @@ mod sound_tests {
 					timeout_until: None,
 				}),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(2),
 					name: "@everyone".into(),
 					bits,

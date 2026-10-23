@@ -321,6 +321,14 @@ pub fn show(
 	surface: &mut crate::select::Surface,
 	card_surface: design::MessageCardSurface,
 ) {
+	crate::message_menu::set_owner(
+		ui.ctx(),
+		crate::message_menu::Owner {
+			generation: crate::message_menu::owner(ui.ctx()).map_or(0, |owner| owner.generation),
+			channel: message.channel,
+			message: message.id,
+		},
+	);
 	show_subset(
 		ui,
 		message,
@@ -587,90 +595,108 @@ fn media_menu(
 	opening: &mut Option<String>,
 	demo: bool,
 ) -> Option<bool> {
-	if !video && response.has_focus() {
-		response.ctx.layer_painter(response.layer_id).rect_stroke(
-			response.rect,
-			5,
-			Stroke::new(2.0, design::palette_for(&response.ctx).accent),
-			StrokeKind::Inside,
-		);
-	}
-	let mut popup = crate::user_menu::popup(response, response.id.with("media-menu"));
-	// Drag-only video sliders do not set secondary_clicked, but still belong to the media.
+	use crate::{icons::Icon, message_menu as menu};
+	menu::register_hit(response, menu::Target::Image);
+	let owner = menu::owner(&response.ctx).filter(|owner| owner.message != Id(0));
+	let mut popup = crate::user_menu::popup(response, response.id.with("media-menu"))
+		.frame(menu::frame(&response.ctx));
 	if response.contains_pointer() && response.ctx.input(|i| i.pointer.secondary_clicked()) {
 		popup = popup
 			.open_memory(Some(egui::SetOpenCommand::Bool(true)))
 			.at_pointer_fixed();
 	}
 	let mut action = None;
+	let popup_id = popup.get_id();
 	popup.show(|ui| {
-		let idle = !demo && !download.busy();
-		let actions = if video {
-			[
+		if let Some(owner) = owner {
+			menu::mark_open(ui.ctx(), owner, popup_id);
+		}
+		menu::content(ui, |ui| {
+			let idle = !demo && !download.busy();
+			for (copy, key, icon) in [
 				(
 					true,
-					crate::i18n::translate("attachments-media-menu-copy-video"),
-				),
-				(
-					false,
-					crate::i18n::translate("attachments-media-menu-save-video-as"),
-				),
-			]
-		} else {
-			[
-				(
-					true,
-					crate::i18n::translate("attachments-media-menu-copy-image"),
-				),
-				(
-					false,
-					crate::i18n::translate("attachments-media-menu-save-image-as"),
-				),
-			]
-		};
-		for (copy, label) in actions {
-			if ui
-				.add_enabled(idle, egui::Button::new(label))
-				.on_disabled_hover_text(crate::i18n::translate_if_key(
-					&(if demo {
-						crate::i18n::translate(
-							"attachments-media-menu-unavailable-for-synthetic-attachments",
-						)
+					if video {
+						"attachments-media-menu-copy-video"
 					} else {
-						crate::i18n::translate(
-							"attachments-media-menu-a-media-transfer-is-already-active",
-						)
-					}),
-				))
-				.clicked()
-			{
-				action = Some(copy);
-				ui.close();
-			}
-		}
-		if let Some(url) = url.and_then(external_url) {
-			if video
-				&& ui
-					.button(crate::i18n::translate(
-						"attachments-media-menu-open-original",
-					))
+						"attachments-media-menu-copy-image"
+					},
+					Icon::Image,
+				),
+				(
+					false,
+					if video {
+						"attachments-media-menu-save-video-as"
+					} else {
+						"menu-save-image"
+					},
+					Icon::Download,
+				),
+			] {
+				if menu::row(ui, key, icon, idle, false)
+					.on_disabled_hover_text(crate::i18n::translate(if demo {
+						"attachments-media-menu-unavailable-for-synthetic-attachments"
+					} else {
+						"attachments-media-menu-a-media-transfer-is-already-active"
+					}))
 					.clicked()
-			{
-				*opening = Some(url.clone());
-				ui.close();
+				{
+					action = Some(copy);
+					ui.close();
+				}
 			}
-			if ui
-				.button(crate::i18n::translate("attachments-media-menu-copy-link"))
+			menu::separator(ui);
+			if let Some(url) = url.and_then(external_url) {
+				if menu::row(ui, "menu-copy-media-link", Icon::Link, true, false).clicked() {
+					ui.ctx().copy_text(url.clone());
+					ui.close();
+				}
+				if menu::row(ui, "menu-open-media-link", Icon::Globe, true, false).clicked() {
+					*opening = Some(url.clone());
+					ui.ctx().data_mut(|data| {
+						data.insert_temp(egui::Id::unique("message-menu-open-link"), url)
+					});
+					ui.close();
+				}
+			}
+			if let Some(owner) = owner {
+				menu::separator(ui);
+				if menu::row(
+					ui,
+					"timeline-message-actions-copy-message-id",
+					Icon::FileText,
+					true,
+					false,
+				)
 				.clicked()
-			{
-				ui.ctx().copy_text(url);
-				ui.close();
+				{
+					ui.ctx().copy_text(owner.message.to_string());
+					ui.close();
+				}
 			}
-		}
+		})
 	});
 	action
 }
+
 impl DownloadUi {
+	/// Stable favorites are read every frame; only a real change needs owned URL copies.
+	pub(crate) fn sync_gif_favorites(&mut self, favorites: &[model::Gif]) {
+		let favorites = &favorites[..favorites.len().min(model::MAX_GIF_FAVORITES)];
+		if self.gif_favorites.len() == favorites.len()
+			&& self
+				.gif_favorites
+				.iter()
+				.zip(favorites)
+				.all(|(url, gif)| url == &gif.url)
+		{
+			return;
+		}
+		self.gif_favorites.clear();
+		self.gif_favorites
+			.extend(favorites.iter().map(|gif| gif.url.clone()));
+	}
+
 	pub(crate) fn view_embed(&mut self, message: Id, media: &model::EmbedMedia) {
 		if media.valid() && media.bytes() <= 8 * 1024 {
 			self.embed_view_request = Some((message, media.clone()));
@@ -1267,6 +1293,59 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn favorite_stars_follow_replacements_removals_and_logout() {
+		let mut download = DownloadUi::default();
+		let mut favorites = test_support::gif_page(None).gifs;
+		download.sync_gif_favorites(&favorites);
+		assert!(
+			favorites
+				.iter()
+				.all(|gif| download.gif_favorites.contains(&gif.url))
+		);
+		let removed = favorites.remove(0).url;
+		favorites[0].url = "https://tenor.com/view/changed-favorite".into();
+		download.sync_gif_favorites(&favorites);
+		assert!(!download.gif_favorites.contains(&removed));
+		assert!(download.gif_favorites.contains(&favorites[0].url));
+		download.sync_gif_favorites(&[]);
+		assert!(download.gif_favorites.is_empty());
+	}
+
+	#[test]
+	#[ignore = "release performance workload"]
+	fn favorite_snapshot_benchmark() {
+		let template = test_support::gif_page(None).gifs.remove(0);
+		let favorites: Vec<_> = (0..model::MAX_GIF_FAVORITES)
+			.map(|index| model::Gif {
+				url: format!("https://tenor.com/view/synthetic-favorite-{index}"),
+				..template.clone()
+			})
+			.collect();
+		let mut download = DownloadUi::default();
+		download.sync_gif_favorites(&favorites);
+		for sample in 0..6 {
+			let started = std::time::Instant::now();
+			for _ in 0..10_000 {
+				let previous: Vec<_> = std::hint::black_box(&favorites)
+					.iter()
+					.map(|gif| gif.url.clone())
+					.collect();
+				std::hint::black_box(previous);
+			}
+			let previous = started.elapsed().as_secs_f64() * 1000.0;
+			let started = std::time::Instant::now();
+			for _ in 0..10_000 {
+				download.sync_gif_favorites(std::hint::black_box(&favorites));
+				std::hint::black_box(&download.gif_favorites);
+			}
+			println!(
+				"favorite_snapshot sample={sample} previous_ms={previous} after_ms={}",
+				started.elapsed().as_secs_f64() * 1000.0
+			);
+		}
+	}
+
+	#[test]
 	fn large_image_galleries_use_three_square_columns_and_narrow_layouts_fit() {
 		for width in [280.0, 420.0, 640.0] {
 			let (columns, size) = image_layout(5, width);
@@ -1629,11 +1708,13 @@ mod tests {
 			},
 		};
 		let message = Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: vec![],
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				username: None,
 				id: Id(4),
 				name: "Synthetic".into(),
 				avatar: None,

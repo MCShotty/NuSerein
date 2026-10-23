@@ -403,6 +403,7 @@ mod tests {
 
 	fn message(kind: u8) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			flags: 0,
 			sticker_items: vec![],
@@ -411,6 +412,7 @@ mod tests {
 			ephemeral: false,
 			kind,
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(3),
@@ -421,6 +423,7 @@ mod tests {
 				discriminator: 0,
 			},
 			mentions: vec![User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(4),

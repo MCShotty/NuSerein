@@ -10,6 +10,7 @@ pub mod heic;
 pub mod hotkeys;
 mod login_keyring;
 pub mod memory;
+pub mod message_speech;
 pub mod notifications;
 pub mod plaintext_login;
 pub mod pointer;

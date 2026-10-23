@@ -15,6 +15,38 @@ pub struct Touched {
 	pub folders: bool,
 }
 
+/// Full frecency updates or reaction/emoji deltas invalidate the bounded account projection.
+pub fn reactions_changed(bytes: &[u8]) -> Result<bool, DecodeError> {
+	#[derive(Deserialize)]
+	struct Update {
+		settings: Proto,
+		#[serde(default)]
+		partial: bool,
+	}
+	#[derive(Deserialize)]
+	struct Proto {
+		#[serde(rename = "type")]
+		kind: u8,
+		proto: String,
+	}
+	if bytes.len() > crate::gif_favorites::MAX_RESPONSE {
+		return Err(DecodeError);
+	}
+	let update: Update = serde_json::from_slice(bytes).map_err(|_| DecodeError)?;
+	if update.settings.kind != 2 {
+		return Ok(false);
+	}
+	if !update.partial {
+		return Ok(true);
+	}
+	let wire = STANDARD
+		.decode(update.settings.proto)
+		.map_err(|_| DecodeError)?;
+	Ok(fields(&wire)?
+		.iter()
+		.any(|field| matches!(field.number, 6 | 13)))
+}
+
 /// `None` for other settings types. An undecodable preloaded-settings proto refreshes both,
 /// so a schema change degrades into an extra read instead of a missed update.
 pub fn decode(bytes: &[u8]) -> Result<Option<Touched>, DecodeError> {
@@ -55,6 +87,21 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Touched>, DecodeError> {
 mod tests {
 	use super::*;
 	use crate::guild_folders::message;
+
+	#[test]
+	fn reaction_updates_ignore_favorites_but_refresh_full_and_reaction_settings() {
+		let mut reactions = Vec::new();
+		message(13, &[], &mut reactions);
+		let mut gifs = Vec::new();
+		message(2, &[], &mut gifs);
+		assert!(reactions_changed(&update(2, &reactions)).unwrap());
+		assert!(!reactions_changed(&update(2, &gifs)).unwrap());
+		assert!(!reactions_changed(&update(1, &reactions)).unwrap());
+		assert!(
+			reactions_changed(br#"{"settings":{"type":2,"proto":""},"partial":false}"#).unwrap()
+		);
+		assert!(reactions_changed(&update(2, &[255])).is_err());
+	}
 
 	fn update(kind: u8, wire: &[u8]) -> Vec<u8> {
 		serde_json::to_vec(&serde_json::json!({

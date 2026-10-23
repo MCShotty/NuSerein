@@ -519,6 +519,41 @@ pub fn toggle(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, label: &st
 	response.on_hover_text(&label)
 }
 
+/// Composer tray: a 22-point glyph in a 32-point target, with legible idle contrast.
+pub(crate) fn composer(ui: &mut egui::Ui, icon: Icon, active: bool, label: &str) -> Response {
+	let label = crate::i18n::translate_if_key(label);
+	let colors = design::palette(ui);
+	let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+	if response.hovered() || response.has_focus() {
+		ui.painter().rect_filled(rect, 6, colors.hover);
+	}
+	let color = if !ui.is_enabled() {
+		colors.muted
+	} else if active || response.hovered() || response.has_focus() {
+		colors.text_strong
+	} else {
+		colors.text
+	};
+	let glyph = Rect::from_center_size(rect.center(), Vec2::splat(22.0))
+		.round_to_pixels(ui.ctx().pixels_per_point());
+	if icon == Icon::Gif {
+		ui.painter().rect_filled(glyph, 3, color);
+		ui.painter().text(
+			glyph.center(),
+			egui::Align2::CENTER_CENTER,
+			"GIF",
+			egui::FontId::new(10.0, design::semibold_family(ui.ctx())),
+			colors.base,
+		);
+	} else {
+		paint(ui.painter(), icon, glyph, color);
+	}
+	response.widget_info(|| {
+		egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), active, &label)
+	});
+	immediate_tooltip(response, &label)
+}
+
 /// Inline glyph used beside labels (channel kinds, section headers).
 pub fn inline(ui: &mut egui::Ui, icon: Icon, size: f32, color: Color32) -> Rect {
 	let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());

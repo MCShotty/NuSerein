@@ -77,6 +77,7 @@ impl State {
 	/// Session-only extension policy. Disabling releases every retained deleted payload.
 	pub fn set_preserve_deleted_messages(&mut self, enabled: bool) {
 		if self.preserve_deleted_messages != enabled {
+			self.history_navigation.evict_back();
 			self.preserve_deleted_messages = enabled;
 			self.revision += 1;
 		}
@@ -96,6 +97,9 @@ impl State {
 	/// Drop dormant previews when disk history is cleared; preserve the visible conversation.
 	pub fn clear_cached_history(&mut self) {
 		self.resident = Windows::default();
+		self.reply_previews.clear();
+		self.history_navigation.clear_back();
+		self.cancel_reply_navigation();
 	}
 	/// Number of dormant windows, excluding the active timeline.
 	pub fn resident_window_count(&self) -> usize {
@@ -119,6 +123,7 @@ impl State {
 	/// Active plus dormant reading rows, including deletion placeholders.
 	pub fn resident_history_rows(&self) -> usize {
 		self.timeline.row_count()
+			+ self.history_navigation.rows()
 			+ self
 				.resident
 				.entries
@@ -129,6 +134,8 @@ impl State {
 	/// Conservative active plus dormant allocation charge (not process RSS).
 	pub fn resident_history_bytes(&self) -> usize {
 		self.timeline.retained_bytes()
+			+ self.history_navigation.bytes()
+			+ self.reply_previews.bytes()
 			+ size_of::<Windows>()
 			+ self.resident.entries.capacity() * size_of::<Window>()
 			+ self
@@ -145,14 +152,38 @@ impl State {
 	}
 	/// Also call after direct disk hydration of the public active timeline.
 	pub fn enforce_resident_budget(&mut self) {
+		let mut bytes = self.resident_history_bytes();
+		let mut rows = self.resident_history_rows();
+		if bytes > MAX_BYTES || rows > MAX_ROWS {
+			let before = self.history_navigation.bytes();
+			let before_rows = self.history_navigation.rows();
+			self.history_navigation.evict_back();
+			bytes -= before - self.history_navigation.bytes();
+			rows -= before_rows - self.history_navigation.rows();
+		}
+		while bytes > MAX_BYTES {
+			let before = self.reply_previews.bytes();
+			if !self.reply_previews.evict() {
+				break;
+			}
+			bytes -= before - self.reply_previews.bytes();
+		}
 		if self.timeline.older_evicted() {
 			self.older_exhausted = false;
 		}
-		while !self.resident.entries.is_empty()
-			&& (self.resident_history_rows() > MAX_ROWS
-				|| self.resident_history_bytes() > MAX_BYTES)
-		{
-			self.evict_resident(false);
+		while !self.resident.entries.is_empty() && (rows > MAX_ROWS || bytes > MAX_BYTES) {
+			let window = self
+				.resident
+				.evict(false)
+				.expect("nonempty resident windows");
+			bytes -= window
+				.timeline
+				.retained_bytes()
+				.saturating_sub(size_of::<Timeline>());
+			rows -= window.timeline.row_count();
+			if window.speculative {
+				self.preload.conversations.forget(window.identity.id);
+			}
 		}
 	}
 	/// Evicts one window, preloaded ones first. An evicted preload may be loaded again later.
@@ -393,12 +424,14 @@ mod tests {
 
 	fn message(channel: u64, id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(id),
 			channel: Id(channel),
 			kind: 0,
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(9),
@@ -905,6 +938,8 @@ mod tests {
 					id: Id(10),
 					owner: Some(Id(8)),
 					roles: Some(vec![p::Role {
+						icon: None,
+						unicode_emoji: None,
 						name: String::new(),
 						color: 0,
 						secondary_color: None,

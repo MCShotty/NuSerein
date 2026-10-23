@@ -77,26 +77,36 @@ def sample(binary, args, cwd, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fork-base', required=True)
+    parser.add_argument('--checkpoint', default='', help='Optional immutable pre-change PR head')
+    parser.add_argument('--nightly-tag', default='', help='Optional published nightly pinned for this comparison')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     root = Path(command(['git', 'rev-parse', '--show-toplevel'], Path.cwd(), capture=True).strip())
     base = args.fork_base
     if not SHA.fullmatch(base) or int(base, 16) == 0:
         raise ValueError('A nonzero full previous-fork revision is required')
+    if args.checkpoint and (not SHA.fullmatch(args.checkpoint) or int(args.checkpoint, 16) == 0):
+        raise ValueError('A nonzero full checkpoint revision is required')
+    if args.nightly_tag and not TAG.fullmatch(args.nightly_tag):
+        raise ValueError('A valid published-nightly tag is required')
     if command(['git', 'status', '--porcelain'], root, capture=True).strip():
         raise RuntimeError('Commit the reviewed changes before recording a revision-labelled comparison')
     current = command(['git', 'rev-parse', 'HEAD'], root, capture=True).strip()
-    tag = latest_nightly()
+    tag = args.nightly_tag or latest_nightly()
     env = dict(os.environ, **SETTINGS)
     # Only the release lookup needs a repository token; build scripts and benchmarks do not.
     for key in ('GH_TOKEN', 'GITHUB_TOKEN'):
         env.pop(key, None)
     command(['git', 'fetch', '--no-tags', '--depth=1', PARENT, 'refs/tags/' + tag], root, env)
     nightly = command(['git', 'rev-parse', 'FETCH_HEAD^{commit}'], root, env, capture=True).strip()
-    available = subprocess.run(['git', 'cat-file', '-e', base + '^{commit}'], cwd=root, env=env, capture_output=True, timeout=10).returncode == 0
-    if not available:
-        command(['git', 'fetch', '--no-tags', '--depth=1', 'origin', base], root, env)
-    revisions = {'nightly': nightly, 'previous_fork': base, 'after': current}
+    for revision in {base, args.checkpoint} - {''}:
+        available = subprocess.run(['git', 'cat-file', '-e', revision + '^{commit}'], cwd=root, env=env, capture_output=True, timeout=10).returncode == 0
+        if not available:
+            command(['git', 'fetch', '--no-tags', '--depth=1', 'origin', revision], root, env)
+    revisions = {'nightly': nightly, 'previous_fork': base}
+    if args.checkpoint:
+        revisions['starting_pr'] = args.checkpoint
+    revisions['after'] = current
     compiler = command(['rustc', '+1.98.1', '--version'], root, env, capture=True).strip()
     result = dict(revisions=revisions, nightly_tag=tag, os=platform.platform(),
                   cpu=platform.processor(), logical_cpus=os.cpu_count(), rust=compiler,

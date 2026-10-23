@@ -12,6 +12,16 @@ use std::{
 pub(crate) use media::{Quality, Surface};
 
 pub type GifFrames = Vec<(Duration, std::sync::Arc<ColorImage>)>;
+
+/// Include every GPU level in the existing artwork byte budget.
+fn artwork_bytes(mut size: [usize; 2], mipmaps: bool) -> usize {
+	let mut bytes = size[0] * size[1] * 4;
+	while mipmaps && size != [1, 1] {
+		size = [size[0].div_euclid(2).max(1), size[1].div_euclid(2).max(1)];
+		bytes += size[0] * size[1] * 4;
+	}
+	bytes
+}
 const ANIMATIONS: usize = 128;
 const ANIMATION_BYTES: usize = 128 * 1024 * 1024;
 const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
@@ -350,7 +360,7 @@ impl Avatars {
 				if now.saturating_duration_since(*used) < IDLE_TEXTURES {
 					return true;
 				}
-				*bytes -= texture.byte_size();
+				*bytes -= artwork_bytes(texture.size(), key.starts_with("emoji-"));
 				self.revision += 1;
 				self.animations.remove(key);
 				self.released.remove(key);
@@ -457,6 +467,8 @@ impl Avatars {
 			return;
 		};
 		self.attempts.remove(&key);
+		let mipmaps = key.starts_with("emoji-");
+		let incoming_bytes = artwork_bytes(image.size, mipmaps);
 		let (textures, bytes, limit, byte_limit) = if key.starts_with("emoji-") {
 			(
 				&mut self.emoji_textures,
@@ -468,23 +480,27 @@ impl Avatars {
 			(&mut self.textures, &mut self.bytes, TEXTURES, TEXTURE_BYTES)
 		};
 		if let Some((_, old)) = textures.remove(&key) {
-			*bytes -= old.byte_size();
+			*bytes -= artwork_bytes(old.size(), mipmaps);
 		}
-		while textures.len() >= limit || *bytes + image.pixels.len() * 4 > byte_limit {
+		while textures.len() >= limit || *bytes + incoming_bytes > byte_limit {
 			let oldest = textures
 				.iter()
 				.min_by_key(|(_, (age, _))| *age)
 				.map(|(key, _)| key.clone())
 				.expect("texture cache over budget");
 			self.animations.remove(&oldest);
-			*bytes -= textures
-				.remove(&oldest)
-				.expect("oldest texture")
-				.1
-				.byte_size();
+			let removed = textures.remove(&oldest).expect("oldest texture").1;
+			*bytes -= artwork_bytes(removed.size(), mipmaps);
 		}
-		let texture = ctx.load_texture("service-image", image, egui::TextureOptions::LINEAR);
-		*bytes += texture.byte_size();
+		let texture = ctx.load_texture(
+			"service-image",
+			image,
+			egui::TextureOptions {
+				mipmap_mode: mipmaps.then_some(egui::TextureFilter::Linear),
+				..egui::TextureOptions::LINEAR
+			},
+		);
+		*bytes += incoming_bytes;
 		self.revision += 1;
 		textures.insert(key, (Instant::now(), texture));
 	}
@@ -1809,7 +1825,7 @@ mod tests {
 		assert!(avatars.texture_id("hidden").is_none());
 		assert!(avatars.texture_id("emoji-2").is_none());
 		assert_eq!(avatars.bytes, 64 * 64 * 4);
-		assert_eq!(avatars.emoji_bytes, 64 * 64 * 4);
+		assert_eq!(avatars.emoji_bytes, artwork_bytes([64, 64], true));
 		assert!(avatars.next_release().unwrap() > now);
 		avatars.request("hidden".into());
 		assert_eq!(avatars.take_requests(), vec!["hidden"]);
@@ -3158,7 +3174,7 @@ mod tests {
 		}
 		assert_eq!(avatars.textures.len(), 64);
 		assert_eq!(avatars.texture_id("emoji-9001"), Some(emoji_texture));
-		assert_eq!(avatars.emoji_bytes, 64 * 64 * 4);
+		assert_eq!(avatars.emoji_bytes, artwork_bytes([64, 64], true));
 		avatars.take_requests();
 		assert!(
 			avatars

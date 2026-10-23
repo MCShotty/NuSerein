@@ -81,6 +81,7 @@ impl Settings {
 			cosmetics: ui.cosmetics,
 			image_cache: ui.image_cache,
 			time_format: ui.time_format,
+			time_zone: ui.time_zone.clone(),
 			plaintext_login: ui.plaintext_login,
 		};
 		if value != self.current {
@@ -131,8 +132,10 @@ impl Settings {
 		ui.cosmetics = value.cosmetics;
 		ui.image_cache = value.image_cache;
 		ui.time_format = value.time_format;
+		ui.time_zone.clone_from(&value.time_zone);
 		ui.plaintext_login = value.plaintext_login;
 		ui::local_time::set_format(ui.time_format, ui.language);
+		ui::local_time::set_timezone(&ui.time_zone);
 	}
 }
 

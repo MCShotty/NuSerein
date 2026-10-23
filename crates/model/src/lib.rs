@@ -11,6 +11,7 @@ pub mod inbox;
 pub mod polls;
 pub mod public_upload;
 pub mod registered_games;
+pub mod reporting;
 pub use image_sharing::ImageShare;
 pub mod archives;
 mod channel_preferences;
@@ -31,6 +32,8 @@ mod graphics;
 pub use graphics::{GpuPreference, VideoAdapter, VideoAdapterIdentity};
 mod time_format;
 pub use time_format::TimeFormat;
+mod time_zone;
+pub use time_zone::TimeZonePreference;
 pub mod guild_folders;
 pub mod message_options;
 pub mod permissions;
@@ -44,6 +47,8 @@ pub mod server_roles;
 pub mod server_settings;
 pub mod soundboard;
 pub use reading_preferences::ReadingPreferences;
+mod reply_preview;
+pub use reply_preview::{MAX_REPLY_PREVIEW_BYTES, ReplyPreview};
 mod cache_preferences;
 pub use cache_preferences::*;
 pub mod badges;
@@ -123,6 +128,10 @@ pub struct User {
 	pub webhook: bool,
 	pub id: Id,
 	pub name: String,
+	/// Actual service username, separate from global display names and guild nicknames.
+	/// Session display metadata only; older disk history has no authoritative username.
+	#[serde(default, skip)]
+	pub username: Option<Box<str>>,
 	pub avatar: Option<String>,
 	pub discriminator: u16,
 	/// Service-supplied server identity displayed beside this user's name.
@@ -144,6 +153,7 @@ impl User {
 	}
 	pub fn heap_bytes(&self) -> usize {
 		self.name.capacity()
+			+ self.username.as_deref().map_or(0, str::len)
 			+ self.avatar.as_ref().map_or(0, String::capacity)
 			+ self.primary_guild.as_ref().map_or(0, |guild| {
 				std::mem::size_of::<ClanTag>()
@@ -242,6 +252,7 @@ impl SavedAccount {
 	/// Avatar lookups and name rows reuse the ordinary user widgets.
 	pub fn user(&self) -> User {
 		User {
+			username: None,
 			kind: AccountKind::Human,
 			webhook: false,
 			id: self.id,
@@ -393,6 +404,8 @@ pub struct Message {
 	pub nonce: Option<String>,
 	/// The replied-to message, or the closed poll of a poll result (type 46).
 	pub reply_to: Option<Id>,
+	/// Bounded original-message summary supplied by the service; never persisted.
+	pub reply_preview: Option<Box<ReplyPreview>>,
 	/// Discord message type; 255 denotes an unknown legacy cached type.
 	pub kind: u8,
 	/// The service explicitly returned a null referenced message, not an unresolved preview.
@@ -436,6 +449,10 @@ impl Message {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ self.poll.as_ref().map_or(0, |poll| poll.bytes())
+			+ self
+				.reply_preview
+				.as_ref()
+				.map_or(0, |preview| preview.bytes())
 			+ self.reactions.as_ref().map_or(0, |r| {
 				reaction_bytes(r) + r.capacity().saturating_sub(r.len()) * size_of::<Reaction>()
 			}) + self.content.capacity()

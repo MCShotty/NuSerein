@@ -8,6 +8,7 @@ use crate::{Event, State};
 pub(super) struct Revisions {
 	catalog_skipped: u64,
 	channels_skipped: u64,
+	mention_evictions: u64,
 	labels_skipped: u64,
 	rail_skipped: u64,
 }
@@ -27,6 +28,13 @@ impl State {
 	/// Sidebar row membership/order, including DM recency and voice participants.
 	pub fn channel_list_revision(&self) -> u64 {
 		self.filtered_revision(self.navigation_index.view_revisions.channels_skipped)
+			.wrapping_add(self.navigation_index.view_revisions.mention_evictions)
+	}
+	/// An incoming message can evict another conversation's last observed mention.
+	/// Refresh only sidebar membership/counts; ordinary traffic still reuses its rows.
+	pub(super) fn note_evicted_mention(&mut self) {
+		let changes = &mut self.navigation_index.view_revisions.mention_evictions;
+		*changes = changes.wrapping_add(1);
 	}
 
 	/// Channel and role names used by timeline mentions.
@@ -41,7 +49,19 @@ impl State {
 
 	pub(super) fn filter_view_revisions(&mut self, event: &Event) {
 		let guild_message = matches!(event, Event::Message(message)
-			if self.channel(message.channel).is_some_and(|channel| channel.guild.is_some()));
+		if self.channel(message.channel).is_some_and(|channel| {
+			channel.guild.is_some()
+				// Existing pings reorder active threads; our own messages acknowledge
+				// their conversation. Ordinary text-channel traffic changes neither.
+				&& ((!matches!(channel.kind, 10..=12)
+					&& self.user.as_ref().is_none_or(|owner| message.author.id != owner.id))
+					|| self.mention_count(message.channel) == 0)
+				// An ordinary guild message has no badge work to repeat here.
+				&& ((message.mentions.is_empty()
+					&& !message.mention_everyone
+					&& message.mention_roles.is_empty())
+					|| !self.counts_toward_mention_badge(message))
+		}));
 		let revisions = &mut self.navigation_index.view_revisions;
 		// These events cannot replace guild catalogs or channel/role labels. Message
 		// arrival still changes unread badges and DM sorting; member lists affect text
@@ -56,13 +76,14 @@ impl State {
 				| Event::Reactions(_)
 				| Event::Members(_)
 				| Event::Voice(_)
+				| Event::ReplyPreview(_)
 		) {
 			revisions.catalog_skipped = revisions.catalog_skipped.wrapping_add(1);
 			revisions.labels_skipped = revisions.labels_skipped.wrapping_add(1);
 		}
 		let metadata_unchanged = matches!(
 			event,
-			Event::Patch(_) | Event::Reactions(_) | Event::Members(_)
+			Event::Patch(_) | Event::Reactions(_) | Event::Members(_) | Event::ReplyPreview(_)
 		);
 		if metadata_unchanged || guild_message {
 			revisions.channels_skipped = revisions.channels_skipped.wrapping_add(1);
@@ -86,6 +107,59 @@ mod tests {
 			state.channel_labels_revision(),
 			state.rail_revision(),
 		]
+	}
+
+	#[test]
+	fn preview_reads_update_content_without_rebuilding_navigation() {
+		let mut state = State {
+			auth: crate::auth::AuthState::Authenticated,
+			gateway_connected: true,
+			freshness: model::Freshness::Fresh,
+			selected: Some(Id(1)),
+			channels: vec![Channel {
+				id: Id(1),
+				guild: None,
+				parent_id: None,
+				position: 0,
+				name: "Synthetic".into(),
+				kind: 1,
+				recipients: vec![],
+				last_message: Some(Id(2)),
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			}],
+			..State::default()
+		};
+		let mut reply = crate::tests::message(2);
+		reply.reply_to = Some(Id(1));
+		state.timeline.insert(reply, false, false).unwrap();
+		let commands = state.sync_visible_reply_previews(&[Id(1)]);
+		let request = commands
+			.iter()
+			.find_map(|command| match command {
+				crate::Command::ReplyPreview { request, .. } => Some(*request),
+				_ => None,
+			})
+			.unwrap();
+		let before = keys(&state);
+		let revision = state.revision;
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::ReplyPreview(crate::reply_previews::ResultEvent {
+				channel: Id(1),
+				message: Id(1),
+				request,
+				result: Err(crate::auth::Failure::Network),
+			}),
+		});
+		assert!(state.revision > revision);
+		assert_eq!(keys(&state), before);
+		assert_eq!(
+			state.reply_preview_status(Id(1)),
+			crate::reply_previews::Status::Failed
+		);
 	}
 
 	#[test]
@@ -127,6 +201,41 @@ mod tests {
 			[before[0], before[1] + 1, before[2], before[3] + 1]
 		);
 		assert_eq!(state.channel(Id(1)).unwrap().last_message, Some(Id(11)));
+	}
+
+	#[test]
+	fn incoming_guild_mentions_invalidate_sidebar_membership() {
+		let mut message = crate::tests::message(20);
+		let mut owner = message.author.clone();
+		owner.id = Id(99);
+		message.mentions = vec![owner.clone()];
+		let mut state = State {
+			user: Some(owner),
+			channels: vec![Channel {
+				id: message.channel,
+				guild: Some(Id(10)),
+				parent_id: None,
+				position: 0,
+				name: "Synthetic".into(),
+				kind: 0,
+				recipients: vec![],
+				last_message: None,
+				icon: None,
+				member_list_id: None,
+				tags: None,
+				message_count: None,
+			}],
+			..State::default()
+		};
+		let before = keys(&state);
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Message(message),
+		});
+		assert_eq!(
+			keys(&state),
+			[before[0], before[1] + 1, before[2], before[3] + 1]
+		);
 	}
 
 	#[test]

@@ -1528,6 +1528,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(User {
+				username: None,
 				id: Id(1),
 				name: "Owner".into(),
 				avatar: None,
@@ -1821,6 +1822,8 @@ mod tests {
 						id: Id(10),
 						owner: Some(Id(99)),
 						roles: Some(vec![p::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: Id(10),
 							name: String::new(),
 							color: 0,
@@ -1861,6 +1864,7 @@ mod tests {
 				auth: AuthState::Authenticated,
 				gateway_connected: true,
 				user: Some(User {
+					username: None,
 					primary_guild: None,
 					cosmetics: None,
 					id: Id(1),
@@ -2024,6 +2028,7 @@ mod tests {
 			oversized.member = Some(Member {
 				roles: vec![],
 				user: User {
+					username: None,
 					primary_guild: None,
 					cosmetics: None,
 					id: Id(2),
@@ -2070,6 +2075,8 @@ mod tests {
 						id: Id(10),
 						owner: Some(Id(999)),
 						roles: Some(vec![p::Role {
+							icon: None,
+							unicode_emoji: None,
 							name: String::new(),
 							color: 0,
 							secondary_color: None,
@@ -2141,6 +2148,7 @@ mod tests {
 				auth: AuthState::Authenticated,
 				gateway_connected: true,
 				user: Some(User {
+					username: None,
 					primary_guild: None,
 					cosmetics: None,
 					id: Id(1),
@@ -2184,6 +2192,8 @@ mod tests {
 						id: Id(10),
 						owner: Some(Id(99)),
 						roles: Some(vec![p::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: Id(10),
 							bits: p::VIEW_CHANNEL | p::CONNECT,
 							name: String::new(),
@@ -2301,6 +2311,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),
@@ -2319,6 +2330,7 @@ mod tests {
 				position: 0,
 				kind: 1,
 				recipients: vec![User {
+					username: None,
 					primary_guild: None,
 					cosmetics: None,
 					id: Id(3),
@@ -2593,6 +2605,7 @@ mod tests {
 				auth: AuthState::Authenticated,
 				gateway_connected: true,
 				user: Some(User {
+					username: None,
 					primary_guild: None,
 					cosmetics: None,
 					id: Id(1),
@@ -2611,6 +2624,7 @@ mod tests {
 					position: 0,
 					kind: 1,
 					recipients: vec![User {
+						username: None,
 						primary_guild: None,
 						cosmetics: None,
 						id: Id(3),

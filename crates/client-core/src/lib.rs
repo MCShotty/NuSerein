@@ -13,6 +13,7 @@ pub mod guild_creation;
 pub mod guild_folders;
 pub mod inbox;
 pub mod permissions;
+pub mod reporting;
 pub mod soundboard;
 pub mod stickers;
 pub use permissions::ChannelAccess;
@@ -35,6 +36,7 @@ pub mod profile;
 pub mod reactions;
 pub mod read_state;
 mod replies;
+pub mod reply_previews;
 pub mod server_profile;
 pub use replies::{HistoryNavigation, ParkedReplies, Reply, ReplyDeletions};
 pub mod community_admin;
@@ -101,6 +103,7 @@ pub enum Command {
 		request: u64,
 		action: inbox::Action,
 	},
+	Report(Box<reporting::Request>),
 	Polls(polls::Request),
 	Soundboard(soundboard::Request),
 	StickerPacks,
@@ -243,6 +246,9 @@ pub enum Command {
 		request: u64,
 		change: Option<(model::Gif, bool)>,
 	},
+	ReactionPreferences {
+		request: u64,
+	},
 	MarkRead {
 		channel: Id,
 		message: Id,
@@ -324,6 +330,17 @@ pub enum Command {
 		after: Option<Id>,
 		request: u64,
 	},
+	HistoryAround {
+		channel: Id,
+		target: Id,
+		request: u64,
+	},
+	ReplyPreview {
+		channel: Id,
+		message: Id,
+		request: u64,
+	},
+	CancelReplyPreviews,
 	/// The command a click would send, sent early on intent and answered by that command's own
 	/// event: a conversation's recent `History` page or a `Profile`.
 	Prefetch(Box<Command>),
@@ -613,6 +630,7 @@ pub enum Event {
 		result: Result<inbox::Outcome, auth::Failure>,
 	},
 	InboxInvalidated,
+	Report(reporting::Event),
 	Gifs {
 		request: u64,
 		result: Result<model::GifPage, auth::Failure>,
@@ -621,6 +639,11 @@ pub enum Event {
 		request: u64,
 		result: Result<Vec<model::Gif>, auth::Failure>,
 	},
+	ReactionPreferences {
+		request: u64,
+		result: Result<Vec<String>, auth::Failure>,
+	},
+	ReactionPreferencesChanged,
 	ReadState(read_state::Event),
 	NotificationPreferences(notifications::Event),
 	Reactions(reactions::Event),
@@ -714,6 +737,7 @@ pub enum Event {
 		request: u64,
 		failure: auth::Failure,
 	},
+	ReplyPreview(reply_previews::ResultEvent),
 	Message(Message),
 	Patch(MessagePatch),
 	Delete {
@@ -792,6 +816,7 @@ pub struct NavigationIndex {
 	bytes: std::cell::Cell<Option<(usize, usize, usize)>>,
 	channels: std::cell::RefCell<BTreeMap<Id, usize>>,
 	channel_stamp: std::cell::Cell<Option<(usize, usize)>>,
+	last_channel: std::cell::Cell<Option<(Id, usize)>>,
 	guilds: std::cell::RefCell<BTreeMap<Id, usize>>,
 	guild_stamp: std::cell::Cell<Option<(usize, usize)>>,
 }
@@ -837,6 +862,7 @@ pub struct State {
 	pub thread_starter: thread_starter::Starter,
 	pub search: Option<search::SearchView>,
 	pub inbox: inbox::View,
+	pub reporting: reporting::View,
 	pub search_request: u64,
 	pub gifs: gifs::Gifs,
 	/// A pin changed in this channel; the pins view should be reloaded once.
@@ -851,6 +877,7 @@ pub struct State {
 	/// One exact target awaiting its history page; never a metadata cache.
 	#[doc(hidden)]
 	pub history_navigation: HistoryNavigation,
+	pub reply_previews: reply_previews::Previews,
 	/// Session reading cursors. Missing means the channel has not been opened yet.
 	pub reading: Vec<(Id, ReadingCursor)>,
 	pub reply_deletions: ReplyDeletions,
@@ -858,6 +885,7 @@ pub struct State {
 	pub startup_warnings: model::account::Warnings,
 	pub notification_preferences: notifications::Preferences,
 	pub reactions: reactions::Reactions,
+	pub reaction_preferences: reactions::Preferences,
 	pub profile: Option<profile::ProfileView>,
 	pub profile_request: u64,
 	pub profile_cache: profile::ProfileCache,
@@ -1082,6 +1110,7 @@ impl Default for State {
 			thread_starter: Default::default(),
 			search: None,
 			inbox: Default::default(),
+			reporting: Default::default(),
 			search_request: 0,
 			gifs: gifs::Gifs::default(),
 			pins_changed: None,
@@ -1091,12 +1120,14 @@ impl Default for State {
 			restore_scroll: false,
 			history_targeted: false,
 			history_navigation: HistoryNavigation::default(),
+			reply_previews: reply_previews::Previews::default(),
 			reading: Vec::new(),
 			reply_deletions: ReplyDeletions::default(),
 			read_state: read_state::ReadState::default(),
 			startup_warnings: Default::default(),
 			notification_preferences: notifications::Preferences::default(),
 			reactions: reactions::Reactions::default(),
+			reaction_preferences: Default::default(),
 			profile: None,
 			profile_request: 0,
 			profile_cache: Default::default(),
@@ -1195,12 +1226,26 @@ impl State {
 	pub fn channel_index(&self, id: Id) -> Option<usize> {
 		let stamp = self.channel_stamp();
 		if self.navigation_index.channel_stamp.get() == Some(stamp) {
+			// Message processing asks several subsystems about the same channel. Reuse
+			// that lookup, while still checking the current slice and exact identity.
+			if let Some((last, index)) = self.navigation_index.last_channel.get()
+				&& last == id
+				&& self
+					.channels
+					.get(index)
+					.is_some_and(|channel| channel.id == id)
+			{
+				return Some(index);
+			}
 			let cached = self.navigation_index.channels.borrow().get(&id).copied();
 			if cached.is_none_or(|index| {
 				self.channels
 					.get(index)
 					.is_some_and(|channel| channel.id == id)
 			}) {
+				self.navigation_index
+					.last_channel
+					.set(cached.map(|index| (id, index)));
 				return cached;
 			}
 		}
@@ -1213,7 +1258,11 @@ impl State {
 			.map(|(index, channel)| (channel.id, index))
 			.collect();
 		self.navigation_index.channel_stamp.set(Some(stamp));
-		index.get(&id).copied()
+		let found = index.get(&id).copied();
+		self.navigation_index
+			.last_channel
+			.set(found.map(|index| (id, index)));
+		found
 	}
 	pub fn channel(&self, id: Id) -> Option<&Channel> {
 		self.channel_index(id)
@@ -1225,6 +1274,7 @@ impl State {
 			.invalidations
 			.set(self.navigation_index.invalidations.get().wrapping_add(1));
 		self.navigation_index.channel_stamp.set(None);
+		self.navigation_index.last_channel.set(None);
 		self.navigation_index.guild_stamp.set(None);
 		self.navigation_index.guilds.borrow_mut().clear();
 		self.navigation_index.bytes.set(None);
@@ -1423,6 +1473,7 @@ impl State {
 		if !self.can_view(channel) {
 			return Apply::Rejected("Channel permissions are unavailable or access was revoked");
 		}
+		self.history_navigation.clear_back();
 		if let Some(previous) = self.selected {
 			self.remember_channel(previous);
 		}
@@ -1540,6 +1591,7 @@ impl State {
 
 	/// Open Friends / Home. Does not clear the timeline or emit a command.
 	pub fn open_home(&mut self) {
+		self.history_navigation.clear_back();
 		self.park_reply();
 		self.reset_thread_starter();
 		self.last_viewed_dm = None;
@@ -1553,6 +1605,7 @@ impl State {
 
 	/// Land on Home because the open channel is gone.
 	pub fn arrived_home(&mut self) {
+		self.history_navigation.clear_back();
 		self.reset_thread_starter();
 		self.application_commands.clear();
 		if let Some(Place::Channel(id)) = self.trail.current()
@@ -1568,6 +1621,11 @@ impl State {
 	}
 
 	pub fn navigate_back(&mut self) -> Option<NavStep> {
+		if self.can_return_from_reply() {
+			return Some(NavStep {
+				command: self.return_from_reply(),
+			});
+		}
 		self.navigate(true)
 	}
 
@@ -1590,6 +1648,7 @@ impl State {
 			};
 			let apply = match place {
 				Place::Home => {
+					self.history_navigation.clear_back();
 					self.park_reply();
 					self.application_commands.clear();
 					self.selected = None;
@@ -1861,6 +1920,7 @@ impl State {
 		}
 	}
 	fn history_range(&mut self, before: Option<Id>, after: Option<Id>) -> Command {
+		self.reply_previews.cancel_pending();
 		if self.selected.is_some_and(|channel| {
 			self.history_navigation
 				.target(channel, self.request)
@@ -2165,6 +2225,21 @@ impl State {
 	}
 	/// Reports a command the transport could not accept as a bounded outcome error.
 	pub fn command_rejected(&mut self, command: Command) {
+		if let Command::Report(request) = command {
+			self.apply_report(reporting::Event {
+				target: request.target,
+				request: request.request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Report queue is full; retry explicitly",
+				)),
+			});
+			return;
+		}
+		if matches!(command, Command::CancelReplyPreviews) {
+			// Core retired these request IDs before asking the worker to cancel. A full
+			// queue cannot make their late results current or invalidate this conversation.
+			return;
+		}
 		if let Command::Polls(request) = command {
 			let _ = self.apply_poll(polls::Event::Result {
 				channel: request.channel,
@@ -2528,6 +2603,10 @@ impl State {
 			self.apply_gif_favorites(request, Err(auth::Failure::Capacity));
 			return;
 		}
+		if let Command::ReactionPreferences { request } = command {
+			self.apply_reaction_preferences(request, Err(auth::Failure::Capacity));
+			return;
+		}
 		if let Command::Edit {
 			channel,
 			message,
@@ -2748,12 +2827,34 @@ impl State {
 			}
 			return;
 		}
+		if let Command::ReplyPreview {
+			channel,
+			message,
+			request,
+		} = &command
+		{
+			self.apply_reply_preview(reply_previews::ResultEvent {
+				channel: *channel,
+				message: *message,
+				request: *request,
+				result: Err(auth::Failure::ProtocolAt("Preview queue is full; retry")),
+			});
+			// This result bypasses apply(), but its negative cache entry still allocates.
+			self.enforce_resident_budget();
+			return;
+		}
 		if let Command::History {
+			channel, request, ..
+		}
+		| Command::HistoryAround {
 			channel, request, ..
 		} = &command
 		{
 			if self.selected != Some(*channel) || *request != self.request || !self.history_pending
 			{
+				return;
+			}
+			if self.fail_history_navigation(auth::Failure::Capacity) {
 				return;
 			}
 			self.cancel_history();
@@ -2791,6 +2892,7 @@ impl State {
 		if envelope.generation != self.generation {
 			return;
 		}
+		self.invalidate_reply_previews(&envelope.event);
 		if envelope.event.changes_access()
 			|| matches!(&envelope.event, Event::Disconnected | Event::Resumed)
 		{
@@ -2866,6 +2968,7 @@ impl State {
 				self.set_premium_type(0);
 			}
 			self.interrupt_preloads();
+			self.interrupt_reaction_preferences();
 			self.interrupt_stickers();
 			self.interrupt_soundboard();
 			self.posts.clear_summaries();
@@ -3105,6 +3208,15 @@ impl State {
 			}
 			Event::AccountSettings { folders, .. } => {
 				self.folders_stale |= folders && self.guild_folders.is_some();
+				Ok(())
+			}
+			Event::ReactionPreferencesChanged => {
+				self.reaction_preferences.dirty = true;
+				self.reaction_preferences.failures = 0;
+				Ok(())
+			}
+			Event::ReactionPreferences { request, result } => {
+				self.apply_reaction_preferences(request, result);
 				Ok(())
 			}
 			Event::Typing(_) => unreachable!("typing is handled before timeline invalidation"),
@@ -3698,6 +3810,10 @@ impl State {
 			Event::MemberPresence { .. } | Event::DirectPresence(_) => {
 				unreachable!("presence handled before timeline revision")
 			}
+			Event::Report(event) => {
+				self.apply_report(event);
+				Ok(())
+			}
 			Event::InboxInvalidated => {
 				// Gateway echoes can precede or follow REST confirmation. Retain both
 				// its correlation and the visible page; Refresh reconciles other clients.
@@ -3757,6 +3873,7 @@ impl State {
 					}
 				} else {
 					let kept_ranges = self.members.as_ref().map(|m| m.ranges.clone());
+					self.refresh_member_labels(&list);
 					for slot in list.slots.iter().flatten() {
 						if let MemberSlot::Person(member) = slot {
 							self.timeline.apply_author_membership(
@@ -3882,6 +3999,7 @@ impl State {
 				self.own_server_profile.reset();
 				self.retain_owned_cosmetic_session(user.id);
 				self.retain_account_settings_session(user.id);
+				self.retain_reaction_preferences(user.id);
 				self.user = Some(user);
 				self.guilds = guilds;
 				self.channels = channels;
@@ -3928,19 +4046,33 @@ impl State {
 					|| messages.len() > 50
 					|| messages.iter().any(|message| {
 						message.channel != channel
-							|| (has_deleted_reference && !Timeline::valid_message(message))
+							|| ((has_deleted_reference
+								|| self.history_navigation.target(channel, request).is_some())
+								&& !Timeline::valid_message(message))
 							|| self
 								.history_before
 								.is_some_and(|before| message.id >= before)
 							|| self.history_after.is_some_and(|after| message.id <= after)
 							|| !ids.insert(message.id)
 					}) {
+					if self.fail_history_navigation(auth::Failure::Protocol) {
+						return;
+					}
 					self.cancel_history();
 					self.fail(auth::Failure::Protocol);
 					return;
 				}
+				if self
+					.prepare_target_history(channel, request, &messages)
+					.is_err()
+				{
+					return;
+				}
 				for message in &messages {
 					self.record_reply_deletion(message);
+				}
+				for message in &mut messages {
+					self.ingest_reply_preview(message);
 				}
 				self.history_pending = false;
 				if !older
@@ -4017,6 +4149,9 @@ impl State {
 				{
 					return;
 				}
+				if self.fail_history_navigation(failure) {
+					return;
+				}
 				if failure == auth::Failure::Capacity && adopted {
 					// Preloads give way to clicks and never reached the service: ask for the
 					// page as the click would have.
@@ -4045,11 +4180,17 @@ impl State {
 				}
 				Ok(())
 			}
+			Event::ReplyPreview(event) => {
+				self.apply_reply_preview(event);
+				Ok(())
+			}
 			Event::Message(mut m) => {
-				if self.timeline.get(m.id).is_some_and(|old| {
-					old.edited_at
-						.is_none_or(|at| m.edited_at.is_some_and(|new| new >= at))
-				}) {
+				self.ingest_reply_preview(&mut m);
+				if self.message_actions.edit_pending(m.channel, m.id)
+					&& self.timeline.get(m.id).is_some_and(|old| {
+						old.edited_at
+							.is_none_or(|at| m.edited_at.is_some_and(|new| new >= at))
+					}) {
 					self.message_actions.observe_content(m.channel, m.id);
 				}
 				self.typing_message(&m);
@@ -4101,6 +4242,7 @@ impl State {
 			}
 			Event::Patch(mut p) => {
 				if !matches!(p.content, Patch::Absent)
+					&& self.message_actions.edit_pending(p.channel, p.id)
 					&& self.timeline.get(p.id).is_some_and(
 						|old| !matches!(p.edited, Patch::Value(at) if old.edited_at.is_some_and(|old| at < old)),
 					) {
@@ -4503,6 +4645,7 @@ impl State {
 			}
 		}
 		self.reconcile_member_guide_access();
+		self.sync_reporting();
 		self.enforce_resident_budget();
 	}
 	fn invalidate_members(&mut self) {
@@ -4733,6 +4876,7 @@ impl Event {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				Self::Report(event) => event.result.as_ref().map_or(0, reporting::Outcome::bytes),
 				Self::Interaction(event) => event.bytes(),
 				Self::Autocomplete(event) => event.bytes(),
 				Self::ApplicationCommands { result, .. } => result.as_ref().map_or(0, |commands| {
@@ -4904,6 +5048,12 @@ impl Event {
 				Self::Gifs {
 					result: Ok(page), ..
 				} => page.bytes(),
+				Self::ReactionPreferences {
+					result: Ok(keys), ..
+				} => {
+					keys.capacity() * size_of::<String>()
+						+ keys.iter().map(String::capacity).sum::<usize>()
+				}
 				Self::GifFavorites {
 					result: Ok(favorites),
 					..
@@ -5034,6 +5184,12 @@ impl Event {
 				}
 				Self::RecipientAdded { user, .. } => user.heap_bytes(),
 				Self::History { messages, .. } => messages.iter().map(Message::bytes).sum(),
+				Self::ReplyPreview(event) => event
+					.result
+					.as_ref()
+					.ok()
+					.and_then(Option::as_ref)
+					.map_or(0, |preview| preview.bytes()),
 				Self::Polls(polls::Event::Result { result, .. }) => {
 					result.as_ref().map_or(0, |message| message.bytes())
 				}
@@ -5616,6 +5772,8 @@ mod tests {
 								timeout_until: None,
 							}),
 							roles: Some(vec![p::Role {
+								icon: None,
+								unicode_emoji: None,
 								id: Id(id),
 								name: String::new(),
 								color: 0,
@@ -6283,6 +6441,7 @@ mod tests {
 				Event::Ready {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
+						username: None,
 						primary_guild: None,
 						cosmetics: None,
 						id: Id(1),
@@ -6694,12 +6853,14 @@ mod tests {
 	}
 	pub(super) fn message(id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			reactions: Some(vec![]),
 			id: Id(id),
 			channel: Id(1),
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(2),
@@ -6778,6 +6939,7 @@ mod tests {
 			Event::RecipientAdded {
 				channel: Id(1),
 				user: User {
+					username: None,
 					primary_guild: None,
 					cosmetics: None,
 					id: Id(3),
@@ -6992,6 +7154,7 @@ mod tests {
 				message_count: None,
 			};
 			let user = || User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(2),
@@ -7123,6 +7286,7 @@ mod tests {
 				Event::Ready {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
+						username: None,
 						primary_guild: None,
 						cosmetics: None,
 						id: Id(2),

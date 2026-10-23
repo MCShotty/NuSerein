@@ -34,6 +34,8 @@ fn main() {
 			owner: None,
 			member: None,
 			roles: Some(vec![p::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: Id(999),
 				name: "Thread moderators".into(),
 				bits: 0,

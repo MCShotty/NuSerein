@@ -1,0 +1,1 @@
+{"name":"message","version":"1.0","variant":"synthetic","root_node_id":1,"postback_url":"/api/reporting/message","nodes":{"1":{"header":"Synthetic reason","children":[["Synthetic option",2]],"elements":[]},"2":{"header":"Confirm","button":{"type":"submit"},"elements":[]}}}

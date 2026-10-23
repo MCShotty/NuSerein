@@ -4,12 +4,51 @@ use crate::{MessagingUi, design, i18n::Language, icons};
 use client_core::State;
 use egui::RichText;
 
+#[cfg(test)]
+mod clock_tests {
+	#[test]
+	fn settled_language_page_wakes_at_the_next_minute_and_suspends_its_timer_when_minimized() {
+		let ctx = egui::Context::default();
+		let _zone = crate::local_time::pin_timezone("UTC");
+		let _now =
+			crate::local_time::pin_now(time::OffsetDateTime::from_unix_timestamp(30).unwrap());
+		let mut app = crate::MessagingUi::default();
+		let mut frame = |minimized| {
+			let mut input = egui::RawInput::default();
+			input
+				.viewports
+				.get_mut(&egui::ViewportId::ROOT)
+				.unwrap()
+				.minimized = Some(minimized);
+			let output = ctx.run_ui(input, |ui| app.language_time_settings(ui));
+			let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+			output.drop_without_applying_deltas();
+			delay
+		};
+		for _ in 0..3 {
+			frame(false);
+		}
+		assert_eq!(frame(false), std::time::Duration::from_secs(30));
+		for _ in 0..3 {
+			frame(true);
+		}
+		assert_eq!(frame(true), std::time::Duration::MAX);
+	}
+}
+
 #[derive(Default)]
 pub(super) struct Settings {
 	pub open: bool,
 	page: Page,
 	query: String,
-	language_time_format: Option<(model::TimeFormat, Language)>,
+	language_time_format: Option<(model::TimeFormat, Language, model::TimeZonePreference)>,
+	timezone_query: String,
+	timezone_filter: Option<String>,
+	timezone_matches: Vec<usize>,
+	timezone_fixed: String,
+	timezone_fixed_for: Option<i16>,
+	custom_timezone: Option<model::TimeZonePreference>,
+	clock_preview: Option<(i64, u64, String, String)>,
 	pub(super) editor: crate::profile_edit::Editor,
 	pub(super) server_editor: crate::server_profile::Editor,
 	pub(super) account: crate::account_settings::AccountUi,
@@ -195,7 +234,7 @@ impl Page {
 				"voice video camera preview audio microphone speakers devices volume gain noise suppression push to talk"
 			}
 			Self::LanguageTime => {
-				"language time clock 12 hour 24 hour am pm format locale translation"
+				"language time clock 12 hour 24 hour am pm format locale translation timezone time zone utc daylight saving region offset"
 			}
 			Self::Storage => "data privacy local storage clear cache drafts credentials",
 			Self::Updates => {
@@ -482,6 +521,7 @@ impl MessagingUi {
 							))
 							.auto_shrink([false, false])
 							.show(ui, |ui| {
+								crate::scroll::claim_wheel_content(ui);
 								crate::dialog::page_fade(
 									ui,
 									egui::Id::unique((
@@ -638,6 +678,7 @@ impl MessagingUi {
 			.id_salt("settings-navigation-scroll")
 			.auto_shrink([false, false])
 			.show(ui, |ui| {
+				crate::scroll::claim_wheel_content(ui);
 				ui.spacing_mut().item_spacing.y = 2.0;
 				self.settings_search(ui);
 				ui.add_space(12.0);
@@ -959,10 +1000,169 @@ impl MessagingUi {
 				}
 			}
 		});
-		let format = (self.time_format, self.language);
-		if self.settings.language_time_format != Some(format) {
+		let title = language.text("timezone-group");
+		design::group(ui, &title, |ui| {
+			let system = self.time_zone == model::TimeZonePreference::System;
+			if design::radio_row(ui, system, &language.text("timezone-system"), None).clicked() {
+				if !system {
+					self.settings.custom_timezone = Some(self.time_zone.clone());
+				}
+				self.time_zone = model::TimeZonePreference::System;
+			}
+			if design::radio_row(ui, !system, &language.text("timezone-custom"), None).clicked()
+				&& system
+			{
+				self.time_zone = self
+					.settings
+					.custom_timezone
+					.clone()
+					.unwrap_or_else(|| model::TimeZonePreference::Named("UTC".into()));
+			}
+			ui.add_enabled_ui(self.time_zone != model::TimeZonePreference::System, |ui| {
+				let previous_fixed =
+					matches!(self.time_zone, model::TimeZonePreference::FixedOffset(_));
+				let mut fixed = previous_fixed;
+				egui::ComboBox::from_id_salt("timezone-kind")
+					.selected_text(language.text(if fixed {
+						"timezone-fixed"
+					} else {
+						"timezone-region"
+					}))
+					.show_ui(ui, |ui| {
+						ui.selectable_value(&mut fixed, false, language.text("timezone-region"));
+						ui.selectable_value(&mut fixed, true, language.text("timezone-fixed"));
+					});
+				if fixed != previous_fixed {
+					self.time_zone = if fixed {
+						model::TimeZonePreference::FixedOffset(0)
+					} else {
+						model::TimeZonePreference::Named("UTC".into())
+					};
+				}
+				if let model::TimeZonePreference::FixedOffset(minutes) = self.time_zone {
+					if self.settings.timezone_fixed_for != Some(minutes) {
+						self.settings.timezone_fixed =
+							model::TimeZonePreference::fixed_label(minutes);
+						self.settings.timezone_fixed_for = Some(minutes);
+					}
+					ui.horizontal_wrapped(|ui| {
+						ui.add(
+							egui::TextEdit::singleline(&mut self.settings.timezone_fixed)
+								.desired_width(140.0)
+								.char_limit(9)
+								.hint_text("UTC+03:00"),
+						);
+						let parsed =
+							model::TimeZonePreference::parse_fixed(&self.settings.timezone_fixed);
+						if ui
+							.add_enabled(
+								parsed.is_some(),
+								egui::Button::new(language.text("timezone-apply")),
+							)
+							.clicked()
+						{
+							self.time_zone = parsed.unwrap_or_default();
+						}
+					});
+					if model::TimeZonePreference::parse_fixed(&self.settings.timezone_fixed)
+						.is_none()
+					{
+						design::hint(ui, &language.text("timezone-offset-invalid"));
+					}
+				} else {
+					let selected = match &self.time_zone {
+						model::TimeZonePreference::Named(name) => name.as_str(),
+						_ => "UTC",
+					};
+					egui::ComboBox::from_id_salt("timezone-region")
+						.selected_text(selected.replace('_', " "))
+						.width(ui.available_width().min(300.0))
+						.show_ui(ui, |ui| {
+							ui.add(
+								egui::TextEdit::singleline(&mut self.settings.timezone_query)
+									.char_limit(128)
+									.hint_text(language.text("timezone-search")),
+							);
+							let query = self
+								.settings
+								.timezone_query
+								.trim()
+								.replace('_', " ")
+								.to_ascii_lowercase();
+							let names = crate::local_time::timezone_names();
+							if self.settings.timezone_filter.as_deref() != Some(&query) {
+								self.settings.timezone_matches = names
+									.iter()
+									.enumerate()
+									.filter_map(|(index, (_, search))| {
+										search.contains(&query).then_some(index)
+									})
+									.collect();
+								self.settings.timezone_filter = Some(query);
+							}
+							ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+							let row_height = ui.spacing().interact_size.y.max(
+								ui.text_style_height(&egui::TextStyle::Button)
+									+ 2.0 * ui.spacing().button_padding.y,
+							);
+							egui::ScrollArea::vertical()
+								.id_salt("timezone-region-results")
+								.max_height(220.0)
+								.show_rows(
+									ui,
+									row_height,
+									self.settings.timezone_matches.len(),
+									|ui, rows| {
+										crate::scroll::claim_wheel_content(ui);
+										for row in rows {
+											let (name, _) =
+												&names[self.settings.timezone_matches[row]];
+											ui.selectable_value(
+												&mut self.time_zone,
+												model::TimeZonePreference::Named(name.clone()),
+												name.replace('_', " "),
+											)
+											.on_hover_text(name);
+										}
+									},
+								);
+						});
+					design::hint(ui, &language.text("timezone-region-description"));
+				}
+			});
+		});
+		let format = (self.time_format, self.language, self.time_zone.clone());
+		if self.settings.language_time_format.as_ref() != Some(&format) {
 			crate::local_time::set_format(self.time_format, self.language);
+			crate::local_time::set_timezone(&self.time_zone);
 			self.settings.language_time_format = Some(format);
+		}
+		let now = crate::local_time::now();
+		let minute = now.unix_timestamp().div_euclid(60);
+		let revision = crate::local_time::format_revision();
+		if self
+			.settings
+			.clock_preview
+			.as_ref()
+			.is_none_or(|cached| (cached.0, cached.1) != (minute, revision))
+		{
+			self.settings.clock_preview = Some((
+				minute,
+				revision,
+				crate::local_time::timezone_label(),
+				crate::local_time::full(now),
+			));
+		}
+		if let Some((_, _, label, example)) = &self.settings.clock_preview {
+			design::hint(ui, label);
+			ui.label(example);
+		}
+		if ui.is_visible() && !ui.input(|input| input.viewport().minimized.unwrap_or(false)) {
+			ui.ctx()
+				.request_repaint_after(crate::local_time::minute_deadline(now));
+		}
+		if let Some(status) = crate::local_time::timezone_status() {
+			design::hint(ui, &language.text(status));
 		}
 	}
 

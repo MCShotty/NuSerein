@@ -321,6 +321,7 @@ fn large_startup_retains_permissions_read_state_and_subsequent_channel_threads()
 
 fn user() -> User {
 	User {
+		username: None,
 		primary_guild: None,
 		cosmetics: None,
 		id: Id(2),
@@ -349,6 +350,7 @@ fn channel(id: u64, kind: u8, parent: Option<Id>) -> Channel {
 }
 fn message(id: u64, channel: Id) -> Message {
 	Message {
+		reply_preview: None,
 		poll: None,
 		sticker_items: Vec::new(),
 		id: Id(id),
@@ -389,6 +391,8 @@ fn snapshot() -> p::Snapshot {
 			owner: Some(Id(999)),
 			roles: Some(vec![
 				p::Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -399,6 +403,8 @@ fn snapshot() -> p::Snapshot {
 					bits: BITS,
 				},
 				p::Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -764,6 +770,8 @@ fn role_rest_catalog_and_self_membership_revoke_selected_history_immediately() {
 		list[1].bits = BITS;
 		list[1].position = 1;
 		list.push(p::Role {
+			icon: None,
+			unicode_emoji: None,
 			id: Id(13),
 			name: "Manager".into(),
 			bits: p::MANAGE_ROLES | p::MANAGE_GUILD,
@@ -1133,6 +1141,8 @@ fn revoked_view_cannot_return_through_stale_gateway_content_or_old_history() {
 			PermissionEvent::Role {
 				guild: Id(10),
 				role: p::Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -1233,6 +1243,8 @@ fn deleting_an_unassigned_role_prunes_its_overwrites_and_invalidates_cached_deci
 			PermissionEvent::Role {
 				guild: Id(10),
 				role: p::Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -1311,6 +1323,8 @@ fn malformed_snapshots_are_atomic_and_rejected_permission_events_fail_closed() {
 	oversized.guilds[0].roles = Some(
 		(1..=513)
 			.map(|id| p::Role {
+				icon: None,
+				unicode_emoji: None,
 				name: String::new(),
 				color: 0,
 				secondary_color: None,
@@ -1501,6 +1515,8 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 			custom_status: None,
 		};
 		let role = |id, position, color, hoist| p::Role {
+			icon: None,
+			unicode_emoji: None,
 			id: Id(id),
 			bits: 0,
 			name: format!("Role {id}"),

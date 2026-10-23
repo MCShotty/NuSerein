@@ -1,5 +1,12 @@
 # Third-party notices
 
+Display timezone conversion uses **Jiff 0.2.38**, **jiff-core 0.1.1** and the
+bundled **jiff-tzdb 0.1.9** IANA database (Unlicense OR MIT), using the MIT option.
+System timezone identification uses **iana-time-zone 0.1.65** (MIT OR Apache-2.0),
+also using MIT. Unmodified license texts, exact source/archive hashes and the
+IANA **2026e** data provenance are retained under `assets/licenses/files` in
+`timezone-PROVENANCE.md` and ship through the existing license-copy step.
+
 Discord Lottie sticker previews use **rasterlottie 0.2.2** (MIT OR Apache-2.0)
 with default features disabled. Serein uses the MIT option; its unmodified MIT
 license is retained in `assets/licenses/files/rasterlottie-0.2.2-LICENSE-MIT`.

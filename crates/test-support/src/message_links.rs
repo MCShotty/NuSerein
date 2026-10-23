@@ -42,6 +42,18 @@ fn records(channel: Id) -> Vec<Message> {
 		.collect()
 }
 
+pub(super) fn all_records(channel: Id) -> Vec<Message> {
+	let mut messages = records(channel);
+	if channel == Id(20) {
+		let mut old = message(100, channel);
+		old.content = "Original old message · outside the showcase's initial window.".into();
+		old.embeds.clear();
+		old.attachments.clear();
+		messages.insert(0, old);
+	}
+	messages
+}
+
 /// New fixture shared by the before/after capture; not a live Discord conversation.
 pub fn message_links_demo_state() -> State {
 	let mut state = crate::chat_demo_state();
@@ -103,14 +115,7 @@ pub fn load_message_link_page(
 	after: Option<Id>,
 ) {
 	assert!(before.is_none() || after.is_none());
-	let mut messages = records(channel);
-	if channel == Id(20) {
-		let mut old = message(100, channel);
-		old.content = "Original old message · outside the showcase's initial window.".into();
-		old.embeds.clear();
-		old.attachments.clear();
-		messages.insert(0, old);
-	}
+	let mut messages = all_records(channel);
 	messages.retain(|message| {
 		before.is_none_or(|before| message.id < before)
 			&& after.is_none_or(|after| message.id > after)
@@ -156,89 +161,109 @@ mod tests {
 			(None, Id(29)),
 		] {
 			let mut state = message_links_demo_state();
-			let Some(Command::History {
-				request,
-				before,
-				after,
-				..
-			}) = state.open_chat_link(guild, channel, Some(Id(100))).unwrap()
-			else {
-				panic!("fixture target needs history")
-			};
-			load_message_link_page(&mut state, channel, request, before, after);
+			let command = state
+				.open_chat_link(guild, channel, Some(Id(100)))
+				.unwrap()
+				.unwrap();
+			assert!(matches!(
+				command,
+				Command::HistoryAround {
+					target: Id(100),
+					..
+				}
+			));
+			let event = crate::offline_history_event(&state, &command, true).unwrap();
+			state.apply(Envelope {
+				generation: state.generation,
+				event,
+			});
 			assert_eq!(state.selected, Some(channel));
 			assert!(state.timeline.get(Id(100)).is_some());
-			assert!(state.timeline.len() <= 50);
-			assert!(state.timeline.bytes() <= 4 * 1024 * 1024);
+			assert!(state.timeline.len() <= 50 && state.timeline.bytes() <= 4 * 1024 * 1024);
 			assert!(state.voice.active.is_none());
 		}
 		let mut state = message_links_demo_state();
-		let Some(Command::History {
-			channel,
-			request,
-			before,
-			after,
-		}) = state
+		let command = state
 			.open_chat_link(Some(Id(10)), Id(20), Some(Id(999)))
 			.unwrap()
-		else {
-			panic!("missing fixture target needs history")
-		};
-		load_message_link_page(&mut state, channel, request, before, after);
+			.unwrap();
+		assert!(matches!(
+			command,
+			Command::HistoryAround {
+				target: Id(999),
+				..
+			}
+		));
+		let event = crate::offline_history_event(&state, &command, true).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
 		assert!(state.timeline.get(Id(999)).is_none());
+		assert!(
+			state.timeline.get(Id(FIRST)).is_some(),
+			"a missing original preserves the showcase"
+		);
+		assert!(!state.history_pending);
 	}
 
 	#[test]
 	fn queued_fixture_history_keeps_its_original_channel_and_request() {
 		let mut state = message_links_demo_state();
-		let Some(Command::History {
-			channel,
-			request,
-			before,
-			after,
-		}) = state
+		let old = state
 			.open_chat_link(Some(Id(10)), Id(20), Some(Id(100)))
 			.unwrap()
+			.unwrap();
+		let Command::HistoryAround {
+			channel, request, ..
+		} = &old
 		else {
-			panic!("old target needs history")
+			panic!("old target needs around history")
 		};
-		let Some(Command::History {
-			channel: current_channel,
-			request: current_request,
-			before: current_before,
-			after: current_after,
-		}) = state
+		let current = state
 			.open_chat_link(Some(Id(10)), Id(21), Some(Id(100)))
 			.unwrap()
+			.unwrap();
+		let Command::HistoryAround {
+			channel: current_channel,
+			request: current_request,
+			..
+		} = &current
 		else {
-			panic!("new destination needs history")
+			panic!("new destination needs around history")
 		};
-		load_message_link_page(&mut state, channel, request, before, after);
-		assert_eq!(state.selected, Some(current_channel));
-		assert_eq!(state.request, current_request);
-		assert!(state.history_pending);
-		assert!(state.timeline.get(Id(100)).is_none());
-		load_message_link_page(
-			&mut state,
-			current_channel,
-			current_request,
-			current_before,
-			current_after,
+		let event = crate::offline_history_event(&state, &old, true).unwrap();
+		assert!(
+			matches!(&event,Event::History {channel:original,request:original_request,..} if original==channel && original_request==request)
 		);
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert_eq!(state.selected, Some(*current_channel));
+		assert_eq!(state.request, *current_request);
+		assert!(state.history_pending && state.timeline.get(Id(100)).is_none());
+		let event = crate::offline_history_event(&state, &current, true).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
 		assert!(!state.history_pending);
 		assert_eq!(
 			state.timeline.get(Id(100)).unwrap().channel,
-			current_channel
+			*current_channel
 		);
-
-		// A queued response can also arrive after the selection has been cleared.
 		state.selected = None;
-		load_message_link_page(&mut state, channel, request, before, after);
+		let event = crate::offline_history_event(&state, &old, true).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
 		assert_eq!(state.selected, None);
-		assert_eq!(state.request, current_request);
+		assert_eq!(state.request, *current_request);
 		assert_eq!(
 			state.timeline.get(Id(100)).unwrap().channel,
-			current_channel
+			*current_channel
 		);
 	}
 }

@@ -108,6 +108,8 @@ pub fn check() {
 			.roles
 			.get_or_insert_default()
 			.push(model::permissions::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: Id(101),
 				bits: 0,
 				name: "Synthetic colored role".into(),
@@ -254,6 +256,7 @@ pub fn check() {
 		request: author_request,
 		result: Ok(vec![model::Member {
 			user: model::User {
+				username: None,
 				id: author_id,
 				name: "Synthetic forum author".into(),
 				kind: model::AccountKind::Human,

@@ -28,6 +28,8 @@ use std::{
 struct Preview {
 	inbox_demo: inbox_demo::Store,
 	interactive: bool,
+	metrics: Option<NativeMetrics>,
+	timeline_churn: bool,
 	smoke: bool,
 	messaging: ui::MessagingUi,
 	state: client_core::State,
@@ -63,10 +65,55 @@ impl eframe::App for Preview {
 
 	fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
+		if let Some(recovered) = ui::local_time::begin_frame() {
+			self.messaging.time_zone = recovered;
+		}
+		ui::local_time::set_timezone(&self.messaging.time_zone);
+		if let Some(request) = ui::local_time::take_timezone_request() {
+			let wake = ctx.clone();
+			std::thread::spawn(move || {
+				request.resolve();
+				wake.request_repaint();
+			});
+		}
+		if self.timeline_churn {
+			self.state.revision = self.state.revision.wrapping_add(1);
+			ctx.request_repaint_after(Duration::from_secs_f64(1.0 / 60.0));
+		}
 		ui::design::paint_backdrop(&ctx);
 		// Only synthetic fixtures execute these commands; no service adapters exist here.
-		for command in self.messaging.show(ui, &mut self.state) {
+		let wheel_events = ctx.input(|input| {
+			input
+				.raw
+				.events
+				.iter()
+				.filter(|event| matches!(event, egui::Event::MouseWheel { .. }))
+				.count()
+		});
+		let measured = Instant::now();
+		let commands = self.messaging.show(ui, &mut self.state);
+		if let Some(metrics) = &mut self.metrics {
+			metrics.record(&ctx, measured.elapsed(), wheel_events);
+		}
+		for command in commands {
 			let event = match command {
+				command @ (client_core::Command::History { .. }
+				| client_core::Command::HistoryAround { .. }
+				| client_core::Command::ReplyPreview { .. }
+				| client_core::Command::CancelReplyPreviews) => {
+					let links = std::env::args().any(|arg| {
+						matches!(
+							arg.as_str(),
+							"--page=channel-links" | "--page=channel-link-replies"
+						)
+					});
+					let Some(event) =
+						test_support::offline_history_event(&self.state, &command, links)
+					else {
+						continue;
+					};
+					event
+				}
 				client_core::Command::EditProfile {
 					user,
 					request,
@@ -92,6 +139,7 @@ impl eframe::App for Preview {
 					change,
 				),
 
+				client_core::Command::Report(request) => test_support::report_demo(*request),
 				command @ (client_core::Command::Mentions { .. }
 				| client_core::Command::InboxAction { .. }) => self.inbox_demo.execute(&self.state, command),
 				client_core::Command::ApplicationCommands {
@@ -381,6 +429,8 @@ fn prime_channel_links(state: &mut client_core::State) {
 		event: client_core::Event::Permissions(client_core::permissions::Event::Role {
 			guild: model::Id(10),
 			role: model::permissions::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: model::Id(101),
 				name: "Synthetic colored role".into(),
 				bits: 0,
@@ -911,11 +961,14 @@ fn prime_conversation(state: &mut client_core::State, inline_media: bool) {
 	});
 }
 
+include!("fixtures/conversation_qol.rs");
+include!("fixtures/native_metrics.rs");
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share|emoji|gif-favorites] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--voice-channel-status] [--lavasr] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share|emoji|gif-favorites] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--voice-channel-status] [--lavasr] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--conversation-qol] [--reaction-history] [--metrics=PATH.json] [--timeline-churn] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -1043,6 +1096,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			let _ = ui::emoji::install(&cc.egui_ctx);
 			ui::design::set_window_effects(transparency.is_some(), transparency.unwrap_or(0), 0);
 			ui::design::apply(&cc.egui_ctx);
+			if args.iter().any(|arg| arg.starts_with("--metrics="))
+				&& let Some(render) = cc.wgpu_render_state.as_ref()
+			{
+				eprintln!("Offline preview renderer: {:?}", render.adapter.get_info());
+			}
 			cc.egui_ctx.set_theme(if light {
 				egui::ThemePreference::Light
 			} else {
@@ -1633,9 +1691,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					args.iter().any(|arg| arg == "--voice-debug"),
 				);
 			}
+			if args.iter().any(|arg| arg == "--conversation-qol") {
+				prime_conversation_qol(&mut state, &mut messaging);
+			}
+			if args.iter().any(|arg| arg == "--reaction-history") {
+				// Synthetic account settings only; never contacts Discord.
+				state.reaction_preferences.ranked = discord_protocol::reaction_preferences(br#"{"settings":"ajIKCgoEOTAwMRICIGQKDAoGcm9ja2V0EgIgWgoKCgRleWVzEgIgUAoKCgRmaXJlEgIgRg=="}"#).expect("synthetic reaction settings");
+				state.reaction_preferences.revision += 1;
+			}
+			if args.iter().any(|arg| arg == "--timeline-churn") {
+				prime_timeline_churn(&mut state);
+			}
 			Ok(Box::new(Preview {
 				inbox_demo: inbox_demo::Store::default(),
+				timeline_churn: args.iter().any(|arg| arg == "--timeline-churn"),
 				interactive,
+				metrics: args
+					.iter()
+					.find_map(|arg| arg.strip_prefix("--metrics="))
+					.map(NativeMetrics::new),
 				smoke,
 				messaging,
 				state,

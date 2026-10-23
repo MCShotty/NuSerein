@@ -287,7 +287,7 @@ attachments-download-button-downloads-are-disabled-for-synthetic-attachments = D
 # Context: media_menu
 attachments-media-menu-a-media-transfer-is-already-active = A media transfer is already active
 # Context: media_menu
-attachments-media-menu-copy-image = Copy image
+attachments-media-menu-copy-image = Copy Image
 # Context: media_menu
 attachments-media-menu-copy-link = Copy link
 # Context: media_menu
@@ -3942,11 +3942,11 @@ timeline-message-actions-copy-message-id = Copy Message ID
 # Context: message_actions
 timeline-message-actions-copy-message-link = Copy Message Link
 # Context: message_actions
-timeline-message-actions-create-thread = Create Thread…
+timeline-message-actions-create-thread = Create Thread
 # Context: message_actions
-timeline-message-actions-delete-message = Delete message…
+timeline-message-actions-delete-message = Delete Message
 # Context: message_actions
-timeline-message-actions-edit-message = Edit message
+timeline-message-actions-edit-message = Edit Message
 # Context: message_actions
 timeline-message-actions-extensions = Extensions
 # Context: message_actions
@@ -3956,11 +3956,11 @@ timeline-message-actions-mark-read-through-here = Mark read through here
 # Context: message_actions
 timeline-message-actions-mark-unread = Mark Unread
 # Context: message_actions
-timeline-message-actions-pin-message = Pin message
+timeline-message-actions-pin-message = Pin Message
 # Context: message_actions
 timeline-message-actions-reply = Reply
 # Context: message_actions
-timeline-message-actions-unpin-message = Unpin message
+timeline-message-actions-unpin-message = Unpin Message
 # Context: message_actions
 timeline-message-actions-view-reactions = View reactions
 # Context: present_control
@@ -5488,3 +5488,53 @@ video-provider-embedding-disabled = This video cannot play inside other apps. Op
 video-provider-identity-failed = YouTube could not verify the player. Retry or open the original.
 video-provider-buffering-failed = Video buffering stopped. Retry or open the original.
 video-provider-open-window = Open video player
+
+# Device-local timezone display; source timestamps remain unchanged.
+timezone-group = Time zone
+timezone-system = System timezone
+timezone-custom = Custom timezone
+timezone-region = City or region
+timezone-fixed = Fixed UTC offset
+timezone-search = Search cities or regions…
+timezone-region-description = Daylight-saving changes are applied automatically.
+timezone-apply = Apply
+timezone-offset-invalid = Enter UTC±HH:MM between −14:00 and +14:00.
+timezone-updating = Updating time zone…
+timezone-system-unavailable = System timezone could not be detected. Showing UTC.
+timezone-unknown-recovered = The saved timezone is unavailable. Following the system timezone.
+mentions-section-members = Members
+mentions-section-roles = Roles
+mentions-section-special = Other mentions
+reply-preview-loading = Loading earlier message…
+reply-preview-failed = Could not load preview · View original
+reply-preview-forbidden = Message history is not accessible
+reply-preview-unavailable = Original message is unavailable
+reply-preview-unrequested = Earlier message · View original
+reply-preview-retry = Retry
+
+# Message, link and media context menus.
+menu-add-reaction = Add Reaction
+menu-copy-text = Copy Text
+menu-remove-bookmark = Remove Bookmark
+menu-bookmark = Bookmark Message
+menu-create-reminder = Create Reminder
+menu-reminder-custom = Custom…
+menu-stop-speaking = Stop Speaking
+menu-speak-message = Speak Message
+menu-interaction-info = View Interaction Info
+menu-report-message = Report Message
+menu-copy-link = Copy Link
+menu-open-link = Open Link
+menu-save-image = Save Image
+menu-copy-media-link = Copy Media Link
+menu-open-media-link = Open Media Link
+menu-reminder-ambiguous = This time occurs twice. Choose an offset.
+menu-reminder-invalid = Choose a future time within the next year and resolve any offset choice.
+menu-report-demo-sent = Synthetic report completed. Nothing was sent to Discord.
+menu-report-sent = Your report was submitted.
+menu-report-next = Next
+menu-report-submit = Submit Report
+menu-close = Close
+menu-back = Back
+menu-open-discord = Open in Discord
+menu-application = Application

@@ -5,6 +5,149 @@ use crate::{
 use model::{Freshness, Id, Reaction, ReactionEmoji, User};
 use std::collections::BTreeSet;
 
+pub const MAX_PREFERRED_REACTIONS: usize = 128;
+pub const MAX_REACTION_PREFERENCE_BYTES: usize = 32 * 1024;
+
+/// Read-only projection of the account's synced reaction ranking. Local usage stays separate.
+#[derive(Default)]
+pub struct Preferences {
+	pub ranked: Vec<String>,
+	pub revision: u64,
+	owner: Option<Id>,
+	sequence: u64,
+	pending: Option<u64>,
+	pub(super) dirty: bool,
+	pub(super) failures: u8,
+	last_read: Option<std::time::Instant>,
+}
+
+impl Preferences {
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>()
+			+ self.ranked.capacity() * size_of::<String>()
+			+ self.ranked.iter().map(String::capacity).sum::<usize>()
+	}
+}
+
+impl State {
+	pub(crate) fn retain_reaction_preferences(&mut self, owner: Id) {
+		if self.reaction_preferences.owner != Some(owner) {
+			let sequence = self.reaction_preferences.sequence;
+			let revision = self.reaction_preferences.revision.wrapping_add(1);
+			self.reaction_preferences = Preferences {
+				owner: Some(owner),
+				dirty: true,
+				sequence,
+				revision,
+				..Default::default()
+			};
+		}
+	}
+	pub fn reaction_preferences_delay(
+		&self,
+		now: std::time::Instant,
+	) -> Option<std::time::Duration> {
+		let preferences = &self.reaction_preferences;
+		(preferences.dirty && preferences.pending.is_none() && preferences.failures < 3).then(
+			|| {
+				preferences
+					.last_read
+					.map_or(std::time::Duration::ZERO, |at| {
+						std::time::Duration::from_secs(5)
+							.saturating_sub(now.saturating_duration_since(at))
+					})
+			},
+		)
+	}
+	pub(crate) fn interrupt_reaction_preferences(&mut self) {
+		self.reaction_preferences.pending = None;
+		self.reaction_preferences.dirty = true;
+		self.reaction_preferences.failures = 0;
+		self.reaction_preferences.last_read = None;
+	}
+	/// One account read after READY, then coalesced reads when another session updates frecency.
+	pub fn next_reaction_preferences_read(
+		&mut self,
+		now: std::time::Instant,
+	) -> Option<crate::Command> {
+		if self.demo || self.auth != AuthState::Authenticated || !self.gateway_connected {
+			return None;
+		}
+		let owner = self.user.as_ref()?.id;
+		let preferences = &mut self.reaction_preferences;
+		if preferences.owner != Some(owner) {
+			let sequence = preferences.sequence;
+			let revision = preferences.revision.wrapping_add(1);
+			*preferences = Preferences {
+				owner: Some(owner),
+				dirty: true,
+				sequence,
+				revision,
+				..Default::default()
+			};
+		}
+		if !preferences.dirty
+			|| preferences.pending.is_some()
+			|| preferences.failures >= 3
+			|| preferences.last_read.is_some_and(|at| {
+				now.saturating_duration_since(at) < std::time::Duration::from_secs(5)
+			}) {
+			return None;
+		}
+		preferences.sequence = preferences.sequence.wrapping_add(1);
+		preferences.pending = Some(preferences.sequence);
+		preferences.dirty = false;
+		preferences.last_read = Some(now);
+		Some(crate::Command::ReactionPreferences {
+			request: preferences.sequence,
+		})
+	}
+	pub(crate) fn apply_reaction_preferences(
+		&mut self,
+		request: u64,
+		result: Result<Vec<String>, Failure>,
+	) {
+		let preferences = &mut self.reaction_preferences;
+		if preferences.pending != Some(request)
+			|| preferences.owner != self.user.as_ref().map(|user| user.id)
+		{
+			return;
+		}
+		preferences.pending = None;
+		let fatal = result
+			.as_ref()
+			.err()
+			.copied()
+			.filter(|failure| failure.ends_session());
+		match result {
+			Ok(mut ranked)
+				if ranked.len() <= MAX_PREFERRED_REACTIONS
+					&& ranked.capacity() * size_of::<String>()
+						+ ranked.iter().map(String::capacity).sum::<usize>()
+						<= MAX_REACTION_PREFERENCE_BYTES
+					&& ranked.iter().all(|key| {
+						!key.is_empty() && key.len() <= 128 && !key.chars().any(char::is_control)
+					}) =>
+			{
+				ranked.shrink_to_fit();
+				for key in &mut ranked {
+					key.shrink_to_fit();
+				}
+				preferences.ranked = ranked;
+				preferences.revision = preferences.revision.wrapping_add(1);
+				preferences.failures = 0;
+			}
+			_ => {
+				preferences.failures = preferences.failures.saturating_add(1);
+				preferences.dirty = true;
+			}
+		}
+		if let Some(failure) = fatal {
+			self.fail(failure);
+		}
+	}
+}
+
 pub enum Command {
 	Read {
 		channel: Id,
@@ -643,6 +786,54 @@ mod tests {
 	use model::{Channel, Message, User, permissions as p};
 
 	#[test]
+	fn account_preferences_coalesce_refreshes_reject_stale_results_and_bound_retries() {
+		let mut state = State {
+			auth: AuthState::Authenticated,
+			gateway_connected: true,
+			user: Some(crate::tests::message(1).author),
+			..Default::default()
+		};
+		let now = std::time::Instant::now();
+		let Some(crate::Command::ReactionPreferences { request }) =
+			state.next_reaction_preferences_read(now)
+		else {
+			panic!("initial account read")
+		};
+		assert!(state.next_reaction_preferences_read(now).is_none());
+		state.apply_reaction_preferences(request + 1, Ok(vec!["wrong".into()]));
+		assert!(state.reaction_preferences.ranked.is_empty());
+		state.reaction_preferences.dirty = true; // A gateway update arrived during the read.
+		state.apply_reaction_preferences(
+			request,
+			Ok(vec!["skull_crossbones".into(), "9001".into()]),
+		);
+		assert_eq!(
+			state.reaction_preferences.ranked,
+			["skull_crossbones", "9001"]
+		);
+		assert!(state.reaction_preferences.bytes() <= MAX_REACTION_PREFERENCE_BYTES);
+		assert!(state.next_reaction_preferences_read(now).is_none());
+		for attempt in 1..=3 {
+			let at = now + std::time::Duration::from_secs(attempt * 5);
+			let Some(crate::Command::ReactionPreferences { request }) =
+				state.next_reaction_preferences_read(at)
+			else {
+				panic!("bounded retry")
+			};
+			state.apply_reaction_preferences(request, Err(Failure::Network));
+		}
+		assert!(
+			state
+				.next_reaction_preferences_read(now + std::time::Duration::from_secs(60))
+				.is_none()
+		);
+		state.retain_reaction_preferences(Id(999));
+		assert!(state.reaction_preferences.ranked.is_empty());
+		state.logout();
+		assert!(state.reaction_preferences.ranked.is_empty());
+	}
+
+	#[test]
 	fn reaction_users_are_paged_deduplicated_and_session_only() {
 		let mut message = crate::tests::message(10);
 		let channel = message.channel;
@@ -686,6 +877,7 @@ mod tests {
 			panic!()
 		};
 		let user = |id| User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(id),
@@ -1278,6 +1470,7 @@ mod tests {
 	#[test]
 	fn reaction_permissions_distinguish_existing_emoji_and_late_reads() {
 		let user = User {
+			username: None,
 			primary_guild: None,
 			cosmetics: None,
 			id: Id(2),
@@ -1324,6 +1517,8 @@ mod tests {
 					id: Id(1),
 					owner: Some(Id(999)),
 					roles: Some(vec![p::Role {
+						icon: None,
+						unicode_emoji: None,
 						name: String::new(),
 						color: 0,
 						secondary_color: None,
@@ -1353,6 +1548,7 @@ mod tests {
 			.timeline
 			.insert(
 				Message {
+					reply_preview: None,
 					poll: None,
 					sticker_items: Vec::new(),
 					kind: 0,

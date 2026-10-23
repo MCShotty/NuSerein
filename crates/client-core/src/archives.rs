@@ -282,6 +282,7 @@ mod tests {
 	}
 	fn message(id: u64, channel: Id) -> model::Message {
 		model::Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			flags: 0,
@@ -292,6 +293,7 @@ mod tests {
 			id: Id(id),
 			channel,
 			author: model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(2),
@@ -331,6 +333,7 @@ mod tests {
 			freshness: Freshness::Fresh,
 			selected: Some(Id(10)),
 			user: Some(model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(2),
@@ -375,6 +378,8 @@ mod tests {
 			let guild = state.permissions.guilds.get_mut(&Id(1)).unwrap();
 			guild.owner = Some(Id(999));
 			guild.roles = Some(vec![p::Role {
+				icon: None,
+				unicode_emoji: None,
 				name: String::new(),
 				color: 0,
 				secondary_color: None,

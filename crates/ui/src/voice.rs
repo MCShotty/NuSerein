@@ -343,6 +343,7 @@ impl MessagingUi {
 								egui::ScrollArea::vertical()
 									.max_height(240.0)
 									.show(ui, |ui| {
+										crate::scroll::claim_wheel_content(ui);
 										for target in state.channels.iter().filter(|target| {
 											target.guild == Some(guild)
 												&& matches!(target.kind, 2 | 13) && target.id != channel
@@ -968,6 +969,7 @@ impl MessagingUi {
 					.id_salt("stage-community-controls")
 					.max_height((body.height() * 0.55).max(80.0))
 					.show(ui, |ui| {
+						crate::scroll::claim_wheel_content(ui);
 						self.community_ui
 							.stage_controls(ui, state, channel, commands);
 					});
@@ -1179,6 +1181,7 @@ impl MessagingUi {
 					.auto_shrink([false, false])
 					.max_height(strip)
 					.show(&mut strip_ui, |ui| {
+						crate::scroll::claim_wheel_content(ui);
 						ui.spacing_mut().item_spacing.x = TILE_GAP;
 						ui.horizontal(|ui| {
 							ui.add_space(((area.width() - width) * 0.5).max(0.0));
@@ -2309,7 +2312,10 @@ impl MessagingUi {
 				));
 				egui::ScrollArea::vertical()
 					.max_height((ui.ctx().content_rect().height() - 180.0).clamp(180.0, 460.0))
-					.show(ui, |ui| self.voice_popup_content(ui, demo, active, input));
+					.show(ui, |ui| {
+						crate::scroll::claim_wheel_content(ui);
+						self.voice_popup_content(ui, demo, active, input);
+					});
 				ui.separator();
 				if ui
 					.add_sized(
@@ -3918,6 +3924,7 @@ impl MessagingUi {
 			.max_height(264.0)
 			.auto_shrink([false, true])
 			.show(ui, |ui| {
+				crate::scroll::claim_wheel_content(ui);
 				for (title, sounds) in groups {
 					if sounds.is_empty() {
 						continue;
@@ -7821,6 +7828,7 @@ mod tests {
 				name: "Synthetic DM".into(),
 				kind: 1,
 				recipients: vec![model::User {
+					username: None,
 					id: Id(2),
 					name: "Synthetic peer".into(),
 					avatar: None,

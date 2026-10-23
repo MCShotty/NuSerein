@@ -179,6 +179,33 @@ pub(crate) fn discord_names() -> &'static [(&'static str, &'static str, &'static
 	})
 }
 
+pub(crate) fn synced_reaction(state: &State, key: &str) -> Option<model::ReactionEmoji> {
+	if let Ok(id) = key.parse::<u64>() {
+		let (_, emoji) = state.custom_emoji(Id(id))?;
+		return Some(model::ReactionEmoji {
+			id: Some(emoji.id),
+			name: Some(emoji.name.clone()),
+		});
+	}
+	static NAMES: OnceLock<std::collections::HashMap<&'static str, &'static str>> = OnceLock::new();
+	let names = NAMES.get_or_init(|| {
+		let mut names = std::collections::HashMap::new();
+		for &(text, primary, aliases) in discord_names() {
+			names.insert(text, text);
+			names.insert(primary, text);
+			for alias in aliases.split(',') {
+				names.insert(alias, text);
+			}
+		}
+		names
+	});
+	let name = *names.get(key.trim_matches(':'))?;
+	Some(model::ReactionEmoji {
+		id: None,
+		name: Some(name.into()),
+	})
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
 	Stickers,
@@ -448,6 +475,8 @@ pub(crate) struct Picker {
 	rail_guild: Option<Id>,
 	#[cfg(test)]
 	rail_scroll: Option<egui::Id>,
+	#[cfg(test)]
+	pub(super) gif_trigger: Option<egui::Rect>,
 	query: String,
 	matches: Vec<usize>,
 	custom: CustomMatches,
@@ -476,6 +505,8 @@ impl Default for Picker {
 			rail_guild: None,
 			#[cfg(test)]
 			rail_scroll: None,
+			#[cfg(test)]
+			gif_trigger: None,
 			query: String::new(),
 			matches: (0..standard().len()).collect(),
 			custom: CustomMatches::default(),
@@ -974,21 +1005,23 @@ impl Picker {
 		}
 		let was_open = self.open;
 		// Rightmost first: the composer lays these out right-to-left like Discord's tray.
-		let trigger = crate::icons::toggle(
+		let trigger = crate::icons::composer(
 			ui,
 			crate::icons::Icon::Smile,
-			28.0,
 			self.open && self.tab == Tab::Emoji,
 			&crate::i18n::translate("emoji-picker-show-insert-an-emoji"),
 		);
-		let gif_trigger = crate::icons::toggle(
+		let gif_trigger = crate::icons::composer(
 			ui,
 			crate::icons::Icon::Gif,
-			28.0,
 			self.open && self.tab == Tab::Gifs,
 			&crate::i18n::translate("emoji-picker-show-send-a-gif"),
 		);
 		for (response, tab) in [(&trigger, Tab::Emoji), (&gif_trigger, Tab::Gifs)] {
+			#[cfg(test)]
+			{
+				self.gif_trigger = Some(gif_trigger.rect);
+			}
 			if response.clicked() {
 				if self.open && self.tab == tab {
 					self.open = false;

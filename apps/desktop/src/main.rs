@@ -42,6 +42,7 @@ mod group_icon;
 mod inbox_demo;
 mod interaction_uploads;
 mod media_output;
+mod message_speech;
 mod notification_runtime;
 mod notification_sounds;
 mod ogg_opus;
@@ -328,6 +329,8 @@ fn main() -> eframe::Result {
 			event: Event::Permissions(client_core::permissions::Event::Role {
 				guild,
 				role: model::permissions::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: role,
 					name: "Verified".into(),
 					color: 0x00ff00,
@@ -1023,6 +1026,10 @@ struct Desktop {
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,
 	monitor_period: Option<Duration>,
 	frame_metrics: FrameMetrics,
+	message_speaker: Option<platform::message_speech::Speaker>,
+	message_speech_target: Option<(u64, model::Id, model::Id)>,
+	timezone_focused: bool,
+	timezone_checked: std::time::Instant,
 	#[cfg(feature = "demo")]
 	rendering_demo: Option<rendering_demo::RenderingDemo>,
 	avatars: Option<avatars::AvatarWorker>,
@@ -1676,6 +1683,8 @@ impl Desktop {
 					}
 					roles.extend([
 						model::permissions::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: model::Id(9001),
 							bits: 0,
 							name: "Founders".into(),
@@ -1686,6 +1695,8 @@ impl Desktop {
 							hoist: true,
 						},
 						model::permissions::Role {
+							icon: None,
+							unicode_emoji: None,
 							id: model::Id(9002),
 							bits: 0,
 							name: "Community".into(),
@@ -2408,6 +2419,10 @@ impl Desktop {
 			monitor_geometry: None,
 			monitor_period: None,
 			frame_metrics: FrameMetrics::new(frame_sample),
+			message_speaker: None,
+			message_speech_target: None,
+			timezone_focused: false,
+			timezone_checked: std::time::Instant::now(),
 			#[cfg(feature = "demo")]
 			rendering_demo: (demo && std::env::args().any(|arg| arg == "--demo-rendering"))
 				.then(rendering_demo::RenderingDemo::default),
@@ -3288,6 +3303,12 @@ impl Desktop {
 	}
 	/// Dispatches one queued command to the demo or live transport.
 	fn command(&mut self, command: Command) {
+		if let Command::Report(request) = &command
+			&& !self.state.report_command_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::Soundboard(request) = &command
 			&& !self.state.soundboard_command_allowed(request)
 		{
@@ -3921,6 +3942,7 @@ impl Desktop {
 				| Command::CancelAutocomplete
 				| Command::CancelMentions
 				| Command::Prefetch(_) => return,
+				Command::Report(request) => test_support::report_demo(*request),
 				command @ (Command::InboxAction { .. } | Command::Mentions { .. }) => {
 					self.inbox_demo.execute(&self.state, command)
 				}
@@ -4198,6 +4220,10 @@ impl Desktop {
 					request,
 					result: Ok(self.state.gifs.favorites.clone()),
 				},
+				Command::ReactionPreferences { request } => Event::ReactionPreferences {
+					request,
+					result: Ok(self.state.reaction_preferences.ranked.clone()),
+				},
 				Command::CreateGuild { sequence, .. } => Event::GuildCreated {
 					sequence,
 					result: Err(Failure::ProtocolAt("Server creation unavailable offline")),
@@ -4252,22 +4278,19 @@ impl Desktop {
 					Event::Members(demo_members(&self.state, guild, channel, request))
 				}
 				Command::ForumPosts { .. } | Command::ForumSummaries { .. } => return,
-				Command::History {
-					channel,
-					request,
-					before,
-					after,
-				} => {
-					if std::env::args().any(|arg| arg == "--demo-message-links") {
-						test_support::load_message_link_page(
-							&mut self.state,
-							channel,
-							request,
-							before,
-							after,
-						);
-					} else {
-						test_support::load_page_with_cursors(&mut self.state, before, after);
+				command @ (Command::History { .. }
+				| Command::HistoryAround { .. }
+				| Command::ReplyPreview { .. }
+				| Command::CancelReplyPreviews) => {
+					if let Some(event) = test_support::offline_history_event(
+						&self.state,
+						&command,
+						std::env::args().any(|arg| arg == "--demo-message-links"),
+					) {
+						self.state.apply(Envelope {
+							generation: self.state.generation,
+							event,
+						});
 					}
 					return;
 				}
@@ -5334,6 +5357,32 @@ impl Desktop {
 	}
 }
 impl Desktop {
+	/// Native timezone discovery runs in the existing blocking pool; publish it only
+	/// at a frame boundary so every timestamp in this frame uses the same zone.
+	fn sync_timezone(&mut self, ctx: &egui::Context) {
+		if let Some(recovered) = ui::local_time::begin_frame() {
+			self.messaging.time_zone = recovered;
+		}
+		ui::local_time::set_timezone(&self.messaging.time_zone);
+		let focused = ctx.input(|input| input.focused && input.viewport().minimized != Some(true));
+		if focused {
+			if !self.timezone_focused || self.timezone_checked.elapsed() >= Duration::from_secs(60)
+			{
+				ui::local_time::refresh_system_timezone();
+				self.timezone_checked = std::time::Instant::now();
+			}
+			ctx.request_repaint_after(Duration::from_secs(60));
+		}
+		self.timezone_focused = focused;
+		if let Some(request) = ui::local_time::take_timezone_request() {
+			let wake = ctx.clone();
+			self.runtime.spawn_blocking(move || {
+				request.resolve();
+				wake.request_repaint();
+			});
+		}
+	}
+
 	fn sync_customization(&mut self, ctx: &egui::Context) {
 		if self.messaging.primary_color != ui::design::primary_color() {
 			ui::design::set_primary_color(self.messaging.primary_color);
@@ -5464,6 +5513,10 @@ impl eframe::App for Desktop {
 			track,
 			self.messaging.wants_mouse_buttons(),
 		);
+		if intercepted.middle.pressed.is_some() || intercepted.side.back || intercepted.side.forward
+		{
+			ui::scroll::reset_wheel(ctx);
+		}
 		self.messaging.middle_button(intercepted.middle);
 		self.messaging.side_buttons(intercepted.side);
 		if track
@@ -5495,6 +5548,7 @@ impl eframe::App for Desktop {
 			}
 		};
 		self.frame_metrics.begin(ctx, search_focused);
+		self.sync_timezone(ctx);
 		self.startup.sync(
 			ctx,
 			&self.runtime,
@@ -5503,6 +5557,7 @@ impl eframe::App for Desktop {
 		);
 		self.messaging.sync_reading_zoom(ctx);
 		self.poll(ctx);
+		self.sync_message_speech(ctx);
 		self.sync_fonts(ctx);
 		self.hotkeys.sync(&self.messaging.keybinds, &self.runtime);
 		self.messaging.global_keybind_status = self.hotkeys.status();
@@ -6147,6 +6202,7 @@ impl eframe::App for Desktop {
 				self.messaging.notification_sound_status = "Could not save device notification settings. Changes apply only until restart.";
 			}
 			let mut commands = self.messaging.show(ui, &mut self.state);
+			self.sync_message_speech(&ctx);
 			self.extensions.cancel_stale_message_events(&self.state);
 			self.choose_interaction_files(&ctx);
 			if let Some(command) = self.captcha.sync(
@@ -6739,6 +6795,20 @@ impl eframe::App for Desktop {
 			}
 			if let Some(command) = self.state.take_gif_favorites_command() {
 				commands.push(command);
+			}
+			if let Some(command) = self
+				.state
+				.next_reaction_preferences_read(std::time::Instant::now())
+			{
+				commands.push(command);
+			}
+			if self.state.gateway_connected
+				&& !self.state.demo
+				&& let Some(delay) = self
+					.state
+					.reaction_preferences_delay(std::time::Instant::now())
+			{
+				ctx.request_repaint_after(delay);
 			}
 			commands.extend(self.state.take_preload_retries());
 			for command in commands {

@@ -67,11 +67,32 @@ impl ParkedReplies {
 #[derive(Default)]
 pub struct HistoryNavigation {
 	target: Option<(Id, u64, Id)>,
+	previous: Option<NavigationMetadata>,
+	back: Option<ReturnWindow>,
+}
+
+#[derive(Clone, Copy)]
+struct NavigationMetadata {
+	before: Option<Id>,
+	after: Option<Id>,
+	targeted: bool,
+	newer_cursor: Option<Id>,
+	newer_more: bool,
+	older_exhausted: bool,
+	freshness: Freshness,
+}
+struct ReturnWindow {
+	channel: Id,
+	timeline: Option<Timeline>,
+	metadata: NavigationMetadata,
+	cursor: Option<crate::ReadingCursor>,
+	stored: std::time::Instant,
 }
 
 impl HistoryNavigation {
 	pub(crate) fn clear(&mut self) {
 		self.target = None;
+		self.previous = None;
 	}
 
 	fn start(&mut self, channel: Id, request: u64, target: Id) {
@@ -83,9 +104,211 @@ impl HistoryNavigation {
 			.filter(|(id, pending, _)| *id == channel && *pending == request)
 			.map(|(_, _, target)| target)
 	}
+	pub(crate) fn bytes(&self) -> usize {
+		self.back
+			.as_ref()
+			.and_then(|back| back.timeline.as_ref())
+			.map_or(0, Timeline::retained_bytes)
+	}
+	pub(crate) fn back_original(&self, channel: Id, id: Id) -> Option<&Message> {
+		let back = self.back.as_ref()?;
+		if back.channel != channel
+			|| back.metadata.freshness != Freshness::Fresh
+			|| back.stored.elapsed() > std::time::Duration::from_secs(5 * 60)
+		{
+			return None;
+		}
+		back.timeline
+			.as_ref()?
+			.get(id)
+			.filter(|message| message.channel == channel)
+	}
+	pub(crate) fn rows(&self) -> usize {
+		self.back
+			.as_ref()
+			.and_then(|back| back.timeline.as_ref())
+			.map_or(0, Timeline::row_count)
+	}
+	pub(crate) fn evict_back(&mut self) -> bool {
+		self.back
+			.as_mut()
+			.and_then(|back| back.timeline.take())
+			.is_some()
+	}
+	pub(crate) fn invalidate_back(&mut self, channel: Id) {
+		if self
+			.back
+			.as_ref()
+			.is_some_and(|back| back.channel == channel)
+		{
+			self.evict_back();
+		}
+	}
+	pub(crate) fn clear_back(&mut self) {
+		self.back = None;
+	}
 }
 
 impl State {
+	fn navigation_metadata(&self) -> NavigationMetadata {
+		NavigationMetadata {
+			before: self.history_before,
+			after: self.history_after,
+			targeted: self.history_targeted,
+			newer_cursor: self.newer_cursor,
+			newer_more: self.newer_may_have_more,
+			older_exhausted: self.older_exhausted,
+			freshness: if self.history_pending && self.freshness == Freshness::Loading {
+				if self.gateway_connected
+					&& !self.timeline.is_empty()
+					&& (self.history_before.is_some() || self.history_after.is_some())
+				{
+					Freshness::Fresh
+				} else {
+					Freshness::Stale
+				}
+			} else {
+				self.freshness
+			},
+		}
+	}
+	fn restore_navigation_metadata(&mut self, metadata: NavigationMetadata) {
+		self.history_before = metadata.before;
+		self.history_after = metadata.after;
+		self.history_targeted = metadata.targeted;
+		self.newer_cursor = metadata.newer_cursor;
+		self.newer_may_have_more = metadata.newer_more;
+		self.older_exhausted = metadata.older_exhausted;
+		self.freshness = metadata.freshness;
+	}
+	pub fn can_return_from_reply(&self) -> bool {
+		self.history_navigation.back.as_ref().is_some_and(|back| {
+			self.selected == Some(back.channel) && self.can_read_history(back.channel)
+		})
+	}
+	pub fn return_from_reply(&mut self) -> Option<Command> {
+		if !self.can_return_from_reply() {
+			return None;
+		}
+		let mut back = self.history_navigation.back.take()?;
+		if back.stored.elapsed() > std::time::Duration::from_secs(5 * 60)
+			|| back.metadata.freshness != Freshness::Fresh
+		{
+			back.timeline = None;
+		}
+		self.cancel_history();
+		if let Some(cursor) = back.cursor {
+			self.remember_reading(back.channel, cursor);
+		}
+		if let Some(timeline) = back.timeline {
+			self.timeline = timeline;
+			self.restore_navigation_metadata(back.metadata);
+			self.search_target = back.cursor.and_then(|cursor| cursor.message);
+			self.restore_scroll = true;
+			self.revision += 1;
+			return None;
+		}
+		match back.cursor.and_then(|cursor| cursor.message) {
+			Some(message) if self.timeline.is_deleted(message) || message.0 <= 1 => {
+				self.timeline.clear_window_preserving_deletions();
+				let command = self.history_range(None, Some(Id(message.0.saturating_sub(1))));
+				self.history_targeted = true;
+				self.restore_scroll = true;
+				Some(command)
+			}
+			Some(message) => self.open_scrolled_window(message),
+			None => {
+				let command = self.history(None);
+				self.restore_scroll = true;
+				Some(command)
+			}
+		}
+	}
+	/// An around request has not touched the current timeline, so failure only restores metadata.
+	pub(crate) fn fail_history_navigation(&mut self, failure: crate::auth::Failure) -> bool {
+		if matches!(
+			failure,
+			crate::auth::Failure::Expired
+				| crate::auth::Failure::Challenged
+				| crate::auth::Failure::InvalidCredential
+		) {
+			return false;
+		}
+		let Some(previous) = self.history_navigation.previous.take() else {
+			return false;
+		};
+		self.history_navigation.clear();
+		self.history_pending = false;
+		self.request = self.request.wrapping_add(1);
+		self.timeline.cancel_page();
+		self.restore_navigation_metadata(previous);
+		self.status = match failure {
+			crate::auth::Failure::Forbidden => {
+				"Original message is unavailable with the current permissions; your reading position was kept"
+			}
+			_ => {
+				"Could not load the original message; your reading position was kept. Try View original again"
+			}
+		};
+		self.revision += 1;
+		true
+	}
+	pub(crate) fn cancel_reply_navigation(&mut self) {
+		if let Some(previous) = self.history_navigation.previous.take() {
+			self.history_navigation.clear();
+			self.history_pending = false;
+			self.request = self.request.wrapping_add(1);
+			self.timeline.cancel_page();
+			self.restore_navigation_metadata(previous);
+		}
+	}
+	pub(crate) fn prepare_target_history(
+		&mut self,
+		channel: Id,
+		request: u64,
+		messages: &[Message],
+	) -> Result<(), &'static str> {
+		let Some(target) = self.history_navigation.target(channel, request) else {
+			return Ok(());
+		};
+		if self.history_navigation.previous.is_none() {
+			return Ok(());
+		}
+		if !messages
+			.iter()
+			.any(|message| message.id == target && message.channel == channel)
+			|| self.timeline.is_deleted(target)
+		{
+			self.fail_history_navigation(crate::auth::Failure::Protocol);
+			return Err("Original message was not returned");
+		}
+		let ids: Vec<_> = messages.iter().map(|message| message.id).collect();
+		let fresh = match self.timeline.history_range(&ids) {
+			Ok(fresh) => fresh,
+			Err(error) => {
+				self.fail_history_navigation(crate::auth::Failure::Protocol);
+				return Err(error);
+			}
+		};
+		let metadata = self
+			.history_navigation
+			.previous
+			.take()
+			.expect("checked navigation metadata");
+		let mut previous = std::mem::replace(&mut self.timeline, fresh);
+		previous.cancel_page();
+		self.history_navigation.back = Some(ReturnWindow {
+			channel,
+			timeline: Some(previous),
+			metadata,
+			cursor: self.reading(channel),
+			stored: std::time::Instant::now(),
+		});
+		self.history_targeted = true;
+		self.search_target = Some(target);
+		self.restore_scroll = false;
+		Ok(())
+	}
 	pub fn reply_target(&self) -> Option<Id> {
 		self.reply.map(Reply::target)
 	}
@@ -347,8 +570,10 @@ impl State {
 		};
 		self.auth == AuthState::Authenticated
 			&& self.gateway_connected
-			&& self.freshness == Freshness::Fresh
-			&& !self.history_pending
+			&& (self.freshness == Freshness::Fresh
+				|| (self.freshness == Freshness::Loading
+					&& self.history_pending
+					&& (self.history_before.is_some() || self.history_after.is_some())))
 			&& target.0 != 0
 			&& target.0.checked_add(1).is_some()
 			&& !self.timeline.is_deleted(target)
@@ -379,6 +604,10 @@ impl State {
 			return None;
 		}
 		if self.timeline.get(target).is_some() {
+			if self.history_pending {
+				self.cancel_history();
+				self.freshness = Freshness::Fresh;
+			}
 			self.search_target = Some(target);
 			self.revision += 1;
 			return None;
@@ -390,29 +619,33 @@ impl State {
 		if target.0 == 0 || self.timeline.is_deleted(target) {
 			return None;
 		}
-		let before = Id(target.0.checked_add(1)?);
+		target.0.checked_add(1)?;
 		let channel = self.selected?;
 		if self.history_pending
 			&& self.history_navigation.target(channel, self.request) == Some(target)
 		{
 			return None;
 		}
-		self.timeline.clear_window_preserving_deletions();
-		self.newer_cursor = None;
-		self.newer_may_have_more = false;
-		self.history_targeted = true;
+		let previous = self
+			.history_navigation
+			.previous
+			.unwrap_or_else(|| self.navigation_metadata());
+		self.timeline.begin_append();
+		self.request = self.request.wrapping_add(1);
+		self.history_before = None;
+		self.history_after = None;
+		self.history_pending = true;
+		self.search_target = None;
+		self.restore_scroll = false;
+		self.history_navigation.start(channel, self.request, target);
+		self.history_navigation.previous = Some(previous);
+		self.reply_previews.cancel_pending();
 		self.revision += 1;
-		let command = self.history(Some(before));
-		if let Command::History {
-			channel, request, ..
-		} = &command
-		{
-			self.search_target = Some(target);
-			self.restore_scroll = false;
-			self.history_navigation.start(*channel, *request, target);
-		}
-		self.enforce_resident_budget();
-		Some(command)
+		Some(Command::HistoryAround {
+			channel,
+			target,
+			request: self.request,
+		})
 	}
 }
 
@@ -424,11 +657,13 @@ mod tests {
 
 	fn message(id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(id),
 			channel: Id(1),
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(9),
@@ -501,6 +736,1273 @@ mod tests {
 			generation: state.generation,
 			event,
 		});
+	}
+
+	#[test]
+	fn preview_cancellation_is_emitted_only_for_actual_work_and_clear_keeps_request_fences() {
+		use crate::reply_previews::ResultEvent;
+		let mut state = state();
+		assert!(state.sync_visible_reply_previews(&[]).is_empty());
+		let request = state
+			.sync_visible_reply_previews(&[Id(50)])
+			.into_iter()
+			.find_map(|command| match command {
+				Command::ReplyPreview { request, .. } => Some(request),
+				_ => None,
+			})
+			.unwrap();
+		state.clear_cached_history();
+		let commands = state.sync_visible_reply_previews(&[Id(50)]);
+		assert!(matches!(
+			commands.first(),
+			Some(Command::CancelReplyPreviews)
+		));
+		let next = commands
+			.iter()
+			.find_map(|command| match command {
+				Command::ReplyPreview { request, .. } => Some(*request),
+				_ => None,
+			})
+			.unwrap();
+		assert_ne!(
+			request, next,
+			"cleared reads must not reuse a request ID in this session"
+		);
+		let preview = Box::new(model::ReplyPreview::from_message(message(50)).unwrap());
+		apply(
+			&mut state,
+			Event::ReplyPreview(ResultEvent {
+				channel: Id(1),
+				message: Id(50),
+				request,
+				result: Ok(Some(preview)),
+			}),
+		);
+		assert!(state.reply_original(Id(50)).is_none());
+		assert_eq!(
+			state.reply_preview_status(Id(50)),
+			crate::reply_previews::Status::Loading
+		);
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[]).as_slice(),
+			[Command::CancelReplyPreviews]
+		));
+		assert!(state.sync_visible_reply_previews(&[]).is_empty());
+	}
+
+	#[test]
+	fn new_embedded_previews_retire_older_inflight_bodies() {
+		use crate::reply_previews::ResultEvent;
+		let mut state = state();
+		let request = state
+			.sync_visible_reply_previews(&[Id(50)])
+			.into_iter()
+			.find_map(|command| match command {
+				Command::ReplyPreview { request, .. } => Some(request),
+				_ => None,
+			})
+			.unwrap();
+		let mut original = message(50);
+		original.content = "Newer embedded body".into();
+		let mut source = message(101);
+		source.reply_to = Some(Id(50));
+		source.reply_preview = Some(Box::new(
+			model::ReplyPreview::from_message(original).unwrap(),
+		));
+		apply(&mut state, Event::Message(source));
+		apply(
+			&mut state,
+			Event::ReplyPreview(ResultEvent {
+				channel: Id(1),
+				message: Id(50),
+				request,
+				result: Ok(Some(Box::new(
+					model::ReplyPreview::from_message(message(50)).unwrap(),
+				))),
+			}),
+		);
+		assert_eq!(
+			state.reply_original(Id(50)).unwrap().content,
+			"Newer embedded body"
+		);
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[Id(50)]).as_slice(),
+			[Command::CancelReplyPreviews]
+		));
+	}
+
+	#[test]
+	fn cached_top_replies_do_not_starve_lower_visible_originals() {
+		let mut state = state();
+		state.timeline.clear();
+		for target in 1..=80 {
+			let mut source = message(1000 + target);
+			source.kind = 19;
+			source.reply_to = Some(Id(target));
+			if target <= 40 {
+				source.reply_preview = Some(Box::new(
+					model::ReplyPreview::from_message(message(target)).unwrap(),
+				));
+			}
+			apply(&mut state, Event::Message(source));
+		}
+		let visible: Vec<_> = (1..=80).map(Id).collect();
+		let commands = state.sync_visible_reply_previews(&visible);
+		let targets: Vec<_> = commands
+			.into_iter()
+			.filter_map(|command| match command {
+				Command::ReplyPreview { message, .. } => Some(message),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(targets, vec![Id(41), Id(42)]);
+	}
+
+	#[test]
+	fn fresh_return_window_supplies_display_only_originals_without_a_read() {
+		let mut state = state();
+		state.timeline.insert(message(50), false, false).unwrap();
+		let mut source = message(100);
+		source.reply_to = Some(Id(20));
+		state.timeline.insert(source, false, false).unwrap();
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(20)) else {
+			panic!()
+		};
+		let mut reply = message(60);
+		reply.reply_to = Some(Id(50));
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![message(20), reply],
+			},
+		);
+		assert!(state.timeline.get(Id(50)).is_none());
+		assert_eq!(
+			state.reply_original(Id(50)).unwrap().content,
+			"Synthetic reply"
+		);
+		assert!(state.sync_visible_reply_previews(&[Id(50)]).is_empty());
+		state.history_navigation.back.as_mut().unwrap().stored =
+			std::time::Instant::now() - std::time::Duration::from_secs(301);
+		assert!(state.reply_original(Id(50)).is_none());
+		assert!(
+			state
+				.sync_visible_reply_previews(&[Id(50)])
+				.iter()
+				.any(|command| matches!(
+					command,
+					Command::ReplyPreview {
+						message: Id(50),
+						..
+					}
+				))
+		);
+	}
+
+	#[test]
+	fn stale_latest_page_hydration_is_not_trusted_as_a_fresh_return_window() {
+		let mut state = state();
+		state.remember_reading(
+			Id(1),
+			crate::ReadingCursor {
+				message: Some(Id(100)),
+				inset: 4.0,
+			},
+		);
+		state.freshness = Freshness::Stale;
+		state.history(None);
+		assert_eq!(state.freshness, Freshness::Loading);
+		assert!(
+			!state.can_open_reply_target(Id(50)),
+			"initial cached history awaits validation"
+		);
+		let Some(Command::HistoryAround { request, .. }) = state.open_target_window(Id(50)) else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![message(50)],
+			},
+		);
+		assert!(
+			state.reply_original(Id(100)).is_none(),
+			"stale cached return payload cannot supply previews"
+		);
+		assert!(
+			matches!(
+				state.return_from_reply(),
+				Some(Command::History {
+					after: Some(Id(99)),
+					..
+				})
+			),
+			"Back revalidates the stale window"
+		);
+		assert!(state.timeline.get(Id(100)).is_none());
+	}
+
+	#[test]
+	fn failed_reply_navigation_stops_page_reconciliation_before_live_message_churn() {
+		let mut state = state();
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::HistoryFailed {
+				channel: Id(1),
+				request,
+				failure: crate::auth::Failure::Network,
+			},
+		);
+		for id in 1000..1000 + session_cache::MAX_MUTATIONS as u64 + 5 {
+			apply(&mut state, Event::Message(message(id)));
+		}
+		assert_eq!(state.freshness, Freshness::Fresh);
+		assert_eq!(state.auth, AuthState::Authenticated);
+		assert!(
+			state
+				.timeline
+				.get(Id(1000 + session_cache::MAX_MUTATIONS as u64 + 4))
+				.is_some()
+		);
+	}
+
+	#[test]
+	fn old_reply_previews_deduplicate_reads_and_ignore_cancelled_results() {
+		use crate::reply_previews::{ResultEvent, Status};
+		let mut state = state();
+		let commands = state.sync_visible_reply_previews(&[Id(50), Id(50)]);
+		let request = commands
+			.iter()
+			.find_map(|command| match command {
+				Command::ReplyPreview { request, .. } => Some(*request),
+				_ => None,
+			})
+			.unwrap();
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Loading);
+		assert!(state.sync_visible_reply_previews(&[Id(50)]).is_empty());
+		let preview = model::ReplyPreview::from_message(message(50)).unwrap();
+		apply(
+			&mut state,
+			Event::ReplyPreview(ResultEvent {
+				channel: Id(1),
+				message: Id(50),
+				request,
+				result: Ok(Some(Box::new(preview))),
+			}),
+		);
+		assert_eq!(
+			state.reply_original(Id(50)).unwrap().content,
+			"Synthetic reply"
+		);
+		assert!(
+			state.timeline.get(Id(50)).is_none(),
+			"preview is never an actionable history row"
+		);
+		assert_eq!(state.timeline.len(), 1);
+		state.sync_visible_reply_previews(&[]);
+		apply(
+			&mut state,
+			Event::Delete {
+				channel: Id(1),
+				id: Id(50),
+			},
+		);
+		assert!(state.reply_original(Id(50)).is_none());
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Deleted);
+		let preview = model::ReplyPreview::from_message(message(50)).unwrap();
+		apply(
+			&mut state,
+			Event::ReplyPreview(ResultEvent {
+				channel: Id(1),
+				message: Id(50),
+				request,
+				result: Ok(Some(Box::new(preview))),
+			}),
+		);
+		assert!(state.reply_original(Id(50)).is_none());
+	}
+
+	#[test]
+	fn every_visible_original_is_read_once_even_after_the_128_body_cache_rolls_over() {
+		use crate::reply_previews::{MAX_VISIBLE_REPLIES, ResultEvent, Status};
+		let mut state = state();
+		state.timeline.clear();
+		let visible: Vec<_> = (1..=MAX_VISIBLE_REPLIES as u64).map(Id).collect();
+		state
+			.timeline
+			.seed_cache(
+				visible
+					.iter()
+					.map(|id| {
+						let mut source = message(1000 + id.0);
+						source.reply_to = Some(*id);
+						source
+					})
+					.collect(),
+			)
+			.unwrap();
+		let mut reads = vec![0; MAX_VISIBLE_REPLIES];
+		for _ in 0..=MAX_VISIBLE_REPLIES / 2 {
+			let commands = state.sync_visible_reply_previews(&visible);
+			for command in commands {
+				let Command::ReplyPreview {
+					channel,
+					message: id,
+					request,
+				} = command
+				else {
+					panic!("the unchanged viewport must not cancel work")
+				};
+				reads[id.0 as usize - 1] += 1;
+				apply(
+					&mut state,
+					Event::ReplyPreview(ResultEvent {
+						channel,
+						message: id,
+						request,
+						result: Ok(Some(Box::new(
+							model::ReplyPreview::from_message(message(id.0)).unwrap(),
+						))),
+					}),
+				);
+			}
+		}
+		assert!(
+			reads.iter().all(|reads| *reads == 1),
+			"evicted bodies must not restart service reads or starve later replies"
+		);
+		assert_eq!(
+			visible
+				.iter()
+				.filter(|id| state.reply_preview_status(**id) == Status::Ready)
+				.count(),
+			128
+		);
+		assert_eq!(state.reply_preview_status(Id(1)), Status::Failed);
+		for _ in 0..5 {
+			assert!(state.sync_visible_reply_previews(&visible).is_empty());
+		}
+		let retry = state.retry_reply_preview(Id(1));
+		assert!(matches!(
+			retry.as_slice(),
+			[Command::ReplyPreview { message: Id(1), .. }]
+		));
+		state.command_rejected(retry.into_iter().next().unwrap());
+		assert_eq!(state.reply_preview_status(Id(1)), Status::Failed);
+		assert!(state.sync_visible_reply_previews(&visible).is_empty());
+		assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+	}
+
+	#[test]
+	fn preview_attempts_reset_for_real_cancellation_edits_visibility_and_access() {
+		use crate::reply_previews::Status;
+		let mut state = state();
+		let mut second = message(101);
+		second.reply_to = Some(Id(51));
+		state.timeline.insert(second, false, false).unwrap();
+		for command in state.sync_visible_reply_previews(&[Id(50), Id(51)]) {
+			state.command_rejected(command);
+		}
+		while state.reply_previews.evict() {}
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Failed);
+		assert_eq!(state.reply_preview_status(Id(51)), Status::Failed);
+		apply(
+			&mut state,
+			Event::Patch(model::MessagePatch {
+				id: Id(50),
+				channel: Id(1),
+				content: model::Patch::Value("Edited original".into()),
+				poll: model::Patch::Absent,
+				sticker_items: model::Patch::Absent,
+				flags: model::Patch::Absent,
+				components: model::Patch::Absent,
+				application_id: model::Patch::Absent,
+				extra_content: Default::default(),
+				reactions: model::Patch::Absent,
+				mentions: model::Patch::Absent,
+				edited: model::Patch::Absent,
+				embeds: model::Patch::Absent,
+				embeds_suppressed: model::Patch::Absent,
+				attachments: model::Patch::Absent,
+			}),
+		);
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Unrequested);
+		assert_eq!(
+			state.reply_preview_status(Id(51)),
+			Status::Failed,
+			"an edit must invalidate only its own attempt"
+		);
+		assert!(matches!(
+			state
+				.sync_visible_reply_previews(&[Id(50), Id(51)])
+				.as_slice(),
+			[Command::ReplyPreview {
+				message: Id(50),
+				..
+			}]
+		));
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[]).as_slice(),
+			[Command::CancelReplyPreviews]
+		));
+		let pending = state.sync_visible_reply_previews(&[Id(50), Id(51)]);
+		assert_eq!(
+			pending.len(),
+			2,
+			"canceled and no-longer-visible attempts may start again"
+		);
+		for command in pending {
+			state.command_rejected(command);
+		}
+		while state.reply_previews.evict() {}
+		apply(&mut state, Event::PermissionsChanged);
+		assert_eq!(state.reply_preview_status(Id(50)), Status::Unrequested);
+		let mut source = message(100);
+		source.reply_to = Some(Id(50));
+		state.history(None);
+		let request = state.request;
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![source],
+			},
+		);
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[Id(50)]).as_slice(),
+			[Command::ReplyPreview {
+				message: Id(50),
+				..
+			}]
+		));
+		state.select(Id(2)).unwrap();
+		let mut source = message(200);
+		source.channel = Id(2);
+		source.reply_to = Some(Id(50));
+		let request = state.request;
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(2),
+				request,
+				older: false,
+				messages: vec![source],
+			},
+		);
+		assert!(
+			state
+				.sync_visible_reply_previews(&[Id(50)])
+				.iter()
+				.any(|command| matches!(
+					command,
+					Command::ReplyPreview {
+						channel: Id(2),
+						message: Id(50),
+						..
+					}
+				)),
+			"attempt IDs must not cross channels"
+		);
+	}
+
+	#[test]
+	fn visible_reply_work_is_bounded_and_failures_require_a_deliberate_retry() {
+		use crate::reply_previews::{ResultEvent, Status};
+		let mut state = state();
+		for id in 1..=40 {
+			let mut source = message(100 + id);
+			source.reply_to = Some(Id(id));
+			state.timeline.insert(source, false, false).unwrap();
+		}
+		let ids: Vec<_> = (1..=40).map(Id).collect();
+		let commands = state.sync_visible_reply_previews(&ids);
+		assert_eq!(
+			commands
+				.iter()
+				.filter(|command| matches!(command, Command::ReplyPreview { .. }))
+				.count(),
+			2
+		);
+		let request = commands
+			.iter()
+			.find_map(|command| match command {
+				Command::ReplyPreview {
+					message: Id(1),
+					request,
+					..
+				} => Some(*request),
+				_ => None,
+			})
+			.unwrap();
+		apply(
+			&mut state,
+			Event::ReplyPreview(ResultEvent {
+				channel: Id(1),
+				message: Id(1),
+				request,
+				result: Err(crate::auth::Failure::Network),
+			}),
+		);
+		assert_eq!(state.reply_preview_status(Id(1)), Status::Failed);
+		let commands = state.sync_visible_reply_previews(&ids);
+		assert!(
+			!commands
+				.iter()
+				.any(|command| matches!(command, Command::ReplyPreview { message: Id(1), .. }))
+		);
+		state.sync_visible_reply_previews(&[]);
+		state.sync_visible_reply_previews(&[Id(1)]);
+		assert!(
+			state
+				.retry_reply_preview(Id(1))
+				.iter()
+				.any(|command| matches!(command, Command::ReplyPreview { message: Id(1), .. }))
+		);
+		assert!(state.resident_history_bytes() < 16 * 1024 * 1024);
+	}
+
+	#[test]
+	fn rejected_preview_cancellation_preserves_history_and_fences_old_results() {
+		use crate::reply_previews::{ResultEvent, Status};
+		let mut state = state();
+		let request = |commands: Vec<Command>| {
+			commands
+				.into_iter()
+				.find_map(|command| match command {
+					Command::ReplyPreview { request, .. } => Some(request),
+					_ => None,
+				})
+				.unwrap()
+		};
+		let old = request(state.sync_visible_reply_previews(&[Id(50)]));
+		assert!(matches!(
+			state.sync_visible_reply_previews(&[]).as_slice(),
+			[Command::CancelReplyPreviews]
+		));
+		let current = request(state.sync_visible_reply_previews(&[Id(50)]));
+		assert_ne!(old, current);
+		state.status = "Keep this unrelated outcome";
+		state.command_rejected(Command::CancelReplyPreviews);
+		assert_eq!(state.status, "Keep this unrelated outcome");
+		assert_eq!(state.freshness, Freshness::Fresh);
+		assert!(!state.history_pending);
+		for request in [old, current] {
+			apply(
+				&mut state,
+				Event::ReplyPreview(ResultEvent {
+					channel: Id(1),
+					message: Id(50),
+					request,
+					result: Ok(Some(Box::new(
+						model::ReplyPreview::from_message(message(50)).unwrap(),
+					))),
+				}),
+			);
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				if request == old {
+					Status::Loading
+				} else {
+					Status::Ready
+				}
+			);
+			assert_eq!(state.status, "Keep this unrelated outcome");
+			assert_eq!(state.freshness, Freshness::Fresh);
+		}
+	}
+
+	const SHARED_HISTORY_BYTES: usize = 16 * 1024 * 1024 - 66 * 1024;
+
+	fn byte_limited_reply_state() -> State {
+		let mut state = state();
+		let mut fourth = state.channels[0].clone();
+		fourth.id = Id(4);
+		state.channels.push(fourth);
+		for channel in 1..=4 {
+			if channel == 1 {
+				state.history(None);
+			} else {
+				state.select(Id(channel)).unwrap();
+			}
+			let mut source = message(channel * 10000);
+			source.channel = Id(channel);
+			if channel == 4 {
+				source.reply_to = Some(Id(50));
+			}
+			let request = state.request;
+			apply(
+				&mut state,
+				Event::History {
+					channel: Id(channel),
+					request,
+					older: false,
+					messages: vec![source],
+				},
+			);
+			if channel < 4 {
+				// A real cache may hold many individually valid 64 KiB messages. The
+				// timeline bounds this hydration before the shared budget is applied.
+				state
+					.timeline
+					.seed_cache(
+						(1..=80)
+							.map(|offset| {
+								let mut item = message(channel * 10000 + offset);
+								item.channel = Id(channel);
+								item.content = "x".repeat(64 * 1024);
+								item
+							})
+							.collect(),
+					)
+					.unwrap();
+				state
+					.channels
+					.iter_mut()
+					.find(|item| item.id == Id(channel))
+					.unwrap()
+					.last_message = Some(Id(channel * 10000 + 80));
+				state.enforce_resident_budget();
+			}
+		}
+		assert_eq!(state.resident_window_count(), 3);
+		let source_capacity = state.timeline.get(Id(40000)).unwrap().content.capacity();
+		for id in 40001..40128 {
+			let remaining = SHARED_HISTORY_BYTES - state.resident_history_bytes() - 1024;
+			if remaining <= 64 * 1024 - source_capacity {
+				break;
+			}
+			let mut incoming = message(id);
+			incoming.channel = Id(4);
+			incoming.content = "x".repeat(48 * 1024);
+			apply(&mut state, Event::Message(incoming));
+		}
+		let mut source = state.timeline.get(Id(40000)).unwrap().clone();
+		let remaining = SHARED_HISTORY_BYTES - state.resident_history_bytes() - 1024;
+		source.content = "x".repeat(source.content.capacity() + remaining);
+		assert!(Timeline::valid_message(&source));
+		apply(&mut state, Event::Message(source));
+		assert_eq!(state.resident_window_count(), 3);
+		assert_eq!(state.resident_history_bytes(), SHARED_HISTORY_BYTES - 1024);
+		state
+	}
+
+	#[test]
+	fn preview_growth_obeys_the_shared_budget_with_large_dormant_windows() {
+		use crate::reply_previews::ResultEvent;
+		for path in ["fetched", "live", "history"] {
+			let mut state = byte_limited_reply_state();
+			let source = state.timeline.get(Id(40000)).unwrap().clone();
+			let mut original = message(50);
+			original.channel = Id(4);
+			original.content = "p".repeat(4096);
+			let preview = Box::new(model::ReplyPreview::from_message(original).unwrap());
+			assert!(preview.bytes() > 1024);
+			let request = state
+				.sync_visible_reply_previews(&[Id(50)])
+				.into_iter()
+				.find_map(|command| match command {
+					Command::ReplyPreview { request, .. } => Some(request),
+					_ => None,
+				})
+				.unwrap();
+			if path == "fetched" {
+				apply(
+					&mut state,
+					Event::ReplyPreview(ResultEvent {
+						channel: Id(4),
+						message: Id(50),
+						request,
+						result: Ok(Some(preview)),
+					}),
+				);
+			} else {
+				let mut incoming = source.clone();
+				incoming.reply_preview = Some(preview);
+				if path == "history" {
+					state.history(Some(Id(40001)));
+					let request = state.request;
+					apply(
+						&mut state,
+						Event::History {
+							channel: Id(4),
+							request,
+							older: true,
+							messages: vec![incoming],
+						},
+					);
+				} else {
+					apply(&mut state, Event::Message(incoming));
+				}
+			}
+			assert!(
+				state.resident_history_bytes() <= SHARED_HISTORY_BYTES,
+				"{path}"
+			);
+			assert!(state.resident_history_rows() <= 1475);
+			assert_eq!(
+				state.resident_window_count(),
+				3,
+				"preview payloads give way before dormant windows"
+			);
+			assert_eq!(
+				state.timeline.get(source.id).unwrap().content,
+				source.content
+			);
+			assert!(
+				state.reply_original(Id(50)).is_none(),
+				"the over-budget {path} preview must be evicted"
+			);
+			assert_eq!(state.freshness, Freshness::Fresh);
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				crate::reply_previews::Status::Failed,
+				"{path}"
+			);
+			for _ in 0..5 {
+				assert!(
+					!state
+						.sync_visible_reply_previews(&[Id(50)])
+						.iter()
+						.any(|command| matches!(command, Command::ReplyPreview { .. })),
+					"memory pressure must not trigger {path} reads on repaint"
+				);
+			}
+			let retry = state.retry_reply_preview(Id(50));
+			assert!(retry.iter().any(|command| matches!(
+				command,
+				Command::ReplyPreview {
+					message: Id(50),
+					..
+				}
+			)));
+			for command in retry {
+				state.command_rejected(command);
+			}
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				crate::reply_previews::Status::Failed
+			);
+			assert!(state.sync_visible_reply_previews(&[Id(50)]).is_empty());
+		}
+	}
+
+	#[test]
+	fn visible_reply_metadata_and_direct_queue_failures_obey_the_shared_budget() {
+		{
+			let mut state = byte_limited_reply_state();
+			let content = state.timeline.get(Id(40000)).unwrap().content.clone();
+			let visible: Vec<_> = (1..=crate::reply_previews::MAX_VISIBLE_REPLIES as u64)
+				.map(Id)
+				.collect();
+			state.sync_visible_reply_previews(&visible);
+			assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+			assert_eq!(
+				state.resident_window_count(),
+				2,
+				"new visible metadata is charged outside Event::apply"
+			);
+			assert_eq!(state.timeline.get(Id(40000)).unwrap().content, content);
+		}
+		{
+			let mut state = byte_limited_reply_state();
+			let request = state
+				.sync_visible_reply_previews(&[Id(50)])
+				.into_iter()
+				.find(|command| matches!(command, Command::ReplyPreview { .. }))
+				.unwrap();
+			let mut source = state.timeline.get(Id(40001)).unwrap().clone();
+			let remaining = SHARED_HISTORY_BYTES - state.resident_history_bytes() - 64;
+			source.content = "x".repeat(source.content.capacity() + remaining);
+			assert!(Timeline::valid_message(&source));
+			apply(&mut state, Event::Message(source));
+			assert_eq!(state.resident_history_bytes(), SHARED_HISTORY_BYTES - 64);
+			state.command_rejected(request);
+			assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+			assert_eq!(
+				state.reply_preview_status(Id(50)),
+				crate::reply_previews::Status::Failed
+			);
+			assert!(state.sync_visible_reply_previews(&[Id(50)]).is_empty());
+			assert_eq!(state.freshness, Freshness::Fresh);
+		}
+	}
+
+	#[test]
+	fn atomic_reply_install_obeys_shared_byte_budget_and_preserves_back_cursor() {
+		let mut state = byte_limited_reply_state();
+		state.remember_reading(
+			Id(4),
+			crate::ReadingCursor {
+				message: Some(Id(40000)),
+				inset: 19.0,
+			},
+		);
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!()
+		};
+		let originals = (25..75)
+			.map(|id| {
+				let mut original = message(id);
+				original.channel = Id(4);
+				original.content = "t".repeat(64 * 1024);
+				original
+			})
+			.collect();
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(4),
+				request,
+				older: false,
+				messages: originals,
+			},
+		);
+		assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+		assert_eq!(state.resident_window_count(), 3);
+		assert_eq!(state.timeline.get(Id(50)).unwrap().content.len(), 64 * 1024);
+		assert_eq!(state.search_target, Some(Id(50)));
+		assert_eq!(
+			state.history_navigation.bytes(),
+			0,
+			"retire the return payload under pressure"
+		);
+		assert!(state.can_return_from_reply());
+		assert!(matches!(
+			state.return_from_reply(),
+			Some(Command::History {
+				channel: Id(4),
+				before: None,
+				after: Some(Id(39999)),
+				..
+			})
+		));
+		assert_eq!(state.reading(Id(4)).unwrap().inset, 19.0);
+	}
+
+	#[test]
+	fn atomic_reply_install_obeys_shared_row_budget_and_preserves_back_cursor() {
+		let mut state = state();
+		for (channel, rows) in [(1, 500), (2, 475), (3, 500)] {
+			if channel == 1 {
+				state.history(None);
+			} else {
+				state.select(Id(channel)).unwrap();
+			}
+			let mut first = message(channel * 10000);
+			first.channel = Id(channel);
+			first.reply_to = Some(Id(50));
+			let request = state.request;
+			apply(
+				&mut state,
+				Event::History {
+					channel: Id(channel),
+					request,
+					older: false,
+					messages: vec![first],
+				},
+			);
+			// Production disk hydration can restore the rest of a bounded 500-row window.
+			state
+				.timeline
+				.seed_cache(
+					(1..rows)
+						.map(|offset| {
+							let mut item = message(channel * 10000 + offset);
+							item.channel = Id(channel);
+							item
+						})
+						.collect(),
+				)
+				.unwrap();
+			state
+				.channels
+				.iter_mut()
+				.find(|item| item.id == Id(channel))
+				.unwrap()
+				.last_message = Some(Id(channel * 10000 + rows - 1));
+			state.enforce_resident_budget();
+		}
+		assert_eq!(state.resident_window_count(), 2);
+		assert_eq!(state.resident_history_rows(), 1475);
+		state.remember_reading(
+			Id(3),
+			crate::ReadingCursor {
+				message: Some(Id(30000)),
+				inset: 23.0,
+			},
+		);
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(3),
+				request,
+				older: false,
+				messages: (25..75)
+					.map(|id| {
+						let mut item = message(id);
+						item.channel = Id(3);
+						item
+					})
+					.collect(),
+			},
+		);
+		assert_eq!(state.timeline.row_count(), 50);
+		assert_eq!(state.resident_history_rows(), 1025);
+		assert!(state.resident_history_bytes() <= SHARED_HISTORY_BYTES);
+		assert_eq!(state.resident_window_count(), 2);
+		assert_eq!(state.search_target, Some(Id(50)));
+		assert_eq!(state.history_navigation.rows(), 0);
+		assert!(state.can_return_from_reply());
+		assert!(matches!(
+			state.return_from_reply(),
+			Some(Command::History {
+				channel: Id(3),
+				before: None,
+				after: Some(Id(29999)),
+				..
+			})
+		));
+		assert_eq!(state.reading(Id(3)).unwrap().inset, 23.0);
+	}
+
+	#[test]
+	fn reply_jump_keeps_the_source_until_success_and_restores_its_anchor() {
+		let mut state = state();
+		state.remember_reading(
+			Id(1),
+			crate::ReadingCursor {
+				message: Some(Id(100)),
+				inset: 23.0,
+			},
+		);
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!("around request")
+		};
+		assert!(state.timeline.get(Id(100)).is_some());
+		apply(
+			&mut state,
+			Event::HistoryFailed {
+				channel: Id(1),
+				request,
+				failure: crate::auth::Failure::Network,
+			},
+		);
+		assert!(state.timeline.get(Id(100)).is_some());
+		assert_eq!(state.freshness, Freshness::Fresh);
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!("around retry")
+		};
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![message(49), message(50), message(51)],
+			},
+		);
+		assert!(state.timeline.get(Id(100)).is_none());
+		assert_eq!(state.search_target, Some(Id(50)));
+		assert!(state.can_return_from_reply());
+		assert!(state.navigate_back().is_some());
+		assert!(state.timeline.get(Id(100)).is_some());
+		assert_eq!(state.search_target, Some(Id(100)));
+		assert_eq!(state.reading(Id(1)).unwrap().inset, 23.0);
+		assert!(state.restore_scroll);
+	}
+
+	#[test]
+	fn changed_return_windows_revalidate_instead_of_restoring_old_payloads() {
+		for deleted in [false, true] {
+			let mut state = state();
+			state.remember_reading(
+				Id(1),
+				crate::ReadingCursor {
+					message: Some(Id(100)),
+					inset: 17.0,
+				},
+			);
+			let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50))
+			else {
+				panic!()
+			};
+			apply(
+				&mut state,
+				Event::History {
+					channel: Id(1),
+					request,
+					older: false,
+					messages: vec![message(50)],
+				},
+			);
+			assert!(state.history_navigation.bytes() > 0);
+			if deleted {
+				apply(
+					&mut state,
+					Event::Delete {
+						channel: Id(1),
+						id: Id(100),
+					},
+				);
+			} else {
+				let mut edited = message(100);
+				edited.content = "New live content".into();
+				edited.edited = true;
+				edited.edited_at = Some(123);
+				apply(&mut state, Event::Message(edited));
+			}
+			assert_eq!(
+				state.history_navigation.bytes(),
+				0,
+				"mutated return payload must be retired"
+			);
+			let step = state.navigate_back().unwrap();
+			assert!(
+				matches!(
+					step.command,
+					Some(Command::History {
+						after: Some(Id(99)),
+						..
+					})
+				),
+				"Back revalidates around the saved anchor"
+			);
+			assert!(state.timeline.get(Id(100)).is_none());
+			assert_eq!(state.reading(Id(1)).unwrap().inset, 17.0);
+		}
+	}
+
+	#[test]
+	fn clearing_history_retires_reply_cache_and_pending_navigation() {
+		let mut state = state();
+		let mut source = message(101);
+		source.reply_to = Some(Id(50));
+		source.reply_preview = Some(Box::new(
+			model::ReplyPreview::from_message(message(50)).unwrap(),
+		));
+		apply(&mut state, Event::Message(source));
+		assert!(state.reply_original(Id(50)).is_some());
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!()
+		};
+		state.clear_cached_history();
+		assert!(state.reply_original(Id(50)).is_none());
+		assert!(!state.history_pending && !state.can_return_from_reply());
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![message(50)],
+			},
+		);
+		assert!(state.timeline.get(Id(50)).is_none());
+		assert!(state.timeline.get(Id(100)).is_some());
+	}
+
+	#[test]
+	fn preview_accounting_survives_live_replacement_eviction_and_deletion() {
+		let mut state = state();
+		for id in 1..=180 {
+			let mut source = message(1000 + id);
+			source.reply_to = Some(Id(id));
+			let mut original = message(id);
+			original.content = "Bounded preview. ".repeat((id % 20 + 1) as usize);
+			source.reply_preview = Some(Box::new(
+				model::ReplyPreview::from_message(original).unwrap(),
+			));
+			apply(&mut state, Event::Message(source));
+			state.reply_previews.assert_accounting();
+		}
+		for id in [60, 100, 180] {
+			apply(
+				&mut state,
+				Event::Delete {
+					channel: Id(1),
+					id: Id(id),
+				},
+			);
+			state.reply_previews.assert_accounting();
+		}
+		state.clear_cached_history();
+		state.reply_previews.assert_accounting();
+	}
+
+	#[test]
+	fn report_navigation_submits_only_explicitly_and_rejects_stale_or_duplicate_results() {
+		use crate::reporting::{Event as ReportEvent, Outcome};
+		use model::reporting::{Button, Menu, Node, Target};
+		let mut state = state();
+		let mut original = message(100);
+		original.author.id = Id(10);
+		apply(&mut state, Event::Message(original));
+		let target = Target {
+			channel: Id(1),
+			message: Id(100),
+		};
+		let Command::Report(read) = state.open_report(target).unwrap() else {
+			panic!()
+		};
+		assert!(state.report_command_allowed(&read));
+		assert!(state.submit_report().is_none());
+		let menu = Menu {
+			version: "1.0".into(),
+			variant: "test".into(),
+			language: "en".into(),
+			root: 1,
+			nodes: [
+				(
+					1,
+					Node {
+						header: "Reason".into(),
+						detail: String::new(),
+						children: vec![("Spam".into(), 2)],
+						elements: vec![],
+						button: Button::None,
+						required: false,
+					},
+				),
+				(
+					2,
+					Node {
+						header: "Confirm".into(),
+						detail: String::new(),
+						children: vec![],
+						elements: vec![],
+						button: Button::Submit,
+						required: false,
+					},
+				),
+			]
+			.into_iter()
+			.collect(),
+		};
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: read.request,
+				result: Ok(Outcome::Menu(Box::new(menu.clone()))),
+			}),
+		);
+		assert!(
+			state.submit_report().is_none(),
+			"opening or choosing a reason never submits"
+		);
+		state.choose_report_node(999);
+		assert_eq!(state.reporting.breadcrumbs, [1]);
+		state.choose_report_node(2);
+		assert_eq!(state.reporting.breadcrumbs, [1, 2]);
+		state.report_back();
+		assert_eq!(state.reporting.breadcrumbs, [1]);
+		state.choose_report_node(2);
+		let Command::Report(write) = state.submit_report().unwrap() else {
+			panic!()
+		};
+		assert!(state.report_command_allowed(&write));
+		assert!(state.submit_report().is_none());
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: write.request,
+				result: Err(Failure::Ambiguous),
+			}),
+		);
+		assert!(
+			state.submit_report().is_none(),
+			"uncertain reports must not be repeated"
+		);
+		state.reporting.close();
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: write.request,
+				result: Ok(Outcome::Sent(Id(99))),
+			}),
+		);
+		assert!(state.reporting.target.is_none() && state.reporting.sent.is_none());
+		let Command::Report(read) = state.open_report(target).unwrap() else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: read.request,
+				result: Ok(Outcome::Menu(Box::new(menu))),
+			}),
+		);
+		state.choose_report_node(2);
+		let Command::Report(write) = state.submit_report().unwrap() else {
+			panic!()
+		};
+		apply(
+			&mut state,
+			Event::Report(ReportEvent {
+				target,
+				request: write.request,
+				result: Ok(Outcome::Sent(Id(99))),
+			}),
+		);
+		assert_eq!(state.reporting.sent, Some(Id(99)));
+		assert!(state.submit_report().is_none());
+		apply(
+			&mut state,
+			Event::Delete {
+				channel: Id(1),
+				id: Id(100),
+			},
+		);
+		assert!(state.reporting.target.is_none());
+		assert!(state.open_report(target).is_none());
+		let own = message(101);
+		apply(&mut state, Event::Message(own));
+		assert!(
+			state
+				.open_report(Target {
+					channel: Id(1),
+					message: Id(101)
+				})
+				.is_none()
+		);
+	}
+
+	#[test]
+	fn missing_target_never_replaces_current_history_and_new_jump_supersedes_pagination() {
+		let mut state = state();
+		let _ = state.history(Some(Id(100)));
+		assert!(state.can_open_reply_target(Id(50)));
+		let Some(Command::HistoryAround { request, .. }) = state.open_reply_target(Id(50)) else {
+			panic!("superseding around request")
+		};
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![message(49), message(51)],
+			},
+		);
+		assert!(state.timeline.get(Id(100)).is_some());
+		assert!(!state.history_pending);
 	}
 
 	#[test]
@@ -638,11 +2140,11 @@ mod tests {
 					.unwrap()
 					.unwrap();
 				assert!(
-					matches!(command, Command::History { channel: id, before: Some(Id(51)), after: None, request } if id == channel && request == state.request)
+					matches!(command, Command::HistoryAround { channel: id, target: Id(50), request } if id == channel && request == state.request)
 				);
 				assert_eq!(state.selected, Some(channel));
-				assert_eq!(state.search_target, Some(Id(50)));
-				assert!(state.history_targeted && state.history_pending);
+				assert!(state.search_target.is_none());
+				assert!(state.history_pending);
 				assert_eq!(state.drafts[&Id(1)], "Unsent draft");
 			}
 		}
@@ -743,9 +2245,9 @@ mod tests {
 				.unwrap();
 			assert!(matches!(
 				command,
-				Some(Command::History {
+				Some(Command::HistoryAround {
 					channel: Id(1),
-					before: Some(Id(61)),
+					target: Id(60),
 					..
 				})
 			));
@@ -979,9 +2481,9 @@ mod tests {
 				},
 			);
 			let command = state.open_reply_target(Id(50)).unwrap();
-			let Command::History {
+			let Command::HistoryAround {
 				channel,
-				before,
+				target,
 				request,
 				..
 			} = command
@@ -989,10 +2491,10 @@ mod tests {
 				panic!()
 			};
 			assert_eq!(channel, Id(1));
-			assert_eq!(before, Some(Id(51)));
-			assert_eq!(state.timeline.row_count(), 0);
+			assert_eq!(target, Id(50));
+			assert_eq!(state.timeline.row_count(), 1);
 			assert!(state.timeline.is_deleted(Id(40)));
-			assert_eq!(state.freshness, Freshness::Loading);
+			assert_eq!(state.freshness, Freshness::Fresh);
 			assert_eq!(state.reply_target(), Some(Id(50)));
 			assert_eq!(state.drafts[&Id(1)], "Unsent draft");
 			assert!(state.open_reply_target(Id(50)).is_none());
@@ -1011,11 +2513,11 @@ mod tests {
 				Event::History {
 					channel,
 					request,
-					older: true,
+					older: false,
 					messages: vec![message(50), message(40), message(30)],
 				},
 			);
-			assert_eq!(state.timeline.row_ids().collect::<Vec<_>>(), vec![Id(30)]);
+			assert_eq!(state.timeline.row_ids().collect::<Vec<_>>(), vec![Id(100)]);
 			assert!(state.timeline.is_deleted(Id(50)));
 			assert!(!state.can_open_reply_target(Id(50)));
 			assert_eq!(state.freshness, Freshness::Fresh);
@@ -1040,7 +2542,10 @@ mod tests {
 					0 => state.auth = AuthState::Unauthenticated,
 					1 => state.gateway_connected = false,
 					2 => state.freshness = Freshness::Stale,
-					3 => state.history_pending = true,
+					3 => {
+						state.history_pending = true;
+						state.freshness = Freshness::Unavailable;
+					}
 					4 => state.selected = Some(Id(2)),
 					5 => state.channels[0].kind = 2,
 					6 => {
@@ -1286,7 +2791,7 @@ mod tests {
 				Event::History {
 					channel: Id(1),
 					request,
-					older: true,
+					older: false,
 					messages: vec![message(50)],
 				},
 			);
@@ -1325,6 +2830,7 @@ mod tests {
 						id: Id(50),
 						channel: Id(1),
 						author: model::User {
+							username: None,
 							kind: model::AccountKind::Human,
 							webhook: false,
 							id: Id(7),
@@ -1345,7 +2851,7 @@ mod tests {
 				}),
 			});
 			let command = state.open_search_hit(Id(50)).unwrap();
-			let Command::History { request, .. } = command else {
+			let Command::HistoryAround { request, .. } = command else {
 				panic!()
 			};
 			apply(
@@ -1353,7 +2859,7 @@ mod tests {
 				Event::History {
 					channel: Id(1),
 					request,
-					older: true,
+					older: false,
 					messages: vec![message(50), message(40)],
 				},
 			);

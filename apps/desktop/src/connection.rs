@@ -412,6 +412,7 @@ impl Connection {
                     }
                 }));
                 let mut history:Option<AbortTask>=None;
+                let mut reply_previews:Vec<AbortTask>=Vec::new();
                 // Preloads never cancel the open conversation's reads or each other; each kind
                 // keeps at most one in flight, so this list stays tiny.
                 let mut prefetches:Vec<AbortTask>=Vec::new();
@@ -549,6 +550,23 @@ impl Connection {
                                 continue;
                             }
                             if matches!(command,Command::CancelSearch) {drop(search.take());continue;}
+                            if matches!(command,Command::CancelReplyPreviews) {reply_previews.clear();continue;}
+                            if let Command::ReplyPreview { channel, message, request } = command {
+                                reply_previews.retain(|task| !task.0.is_finished());
+                                if reply_previews.len() >= 2 {
+                                    emit(Event::ReplyPreview(client_core::reply_previews::ResultEvent {channel,message,request,result:Err(Failure::ProtocolAt("Preview queue is full; retry"))}))?;
+                                    wake.request_repaint();
+                                    continue;
+                                }
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                reply_previews.push(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(Command::ReplyPreview { channel,message,request }).await;
+                                    let failure=match &event {Event::ReplyPreview(result)=>result.result.as_ref().err().copied().filter(|f|f.ends_session()),_=>None};
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
                             if matches!(command,Command::CancelMentions) {inbox.cancel_read();continue;}
                             if matches!(command,Command::Mentions{..}|Command::InboxAction{..}) {
                                 let write=matches!(&command,Command::InboxAction{action,..} if action.write());
@@ -912,7 +930,8 @@ impl Connection {
                                 })));
                                 continue;
                             }
-                            if let Command::History { channel, request, .. } = &command {
+                            if let Command::History { channel, request, .. } | Command::HistoryAround { channel, request, .. } = &command {
+                                reply_previews.clear();
                                 drop(search.take());
                                 drop(reaction_read.take());
                                 let (channel, request) = (*channel, *request);
@@ -2222,6 +2241,7 @@ mod tests {
 		let ready = || Event::Ready {
 			permissions: model::permissions::Snapshot::default(),
 			user: model::User {
+				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),
 				avatar: None,

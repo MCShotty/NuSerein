@@ -323,12 +323,14 @@ mod tests {
 	}
 	fn test_message() -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(1),
 			channel: Id(1),
 			kind: 0,
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(9),

@@ -81,6 +81,8 @@ impl Role {
 		crate::permissions::Role {
 			id: self.id,
 			name: self.name.clone(),
+			icon: self.icon.clone(),
+			unicode_emoji: self.unicode_emoji.clone(),
 			bits: self.permissions,
 			color: self.colors.primary,
 			secondary_color: self.colors.secondary,

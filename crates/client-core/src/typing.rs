@@ -135,6 +135,7 @@ mod tests {
 	fn state() -> State {
 		State {
 			user: Some(User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),
@@ -177,11 +178,13 @@ mod tests {
 	}
 	fn message(user: u64, channel: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			sticker_items: Vec::new(),
 			id: Id(100),
 			channel: Id(channel),
 			author: User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(user),

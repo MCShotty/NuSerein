@@ -160,6 +160,7 @@ mod tests {
 	use model::server_admin::{Action, Member, Result as Outcome};
 	fn user(id: u64) -> model::User {
 		model::User {
+			username: None,
 			id: Id(id),
 			name: "Synthetic".into(),
 			avatar: None,
@@ -172,6 +173,8 @@ mod tests {
 	}
 	fn role(id: u64, position: i32, bits: u128) -> p::Role {
 		p::Role {
+			icon: None,
+			unicode_emoji: None,
 			id: Id(id),
 			name: "Synthetic role".into(),
 			position,

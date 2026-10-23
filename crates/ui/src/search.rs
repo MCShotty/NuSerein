@@ -1612,6 +1612,7 @@ impl SearchUi {
 			.previews
 			.entry(hit.id)
 			.or_insert_with(|| model::Message {
+				reply_preview: None,
 				poll: None,
 				sticker_items: Vec::new(),
 				flags: 0,
@@ -2686,6 +2687,7 @@ mod tests {
 						id: Id(10),
 						channel: Id(1),
 						author: model::User {
+							username: None,
 							kind: model::AccountKind::Human,
 							webhook: false,
 							id: Id(7),
@@ -2976,6 +2978,7 @@ mod tests {
 			last_message: None,
 		};
 		let user = model::User {
+			username: None,
 			kind: model::AccountKind::Human,
 			webhook: false,
 			id: Id(42),

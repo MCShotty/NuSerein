@@ -106,6 +106,8 @@ pub mod dialog;
 mod join_server;
 mod keybinds;
 mod member_guide;
+mod message_menu;
+pub use message_menu::MessageSpeech;
 mod name_styles;
 mod onboarding;
 mod polls;
@@ -245,6 +247,8 @@ struct SubmittedEdit {
 
 #[derive(Default)]
 pub struct MessagingUi {
+	message_speech: Option<message_menu::MessageSpeech>,
+	message_speech_error: Option<&'static str>,
 	poll_creator: polls::Creator,
 	pub language: i18n::Language,
 	forwarding: forwarding::ForwardDialog,
@@ -334,6 +338,8 @@ pub struct MessagingUi {
 	pub image_cache: model::CachePreferences,
 	/// Clock style for message times.
 	pub time_format: model::TimeFormat,
+	/// Device-local display timezone, independent of language and clock style.
+	pub time_zone: model::TimeZonePreference,
 	/// Saved logins may fall back to plain files when no OS keyring works.
 	pub plaintext_login: bool,
 	/// Latest disk use of the media and shared-artwork caches, once measured.
@@ -1427,6 +1433,7 @@ impl MessagingUi {
 							.add_enabled_ui(
 								self.settings.open
 									|| self.server_settings.is_open()
+									|| state.can_return_from_reply()
 									|| state.trail.can_go_back(),
 								|ui| icons::button(ui, icons::Icon::ArrowLeft, 28.0, "Back"),
 							)
@@ -1872,6 +1879,10 @@ impl MessagingUi {
 									})
 									.flatten();
 								let text_color = if online { colors.text } else { colors.muted };
+								let icon_role =
+									guild.and_then(|guild| state.guild_roles(guild)).and_then(
+										|roles| mentions::member_icon_role(roles, &member.roles),
+									);
 								let mut show_name = |ui: &mut egui::Ui| {
 									ui.allocate_ui_with_layout(
 										egui::vec2(ui.available_width(), 18.0),
@@ -1881,7 +1892,8 @@ impl MessagingUi {
 											let server_tag = member.user.primary_guild.as_deref();
 											let trailing =
 												profiles::server_tag_width(ui, server_tag)
-													+ if server_tag.is_some() { 5.0 } else { 0.0 };
+													+ if server_tag.is_some() { 5.0 } else { 0.0 }
+													+ if icon_role.is_some() { 21.0 } else { 0.0 };
 											crate::name_styles::in_row(
 												response.contains_pointer() || response.has_focus(),
 												|| {
@@ -1906,6 +1918,15 @@ impl MessagingUi {
 													)
 												},
 											);
+											if let Some(role) = icon_role {
+												mentions::show_role_icon(
+													ui,
+													&mut self.avatars,
+													role,
+													16.0,
+													state.demo,
+												);
+											}
 											if let Some(tag) = server_tag {
 												profiles::server_tag(
 													ui,
@@ -3620,10 +3641,10 @@ impl MessagingUi {
                         column(ui, &mut |ui| {
                         let send_button = ui
                             .add_enabled_ui(can_send, |ui| {
-                                icons::button(
+                                icons::composer(
                                     ui,
                                     icons::Icon::Send,
-                                    28.0,
+                                    false,
                                     &crate::i18n::translate_if_key(if editing_here { "lib-ime-updates-text-save-edit" } else if application_command { "lib-ime-updates-text-send-command" } else { "lib-ime-updates-text-send-message" }),
                                 )
                             })
@@ -3837,6 +3858,7 @@ impl MessagingUi {
                             .min_scrolled_height(ui.ctx().viewport_rect().height() * 0.5)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
+                                crate::scroll::claim_wheel_content(ui);
                                 let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width: f32| {
                                     rich_layout.galley_games(
                                         ui,
@@ -4058,6 +4080,7 @@ impl MessagingUi {
 		egui::ScrollArea::horizontal()
 			.id_salt("pending-attachments")
 			.show(ui, |ui| {
+				crate::scroll::claim_wheel_content(ui);
 				ui.horizontal(|ui| {
 					ui.spacing_mut().item_spacing.x = 12.0;
 					for (index, (filename, bytes)) in files.iter().enumerate() {
@@ -4243,16 +4266,33 @@ impl MessagingUi {
 	}
 
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
+		message_menu::set_owner(
+			ui.ctx(),
+			message_menu::Owner {
+				generation: state.generation,
+				channel: state.selected.unwrap_or(Id(0)),
+				message: Id(0),
+			},
+		);
+		self.timeline.menu.sync(ui.ctx(), state);
+		self.timeline.visible_replies.clear();
 		self.avatars.cosmetics = self.cosmetics;
 		name_styles::set_enabled(self.cosmetics.name_styles);
 		let cosmetics_refresh = state.set_profile_cosmetics(self.cosmetics);
-		self.timeline.download.gif_favorites = state
-			.gifs
-			.favorites
-			.iter()
-			.map(|gif| gif.url.clone())
-			.collect();
-		crate::scroll::apply_preferences(ui.ctx(), self.reading_preferences);
+		self.timeline
+			.download
+			.sync_gif_favorites(&state.gifs.favorites);
+		crate::scroll::apply_preferences_in(
+			ui.ctx(),
+			self.reading_preferences,
+			egui::Id::unique((
+				"reading-wheel",
+				state.generation,
+				state.selected,
+				self.settings.open,
+				self.search.open,
+			)),
+		);
 		let diagnostics_chord = self
 			.keybinds
 			.chord(model::KeybindAction::CopyIssueDiagnostics);
@@ -5151,19 +5191,6 @@ impl MessagingUi {
 						self.timeline.extension_actions = self.extensions.message_actions();
 						self.timeline.quick_reactions =
 							Some(self.reaction_picker.quick_reactions());
-						let mut seen = std::collections::BTreeSet::new();
-						let author_lookup: Vec<_> = state
-							.timeline
-							.iter()
-							.rev()
-							.filter(|message| !message.author.webhook)
-							.map(|message| message.author.id)
-							.filter(|id| seen.insert(*id))
-							.take(client_core::member_search::LIMIT)
-							.collect();
-						if let Some(command) = state.request_author_members(&author_lookup) {
-							commands.push(command);
-						}
 						self.timeline.show_with_scroll(
 							ui,
 							state,
@@ -5302,11 +5329,14 @@ impl MessagingUi {
 							ctx.request_repaint();
 						}
 						if let Some(target) = self.timeline.reply_target.take() {
+							crate::scroll::reset_wheel(&ctx);
+							self.timeline.remember_position(state);
 							if let Some(command) = state.open_reply_target(target) {
 								commands.push(command);
 							}
 							ctx.request_repaint();
 						} else if std::mem::take(&mut self.timeline.unread_jump) {
+							crate::scroll::reset_wheel(&ctx);
 							if let Some(command) = state.open_unread() {
 								commands.push(command);
 							}
@@ -5332,6 +5362,10 @@ impl MessagingUi {
 						}
 					});
 			});
+		if let Some(target) = self.timeline.reply_retry.take() {
+			commands.extend(state.retry_reply_preview(target));
+		}
+		commands.extend(state.sync_visible_reply_previews(&self.timeline.visible_replies));
 		if state
 			.archives
 			.as_ref()
@@ -5577,6 +5611,22 @@ impl MessagingUi {
 		if let Some(text) = self.timeline.quick_reaction_used.take() {
 			self.reaction_picker.record(text);
 		}
+		if let Some((message, emoji)) = self.timeline.menu.reaction.take() {
+			self.timeline.reaction = Some((message, Some(emoji)));
+		}
+		if let Some(picker) = self.timeline.menu.picker.take() {
+			self.timeline.reaction_picker = Some(picker);
+		}
+		if let Some(url) = ctx
+			.data_mut(|data| data.remove_temp::<String>(egui::Id::unique("message-menu-open-link")))
+		{
+			self.timeline.opening = Some(url);
+		}
+		if let Some(action) = self.timeline.menu.save.take()
+			&& let Some(command) = state.request_inbox_action(action)
+		{
+			commands.push(command);
+		}
 		if let Some((message, emoji)) = self.timeline.reaction.take() {
 			if let Some(emoji) = emoji {
 				if let Some(command) = state.prepare_reaction(message, emoji) {
@@ -5586,6 +5636,17 @@ impl MessagingUi {
 				state.refresh_reactions(message);
 			}
 		}
+		for command in &commands {
+			if let Command::Reactions(client_core::reactions::Command::Set {
+				emoji,
+				add: true,
+				..
+			}) = command
+			{
+				self.timeline.menu.record(emoji);
+			}
+		}
+		self.sync_message_actions(&ctx, state, &mut commands);
 		self.group_menu
 			.show(&ctx, state, &mut self.avatars, &mut commands);
 		self.group_create.show(&ctx, state, &mut commands);
@@ -5968,7 +6029,7 @@ mod composer_tests {
 			.open_notification(&mut state, direct, Some(target))
 			.unwrap();
 		assert!(
-			matches!(command, Command::History { channel, before: Some(before), .. } if channel == direct && before == Id(target.0 + 1))
+			matches!(command, Command::HistoryAround { channel, target: requested, .. } if channel == direct && requested == target)
 		);
 		assert_eq!(state.selected, Some(direct));
 		assert_eq!(view.guild, None);
@@ -6910,6 +6971,7 @@ mod composer_tests {
 
 	fn edit_state() -> State {
 		let user = model::User {
+			username: None,
 			id: Id(1),
 			name: "Alex".into(),
 			avatar: None,
@@ -6946,6 +7008,7 @@ mod composer_tests {
 			.timeline
 			.insert(
 				model::Message {
+					reply_preview: None,
 					poll: None,
 					sticker_items: vec![],
 					id: Id(20),
@@ -7432,9 +7495,30 @@ mod composer_tests {
 			commands.extend(frame(&mut view, &mut state, vec![]).1);
 			assert_eq!(state.selected, Some(Id(11)), "source: {source}");
 			assert_eq!(view.guild, Some(Id(100)));
-			assert_eq!(state.search_target, target_message);
+			assert!(
+				state.search_target.is_none(),
+				"Remote targets are published only after a validated page succeeds"
+			);
 			assert_eq!(state.drafts, drafts);
-			assert_eq!(commands.iter().filter(|command| matches!(command, Command::History { channel: Id(11), before, .. } if *before == target_message.map(|id| Id(id.0 + 1)))).count(), 1);
+			assert_eq!(
+				commands
+					.iter()
+					.filter(|command| match command {
+						Command::HistoryAround {
+							channel: Id(11),
+							target,
+							..
+						} => Some(*target) == target_message,
+						Command::History {
+							channel: Id(11),
+							before: None,
+							..
+						} => target_message.is_none(),
+						_ => false,
+					})
+					.count(),
+				1
+			);
 			assert!(!commands.iter().any(|command| matches!(
 				command,
 				Command::Send { .. } | Command::Edit { .. } | Command::Delete { .. }
@@ -8359,7 +8443,7 @@ mod composer_tests {
 	}
 
 	#[test]
-	fn reply_controls_are_inert_when_deleted_loading_stale_or_unavailable() {
+	fn reply_controls_are_inert_when_deleted_stale_or_unavailable() {
 		fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
 			match shape {
 				egui::Shape::Text(text) => labels.push((
@@ -8374,7 +8458,7 @@ mod composer_tests {
 				_ => {}
 			}
 		}
-		for blocked in 0..5 {
+		for blocked in [0, 1, 3, 4] {
 			let ctx = egui::Context::default();
 			let mut view = MessagingUi::default();
 			let mut state = edit_state();
@@ -8533,7 +8617,7 @@ mod composer_tests {
 						events,
 						..Default::default()
 					},
-					|ui| commands = view.show(ui, state),
+					|ui| commands.extend(view.show(ui, state)),
 				);
 				// egui reports settled text selection for the native PRIMARY clipboard.
 				// Explicit clipboard writes and browser actions must remain absent.
@@ -8584,6 +8668,7 @@ mod composer_tests {
 					text == "@Alex  Spoiler"
 				} else {
 					text == "Earlier message \u{b7} View original"
+						|| text == "Loading earlier message…"
 				}
 			};
 			let (labels, _) = frame(&mut view, &mut state, vec![]);
@@ -8656,8 +8741,8 @@ mod composer_tests {
 			assert_eq!(state.reply_target(), Some(Id(19)));
 			assert_eq!(state.drafts, draft);
 			assert!(view.draft_changes.is_empty());
-			assert_eq!(state.search_target, Some(Id(19)));
 			if loaded {
+				assert_eq!(state.search_target, Some(Id(19)));
 				assert_eq!(state.request, request);
 				assert!(
 					!commands
@@ -8669,14 +8754,18 @@ mod composer_tests {
 				}
 				assert!(state.search_target.is_none());
 			} else {
+				assert!(
+					state.search_target.is_none(),
+					"A pending remote jump must not change the visible window"
+				);
 				assert_eq!(
 					commands
 						.iter()
 						.filter(|command| matches!(
 							command,
-							Command::History {
+							Command::HistoryAround {
 								channel: Id(10),
-								before: Some(Id(20)),
+								target: Id(19),
 								..
 							}
 						))
@@ -8684,7 +8773,11 @@ mod composer_tests {
 					1
 				);
 				assert!(state.history_pending);
-				assert_eq!(state.freshness, Freshness::Loading);
+				assert_eq!(
+					state.freshness,
+					Freshness::Fresh,
+					"The source window stays usable during a remote jump"
+				);
 				for _ in 0..3 {
 					let (_, commands) = frame(&mut view, &mut state, vec![]);
 					assert!(
@@ -8721,10 +8814,16 @@ mod composer_tests {
 				let mut reload = None;
 				for _ in 0..80 {
 					let (labels, _) = frame(&mut view, &mut state, vec![edit_key(egui::Key::Tab)]);
-					if let Some((_, rect)) =
-						labels.iter().find(|(text, _)| text == "Reload history")
+					if let Some(response) = ctx
+						.memory(|memory| memory.focused())
+						.and_then(|id| ctx.read_response(id))
+						&& labels
+							.iter()
+							.any(|(text, rect)| text == "Reload history" && *rect == response.rect)
 					{
-						reload = Some(rect.center());
+						// Focus tooltips have their own text rectangles outside the icon.
+						// Activate the actual button, not that painted tooltip.
+						reload = Some(response.rect.center());
 						break;
 					}
 				}
@@ -8759,6 +8858,10 @@ mod composer_tests {
 						.count();
 				}
 				assert_eq!(reloads, 1, "Explicit Reload returns to recent history");
+				assert!(state.history_pending);
+				assert_eq!(state.freshness, Freshness::Loading);
+				assert!(!state.history_targeted);
+				assert!(state.history_before.is_none() && state.history_after.is_none());
 			}
 		}
 	}
@@ -8872,7 +8975,7 @@ mod composer_tests {
 				let mut activated = false;
 				for _ in 0..80 {
 					let labels = frame(&mut view, &mut state, vec![edit_key(egui::Key::Tab)]);
-					if labels.iter().any(|(text, _)| text == "Edit message") {
+					if labels.iter().any(|(text, _)| text == "Edit Message") {
 						frame(&mut view, &mut state, vec![edit_key(egui::Key::Enter)]);
 						activated = true;
 						break;
@@ -9054,6 +9157,7 @@ mod composer_tests {
 					.map(|id| {
 						Some(model::MemberSlot::Person(model::Member {
 							user: model::User {
+								username: None,
 								id: Id(id),
 								name: format!("Synthetic {id}"),
 								avatar: None,
@@ -9090,6 +9194,8 @@ mod composer_tests {
 				owner: None,
 				member: None,
 				roles: Some(vec![model::permissions::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(8),
 					bits: 0,
 					name: "Founders".into(),
@@ -9813,6 +9919,7 @@ mod composer_tests {
 	fn profile_uses_open_conversation_not_browsed_sidebar_server() {
 		for guild in [None, Some(Id(10))] {
 			let user = model::User {
+				username: None,
 				id: Id(2),
 				name: "Synthetic".into(),
 				avatar: None,

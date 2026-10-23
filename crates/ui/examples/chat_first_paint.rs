@@ -231,6 +231,8 @@ fn main() {
 		event: Event::Permissions(client_core::permissions::Event::Role {
 			guild: Id(10),
 			role: model::permissions::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: Id(50),
 				name: "Build alerts".into(),
 				color: 0xE91E63,

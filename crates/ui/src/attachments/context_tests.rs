@@ -51,6 +51,14 @@ fn select_media_menu(
 				..Default::default()
 			},
 			|ui| {
+				crate::message_menu::set_owner(
+					ui.ctx(),
+					crate::message_menu::Owner {
+						generation: 0,
+						channel: message.channel,
+						message: message.id,
+					},
+				);
 				if in_viewer {
 					assert_eq!(
 						viewer(
@@ -121,19 +129,17 @@ fn select_media_menu(
 		}
 	}
 	let output = frame(vec![]);
-	let target = output
-		.shapes
-		.iter()
-		.find_map(|shape| match &shape.shape {
-			egui::Shape::Text(text) if text.galley.job.text == label => {
-				Some(text.pos + text.galley.rect.center().to_vec2())
-			}
-			_ => None,
-		})
-		.unwrap_or_else(|| panic!("right-click menu is missing {label}"));
+	let target = output.shapes.iter().find_map(|shape| match &shape.shape {
+		egui::Shape::Text(text) if text.galley.job.text == label => {
+			Some(text.pos + text.galley.rect.center().to_vec2())
+		}
+		_ => None,
+	});
 	output.drop_without_applying_deltas();
+	let target = target.unwrap_or_else(|| panic!("right-click menu is missing {label}"));
+	let mut copied_owner = false;
 	for pressed in [true, false] {
-		frame(vec![
+		let output = frame(vec![
 			egui::Event::PointerMoved(target),
 			egui::Event::PointerButton {
 				pos: target,
@@ -141,8 +147,18 @@ fn select_media_menu(
 				pressed,
 				modifiers: egui::Modifiers::NONE,
 			},
-		])
-		.drop_without_applying_deltas();
+		]);
+		copied_owner |=
+			output.platform_output.commands.iter().any(
+				|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "1"),
+			);
+		output.drop_without_applying_deltas();
+	}
+	if label == "Copy Message ID" {
+		assert!(
+			copied_owner,
+			"media must copy its message ID, not attachment 42"
+		);
 	}
 	assert!(viewing.is_none() && opening.is_none());
 	assert!(
@@ -163,15 +179,37 @@ fn select_media_menu(
 }
 
 #[test]
+fn image_menus_copy_the_owning_message_id_in_the_card_and_viewer() {
+	for viewer in [false, true] {
+		select_media_menu(
+			&attachment(false),
+			viewer,
+			false,
+			DownloadUi::default(),
+			"Copy Message ID",
+			None,
+			false,
+		);
+	}
+}
+
+#[test]
 fn image_video_and_viewer_context_menus_copy_or_save_the_attachment() {
 	for (video, in_viewer) in [(false, false), (true, false), (false, true)] {
 		let attachment = attachment(video);
-		let kind = if video { "video" } else { "image" };
 		for copy in [true, false] {
 			let label = if copy {
-				format!("Copy {kind}")
+				if video {
+					"Copy video".to_owned()
+				} else {
+					"Copy Image".to_owned()
+				}
 			} else {
-				format!("Save {kind} as…")
+				if video {
+					"Save video as…".to_owned()
+				} else {
+					"Save Image".to_owned()
+				}
 			};
 			let download = select_media_menu(
 				&attachment,
@@ -192,11 +230,21 @@ fn image_video_and_viewer_context_menus_copy_or_save_the_attachment() {
 fn media_context_menus_disable_transfers_in_demo_and_while_busy() {
 	for (video, in_viewer) in [(false, false), (true, false), (false, true)] {
 		let attachment = attachment(video);
-		let kind = if video { "video" } else { "image" };
 		let mut previous = attachment.clone();
 		previous.id = Id(99);
 		for mode in 0..5 {
-			for label in [format!("Copy {kind}"), format!("Save {kind} as…")] {
+			for label in [
+				if video {
+					"Copy video".to_owned()
+				} else {
+					"Copy Image".to_owned()
+				},
+				if video {
+					"Save video as…".to_owned()
+				} else {
+					"Save Image".to_owned()
+				},
+			] {
 				let request = (mode == 2).then(|| previous.clone());
 				let copy_request = (mode == 3).then(|| previous.clone());
 				let embed_request = (mode == 4).then(|| (previous.media.clone(), true));
@@ -227,7 +275,7 @@ fn media_context_menus_disable_transfers_in_demo_and_while_busy() {
 fn media_menus_open_from_keyboard() {
 	for video in [false, true] {
 		let attachment = attachment(video);
-		let label = if video { "Copy video" } else { "Copy image" };
+		let label = if video { "Copy video" } else { "Copy Image" };
 		let download = select_media_menu(
 			&attachment,
 			false,

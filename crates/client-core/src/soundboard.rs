@@ -460,6 +460,8 @@ mod tests {
 				id: Id(9),
 				owner: Some(Id(999)),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -485,6 +487,7 @@ mod tests {
 	fn connected(bits: u128) -> State {
 		let mut state = State {
 			user: Some(model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),

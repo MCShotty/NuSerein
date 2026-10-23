@@ -1085,6 +1085,8 @@ mod tests {
 			id: Id(1),
 			owner: Some(Id(9)),
 			roles: Some(vec![p::Role {
+				icon: None,
+				unicode_emoji: None,
 				name: String::new(),
 				color: 0,
 				secondary_color: None,

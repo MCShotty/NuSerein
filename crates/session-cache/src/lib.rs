@@ -125,6 +125,26 @@ impl Timeline {
 	pub fn is_deleted(&self, id: Id) -> bool {
 		self.deleted.contains(&id)
 	}
+	/// A separately fetched range inherits live mutations, without clearing the displayed window.
+	pub fn history_range(&self, ids: &[Id]) -> Result<Self, &'static str> {
+		let mut fresh = Self {
+			deleted: self.deleted.clone(),
+			preserve_deleted_messages: self.preserve_deleted_messages,
+			loading: true,
+			..Self::default()
+		};
+		for id in ids {
+			if let Some(patch) = self.patches.get(id) {
+				fresh.patch(patch.clone())?;
+			}
+			if self.changed.contains(id)
+				&& let Some(message) = self.get(*id)
+			{
+				fresh.insert(message.clone(), true, false)?;
+			}
+		}
+		Ok(fresh)
+	}
 	/// Drop a retained deleted payload while keeping the tombstone.
 	/// History cannot restore the body. A second call is a no-op.
 	pub fn discard_preserved(&mut self, id: Id) -> bool {
@@ -1449,6 +1469,7 @@ mod tests {
 	}
 	fn message(id: u64) -> Message {
 		Message {
+			reply_preview: None,
 			poll: None,
 			flags: 0,
 			sticker_items: vec![],
@@ -1459,6 +1480,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(1),
 			author: model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				avatar: None,

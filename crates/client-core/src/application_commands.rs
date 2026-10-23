@@ -400,6 +400,7 @@ mod tests {
 	use model::{AccountKind, Channel, User};
 	fn bot_state() -> State {
 		let bot = User {
+			username: None,
 			id: Id(3),
 			name: "Synthetic app".into(),
 			kind: AccountKind::Bot,
@@ -806,6 +807,8 @@ mod tests {
 				stickers: None,
 			});
 			let role = |id, bits| p::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: Id(id),
 				bits,
 				name: "Synthetic role".into(),
@@ -1111,6 +1114,8 @@ mod tests {
 					id: Id(10),
 					owner: Some(Id(99)),
 					roles: Some(vec![p::Role {
+						icon: None,
+						unicode_emoji: None,
 						id: Id(10),
 						bits: p::VIEW_CHANNEL | p::USE_APPLICATION_COMMANDS | p::SEND_MESSAGES,
 						name: "Synthetic role".into(),

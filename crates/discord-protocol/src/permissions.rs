@@ -82,6 +82,10 @@ pub(crate) struct Role {
 	permissions: Bits,
 	#[serde(default, deserialize_with = "null_default")]
 	name: String,
+	#[serde(default)]
+	icon: Option<String>,
+	#[serde(default)]
+	unicode_emoji: Option<String>,
 	#[serde(default, deserialize_with = "null_default")]
 	color: u32,
 	#[serde(default)]
@@ -120,6 +124,13 @@ impl Role {
 		}
 		Ok(p::Role {
 			id: self.id,
+			icon: self.icon.filter(|hash| model::valid_avatar_hash(hash)),
+			unicode_emoji: self.unicode_emoji.filter(|emoji| {
+				!emoji.trim().is_empty()
+					&& emoji.len() <= 128
+					&& emoji.chars().count() <= 32
+					&& !emoji.chars().any(char::is_control)
+			}),
 			bits: self.permissions.0,
 			name: self
 				.name
@@ -749,6 +760,32 @@ mod tests {
 			);
 			assert_eq!(known_empty.channels[0].overwrites, Some(Vec::new()));
 		}
+	}
+
+	#[test]
+	fn ordinary_role_events_retain_icons_and_drop_unsafe_cosmetics() {
+		let read = |icon: &str, emoji: &str| {
+			let payload = json!({"guild_id":"1", "role": {
+				"id":"2", "permissions":"1024", "icon":icon, "unicode_emoji":emoji
+			}});
+			super::role(&serde_json::to_vec(&payload).unwrap())
+				.unwrap()
+				.1
+		};
+		let role = read("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "🏅");
+		assert_eq!(
+			role.icon.as_deref(),
+			Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+		);
+		assert_eq!(role.unicode_emoji.as_deref(), Some("🏅"));
+		assert!(role.has_icon());
+		let invalid = read("../bad", "\n");
+		assert!(invalid.icon.is_none() && invalid.unicode_emoji.is_none());
+		assert_eq!(
+			invalid.bits,
+			p::VIEW_CHANNEL,
+			"bad cosmetics cannot discard permissions"
+		);
 	}
 
 	#[test]

@@ -18,6 +18,8 @@ pulldown-cmark = { version = "=0.13.4", default-features = false }
 url.workspace = true
 zeroize.workspace = true
 time = { workspace = true, features = ["local-offset", "formatting"] }
+jiff.workspace = true
+iana-time-zone.workspace = true
 unicode-segmentation = "=1.13.3"
 unicode-bidi = "=0.3.18"
 fluent-templates = { version = "=0.15.1", default-features = false, features = ["macros", "walkdir"] }

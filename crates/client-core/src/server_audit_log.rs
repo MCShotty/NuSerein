@@ -80,6 +80,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),
@@ -109,6 +110,8 @@ mod tests {
 					timeout_until: None,
 				}),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					id: Id(2),
 					name: "@everyone".into(),
 					bits: VIEW_AUDIT_LOG,

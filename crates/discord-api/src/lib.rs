@@ -28,6 +28,7 @@ mod inbox;
 pub mod proxy;
 #[cfg(test)]
 mod proxy_tests;
+mod reporting;
 pub mod rpc;
 mod server_actions;
 mod server_admin;
@@ -856,6 +857,68 @@ impl DiscordApi {
 			.ok_or(Failure::Ambiguous)
 	}
 	/// One bounded 50-message history page, before or after a cursor or at the latest message.
+	async fn history_around(&self, channel: Id, target: Id, request: u64) -> Event {
+		let result = self
+			.request(
+				Method::GET,
+				&format!("/channels/{channel}/messages?limit=50&around={target}"),
+				None,
+			)
+			.await
+			.and_then(|bytes| decode::<Vec<MessageDto>>(&bytes).map_err(|_| Failure::Protocol));
+		match result {
+			Ok(messages) if messages.len() <= 50 => Event::History {
+				channel,
+				request,
+				older: false,
+				messages: messages.into_iter().map(MessageDto::into_model).collect(),
+			},
+			Ok(_) => Event::HistoryFailed {
+				channel,
+				request,
+				failure: Failure::Protocol,
+			},
+			Err(failure) if failure.ends_session() => Event::Failure(failure),
+			Err(failure) => Event::HistoryFailed {
+				channel,
+				request,
+				failure,
+			},
+		}
+	}
+	async fn reply_preview(&self, channel: Id, message: Id, request: u64) -> Event {
+		let result = self
+			.request(
+				Method::GET,
+				&format!("/channels/{channel}/messages?limit=1&around={message}"),
+				None,
+			)
+			.await
+			.and_then(|bytes| {
+				let mut messages =
+					decode::<Vec<MessageDto>>(&bytes).map_err(|_| Failure::Protocol)?;
+				if messages.is_empty() {
+					return Ok(None);
+				}
+				if messages.len() != 1 {
+					return Err(Failure::Protocol);
+				}
+				let dto = messages.pop().ok_or(Failure::Protocol)?;
+				// Normal-user history can return a neighbouring row when the original is gone.
+				if dto.id != message || dto.channel_id != channel {
+					return Ok(None);
+				}
+				model::ReplyPreview::from_message(dto.into_model())
+					.map(|preview| Some(Box::new(preview)))
+					.ok_or(Failure::Protocol)
+			});
+		Event::ReplyPreview(client_core::reply_previews::ResultEvent {
+			channel,
+			message,
+			request,
+			result,
+		})
+	}
 	async fn history(
 		&self,
 		channel: Id,
@@ -938,6 +1001,11 @@ impl DiscordApi {
 	}
 	pub async fn execute(&self, command: Command) -> Event {
 		match command {
+			Command::Report(request) => Event::Report(client_core::reporting::Event {
+				target: request.target,
+				request: request.request,
+				result: self.report(&request).await,
+			}),
 			Command::CancelAutocomplete => Event::Autocomplete(
 				client_core::application_commands::CompletionEvent::Submitted {
 					nonce: String::new(),
@@ -1253,7 +1321,9 @@ impl DiscordApi {
 					result,
 				}
 			}
-			Command::CancelSearch | Command::CancelMentions => Event::Failure(Failure::Protocol),
+			Command::CancelSearch | Command::CancelMentions | Command::CancelReplyPreviews => {
+				Event::Failure(Failure::Protocol)
+			}
 			Command::Gifs { query, request } => Event::Gifs {
 				request,
 				result: self.gifs(query.as_deref()).await,
@@ -1262,6 +1332,10 @@ impl DiscordApi {
 			Command::GifFavorites { request, change } => Event::GifFavorites {
 				request,
 				result: self.gif_favorites(change).await,
+			},
+			Command::ReactionPreferences { request } => Event::ReactionPreferences {
+				request,
+				result: self.reaction_preferences().await,
 			},
 			Command::MarkRead {
 				channel,
@@ -1641,6 +1715,16 @@ impl DiscordApi {
 				after,
 				request,
 			} => self.history(channel, before, after, request).await,
+			Command::HistoryAround {
+				channel,
+				target,
+				request,
+			} => self.history_around(channel, target, request).await,
+			Command::ReplyPreview {
+				channel,
+				message,
+				request,
+			} => self.reply_preview(channel, message, request).await,
 			// The same request a click sends, but it gives way: without spare capacity or during
 			// a cooldown it fails with Capacity at once, and a click that adopted it sends its own.
 			Command::Prefetch(command) => {
@@ -3355,6 +3439,39 @@ mod tests {
             server.await.unwrap();
         }).await.unwrap();
 	}
+	#[tokio::test]
+	async fn reply_preview_reads_exact_rows_and_around_history_preserves_context() {
+		tokio::time::timeout(Duration::from_secs(10),async {
+			let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api=DiscordApi::new(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_REPLY_PREVIEW_TOKEN".into()).unwrap())).unwrap();
+			api.base=format!("http://{}",listener.local_addr().unwrap());
+			let server=tokio::spawn(async move {
+				for (route,body) in [
+					("GET /channels/1/messages?limit=1&around=2",r#"[{"id":"2","channel_id":"1","author":{"id":"4","username":"Original"},"content":"Original body"}]"#),
+					("GET /channels/1/messages?limit=1&around=2",r#"[{"id":"3","channel_id":"1","author":{"id":"4","username":"Neighbour"}}]"#),
+					("GET /channels/1/messages?limit=1&around=2",r#"[{"id":"2","channel_id":"9","author":{"id":"4","username":"Other channel"}}]"#),
+					("GET /channels/1/messages?limit=1&around=2","[]"),
+					("GET /channels/1/messages?limit=50&around=2",r#"[{"id":"1","channel_id":"1","author":{"id":"4","username":"Context"}},{"id":"2","channel_id":"1","author":{"id":"4","username":"Original"}},{"id":"3","channel_id":"1","author":{"id":"4","username":"Context"}}]"#),
+				] {
+					let (mut stream,_)=listener.accept().await.unwrap();let mut request=Vec::new();
+					while !request.ends_with(b"\r\n\r\n") { assert!(request.len()<4096);request.push(stream.read_u8().await.unwrap()); }
+					assert!(std::str::from_utf8(&request).unwrap().starts_with(&format!("{route} HTTP/1.1\r\n")));
+					stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+				}
+			});
+			let read=|request|Command::ReplyPreview {channel:Id(1),message:Id(2),request};
+			let Event::ReplyPreview(result)=api.execute(read(1)).await else {panic!("preview result")};
+			assert_eq!(result.result.unwrap().unwrap().message().content,"Original body");
+			for request in 2..=4 {
+				let Event::ReplyPreview(result)=api.execute(read(request)).await else {panic!("preview result")};
+				assert!(result.result.unwrap().is_none(),"never render a neighbour or other channel");
+			}
+			let Event::History {messages,older:false,request:5,..}=api.execute(Command::HistoryAround {channel:Id(1),target:Id(2),request:5}).await else {panic!("around history")};
+			assert_eq!(messages.iter().map(|m|m.id).collect::<Vec<_>>(),vec![Id(1),Id(2),Id(3)]);
+			server.await.unwrap();
+		}).await.unwrap();
+	}
+
 	#[tokio::test]
 	async fn reaction_routes_encode_one_component_and_read_back_scoped_counts() {
 		{

@@ -1836,6 +1836,9 @@ async fn run_recoverable(
 									// Status, appearance and server folders live here. Channel and guild
 									// mutes live on user guild settings, so this event must not clear them.
 									"USER_SETTINGS_PROTO_UPDATE" => {
+										if discord_protocol::settings_update::reactions_changed(packet.d.get().as_bytes()).unwrap_or(true) {
+											emit(Event::ReactionPreferencesChanged)?;
+										}
 										if let Some(touched) = discord_protocol::settings_update::decode(packet.d.get().as_bytes()).unwrap_or(Some(discord_protocol::settings_update::Touched { status: true, folders: true }))
 											&& (touched.status || touched.folders)
 										{

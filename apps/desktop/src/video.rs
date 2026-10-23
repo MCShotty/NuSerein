@@ -1928,6 +1928,7 @@ mod render_tests {
 			.request_device(&w::DeviceDescriptor::default())
 			.await
 			.unwrap();
+		check_artwork_mipmaps(&device, &queue).await;
 		let sdr = MediaOutput::sdr(w::TextureFormat::Rgba8Unorm);
 		let frame = Arc::new(
 			Frame::new(
@@ -2081,6 +2082,107 @@ mod render_tests {
 			.unwrap();
 		let frame = Arc::new(Frame::new(Picture::sdr(2, 2), vec![128; 16]).unwrap());
 		assert_eq!(render(&next_device, &next_queue, frame, sdr, 2, 2)[0], 128);
+	}
+
+	async fn check_artwork_mipmaps(device: &w::Device, queue: &w::Queue) {
+		use eframe::egui::{Color32, ColorImage, TextureFilter, TextureId, TextureOptions};
+		let mut renderer = eframe::egui_wgpu::Renderer::new(
+			device,
+			w::TextureFormat::Rgba8Unorm,
+			Default::default(),
+		);
+		let mut image = ColorImage::filled([64, 64], Color32::BLACK);
+		for y in 0..64 {
+			for x in 0..64 {
+				if (x + y) % 2 == 0 {
+					image.pixels[y * 64 + x] = Color32::WHITE;
+				}
+			}
+		}
+		let id = TextureId::Managed(9001);
+		renderer.update_texture(
+			device,
+			queue,
+			id,
+			&eframe::egui::epaint::ImageDelta::full(image, TextureOptions::LINEAR),
+		);
+		assert_eq!(
+			renderer
+				.texture(&id)
+				.unwrap()
+				.texture
+				.as_ref()
+				.unwrap()
+				.mip_level_count(),
+			1
+		);
+		let options = TextureOptions {
+			mipmap_mode: Some(TextureFilter::Linear),
+			..TextureOptions::LINEAR
+		};
+		renderer.update_texture(
+			device,
+			queue,
+			id,
+			&eframe::egui::epaint::ImageDelta::partial(
+				[0, 0],
+				ColorImage::filled([64, 32], Color32::WHITE),
+				options,
+			),
+		);
+		let texture = renderer.texture(&id).unwrap().texture.as_ref().unwrap();
+		assert_eq!(texture.mip_level_count(), 7);
+		let buffer = device.create_buffer(&w::BufferDescriptor {
+			label: Some("offline icon mip readback"),
+			size: 256,
+			usage: w::BufferUsages::COPY_DST | w::BufferUsages::MAP_READ,
+			mapped_at_creation: false,
+		});
+		let mut encoder = device.create_command_encoder(&Default::default());
+		encoder.copy_texture_to_buffer(
+			w::TexelCopyTextureInfo {
+				texture,
+				mip_level: 6,
+				origin: w::Origin3d::ZERO,
+				aspect: w::TextureAspect::All,
+			},
+			w::TexelCopyBufferInfo {
+				buffer: &buffer,
+				layout: w::TexelCopyBufferLayout {
+					offset: 0,
+					bytes_per_row: Some(256),
+					rows_per_image: Some(1),
+				},
+			},
+			w::Extent3d {
+				width: 1,
+				height: 1,
+				depth_or_array_layers: 1,
+			},
+		);
+		queue.submit([encoder.finish()]);
+		let (send, receive) = std::sync::mpsc::sync_channel(1);
+		buffer.slice(..).map_async(w::MapMode::Read, move |result| {
+			let _ = send.send(result);
+		});
+		device.poll(w::PollType::wait_indefinitely()).unwrap();
+		receive
+			.recv_timeout(std::time::Duration::from_secs(10))
+			.unwrap()
+			.unwrap();
+		let data = buffer.slice(..).get_mapped_range().unwrap();
+		assert!(
+			(190..=193).contains(&data[0])
+				&& data[0] == data[1]
+				&& data[1] == data[2]
+				&& data[3] == 255,
+			"the final mip must average both the updated white half and the unchanged checkerboard half: {:?}",
+			&data[..4]
+		);
+		drop(data);
+		buffer.unmap();
+		renderer.free_texture(&id);
+		assert!(renderer.texture(&id).is_none());
 	}
 }
 

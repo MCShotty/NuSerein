@@ -3,6 +3,52 @@ use client_core::{Envelope, Event, State};
 use model::*;
 mod community;
 pub use community::community_state;
+
+/// Entirely offline report adapter. It never reaches Discord's reporting service.
+pub fn report_demo(request: client_core::reporting::Request) -> client_core::Event {
+	use model::reporting::{Button, Menu, Node};
+	let result = if request.submission.is_some() {
+		client_core::reporting::Outcome::Sent(Id(12345))
+	} else {
+		client_core::reporting::Outcome::Menu(Box::new(Menu {
+			version: "1.0".into(),
+			variant: "synthetic".into(),
+			language: "en".into(),
+			root: 1,
+			nodes: [
+				(
+					1,
+					Node {
+						header: "What are you reporting?".into(),
+						detail: "Synthetic demonstration. Nothing will be sent to Discord.".into(),
+						children: vec![("Spam".into(), 2), ("Harassment".into(), 2)],
+						elements: vec![],
+						button: Button::None,
+						required: false,
+					},
+				),
+				(
+					2,
+					Node {
+						header: "Review this synthetic report".into(),
+						detail: "Confirm only to exercise the offline adapter.".into(),
+						children: vec![],
+						elements: vec![],
+						button: Button::Submit,
+						required: false,
+					},
+				),
+			]
+			.into_iter()
+			.collect(),
+		}))
+	};
+	client_core::Event::Report(client_core::reporting::Event {
+		target: request.target,
+		request: request.request,
+		result: Ok(result),
+	})
+}
 mod message_links;
 pub use message_links::{load_message_link_page, message_links_demo_state};
 /// Synthetic Tenor-shaped results. Previews under `/synthetic/` are painted locally; no request.
@@ -95,6 +141,7 @@ pub fn message(id: u64, channel: Id) -> Message {
 		content = format!("Hey <@2> — see <#21>. {content}");
 	}
 	Message {
+		reply_preview: None,
 		poll: None,
 		reactions: Some(if id == 500 {
 			vec![Reaction {
@@ -112,6 +159,7 @@ pub fn message(id: u64, channel: Id) -> Message {
 		id: Id(id),
 		channel,
 		author: User {
+			username: None,
 			avatar: None,
 			webhook: false,
 			kind: Default::default(),
@@ -217,6 +265,7 @@ pub fn message(id: u64, channel: Id) -> Message {
 		suppress_notifications: false,
 		mentions: if id == 500 {
 			vec![User {
+				username: None,
 				id: Id(2),
 				name: "Robin (synthetic)".into(),
 				avatar: None,
@@ -318,6 +367,7 @@ pub fn demo_state() -> State {
 		event: Event::Ready {
 			permissions: model::permissions::Snapshot::default(),
 			user: User {
+				username: None,
 				avatar: None,
 				webhook: false,
 				kind: Default::default(),
@@ -417,6 +467,7 @@ pub fn demo_state() -> State {
 					name: "Message request (synthetic)".into(),
 					kind: 1,
 					recipients: vec![User {
+						username: None,
 						id: Id(8004),
 						name: "Rowan (synthetic)".into(),
 						avatar: None,
@@ -440,6 +491,7 @@ pub fn demo_state() -> State {
 					name: "Spam request (synthetic)".into(),
 					kind: 1,
 					recipients: vec![User {
+						username: None,
 						id: Id(8005),
 						name: "Spam (synthetic)".into(),
 						avatar: None,
@@ -465,6 +517,7 @@ pub fn demo_state() -> State {
 					recipients: vec![
 						message(1, Id(29)).author,
 						User {
+							username: None,
 							id: Id(3),
 							name: "Casey (synthetic)".into(),
 							avatar: None,
@@ -652,6 +705,7 @@ pub fn demo_state() -> State {
 		event: Event::UserAction(client_core::user_actions::Event::Requests(Some(vec![
 			(
 				User {
+					username: None,
 					id: Id(8001),
 					name: "Avery".into(),
 					avatar: None,
@@ -666,6 +720,7 @@ pub fn demo_state() -> State {
 			),
 			(
 				User {
+					username: None,
 					id: Id(8003),
 					name: "Rowan".into(),
 					avatar: None,
@@ -704,6 +759,7 @@ pub fn demo_state() -> State {
 			.map(|(i, name)| {
 				(
 					User {
+						username: None,
 						id: Id(1001 + i as u64),
 						name: name.into(),
 						avatar: None,
@@ -795,6 +851,7 @@ pub fn voice_demo_state() -> State {
 		member: Some(Member {
 			roles: vec![],
 			user: User {
+				username: None,
 				id: Id(id),
 				name: name.into(),
 				avatar: None,
@@ -957,12 +1014,150 @@ pub fn load_page(state: &mut State, before: Option<Id>) {
 pub fn load_page_with_cursors(state: &mut State, before: Option<Id>, after: Option<Id>) {
 	assert!(before.is_none() || after.is_none());
 	let channel = state.selected.unwrap();
-	let latest = state
+	let command = client_core::Command::History {
+		channel,
+		before,
+		after,
+		request: state.request,
+	};
+	if let Some(event) = offline_history_event(state, &command, false) {
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+	}
+}
+
+/// Resolve only bounded synthetic history/reply commands. Responses retain the command's scope,
+/// even if navigation changed before an offline adapter services it.
+pub fn offline_history_event(
+	state: &State,
+	command: &client_core::Command,
+	message_links: bool,
+) -> Option<Event> {
+	use client_core::Command;
+	match command {
+		Command::History {
+			channel,
+			before,
+			after,
+			request,
+		} => {
+			if before.is_some() && after.is_some() {
+				return Some(Event::HistoryFailed {
+					channel: *channel,
+					request: *request,
+					failure: client_core::auth::Failure::Protocol,
+				});
+			}
+			let messages = if message_links {
+				message_links::all_records(*channel)
+					.into_iter()
+					.filter(|message| {
+						before.is_none_or(|before| message.id < before)
+							&& after.is_none_or(|after| message.id > after)
+					})
+					.take(50)
+					.collect()
+			} else {
+				numeric_page(state, *channel, *before, *after)
+			};
+			Some(Event::History {
+				channel: *channel,
+				request: *request,
+				older: before.is_some(),
+				messages,
+			})
+		}
+		Command::HistoryAround {
+			channel,
+			target,
+			request,
+		} => {
+			let known = (state.selected == Some(*channel))
+				.then(|| state.reply_original(*target))
+				.flatten()
+				.filter(|message| message.channel == *channel)
+				.cloned();
+			let mut messages = if message_links {
+				message_links::all_records(*channel)
+			} else {
+				let latest = synthetic_latest(state, *channel);
+				if target.0 == 0 || target.0 > latest {
+					Vec::new()
+				} else {
+					let end = target
+						.0
+						.saturating_sub(25)
+						.max(1)
+						.saturating_add(50)
+						.min(latest.saturating_add(1));
+					let start = end.saturating_sub(50).max(1);
+					(start..end).map(|id| message(id, *channel)).collect()
+				}
+			};
+			if let Some(known) = known {
+				if let Some(row) = messages.iter_mut().find(|message| message.id == *target) {
+					*row = known;
+				} else {
+					messages.push(known);
+				}
+			}
+			messages.sort_by_key(|message| message.id);
+			messages.truncate(50);
+			Some(Event::History {
+				channel: *channel,
+				request: *request,
+				older: false,
+				messages,
+			})
+		}
+		Command::ReplyPreview {
+			channel,
+			message: target,
+			request,
+		} => {
+			let known = (state.selected == Some(*channel))
+				.then(|| state.reply_original(*target))
+				.flatten()
+				.filter(|message| message.channel == *channel)
+				.cloned();
+			let original = known.or_else(|| {
+				if message_links {
+					message_links::all_records(*channel)
+						.into_iter()
+						.find(|message| message.id == *target)
+				} else {
+					(target.0 != 0 && target.0 <= synthetic_latest(state, *channel))
+						.then(|| message(target.0, *channel))
+				}
+			});
+			let preview = original
+				.and_then(model::ReplyPreview::from_message)
+				.map(Box::new);
+			Some(Event::ReplyPreview(
+				client_core::reply_previews::ResultEvent {
+					channel: *channel,
+					message: *target,
+					request: *request,
+					result: Ok(preview),
+				},
+			))
+		}
+		_ => None,
+	}
+}
+
+fn synthetic_latest(state: &State, channel: Id) -> u64 {
+	state
 		.channels
 		.iter()
 		.find(|c| c.id == channel)
 		.and_then(|c| c.last_message)
-		.map_or(500, |id| id.0.max(500));
+		.map_or(500, |id| id.0.max(500))
+}
+fn numeric_page(state: &State, channel: Id, before: Option<Id>, after: Option<Id>) -> Vec<Message> {
+	let latest = synthetic_latest(state, channel);
 	let (start, end) = if let Some(after) = after {
 		let start = after.0.saturating_add(1);
 		(
@@ -973,15 +1168,7 @@ pub fn load_page_with_cursors(state: &mut State, before: Option<Id>, after: Opti
 		let end = before.map_or_else(|| latest.saturating_add(1), |id| id.0);
 		(end.saturating_sub(50).max(1), end)
 	};
-	state.apply(Envelope {
-		generation: state.generation,
-		event: Event::History {
-			channel,
-			request: state.request,
-			older: before.is_some(),
-			messages: (start..end).map(|id| message(id, channel)).collect(),
-		},
-	});
+	(start..end).map(|id| message(id, channel)).collect()
 }
 /// A confirmed empty guild channel, using the ordinary history response path.
 pub fn empty_channel_demo_state(long_name: bool) -> State {
@@ -1065,6 +1252,8 @@ pub fn seed_access_marks(state: &mut State) {
 	if let Some(guild) = snapshot.guilds.iter_mut().find(|guild| guild.id == GUILD) {
 		if let Some(roles) = guild.roles.as_mut() {
 			roles.push(Role {
+				icon: None,
+				unicode_emoji: None,
 				id: STAFF,
 				bits: 0,
 				name: "Contributors".into(),
@@ -1170,6 +1359,8 @@ pub fn chat_demo_state() -> State {
 		event: Event::Permissions(client_core::permissions::Event::Role {
 			guild: Id(10),
 			role: model::permissions::Role {
+				icon: None,
+				unicode_emoji: None,
 				id: Id(101),
 				name: "Synthetic colored role".into(),
 				bits: 0,
@@ -1203,6 +1394,7 @@ pub fn chat_demo_state() -> State {
 		m.author_roles = vec![Id(101)];
 		if i == 6 {
 			m.mentions = vec![User {
+				username: None,
 				id: Id(2),
 				name: "𝖘𝖓𝖎𝖎𝖝. (synthetic)".into(),
 				avatar: None,
@@ -1323,6 +1515,8 @@ pub fn permission_snapshot(state: &State) -> model::permissions::Snapshot {
 				id: guild.id,
 				owner: Some(Id(u64::MAX)),
 				roles: Some(vec![p::Role {
+					icon: None,
+					unicode_emoji: None,
 					name: String::new(),
 					color: 0,
 					secondary_color: None,
@@ -1387,6 +1581,7 @@ pub fn system_demo_state() -> State {
 		m.attachments.clear();
 		m.reactions = Some(vec![]);
 		m.mentions = vec![User {
+			username: None,
 			id: Id(42),
 			name: "Casey (synthetic)".into(),
 			avatar: None,
@@ -1464,6 +1659,7 @@ pub fn friends_demo_state() -> State {
 		event: Event::UserAction(client_core::user_actions::Event::Restrictions(Some(vec![
 			(
 				User {
+					username: None,
 					id: Id(8101),
 					name: "Blocked Example".into(),
 					avatar: None,
@@ -1478,6 +1674,7 @@ pub fn friends_demo_state() -> State {
 			),
 			(
 				User {
+					username: None,
 					id: Id(8102),
 					name: "Ignored Example".into(),
 					avatar: None,
@@ -1497,6 +1694,7 @@ pub fn friends_demo_state() -> State {
 		event: Event::UserAction(client_core::user_actions::Event::Requests(Some(vec![
 			(
 				model::User {
+					username: None,
 					id: Id(8001),
 					name: "Avery".into(),
 					avatar: None,
@@ -1511,6 +1709,7 @@ pub fn friends_demo_state() -> State {
 			),
 			(
 				model::User {
+					username: None,
 					id: Id(8002),
 					name: "Morgan".into(),
 					avatar: None,
@@ -1672,6 +1871,189 @@ pub fn reorder_video_fixture(input: &[u8], video_first: Option<bool>) -> Vec<u8>
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn offline_reply_adapter_loads_preview_then_around_history_without_network() {
+		use client_core::Command;
+		let mut state = demo_state();
+		load_page(&mut state, None);
+		let mut source = message(501, Id(20));
+		source.kind = 19;
+		source.reply_to = Some(Id(400));
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Message(source),
+		});
+		let command = state
+			.sync_visible_reply_previews(&[Id(400)])
+			.into_iter()
+			.find(|command| matches!(command, Command::ReplyPreview { .. }))
+			.unwrap();
+		let event = offline_history_event(&state, &command, false).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert!(state.reply_original(Id(400)).is_some());
+		assert!(
+			state.timeline.get(Id(400)).is_none(),
+			"preview is not an actionable timeline row"
+		);
+		let command = state.open_reply_target(Id(400)).unwrap();
+		assert!(matches!(
+			command,
+			Command::HistoryAround {
+				target: Id(400),
+				..
+			}
+		));
+		assert!(
+			state.timeline.get(Id(501)).is_some(),
+			"keep current window while loading"
+		);
+		let event = offline_history_event(&state, &command, false).unwrap();
+		assert!(
+			matches!(&event,Event::History {messages,older:false,..} if messages.len()==50 && messages.iter().any(|message|message.id==Id(400)))
+		);
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert_eq!(state.search_target, Some(Id(400)));
+		assert!(state.timeline.get(Id(400)).is_some());
+		assert!(offline_history_event(&state, &Command::CancelReplyPreviews, false).is_none());
+	}
+
+	#[test]
+	fn offline_around_adapter_uses_known_large_embedded_originals() {
+		let mut state = demo_state();
+		load_page(&mut state, None);
+		let target = Id(1_510_000_000_000_000_000);
+		let mut original = message(target.0, Id(20));
+		original.content = "Exact synthetic embedded original".into();
+		original.embeds.clear();
+		original.attachments.clear();
+		let mut source = message(target.0 + 1, Id(20));
+		source.kind = 19;
+		source.reply_to = Some(target);
+		source.reply_preview = Some(Box::new(ReplyPreview::from_message(original).unwrap()));
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Message(source),
+		});
+		let command = state.open_reply_target(target).unwrap();
+		let event = offline_history_event(&state, &command, false).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert_eq!(
+			state.timeline.get(target).unwrap().content,
+			"Exact synthetic embedded original"
+		);
+		assert!(state.timeline.len() <= 50);
+	}
+
+	#[test]
+	fn queued_offline_reads_keep_channel_request_and_preview_scope() {
+		use client_core::Command;
+		let mut state = demo_state();
+		load_page(&mut state, None);
+		let old = state.history(Some(Id(451)));
+		let Command::History {
+			channel: old_channel,
+			request: old_request,
+			..
+		} = &old
+		else {
+			panic!()
+		};
+		let current = state.select(Id(21)).unwrap();
+		let event = offline_history_event(&state, &old, false).unwrap();
+		assert!(
+			matches!(&event,Event::History {channel,request,..} if channel==old_channel && request==old_request)
+		);
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert_eq!(state.selected, Some(Id(21)));
+		assert!(state.history_pending && state.timeline.is_empty());
+		let event = offline_history_event(&state, &current, false).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert!(
+			!state.history_pending
+				&& state
+					.timeline
+					.iter()
+					.all(|message| message.channel == Id(21))
+		);
+		let preview = Command::ReplyPreview {
+			channel: Id(20),
+			message: Id(400),
+			request: 1234,
+		};
+		let event = offline_history_event(&state, &preview, false).unwrap();
+		assert!(
+			matches!(&event,Event::ReplyPreview(result) if result.channel==Id(20) && result.request==1234)
+		);
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert!(state.reply_original(Id(400)).is_none());
+	}
+
+	#[test]
+	fn offline_history_supports_both_cursor_directions_and_bounded_around_edges() {
+		use client_core::Command;
+		let state = demo_state();
+		for (before, after, first, last) in [
+			(Some(Id(101)), None, 51, 100),
+			(None, Some(Id(100)), 101, 150),
+		] {
+			let command = Command::History {
+				channel: Id(20),
+				before,
+				after,
+				request: 99,
+			};
+			let Some(Event::History {
+				messages,
+				request: 99,
+				older,
+				..
+			}) = offline_history_event(&state, &command, false)
+			else {
+				panic!()
+			};
+			assert_eq!(older, before.is_some());
+			assert_eq!(messages.len(), 50);
+			assert_eq!(messages.first().unwrap().id, Id(first));
+			assert_eq!(messages.last().unwrap().id, Id(last));
+		}
+		for target in [Id(1), Id(500), Id(501), Id(u64::MAX)] {
+			let Some(Event::History { messages, .. }) = offline_history_event(
+				&state,
+				&Command::HistoryAround {
+					channel: Id(20),
+					target,
+					request: 100,
+				},
+				false,
+			) else {
+				panic!()
+			};
+			assert!(messages.len() <= 50);
+			assert_eq!(
+				messages.iter().any(|message| message.id == target),
+				target.0 <= 500
+			);
+		}
+	}
+
 	#[test]
 	fn existing_dm_calls_survive_ringing_hangup_and_resume_but_not_deletion_or_logout() {
 		use client_core::voice::{Command as V, Event as E, MAX_DM_CALLS};
@@ -2263,14 +2645,19 @@ mod tests {
 		);
 		state.apply_search(Id(20), newest, Ok(Outcome::Pins(page())));
 		assert!(state.open_search_hit(Id(478)).is_none());
+		let command = state.open_search_hit(Id(480)).unwrap();
 		assert!(matches!(
-			state.open_search_hit(Id(480)),
-			Some(Command::History {
-				before: Some(Id(481)),
+			command,
+			Command::HistoryAround {
+				target: Id(480),
 				..
-			})
+			}
 		));
-		load_page(&mut state, Some(Id(481)));
+		let event = offline_history_event(&state, &command, false).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
 		assert!(state.timeline.get(Id(480)).is_some());
 		let command = state.request_pins().unwrap();
 		state.command_rejected(command);
@@ -2442,18 +2829,27 @@ mod tests {
 			message(499, Id(20)).content
 		);
 		assert!(state.open_search_hit(Id(498)).is_none());
+		let command = state.open_search_hit(Id(499)).unwrap();
 		assert!(matches!(
-			state.open_search_hit(Id(499)),
-			Some(Command::History {
+			command,
+			Command::HistoryAround {
 				channel: Id(20),
-				before: Some(Id(500)),
+				target: Id(499),
 				..
-			})
+			}
 		));
-		assert!(state.timeline.is_empty());
-		assert_eq!(state.search_target, Some(Id(499)));
-		load_page(&mut state, Some(Id(500)));
-		assert_eq!(state.timeline.iter().last().unwrap().id, Id(499));
+		assert!(
+			state.timeline.get(Id(499)).is_some(),
+			"retain the reading window during revalidation"
+		);
+		assert!(state.search_target.is_none());
+		let event = offline_history_event(&state, &command, false).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert!(state.timeline.get(Id(499)).is_some());
+		assert_eq!(state.timeline.iter().last().unwrap().id, Id(500));
 		assert_eq!(
 			state.timeline.get(Id(499)).unwrap().content,
 			message(499, Id(20)).content

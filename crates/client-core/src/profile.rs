@@ -718,6 +718,7 @@ mod tests {
 	fn own_data(name: &str) -> Box<UserProfile> {
 		Box::new(UserProfile {
 			user: model::User {
+				username: None,
 				primary_guild: None,
 				cosmetics: None,
 				id: Id(1),
@@ -1413,6 +1414,7 @@ mod tests {
 			fn profile(user: Id) -> Box<UserProfile> {
 				Box::new(UserProfile {
 					user: model::User {
+						username: None,
 						primary_guild: None,
 						cosmetics: None,
 						id: user,
@@ -1602,6 +1604,7 @@ mod tests {
 			let profile = |user| {
 				Box::new(UserProfile {
 					user: model::User {
+						username: None,
 						primary_guild: None,
 						cosmetics: None,
 						id: user,
@@ -1671,6 +1674,8 @@ mod tests {
 							id: Id(9),
 							owner: None,
 							roles: Some(vec![model::permissions::Role {
+								icon: None,
+								unicode_emoji: None,
 								id: Id(30),
 								bits: 0,
 								name: "old".into(),
@@ -1709,6 +1714,8 @@ mod tests {
 				event: Event::Permissions(crate::permissions::Event::Role {
 					guild: Id(9),
 					role: model::permissions::Role {
+						icon: None,
+						unicode_emoji: None,
 						id: Id(30),
 						bits: 0,
 						name: "new".into(),
