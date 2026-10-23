@@ -261,24 +261,26 @@ mod tests {
 	fn removing_device_favorite_does_not_change_account_favorite_or_send_a_request() {
 		for account_favorite in [false, true] {
 			let mut state = test_support::demo_state();
-			state.apply_notification_preferences(client_core::notifications::Event::Settings {
-				entries: vec![client_core::notifications::Setting {
-					guild: Some(Id(10)),
-					flags: Some(0),
-					overrides_known: true,
-					channel_flags: vec![(
-						Id(20),
-						Some(if account_favorite {
-							model::channel_visibility::FAVORITED
-						} else {
-							0
-						}),
-						Some(false),
-					)],
-					..Default::default()
-				}],
-				replace: false,
-			});
+			state
+				.apply_notification_preferences(client_core::notifications::Event::Settings {
+					entries: vec![client_core::notifications::Setting {
+						guild: Some(Id(10)),
+						flags: Some(0),
+						overrides_known: true,
+						channel_flags: vec![(
+							Id(20),
+							Some(if account_favorite {
+								model::channel_visibility::FAVORITED
+							} else {
+								0
+							}),
+							Some(false),
+						)],
+						..Default::default()
+					}],
+					replace: false,
+				})
+				.unwrap();
 			let mut ui = MessagingUi {
 				channel_preferences: ChannelPreferences {
 					favorites: vec![Id(20)],

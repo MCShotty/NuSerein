@@ -3017,17 +3017,19 @@ mod tests {
 	fn active_voice_channel_stays_visible_in_a_collapsed_category() {
 		let mut state = test_support::demo_state();
 		state.select(Id(20));
-		state.apply_notification_preferences(client_core::notifications::Event::Settings {
-			entries: vec![client_core::notifications::Setting {
-				guild: Some(Id(10)),
-				flags: Some(0),
-				overrides_known: true,
-				channels: vec![(Id(24), Some(true), Some(3))],
-				hide_muted_channels: Some(true),
-				..Default::default()
-			}],
-			replace: false,
-		});
+		state
+			.apply_notification_preferences(client_core::notifications::Event::Settings {
+				entries: vec![client_core::notifications::Setting {
+					guild: Some(Id(10)),
+					flags: Some(0),
+					overrides_known: true,
+					channels: vec![(Id(24), Some(true), Some(3))],
+					hide_muted_channels: Some(true),
+					..Default::default()
+				}],
+				replace: false,
+			})
+			.unwrap();
 		let visible = |state: &State| {
 			rows(
 				state,
