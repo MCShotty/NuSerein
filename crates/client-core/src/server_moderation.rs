@@ -760,6 +760,103 @@ mod tests {
 		);
 	}
 	#[test]
+	fn completed_or_reconciled_batches_ignore_late_duplicate_completion() {
+		let mut state = state(p::BAN_MEMBERS | p::MANAGE_GUILD);
+		let submit = m::Action::BulkBan {
+			users: vec![Id(7)],
+			delete_seconds: 0,
+			reason: String::new(),
+		};
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::Moderation(submit))
+			.unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Bulk(
+					m::BulkReport::pending(&[Id(7)]),
+				))),
+			})
+			.unwrap();
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(
+				Id(2),
+				Action::Moderation(m::Action::BulkRefresh { users: vec![Id(7)] }),
+			)
+			.unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Bulk(m::BulkReport {
+					users: vec![(Id(7), m::BanStatus::NotBanned)],
+					accepted: true,
+				}))),
+			})
+			.unwrap();
+		assert!(!state.server_admin.bulk_awaiting_completion);
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Banned)],
+				accepted: true,
+			},
+		);
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::NotBanned
+		);
+		state.dismiss_bulk_moderation();
+		assert!(state.server_admin.bulk_report.is_none());
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Banned)],
+				accepted: true,
+			},
+		);
+		assert!(state.server_admin.bulk_report.is_none());
+	}
+	#[test]
+	fn timed_out_active_batch_can_finish_once_before_it_is_retired() {
+		let mut state = state(p::BAN_MEMBERS | p::MANAGE_GUILD);
+		state.server_admin.bulk_report = Some(m::BulkReport::pending(&[Id(7)]));
+		state.server_admin.bulk_awaiting_completion = true;
+		state.server_admin.bulk_started =
+			Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
+		state.expire_bulk_moderation();
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::Unknown
+		);
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Banned)],
+				accepted: true,
+			},
+		);
+		assert!(!state.server_admin.bulk_awaiting_completion);
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Failed)],
+				accepted: true,
+			},
+		);
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::Banned
+		);
+	}
+	#[test]
 	fn member_review_is_scoped_and_never_installs_history_or_marks_it_read() {
 		let mut state = state(p::KICK_MEMBERS | p::VIEW_CHANNEL | p::READ_MESSAGE_HISTORY);
 		state.channels = vec![model::Channel {

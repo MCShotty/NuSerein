@@ -37,7 +37,7 @@ impl BulkUi {
 	pub fn header(
 		&mut self,
 		ui: &mut egui::Ui,
-		state: &State,
+		state: &mut State,
 		guild: Id,
 		query: &Query,
 		action: &mut Option<Action>,
@@ -96,6 +96,7 @@ impl BulkUi {
 				}
 			});
 		}
+		let mut dismiss = false;
 		if let Some(report) = &state.server_admin.bulk_report {
 			ui.separator();
 			ui.strong(if report.accepted {
@@ -139,6 +140,17 @@ impl BulkUi {
 					users: report.users.iter().map(|(id, _)| *id).collect(),
 				}));
 			}
+			if !state.server_admin.pending
+				&& report
+					.users
+					.iter()
+					.all(|(_, status)| *status != BanStatus::Pending)
+			{
+				dismiss = ui.button("Done").clicked();
+			}
+		}
+		if dismiss {
+			state.dismiss_bulk_moderation();
 		}
 		if let Some(users) = self.confirmation.clone() {
 			let mut confirm = false;

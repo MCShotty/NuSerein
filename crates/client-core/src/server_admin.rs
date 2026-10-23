@@ -27,6 +27,8 @@ pub struct View {
 	pub member_review: Option<model::moderation::Review>,
 	pub bulk_report: Option<model::moderation::BulkReport>,
 	pub bulk_started: Option<std::time::Instant>,
+	/// Only an active operation may consume a Gateway completion.
+	pub bulk_awaiting_completion: bool,
 	webhook_url: Option<model::server_integrations::WebhookUrl>,
 	pub audit_log: Option<model::server_audit_log::Page>,
 	pub audit_query: Option<model::server_audit_log::Query>,
@@ -128,6 +130,7 @@ impl View {
 			self.member_review = None;
 			self.bulk_report = None;
 			self.bulk_started = None;
+			self.bulk_awaiting_completion = false;
 			self.webhook_url = None;
 			self.permission_revision = self.permission_revision.wrapping_add(1);
 		}
@@ -621,6 +624,7 @@ impl State {
 			report.accepted = false;
 			self.server_admin.bulk_report = Some(report);
 			self.server_admin.bulk_started = Some(std::time::Instant::now());
+			self.server_admin.bulk_awaiting_completion = true;
 		}
 		if matches!(
 			action,
@@ -753,8 +757,16 @@ impl State {
 			self.server_admin.bulk_started = None;
 		}
 	}
+	pub fn dismiss_bulk_moderation(&mut self) {
+		if !self.server_admin.pending {
+			self.server_admin.bulk_report = None;
+			self.server_admin.bulk_started = None;
+			self.server_admin.bulk_awaiting_completion = false;
+		}
+	}
 	pub fn apply_bulk_moderation(&mut self, guild: Id, report: model::moderation::BulkReport) {
-		if self.server_admin.guild != Some(guild)
+		if !self.server_admin.bulk_awaiting_completion
+			|| self.server_admin.guild != Some(guild)
 			|| !self.can_view_guild_bans(guild)
 			|| !report.valid()
 		{
@@ -788,6 +800,7 @@ impl State {
 		}
 		self.server_admin.bulk_report = Some(report);
 		self.server_admin.bulk_started = None;
+		self.server_admin.bulk_awaiting_completion = false;
 		self.server_admin.revision = self.server_admin.revision.wrapping_add(1);
 	}
 	pub fn close_server_admin(&mut self) {
@@ -926,6 +939,7 @@ impl State {
 				{
 					self.server_admin.bulk_report = None;
 					self.server_admin.bulk_started = None;
+					self.server_admin.bulk_awaiting_completion = false;
 				}
 				if matches!(action, Some(Action::Community(_)))
 					&& matches!(failure, Failure::Forbidden | Failure::Ambiguous)
@@ -1226,6 +1240,14 @@ impl State {
 					self.server_admin.member_review = Some(*review);
 				}
 				model::moderation::Outcome::Bulk(report) => {
+					if matches!(
+						action,
+						Some(Action::Moderation(
+							model::moderation::Action::BulkRefresh { .. }
+						))
+					) {
+						self.server_admin.bulk_awaiting_completion = false;
+					}
 					// Gateway completion can precede the HTTP acknowledgement. Never replace it with Pending.
 					let completed = self
 						.server_admin

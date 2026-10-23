@@ -632,7 +632,7 @@ impl Admin {
 				});
 			if before != self.query.sort {
 				self.query.after = None;
-				self.query_changed = Some(0.0);
+				self.query_changed = Some(ui.input(|input| input.time));
 			}
 			if ui
 				.checkbox(
@@ -642,7 +642,7 @@ impl Admin {
 				.changed()
 			{
 				self.query.after = None;
-				self.query_changed = Some(0.0);
+				self.query_changed = Some(ui.input(|input| input.time));
 			}
 		});
 		let before_filters = self.query.filters.clone();
@@ -758,7 +758,7 @@ impl Admin {
 		});
 		if before_filters != self.query.filters {
 			self.query.after = None;
-			self.query_changed = Some(0.0);
+			self.query_changed = Some(ui.input(|input| input.time));
 		}
 		if self
 			.query_changed
