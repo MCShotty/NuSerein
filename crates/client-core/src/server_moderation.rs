@@ -901,6 +901,7 @@ mod tests {
 				},
 			],
 			audit: vec![],
+			audit_window: None,
 			messages_error: None,
 			audit_error: None,
 		};

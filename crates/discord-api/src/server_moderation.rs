@@ -339,6 +339,7 @@ impl DiscordApi {
 					roles: Vec::new(),
 					messages: Vec::new(),
 					audit: Vec::new(),
+					audit_window: None,
 					messages_error: None,
 					audit_error: None,
 				};
@@ -390,6 +391,12 @@ impl DiscordApi {
 						.await
 					{
 						Ok(page) => {
+							review.audit_window = page
+								.entries
+								.iter()
+								.map(|entry| entry.id)
+								.min()
+								.zip(page.entries.iter().map(|entry| entry.id).max());
 							let target = user.to_string();
 							review.audit = page
 								.entries
@@ -723,7 +730,7 @@ mod member_review_tests {
 				assert!(tokio::time::timeout(Duration::from_millis(80),listener.accept()).await.is_err());
 			});
 			let m::Outcome::Review(review)=api.moderation(Id(2),&m::Action::Review {user:Id(7),channel:Id(3),audit:true}).await.unwrap()else{panic!()};
-			assert!(review.valid());assert_eq!(review.member.nick.as_deref(),Some("Server nickname"));assert_eq!(review.messages[0].id,Id(9));assert_eq!(review.audit.len(),1);assert_eq!(review.audit[0].reason.as_deref(),Some("Reviewed"));
+			assert!(review.valid());assert_eq!(review.audit_window,Some((Id(98),Id(99))));assert_eq!(review.member.nick.as_deref(),Some("Server nickname"));assert_eq!(review.messages[0].id,Id(9));assert_eq!(review.audit.len(),1);assert_eq!(review.audit[0].reason.as_deref(),Some("Reviewed"));
 			server.await.unwrap();
 		}).await.unwrap();
 	}

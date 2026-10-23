@@ -1235,6 +1235,7 @@ impl State {
 					});
 					if !self.guild_permission(event.guild, p::VIEW_AUDIT_LOG) {
 						review.audit.clear();
+						review.audit_window = None;
 					}
 					self.server_admin.moderation_target = Some(review.member.clone());
 					self.server_admin.member_review = Some(*review);

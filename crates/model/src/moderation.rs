@@ -237,6 +237,8 @@ pub struct Review {
 	pub roles: Vec<crate::server_admin::Role>,
 	pub messages: Vec<ReviewMessage>,
 	pub audit: Vec<ReviewAudit>,
+	/// Inclusive oldest/newest audit IDs in the loaded server window, before member filtering.
+	pub audit_window: Option<(Id, Id)>,
 	pub messages_error: Option<&'static str>,
 	pub audit_error: Option<&'static str>,
 }
@@ -275,6 +277,9 @@ impl Review {
 				.all(|role| role.role.id.0 != 0 && role.role.heap_bytes() <= 1024)
 			&& self.messages.len() <= 25
 			&& self.audit.len() <= 20
+			&& self
+				.audit_window
+				.is_none_or(|(oldest, newest)| oldest.0 != 0 && oldest <= newest)
 			&& self
 				.messages
 				.iter()
