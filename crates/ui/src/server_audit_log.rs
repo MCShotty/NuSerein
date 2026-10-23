@@ -21,11 +21,16 @@ pub(super) struct AuditLogUi {
 	actor_search: String,
 	action_search: String,
 	search: String,
+	member_filter: Option<Id>,
 	filtered: Vec<usize>,
 	filter_key: Option<(u64, usize, u64, crate::i18n::Language)>,
 	pub target: Option<Target>,
 }
 impl AuditLogUi {
+	pub fn filter_member(&mut self, user: Id) {
+		self.member_filter = Some(user);
+		self.filter_key = None;
+	}
 	pub fn preview(&mut self, expanded: bool) {
 		self.preview_expand = expanded;
 	}
@@ -199,6 +204,17 @@ impl AuditLogUi {
 			crate::dialog::notice(ui, crate::dialog::Level::Error, error);
 		}
 		if let Some(page) = &state.server_admin.audit_log {
+			if let Some(member) = self.member_filter {
+				ui.horizontal_wrapped(|ui| {
+					ui.weak(format!(
+						"Actions affecting member {member} in the loaded audit window"
+					));
+					if ui.small_button("Clear member filter").clicked() {
+						self.member_filter = None;
+						self.filter_key = None;
+					}
+				});
+			}
 			if ui
 				.add(
 					egui::TextEdit::singleline(&mut self.search)
@@ -222,7 +238,10 @@ impl AuditLogUi {
 					.entries
 					.iter()
 					.enumerate()
-					.filter(|(_, entry)| audit_matches(entry, page, state, &text))
+					.filter(|(_, entry)| {
+						member_target_matches(entry, self.member_filter)
+							&& audit_matches(entry, page, state, &text)
+					})
 					.map(|(index, _)| index)
 					.collect();
 				self.filter_key = Some((
@@ -616,6 +635,15 @@ fn details(ui: &mut egui::Ui, entry: &Entry, state: &State, page: &Page) -> Opti
 	});
 	target
 }
+fn member_target_matches(entry: &Entry, member: Option<Id>) -> bool {
+	member.is_none_or(|member| {
+		entry
+			.target_id
+			.as_deref()
+			.and_then(|id| id.parse::<Id>().ok())
+			== Some(member)
+	})
+}
 fn audit_matches(entry: &Entry, page: &Page, state: &State, query: &str) -> bool {
 	query.is_empty()
 		|| summary(entry, page, state).to_lowercase().contains(query)
@@ -820,6 +848,29 @@ const ACTIONS: &[(u16, &str)] = &[
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn member_context_filters_the_affected_target_without_impersonating_the_actor_filter() {
+		let mut view = AuditLogUi::default();
+		view.filter_member(Id(7));
+		let mut entry = Entry {
+			id: Id(100),
+			user_id: Some(Id(8)),
+			target_id: Some("7".into()),
+			action_type: 24,
+			reason: None,
+			options: vec![],
+			changes: vec![],
+		};
+		assert!(member_target_matches(&entry, view.member_filter));
+		entry.user_id = Some(Id(7));
+		entry.target_id = Some("8".into());
+		assert!(!member_target_matches(&entry, view.member_filter));
+		assert_eq!(
+			view.query.user, None,
+			"a member target is not the acting moderator"
+		);
+		assert!(view.filter_key.is_none());
+	}
 	#[test]
 	fn audit_loaded_filter_keeps_exact_targets_and_reasons_without_changing_server_query() {
 		let state = State::default();

@@ -628,6 +628,33 @@ impl MessagingUi {
 				.load(state, guild, page == Page::Members)
 		}
 	}
+	pub(super) fn open_member_audit(
+		&mut self,
+		state: &mut State,
+		guild: Id,
+		user: Id,
+	) -> Option<Command> {
+		if !state.can_open_audit_log_settings(guild) || user.0 == 0 {
+			return None;
+		}
+		if self.has_server_settings_changes() {
+			state.status = "Save or reset server settings before opening the member audit log.";
+			return None;
+		}
+		let command = state.request_server_admin(
+			guild,
+			model::server_admin::Action::AuditLog(Default::default()),
+		)?;
+		self.mod_view.close(state);
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::AuditLog,
+			..Default::default()
+		};
+		self.server_settings.audit_log.filter_member(user);
+		Some(command)
+	}
 	pub fn accepts_server_emoji_drops(&self) -> bool {
 		self.server_settings.is_open() && self.server_settings.page == Page::Emoji
 	}

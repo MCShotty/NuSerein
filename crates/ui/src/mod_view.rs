@@ -1,6 +1,11 @@
 //! Member review is scoped separately from the visible conversation and read acknowledgements.
 use client_core::{Command, State};
 use model::{Id, moderation::Action, server_admin};
+pub(super) enum Intent {
+	Original(String),
+	Messages { guild: Id, user: Id },
+	Audit { guild: Id, user: Id },
+}
 #[derive(Default)]
 pub(super) struct ModViewUi {
 	scope: Option<(u64, Id, Id, Option<Id>)>,
@@ -10,6 +15,10 @@ pub(super) struct ModViewUi {
 	role_search: String,
 }
 impl ModViewUi {
+	pub fn close(&mut self, state: &mut State) {
+		*self = Self::default();
+		state.close_member_review();
+	}
 	pub fn open(&mut self, state: &mut State, guild: Id, user: Id) -> Option<Command> {
 		if !state.can_open_mod_view(guild) {
 			return None;
@@ -55,7 +64,7 @@ impl ModViewUi {
 		ctx: &egui::Context,
 		state: &mut State,
 		commands: &mut Vec<Command>,
-	) -> Option<String> {
+	) -> Option<Intent> {
 		let (generation, guild, user, origin) = self.scope?;
 		if generation != state.generation
 			|| state.selected != origin
@@ -97,6 +106,8 @@ impl ModViewUi {
 			if member.flags.is_none()&&member.unusual_dm_until.is_none(){ui.weak("No safety information supplied.");}
 			ui.separator();
 			egui::CollapsingHeader::new("Recent server messages").default_open(true).show(ui,|ui| {
+				if ui.add_enabled(search_channel(state,guild).is_some(),egui::Button::new("Search messages from member"))
+					.on_disabled_hover_text("Open a text channel in this server to search its messages.").clicked(){jump=Some(Intent::Messages {guild,user});}
 				if state.user_content_restriction(user).is_some(){ui.weak("Messages are hidden for this blocked or ignored member.");return;}
 				if let Some(error)=review.messages_error {ui.weak(error);}
 				if review.messages.is_empty()&&review.messages_error.is_none(){ui.weak("No recent messages returned.");}
@@ -105,11 +116,12 @@ impl ModViewUi {
 					ui.separator();
 					ui.weak(state.channel(row.channel).map_or("Channel",|channel|channel.name.as_str()));
 					ui.label(visible_excerpt(&row.excerpt));
-					if ui.small_button("Open original").clicked(){jump=Some(format!("https://discord.com/channels/{guild}/{}/{}",row.channel,row.id));}
+					if ui.small_button("Open original").clicked(){jump=Some(Intent::Original(format!("https://discord.com/channels/{guild}/{}/{}",row.channel,row.id)));}
 				}
 			});
 			if state.guild_permission(guild,model::permissions::VIEW_AUDIT_LOG){
 				egui::CollapsingHeader::new("Recent audit activity").show(ui,|ui| {
+					if ui.add_enabled(!state.server_admin.pending,egui::Button::new("Open member audit log")).clicked(){jump=Some(Intent::Audit {guild,user});}
 					ui.weak("Matching entries from the latest 50 audit events; this is not a complete disciplinary history.");
 					if let Some((oldest,newest))=review.audit_window {
 						let date=|id:Id|crate::local_time::discord_timestamp((((id.0>>22)+1_420_070_400_000)/1000)as i64,b'f').unwrap_or_else(||id.to_string());
@@ -159,6 +171,44 @@ impl ModViewUi {
 		jump
 	}
 }
+fn search_channel(state: &State, guild: Id) -> Option<Id> {
+	state.selected.filter(|channel| {
+		state.can_search()
+			&& state
+				.channel(*channel)
+				.is_some_and(|channel| channel.guild == Some(guild))
+	})
+}
+impl crate::MessagingUi {
+	pub(super) fn apply_mod_view_intent(
+		&mut self,
+		intent: Intent,
+		state: &mut State,
+		commands: &mut Vec<Command>,
+	) {
+		match intent {
+			Intent::Original(url) => self.timeline.opening = Some(url),
+			Intent::Messages { guild, user } => {
+				if user.0 != 0
+					&& state.can_open_mod_view(guild)
+					&& let Some(channel) = search_channel(state, guild)
+				{
+					let query = format!("from:{user}");
+					if let Some(command) = state.request_search(query.clone(), None) {
+						self.mod_view.close(state);
+						self.search.open_extension(channel, false, Some(query));
+						commands.push(command);
+					}
+				}
+			}
+			Intent::Audit { guild, user } => {
+				if let Some(command) = self.open_member_audit(state, guild, user) {
+					commands.push(command);
+				}
+			}
+		}
+	}
+}
 /// Preview text never reveals spoilers; opening the original uses the ordinary renderer.
 fn visible_excerpt(text: &str) -> String {
 	let mut result = String::new();
@@ -175,6 +225,57 @@ fn visible_excerpt(text: &str) -> String {
 }
 #[cfg(test)]
 mod tests {
+	use super::*;
+	#[test]
+	fn contextual_navigation_uses_member_ids_without_replacing_or_acknowledging_the_conversation() {
+		let mut state = test_support::demo_state();
+		state
+			.permissions
+			.replace(test_support::permission_snapshot(&state))
+			.unwrap();
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let actor = state.user.as_ref().unwrap().id;
+		state.permissions.guilds.get_mut(&guild).unwrap().owner = Some(actor);
+		state.permissions.clear_cache();
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		state.freshness = model::Freshness::Fresh;
+		let timeline: Vec<_> = state.timeline.iter().map(|message| message.id).collect();
+		let request = state.request;
+		let mut view = crate::MessagingUi::default();
+		let mut commands = vec![];
+		view.apply_mod_view_intent(
+			Intent::Messages { guild, user: Id(7) },
+			&mut state,
+			&mut commands,
+		);
+		assert!(
+			matches!(commands.as_slice(),[Command::Search {channel:origin,guild:Some(server),query,..}] if *origin==channel && *server==guild && query=="from:7")
+		);
+		assert!(view.search.open);
+		assert_eq!(state.selected, Some(channel));
+		assert_eq!(state.request, request);
+		assert_eq!(
+			state
+				.timeline
+				.iter()
+				.map(|message| message.id)
+				.collect::<Vec<_>>(),
+			timeline
+		);
+		commands.clear();
+		view.apply_mod_view_intent(
+			Intent::Audit { guild, user: Id(7) },
+			&mut state,
+			&mut commands,
+		);
+		assert!(
+			matches!(commands.as_slice(),[Command::ServerAdmin {guild:server,action,..}] if *server==guild && matches!(action.as_ref(),server_admin::Action::AuditLog(query) if query.user.is_none()))
+		);
+		assert_eq!(state.selected, Some(channel));
+		assert_eq!(state.request, request);
+	}
 	#[test]
 	fn review_excerpts_conceal_spoilers_including_unclosed_segments() {
 		assert_eq!(

@@ -5992,8 +5992,8 @@ impl MessagingUi {
 			) {
 			commands.push(command);
 		}
-		if let Some(url) = self.mod_view.show(&ctx, state, &mut commands) {
-			self.timeline.opening = Some(url);
+		if let Some(intent) = self.mod_view.show(&ctx, state, &mut commands) {
+			self.apply_mod_view_intent(intent, state, &mut commands);
 			ctx.request_repaint();
 		}
 		self.verification.show(&ctx, state);
