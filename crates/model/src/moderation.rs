@@ -87,11 +87,12 @@ impl Action {
 				reason,
 			} => {
 				valid_targets(users)
+					&& users.capacity() <= MAX_BULK * 2
 					&& *delete_seconds <= 604800
 					&& crate::automod::valid_reason(reason)
 					&& reason.capacity() <= 4096
 			}
-			Self::BulkRefresh { users } => valid_targets(users),
+			Self::BulkRefresh { users } => valid_targets(users) && users.capacity() <= MAX_BULK * 2,
 			Self::Change {
 				user,
 				change,
@@ -210,7 +211,6 @@ impl BulkReport {
 pub fn valid_targets(users: &[Id]) -> bool {
 	!users.is_empty()
 		&& users.len() <= MAX_BULK
-		&& users.capacity() <= MAX_BULK * 2
 		&& users
 			.iter()
 			.enumerate()
