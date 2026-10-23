@@ -18,6 +18,7 @@ mod interactions;
 mod member_guide;
 mod message_options;
 mod messaging_permissions;
+mod mfa;
 mod onboarding;
 mod owned_cosmetics;
 mod profile_edit;
@@ -94,6 +95,7 @@ pub struct DiscordApi {
 	requests: Semaphore,
 	stopped: AtomicBool,
 	catalog: std::sync::Mutex<collectibles::Catalog>,
+	mfa: mfa::Broker,
 	#[cfg(test)]
 	base: String,
 	/// Stands in for the public test host; tests keep the process-wide switch untouched.
@@ -109,6 +111,7 @@ struct ProxyState {
 
 enum RequestContent {
 	Json(serde_json::Value),
+	SecretJson(zeroize::Zeroizing<Vec<u8>>),
 	Multipart { content_type: String, body: Vec<u8> },
 }
 
@@ -268,6 +271,7 @@ impl DiscordApi {
 			requests: Semaphore::new(4),
 			stopped: AtomicBool::new(false),
 			catalog: std::sync::Mutex::default(),
+			mfa: mfa::Broker::default(),
 			#[cfg(test)]
 			base: "https://discord.com/api/v10".into(),
 			#[cfg(test)]
@@ -308,6 +312,7 @@ impl DiscordApi {
 	}
 	pub fn stop(&self) {
 		self.stopped.store(true, Ordering::Release);
+		self.mfa.cancel_all();
 	}
 	pub fn stopped(&self) -> bool {
 		self.stopped.load(Ordering::Acquire)
@@ -495,15 +500,30 @@ impl DiscordApi {
 		let idempotent = method == Method::GET && body.is_none() && !speculative;
 		let mut body = body;
 		let mut rate_limits = 0u8;
+		let mut mfa_replay: Option<reqwest::RequestBuilder> = None;
+		let mut mfa_resumed = false;
+		let mut mfa_deadline: Option<Instant> = None;
 		loop {
 			// Proxy setup may pause: resolve it before checking cooldown and session admission.
-			let client = self.rest_client().await?;
+			let client = if let Some(deadline) = mfa_deadline {
+				tokio::time::timeout_at(deadline, self.rest_client())
+					.await
+					.map_err(|_| {
+						Failure::ProtocolAt("Verification expired before the request could resume")
+					})??
+			} else {
+				self.rest_client().await?
+			};
 			loop {
 				let next = *self.cooldown.lock().await;
 				if speculative && Instant::now() < next {
 					return Err(Failure::Capacity);
 				}
-				sleep_until(next).await;
+				if let Some(deadline) = mfa_deadline {
+					tokio::select! { _=sleep_until(deadline)=>return Err(Failure::ProtocolAt("Verification expired before the request could resume")), _=sleep_until(next)=>{} }
+				} else {
+					sleep_until(next).await;
+				}
 				if Instant::now() >= *self.cooldown.lock().await {
 					break;
 				}
@@ -516,10 +536,13 @@ impl DiscordApi {
 			authorization.set_sensitive(true);
 			let (base, on_stable) = self.api_origin();
 			let write = method != Method::GET;
-			let mut request = client
-				.request(method.clone(), format!("{base}{path}"))
-				.header(AUTHORIZATION, authorization);
-			if let Some(reason) = reason.filter(|reason| !reason.is_empty()) {
+			let replaying = mfa_replay.is_some();
+			let mut request = mfa_replay.take().unwrap_or_else(|| {
+				client
+					.request(method.clone(), format!("{base}{path}"))
+					.header(AUTHORIZATION, authorization)
+			});
+			if !replaying && let Some(reason) = reason.filter(|reason| !reason.is_empty()) {
 				let encoded: String = reason.bytes().map(|byte| format!("%{byte:02X}")).collect();
 				let mut value = HeaderValue::from_str(&encoded).map_err(|_| Failure::Protocol)?;
 				value.set_sensitive(true);
@@ -544,9 +567,12 @@ impl DiscordApi {
 					}
 				}
 			}
-			if let Some(content) = body.take() {
+			if !replaying && let Some(content) = body.take() {
 				request = match content {
 					RequestContent::Json(body) => request.json(&body),
+					RequestContent::SecretJson(body) => request
+						.header(CONTENT_TYPE, "application/json")
+						.body(body.to_vec()),
 					RequestContent::Multipart { content_type, body } => request
 						.header(
 							CONTENT_TYPE,
@@ -555,6 +581,12 @@ impl DiscordApi {
 						.body(body),
 				};
 			}
+			let mfa_target = write
+				.then(|| mfa::OPERATION.try_with(Clone::clone).ok())
+				.flatten();
+			let exact_retry = (!mfa_resumed && mfa_target.is_some())
+				.then(|| request.try_clone())
+				.flatten();
 			let mut response = request.send().await.map_err(|_| {
 				if write {
 					Failure::Ambiguous
@@ -563,10 +595,11 @@ impl DiscordApi {
 				}
 			})?;
 			let status = response.status();
-			if status == StatusCode::UNAUTHORIZED {
-				self.stop();
-				return Err(Failure::Expired);
-			}
+			let max_bytes = if status.is_success() {
+				max_bytes
+			} else {
+				mfa::MAX_WIRE
+			};
 			let uncertain_write = write && (status.is_success() || status.is_server_error());
 			let exhausted = response
 				.headers()
@@ -611,12 +644,20 @@ impl DiscordApi {
 				.content_length()
 				.is_some_and(|n| n > max_bytes as u64)
 			{
+				if status == StatusCode::UNAUTHORIZED {
+					self.stop();
+					return Err(Failure::Expired);
+				}
 				return Err(overflow);
 			}
 			let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(
 				response.content_length().unwrap_or(0).min(max_bytes as u64) as usize,
 			));
 			while let Some(chunk) = response.chunk().await.map_err(|_| {
+				if status == StatusCode::UNAUTHORIZED {
+					self.stop();
+					return Failure::Expired;
+				}
 				if write {
 					Failure::Ambiguous
 				} else {
@@ -624,12 +665,47 @@ impl DiscordApi {
 				}
 			})? {
 				if bytes.len() + chunk.len() > max_bytes {
+					if status == StatusCode::UNAUTHORIZED {
+						self.stop();
+						return Err(Failure::Expired);
+					}
 					return Err(overflow);
 				}
 				bytes.extend_from_slice(&chunk);
 			}
 			if !status.is_success() {
 				let error = decode::<ErrorBody>(&bytes).unwrap_or_default();
+				if error.code == Some(60003)
+					&& !mfa_resumed && let (Some(target), Some(replay), Some(challenge)) =
+					(mfa_target, exact_retry, mfa::challenge(&bytes))
+				{
+					let proof = self.wait_for_mfa(target, challenge).await?;
+					if self.stopped() {
+						return Err(Failure::Expired);
+					}
+					mfa_deadline = Some(Instant::now() + proof.remaining());
+					mfa_replay =
+						Some(replay.header("x-discord-mfa-authorization", proof.header()?));
+					mfa_resumed = true;
+					continue;
+				}
+				if error.code == Some(60003) && mfa_resumed {
+					return Err(Failure::ProtocolAt(
+						"Discord did not accept verification; review the operation before trying again",
+					));
+				}
+				if status == StatusCode::UNAUTHORIZED {
+					if matches!(path, "/mfa/finish" | "/auth/mfa/sms/send")
+						&& matches!(error.code, Some(60006 | 60008 | 60009))
+					{
+						return Err(Failure::ProtocolAt(
+							"Verification was rejected; check the code and try again",
+						));
+					}
+					self.stop();
+					return Err(Failure::Expired);
+				}
+
 				if error.captcha_key.is_some() || matches!(error.code, Some(60003 | 50014)) {
 					let auth_challenge = matches!(error.code, Some(60003 | 50014));
 					if !auth_challenge
@@ -1000,7 +1076,17 @@ impl DiscordApi {
 		event
 	}
 	pub async fn execute(&self, command: Command) -> Event {
+		if let Some(target) = client_core::mfa::Target::from_command(&command) {
+			mfa::OPERATION
+				.scope(target, self.execute_unscoped(command))
+				.await
+		} else {
+			self.execute_unscoped(command).await
+		}
+	}
+	async fn execute_unscoped(&self, command: Command) -> Event {
 		match command {
+			Command::Mfa(request) => Event::Mfa(self.mfa_request(*request).await),
 			Command::Report(request) => Event::Report(client_core::reporting::Event {
 				target: request.target,
 				request: request.request,

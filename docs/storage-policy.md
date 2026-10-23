@@ -2234,3 +2234,17 @@ Linux uses a separate ephemeral WebKit network session with persistent credentia
 disabled, and destroys its window/web process on retirement. Native browser processes,
 caches and decoder allocations are additional to Serein's bounded player bookkeeping;
 provider-process memory and live playback require separate native measurements.
+
+### Administrative MFA verification
+
+One protected HTTP request can wait for an owner-completed native MFA check.
+The transport retains one bounded ticket (8 KiB), at most eight advertised methods,
+one submitted input (1 KiB) and one proof (16 KiB), with a 64 KiB wire cap and a
+five-minute deadline. The state event contains only the challenge identifier,
+method choices and the original bounded administrative target; its conservative
+admission estimate is 2 MiB. No password, code, ticket or proof enters SQLite,
+preferences, the credential store, screenshots, extension snapshots or logs.
+Serein-owned secret buffers use redacted zeroizing wrappers. The native text field
+is masked and clears its undo history each frame. Transport/framework transient
+copies are not covered by a forensic-erasure claim. Completion, cancellation,
+expiry and session teardown release the pending check.

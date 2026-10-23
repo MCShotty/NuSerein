@@ -3377,6 +3377,12 @@ impl Desktop {
 			self.state.command_rejected(command);
 			return;
 		}
+		if let Command::Mfa(request) = &command
+			&& !self.state.mfa_command_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::ServerAdmin {
 			guild,
 			request,
@@ -3716,6 +3722,7 @@ impl Desktop {
 				}
 
 				// Demo preference changes are applied synchronously by client-core.
+				Command::Mfa(_) => return,
 				Command::MessagingPermissions { .. } => return,
 				Command::AccountOverview { .. } | Command::AccountConnections { .. } => return,
 				Command::ServerProfile {
@@ -5812,6 +5819,7 @@ impl eframe::App for Desktop {
 	}
 	fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
+		self.messaging.retire_mfa_input(&ctx, &self.state);
 		let title_bar_height = if self.login.is_some() {
 			platform::LOGIN_HEADER_HEIGHT
 		} else if self.state.user.is_some() {

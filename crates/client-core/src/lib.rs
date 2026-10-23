@@ -28,6 +28,7 @@ pub mod invites;
 pub mod member_search;
 pub mod message_actions;
 pub mod messaging_permissions;
+pub mod mfa;
 pub mod notifications;
 pub mod owned_cosmetics;
 mod personal_channels;
@@ -86,6 +87,7 @@ pub const EVENT_SLOTS: usize = 8; // UI drain batch; reliable events share a 32 
 pub const COMMAND_SLOTS: usize = 16; // ordinary commands <=16 KiB; bulk DM settings <=33 KiB; channel edit <=128 KiB; group icon <=350 KiB
 
 pub enum Command {
+	Mfa(Box<mfa::Request>),
 	Autocomplete(interactions::Request),
 	CancelAutocomplete,
 
@@ -518,6 +520,7 @@ fn prepare_navigation(
 	Ok(permission_state)
 }
 pub enum Event {
+	Mfa(mfa::Event),
 	Autocomplete(application_commands::CompletionEvent),
 
 	Community(community::Event),
@@ -951,6 +954,7 @@ pub struct State {
 	/// Search results run oldest first, sorted by Discord rather than per page.
 	pub search_oldest: bool,
 	pub send_verification: verification::SendVerification,
+	pub mfa: mfa::View,
 	pub reply: Option<Reply>,
 	/// Reply targets of conversations left before sending; at most 64, session RAM only.
 	#[doc(hidden)]
@@ -1177,6 +1181,7 @@ impl Default for State {
 			send_throttle_seen: false,
 			search_oldest: false,
 			send_verification: Default::default(),
+			mfa: Default::default(),
 			reply: None,
 			parked_replies: ParkedReplies::default(),
 			send_sequence: 0,
@@ -2249,6 +2254,10 @@ impl State {
 				request: request.request,
 				result: Err(auth::Failure::Capacity),
 			});
+			return;
+		}
+		if let Command::Mfa(request) = &command {
+			self.reject_mfa(request.id);
 			return;
 		}
 		if let Command::Soundboard(request) = &command {
@@ -3357,6 +3366,10 @@ impl State {
 			Event::NotificationPreferences(event) => self.apply_notification_preferences(event),
 			Event::MessagingPermissions { request, result } => {
 				self.apply_messaging_permissions(request, result);
+				Ok(())
+			}
+			Event::Mfa(event) => {
+				self.apply_mfa(event);
 				Ok(())
 			}
 			Event::UserAction(event) => self.apply_user_action(event),
@@ -4886,6 +4899,7 @@ impl Event {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				Self::Mfa(event) => event.bytes(),
 				Self::Report(event) => event.result.as_ref().map_or(0, reporting::Outcome::bytes),
 				Self::Interaction(event) => event.bytes(),
 				Self::Autocomplete(event) => event.bytes(),

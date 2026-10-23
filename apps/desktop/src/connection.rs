@@ -336,6 +336,8 @@ impl Connection {
 				}
 				let _ = account_presence_send.send_replace(chosen);
                 let emit=Arc::new(emit);
+                let mfa_emit=emit.clone();
+                api.set_mfa_notifier(move |event| mfa_emit(Event::Mfa(event)))?;
                 let (member_send,member_receive)=watch::channel(None);
                 let (voice_send,voice_receive)=mpsc::channel(8);
 				let (activity_send,activity_receive)=watch::channel(None);
@@ -411,6 +413,10 @@ impl Connection {
                         if let Some(error)=error {write_api.stop();let _=write_finished.send(Some(error));write_wake.request_repaint();break;}
                     }
                 }));
+                // Administrative writes may wait for owner verification without holding up
+                // the ordinary message-send queue. One protected operation and one check.
+                let mut administrative:Option<AbortTask>=None;
+                let mut mfa_job:Option<AbortTask>=None;
                 let mut history:Option<AbortTask>=None;
                 let mut reply_previews:Vec<AbortTask>=Vec::new();
                 // Preloads never cancel the open conversation's reads or each other; each kind
@@ -525,6 +531,39 @@ impl Connection {
                                 if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                             }
                             let Some(command)=command else {break;};
+                            if let Command::Mfa(request)=command {
+                                if !matches!(request.action,client_core::mfa::Action::Cancel) && mfa_job.as_ref().is_some_and(|task|!task.0.is_finished()) {
+                                    emit(Event::Mfa(client_core::mfa::Event::Updated{id:request.id,result:Err(Failure::ProtocolAt("A security check is already in progress"))}))?;
+                                    continue;
+                                }
+                                drop(mfa_job.take());
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                mfa_job=Some(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(Command::Mfa(request)).await;
+                                    let failure=match &event {Event::Mfa(client_core::mfa::Event::Updated{result:Err(f),..}) if f.ends_session()=>Some(*f),_=>None};
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
+                            if let Some(target)=client_core::mfa::Target::from_command(&command) {
+                                if administrative.as_ref().is_some_and(|task|!task.0.is_finished()) {
+                                    emit(target.rejected(Failure::ProtocolAt("Finish the current server action first")))?;
+                                    continue;
+                                }
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                administrative=Some(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(command).await;
+                                    let failure=match &event {
+                                        Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})|Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})|Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..}) if f.ends_session()=>Some(*f),
+                                        _=>None,
+                                    };
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
+
                             if let Command::Community {guild,request,fence,action,..} = &command {
                                 let (guild,request,fence)=(*guild,*request,*fence);
                                 let call=match action.as_ref(){model::community::Action::StageVoice{channel,call_request,..}|model::community::Action::GetStage{channel,call_request:Some(call_request)}=>Some((*channel,*call_request)),_=>None};

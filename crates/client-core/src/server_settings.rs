@@ -114,6 +114,12 @@ impl State {
 				.as_ref()
 				.is_none_or(|edit| self.valid_server_settings_edit(guild, edit))
 	}
+	pub(crate) fn server_settings_mfa_allowed(&self, guild: Id, request: u64, edit: &Edit) -> bool {
+		self.server_settings.guild == Some(guild)
+			&& self.server_settings.sequence == request
+			&& self.server_settings.pending
+			&& self.valid_server_settings_edit(guild, edit)
+	}
 	fn valid_server_settings_edit(&self, guild: Id, edit: &Edit) -> bool {
 		let Some(snapshot) = self
 			.server_settings

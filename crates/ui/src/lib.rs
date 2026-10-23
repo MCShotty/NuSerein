@@ -145,6 +145,7 @@ mod text_menu;
 mod thumbhash;
 #[cfg(feature = "demo")]
 pub use polls::debug_poll_check;
+mod mfa;
 mod timeline;
 #[cfg(test)]
 mod title_bar_tests;
@@ -261,6 +262,7 @@ pub struct MessagingUi {
 	pub interaction_file_request: Option<String>,
 	interaction_components: components::Components,
 	pub verification: VerificationUi,
+	mfa: mfa::MfaUi,
 	onboarding: onboarding::OnboardingUi,
 	pub extensions: ExtensionUi,
 	friends: friends::Friends,
@@ -695,6 +697,11 @@ enum MentionWrite {
 }
 
 impl MessagingUi {
+	/// Retire secret input even when the conversation UI is no longer drawn.
+	pub fn retire_mfa_input(&mut self, ctx: &egui::Context, state: &State) {
+		self.mfa.retire(ctx, state);
+	}
+
 	pub fn interaction_modal_id(&self) -> Option<Id> {
 		self.interaction_components.modal_id()
 	}
@@ -5959,6 +5966,7 @@ impl MessagingUi {
 			commands.push(command);
 		}
 		self.verification.show(&ctx, state);
+		self.mfa.show(&ctx, state, &mut commands);
 		// Discord's notice for a rate-limited send; the messages stay queued and go out on their own.
 		if state.send_throttled {
 			let result = dialog::Dialog::new(
