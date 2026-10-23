@@ -142,6 +142,7 @@ impl Preview {
 						let Some(channel) = state.channels.get(row.index).filter(|channel| channel.id == row.id) else { continue; };
 						let visible = row.bits.is_some_and(|bits| bits & p::VIEW_CHANNEL != 0);
 						ui.horizontal(|ui| {
+							ui.set_min_height(row_height);
 							ui.label(if visible { "✓" } else if row.bits.is_some() { "—" } else { "?" });
 							if ui.add(egui::Button::selectable(self.channel == Some(row.id), &channel.name).truncate()).clicked() { self.channel = Some(row.id); }
 							ui.weak(if visible { "Visible" } else if row.bits.is_some() { "Hidden by permissions" } else { "Permissions unavailable" });
