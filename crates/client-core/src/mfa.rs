@@ -255,11 +255,13 @@ impl Target {
 	}
 	pub fn bytes(&self) -> usize {
 		match self {
-			Self::Admin { .. }
-			| Self::Settings { .. }
-			| Self::Channel { .. }
-			| Self::Community { .. }
-			| Self::Onboarding { .. } => MAX_TARGET_BYTES,
+			Self::Admin { action, .. } => size_of_val(action.as_ref()) + action.heap_bytes(),
+			Self::Settings { edit, .. } => size_of_val(edit.as_ref()) + edit.heap_bytes(),
+			Self::Channel { action, .. } => channel_action_bytes(action),
+			Self::Community { action, .. } => action.bytes(),
+			Self::Onboarding {
+				form, submission, ..
+			} => onboarding_bytes(form, submission),
 			Self::Delete { .. } => 0,
 		}
 	}
@@ -301,6 +303,111 @@ impl Target {
 			} => state.onboarding_mfa_allowed(*guild, *request, form, submission),
 		}
 	}
+}
+
+fn channel_action_bytes(action: &crate::channel_actions::Action) -> usize {
+	use crate::channel_actions::Action as C;
+	size_of_val(action)
+		+ match action {
+			C::Edit { before, after } => before.bytes() + after.bytes(),
+			C::PostRename(name)
+			| C::Duplicate { name }
+			| C::Create { name, .. }
+			| C::CreateThread { name, .. }
+			| C::CreatePrivateThread { name, .. }
+			| C::CreateCategory { name } => name.capacity(),
+			C::PostTags(tags) => tags.capacity() * size_of::<Id>(),
+			C::Move { shifts, .. } => shifts.capacity() * size_of::<(Id, i32)>(),
+			C::Personal(change) => {
+				size_of_val(change.as_ref())
+					+ change.channels.capacity() * size_of::<model::channel_visibility::RowChange>()
+			}
+			C::Reference
+			| C::Description
+			| C::Publish(_)
+			| C::FollowAnnouncement(_)
+			| C::Load
+			| C::PostLoad
+			| C::PostFollow(_)
+			| C::PostArchive(_)
+			| C::PostLock(_)
+			| C::PostAddMember(_)
+			| C::PostRemoveMember(_)
+			| C::PostPin(_)
+			| C::PostMute(_)
+			| C::PostNotifications(_)
+			| C::Delete
+			| C::Mute(_)
+			| C::Notifications(_)
+			| C::HideMuted(_) => 0,
+		}
+}
+
+fn onboarding_bytes(
+	form: &model::onboarding::Form,
+	submission: &model::onboarding::Submission,
+) -> usize {
+	use model::onboarding::{Answer, Field, Prompt, PromptOption};
+	fn text(value: &Option<String>) -> usize {
+		value.as_ref().map_or(0, String::capacity)
+	}
+	size_of_val(form)
+		+ size_of_val(submission)
+		+ form.verification.as_ref().map_or(0, |verification| {
+			text(&verification.version)
+				+ text(&verification.description)
+				+ verification.fields.capacity() * size_of::<Field>()
+				+ verification
+					.fields
+					.iter()
+					.map(|field| {
+						field.wire_kind.capacity()
+							+ field.label.capacity()
+							+ text(&field.description)
+							+ text(&field.placeholder)
+							+ (field.rules.capacity() + field.choices.capacity())
+								* size_of::<String>()
+							+ field
+								.rules
+								.iter()
+								.chain(&field.choices)
+								.map(String::capacity)
+								.sum::<usize>()
+					})
+					.sum::<usize>()
+		}) + form.onboarding.as_ref().map_or(0, |onboarding| {
+		onboarding.responses.capacity() * size_of::<Id>()
+			+ onboarding.prompts.capacity() * size_of::<Prompt>()
+			+ onboarding
+				.prompts
+				.iter()
+				.map(|prompt| {
+					prompt.title.capacity()
+						+ prompt.options.capacity() * size_of::<PromptOption>()
+						+ prompt
+							.options
+							.iter()
+							.map(|option| {
+								option.title.capacity()
+									+ text(&option.description) + text(&option.emoji)
+							})
+							.sum::<usize>()
+				})
+				.sum::<usize>()
+	}) + submission
+		.onboarding
+		.as_ref()
+		.map_or(0, |ids| ids.capacity() * size_of::<Id>())
+		+ submission.verification.as_ref().map_or(0, |answers| {
+			answers.capacity() * size_of::<Answer>()
+				+ answers
+					.iter()
+					.map(|answer| match answer {
+						Answer::Text(text) => text.capacity(),
+						_ => 0,
+					})
+					.sum::<usize>()
+		})
 }
 impl fmt::Debug for Target {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -385,7 +492,9 @@ pub struct View {
 impl View {
 	pub fn bytes(&self) -> usize {
 		self.pending.as_ref().map_or(0, |p| {
-			p.target.bytes() + p.methods.capacity() * size_of::<Method>()
+			// The suspended transport retains its task-local target while the notice's
+			// reconciliation copy is held here. Tickets/proofs stay in their bounded broker.
+			p.target.bytes().saturating_mul(2) + p.methods.capacity() * size_of::<Method>()
 		})
 	}
 }
@@ -488,6 +597,7 @@ impl State {
 			Event::Required(notice) => {
 				if self.mfa.pending.is_some()
 					|| notice.id == 0
+					|| notice.target.bytes() > MAX_TARGET_BYTES
 					|| notice.methods.is_empty()
 					|| notice.methods.len() > MAX_METHODS
 					|| notice.methods.capacity() > MAX_METHODS * 2
@@ -553,6 +663,68 @@ impl State {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn target_charges_owned_capacities_for_settings_channels_and_onboarding() {
+		let mut icon = String::with_capacity(4096);
+		icon.push_str("data:image/png;base64,AAAA");
+		let edit = model::server_settings::Edit {
+			icon: model::Patch::Value(icon),
+			..Default::default()
+		};
+		let expected = size_of_val(&edit) + edit.heap_bytes();
+		assert_eq!(
+			Target::Settings {
+				guild: Id(2),
+				request: 1,
+				edit: Box::new(edit)
+			}
+			.bytes(),
+			expected
+		);
+
+		let mut topic = String::with_capacity(8192);
+		topic.push_str("Original topic");
+		let before = crate::channel_actions::Edit {
+			name: "channel".into(),
+			topic,
+			..Default::default()
+		};
+		let after = before.clone();
+		let expected = size_of::<crate::channel_actions::Action>() + before.bytes() + after.bytes();
+		assert_eq!(
+			Target::Channel {
+				guild: Id(2),
+				channel: Id(3),
+				request: 1,
+				action: Box::new(crate::channel_actions::Action::Edit { before, after }),
+			}
+			.bytes(),
+			expected
+		);
+
+		let mut text = String::with_capacity(4096);
+		text.push_str("Owner supplied answer");
+		let form = model::onboarding::Form::default();
+		let submission = model::onboarding::Submission {
+			onboarding: Some(Vec::with_capacity(10)),
+			verification: Some(vec![model::onboarding::Answer::Text(text)]),
+		};
+		let expected = size_of_val(&form)
+			+ size_of_val(&submission)
+			+ 10 * size_of::<Id>()
+			+ size_of::<model::onboarding::Answer>()
+			+ 4096;
+		assert_eq!(
+			Target::Onboarding {
+				guild: Id(2),
+				request: 1,
+				form: Box::new(form),
+				submission: Box::new(submission)
+			}
+			.bytes(),
+			expected
+		);
+	}
 	fn fixture() -> (State, Target) {
 		let mut state = State {
 			auth: AuthState::Authenticated,

@@ -191,6 +191,52 @@ mod tests {
 	}
 
 	#[test]
+	fn a_small_challenged_action_keeps_its_pending_operation_and_large_valid_panels() {
+		use crate::mfa::{self, Method, Target};
+		let mut state = valid_panel_state();
+		let command = state
+			.request_server_admin(
+				Id(2),
+				admin::Action::CreateEmoji {
+					name: "synthetic_emoji".into(),
+					image: "data:image/png;base64,AAAA".into(),
+				},
+			)
+			.unwrap();
+		let target = Target::from_command(&command).unwrap();
+		assert!(target.bytes() < 1024);
+		let before = state.retained_admin_bytes();
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::Mfa(mfa::Event::Required(mfa::Notice {
+				id: 7,
+				target,
+				methods: vec![Method::Totp],
+			})),
+		});
+		assert!(state.retained_admin_bytes() < MAX_ADMIN_BYTES);
+		assert!(state.retained_admin_bytes() - before < 1024);
+		assert!(
+			state
+				.mfa
+				.pending
+				.as_ref()
+				.is_some_and(|pending| pending.id == 7)
+		);
+		assert!(state.server_admin.pending && state.server_admin.saving);
+		assert!(state.server_admin.members.is_some() && state.server_admin.audit_log.is_some());
+		assert!(
+			state.maintain_mfa().is_none(),
+			"small actions must not cancel their own verification"
+		);
+		let Some(crate::Command::Mfa(verify)) = state.submit_mfa(Method::Totp, "123456".into())
+		else {
+			panic!("pending action remains eligible")
+		};
+		assert!(state.mfa_command_allowed(&verify));
+	}
+
+	#[test]
 	fn stripped_upload_payload_is_still_charged_once_for_the_transport() {
 		let mut state = valid_panel_state();
 		let before = state.retained_admin_bytes();
