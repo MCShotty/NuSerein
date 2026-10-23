@@ -1218,6 +1218,11 @@ impl Editor {
 			} else {
 				(false, false, false, false)
 			};
+		// egui schedules directional focus before these keys are consumed, including
+		// the first focused frame before TextEdit installs its focus filter.
+		if down || up {
+			ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+		}
 		if escape {
 			self.navigation_search.clear();
 			self.navigation_cursor = 0;
@@ -2796,6 +2801,15 @@ mod navigation_tests {
 				compact,
 				vec![key(egui::Key::ArrowDown)],
 			);
+			assert_eq!(editor.navigation_cursor, 1);
+			assert_eq!(
+				destinations(&state, guild, &editor.navigation_search)[editor.navigation_cursor]
+					.anchor,
+				Some("filter")
+			);
+			assert!(ctx.memory(|memory| {
+				memory.has_focus(egui::Id::unique(("server-settings-search", guild)))
+			}));
 			frame(
 				&ctx,
 				&mut editor,
