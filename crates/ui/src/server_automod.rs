@@ -15,6 +15,8 @@ struct Draft {
 	regex: String,
 	allow: String,
 	reason: String,
+	role_search: String,
+	channel_search: String,
 }
 impl Draft {
 	fn new(id: Option<Id>, settings: Settings) -> Self {
@@ -26,6 +28,8 @@ impl Draft {
 			after: settings,
 			id,
 			reason: String::new(),
+			role_search: String::new(),
+			channel_search: String::new(),
 		}
 	}
 	fn settings(&self) -> Option<Settings> {
@@ -235,13 +239,24 @@ impl AutoModUi {
 				}
 				ui.separator();
 				ui.collapsing(i18n::translate("automod-exempt-roles"), |ui| {
+					ui.add(
+						egui::TextEdit::singleline(&mut draft.role_search)
+							.hint_text(i18n::translate("automod-search-roles"))
+							.char_limit(100),
+					);
+					let query = draft.role_search.trim().to_lowercase();
 					if let Some(roles) = state
 						.permissions
 						.guilds
 						.get(&guild)
 						.and_then(|guild| guild.roles.as_ref())
 					{
-						for role in roles {
+						let mut found = false;
+						for role in roles
+							.iter()
+							.filter(|role| matches_exemption(&query, role.id, &role.name))
+						{
+							found = true;
 							let mut exempt = draft.after.exempt_roles.contains(&role.id);
 							if ui
 								.add_enabled(
@@ -256,6 +271,9 @@ impl AutoModUi {
 								}
 							}
 						}
+						if !found {
+							ui.weak(i18n::translate("automod-no-matching-roles"));
+						}
 						if ui
 							.button(i18n::translate("automod-clear-unavailable-roles"))
 							.clicked()
@@ -268,11 +286,19 @@ impl AutoModUi {
 					}
 				});
 				ui.collapsing(i18n::translate("automod-exempt-channels"), |ui| {
-					for channel in state
-						.channels
-						.iter()
-						.filter(|row| row.guild == Some(guild) && state.can_view(row.id))
-					{
+					ui.add(
+						egui::TextEdit::singleline(&mut draft.channel_search)
+							.hint_text(i18n::translate("automod-search-channels"))
+							.char_limit(100),
+					);
+					let query = draft.channel_search.trim().to_lowercase();
+					let mut found = false;
+					for channel in state.channels.iter().filter(|row| {
+						row.guild == Some(guild)
+							&& state.can_view(row.id)
+							&& matches_exemption(&query, row.id, &row.name)
+					}) {
+						found = true;
 						let mut exempt = draft.after.exempt_channels.contains(&channel.id);
 						if ui
 							.add_enabled(
@@ -286,6 +312,9 @@ impl AutoModUi {
 								draft.after.exempt_channels.push(channel.id);
 							}
 						}
+					}
+					if !found {
+						ui.weak(i18n::translate("automod-no-matching-channels"));
 					}
 					if ui
 						.button(i18n::translate("automod-clear-unavailable-channels"))
@@ -504,6 +533,9 @@ fn trigger_name(kind: u8) -> String {
 		_ => "automod-title",
 	})
 }
+fn matches_exemption(query: &str, id: Id, name: &str) -> bool {
+	query.is_empty() || name.to_lowercase().contains(query) || query.parse::<Id>() == Ok(id)
+}
 fn lines(ui: &mut egui::Ui, label: &str, value: &mut String, limit: usize) {
 	ui.label(i18n::translate(label));
 	ui.add(
@@ -529,6 +561,177 @@ fn effect_toggle(ui: &mut egui::Ui, settings: &mut Settings, kind: u8, label: &s
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn exemption_search_filters_production_selectors_without_dropping_hidden_selections() {
+		fn frame(
+			ctx: &egui::Context,
+			editor: &mut AutoModUi,
+			state: &mut State,
+			guild: Id,
+			events: Vec<egui::Event>,
+		) -> egui::FullOutput {
+			let mut commands = vec![];
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(900.0, 1800.0),
+					)),
+					time: Some(ctx.input(|input| input.time) + 0.3),
+					events,
+					..Default::default()
+				},
+				|ui| editor.show(ui, state, guild, &mut commands),
+			);
+			assert!(
+				commands.is_empty(),
+				"search and selection do not submit a rule"
+			);
+			output
+		}
+		fn position(output: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+			output.shapes.iter().find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text) if text.galley.job.text == label => {
+					Some(text.pos + text.galley.size() / 2.0)
+				}
+				_ => None,
+			})
+		}
+		fn click(position: egui::Pos2) -> Vec<egui::Event> {
+			vec![
+				egui::Event::PointerMoved(position),
+				egui::Event::PointerButton {
+					pos: position,
+					button: egui::PointerButton::Primary,
+					pressed: true,
+					modifiers: egui::Modifiers::NONE,
+				},
+				egui::Event::PointerButton {
+					pos: position,
+					button: egui::PointerButton::Primary,
+					pressed: false,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]
+		}
+		i18n::set_current(i18n::Language::English);
+		let mut state = test_support::demo_state();
+		let guild = state.guilds[0].id;
+		let mut permissions = test_support::permission_snapshot(&state);
+		let metadata = permissions
+			.guilds
+			.iter_mut()
+			.find(|g| g.id == guild)
+			.unwrap();
+		metadata.owner = state.user.as_ref().map(|u| u.id);
+		let roles = metadata.roles.as_mut().unwrap();
+		let mut role = roles[0].clone();
+		role.id = Id(19991);
+		role.name = "Hidden selected role".into();
+		roles.push(role.clone());
+		role.id = Id(19992);
+		role.name = "Target Moderator".into();
+		roles.push(role);
+		state.permissions.replace(permissions).unwrap();
+		let channels: Vec<_> = state
+			.channels
+			.iter_mut()
+			.filter(|c| c.guild == Some(guild) && c.kind == 0)
+			.take(2)
+			.enumerate()
+			.map(|(i, c)| {
+				c.name = if i == 0 {
+					"Target Room"
+				} else {
+					"Hidden selected channel"
+				}
+				.into();
+				c.id
+			})
+			.collect();
+		assert_eq!(channels.len(), 2);
+		let settings = Settings {
+			name: "Synthetic filter".into(),
+			trigger: 3,
+			exempt_roles: vec![Id(19991)],
+			exempt_channels: vec![channels[1]],
+			..Default::default()
+		};
+		state.server_admin.guild = Some(guild);
+		state.server_admin.automod = Some(m::Snapshot {
+			guild,
+			rules: vec![m::Rule {
+				id: Id(77),
+				guild,
+				creator: Id(1),
+				settings: settings.clone(),
+			}],
+		});
+		let mut draft = Draft::new(Some(Id(77)), settings);
+		draft.role_search = "TARGET".into();
+		draft.channel_search = "target".into();
+		let mut editor = AutoModUi {
+			scope: Some((state.generation, guild)),
+			attempted: true,
+			draft: Some(draft),
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		for label in ["Exempt roles", "Exempt channels"] {
+			let output = frame(&ctx, &mut editor, &mut state, guild, vec![]);
+			let point = position(&output, label).expect("selector heading");
+			output.drop_without_applying_deltas();
+			frame(&ctx, &mut editor, &mut state, guild, click(point))
+				.drop_without_applying_deltas();
+		}
+		for _ in 0..4 {
+			frame(&ctx, &mut editor, &mut state, guild, vec![]).drop_without_applying_deltas();
+		}
+		for label in [
+			"Target Moderator",
+			"Target Room",
+			"Remove unavailable roles",
+			"Remove unavailable channels",
+		] {
+			let output = frame(&ctx, &mut editor, &mut state, guild, vec![]);
+			assert!(position(&output, "Hidden selected role").is_none());
+			assert!(position(&output, "Hidden selected channel").is_none());
+			let point = position(&output, label).expect("filtered control");
+			output.drop_without_applying_deltas();
+			frame(&ctx, &mut editor, &mut state, guild, click(point))
+				.drop_without_applying_deltas();
+		}
+		let draft = editor.draft.as_mut().unwrap();
+		assert!(
+			draft.after.exempt_roles.contains(&Id(19991))
+				&& draft.after.exempt_roles.contains(&Id(19992))
+		);
+		assert!(
+			draft.after.exempt_channels.contains(&channels[0])
+				&& draft.after.exempt_channels.contains(&channels[1])
+		);
+		draft.role_search = "19992".into();
+		draft.channel_search = channels[0].to_string();
+		let output = frame(&ctx, &mut editor, &mut state, guild, vec![]);
+		assert!(
+			position(&output, "Target Moderator").is_some()
+				&& position(&output, "Target Room").is_some()
+		);
+		output.drop_without_applying_deltas();
+		let draft = editor.draft.as_mut().unwrap();
+		draft.role_search = "no matching role".into();
+		draft.channel_search = "no matching channel".into();
+		let output = frame(&ctx, &mut editor, &mut state, guild, vec![]);
+		assert!(
+			position(&output, "No matching roles.").is_some()
+				&& position(&output, "No matching channels.").is_some()
+		);
+		output.drop_without_applying_deltas();
+		let draft = editor.draft.as_ref().unwrap();
+		assert_eq!(draft.after.exempt_roles.len(), 2);
+		assert_eq!(draft.after.exempt_channels.len(), 2);
+	}
 	#[test]
 	fn unrelated_rule_edits_preserve_keyword_and_regex_whitespace() {
 		let settings = Settings {
