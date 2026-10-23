@@ -3363,6 +3363,20 @@ impl Desktop {
 			self.state.command_rejected(command);
 			return;
 		}
+		if let Command::ChannelAction {
+			guild,
+			channel,
+			request,
+			action,
+		} = &command
+			&& matches!(action, client_core::channel_actions::Action::Personal(_))
+			&& !self
+				.state
+				.personal_channel_dispatch_allowed(*guild, *channel, *request, action)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::ServerAdmin {
 			guild,
 			request,

@@ -118,7 +118,7 @@ impl ChannelMenu {
 			ui.set_width(232.0);
 			ui.spacing_mut().button_padding = egui::vec2(12.0, 8.0);
 			let available = (state.demo || state.gateway_connected)
-				&& !state.channel_action_pending()
+				&& (!state.channel_action_pending() || state.channel_description_pending())
 				&& state.can_view(channel.id);
 			let mut intent = None;
 			if row(
@@ -135,22 +135,54 @@ impl ChannelMenu {
 			if channel.kind != 4
 				&& row(
 					ui,
-					if view.contains(Shortcut::Favorite, channel.id) {
+					if state.channel_account_favorite(channel.id) {
 						"channel-menu-context-remove-from-favorites"
 					} else {
 						"channel-menu-context-add-to-favorites"
 					},
-					view.available(),
+					state.personal_channel_controls_available(guild),
 					false,
 				)
 				.on_hover_text(crate::i18n::translate(
-					"channel-menu-context-favorites-are-saved-on-this-device",
+					"Favorites are synchronized with your Discord account",
 				))
 				.clicked()
 			{
-				self.shortcut_requested = Some(view.toggle(Shortcut::Favorite, channel.id));
+				self.shortcut_requested = Some(crate::shortcuts::Intent {
+					channel: channel.id,
+					kind: Shortcut::Favorite,
+					on: !state.channel_account_favorite(channel.id),
+				});
 				self.generation = state.generation;
 				ui.close();
+			}
+			if !matches!(channel.kind, 10..=12) {
+				let shown = if channel.kind == 4 {
+					state
+						.channels
+						.iter()
+						.filter(|row| row.parent_id == Some(channel.id) && state.can_view(row.id))
+						.any(|row| state.channel_personally_selected(row.id))
+				} else {
+					state.channel_personally_selected(channel.id)
+				};
+				let label = match (channel.kind == 4, shown) {
+					(true, true) => "Hide Category",
+					(true, false) => "Show Category",
+					(false, true) => "Hide Channel",
+					(false, false) => "Show Channel",
+				};
+				if row(
+					ui,
+					label,
+					state.personal_channel_controls_available(guild),
+					false,
+				)
+				.clicked() && let Some(action) =
+					state.personal_visibility_change(channel.id, !shown)
+				{
+					intent = Some(Intent::Write(action));
+				}
 			}
 			ui.separator();
 			if state.can_create_server_invite(guild, channel.id)
@@ -222,6 +254,66 @@ impl ChannelMenu {
 						}
 					},
 				);
+			});
+			ui.add_enabled_ui(state.personal_channel_controls_available(guild), |ui| {
+				ui.menu_button("Unread Badges", |ui| {
+					let mask = model::channel_visibility::UNREADS_ONLY_MENTIONS
+						| model::channel_visibility::UNREADS_ALL_MESSAGES;
+					for (label, bits) in [
+						("Use notification setting", 0),
+						(
+							"All new messages",
+							model::channel_visibility::UNREADS_ALL_MESSAGES,
+						),
+						(
+							"Only mentions",
+							model::channel_visibility::UNREADS_ONLY_MENTIONS,
+						),
+					] {
+						if ui
+							.selectable_label(
+								state
+									.personal_channel_flags(channel.id)
+									.is_some_and(|flags| flags & mask == bits),
+								label,
+							)
+							.clicked() && let Some(action) =
+							state.personal_channel_flag_change(channel.id, mask, bits)
+						{
+							intent = Some(Intent::Write(action));
+						}
+					}
+				});
+				if matches!(channel.kind, 15 | 16) {
+					ui.menu_button("New Post Notifications", |ui| {
+						let mask = model::channel_visibility::NEW_FORUM_THREADS_OFF
+							| model::channel_visibility::NEW_FORUM_THREADS_ON;
+						for (label, bits) in [
+							("Use server default", 0),
+							(
+								"Show unread for new posts",
+								model::channel_visibility::NEW_FORUM_THREADS_ON,
+							),
+							(
+								"Do not mark unread for new posts",
+								model::channel_visibility::NEW_FORUM_THREADS_OFF,
+							),
+						] {
+							if ui
+								.selectable_label(
+									state
+										.personal_channel_flags(channel.id)
+										.is_some_and(|flags| flags & mask == bits),
+									label,
+								)
+								.clicked() && let Some(action) =
+								state.personal_channel_flag_change(channel.id, mask, bits)
+							{
+								intent = Some(Intent::Write(action));
+							}
+						}
+					});
+				}
 			});
 			if state.can_open_channel_settings(channel.id) {
 				ui.separator();

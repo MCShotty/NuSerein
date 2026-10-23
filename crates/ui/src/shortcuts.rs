@@ -36,7 +36,10 @@ impl Scope {
 	pub fn rosters(self) -> &'static [(Shortcut, Heading)] {
 		match self {
 			Self::Home => &[(Shortcut::Pinned, Heading::Pinned)],
-			Self::Guild(_) => &[(Shortcut::Favorite, Heading::Favorites)],
+			Self::Guild(_) => &[
+				(Shortcut::Favorite, Heading::Favorites),
+				(Shortcut::Favorite, Heading::DeviceFavorites),
+			],
 		}
 	}
 
@@ -56,6 +59,7 @@ pub(crate) enum Heading {
 	Pinned,
 	DirectMessages,
 	Favorites,
+	DeviceFavorites,
 }
 
 impl Heading {
@@ -65,11 +69,12 @@ impl Heading {
 			Self::Pinned => "channel-list-heading-pinned",
 			Self::DirectMessages => "channel-list-heading-direct-messages",
 			Self::Favorites => "channel-list-heading-favorites",
+			Self::DeviceFavorites => "Favorites on this device",
 		}
 	}
 
 	pub fn shelf(self) -> bool {
-		matches!(self, Self::Pinned | Self::Favorites)
+		matches!(self, Self::Pinned | Self::Favorites | Self::DeviceFavorites)
 	}
 }
 
@@ -97,9 +102,22 @@ impl<'a> Roster<'a> {
 	) -> Self {
 		let rosters = scope.rosters();
 		let mut rank = BTreeMap::new();
-		for (index, (kind, _)) in rosters.iter().enumerate() {
-			for (position, id) in prefs.ids(*kind).iter().enumerate() {
-				rank.entry(*id).or_insert((index, position));
+		for (index, (kind, heading)) in rosters.iter().enumerate() {
+			if *kind == Shortcut::Favorite && *heading == Heading::Favorites {
+				for (position, channel) in state
+					.channels
+					.iter()
+					.filter(|channel| {
+						channel.guild == scope.guild() && state.channel_account_favorite(channel.id)
+					})
+					.enumerate()
+				{
+					rank.entry(channel.id).or_insert((index, position));
+				}
+			} else {
+				for (position, id) in prefs.ids(*kind).iter().enumerate() {
+					rank.entry(*id).or_insert((index, position));
+				}
 			}
 		}
 		let mut buckets: Vec<Vec<(usize, &Channel)>> = vec![Vec::new(); rosters.len()];
@@ -183,20 +201,36 @@ impl MessagingUi {
 		state.demo || self.channel_preferences_loaded
 	}
 
-	pub(crate) fn apply_shortcut(&mut self, state: &State, intent: Intent) {
+	pub(crate) fn apply_shortcut(
+		&mut self,
+		state: &mut State,
+		intent: Intent,
+	) -> Option<client_core::Command> {
+		if intent.kind == Shortcut::Favorite {
+			let action = state.personal_channel_flag_change(
+				intent.channel,
+				model::channel_visibility::FAVORITED,
+				if intent.on {
+					model::channel_visibility::FAVORITED
+				} else {
+					0
+				},
+			)?;
+			return state.request_channel_action(intent.channel, action);
+		}
 		if !self.shortcuts_available(state) {
-			return;
+			return None;
 		}
 		if intent.on {
 			let Some(channel) = state.channel(intent.channel) else {
-				return;
+				return None;
 			};
 			let allowed = match intent.kind {
 				Shortcut::Pinned => ChannelPreferences::can_pin(channel),
 				Shortcut::Favorite => ChannelPreferences::can_favorite(channel),
 			};
 			if !allowed {
-				return;
+				return None;
 			}
 		}
 		match self
@@ -210,5 +244,6 @@ impl MessagingUi {
 			PreferenceEdit::CapacityReached => self.channel_menu.report_capacity(state.generation),
 			PreferenceEdit::Unchanged => {}
 		}
+		None
 	}
 }

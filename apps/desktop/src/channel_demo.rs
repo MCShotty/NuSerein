@@ -36,12 +36,16 @@ pub fn execute(
 		.channel(channel)
 		.ok_or(Failure::Forbidden)
 		.map(|source| match action {
+			Action::Description => {
+				Outcome::Description("A synthetic channel for community conversations.".into())
+			}
 			Action::Publish(message) => Outcome::Published(message),
 			Action::FollowAnnouncement(destination) => Outcome::AnnouncementFollowed {
 				destination,
 				webhook: Id(999),
 			},
 			Action::Move { .. } => Outcome::Moved,
+			Action::Personal(change) => Outcome::Personal(change),
 			Action::Load => {
 				Outcome::Details(state.channel_details(channel).cloned().unwrap_or_else(|| {
 					Edit {

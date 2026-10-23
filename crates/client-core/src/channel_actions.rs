@@ -234,6 +234,7 @@ impl CreateKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
 	Reference,
+	Description,
 	Publish(Id),
 	FollowAnnouncement(Id),
 	Load,
@@ -281,10 +282,12 @@ pub enum Action {
 	Mute(Mute),
 	Notifications(u8),
 	HideMuted(bool),
+	Personal(Box<model::channel_visibility::Change>),
 }
 impl Action {
 	pub fn valid(&self) -> bool {
 		match self {
+			Self::Personal(change) => change.valid(),
 			Self::Publish(message) | Self::FollowAnnouncement(message) => message.0 != 0,
 			Self::PostAddMember(user) | Self::PostRemoveMember(user) => user.0 != 0,
 			Self::PostTags(tags) => {
@@ -325,6 +328,7 @@ impl Action {
 	}
 }
 pub enum Outcome {
+	Description(Box<str>),
 	Published(Id),
 	AnnouncementFollowed {
 		destination: Id,
@@ -347,11 +351,14 @@ pub enum Outcome {
 		mute_until: Option<i64>,
 	},
 	HideMuted(bool),
+	Personal(Box<model::channel_visibility::Change>),
 }
 impl Outcome {
 	pub fn bytes(&self) -> usize {
 		match self {
 			Self::Details(edit) => edit.bytes(),
+			Self::Description(value) => value.len(),
+			Self::Personal(change) => change.bytes(),
 			Self::Post { channel, .. } => channel.bytes(),
 			Self::Channel {
 				channel,
@@ -388,6 +395,8 @@ pub struct Actions {
 	post_owner: Option<(Id, Id)>,
 	status: Option<(Id, &'static str, bool)>,
 	reference_names: Vec<(Id, Box<str>)>,
+	descriptions: Vec<(Id, Box<str>)>,
+	retired_description: Option<(Id, Id, u64)>,
 	created_thread: Option<(Id, Id, u64)>,
 	completed: Option<(Id, u64, bool)>,
 }
@@ -803,6 +812,20 @@ impl State {
 		}
 	}
 	pub fn request_channel_action(&mut self, channel: Id, action: Action) -> Option<Command> {
+		// Explicit actions supersede one optional topic read. Its late result is retired,
+		// and no further automatic read can start until it completes: at most one retired read.
+		if !matches!(action, Action::Description)
+			&& self.channel_description_pending()
+			&& self.channel_actions.retired_description.is_none()
+			&& let Some((guild, channel, request, _, _)) = self.channel_actions.pending.take()
+		{
+			self.channel_actions.retired_description = Some((guild, channel, request));
+		}
+		if matches!(action, Action::Description)
+			&& self.channel_actions.retired_description.is_some()
+		{
+			return None;
+		}
 		if self.channel_action_pending() {
 			return None;
 		}
@@ -811,13 +834,15 @@ impl State {
 		let guild = source.guild?;
 		let personal = matches!(
 			action,
-			Action::Mute(_) | Action::Notifications(_) | Action::HideMuted(_)
+			Action::Mute(_) | Action::Notifications(_) | Action::HideMuted(_) | Action::Personal(_)
 		);
 		if !action.valid()
+			|| matches!(&action, Action::Personal(change) if !self.personal_change_allowed(guild, change, false))
 			|| !self.can_view(channel)
 			|| (!personal
 				&& !match &action {
 					Action::Reference => false,
+					Action::Description => self.can_view(channel),
 					Action::Publish(message) => self.can_publish_message(channel, *message),
 					Action::FollowAnnouncement(destination) => {
 						self.can_follow_announcement(channel, *destination)
@@ -947,6 +972,47 @@ impl State {
 			action,
 		})
 	}
+	pub fn channel_description_pending(&self) -> bool {
+		self.channel_actions
+			.pending
+			.as_ref()
+			.is_some_and(|(_, _, _, action, _)| matches!(action, Action::Description))
+	}
+	pub fn channel_description_bytes(&self) -> usize {
+		self.channel_actions.descriptions.capacity() * size_of::<(Id, Box<str>)>()
+			+ self
+				.channel_actions
+				.descriptions
+				.iter()
+				.map(|(_, value)| value.len())
+				.sum::<usize>()
+	}
+	pub fn personal_channel_dispatch_allowed(
+		&self,
+		guild: Id,
+		channel: Id,
+		request: u64,
+		action: &Action,
+	) -> bool {
+		self.channel_actions
+			.pending
+			.as_ref()
+			.is_some_and(|(g, c, r, pending, _)| {
+				(*g, *c, *r) == (guild, channel, request) && pending == action
+			}) && self.can_view(channel)
+			&& matches!(action,Action::Personal(change) if self.personal_change_allowed(guild,change,false))
+	}
+	pub fn channel_description(&self, id: Id) -> Option<&str> {
+		self.can_view(id)
+			.then(|| {
+				self.channel_actions
+					.descriptions
+					.iter()
+					.find(|(known, _)| *known == id)
+					.map(|(_, value)| value.as_ref())
+			})
+			.flatten()
+	}
 	pub fn channel_reference_name(&self, id: Id) -> Option<&str> {
 		self.channel(id)
 			.filter(|channel| {
@@ -992,7 +1058,10 @@ impl State {
 			self.channel_actions.completed = Some((channel, request, false));
 			self.channel_actions.status = Some((
 				channel,
-				if matches!(action, Action::Reference | Action::Load | Action::PostLoad) {
+				if matches!(
+					action,
+					Action::Reference | Action::Description | Action::Load | Action::PostLoad
+				) {
 					"Channel load interrupted"
 				} else {
 					Failure::Ambiguous.label()
@@ -1004,6 +1073,18 @@ impl State {
 		self.channel_actions.post = None;
 	}
 	pub(crate) fn observe_channel_action(&mut self, event: &crate::Event) {
+		match event {
+			crate::Event::ChannelChanged(p) | crate::Event::ThreadChanged { patch: p, .. } => self
+				.channel_actions
+				.descriptions
+				.retain(|(id, _)| *id != p.id),
+			crate::Event::Unavailable(channel) => self
+				.channel_actions
+				.descriptions
+				.retain(|(id, _)| id != channel),
+			crate::Event::Permissions(_) => self.channel_actions.descriptions.clear(),
+			_ => {}
+		}
 		if let Some((channel, _)) = &self.channel_actions.post {
 			let invalid = match event {
 				crate::Event::ChannelChanged(p) | crate::Event::ThreadChanged { patch: p, .. } => {
@@ -1050,7 +1131,10 @@ impl State {
 					..
 				}) if matches!(
 					action,
-					Action::Mute(_) | Action::Notifications(_) | Action::HideMuted(_)
+					Action::Mute(_)
+						| Action::Notifications(_)
+						| Action::HideMuted(_)
+						| Action::Personal(_)
 				) =>
 				{
 					entries.iter().any(|s| s.guild == Some(*guild))
@@ -1066,6 +1150,10 @@ impl State {
 			request,
 			result,
 		} = event;
+		if self.channel_actions.retired_description == Some((guild, channel, request)) {
+			self.channel_actions.retired_description = None;
+			return Ok(());
+		}
 		let Some((g, c, r, _, _)) = &self.channel_actions.pending else {
 			return Ok(());
 		};
@@ -1178,6 +1266,9 @@ impl State {
 							_ => true,
 						}
 				}
+				(Action::Description, Outcome::Description(value)) => {
+					value.len() <= 2048 && value.chars().count() <= 512
+				}
 				(Action::Delete, Outcome::Deleted) => true,
 				(Action::Move { .. }, Outcome::Moved) => true,
 				(Action::Mute(mute), Outcome::Preferences { muted, .. }) => {
@@ -1187,6 +1278,7 @@ impl State {
 					*level == Some(*wanted)
 				}
 				(Action::HideMuted(hide), Outcome::HideMuted(actual)) => hide == actual,
+				(Action::Personal(wanted), Outcome::Personal(actual)) => wanted == actual,
 				_ => false,
 			};
 			if valid && outcome.bytes() <= 64 * 1024 {
@@ -1226,6 +1318,27 @@ impl State {
 				}
 				self.channel_actions.status = Some((channel, failure.label(), false));
 				self.status = failure.label();
+				return Ok(());
+			}
+			Ok(Outcome::Description(value)) => {
+				if !observed && self.can_view(channel) {
+					self.channel_actions
+						.descriptions
+						.retain(|(id, _)| *id != channel);
+					while self.channel_actions.descriptions.len() >= 64
+						|| self
+							.channel_actions
+							.descriptions
+							.iter()
+							.map(|(_, value)| value.len())
+							.sum::<usize>() + value.len()
+							> 64 * 1024
+					{
+						self.channel_actions.descriptions.remove(0);
+					}
+					self.channel_actions.descriptions.push((channel, value));
+				}
+				self.channel_actions.completed = Some((channel, request, true));
 				return Ok(());
 			}
 			Ok(Outcome::Published(message)) => {
@@ -1510,6 +1623,28 @@ impl State {
 					return Ok(());
 				}
 				"Notification settings updated"
+			}
+			Ok(Outcome::Personal(change)) => {
+				if !observed && !self.personal_change_allowed(guild, &change, false) {
+					self.channel_actions.status = Some((
+						channel,
+						"Channel access or preferences changed; reload before retrying",
+						false,
+					));
+					return Ok(());
+				}
+				if observed && !self.personal_change_allowed(guild, &change, true) {
+					self.channel_actions.status = Some((
+						channel,
+						"Channel preferences changed in another client; review before retrying",
+						false,
+					));
+					return Ok(());
+				}
+				if !observed {
+					self.confirm_personal_channels(guild, &change)?;
+				}
+				"Channel preferences updated"
 			}
 			Ok(Outcome::HideMuted(hide)) => {
 				if let Err(status) = self.confirm_guild_hides_muted(guild, hide) {

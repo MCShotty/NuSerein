@@ -48,7 +48,7 @@ impl PostMenu {
 		response: &egui::Response,
 		state: &State,
 		post: &Channel,
-		view: ShortcutView<'_>,
+		_view: ShortcutView<'_>,
 	) {
 		if self.generation != state.generation {
 			*self = Self {
@@ -91,20 +91,25 @@ impl PostMenu {
 				ui.separator();
 				if row(
 					ui,
-					if view.contains(Shortcut::Favorite, post.id) {
+					if state.channel_account_favorite(post.id) {
 						"post-menu-context-remove-from-favorites"
 					} else {
 						"post-menu-context-add-to-favorites"
 					},
-					view.available() && state.channel(post.id).is_some(),
+					state.personal_channel_controls_available(post.guild.unwrap())
+						&& state.channel(post.id).is_some(),
 					false,
 				)
 				.on_hover_text(crate::i18n::translate(
-					"post-menu-context-favorites-are-saved-on-this-device",
+					"Favorites are synchronized with your Discord account",
 				))
 				.clicked()
 				{
-					self.shortcut_requested = Some(view.toggle(Shortcut::Favorite, post.id));
+					self.shortcut_requested = Some(crate::shortcuts::Intent {
+						channel: post.id,
+						kind: Shortcut::Favorite,
+						on: !state.channel_account_favorite(post.id),
+					});
 					ui.close();
 				}
 				ui.separator();

@@ -1457,7 +1457,7 @@ impl MessagingUi {
 			|ui| {
 				design::switch(
 					ui,
-					"settings-chat-settings-show-hidden-channels",
+					"Show Permission-Locked Channels",
 					Some("settings-chat-settings-show-channels-you-cannot-currently-access"),
 					&mut self.show_hidden_channels,
 				);

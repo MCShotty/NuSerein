@@ -15,6 +15,7 @@ pub mod reporting;
 pub use image_sharing::ImageShare;
 pub mod archives;
 mod channel_preferences;
+pub mod channel_visibility;
 pub mod keybinds;
 pub mod member_guide;
 pub mod messaging_permissions;

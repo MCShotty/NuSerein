@@ -2047,6 +2047,12 @@ fn notification_preferences(
 			.into_iter()
 			.map(discord_protocol::notifications::Setting::with_defaults)
 			.map(|s| client_core::notifications::Setting {
+				flags: s.flags,
+				channel_flags: s.channel_overrides.as_ref().map_or_else(Vec::new, |c| {
+					c.0.iter()
+						.map(|row| (row.channel_id, row.flags, row.collapsed))
+						.collect()
+				}),
 				overrides_known: true,
 				guild: s.guild_id,
 				muted: s.muted,

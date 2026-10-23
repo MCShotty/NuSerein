@@ -297,6 +297,15 @@ impl State {
 		{
 			return None;
 		}
+		if self
+			.personal_channel_flags(channel.id)
+			.is_some_and(|flags| {
+				flags & model::channel_visibility::UNREADS_ONLY_MENTIONS != 0
+					|| matches!(channel.kind, 15 | 16)
+						&& flags & model::channel_visibility::NEW_FORUM_THREADS_OFF != 0
+			}) {
+			return Some(self.mention_count(channel.id) > 0);
+		}
 		let read = match self.read_state.entries.get(&channel.id) {
 			Some((id, _)) => *id,
 			None if self.read_state.known && matches!(channel.kind, 10..=12) => None,

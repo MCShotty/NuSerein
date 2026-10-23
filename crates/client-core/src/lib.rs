@@ -30,6 +30,7 @@ pub mod message_actions;
 pub mod messaging_permissions;
 pub mod notifications;
 pub mod owned_cosmetics;
+mod personal_channels;
 pub mod polls;
 pub mod preload;
 pub mod presence;

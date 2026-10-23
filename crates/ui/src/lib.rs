@@ -28,6 +28,7 @@ mod avatars;
 pub use avatars::media::debug_heic_layout_check;
 pub use avatars::media::{Lane, MAX_FRAMES, Motion, Rendition, Size, fit_edge, is_motion_video};
 pub use avatars::{EMBED_EDGE, FRAME_EDGE, GifFrames};
+mod browse_channels;
 mod categories;
 #[cfg(feature = "demo")]
 pub use categories::debug_thread_navigation_check;
@@ -276,6 +277,7 @@ pub struct MessagingUi {
 	group_menu: group_menu::GroupMenu,
 	group_create: group_members::NewGroup,
 	server_menu: server_menu::ServerMenu,
+	browse_channels: browse_channels::Browser,
 	community_ui: community::CommunityUi,
 	channel_menu: channel_menu::ChannelMenu,
 	pub channel_preferences: model::ChannelPreferences,
@@ -2092,6 +2094,17 @@ impl MessagingUi {
 						}
 					};
 					commands.extend(command);
+				}
+				if let Some(guild) = self.guild {
+					if ui
+						.add_sized(
+							[ui.available_width(), 30.0],
+							egui::Button::new("Browse Channels"),
+						)
+						.clicked()
+					{
+						self.browse_channels.open(state, guild);
+					}
 				}
 				ui.add_space(6.0);
 				if self.guild.is_none() {
@@ -4732,39 +4745,16 @@ impl MessagingUi {
 		if let Some(collapsed) = self.channel_menu.categories_collapsed_requested.take()
 			&& let Some(guild) = self.guild
 		{
-			let categories: Vec<_> = if collapsed {
-				state
-					.channels
-					.iter()
-					.filter(|channel| channel.guild == Some(guild) && channel.kind == 4)
-					.take(model::ChannelPreferences::MAX_ENTRIES + 1)
-					.map(|channel| channel.id)
-					.collect()
-			} else {
-				self.channel_preferences
-					.collapsed_categories
-					.iter()
-					.copied()
-					.filter(|id| {
-						state
-							.channel(*id)
-							.is_some_and(|channel| channel.guild == Some(guild))
-					})
-					.collect()
-			};
-			match self
-				.channel_preferences
-				.set_categories_collapsed(&categories, collapsed)
-			{
-				model::PreferenceEdit::Changed => {
-					self.channel_preferences_changed = true;
-					self.channel_cache.invalidate();
-					ctx.request_repaint();
-				}
-				model::PreferenceEdit::CapacityReached => {
-					self.channel_menu.report_capacity(state.generation)
-				}
-				model::PreferenceEdit::Unchanged => {}
+			let categories: Vec<_> = state
+				.channels
+				.iter()
+				.filter(|channel| {
+					channel.guild == Some(guild) && channel.kind == 4 && state.can_view(channel.id)
+				})
+				.map(|channel| channel.id)
+				.collect();
+			if let Some(action) = state.personal_collapse_change(guild, &categories, collapsed) {
+				commands.extend(state.request_personal_channel_action(guild, action));
 			}
 		}
 		if let Some((guild, channel)) = self.channel_menu.invite_requested.take() {
@@ -4782,6 +4772,20 @@ impl MessagingUi {
 			self.community_ui.open_events(state, guild, &mut commands);
 		}
 		self.community_ui.show(&ctx, state, &mut commands);
+		if let Some(guild) = self.server_menu.browse_requested.take() {
+			self.browse_channels.open(state, guild);
+		}
+		if let Some((guild, action)) = self.server_menu.channel_preferences_requested.take() {
+			commands.extend(state.request_personal_channel_action(guild, action));
+		}
+		self.browse_channels.show(
+			&ctx,
+			state,
+			self.guild,
+			&self.channel_preferences,
+			self.show_hidden_channels,
+			&mut commands,
+		);
 		if let Some(guild) = self.server_menu.settings_requested.take()
 			&& let Some(command) = self.preview_server_settings(state, guild)
 		{
@@ -5657,7 +5661,7 @@ impl MessagingUi {
 			.into_iter()
 			.chain(self.group_menu.pin_requested.take())
 		{
-			self.apply_shortcut(state, intent);
+			commands.extend(self.apply_shortcut(state, intent));
 		}
 		if let Some(action) = self.user_action.take().or(self.timeline.user_action.take()) {
 			let command = match action {
@@ -5678,7 +5682,7 @@ impl MessagingUi {
 					self.contact_editor.open(user, true, state)
 				}
 				user_menu::Action::Shortcut(intent) => {
-					self.apply_shortcut(state, intent);
+					commands.extend(self.apply_shortcut(state, intent));
 					None
 				}
 				user_menu::Action::Mention(user) => {
