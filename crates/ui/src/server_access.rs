@@ -50,6 +50,9 @@ impl AccessUi {
 	pub fn has_changes(&self) -> bool {
 		self.confirmation.is_some() || self.submitted || self.draft != self.baseline
 	}
+	pub fn overlay_open(&self) -> bool {
+		self.confirmation.is_some()
+	}
 	fn scope(&mut self, state: &State, guild: Id) {
 		if self.scope != Some((state.generation, guild)) {
 			*self = Self {
@@ -169,22 +172,51 @@ impl AccessUi {
 			Page::Safety => self.safety(ui, state, guild, available, &mut action),
 			Page::Access => self.access(ui, state, guild, available, &mut action),
 		}
-		self.confirm(ui, state, guild, available, &mut action);
 		if let Some(action) = action {
-			let write = action.write();
-			let interview = matches!(action, Action::Interview { .. });
-			if let Some(command) =
-				state.request_server_admin(guild, server_admin::Action::Access(action))
-			{
-				commands.push(command);
-				self.submitted = write;
-				self.open_interview = interview;
-				self.error = None;
-			} else {
-				self.error = Some(
-					"This action is unavailable. Reload and check your current permissions before trying again.",
-				);
-			}
+			self.dispatch(state, guild, action, commands);
+		}
+	}
+	fn dispatch(
+		&mut self,
+		state: &mut State,
+		guild: Id,
+		action: Action,
+		commands: &mut Vec<Command>,
+	) {
+		let write = action.write();
+		let interview = matches!(action, Action::Interview { .. });
+		if let Some(command) =
+			state.request_server_admin(guild, server_admin::Action::Access(action))
+		{
+			commands.push(command);
+			self.submitted = write;
+			self.open_interview = interview;
+			self.error = None;
+		} else {
+			self.error = Some(
+				"This action is unavailable. Reload and check your current permissions before trying again.",
+			);
+		}
+	}
+	pub fn overlays(
+		&mut self,
+		ctx: &egui::Context,
+		state: &mut State,
+		guild: Id,
+		page: Page,
+		commands: &mut Vec<Command>,
+	) {
+		if self.scope != Some((state.generation, guild)) || !Self::allowed(state, guild, page) {
+			self.confirmation = None;
+			self.reason.clear();
+			self.transfer_name.clear();
+			return;
+		}
+		let available = !state.server_admin.pending && (state.demo || state.gateway_connected);
+		let mut action = None;
+		self.confirm(ctx, state, guild, available, &mut action);
+		if let Some(action) = action {
+			self.dispatch(state, guild, action, commands);
 		}
 	}
 	fn applications(
@@ -641,7 +673,7 @@ impl AccessUi {
 	}
 	fn confirm(
 		&mut self,
-		ui: &mut egui::Ui,
+		ctx: &egui::Context,
 		state: &State,
 		guild: Id,
 		available: bool,
@@ -650,16 +682,11 @@ impl AccessUi {
 		let Some(confirmation) = self.confirmation.clone() else {
 			return;
 		};
-		let mut open = true;
 		let mut dismiss = false;
-		egui::Window::new("Confirm server action")
-			.id(egui::Id::unique("access-confirmation"))
-			.open(&mut open)
-			.collapsible(false)
-			.resizable(false)
-			.default_width(420.0)
-			.show(ui.ctx(), |ui| {
-				match &confirmation {
+		let response = dialog::Dialog::new("access-confirmation", "Confirm server action")
+			.width(420.0)
+			.show(ctx, |body| {
+				body.content(|ui| match &confirmation {
 					Confirmation::Decision { status, .. } => {
 						ui.label(if *status == Status::Approved {
 							"Approve this member application?"
@@ -706,19 +733,26 @@ impl AccessUi {
 						ui.label("Type the server name to confirm.");
 						ui.add(egui::TextEdit::singleline(&mut self.transfer_name).char_limit(100));
 					}
-				}
-				let ready = available
-					&& !state.server_admin.needs_refresh
-					&& !self.submitted
-					&& (!matches!(confirmation, Confirmation::Decision { .. })
-						|| !state.server_admin.access.applications_changed);
-				let name_matches = !matches!(confirmation, Confirmation::Transfer { .. })
-					|| state
-						.guild(guild)
-						.is_some_and(|g| g.name == self.transfer_name);
-				ui.horizontal_wrapped(|ui| {
+				});
+				body.footer(|ui| {
+					let ready = available
+						&& !state.server_admin.needs_refresh
+						&& !self.submitted && (!matches!(
+						confirmation,
+						Confirmation::Decision { .. }
+					) || !state
+						.server_admin
+						.access
+						.applications_changed);
+					let name_matches = !matches!(confirmation, Confirmation::Transfer { .. })
+						|| state
+							.guild(guild)
+							.is_some_and(|g| g.name == self.transfer_name);
 					if ui
-						.add_enabled(ready && name_matches, egui::Button::new("Confirm"))
+						.add_enabled_ui(ready && name_matches, |ui| {
+							dialog::action(ui, "Confirm", dialog::Action::Primary)
+						})
+						.inner
 						.clicked()
 					{
 						*action = Some(match confirmation.clone() {
@@ -744,14 +778,17 @@ impl AccessUi {
 						});
 					}
 					if ui
-						.add_enabled(!self.submitted, egui::Button::new("Cancel"))
+						.add_enabled_ui(!self.submitted, |ui| {
+							dialog::action(ui, "Cancel", dialog::Action::Neutral)
+						})
+						.inner
 						.clicked()
 					{
 						dismiss = true;
 					}
 				});
 			});
-		if !open || dismiss {
+		if response.close || dismiss {
 			self.confirmation = None;
 			self.reason.clear();
 			self.transfer_name.clear();

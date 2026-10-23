@@ -1127,6 +1127,7 @@ impl Editor {
 		}
 		let child_overlay = self.invites.overlay_open()
 			|| self.integrations.overlay_open()
+			|| self.access.overlay_open()
 			|| (self.page == Page::Roles && self.roles.preview_open());
 		let settings_bar = self.dirty() || self.refresh_conflict || state.server_settings.saving;
 		let roles_bar = self.page == Page::Roles && self.roles.has_changes();
@@ -1165,6 +1166,14 @@ impl Editor {
 			});
 		if self.page == Page::Roles {
 			self.roles.overlays(ctx, state);
+		}
+		if let Some(page) = match self.page {
+			Page::Applications => Some(crate::server_access::Page::Applications),
+			Page::Safety => Some(crate::server_access::Page::Safety),
+			Page::Access => Some(crate::server_access::Page::Access),
+			_ => None,
+		} {
+			self.access.overlays(ctx, state, guild, page, commands);
 		}
 		if self.page == Page::Invites {
 			self.invites.overlays(ctx, state, guild, avatars, commands);
@@ -2708,6 +2717,194 @@ fn timeout_picker(ui: &mut egui::Ui, timeout: &mut u32) {
 #[cfg(test)]
 mod navigation_tests {
 	use super::*;
+	fn access_frame(
+		ctx: &egui::Context,
+		editor: &mut Editor,
+		state: &mut State,
+		events: Vec<egui::Event>,
+	) -> (egui::FullOutput, Vec<Command>) {
+		let mut commands = Vec::new();
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(1440.0, 1100.0),
+				)),
+				events,
+				..Default::default()
+			},
+			|ui| {
+				editor.show(
+					ui.ctx(),
+					state,
+					&mut Avatars::default(),
+					&mut crate::profiles::ProfileSession::default(),
+					&mut commands,
+				)
+			},
+		);
+		(output, commands)
+	}
+	fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+		output
+			.shapes
+			.iter()
+			.find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text) if text.galley.job.text == label => {
+					Some(text.pos + text.galley.size() / 2.0)
+				}
+				_ => None,
+			})
+			.unwrap_or_else(|| panic!("production button {label}"))
+	}
+	fn click(position: egui::Pos2) -> Vec<egui::Event> {
+		vec![
+			egui::Event::PointerMoved(position),
+			egui::Event::PointerButton {
+				pos: position,
+				button: egui::PointerButton::Primary,
+				pressed: true,
+				modifiers: egui::Modifiers::NONE,
+			},
+			egui::Event::PointerButton {
+				pos: position,
+				button: egui::PointerButton::Primary,
+				pressed: false,
+				modifiers: egui::Modifiers::NONE,
+			},
+		]
+	}
+	fn access_fixture() -> (State, Id, Editor) {
+		let (mut state, guild, mut editor) = fixture();
+		editor.page = Page::Safety;
+		state.server_admin.guild = Some(guild);
+		state.server_admin.access.settings = Some(model::server_access::Settings {
+			guild,
+			owner: state.user.as_ref().unwrap().id,
+			features: vec![],
+			configuration: Default::default(),
+			mfa_level: 0,
+			verification_level: 1,
+			content_filter: 2,
+			incident: Some(Default::default()),
+		});
+		(state, guild, editor)
+	}
+	fn access_settle(ctx: &egui::Context, editor: &mut Editor, state: &mut State) {
+		for _ in 0..3 {
+			let (output, commands) = access_frame(ctx, editor, state, vec![]);
+			assert!(
+				commands
+					.iter()
+					.all(|c| client_core::mfa::Target::from_command(c).is_none())
+			);
+			output.drop_without_applying_deltas();
+		}
+	}
+	fn open_access_confirmation(ctx: &egui::Context, editor: &mut Editor, state: &mut State) {
+		access_settle(ctx, editor, state);
+		let (output, commands) = access_frame(ctx, editor, state, vec![]);
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		let button = text_position(&output, "Require moderator MFA");
+		output.drop_without_applying_deltas();
+		let (output, commands) = access_frame(ctx, editor, state, click(button));
+		output.drop_without_applying_deltas();
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		assert!(editor.access.overlay_open());
+		access_settle(ctx, editor, state);
+	}
+	#[test]
+	fn access_confirmation_is_top_modal_cancel_and_escape_do_not_write_or_close_settings() {
+		let (mut state, _, mut editor) = access_fixture();
+		let selected = state.selected;
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		open_access_confirmation(&ctx, &mut editor, &mut state);
+		let layer = egui::LayerId::new(
+			egui::Order::Foreground,
+			egui::Id::unique("access-confirmation"),
+		);
+		assert_eq!(ctx.memory(|m| m.top_modal_layer()), Some(layer));
+		let (output, commands) =
+			access_frame(&ctx, &mut editor, &mut state, vec![key(egui::Key::Escape)]);
+		output.drop_without_applying_deltas();
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		assert!(!editor.access.overlay_open());
+		assert!(editor.is_open());
+		assert!(!editor.discard);
+		open_access_confirmation(&ctx, &mut editor, &mut state);
+		let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+		let cancel = text_position(&output, "Cancel");
+		assert_eq!(ctx.layer_id_at(cancel), Some(layer));
+		output.drop_without_applying_deltas();
+		let (output, commands) = access_frame(&ctx, &mut editor, &mut state, click(cancel));
+		output.drop_without_applying_deltas();
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		assert!(!editor.access.overlay_open());
+		assert!(editor.is_open());
+		assert!(!editor.discard);
+		assert_eq!(state.selected, selected);
+	}
+	#[test]
+	fn access_confirmation_dispatches_once_and_rechecks_the_current_snapshot() {
+		for stale in [false, true] {
+			let (mut state, guild, mut editor) = access_fixture();
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			open_access_confirmation(&ctx, &mut editor, &mut state);
+			if stale {
+				state
+					.server_admin
+					.access
+					.settings
+					.as_mut()
+					.unwrap()
+					.mfa_level = 1;
+			}
+			let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+			let confirm = text_position(&output, "Confirm");
+			assert_eq!(
+				ctx.layer_id_at(confirm),
+				Some(egui::LayerId::new(
+					egui::Order::Foreground,
+					egui::Id::unique("access-confirmation")
+				))
+			);
+			output.drop_without_applying_deltas();
+			let (output, commands) = access_frame(&ctx, &mut editor, &mut state, click(confirm));
+			output.drop_without_applying_deltas();
+			let writes: Vec<_> = commands
+				.iter()
+				.filter(|c| client_core::mfa::Target::from_command(c).is_some())
+				.collect();
+			if stale {
+				assert!(writes.is_empty());
+				assert!(!state.server_admin.pending);
+			} else {
+				assert_eq!(writes.len(), 1);
+				assert!(
+					matches!(writes[0],Command::ServerAdmin {guild:target,action,..}if *target==guild&&matches!(action.as_ref(),model::server_admin::Action::Access(model::server_access::Action::MfaLevel {before:0,after:1})))
+				);
+				access_settle(&ctx, &mut editor, &mut state);
+			}
+		}
+	}
 	#[test]
 	fn role_preview_is_the_top_settings_modal_and_dismisses_without_closing_settings() {
 		fn render(
