@@ -646,11 +646,17 @@ mod member_review_tests {
 					body,
 					json!({"user_ids":["7","8"],"delete_message_seconds":0})
 				);
-				assert!(
-					headers
-						.to_ascii_lowercase()
-						.contains("x-audit-log-reason: reviewed")
-				);
+				let encoded = headers
+					.lines()
+					.find_map(|line| {
+						let (key, value) = line.split_once(':')?;
+						key.eq_ignore_ascii_case("x-audit-log-reason")
+							.then(|| value.trim())
+					})
+					.expect("bulk ban retains its audit reason header");
+				let reason =
+					reqwest::Url::parse(&format!("http://127.0.0.1/?reason={encoded}")).unwrap();
+				assert_eq!(reason.query_pairs().next().unwrap().1, "Reviewed");
 				respond(&mut socket, "204 No Content", "").await;
 				for _ in 0..2 {
 					let (mut socket, _) = listener.accept().await.unwrap();
