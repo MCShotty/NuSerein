@@ -245,7 +245,7 @@ mod tests {
 		let mut preview = Preview::default();
 		preview.open(&state, guild, guild);
 		let ctx = egui::Context::default();
-		let _ = ctx.run_ui(
+		ctx.run_ui(
 			egui::RawInput {
 				screen_rect: Some(egui::Rect::from_min_size(
 					egui::Pos2::ZERO,
@@ -254,7 +254,8 @@ mod tests {
 				..Default::default()
 			},
 			|ui| preview.show(ui.ctx(), &state),
-		);
+		)
+		.drop_without_applying_deltas();
 		assert_eq!(preview.rebuilds, 1);
 		assert!(preview.rows.len() >= 500);
 		assert!(
@@ -268,9 +269,10 @@ mod tests {
 			.unwrap()
 			.bits;
 		assert_eq!(initial, Some(p::VIEW_CHANNEL));
-		let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+		ctx.run_ui(egui::RawInput::default(), |ui| {
 			preview.show(ui.ctx(), &state)
-		});
+		})
+		.drop_without_applying_deltas();
 		assert_eq!(
 			preview.rebuilds, 1,
 			"a repaint does not reevaluate offscreen channels"
@@ -284,9 +286,10 @@ mod tests {
 			generation: state.generation,
 			event: client_core::Event::Message(message),
 		});
-		let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+		ctx.run_ui(egui::RawInput::default(), |ui| {
 			preview.show(ui.ctx(), &state)
-		});
+		})
+		.drop_without_applying_deltas();
 		assert_eq!(
 			preview.rebuilds, 1,
 			"ordinary guild traffic keeps the preview cache"
@@ -311,9 +314,10 @@ mod tests {
 				role,
 			}),
 		});
-		let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+		ctx.run_ui(egui::RawInput::default(), |ui| {
 			preview.show(ui.ctx(), &state)
-		});
+		})
+		.drop_without_applying_deltas();
 		assert_eq!(preview.rebuilds, 2);
 		assert_eq!(
 			preview
@@ -337,9 +341,10 @@ mod tests {
 			.unwrap()
 			.id;
 		preview.roles.push(extra_role);
-		let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+		ctx.run_ui(egui::RawInput::default(), |ui| {
 			preview.show(ui.ctx(), &state)
-		});
+		})
+		.drop_without_applying_deltas();
 		assert_eq!(
 			preview.rebuilds, 3,
 			"selected-role changes reevaluate the simulation"
@@ -361,9 +366,10 @@ mod tests {
 		preview.open(&state, guild, guild);
 		assert!(preview.active());
 		let ctx = egui::Context::default();
-		let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+		ctx.run_ui(egui::RawInput::default(), |ui| {
 			preview.show(ui.ctx(), &state)
-		});
+		})
+		.drop_without_applying_deltas();
 		assert_eq!(state.permissions.guilds.get(&guild), Some(&original));
 		assert_eq!(state.selected, selected);
 		state.generation = state.generation.wrapping_add(1);

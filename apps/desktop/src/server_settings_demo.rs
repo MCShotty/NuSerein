@@ -85,6 +85,18 @@ pub fn execute_admin(
 	);
 	let owner = state.user.as_ref().expect("fixture user");
 	let result = match action {
+		Action::CommandPermissions(action) => {
+			match execute_command_permissions(state, guild, action) {
+				Ok(page) => Outcome::CommandPermissions(page),
+				Err(failure) => {
+					return Event::ServerAdmin(client_core::server_admin::Event {
+						guild,
+						request,
+						result: Err(failure),
+					});
+				}
+			}
+		}
 		Action::Access(action) => Outcome::Access(execute_access(state, guild, action)),
 		Action::Community(action) => {
 			Outcome::Community(crate::community_admin_demo::execute(state, guild, action))
@@ -642,7 +654,7 @@ fn execute_access(
 				let mut user = owner.clone();
 				user.id = Id(id.0.saturating_add(100));
 				user.name = ["Avery", "Mika", "Rowan"][(id.0 % 3) as usize].into();
-				user.username = Some(format!("synthetic.{}", user.name.to_lowercase()));
+				user.username = Some(format!("synthetic.{}", user.name.to_lowercase()).into());
 				user.avatar = None;
 				Application {
 					id,
@@ -1237,6 +1249,75 @@ pub fn open(state: &mut State, messaging: &mut ui::MessagingUi) {
 	}
 }
 
+fn execute_command_permissions(
+	state: &State,
+	guild: Id,
+	action: model::command_permissions::Action,
+) -> Result<model::command_permissions::Snapshot, client_core::auth::Failure> {
+	use client_core::auth::Failure;
+	use model::command_permissions as m;
+	let application = action.application();
+	if state.server_admin.guild != Some(guild)
+		|| !state
+			.server_admin
+			.integrations
+			.as_ref()
+			.is_some_and(|page| {
+				page.guild == guild
+					&& page.integrations.as_ref().is_some_and(|items| {
+						items.iter().any(|item| {
+							item.application
+								.as_ref()
+								.is_some_and(|app| app.id == application)
+						})
+					})
+			}) {
+		return Err(Failure::Forbidden);
+	}
+	let mut page = state
+		.server_admin
+		.command_permissions
+		.as_ref()
+		.filter(|page| page.guild == guild && page.application == application)
+		.cloned()
+		.unwrap_or_else(|| m::Snapshot {
+			guild,
+			application,
+			commands: ["help", "server-info"]
+				.into_iter()
+				.enumerate()
+				.map(|(index, name)| m::Command {
+					id: Id(application.0.saturating_add(100 + index as u64)),
+					name: name.into(),
+					kind: 1,
+				})
+				.collect(),
+			permissions: vec![m::Permissions {
+				id: application,
+				overrides: vec![m::Override {
+					id: guild,
+					kind: 1,
+					permission: true,
+				}],
+			}],
+		});
+	match action {
+		m::Action::Load { .. } => {}
+		m::Action::Save { before, after, .. } => {
+			let actual = page.get(before.id).ok_or(Failure::Forbidden)?;
+			let merged = m::Permissions::merge(&before, &after, &actual).ok_or(
+				Failure::ProtocolAt("Command permissions changed; reload and review your changes"),
+			)?;
+			page.permissions.retain(|rules| rules.id != merged.id);
+			page.permissions.push(merged);
+		}
+	}
+	if !page.valid() {
+		return Err(Failure::Protocol);
+	}
+	Ok(page)
+}
+
 fn execute_integrations(
 	state: &State,
 	guild: Id,
@@ -1384,6 +1465,29 @@ fn execute_integrations(
 			hook.name = Some(name);
 			page.integrations = None;
 		}
+		Action::SetWebhookAvatar {
+			scope,
+			webhook,
+			avatar,
+		} => {
+			page.channel = scope;
+			let hook = page
+				.webhooks
+				.as_mut()
+				.unwrap()
+				.iter_mut()
+				.find(|hook| {
+					hook.id == webhook
+						&& hook.kind == 1 && scope.is_none_or(|channel| hook.channel == Some(channel))
+				})
+				.expect("eligible synthetic webhook avatar target");
+			hook.avatar = match avatar {
+				model::Patch::Value(_) => Some("cccccccccccccccccccccccccccccccc".into()),
+				model::Patch::Null => None,
+				model::Patch::Absent => unreachable!("validated avatar patch"),
+			};
+			page.integrations = None;
+		}
 		Action::DeleteWebhook { webhook, scope } => {
 			page.channel = scope;
 			page.webhooks
@@ -1501,4 +1605,223 @@ fn execute_audit_log(
 	};
 	assert!(page.valid_response());
 	model::server_admin::Result::AuditLog(page)
+}
+
+#[cfg(test)]
+mod permissions_tests {
+	use super::*;
+	use model::{command_permissions as m, server_admin::Action, server_integrations as i};
+
+	fn perform(state: &mut State, guild: Id, action: Action) {
+		let Command::ServerAdmin {
+			guild,
+			request,
+			action,
+		} = state
+			.request_server_admin(guild, action)
+			.expect("eligible synthetic administration command")
+		else {
+			panic!("production administration command");
+		};
+		let event = execute_admin(state, guild, request, *action);
+		assert!(matches!(&event, Event::ServerAdmin(event) if event.result.is_ok()));
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		assert!(state.server_admin.error.is_none());
+		assert!(!state.server_admin.pending);
+	}
+	fn fixture() -> (State, Id) {
+		let mut state = test_support::demo_state();
+		open(&mut state, &mut ui::MessagingUi::default());
+		let guild = state.guilds[0].id;
+		perform(
+			&mut state,
+			guild,
+			Action::Integrations(i::Action::Load {
+				channel: None,
+				integrations: true,
+				webhooks: true,
+			}),
+		);
+		(state, guild)
+	}
+
+	#[test]
+	fn command_permission_demo_loads_saves_and_preserves_unknown_overrides() {
+		let (mut state, guild) = fixture();
+		let app = state
+			.server_admin
+			.integrations
+			.as_ref()
+			.unwrap()
+			.integrations
+			.as_ref()
+			.unwrap()[0]
+			.application
+			.as_ref()
+			.unwrap()
+			.id;
+		perform(
+			&mut state,
+			guild,
+			Action::CommandPermissions(m::Action::Load { application: app }),
+		);
+		let page = state.server_admin.command_permissions.as_mut().unwrap();
+		assert_eq!(page.commands.len(), 2);
+		let command = page.commands[0].id;
+		page.permissions[0].overrides.push(m::Override {
+			id: Id(777),
+			kind: 77,
+			permission: false,
+		});
+		let before = page.get(app).unwrap();
+		let mut after = before.clone();
+		after.overrides[0].permission = false;
+		perform(
+			&mut state,
+			guild,
+			Action::CommandPermissions(m::Action::Save {
+				application: app,
+				before,
+				after,
+			}),
+		);
+		let page = state.server_admin.command_permissions.as_ref().unwrap();
+		let defaults = page.get(app).unwrap();
+		assert!(
+			defaults
+				.overrides
+				.iter()
+				.any(|row| row.kind == 77 && !row.permission)
+		);
+		assert!(
+			defaults
+				.overrides
+				.iter()
+				.any(|row| row.id == guild && row.kind == 1 && !row.permission)
+		);
+		let before = page.get(command).unwrap();
+		let mut after = before.clone();
+		after.overrides.push(m::Override {
+			id: guild,
+			kind: 1,
+			permission: true,
+		});
+		perform(
+			&mut state,
+			guild,
+			Action::CommandPermissions(m::Action::Save {
+				application: app,
+				before: before.clone(),
+				after: after.clone(),
+			}),
+		);
+		assert!(
+			state
+				.server_admin
+				.command_permissions
+				.as_ref()
+				.unwrap()
+				.get(command)
+				.unwrap()
+				.equivalent(&after)
+		);
+		assert!(matches!(
+			execute_command_permissions(
+				&state,
+				guild,
+				m::Action::Save {
+					application: app,
+					before,
+					after
+				}
+			),
+			Err(client_core::auth::Failure::ProtocolAt(_))
+		));
+		assert!(matches!(
+			execute_command_permissions(&state, Id(999_999), m::Action::Load { application: app }),
+			Err(client_core::auth::Failure::Forbidden)
+		));
+	}
+
+	#[test]
+	fn webhook_avatar_demo_changes_only_the_approved_avatar_and_supports_removal() {
+		let (mut state, guild) = fixture();
+		let original = state
+			.server_admin
+			.integrations
+			.as_ref()
+			.unwrap()
+			.webhooks
+			.as_ref()
+			.unwrap()[0]
+			.clone();
+		perform(
+			&mut state,
+			guild,
+			Action::Integrations(i::Action::SetWebhookAvatar {
+				scope: None,
+				webhook: original.id,
+				avatar: model::Patch::Value("data:image/png;base64,U1lOVEhFVElD".into()),
+			}),
+		);
+		let updated = &state
+			.server_admin
+			.integrations
+			.as_ref()
+			.unwrap()
+			.webhooks
+			.as_ref()
+			.unwrap()[0];
+		assert!(updated.avatar.is_some());
+		assert_eq!(updated.name, original.name);
+		assert_eq!(updated.channel, original.channel);
+		assert_eq!(updated.id, original.id);
+		perform(
+			&mut state,
+			guild,
+			Action::Integrations(i::Action::SetWebhookAvatar {
+				scope: None,
+				webhook: original.id,
+				avatar: model::Patch::Null,
+			}),
+		);
+		let updated = &state
+			.server_admin
+			.integrations
+			.as_ref()
+			.unwrap()
+			.webhooks
+			.as_ref()
+			.unwrap()[0];
+		assert!(updated.avatar.is_none());
+		assert_eq!(updated.name, original.name);
+		assert_eq!(updated.channel, original.channel);
+		let followed = state
+			.server_admin
+			.integrations
+			.as_ref()
+			.unwrap()
+			.webhooks
+			.as_ref()
+			.unwrap()
+			.iter()
+			.find(|hook| hook.kind == 2)
+			.unwrap()
+			.id;
+		assert!(
+			state
+				.request_server_admin(
+					guild,
+					Action::Integrations(i::Action::SetWebhookAvatar {
+						scope: None,
+						webhook: followed,
+						avatar: model::Patch::Null
+					})
+				)
+				.is_none()
+		);
+	}
 }
