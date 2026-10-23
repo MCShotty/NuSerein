@@ -328,6 +328,80 @@ mod tests {
 		net::TcpListener,
 	};
 	#[tokio::test]
+	async fn webhook_avatar_is_a_narrow_write_with_confirmed_readback_and_no_retry() {
+		tokio::time::timeout(Duration::from_secs(10), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_AVATAR_TOKEN".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let old = "11111111111111111111111111111111";
+			let new = "22222222222222222222222222222222";
+			let data = "data:image/png;base64,U1lOVEhFVElD";
+			let server = tokio::spawn(async move {
+				let hook = |avatar: Option<&str>| {
+					json!({"id":"3","guild_id":"2","channel_id":"4","type":1,"name":"Unchanged name","avatar":avatar})
+				};
+				for (before, acknowledgement, readback, body) in [
+					(Some(old), Some(new), Some(new), json!({"avatar":data})),
+					(Some(new), None, None, json!({"avatar":null})),
+					(Some(old), Some(new), Some(old), json!({"avatar":data})),
+				] {
+					for (method, path, response, body) in [
+						("GET", "/channels/4/webhooks", json!([hook(before)]), None),
+						("GET", "/channels/4", json!({"id":"4","guild_id":"2","type":0}), None),
+						("PATCH", "/webhooks/3", hook(acknowledgement), Some(body)),
+						("GET", "/channels/4/webhooks", json!([hook(readback)]), None),
+					] {
+						let (mut stream, _) = listener.accept().await.unwrap();
+						let mut bytes = Vec::new();
+						let end = loop {
+							let mut chunk = [0; 4096];
+							let n = stream.read(&mut chunk).await.unwrap();
+							assert!(n > 0);
+							bytes.extend_from_slice(&chunk[..n]);
+							assert!(bytes.len() <= 16_384);
+							if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+								break end + 4;
+							}
+						};
+						let headers = std::str::from_utf8(&bytes[..end]).unwrap();
+						assert!(headers.starts_with(&format!("{method} {path} HTTP/1.1\r\n")));
+						let length = headers.lines().find_map(|line| {
+							let (name, value) = line.split_once(':')?;
+							name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+						}).unwrap_or(0);
+						assert!(length <= 4096);
+						while bytes.len() < end + length {
+							let mut chunk = [0; 4096];
+							let n = stream.read(&mut chunk).await.unwrap();
+							assert!(n > 0);
+							bytes.extend_from_slice(&chunk[..n]);
+						}
+						if let Some(body) = body {
+							assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[end..end + length]).unwrap(), body);
+						} else {
+							assert_eq!(length, 0);
+						}
+						let response = response.to_string();
+						stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+					}
+				}
+				assert!(tokio::time::timeout(Duration::from_millis(80), listener.accept()).await.is_err());
+			});
+			for (avatar, expected) in [(model::Patch::Value(data.into()), Some(new)), (model::Patch::Null, None)] {
+				let page = api.server_integration_action(Id(2), &Action::SetWebhookAvatar {scope: Some(Id(4)), webhook: Id(3), avatar}).await.unwrap();
+				let hooks = page.webhooks.unwrap();
+				assert_eq!(hooks[0].avatar.as_deref(), expected);
+				assert_eq!(hooks[0].name.as_deref(), Some("Unchanged name"));
+				assert_eq!(hooks[0].channel, Some(Id(4)));
+			}
+			assert!(matches!(api.server_integration_action(Id(2), &Action::SetWebhookAvatar {scope:Some(Id(4)), webhook:Id(3), avatar:model::Patch::Value(data.into())}).await, Err(Failure::Ambiguous)));
+			server.await.unwrap();
+		}).await.unwrap();
+	}
+	#[tokio::test]
 	async fn webhook_url_copy_uses_authenticated_get_and_rejects_wrong_scope() {
 		tokio::time::timeout(Duration::from_secs(10), async {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

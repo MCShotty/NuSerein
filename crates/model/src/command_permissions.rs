@@ -269,4 +269,30 @@ mod tests {
 				.equivalent(&set(&[(4, 77, false), (5, 3, true)]))
 		);
 	}
+	#[test]
+	fn current_hundred_override_limit_preserves_unknown_kinds_without_truncation() {
+		let before = Permissions {
+			id: Id(2),
+			overrides: (1..=MAX_OVERRIDES as u64)
+				.map(|id| Override {
+					id: Id(id),
+					kind: if id == 100 { 77 } else { 2 },
+					permission: true,
+				})
+				.collect(),
+		};
+		assert!(before.valid());
+		let mut after = before.clone();
+		after.overrides[0].permission = false;
+		let merged = Permissions::merge(&before, &after, &before).unwrap();
+		assert_eq!(merged.overrides.len(), MAX_OVERRIDES);
+		assert_eq!(merged.overrides.last().unwrap().kind, 77);
+		after.overrides.push(Override {
+			id: Id(101),
+			kind: 2,
+			permission: true,
+		});
+		assert!(!after.valid());
+		assert!(Permissions::merge(&before, &after, &before).is_none());
+	}
 }

@@ -228,6 +228,16 @@ impl PermissionsUi {
 		if draft.overrides.is_empty() {
 			ui.weak("No overrides · uses the app's defaults and the member's permissions.");
 		}
+		ui.weak(format!(
+			"{} / {} permission overrides{}",
+			draft.overrides.len(),
+			m::MAX_OVERRIDES,
+			if draft.overrides.len() >= m::MAX_OVERRIDES {
+				" · remove an override before adding another"
+			} else {
+				""
+			}
+		));
 		ui.add_enabled_ui(
 			!state.server_admin.pending && draft.overrides.len() < m::MAX_OVERRIDES,
 			|ui| {
@@ -454,4 +464,68 @@ fn member_matches(state: &State, channel: Id, query: &str) -> Vec<(Id, String, S
 			.then(a.0.cmp(&b.0))
 	});
 	rows
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn command_member_selector_uses_scoped_gateway_nicknames_and_usernames() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let target = Id(900_001);
+		assert!(member_matches(&state, channel, "unique.account").is_empty());
+		let client_core::Command::MemberSearch(request) =
+			state.search_members(channel, "unique.account", 0).unwrap()
+		else {
+			panic!("production member lookup");
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberSearch {
+				request,
+				result: Ok(vec![model::Member {
+					user: model::User {
+						id: target,
+						name: "Global display".into(),
+						username: Some("unique.account".into()),
+						avatar: None,
+						webhook: false,
+						kind: Default::default(),
+						discriminator: 0,
+						primary_guild: None,
+						cosmetics: None,
+					},
+					roles: vec![],
+					nick: Some("Shared nickname".into()),
+					status: None,
+					custom_status: None,
+					activities: vec![],
+					clients: Default::default(),
+				}]),
+			},
+		});
+		let expected = vec![(target, "Shared nickname".into(), "unique.account".into())];
+		for query in ["unique.account", "shared nick", "global display", "900001"] {
+			assert_eq!(member_matches(&state, channel, query), expected);
+		}
+		assert!(
+			state
+				.members
+				.as_ref()
+				.is_none_or(|members| members.slots.iter().flatten().all(
+					|row| !matches!(row, model::MemberSlot::Person(member) if member.user.id == target)
+				))
+		);
+		let _ = state.search_members(channel, "another query", 0).unwrap();
+		assert_eq!(member_matches(&state, channel, "unique.account"), expected);
+		state.member_search[0].request.as_mut().unwrap().guild = Id(999_999);
+		assert!(member_matches(&state, channel, "unique.account").is_empty());
+		state.channels.retain(|row| row.id != channel);
+		assert!(member_matches(&state, channel, "unique.account").is_empty());
+	}
 }
