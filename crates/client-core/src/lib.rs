@@ -570,6 +570,10 @@ pub enum Event {
 	},
 	ChannelAction(channel_actions::Event),
 	ServerAdmin(server_admin::Event),
+	BulkModeration {
+		guild: Id,
+		report: model::moderation::BulkReport,
+	},
 	ServerSettings(server_settings::Event),
 	MemberGuide(member_guide::Event),
 	Onboarding(onboarding::Event),
@@ -3040,6 +3044,7 @@ impl State {
 		) {
 			self.navigation_index.bytes.set(None);
 		}
+		self.invalidate_member_review(&envelope.event);
 		let access_changed = envelope.event.changes_access();
 		if access_changed && self.search_access_changed(&envelope.event) {
 			self.clear_search();
@@ -3424,6 +3429,11 @@ impl State {
 				let result = self.apply_server_admin(event);
 				self.enforce_admin_budget();
 				result
+			}
+			Event::BulkModeration { guild, report } => {
+				self.apply_bulk_moderation(guild, report);
+				self.enforce_admin_budget();
+				Ok(())
 			}
 			Event::GroupAction(event) => self.apply_group_action(event),
 			Event::ThreadsSync {
@@ -4994,6 +5004,7 @@ impl Event {
 					.result
 					.as_ref()
 					.map_or(0, model::community::Outcome::bytes),
+				Self::BulkModeration { report, .. } => report.bytes(),
 				Self::ServerAdmin(event) => event
 					.result
 					.as_ref()

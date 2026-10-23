@@ -249,6 +249,170 @@ impl DiscordApi {
 					.map(m::Outcome::Bans)
 					.map_err(|_| Failure::Protocol)
 			}
+			m::Action::BanSearch { query } => {
+				let encoded: String = query
+					.trim()
+					.bytes()
+					.map(|byte| format!("%{byte:02X}"))
+					.collect();
+				let bytes = self
+					.request_limited(
+						Method::GET,
+						&format!("/guilds/{guild}/bans/search?query={encoded}&limit=10"),
+						None,
+						128 * 1024,
+					)
+					.await?;
+				let mut page = discord_protocol::moderation::bans(&bytes, guild, None)
+					.map_err(|_| Failure::Protocol)?;
+				if page.items.len() > 10 {
+					return Err(Failure::Protocol);
+				}
+				page.next = None;
+				Ok(m::Outcome::Bans(page))
+			}
+			m::Action::BulkBan {
+				users,
+				delete_seconds,
+				reason,
+			} => {
+				let response = self
+					.request_reason_limited(
+						Method::POST,
+						&format!("/guilds/{guild}/bulk-ban/v2"),
+						Some(json!({"user_ids": users,"delete_message_seconds":delete_seconds})),
+						4096,
+						reason,
+					)
+					.await
+					.map_err(write_failure)?;
+				if !response.is_empty() {
+					return Err(Failure::Ambiguous);
+				}
+				Ok(m::Outcome::Bulk(m::BulkReport::pending(users)))
+			}
+			m::Action::BulkRefresh { users } => {
+				use futures_util::{StreamExt, stream};
+				let rows = stream::iter(users.iter().copied())
+					.map(|user| async move {
+						let status = match self
+							.request_optional_limited(&format!("/guilds/{guild}/bans/{user}"), 8192)
+							.await
+						{
+							Ok(Some(bytes)) => {
+								let value: Value = serde_json::from_slice(&bytes)
+									.map_err(|_| Failure::Protocol)?;
+								if value["user"]["id"]
+									.as_str()
+									.and_then(|id| id.parse::<Id>().ok())
+									!= Some(user)
+								{
+									return Err(Failure::Protocol);
+								}
+								m::BanStatus::Banned
+							}
+							Ok(None) => m::BanStatus::NotBanned,
+							Err(error) if error.ends_session() => return Err(error),
+							Err(_) => m::BanStatus::Unknown,
+						};
+						Ok((user, status))
+					})
+					.buffer_unordered(2)
+					.collect::<Vec<Result<_, Failure>>>()
+					.await;
+				let users = rows.into_iter().collect::<Result<Vec<_>, _>>()?;
+				Ok(m::Outcome::Bulk(m::BulkReport {
+					users,
+					accepted: true,
+				}))
+			}
+			m::Action::Review {
+				user,
+				channel,
+				audit,
+			} => {
+				let member = self.admin_member(guild, *user).await?;
+				let mut review = m::Review {
+					guild,
+					channel: *channel,
+					member,
+					roles: Vec::new(),
+					messages: Vec::new(),
+					audit: Vec::new(),
+					messages_error: None,
+					audit_error: None,
+				};
+				match self.admin_metadata(guild).await {
+					Ok(metadata) => {
+						if let Ok((roles, _)) = metadata.checked_roles() {
+							review.roles = roles;
+						}
+					}
+					Err(error) if error.ends_session() => return Err(error),
+					Err(_) => {}
+				}
+				match self
+					.search(
+						*channel,
+						Some(guild),
+						&format!("from:{user}"),
+						None,
+						0,
+						false,
+					)
+					.await
+				{
+					Ok(client_core::search::Outcome::Page(page)) => {
+						for hit in page
+							.hits
+							.into_iter()
+							.filter(|hit| hit.author.id == *user)
+							.take(25)
+						{
+							let excerpt: String = hit.excerpt.chars().take(512).collect();
+							review.messages.push(m::ReviewMessage {
+								id: hit.id,
+								channel: hit.channel,
+								excerpt,
+							});
+						}
+					}
+					Ok(_) => {
+						review.messages_error =
+							Some("Message search is still indexing. Retry later.")
+					}
+					Err(error) if error.ends_session() => return Err(error),
+					Err(error) => review.messages_error = Some(error.label()),
+				}
+				if *audit {
+					match self
+						.server_audit_log(guild, &model::server_audit_log::Query::default())
+						.await
+					{
+						Ok(page) => {
+							let target = user.to_string();
+							review.audit = page
+								.entries
+								.into_iter()
+								.filter(|entry| entry.target_id.as_deref() == Some(target.as_str()))
+								.take(20)
+								.map(|entry| m::ReviewAudit {
+									id: entry.id,
+									actor: entry.user_id,
+									action: entry.action_type,
+									reason: entry.reason,
+								})
+								.collect();
+						}
+						Err(error) if error.ends_session() => return Err(error),
+						Err(error) => review.audit_error = Some(error.label()),
+					}
+				}
+				if !review.valid() {
+					return Err(Failure::Capacity);
+				}
+				Ok(m::Outcome::Review(Box::new(review)))
+			}
 			m::Action::Member(user) => self
 				.admin_member(guild, *user)
 				.await
@@ -413,5 +577,154 @@ mod tests {
 			"Explicit rename"
 		);
 		assert!(body.get("event_type").is_none() && body.get("trigger_type").is_none());
+	}
+}
+#[cfg(test)]
+mod member_review_tests {
+	use super::*;
+	use client_core::auth::SessionSecret;
+	use std::{sync::Arc, time::Duration};
+	use tokio::{
+		io::{AsyncReadExt, AsyncWriteExt},
+		net::TcpListener,
+	};
+	async fn request(socket: &mut tokio::net::TcpStream) -> (String, Value) {
+		let mut bytes = Vec::new();
+		loop {
+			let mut chunk = [0; 4096];
+			let n = socket.read(&mut chunk).await.unwrap();
+			assert!(n > 0);
+			bytes.extend_from_slice(&chunk[..n]);
+			assert!(bytes.len() < 32768);
+			if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+				let headers = std::str::from_utf8(&bytes[..end]).unwrap();
+				let length = headers
+					.lines()
+					.find_map(|line| {
+						let (key, value) = line.split_once(':')?;
+						key.eq_ignore_ascii_case("content-length")
+							.then(|| value.trim().parse::<usize>().unwrap())
+					})
+					.unwrap_or(0);
+				if bytes.len() >= end + 4 + length {
+					return (
+						headers.to_owned(),
+						if length == 0 {
+							Value::Null
+						} else {
+							serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap()
+						},
+					);
+				}
+			}
+		}
+	}
+	async fn respond(socket: &mut tokio::net::TcpStream, status: &str, body: &str) {
+		socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+	}
+	#[tokio::test]
+	async fn bulk_v2_ack_is_pending_and_explicit_readback_does_not_resend_a_ban() {
+		tokio::time::timeout(Duration::from_secs(15), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_BULK_REVIEW_TOKEN".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let server = tokio::spawn(async move {
+				let (mut socket, _) = listener.accept().await.unwrap();
+				let (headers, body) = request(&mut socket).await;
+				assert!(headers.starts_with("POST /guilds/2/bulk-ban/v2 "));
+				assert_eq!(
+					body,
+					json!({"user_ids":["7","8"],"delete_message_seconds":0})
+				);
+				assert!(
+					headers
+						.to_ascii_lowercase()
+						.contains("x-audit-log-reason: reviewed")
+				);
+				respond(&mut socket, "204 No Content", "").await;
+				for _ in 0..2 {
+					let (mut socket, _) = listener.accept().await.unwrap();
+					let (headers, body) = request(&mut socket).await;
+					assert_eq!(body, Value::Null);
+					if headers.starts_with("GET /guilds/2/bans/7 ") {
+						respond(
+							&mut socket,
+							"200 OK",
+							r#"{"user":{"id":"7","username":"Synthetic"},"reason":"Reviewed"}"#,
+						)
+						.await;
+					} else {
+						assert!(headers.starts_with("GET /guilds/2/bans/8 "));
+						respond(&mut socket, "404 Not Found", r#"{"code":10026}"#).await;
+					}
+				}
+				assert!(
+					tokio::time::timeout(Duration::from_millis(80), listener.accept())
+						.await
+						.is_err()
+				);
+			});
+			let m::Outcome::Bulk(report) = api
+				.moderation(
+					Id(2),
+					&m::Action::BulkBan {
+						users: vec![Id(7), Id(8)],
+						delete_seconds: 0,
+						reason: "Reviewed".into(),
+					},
+				)
+				.await
+				.unwrap()
+			else {
+				panic!()
+			};
+			assert!(
+				report
+					.users
+					.iter()
+					.all(|(_, status)| *status == m::BanStatus::Pending)
+			);
+			let m::Outcome::Bulk(report) = api
+				.moderation(
+					Id(2),
+					&m::Action::BulkRefresh {
+						users: vec![Id(7), Id(8)],
+					},
+				)
+				.await
+				.unwrap()
+			else {
+				panic!()
+			};
+			assert!(report.users.contains(&(Id(7), m::BanStatus::Banned)));
+			assert!(report.users.contains(&(Id(8), m::BanStatus::NotBanned)));
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn member_review_uses_bounded_search_and_latest_audit_without_history_or_ack_writes() {
+		tokio::time::timeout(Duration::from_secs(15),async {
+			let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api=DiscordApi::new(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_REVIEW_TOKEN".into()).unwrap())).unwrap();api.base=format!("http://{}",listener.local_addr().unwrap());
+			let server=tokio::spawn(async move {
+				for step in 0..4 {let (mut socket,_)=listener.accept().await.unwrap();let (headers,body)=request(&mut socket).await;assert_eq!(body,Value::Null);
+					let response=match step {
+						0=>{assert!(headers.starts_with("GET /guilds/2/members/7 "));r#"{"user":{"id":"7","username":"account_name","global_name":"Display"},"nick":"Server nickname","roles":[],"joined_at":"2025-01-01T00:00:00Z"}"#},
+						1=>{assert!(headers.starts_with("GET /guilds/2 "));r#"{"id":"2","owner_id":"99","roles":[{"id":"2","name":"@everyone","permissions":"1024","position":0,"managed":false}],"features":[]}"#},
+						2=>{assert!(headers.starts_with("GET /guilds/2/messages/search?"));assert!(headers.contains("author_id=%37"));r#"{"messages":[[{"id":"9","channel_id":"3","author":{"id":"7","username":"account_name"},"content":"Recent ||spoiler||"}]],"total_results":1}"#},
+						_=>{assert!(headers.starts_with("GET /guilds/2/audit-logs?limit=50 "));r#"{"audit_log_entries":[{"id":"99","user_id":"1","target_id":"7","action_type":24,"reason":"Reviewed"},{"id":"98","user_id":"1","target_id":"8","action_type":24}],"users":[]}"#}
+					};respond(&mut socket,"200 OK",response).await;
+				}
+				assert!(tokio::time::timeout(Duration::from_millis(80),listener.accept()).await.is_err());
+			});
+			let m::Outcome::Review(review)=api.moderation(Id(2),&m::Action::Review {user:Id(7),channel:Id(3),audit:true}).await.unwrap()else{panic!()};
+			assert!(review.valid());assert_eq!(review.member.nick.as_deref(),Some("Server nickname"));assert_eq!(review.messages[0].id,Id(9));assert_eq!(review.audit.len(),1);assert_eq!(review.audit[0].reason.as_deref(),Some("Reviewed"));
+			server.await.unwrap();
+		}).await.unwrap();
 	}
 }

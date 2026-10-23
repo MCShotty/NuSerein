@@ -320,7 +320,10 @@ impl MessagingUi {
 				let muted = entry.participant.server_muted;
 				let can_mute =
 					state.can_moderate_voice(guild, channel, user, VoiceChange::Mute(!muted));
-				if can_move || can_mute {
+				let deafened = entry.participant.server_deafened;
+				let can_deafen =
+					state.can_moderate_voice(guild, channel, user, VoiceChange::Deafen(!deafened));
+				if can_move || can_mute || can_deafen {
 					let enabled = !state.server_admin.pending
 						&& (state.demo
 							|| (state.gateway_connected && state.auth == AuthState::Authenticated));
@@ -336,6 +339,19 @@ impl MessagingUi {
 						{
 							self.voice_moderation =
 								Some((guild, channel, user, VoiceChange::Mute(!muted)));
+							ui.close();
+						}
+						if can_deafen
+							&& ui
+								.button(if deafened {
+									"Server Undeafen"
+								} else {
+									"Server Deafen"
+								})
+								.clicked()
+						{
+							self.voice_moderation =
+								Some((guild, channel, user, VoiceChange::Deafen(!deafened)));
 							ui.close();
 						}
 						if can_move {
@@ -375,13 +391,14 @@ impl MessagingUi {
 					ui.separator();
 				}
 				if let Some(user) = resolve_member(state, entry).0 {
-					crate::user_menu::contents(
+					crate::user_menu::contents_scoped(
 						ui,
 						state,
 						user,
 						&mut self.profile,
 						&mut self.user_action,
 						None,
+						(guild.0 != 0).then_some(guild),
 					);
 				}
 			});
@@ -6385,7 +6402,7 @@ mod tests {
 			.iter_mut()
 			.find(|role| role.id == guild)
 			.unwrap()
-			.bits = p::VIEW_CHANNEL | p::CONNECT | p::MUTE_MEMBERS | p::MOVE_MEMBERS;
+			.bits = p::VIEW_CHANNEL | p::CONNECT | p::MUTE_MEMBERS | p::DEAFEN_MEMBERS | p::MOVE_MEMBERS;
 		for id in [Id(25), Id(26)] {
 			state.permissions.channels.insert(
 				id,
@@ -6424,6 +6441,8 @@ mod tests {
 		for change in [
 			VoiceChange::Mute(true),
 			VoiceChange::Mute(false),
+			VoiceChange::Deafen(true),
+			VoiceChange::Deafen(false),
 			VoiceChange::Move(Some(Id(26))),
 			VoiceChange::Move(None),
 		] {
@@ -6469,6 +6488,17 @@ mod tests {
 						.participant
 						.server_muted,
 					muted
+				),
+				VoiceChange::Deafen(deafened) => assert_eq!(
+					state
+						.voice
+						.roster
+						.iter()
+						.find(|entry| entry.participant.user == Id(2))
+						.unwrap()
+						.participant
+						.server_deafened,
+					deafened
 				),
 				VoiceChange::Move(to) => assert_eq!(
 					state

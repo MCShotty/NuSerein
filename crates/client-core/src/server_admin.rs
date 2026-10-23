@@ -24,6 +24,9 @@ pub struct View {
 	pub automod: Option<model::automod::Snapshot>,
 	pub bans: Option<model::moderation::Bans>,
 	pub moderation_target: Option<model::server_admin::Member>,
+	pub member_review: Option<model::moderation::Review>,
+	pub bulk_report: Option<model::moderation::BulkReport>,
+	pub bulk_started: Option<std::time::Instant>,
 	webhook_url: Option<model::server_integrations::WebhookUrl>,
 	pub audit_log: Option<model::server_audit_log::Page>,
 	pub audit_query: Option<model::server_audit_log::Query>,
@@ -105,6 +108,7 @@ impl View {
 				guild.is_none_or(|guild| guild == active)
 					&& (self.integrations.is_some()
 						|| self.automod.is_some()
+						|| self.member_review.is_some()
 						|| self.community.is_some()
 						|| matches!(
 							self.action,
@@ -121,6 +125,9 @@ impl View {
 			self.community = None;
 			self.bans = None;
 			self.moderation_target = None;
+			self.member_review = None;
+			self.bulk_report = None;
+			self.bulk_started = None;
 			self.webhook_url = None;
 			self.permission_revision = self.permission_revision.wrapping_add(1);
 		}
@@ -153,6 +160,7 @@ impl State {
 		}
 		let permission = match change {
 			VoiceChange::Mute(_) => p::MUTE_MEMBERS,
+			VoiceChange::Deafen(_) => p::DEAFEN_MEMBERS,
 			VoiceChange::Move(_) => p::MOVE_MEMBERS,
 		};
 		self.permission(channel, permission) == Some(true)
@@ -396,6 +404,13 @@ impl State {
 			.members
 			.as_ref()
 			.and_then(|page| page.roles.iter().find(|row| row.role.id == role))
+			.or_else(|| {
+				self.server_admin
+					.member_review
+					.as_ref()
+					.filter(|review| review.guild == guild)
+					.and_then(|review| review.roles.iter().find(|row| row.role.id == role))
+			})
 		else {
 			return false;
 		};
@@ -601,6 +616,18 @@ impl State {
 			self.server_admin.query = query.clone();
 			self.server_admin.member_role_filter = *role;
 		}
+		if let Action::Moderation(model::moderation::Action::BulkBan { users, .. }) = &action {
+			let mut report = model::moderation::BulkReport::pending(users);
+			report.accepted = false;
+			self.server_admin.bulk_report = Some(report);
+			self.server_admin.bulk_started = Some(std::time::Instant::now());
+		}
+		if matches!(
+			action,
+			Action::Moderation(model::moderation::Action::Review { .. })
+		) {
+			self.server_admin.member_review = None;
+		}
 		self.server_admin.webhook_url = None;
 		self.server_admin.guild = Some(guild);
 		self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
@@ -634,6 +661,8 @@ impl State {
 		self.server_admin.guild == Some(guild)
 			&& self.server_admin.sequence == request
 			&& self.server_admin.pending
+			&& self.server_admin.requested_permission_revision
+				== self.server_admin.permission_revision
 			&& self.server_admin_action_allowed(guild, action)
 	}
 	/// Consume a ready URL only while the same permission-scoped settings remain open.
@@ -666,6 +695,100 @@ impl State {
 			self.server_admin.pending = false;
 			self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
 		}
+	}
+	/// Retire only the drawer's read, keeping unrelated server settings and selections intact.
+	pub(crate) fn invalidate_member_review(&mut self, event: &crate::Event) {
+		let Some(review) = &mut self.server_admin.member_review else {
+			return;
+		};
+		match event {
+			crate::Event::Patch(patch)
+				if review
+					.messages
+					.iter()
+					.any(|row| row.channel == patch.channel && row.id == patch.id) =>
+			{
+				review.messages.clear();
+				review.messages_error = Some("Messages changed. Refresh to view current content.");
+			}
+			crate::Event::Disconnected | crate::Event::Resync | crate::Event::Failure(_) => {
+				self.server_admin.member_review = None;
+			}
+			crate::Event::DeleteBulk { channel, ids } => review
+				.messages
+				.retain(|row| row.channel != *channel || !ids.contains(&row.id)),
+			crate::Event::Delete { channel, id } => review
+				.messages
+				.retain(|row| row.channel != *channel || row.id != *id),
+			crate::Event::Unavailable(channel) => {
+				review.messages.retain(|row| row.channel != *channel)
+			}
+			_ => {}
+		}
+	}
+	pub fn close_member_review(&mut self) {
+		self.server_admin.member_review = None;
+		if matches!(
+			self.server_admin.action,
+			Some(Action::Moderation(model::moderation::Action::Review { .. }))
+		) {
+			self.server_admin.action = None;
+			self.server_admin.pending = false;
+			self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
+		}
+	}
+	pub fn expire_bulk_moderation(&mut self) {
+		if self
+			.server_admin
+			.bulk_started
+			.is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(30))
+		{
+			if let Some(report) = &mut self.server_admin.bulk_report {
+				for (_, status) in &mut report.users {
+					if *status == model::moderation::BanStatus::Pending {
+						*status = model::moderation::BanStatus::Unknown;
+					}
+				}
+			}
+			self.server_admin.bulk_started = None;
+		}
+	}
+	pub fn apply_bulk_moderation(&mut self, guild: Id, report: model::moderation::BulkReport) {
+		if self.server_admin.guild != Some(guild)
+			|| !self.can_view_guild_bans(guild)
+			|| !report.valid()
+		{
+			return;
+		}
+		if report.users.iter().any(|(_, status)| {
+			!matches!(
+				status,
+				model::moderation::BanStatus::Banned | model::moderation::BanStatus::Failed
+			)
+		}) {
+			return;
+		}
+		let Some(current) = &self.server_admin.bulk_report else {
+			return;
+		};
+		let targets: Vec<_> = current.users.iter().map(|(id, _)| *id).collect();
+		if !report.matches(&targets) {
+			return;
+		}
+		if let Some(page) = &mut self.server_admin.members {
+			let before = page.items.len();
+			page.items.retain(|member| {
+				!report.users.iter().any(|(id, status)| {
+					*id == member.user.id && *status == model::moderation::BanStatus::Banned
+				})
+			});
+			page.total = page
+				.total
+				.saturating_sub((before - page.items.len()) as u64);
+		}
+		self.server_admin.bulk_report = Some(report);
+		self.server_admin.bulk_started = None;
+		self.server_admin.revision = self.server_admin.revision.wrapping_add(1);
 	}
 	pub fn close_server_admin(&mut self) {
 		if !self.server_admin.saving {
@@ -725,7 +848,7 @@ impl State {
 			} else if matches!(action, Action::AutoMod(_)) {
 				!self.can_manage_guild(event.guild)
 			} else if matches!(action, Action::Moderation(_)) {
-				!self.can_open_moderation(event.guild)
+				!self.can_open_mod_view(event.guild)
 			} else if matches!(action, Action::AuditLog(_)) {
 				!self.can_open_audit_log_settings(event.guild)
 			} else if let Action::CommandPermissions(action) = action {
@@ -740,6 +863,11 @@ impl State {
 						action,
 						Action::Roles(model::server_roles::Action::Members { .. })
 					) && !self.can_open_member_settings(event.guild)
+			} else if matches!(
+				action,
+				Action::SetRole { .. } | Action::SetNickname { .. } | Action::Kick { .. }
+			) {
+				!self.server_admin_action_allowed(event.guild, action)
 			} else if action.emoji() {
 				!self.can_open_emoji_settings(event.guild)
 			} else if action.sticker() {
@@ -789,6 +917,16 @@ impl State {
 				return Ok(());
 			}
 			Err(failure) => {
+				if matches!(
+					action,
+					Some(Action::Moderation(
+						model::moderation::Action::BulkBan { .. }
+					))
+				) && failure != Failure::Ambiguous
+				{
+					self.server_admin.bulk_report = None;
+					self.server_admin.bulk_started = None;
+				}
 				if matches!(action, Some(Action::Community(_)))
 					&& matches!(failure, Failure::Forbidden | Failure::Ambiguous)
 				{
@@ -889,7 +1027,26 @@ impl State {
 			(Some(Action::Moderation(action)), Outcome::Moderation(result)) => {
 				match (action, result) {
 					(
-						model::moderation::Action::Bans { .. },
+						model::moderation::Action::Review {
+							user,
+							channel,
+							audit,
+						},
+						model::moderation::Outcome::Review(review),
+					) => {
+						review.guild == event.guild
+							&& review.channel == *channel
+							&& review.member.user.id == *user
+							&& (*audit || review.audit.is_empty())
+					}
+					(
+						model::moderation::Action::BulkBan { users, .. }
+						| model::moderation::Action::BulkRefresh { users },
+						model::moderation::Outcome::Bulk(report),
+					) => report.matches(users),
+					(
+						model::moderation::Action::Bans { .. }
+						| model::moderation::Action::BanSearch { .. },
 						model::moderation::Outcome::Bans(page),
 					) => page.guild == event.guild,
 					(
@@ -1056,11 +1213,62 @@ impl State {
 			}
 			Outcome::AutoMod(page) => self.server_admin.automod = Some(page),
 			Outcome::Moderation(result) => match result {
+				model::moderation::Outcome::Review(mut review) => {
+					review.messages.retain(|row| {
+						self.channel(row.channel)
+							.is_some_and(|channel| channel.guild == Some(event.guild))
+							&& self.can_view(row.channel)
+					});
+					if !self.guild_permission(event.guild, p::VIEW_AUDIT_LOG) {
+						review.audit.clear();
+					}
+					self.server_admin.moderation_target = Some(review.member.clone());
+					self.server_admin.member_review = Some(*review);
+				}
+				model::moderation::Outcome::Bulk(report) => {
+					// Gateway completion can precede the HTTP acknowledgement. Never replace it with Pending.
+					let completed = self
+						.server_admin
+						.bulk_report
+						.as_ref()
+						.is_some_and(|current| {
+							current.users.iter().any(|(_, status)| {
+								matches!(
+									status,
+									model::moderation::BanStatus::Banned
+										| model::moderation::BanStatus::Failed
+								)
+							})
+						});
+					if !completed
+						|| matches!(
+							action,
+							Some(Action::Moderation(
+								model::moderation::Action::BulkRefresh { .. }
+							))
+						) {
+						self.server_admin.bulk_started = report
+							.users
+							.iter()
+							.any(|(_, status)| *status == model::moderation::BanStatus::Pending)
+							.then(std::time::Instant::now);
+						self.server_admin.bulk_report = Some(report);
+					} else if let Some(current) = &mut self.server_admin.bulk_report {
+						current.accepted = true;
+					}
+				}
 				model::moderation::Outcome::Bans(page) => self.server_admin.bans = Some(page),
 				model::moderation::Outcome::Member(member) => {
 					self.server_admin.moderation_target = Some(*member)
 				}
 				model::moderation::Outcome::Changed { user, member } => {
+					if let Some(updated) = member.as_deref()
+						&& let Some(review) = &mut self.server_admin.member_review
+						&& review.member.user.id == user
+					{
+						review.member = updated.clone();
+					}
+
 					let removed = matches!(
 						action,
 						Some(Action::Moderation(model::moderation::Action::Change {
@@ -1069,6 +1277,15 @@ impl State {
 							..
 						}))
 					);
+					if removed
+						&& self
+							.server_admin
+							.member_review
+							.as_ref()
+							.is_some_and(|review| review.member.user.id == user)
+					{
+						self.server_admin.member_review = None;
+					}
 					if let Some(page) = &mut self.server_admin.members {
 						if let Some(updated) = member.as_deref() {
 							if let Some(existing) =
@@ -1175,6 +1392,20 @@ impl State {
 				self.server_admin.members = Some(page);
 			}
 			Outcome::Member(mut member) => {
+				if let Some(review) = &mut self.server_admin.member_review
+					&& review.member.user.id == member.user.id
+				{
+					review.member = member.clone();
+				}
+				if self
+					.server_admin
+					.moderation_target
+					.as_ref()
+					.is_some_and(|target| target.user.id == member.user.id)
+				{
+					self.server_admin.moderation_target = Some(member.clone());
+				}
+
 				if matches!(action, Some(Action::SetRole { .. }))
 					&& self
 						.user
@@ -1253,7 +1484,10 @@ impl State {
 							VoiceChange::Mute(muted) => *muted,
 							_ => participant.server_muted,
 						},
-						server_deafened: participant.server_deafened,
+						server_deafened: match change {
+							VoiceChange::Deafen(deafened) => *deafened,
+							_ => participant.server_deafened,
+						},
 						stage: participant.stage,
 						muted: participant.muted,
 						deafened: participant.deafened,

@@ -117,6 +117,7 @@ impl DiscordApi {
 						json!({"channel_id":channel.map(|id| id.to_string())})
 					}
 					VoiceChange::Mute(muted) => json!({"mute":muted}),
+					VoiceChange::Deafen(deafened) => json!({"deaf":deafened}),
 				};
 				let bytes = self
 					.request_limited(
@@ -133,6 +134,7 @@ impl DiscordApi {
 					.as_str()
 					.and_then(|id| id.parse::<u64>().ok())
 					!= Some(user.0) || matches!(change, VoiceChange::Mute(muted) if member["mute"].as_bool() != Some(*muted))
+					|| matches!(change, VoiceChange::Deafen(deafened) if member["deaf"].as_bool() != Some(*deafened))
 				{
 					return Err(Failure::Ambiguous);
 				}

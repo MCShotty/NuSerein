@@ -72,8 +72,38 @@ pub struct Cursor {
 	pub user: Id,
 	pub joined_at: i64,
 }
+/// Server-side member filters. Empty fields never constrain the search.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MemberFilters {
+	pub role: Option<Id>,
+	pub joined_within_days: Option<u16>,
+	pub account_younger_than_days: Option<u16>,
+	pub join_source: Option<u8>,
+	pub signal: Option<MemberSignal>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemberSignal {
+	TimedOut,
+	UnusualDm,
+	Quarantined,
+	Rejoined,
+	Pending,
+}
+impl MemberFilters {
+	pub fn valid(&self) -> bool {
+		self.role.is_none_or(|id| id.0 != 0)
+			&& self
+				.joined_within_days
+				.is_none_or(|days| (1..=3650).contains(&days))
+			&& self
+				.account_younger_than_days
+				.is_none_or(|days| (1..=3650).contains(&days))
+			&& self.join_source.is_none_or(|source| source <= 8)
+	}
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
+	pub filters: MemberFilters,
 	pub search: String,
 	pub sort: u8,
 	pub recent: bool,
@@ -82,6 +112,7 @@ pub struct Query {
 impl Default for Query {
 	fn default() -> Self {
 		Self {
+			filters: MemberFilters::default(),
 			search: String::new(),
 			sort: 1,
 			recent: false,
@@ -91,7 +122,8 @@ impl Default for Query {
 }
 impl Query {
 	pub fn valid(&self) -> bool {
-		self.search.capacity() <= 400
+		self.filters.valid()
+			&& self.search.capacity() <= 400
 			&& self.search.chars().count() <= 100
 			&& !self.search.chars().any(char::is_control)
 			&& (1..=4).contains(&self.sort)
@@ -104,6 +136,7 @@ impl Query {
 pub enum VoiceChange {
 	Move(Option<Id>),
 	Mute(bool),
+	Deafen(bool),
 }
 #[derive(Clone)]
 pub enum Action {

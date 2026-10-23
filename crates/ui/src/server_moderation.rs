@@ -13,6 +13,10 @@ enum Confirmation {
 }
 #[derive(Default)]
 pub(super) struct ModerationUi {
+	bans_only: bool,
+	actions_only: bool,
+	ban_search: String,
+	custom_minutes: String,
 	scope: Option<(u64, Id)>,
 	target: String,
 	reason: String,
@@ -33,6 +37,32 @@ impl ModerationUi {
 			..Default::default()
 		};
 	}
+	pub fn show_actions(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		guild: Id,
+		user: Id,
+		commands: &mut Vec<Command>,
+	) {
+		if self.scope != Some((state.generation, guild)) || self.target.parse::<Id>() != Ok(user) {
+			self.select(state.generation, guild, user);
+		}
+		self.actions_only = true;
+		self.show(ui, state, guild, commands);
+		self.actions_only = false;
+	}
+	pub fn show_bans(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		guild: Id,
+		commands: &mut Vec<Command>,
+	) {
+		self.bans_only = true;
+		self.show(ui, state, guild, commands);
+		self.bans_only = false;
+	}
 	pub fn show(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -40,10 +70,14 @@ impl ModerationUi {
 		guild: Id,
 		commands: &mut Vec<Command>,
 	) {
+		let bans_only = self.bans_only;
+		let actions_only = self.actions_only;
 		if self.scope != Some((state.generation, guild)) {
 			*self = Self {
 				scope: Some((state.generation, guild)),
 				timeout_seconds: 600,
+				bans_only,
+				actions_only,
 				..Default::default()
 			};
 		}
@@ -59,168 +93,226 @@ impl ModerationUi {
 		}
 		let available = !state.server_admin.pending && (state.demo || state.gateway_connected);
 		let mut action = None;
-		ui.heading(i18n::translate("moderation-title"));
+		if !self.actions_only {
+			ui.heading(i18n::translate(if self.bans_only {
+				"moderation-bans"
+			} else {
+				"moderation-title"
+			}));
+		}
 		if let Some(error) = state.server_admin.error {
 			ui.colored_label(design::palette(ui).danger, error);
 		}
 		if state.server_admin.pending {
 			ui.spinner();
 		}
-		ui.horizontal_wrapped(|ui| {
-			ui.label(i18n::translate("moderation-member"));
-			ui.add(
-				egui::TextEdit::singleline(&mut self.target)
-					.char_limit(20)
-					.desired_width(200.0),
-			);
-			if ui
-				.add_enabled(
-					available && self.target.parse::<Id>().is_ok_and(|user| user.0 != 0),
-					egui::Button::new(i18n::translate("moderation-lookup")),
-				)
-				.clicked()
-			{
-				action = self.target.parse().ok().map(Action::Member);
-			}
-		});
-		if let Some(channel) = state.selected.filter(|id| {
-			state
-				.channel(*id)
-				.is_some_and(|row| row.guild == Some(guild))
-		}) {
-			ui.menu_button(i18n::translate("moderation-choose-member"), |ui| {
-				egui::ScrollArea::vertical()
-					.max_height(220.0)
-					.show(ui, |ui| {
-						for user in crate::mentions::known_users(state, channel)
-							.into_iter()
-							.filter(|user| {
-								state.user.as_ref().is_none_or(|actor| actor.id != user.id)
-							}) {
-							if ui
-								.add_enabled(available, egui::Button::new(&user.name))
-								.clicked()
-							{
-								self.target = user.id.to_string();
-								action = Some(Action::Member(user.id));
-								ui.close();
-							}
-						}
-					});
-			});
-		}
-		ui.weak(i18n::translate("moderation-lookup-help"));
-		if let Some(member) = state
-			.server_admin
-			.moderation_target
-			.as_ref()
-			.filter(|member| self.target.parse::<Id>() == Ok(member.user.id))
-		{
-			ui.separator();
-			ui.strong(&member.user.name);
-			if let Some(until) = member
-				.timeout_until
-				.and_then(|at| crate::local_time::discord_timestamp((at / 1000) as i64, b'f'))
-			{
-				ui.label(format!(
-					"{} {until}",
-					i18n::translate("moderation-timeout-until")
-				));
-			}
-			ui.add_enabled_ui(available && !state.server_admin.needs_refresh, |ui| {
+		if !self.bans_only {
+			if !self.actions_only {
 				ui.horizontal_wrapped(|ui| {
-					egui::ComboBox::from_id_salt("moderation-timeout")
-						.selected_text(duration(self.timeout_seconds))
-						.show_ui(ui, |ui| {
-							for seconds in [60, 300, 600, 3600, 86400, 604800, 2_419_200] {
+					ui.label(i18n::translate("moderation-member"));
+					ui.add(
+						egui::TextEdit::singleline(&mut self.target)
+							.char_limit(20)
+							.desired_width(200.0),
+					);
+					if ui
+						.add_enabled(
+							available && self.target.parse::<Id>().is_ok_and(|user| user.0 != 0),
+							egui::Button::new(i18n::translate("moderation-lookup")),
+						)
+						.clicked()
+					{
+						action = self.target.parse().ok().map(Action::Member);
+					}
+				});
+				if let Some(channel) = state.selected.filter(|id| {
+					state
+						.channel(*id)
+						.is_some_and(|row| row.guild == Some(guild))
+				}) {
+					ui.menu_button(i18n::translate("moderation-choose-member"), |ui| {
+						egui::ScrollArea::vertical()
+							.max_height(220.0)
+							.show(ui, |ui| {
+								for user in crate::mentions::known_users(state, channel)
+									.into_iter()
+									.filter(|user| {
+										state.user.as_ref().is_none_or(|actor| actor.id != user.id)
+									}) {
+									if ui
+										.add_enabled(available, egui::Button::new(&user.name))
+										.clicked()
+									{
+										self.target = user.id.to_string();
+										action = Some(Action::Member(user.id));
+										ui.close();
+									}
+								}
+							});
+					});
+				}
+				ui.weak(i18n::translate("moderation-lookup-help"));
+			}
+			if let Some(member) = state
+				.server_admin
+				.moderation_target
+				.as_ref()
+				.filter(|member| self.target.parse::<Id>() == Ok(member.user.id))
+			{
+				ui.separator();
+				ui.strong(&member.user.name);
+				if let Some(until) = member
+					.timeout_until
+					.and_then(|at| crate::local_time::discord_timestamp((at / 1000) as i64, b'f'))
+				{
+					ui.label(format!(
+						"{} {until}",
+						i18n::translate("moderation-timeout-until")
+					));
+				}
+				ui.add_enabled_ui(available && !state.server_admin.needs_refresh, |ui| {
+					ui.horizontal_wrapped(|ui| {
+						egui::ComboBox::from_id_salt("moderation-timeout")
+							.selected_text(if self.timeout_seconds == 0 {
+								"Custom duration".into()
+							} else {
+								duration(self.timeout_seconds)
+							})
+							.show_ui(ui, |ui| {
 								ui.selectable_value(
 									&mut self.timeout_seconds,
-									seconds,
-									duration(seconds),
+									0,
+									"Custom duration",
 								);
-							}
-						});
-					if ui
-						.add_enabled(
-							state.can_timeout_guild_member(guild, member.user.id),
-							egui::Button::new(i18n::translate("moderation-timeout")),
-						)
-						.clicked()
-					{
-						let seconds = time::OffsetDateTime::now_utc().unix_timestamp() as i128
-							+ i128::from(self.timeout_seconds);
-						self.confirmation = Some(Confirmation::Change(
-							member.user.id,
-							Change::Timeout {
-								until: Some(seconds * 1_000_000_000),
-							},
-						));
-					}
-					if member.timeout_until.is_some()
-						&& ui
+								for seconds in [60, 300, 600, 3600, 86400, 604800, 2_419_200] {
+									ui.selectable_value(
+										&mut self.timeout_seconds,
+										seconds,
+										duration(seconds),
+									);
+								}
+							});
+						if self.timeout_seconds == 0 {
+							ui.add(
+								egui::TextEdit::singleline(&mut self.custom_minutes)
+									.char_limit(6)
+									.desired_width(80.0)
+									.hint_text("Minutes"),
+							);
+						}
+						let timeout = if self.timeout_seconds == 0 {
+							self.custom_minutes
+								.parse::<u32>()
+								.ok()
+								.filter(|minutes| (1..=40320).contains(minutes))
+								.map(|minutes| minutes * 60)
+						} else {
+							Some(self.timeout_seconds)
+						};
+						if ui
 							.add_enabled(
-								state.can_timeout_guild_member(guild, member.user.id),
-								egui::Button::new(i18n::translate("moderation-remove-timeout")),
+								state.can_timeout_guild_member(guild, member.user.id)
+									&& timeout.is_some(),
+								egui::Button::new(i18n::translate("moderation-timeout")),
 							)
 							.clicked()
-					{
-						self.confirmation = Some(Confirmation::Change(
-							member.user.id,
-							Change::Timeout { until: None },
-						));
-					}
-				});
-				ui.horizontal_wrapped(|ui| {
-					egui::ComboBox::from_id_salt("moderation-ban-delete")
-						.selected_text(if self.ban_seconds == 0 {
-							i18n::translate("moderation-keep-messages")
-						} else {
-							duration(self.ban_seconds)
-						})
-						.show_ui(ui, |ui| {
-							ui.selectable_value(
-								&mut self.ban_seconds,
-								0,
-								i18n::translate("moderation-keep-messages"),
-							);
-							for seconds in [3600, 86400, 604800] {
+						{
+							let seconds = time::OffsetDateTime::now_utc().unix_timestamp() as i128
+								+ i128::from(timeout.unwrap_or(600));
+							self.confirmation = Some(Confirmation::Change(
+								member.user.id,
+								Change::Timeout {
+									until: Some(seconds * 1_000_000_000),
+								},
+							));
+						}
+						if member.timeout_until.is_some()
+							&& ui
+								.add_enabled(
+									state.can_timeout_guild_member(guild, member.user.id),
+									egui::Button::new(i18n::translate("moderation-remove-timeout")),
+								)
+								.clicked()
+						{
+							self.confirmation = Some(Confirmation::Change(
+								member.user.id,
+								Change::Timeout { until: None },
+							));
+						}
+					});
+					ui.horizontal_wrapped(|ui| {
+						egui::ComboBox::from_id_salt("moderation-ban-delete")
+							.selected_text(if self.ban_seconds == 0 {
+								i18n::translate("moderation-keep-messages")
+							} else {
+								duration(self.ban_seconds)
+							})
+							.show_ui(ui, |ui| {
 								ui.selectable_value(
 									&mut self.ban_seconds,
-									seconds,
-									duration(seconds),
+									0,
+									i18n::translate("moderation-keep-messages"),
 								);
-							}
-						});
-					if ui
-						.add_enabled(
-							state.can_ban_guild_member(guild, member.user.id),
-							egui::Button::new(i18n::translate("moderation-ban")),
-						)
-						.clicked()
-					{
-						self.confirmation = Some(Confirmation::Change(
-							member.user.id,
-							Change::Ban {
-								delete_seconds: self.ban_seconds,
-							},
-						));
-					}
-					if ui
-						.add_enabled(
-							state.can_kick_guild_member(guild, member.user.id),
-							egui::Button::new(i18n::translate("moderation-kick")),
-						)
-						.clicked()
-					{
-						self.confirmation =
-							Some(Confirmation::Change(member.user.id, Change::Kick));
-					}
+								for seconds in [3600, 86400, 604800] {
+									ui.selectable_value(
+										&mut self.ban_seconds,
+										seconds,
+										duration(seconds),
+									);
+								}
+							});
+						if ui
+							.add_enabled(
+								state.can_ban_guild_member(guild, member.user.id),
+								egui::Button::new(i18n::translate("moderation-ban")),
+							)
+							.clicked()
+						{
+							self.confirmation = Some(Confirmation::Change(
+								member.user.id,
+								Change::Ban {
+									delete_seconds: self.ban_seconds,
+								},
+							));
+						}
+						if ui
+							.add_enabled(
+								state.can_kick_guild_member(guild, member.user.id),
+								egui::Button::new(i18n::translate("moderation-kick")),
+							)
+							.clicked()
+						{
+							self.confirmation =
+								Some(Confirmation::Change(member.user.id, Change::Kick));
+						}
+					});
 				});
-			});
+			}
 		}
-		if state.can_view_guild_bans(guild) {
+		if !self.actions_only && state.can_view_guild_bans(guild) {
 			ui.separator();
-			ui.heading(i18n::translate("moderation-bans"));
+			if !self.bans_only {
+				ui.heading(i18n::translate("moderation-bans"));
+			}
+			ui.horizontal(|ui| {
+				ui.add(
+					egui::TextEdit::singleline(&mut self.ban_search)
+						.char_limit(32)
+						.hint_text("Search banned members"),
+				);
+				if ui
+					.add_enabled(
+						available && !self.ban_search.trim().is_empty(),
+						egui::Button::new("Search"),
+					)
+					.clicked()
+				{
+					action = Some(Action::BanSearch {
+						query: self.ban_search.clone(),
+					});
+				}
+			});
+
 			if ui
 				.add_enabled(
 					available,

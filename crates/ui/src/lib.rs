@@ -110,6 +110,8 @@ mod member_guide;
 mod message_menu;
 pub use message_menu::MessageSpeech;
 mod command_permissions;
+mod mod_view;
+mod moderation_bulk;
 mod name_styles;
 mod onboarding;
 mod polls;
@@ -304,6 +306,7 @@ pub struct MessagingUi {
 	search: search::SearchUi,
 	settings: settings::Settings,
 	server_settings: server_settings::Editor,
+	mod_view: mod_view::ModViewUi,
 	server_icon_sequence: u64,
 	server_emoji_sequence: u64,
 	server_sticker_sequence: u64,
@@ -1278,6 +1281,9 @@ impl MessagingUi {
 			..Self::default()
 		};
 		self.timeline.video.fullscreen_request = video_fullscreen_request;
+	}
+	pub fn preview_mod_view(&mut self, state: &mut State, guild: Id, user: Id) -> Option<Command> {
+		self.mod_view.open(state, guild, user)
 	}
 	pub fn restore_channel_preferences(&mut self, preferences: model::ChannelPreferences) {
 		if !self.channel_preferences_changed && preferences.is_valid() {
@@ -5685,6 +5691,10 @@ impl MessagingUi {
 		}
 		if let Some(action) = self.user_action.take().or(self.timeline.user_action.take()) {
 			let command = match action {
+				user_menu::Action::ModView { guild, user } => {
+					self.profile.hide();
+					self.mod_view.open(state, guild, user)
+				}
 				user_menu::Action::Message(user) => {
 					self.open_user_direct(state, user, user_direct::Intent::Message, &mut commands);
 					None
@@ -5972,6 +5982,10 @@ impl MessagingUi {
 				},
 			) {
 			commands.push(command);
+		}
+		if let Some(url) = self.mod_view.show(&ctx, state, &mut commands) {
+			self.timeline.opening = Some(url);
+			ctx.request_repaint();
 		}
 		self.verification.show(&ctx, state);
 		self.mfa.show(&ctx, state, &mut commands);

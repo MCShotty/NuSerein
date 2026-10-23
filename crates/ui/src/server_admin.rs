@@ -22,6 +22,7 @@ enum Dialog {
 }
 #[derive(Default)]
 pub(super) struct Admin {
+	bulk: crate::moderation_bulk::BulkUi,
 	pub request: u64,
 	files: Option<Vec<std::path::PathBuf>>,
 	preparing: bool,
@@ -644,6 +645,121 @@ impl Admin {
 				self.query_changed = Some(0.0);
 			}
 		});
+		let before_filters = self.query.filters.clone();
+		egui::CollapsingHeader::new("Filter members").show(ui, |ui| {
+			ui.horizontal_wrapped(|ui| {
+				egui::ComboBox::from_id_salt("member-filter-role")
+					.selected_text(
+						self.query
+							.filters
+							.role
+							.and_then(|id| {
+								state.server_admin.members.as_ref().and_then(|page| {
+									page.roles.iter().find(|row| row.role.id == id)
+								})
+							})
+							.map_or("Any role", |row| row.role.name.as_str()),
+					)
+					.show_ui(ui, |ui| {
+						ui.selectable_value(&mut self.query.filters.role, None, "Any role");
+						if let Some(page) = &state.server_admin.members {
+							for role in &page.roles {
+								ui.selectable_value(
+									&mut self.query.filters.role,
+									Some(role.role.id),
+									&role.role.name,
+								);
+							}
+						}
+					});
+				for (key, label, value) in [
+					(
+						"member-joined-window",
+						"Joined within",
+						&mut self.query.filters.joined_within_days,
+					),
+					(
+						"member-age-window",
+						"Account younger than",
+						&mut self.query.filters.account_younger_than_days,
+					),
+				] {
+					egui::ComboBox::from_id_salt(key)
+						.selected_text(value.map_or_else(
+							|| format!("{label}: any time"),
+							|days| format!("{label}: {days} days"),
+						))
+						.show_ui(ui, |ui| {
+							ui.selectable_value(value, None, "Any time");
+							for days in [1, 7, 30, 90, 365] {
+								ui.selectable_value(value, Some(days), format!("{days} days"));
+							}
+						});
+				}
+				egui::ComboBox::from_id_salt("member-source-filter")
+					.selected_text(self.query.filters.join_source.map_or_else(
+						|| "Any join method".into(),
+						|source| format!("Join method: {source}"),
+					))
+					.show_ui(ui, |ui| {
+						ui.selectable_value(
+							&mut self.query.filters.join_source,
+							None,
+							"Any join method",
+						);
+						for (source, label) in [
+							(1, "Bot"),
+							(2, "Integration"),
+							(3, "Discovery"),
+							(5, "Invite"),
+							(6, "Custom invite link"),
+							(7, "Application"),
+						] {
+							ui.selectable_value(
+								&mut self.query.filters.join_source,
+								Some(source),
+								label,
+							);
+						}
+					});
+				use model::server_admin::MemberSignal;
+				egui::ComboBox::from_id_salt("member-signal-filter")
+					.selected_text(self.query.filters.signal.map_or(
+						"Any safety signal",
+						|signal| match signal {
+							MemberSignal::TimedOut => "Timed out",
+							MemberSignal::UnusualDm => "Unusual DM activity",
+							MemberSignal::Quarantined => "Quarantined name",
+							MemberSignal::Rejoined => "Rejoined",
+							MemberSignal::Pending => "Pending screening",
+						},
+					))
+					.show_ui(ui, |ui| {
+						ui.selectable_value(
+							&mut self.query.filters.signal,
+							None,
+							"Any safety signal",
+						);
+						for (signal, label) in [
+							(MemberSignal::TimedOut, "Timed out"),
+							(MemberSignal::UnusualDm, "Unusual DM activity"),
+							(MemberSignal::Quarantined, "Quarantined name"),
+							(MemberSignal::Rejoined, "Rejoined"),
+							(MemberSignal::Pending, "Pending screening"),
+						] {
+							ui.selectable_value(
+								&mut self.query.filters.signal,
+								Some(signal),
+								label,
+							);
+						}
+					});
+			});
+		});
+		if before_filters != self.query.filters {
+			self.query.after = None;
+			self.query_changed = Some(0.0);
+		}
 		if self
 			.query_changed
 			.is_some_and(|at| ui.input(|input| input.time) - at >= 0.3)
@@ -656,8 +772,15 @@ impl Admin {
 			ui.ctx()
 				.request_repaint_after(std::time::Duration::from_millis(300));
 		}
+		state.expire_bulk_moderation();
+		self.bulk.header(ui, state, guild, &self.query, &mut action);
 		ui.add_space(10.0);
 		ui.separator();
+		if let Some(started) = state.server_admin.bulk_started {
+			ui.ctx().request_repaint_after(
+				std::time::Duration::from_secs(30).saturating_sub(started.elapsed()),
+			);
+		}
 		if let Some(members) = &state.server_admin.members {
 			if ui.available_width() < 820.0 {
 				for member in &members.items {
@@ -706,6 +829,7 @@ impl Admin {
 										|ui| {
 											ui.set_width(names);
 											ui.set_min_height(44.0);
+											self.bulk.select(ui, state, guild, member.user.id);
 											let avatar =
 												avatars.show(ui, &member.user, 30.0, state.demo);
 											profile.person_click(ui, &avatar, None, &member.user);
@@ -724,9 +848,15 @@ impl Admin {
 												);
 												ui.add(
 													egui::Label::new(
-														RichText::new(&member.user.name)
-															.size(11.0)
-															.color(colors.muted),
+														RichText::new(
+															member
+																.user
+																.username
+																.as_deref()
+																.unwrap_or(&member.user.name),
+														)
+														.size(11.0)
+														.color(colors.muted),
 													)
 													.truncate(),
 												);
@@ -913,6 +1043,7 @@ impl Admin {
 		design::card(ui, |ui| {
 			let row = ui
 				.horizontal(|ui| {
+					self.bulk.select(ui, state, guild, member.user.id);
 					let avatar = avatars.show(ui, &member.user, 32.0, state.demo);
 					profile.person_click(ui, &avatar, None, &member.user);
 					ui.vertical(|ui| {
@@ -926,18 +1057,13 @@ impl Admin {
 							)
 							.on_hover_text(name);
 						profile.person_click(ui, &name_response, None, &member.user);
-						if member
-							.nick
-							.as_ref()
-							.is_some_and(|nick| nick != &member.user.name)
-						{
+						let username = member.user.username.as_deref().unwrap_or(&member.user.name);
+						if name != username {
 							ui.add(
-								egui::Label::new(
-									RichText::new(&member.user.name).color(colors.muted),
-								)
-								.truncate(),
+								egui::Label::new(RichText::new(username).color(colors.muted))
+									.truncate(),
 							)
-							.on_hover_text(&member.user.name);
+							.on_hover_text(username);
 						}
 					});
 					let button = icons::button(
@@ -1012,6 +1138,14 @@ impl Admin {
 	) {
 		ui.set_width(190.0);
 		let colors = design::palette(ui);
+		if state.can_open_mod_view(guild) && ui.button("Open Mod View").clicked() {
+			self.user_action = Some(user_menu::Action::ModView {
+				guild,
+				user: member.user.id,
+			});
+			ui.close();
+		}
+
 		if ui
 			.button(crate::i18n::translate("server-admin-member-menu-profile"))
 			.clicked()

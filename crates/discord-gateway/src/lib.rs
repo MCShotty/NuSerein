@@ -1981,6 +1981,10 @@ async fn run_recoverable(
 										if let Some((guild,owner))=owner {emit(Event::Permissions(client_core::permissions::Event::Owner {guild,owner}))?;}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::guild(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
 									}
+									"GUILD_BULK_BAN_UPDATE" => {
+										let (guild,report)=discord_protocol::moderation::bulk_update(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										emit(Event::BulkModeration {guild,report})?;
+									}
 									"GUILD_MEMBER_UPDATE" => {
 										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=permissions::member(packet.d.get().as_bytes(),owner).map_err(|_|Failure::Protocol)? {
 											emit(Event::Permissions(client_core::permissions::Event::Member {guild,roles,timeout_until}))?;

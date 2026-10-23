@@ -695,7 +695,7 @@ fn event_icon(action: u16) -> icons::Icon {
 		_ => icons::Icon::Gear,
 	}
 }
-fn action_text(action: u16) -> &'static str {
+pub(super) fn action_text(action: u16) -> &'static str {
 	ACTIONS.iter().find(|(value, _)| *value == action).map_or(
 		"server-audit-log-event-icon-unknown-action",
 		|(_, label)| *label,
