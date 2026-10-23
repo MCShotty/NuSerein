@@ -737,6 +737,52 @@ mod tests {
 		.unwrap();
 	}
 	#[tokio::test]
+	async fn suspended_write_uses_updated_proxy_without_reusing_the_previous_route() {
+		tokio::time::timeout(std::time::Duration::from_secs(5), async {
+			let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let origin_url = format!("http://{}",origin.local_addr().unwrap());
+			let proxy_url = format!("http://{}",proxy.local_addr().unwrap());
+			let (route,updates) = tokio::sync::watch::channel(Some(crate::proxy::ApiProxy::Direct));
+			let mut api = DiscordApi::with_proxy(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MFA_ACCOUNT_TOKEN".into()).unwrap()),updates).unwrap();
+			api.base = origin_url.clone();let api = Arc::new(api);
+			let (send,mut receive) = tokio::sync::mpsc::channel(4);
+			api.set_mfa_notifier(move |notice|send.try_send(notice).map_err(|_|Failure::Capacity)).unwrap();
+			let (release,done) = tokio::sync::oneshot::channel::<()>();
+			let origin_server = tokio::spawn(async move {
+				let (mut stream,_) = origin.accept().await.unwrap();
+				let (headers,body) = read(&mut stream).await;
+				assert!(headers.starts_with("PATCH /protected "));
+				assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(),json!({"name":"Synthetic name"}));
+				answer(&mut stream,"401 Unauthorized",r#"{"code":60003,"mfa":{"ticket":"SYNTHETIC_TICKET","methods":[{"type":"totp"}]}}"#).await;
+				tokio::select! {
+					connection = origin.accept()=>{connection.unwrap();panic!("the retired direct route received another request");},
+					_ = done=>{},
+				}
+			});
+			let proxy_server = tokio::spawn(async move {
+				for index in 0..3 {
+					let (mut stream,_) = proxy.accept().await.unwrap();let(headers,body)=read(&mut stream).await;
+					match index {
+						0=>{assert!(headers.starts_with(&format!("POST {origin_url}/mfa/finish ")));answer(&mut stream,"200 OK",r#"{"token":"SYNTHETIC_MFA_PROOF"}"#).await;},
+						1=>{assert!(headers.starts_with(&format!("PATCH {origin_url}/protected ")));assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(),json!({"name":"Synthetic name"}));assert!(headers.to_lowercase().contains("x-discord-mfa-authorization: synthetic_mfa_proof"));answer(&mut stream,"200 OK","{}").await;},
+						_=>{assert!(headers.starts_with(&format!("GET {origin_url}/after ")));assert!(!headers.to_lowercase().contains("x-discord-mfa-authorization"));answer(&mut stream,"200 OK","{}").await;},
+					}
+				}
+			});
+			let original=api.clone();
+			let operation=tokio::spawn(async move {OPERATION.scope(target(),original.request(reqwest::Method::PATCH,"/protected",Some(json!({"name":"Synthetic name"})))).await});
+			let Some(core::Event::Required(notice))=receive.recv().await else {panic!("missing scoped challenge")};
+			route.send(Some(crate::proxy::ApiProxy::Url {url:proxy_url})).unwrap();
+			assert!(matches!(api.execute(Command::Mfa(Box::new(core::Request {id:notice.id,action:Action::Verify {method:Method::Totp,input:core::Input::new(Method::Totp,"123456".into()).unwrap()}}))).await,client_core::Event::Mfa(core::Event::Updated {result:Ok(Status::Verified),..})));
+			assert!(matches!(api.execute(Command::Mfa(Box::new(core::Request {id:notice.id,action:Action::Resume}))).await,client_core::Event::Mfa(core::Event::Updated {result:Ok(Status::Resumed),..})));
+			operation.await.unwrap().unwrap();
+			api.request(reqwest::Method::GET,"/after",None).await.unwrap();
+			release.send(()).unwrap();origin_server.await.unwrap();proxy_server.await.unwrap();
+			assert!(!api.stopped());
+		}).await.unwrap();
+	}
+	#[tokio::test]
 	async fn unsupported_valid_action_challenge_is_local_but_malformed_401_still_revokes() {
 		tokio::time::timeout(std::time::Duration::from_secs(5), async {
 			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -589,7 +589,13 @@ impl DiscordApi {
 			let exact_retry = (!mfa_resumed && mfa_target.is_some())
 				.then(|| request.try_clone())
 				.flatten();
-			let mut response = request.send().await.map_err(|_| {
+			// A suspended builder retains its original client. Execute its immutable
+			// request through the currently approved route after proxy reconfiguration.
+			let result = match request.build() {
+				Ok(request) => client.execute(request).await,
+				Err(error) => Err(error),
+			};
+			let mut response = result.map_err(|_| {
 				if write {
 					Failure::Ambiguous
 				} else {
