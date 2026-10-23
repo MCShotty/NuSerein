@@ -180,6 +180,9 @@ impl<'a> ShortcutView<'a> {
 	pub fn contains(self, kind: Shortcut, channel: Id) -> bool {
 		self.prefs.contains(kind, channel)
 	}
+	pub fn ids(self, kind: Shortcut) -> &'a [Id] {
+		self.prefs.ids(kind)
+	}
 
 	pub fn available(self) -> bool {
 		self.available

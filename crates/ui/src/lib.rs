@@ -4801,12 +4801,16 @@ impl MessagingUi {
 		if let Some((guild, action)) = self.server_menu.channel_preferences_requested.take() {
 			commands.extend(state.request_personal_channel_action(guild, action));
 		}
+		let browse_shortcuts = shortcuts::ShortcutView::new(
+			&self.channel_preferences,
+			self.shortcuts_available(state),
+		);
 		self.browse_channels.show(
 			&ctx,
 			state,
 			self.guild,
-			&self.channel_preferences,
-			self.show_hidden_channels,
+			(browse_shortcuts, self.show_hidden_channels),
+			&mut self.channel_menu,
 			&mut commands,
 		);
 		if let Some(guild) = self.server_menu.settings_requested.take()
