@@ -15,7 +15,7 @@ pub(super) const MAX_SOURCE_HEIGHT: u32 = model::voice_settings::VideoResolution
 pub(super) const MAX_FRAME_WIDTH: u32 = MAX_SOURCE_WIDTH;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(super) const MAX_FRAME_HEIGHT: u32 = MAX_SOURCE_HEIGHT;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 pub(super) const MAX_RAW_BYTES: usize = super::MAX_RAW_BYTES;
 
 #[cfg(any(test, target_os = "macos", target_os = "windows"))]
