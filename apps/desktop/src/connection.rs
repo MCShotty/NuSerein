@@ -97,6 +97,14 @@ impl Drop for Connection {
 /// Preload tasks kept at once: one per preload kind, plus room for one whose result was lost.
 const PREFETCHES: usize = 4;
 struct AbortTask(JoinHandle<()>);
+/// Community retains its Stage/call cancellation worker, but all administrative
+/// mutations share one admission slot across that worker and the general lane.
+fn admin_mutation_busy(administrative: &Option<AbortTask>, community: &Option<AbortTask>) -> bool {
+	[administrative, community]
+		.iter()
+		.any(|job| job.as_ref().is_some_and(|task| !task.0.is_finished()))
+}
+
 fn mfa_job_available(
 	job: &Option<AbortTask>,
 	request: &client_core::mfa::Request,
@@ -677,7 +685,7 @@ impl Connection {
                             }
                             // Community writes keep their existing call/fence cancellation path below.
                             if let Some(target)=client_core::mfa::Target::from_command(&command).filter(|_|!matches!(&command,Command::Community {..})) {
-                                if administrative.as_ref().is_some_and(|task|!task.0.is_finished()) {
+                                if admin_mutation_busy(&administrative,&community_job) {
                                     emit(target.rejected(Failure::ProtocolAt("Finish the current server action first")))?;
                                     continue;
                                 }
@@ -697,7 +705,7 @@ impl Connection {
                             if let Command::Community {guild,request,fence,action,..} = &command {
                                 let (guild,request,fence)=(*guild,*request,*fence);
                                 let call=match action.as_ref(){model::community::Action::StageVoice{channel,call_request,..}|model::community::Action::GetStage{channel,call_request:Some(call_request)}=>Some((*channel,*call_request)),_=>None};
-                                if call.is_some_and(|call|voice_request.map(|(c,r,_)|(c,r))!=Some(call)) || *community_scope.borrow()!=fence || community_job.as_ref().is_some_and(|job|!job.0.is_finished()) {
+                                if call.is_some_and(|call|voice_request.map(|(c,r,_)|(c,r))!=Some(call)) || *community_scope.borrow()!=fence || admin_mutation_busy(&administrative,&community_job) {
                                     emit(Event::Community(client_core::community::Event {guild,request,result:Err(Failure::ProtocolAt("Community action expired or is already pending; refresh to continue"))}))?;continue;
                                 }
                                 drop(community_job.take());
@@ -2165,6 +2173,32 @@ fn scope_history_failure(event: Event, channel: model::Id, request: u64) -> Even
 
 #[cfg(test)]
 mod tests {
+	#[tokio::test]
+	async fn administrative_and_community_mutations_cannot_overlap() {
+		let (release, held) = tokio::sync::oneshot::channel::<()>();
+		let mut administrative = Some(AbortTask(tokio::spawn(async move {
+			let _ = held.await;
+		})));
+		let mut community = None;
+		assert!(
+			admin_mutation_busy(&administrative, &community),
+			"an active server mutation rejects a Community write"
+		);
+		drop(administrative.take());
+		drop(release);
+		assert!(!admin_mutation_busy(&administrative, &community));
+		let (release, held) = tokio::sync::oneshot::channel::<()>();
+		community = Some(AbortTask(tokio::spawn(async move {
+			let _ = held.await;
+		})));
+		assert!(
+			admin_mutation_busy(&administrative, &community),
+			"an active Community write rejects a server mutation"
+		);
+		drop(community.take());
+		drop(release);
+		assert!(!admin_mutation_busy(&administrative, &community));
+	}
 	#[tokio::test]
 	async fn verified_resume_handoff_does_not_wait_for_worker_exit() {
 		use client_core::mfa::{Action, Request};
