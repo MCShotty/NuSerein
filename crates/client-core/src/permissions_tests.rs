@@ -158,6 +158,34 @@ fn large_startup() -> crate::Startup {
 }
 
 #[test]
+fn prepared_startup_and_warnings_cannot_restore_a_logged_out_generation() {
+	let startup = large_startup().prepare().unwrap();
+	let mut state = State::default();
+	let previous = state.generation;
+	state.logout();
+	let generation = state.generation;
+	for event in [
+		Event::Startup(Box::new(startup)),
+		Event::StartupWarnings(model::account::Warnings {
+			read_state: true,
+			notifications: true,
+			..Default::default()
+		}),
+	] {
+		state.apply(crate::Envelope {
+			generation: previous,
+			event,
+		});
+		assert_eq!(state.generation, generation);
+		assert_eq!(state.auth, crate::auth::AuthState::Unauthenticated);
+		assert!(state.user.is_none() && state.selected.is_none());
+		assert!(state.channels.is_empty() && state.guilds.is_empty());
+		assert_eq!(state.read_marker(Id(100_000)), None);
+		assert_eq!(state.startup_warnings, model::account::Warnings::default());
+	}
+}
+
+#[test]
 fn large_startup_retains_permissions_read_state_and_subsequent_channel_threads() {
 	{
 		let startup = large_startup();
