@@ -76,7 +76,13 @@ mod tests {
 
 	#[test]
 	fn spare_snapshot_capacity_is_charged_and_retired_without_losing_the_account() {
-		let mut state = State::default();
+		let mut state = State {
+			user: Some(crate::tests::message(1).author),
+			auth: crate::auth::AuthState::Authenticated,
+			gateway_connected: true,
+			..Default::default()
+		};
+		let account = state.user.as_ref().unwrap().id;
 		let generation = state.generation;
 		let empty = state.retained_admin_bytes();
 		state.server_admin.members = Some(admin::Members {
@@ -88,6 +94,9 @@ mod tests {
 		assert!(state.server_admin.members.is_none());
 		assert!(state.server_admin.error.is_some());
 		assert_eq!(state.generation, generation);
+		assert_eq!(state.user.as_ref().unwrap().id, account);
+		assert_eq!(state.auth, crate::auth::AuthState::Authenticated);
+		assert!(state.gateway_connected);
 		assert_eq!(state.retained_admin_bytes(), empty);
 	}
 
