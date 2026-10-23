@@ -4,6 +4,8 @@ fn main() {
 	println!("cargo:rerun-if-changed=src/video/video_decode_ffmpeg.c");
 	println!("cargo:rerun-if-changed=src/video/video_encode_ffmpeg.h");
 	println!("cargo:rerun-if-changed=src/video/video_gpu.c");
+	println!("cargo:rerun-if-changed=src/video/capture_windows.c");
+	println!("cargo:rerun-if-changed=src/video/capture_windows.h");
 	for file in ["video_query.c", "video_query_amf.cpp"] {
 		println!("cargo:rerun-if-changed=src/video/{file}");
 	}
@@ -19,6 +21,7 @@ fn main() {
 	}
 	if target == "windows" {
 		println!("cargo:rustc-link-lib=user32");
+		println!("cargo:rustc-link-lib=d3d11");
 	}
 	let prefix = std::env::var_os("FFMPEG_DIR").map(std::path::PathBuf::from);
 	let mut native = cc::Build::new();
@@ -26,6 +29,7 @@ fn main() {
 		.file("src/video/video_encode_ffmpeg.c")
 		.file("src/video/video_decode_ffmpeg.c")
 		.file("src/video/video_gpu.c")
+		.file("src/video/capture_windows.c")
 		.file("src/video/video_query.c")
 		.static_crt(target == "windows")
 		.std("c11");

@@ -24,6 +24,9 @@ pub struct ScreenUi {
 	pub adapting: bool,
 	pub supported: bool,
 	pub preview: Option<egui::TextureHandle>,
+	/// Native visibility (including tray hiding), published by the desktop owner.
+	pub preview_window_visible: bool,
+	preview_painted_at: Option<u64>,
 	resolution: Resolution,
 	fps: u32,
 	cursor: bool,
@@ -44,6 +47,8 @@ impl Default for ScreenUi {
 			adapting: false,
 			supported: false,
 			preview: None,
+			preview_window_visible: true,
+			preview_painted_at: None,
 			resolution: Resolution::Preset(if cfg!(target_os = "linux") {
 				VideoResolution::P720
 			} else {
@@ -56,6 +61,32 @@ impl Default for ScreenUi {
 	}
 }
 impl ScreenUi {
+	/// Local presentation demand is independent of whether the share has viewers.
+	pub fn preview_requested(&self, ctx: &egui::Context) -> bool {
+		self.preview_window_visible
+			&& ctx.input(|input| {
+				input.viewport().visible() != Some(false) && !input.viewport().close_requested()
+			}) && self.preview_demand(ctx)
+	}
+
+	/// The tile was painted in this pass or the immediately preceding one. The
+	/// desktop polls before painting, so a single previous frame is intentional.
+	pub fn preview_demand(&self, ctx: &egui::Context) -> bool {
+		let current = ctx.cumulative_frame_nr();
+		self.preview_painted_at
+			.is_some_and(|painted| painted == current || painted.checked_add(1) == Some(current))
+	}
+
+	pub(crate) fn preview_painted(&mut self, ctx: &egui::Context) {
+		let newly_visible = !self.preview_demand(ctx);
+		self.preview_painted_at = Some(ctx.cumulative_frame_nr());
+		if newly_visible {
+			// Let the desktop publish demand even if this newly visible tile has
+			// otherwise static content and would not schedule another frame.
+			ctx.request_repaint();
+		}
+	}
+
 	pub(crate) fn launch(&mut self, state: &State) {
 		let Some(call) = &state.voice.active else {
 			return;
@@ -525,6 +556,43 @@ mod tests {
 			dimensions: size,
 		}
 	}
+	#[test]
+	fn preview_demand_expires_when_the_tile_stops_painting_and_recovers() {
+		let ctx = egui::Context::default();
+		let mut picker = ScreenUi::default();
+		assert!(!picker.preview_demand(&ctx));
+		assert!(!picker.preview_requested(&ctx));
+		picker.preview_window_visible = false;
+		assert!(!picker.preview_requested(&ctx));
+		picker.preview_window_visible = true;
+		picker.preview = Some(ctx.load_texture(
+			"synthetic-screen",
+			egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+			Default::default(),
+		));
+		assert!(!picker.preview_requested(&ctx));
+		ctx.run_ui(Default::default(), |ui| picker.preview_painted(ui.ctx()))
+			.drop_without_applying_deltas();
+		assert!(picker.preview_demand(&ctx));
+		assert!(picker.preview_requested(&ctx));
+		for (minimized, occluded) in [(true, false), (false, true)] {
+			let mut input = egui::RawInput::default();
+			let viewport = input.viewports.get_mut(&input.viewport_id).unwrap();
+			viewport.minimized = Some(minimized);
+			viewport.occluded = Some(occluded);
+			ctx.run_ui(input, |_| {
+				assert!(!picker.preview_requested(&ctx));
+			})
+			.drop_without_applying_deltas();
+		}
+		ctx.run_ui(Default::default(), |_| {})
+			.drop_without_applying_deltas();
+		assert!(!picker.preview_demand(&ctx));
+		ctx.run_ui(Default::default(), |ui| picker.preview_painted(ui.ctx()))
+			.drop_without_applying_deltas();
+		assert!(picker.preview_demand(&ctx));
+	}
+
 	#[test]
 	fn oversized_resolution_refuses_pointer_and_keyboard_activation() {
 		for dark in [false, true] {

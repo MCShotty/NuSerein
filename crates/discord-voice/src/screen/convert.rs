@@ -15,6 +15,7 @@ struct Tap {
 }
 
 /// Destination axis mapping into a source axis, with letterbox bounds.
+#[derive(Default)]
 struct Axis {
 	taps: Vec<Tap>,
 	start: usize,
@@ -22,25 +23,27 @@ struct Axis {
 }
 
 impl Axis {
+	#[cfg(test)]
 	fn new(source: usize, scaled: usize, destination: usize, step: usize) -> Self {
-		let start = (destination - scaled) / 2;
-		let taps = (0..scaled)
-			.map(|index| {
-				let position = ((index as f64 + 0.5) * source as f64 / scaled as f64 - 0.5)
-					.clamp(0.0, (source - 1) as f64);
-				let near = position as usize;
-				Tap {
-					near: near * step,
-					far: (near + 1).min(source - 1) * step,
-					weight: ((position - near as f64) * 256.0) as u32,
-				}
-			})
-			.collect();
-		Self {
-			taps,
-			start,
-			end: start + scaled,
-		}
+		let mut axis = Self::default();
+		axis.reset(source, scaled, destination, step);
+		axis
+	}
+
+	fn reset(&mut self, source: usize, scaled: usize, destination: usize, step: usize) {
+		self.start = (destination - scaled) / 2;
+		self.end = self.start + scaled;
+		self.taps.clear();
+		self.taps.extend((0..scaled).map(|index| {
+			let position = ((index as f64 + 0.5) * source as f64 / scaled as f64 - 0.5)
+				.clamp(0.0, (source - 1) as f64);
+			let near = position as usize;
+			Tap {
+				near: near * step,
+				far: (near + 1).min(source - 1) * step,
+				weight: ((position - near as f64) * 256.0) as u32,
+			}
+		}));
 	}
 
 	fn tap(&self, index: usize) -> Option<Tap> {
@@ -50,71 +53,256 @@ impl Axis {
 	}
 }
 
-/// Fit `frame` into `width`x`height` 4:2:0 `output` (exactly `width * height * 3 / 2` bytes).
+/// A worker-owned conversion workspace. Geometry, row scratch and a small thread pool
+/// survive between pictures; full input pictures remain owned by the caller.
+pub(crate) struct Converter {
+	geometry: Option<Geometry>,
+	columns: Axis,
+	rows: Axis,
+	scratch: Vec<Scratch>,
+	pool: Option<rayon::ThreadPool>,
+	band_limit: usize,
+}
+impl Default for Converter {
+	fn default() -> Self {
+		Self {
+			geometry: None,
+			columns: Axis::default(),
+			rows: Axis::default(),
+			scratch: Vec::new(),
+			pool: None,
+			band_limit: std::thread::available_parallelism()
+				.map_or(1, |count| count.get())
+				.clamp(1, 4),
+		}
+	}
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Geometry {
+	source: (u32, u32, usize),
+	output: (usize, usize),
+	hdr: bool,
+}
+
+#[derive(Default)]
+struct Scratch {
+	top: Vec<[u32; 3]>,
+	bottom: Vec<[u32; 3]>,
+}
+impl Scratch {
+	fn resize(&mut self, width: usize) {
+		self.top.resize(width, [0; 3]);
+		self.bottom.resize(width, [0; 3]);
+	}
+}
+
+impl Converter {
+	/// Fit a validated source into limited-range BT.601 I420 without stretching it.
+	pub(crate) fn convert(
+		&mut self,
+		frame: &RawFrame,
+		width: usize,
+		height: usize,
+		output: &mut [u8],
+	) -> Result<(), &'static str> {
+		validate_frame(frame)?;
+		if !super::valid_dimensions(
+			u32::try_from(width).unwrap_or(0),
+			u32::try_from(height).unwrap_or(0),
+		) || !width.is_multiple_of(2)
+			|| !height.is_multiple_of(2)
+			|| output.len() != width * height * 3 / 2
+		{
+			return Err("Invalid screen encoder picture size");
+		}
+		if matches!(frame.format, super::RawFormat::Nv12) {
+			return nv12_to_i420(frame, width, height, output);
+		}
+		let hdr = !matches!(frame.format, super::RawFormat::Bgra8);
+		let geometry = Geometry {
+			source: (frame.width, frame.height, frame.stride),
+			output: (width, height),
+			hdr,
+		};
+		let bands = self.band_limit.min(height / 64).max(1);
+		if self.geometry != Some(geometry) {
+			let scale =
+				(width as f64 / frame.width as f64).min(height as f64 / frame.height as f64);
+			let scaled_width = (frame.width as f64 * scale)
+				.round()
+				.clamp(1.0, width as f64) as usize;
+			let scaled_height = (frame.height as f64 * scale)
+				.round()
+				.clamp(1.0, height as f64) as usize;
+			self.columns.reset(
+				frame.width as usize,
+				scaled_width,
+				width,
+				if hdr { 1 } else { 4 },
+			);
+			self.rows.reset(
+				frame.height as usize,
+				scaled_height,
+				height,
+				if hdr { 1 } else { frame.stride },
+			);
+			self.geometry = Some(geometry);
+		}
+		self.scratch.resize_with(bands, Scratch::default);
+		for scratch in &mut self.scratch {
+			scratch.resize(width);
+		}
+		if bands > 1 && self.pool.is_none() {
+			self.pool = Some(
+				rayon::ThreadPoolBuilder::new()
+					.num_threads(self.band_limit - 1)
+					.thread_name(|index| format!("screen-convert-{index}"))
+					.build()
+					.map_err(|_| "Could not start screen conversion workers")?,
+			);
+		}
+		let conversion = if hdr {
+			Some(frame.conversion().ok_or("Missing capture color metadata")?)
+		} else {
+			None
+		};
+		let columns = &self.columns;
+		let rows = &self.rows;
+		let band_rows = height.div_ceil(bands).next_multiple_of(2);
+		let (luma, uv) = output.split_at_mut(width * height);
+		let (u, v) = uv.split_at_mut(width * height / 4);
+		let conversion = conversion.as_ref();
+		let jobs = luma
+			.chunks_mut(band_rows * width)
+			.zip(u.chunks_mut(band_rows * width / 4))
+			.zip(v.chunks_mut(band_rows * width / 4))
+			.zip(&mut self.scratch)
+			.enumerate()
+			.map(|(index, (((luma, u), v), scratch))| Job {
+				frame,
+				columns,
+				rows,
+				conversion,
+				width,
+				first: index * band_rows,
+				luma,
+				u,
+				v,
+				scratch,
+			});
+		if let Some(pool) = &self.pool {
+			// Keep the caller productive as the final band, matching the previous
+			// four-way schedule without allocating fresh OS threads per picture.
+			pool.in_place_scope(|scope| {
+				let mut jobs = jobs.peekable();
+				while let Some(job) = jobs.next() {
+					if jobs.peek().is_some() {
+						scope.spawn(move |_| job.run());
+					} else {
+						job.run();
+					}
+				}
+			});
+		} else {
+			for job in jobs {
+				job.run();
+			}
+		}
+		Ok(())
+	}
+}
+
+struct Job<'a> {
+	frame: &'a RawFrame,
+	columns: &'a Axis,
+	rows: &'a Axis,
+	conversion: Option<&'a platform::video::ffmpeg::SdrConverter>,
+	width: usize,
+	first: usize,
+	luma: &'a mut [u8],
+	u: &'a mut [u8],
+	v: &'a mut [u8],
+	scratch: &'a mut Scratch,
+}
+impl Job<'_> {
+	fn run(self) {
+		if let Some(conversion) = self.conversion {
+			HdrBand {
+				frame: self.frame,
+				columns: self.columns,
+				rows: self.rows,
+				conversion,
+				width: self.width,
+				first: self.first,
+				luma: self.luma,
+				u: self.u,
+				v: self.v,
+			}
+			.run(&mut self.scratch.top, &mut self.scratch.bottom);
+		} else {
+			Band {
+				source: &self.frame.data,
+				columns: self.columns,
+				rows: self.rows,
+				width: self.width,
+				first: self.first,
+				luma: self.luma,
+				u: self.u,
+				v: self.v,
+			}
+			.run(&mut self.scratch.top, &mut self.scratch.bottom);
+		}
+	}
+}
+
+/// One-shot helper for fixtures. Production workers retain a `Converter`.
+#[cfg(test)]
 pub(crate) fn bgra_to_i420(
 	frame: &RawFrame,
 	width: usize,
 	height: usize,
 	output: &mut [u8],
 ) -> Result<(), &'static str> {
-	validate_frame(frame)?;
-	if !matches!(frame.format, super::RawFormat::Bgra8) {
-		return hdr_to_i420(frame, width, height, output);
-	}
-	if !super::valid_dimensions(
-		u32::try_from(width).unwrap_or(0),
-		u32::try_from(height).unwrap_or(0),
-	) || !width.is_multiple_of(2)
-		|| !height.is_multiple_of(2)
-		|| output.len() != width * height * 3 / 2
-	{
-		return Err("Invalid screen encoder picture size");
-	}
-	let (source_width, source_height) = (frame.width as usize, frame.height as usize);
-	let scale = (width as f64 / source_width as f64).min(height as f64 / source_height as f64);
-	let scaled_width = ((source_width as f64 * scale).round() as usize).clamp(1, width);
-	let scaled_height = ((source_height as f64 * scale).round() as usize).clamp(1, height);
-	let columns = Axis::new(source_width, scaled_width, width, 4);
-	let rows = Axis::new(source_height, scaled_height, height, frame.stride);
+	Converter::default().convert(frame, width, height, output)
+}
 
-	let (luma, chroma_planes) = output.split_at_mut(width * height);
-	let bands = std::thread::available_parallelism()
-		.map_or(1, |count| count.get())
-		.clamp(1, 4)
-		.min(height / 64)
-		.max(1);
-	// Even row counts keep every chroma row inside one band.
-	let band_rows = height.div_ceil(bands).next_multiple_of(2);
-	let (mut u, mut v) = chroma_planes.split_at_mut(width * height / 4);
-	std::thread::scope(|scope| {
-		let mut luma = luma;
-		let mut first = 0;
-		while first < height {
-			let count = band_rows.min(height - first);
-			let (band_luma, rest) = luma.split_at_mut(count * width);
-			luma = rest;
-			let chroma_bytes = count / 2 * width / 2;
-			let (band_u, rest_u) = std::mem::take(&mut u).split_at_mut(chroma_bytes);
-			let (band_v, rest_v) = std::mem::take(&mut v).split_at_mut(chroma_bytes);
-			(u, v) = (rest_u, rest_v);
-			let job = Band {
-				source: &frame.data,
-				columns: &columns,
-				rows: &rows,
-				width,
-				first,
-				luma: band_luma,
-				u: band_u,
-				v: band_v,
-			};
-			if first + count >= height {
-				job.run();
-			} else {
-				scope.spawn(move || job.run());
-			}
-			first += count;
+/// GPU capture already scales NV12 to the resolved output. Preserve its limited-range
+/// samples exactly while unpacking the chroma planes for a software/native fallback.
+fn nv12_to_i420(
+	frame: &RawFrame,
+	width: usize,
+	height: usize,
+	output: &mut [u8],
+) -> Result<(), &'static str> {
+	if (frame.width as usize, frame.height as usize) != (width, height) {
+		return Err("NV12 capture dimensions do not match the resolved screen size");
+	}
+	let required = frame
+		.stride
+		.checked_mul(height + height / 2)
+		.ok_or("Invalid NV12 capture size")?;
+	if frame.stride < width || required > frame.data.len() {
+		return Err("Invalid NV12 capture planes");
+	}
+	let (luma, uv) = output.split_at_mut(width * height);
+	let (u, v) = uv.split_at_mut(width * height / 4);
+	for (source, destination) in frame.data[..frame.stride * height]
+		.chunks_exact(frame.stride)
+		.zip(luma.chunks_exact_mut(width))
+	{
+		destination.copy_from_slice(&source[..width]);
+	}
+	for ((source, u), v) in frame.data[frame.stride * height..required]
+		.chunks_exact(frame.stride)
+		.zip(u.chunks_exact_mut(width / 2))
+		.zip(v.chunks_exact_mut(width / 2))
+	{
+		for ((pixel, u), v) in source[..width].as_chunks::<2>().0.iter().zip(u).zip(v) {
+			*u = pixel[0];
+			*v = pixel[1];
 		}
-	});
+	}
 	Ok(())
 }
 
@@ -130,14 +318,12 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-	fn run(self) {
+	fn run(self, top: &mut [[u32; 3]], bottom: &mut [[u32; 3]]) {
 		let width = self.width;
-		let mut top = vec![[0u32; 3]; width];
-		let mut bottom = vec![[0u32; 3]; width];
 		for pair in 0..self.luma.len() / width / 2 {
 			let row = self.first + pair * 2;
-			self.sample(row, &mut top);
-			self.sample(row + 1, &mut bottom);
+			self.sample(row, top);
+			self.sample(row + 1, bottom);
 			let offset = pair * 2 * width;
 			for (x, rgb) in top.iter().enumerate() {
 				self.luma[offset + x] = luma(*rgb);
@@ -204,70 +390,6 @@ fn chroma([r, g, b]: [u32; 3]) -> (u8, u8) {
 	(u.clamp(0, 255) as u8, v.clamp(0, 255) as u8)
 }
 
-fn hdr_to_i420(
-	frame: &RawFrame,
-	width: usize,
-	height: usize,
-	output: &mut [u8],
-) -> Result<(), &'static str> {
-	if !super::valid_dimensions(
-		u32::try_from(width).unwrap_or(0),
-		u32::try_from(height).unwrap_or(0),
-	) || !width.is_multiple_of(2)
-		|| !height.is_multiple_of(2)
-		|| output.len() != width * height * 3 / 2
-	{
-		return Err("Invalid HDR conversion size");
-	}
-	let scale = (width as f64 / frame.width as f64).min(height as f64 / frame.height as f64);
-	let w = (frame.width as f64 * scale)
-		.round()
-		.clamp(1.0, width as f64) as usize;
-	let h = (frame.height as f64 * scale)
-		.round()
-		.clamp(1.0, height as f64) as usize;
-	let columns = Axis::new(frame.width as usize, w, width, 1);
-	let rows = Axis::new(frame.height as usize, h, height, 1);
-	let conversion = frame.conversion().ok_or("Missing capture color metadata")?;
-	let (mut y, uv) = output.split_at_mut(width * height);
-	let (mut u, mut v) = uv.split_at_mut(width * height / 4);
-	let bands = std::thread::available_parallelism()
-		.map_or(1, |count| count.get())
-		.clamp(1, 4)
-		.min(height / 64)
-		.max(1);
-	let band_rows = height.div_ceil(bands).next_multiple_of(2);
-	std::thread::scope(|scope| {
-		let mut first = 0;
-		while first < height {
-			let count = band_rows.min(height - first);
-			let (luma, rest) = y.split_at_mut(count * width);
-			y = rest;
-			let chroma_bytes = count / 2 * width / 2;
-			let (band_u, rest_u) = std::mem::take(&mut u).split_at_mut(chroma_bytes);
-			let (band_v, rest_v) = std::mem::take(&mut v).split_at_mut(chroma_bytes);
-			(u, v) = (rest_u, rest_v);
-			let job = HdrBand {
-				frame,
-				columns: &columns,
-				rows: &rows,
-				conversion: &conversion,
-				width,
-				first,
-				luma,
-				u: band_u,
-				v: band_v,
-			};
-			if first + count >= height {
-				job.run();
-			} else {
-				scope.spawn(move || job.run());
-			}
-			first += count;
-		}
-	});
-	Ok(())
-}
 struct HdrBand<'a> {
 	frame: &'a RawFrame,
 	columns: &'a Axis,
@@ -280,12 +402,10 @@ struct HdrBand<'a> {
 	v: &'a mut [u8],
 }
 impl HdrBand<'_> {
-	fn run(self) {
-		let mut top = vec![[0; 3]; self.width];
-		let mut bottom = vec![[0; 3]; self.width];
+	fn run(self, top: &mut [[u32; 3]], bottom: &mut [[u32; 3]]) {
 		for pair in 0..self.luma.len() / self.width / 2 {
-			self.sample(self.first + pair * 2, &mut top);
-			self.sample(self.first + pair * 2 + 1, &mut bottom);
+			self.sample(self.first + pair * 2, top);
+			self.sample(self.first + pair * 2 + 1, bottom);
 			let at = pair * 2 * self.width;
 			for (x, rgb) in top.iter().enumerate() {
 				self.luma[at + x] = luma(*rgb);
@@ -355,6 +475,108 @@ mod tests {
 			height,
 			stride,
 			data,
+		}
+	}
+
+	#[test]
+	fn workspace_reuses_geometry_without_retaining_old_pixels_or_stride() {
+		let mut converter = Converter::default();
+		for (source, target, padding, seed) in [
+			((333, 250), (320, 180), 12, 31),
+			((333, 250), (320, 180), 12, 79),
+			((333, 250), (320, 180), 28, 97),
+			((250, 333), (96, 144), 4, 19),
+			((128, 128), (128, 128), 0, 47),
+			((614, 256), (344, 144), 8, 73),
+		] {
+			let mut frame = solid(source.0, source.1, source.0 as usize * 4 + padding, [0; 4]);
+			for (index, byte) in frame.data.iter_mut().enumerate() {
+				*byte = (index * seed % 251) as u8;
+			}
+			let mut reused = vec![0xee; target.0 * target.1 * 3 / 2];
+			let mut fresh = vec![0; reused.len()];
+			converter
+				.convert(&frame, target.0, target.1, &mut reused)
+				.unwrap();
+			bgra_to_i420(&frame, target.0, target.1, &mut fresh).unwrap();
+			assert_eq!(
+				reused, fresh,
+				"source={source:?} target={target:?} padding={padding}"
+			);
+		}
+	}
+
+	#[test]
+	fn nv12_fallback_preserves_samples_and_rejects_unresolved_scaling() {
+		let mut converter = Converter::default();
+		let mut frame = RawFrame {
+			format: crate::screen::RawFormat::Nv12,
+			width: 4,
+			height: 2,
+			stride: 8,
+			data: vec![
+				16, 16, 235, 235, 0xee, 0xee, 0xee, 0xee, 82, 82, 145, 145, 0xee, 0xee, 0xee, 0xee,
+				90, 240, 54, 34, 0xee, 0xee, 0xee, 0xee,
+			],
+		};
+		let mut output = vec![0; 12];
+		converter.convert(&frame, 4, 2, &mut output).unwrap();
+		assert_eq!(
+			output,
+			[16, 16, 235, 235, 82, 82, 145, 145, 90, 54, 240, 34]
+		);
+		assert!(converter.convert(&frame, 2, 2, &mut [0; 6]).is_err());
+		frame.data.truncate(19);
+		assert!(converter.convert(&frame, 4, 2, &mut output).is_err());
+	}
+
+	#[test]
+	fn hdr_workspace_matches_single_band_across_color_metadata_changes() {
+		let mut converter = Converter::default();
+		for (unit_nits, white_nits, peak_nits) in [(80, 203, 1000), (80, 80, 80), (203, 203, 1000)]
+		{
+			let frame = RawFrame {
+				format: crate::screen::RawFormat::LinearRgba16 {
+					unit_nits,
+					white_nits,
+					peak_nits,
+				},
+				width: 4,
+				height: 4,
+				stride: 32,
+				data: (0..64)
+					.flat_map(|index| [0u16, 0x3800, 0x3c00, 0x4000][index % 4].to_le_bytes())
+					.collect(),
+			};
+			let (width, height) = (128, 128);
+			let mut parallel = vec![0; width * height * 3 / 2];
+			converter
+				.convert(&frame, width, height, &mut parallel)
+				.unwrap();
+			let mut reference = vec![0; parallel.len()];
+			let (luma, uv) = reference.split_at_mut(width * height);
+			let (u, v) = uv.split_at_mut(width * height / 4);
+			let columns = Axis::new(4, width, width, 1);
+			let rows = Axis::new(4, height, height, 1);
+			let conversion = frame.conversion().unwrap();
+			let mut scratch = Scratch::default();
+			scratch.resize(width);
+			HdrBand {
+				frame: &frame,
+				columns: &columns,
+				rows: &rows,
+				conversion: &conversion,
+				width,
+				first: 0,
+				luma,
+				u,
+				v,
+			}
+			.run(&mut scratch.top, &mut scratch.bottom);
+			assert_eq!(
+				parallel, reference,
+				"unit={unit_nits} white={white_nits} peak={peak_nits}"
+			);
 		}
 	}
 
@@ -441,6 +663,8 @@ mod tests {
 			let mut single = vec![0; width * height * 3 / 2];
 			let (luma, uv) = single.split_at_mut(width * height);
 			let (u, v) = uv.split_at_mut(width * height / 4);
+			let mut scratch = Scratch::default();
+			scratch.resize(width);
 			Band {
 				source: &frame.data,
 				columns: &columns,
@@ -451,7 +675,7 @@ mod tests {
 				u,
 				v,
 			}
-			.run();
+			.run(&mut scratch.top, &mut scratch.bottom);
 			assert!(banded == single);
 		}
 	}

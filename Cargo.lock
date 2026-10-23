@@ -1588,6 +1588,7 @@ dependencies = [
  "openmls_rust_crypto",
  "opus2",
  "platform",
+ "rayon",
  "rtrb",
  "screencapturekit",
  "serde_json",
@@ -1600,6 +1601,7 @@ dependencies = [
  "windows 0.61.3",
  "windows-capture",
  "windows-core 0.61.2",
+ "windows-core 0.62.2",
  "zbus",
  "zeroize",
 ]

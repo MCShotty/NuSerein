@@ -21,6 +21,9 @@ mod linux;
 #[cfg(target_os = "linux")]
 #[path = "screen/portal_linux.rs"]
 mod portal_linux;
+#[cfg(any(test, target_os = "windows"))]
+#[path = "screen/capture_probe.rs"]
+pub mod probe;
 
 use std::sync::{
 	Arc, Mutex,
@@ -38,6 +41,8 @@ pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
 pub enum RawFormat {
 	#[default]
 	Bgra8,
+	/// Limited-range BT.601 NV12, preserving the existing SDR encoder matrix.
+	Nv12,
 	/// Linear Rec.709 half floats. Windows scRGB uses 80 nits per unit;
 	/// Apple EDR capture uses the canonical 203-nit reference white.
 	LinearRgba16 {
@@ -57,6 +62,7 @@ impl RawFormat {
 	fn bytes(self) -> usize {
 		match self {
 			Self::Bgra8 => 4,
+			Self::Nv12 => 1,
 			Self::LinearRgba16 { .. } => 8,
 			Self::P010 { .. } => 2,
 		}
@@ -68,6 +74,99 @@ pub struct RawFrame {
 	pub height: u32,
 	pub stride: usize,
 	pub data: Vec<u8>,
+}
+
+/// Physical capture geometry is independent of a GPU-scaled encoder picture.
+#[cfg(not(target_os = "linux"))]
+pub(super) enum CapturedFrame {
+	#[cfg(not(target_os = "windows"))]
+	Cpu(RawFrame),
+	#[cfg(target_os = "windows")]
+	Gpu(platform::video::capture::Frame),
+}
+
+#[cfg(not(target_os = "linux"))]
+impl CapturedFrame {
+	#[cfg(not(target_os = "windows"))]
+	fn cpu(frame: RawFrame) -> Self {
+		Self::Cpu(frame)
+	}
+	#[cfg(target_os = "windows")]
+	fn gpu(frame: platform::video::capture::Frame) -> Self {
+		Self::Gpu(frame)
+	}
+	fn source_dimensions(&self) -> (u32, u32) {
+		match self {
+			#[cfg(not(target_os = "windows"))]
+			Self::Cpu(frame) => (frame.width, frame.height),
+			#[cfg(target_os = "windows")]
+			Self::Gpu(frame) => frame.source_dimensions(),
+		}
+	}
+	fn validate(&self) -> Result<(), &'static str> {
+		let (width, height) = self.source_dimensions();
+		if !valid_dimensions(width, height) {
+			return Err("Screen capture returned unsupported source dimensions");
+		}
+		match self {
+			#[cfg(not(target_os = "windows"))]
+			Self::Cpu(frame) => validate_frame(frame).map(|_| ()),
+			#[cfg(target_os = "windows")]
+			Self::Gpu(frame) => {
+				let (width, height) = frame.dimensions();
+				if valid_dimensions(width, height) {
+					Ok(())
+				} else {
+					Err("Screen capture returned unsupported processed dimensions")
+				}
+			}
+		}
+	}
+	fn preview(&self) -> Result<Option<image::RgbaImage>, &'static str> {
+		match self {
+			#[cfg(not(target_os = "windows"))]
+			Self::Cpu(frame) => preview_frame(frame).map(Some),
+			#[cfg(target_os = "windows")]
+			Self::Gpu(frame) => frame.preview(640, 360),
+		}
+	}
+	#[cfg(target_os = "windows")]
+	fn with_cpu<T>(
+		&self,
+		bytes: &mut Vec<u8>,
+		use_frame: impl FnOnce(&RawFrame) -> Result<T, &'static str>,
+	) -> Result<T, &'static str> {
+		match self {
+			#[cfg(target_os = "windows")]
+			Self::Gpu(frame) => {
+				let description = frame.download_into(bytes)?;
+				use platform::video::capture::PixelFormat;
+				let format = match description.format {
+					PixelFormat::Bgra8 => RawFormat::Bgra8,
+					PixelFormat::Nv12 => RawFormat::Nv12,
+					PixelFormat::LinearRgba16 {
+						unit_nits,
+						white_nits,
+						peak_nits,
+					} => RawFormat::LinearRgba16 {
+						unit_nits,
+						white_nits,
+						peak_nits,
+					},
+				};
+				let raw = RawFrame {
+					format,
+					width: description.width,
+					height: description.height,
+					stride: description.stride,
+					data: std::mem::take(bytes),
+				};
+				let result = use_frame(&raw);
+				*bytes = raw.data;
+				result
+			}
+		}
+	}
 }
 
 pub struct EncodedFrame {
@@ -225,7 +324,6 @@ pub struct Worker {
 	done: Option<mpsc::Receiver<Result<(), &'static str>>>,
 	#[cfg(target_os = "linux")]
 	status: Arc<Mutex<&'static str>>,
-	#[cfg(target_os = "linux")]
 	preview_visible: Arc<AtomicBool>,
 }
 
@@ -263,9 +361,7 @@ impl Worker {
 		let status = Arc::new(Mutex::new("Choose a screen or window in the system picker"));
 		#[cfg(target_os = "linux")]
 		let worker_status = status.clone();
-		#[cfg(target_os = "linux")]
-		let preview_visible = Arc::new(AtomicBool::new(true));
-		#[cfg(target_os = "linux")]
+		let preview_visible = Arc::new(AtomicBool::new(false));
 		let worker_preview_visible = preview_visible.clone();
 		// A few frames of slack absorbs send jitter without forcing keyframes on every hiccup.
 		let (send, frames) = tokio::sync::mpsc::channel(3);
@@ -316,6 +412,7 @@ impl Worker {
 					audio_send,
 					worker_audio_epoch,
 					worker_preview,
+					worker_preview_visible,
 					&wake,
 				);
 				finished_ready.store(false, Ordering::Release);
@@ -341,7 +438,6 @@ impl Worker {
 				done: Some(done),
 				#[cfg(target_os = "linux")]
 				status,
-				#[cfg(target_os = "linux")]
 				preview_visible,
 			},
 			Video {
@@ -357,9 +453,11 @@ impl Worker {
 		))
 	}
 
-	pub fn set_preview_visible(&self, _visible: bool) {
-		#[cfg(target_os = "linux")]
-		self.preview_visible.store(_visible, Ordering::Release);
+	pub fn set_preview_visible(&self, visible: bool) {
+		self.preview_visible.store(visible, Ordering::Release);
+		if !visible && let Ok(mut preview) = self.preview.try_lock() {
+			*preview = None;
+		}
 	}
 
 	pub fn capture_status(&self) -> Option<&'static str> {
@@ -385,7 +483,12 @@ impl Worker {
 
 	/// One local RGBA image, bounded to 640 by 360 pixels and replaced at most ten times a second.
 	pub fn take_preview(&self) -> Option<image::RgbaImage> {
-		self.preview.try_lock().ok()?.take()
+		let mut preview = self.preview.try_lock().ok()?;
+		if !self.preview_visible.load(Ordering::Acquire) {
+			*preview = None;
+			return None;
+		}
+		preview.take()
 	}
 
 	pub fn shutdown(mut self) -> mpsc::Receiver<Result<(), &'static str>> {
@@ -397,6 +500,58 @@ impl Drop for Worker {
 	fn drop(&mut self) {
 		self.ready.store(false, Ordering::Release);
 		self.stop.store(true, Ordering::Release);
+	}
+}
+
+/// Delayed encoders may need a few copies to release the last fresh picture.
+/// Pending output alone must not keep a static screen encoding forever.
+#[cfg(any(test, not(target_os = "linux")))]
+#[derive(Default)]
+struct CaptureDelivery {
+	latest: u64,
+	delivered: u64,
+	epoch: Option<u64>,
+	inputs: std::collections::VecDeque<(u32, u64)>,
+}
+
+#[cfg(any(test, not(target_os = "linux")))]
+impl CaptureDelivery {
+	fn fresh(&mut self) -> Result<(), &'static str> {
+		self.latest = self
+			.latest
+			.checked_add(1)
+			.ok_or("Screen capture sequence exhausted")?;
+		Ok(())
+	}
+	fn needs_picture(&self) -> bool {
+		self.latest != self.delivered
+	}
+	fn retire(&mut self) {
+		self.inputs.clear();
+		self.epoch = None;
+		self.delivered = 0;
+	}
+	fn submitted(&mut self, timestamp: u32, epoch: u64) -> Result<(), &'static str> {
+		if self.epoch != Some(epoch) {
+			self.retire();
+			self.epoch = Some(epoch);
+		}
+		if self.inputs.len() >= crate::video_encode::MAX_PENDING_PICTURES {
+			return Err("Screen encoder exceeded its pending picture limit");
+		}
+		self.inputs.push_back((timestamp, self.latest));
+		Ok(())
+	}
+	fn received(&mut self, timestamp: u32, epoch: u64) {
+		if self.epoch == Some(epoch)
+			&& let Some(index) = self
+				.inputs
+				.iter()
+				.position(|(input, _)| *input == timestamp)
+			&& let Some((_, source)) = self.inputs.remove(index)
+		{
+			self.delivered = self.delivered.max(source);
+		}
 	}
 }
 
@@ -415,6 +570,7 @@ fn encode_loop(
 	audio: Option<tokio::sync::mpsc::Sender<AudioChunk>>,
 	audio_epoch: Arc<AtomicU64>,
 	preview: Arc<Mutex<Option<image::RgbaImage>>>,
+	preview_visible: Arc<AtomicBool>,
 	wake: &impl Fn(),
 ) -> Result<(), &'static str> {
 	if stop.load(Ordering::Acquire) || send.is_closed() {
@@ -435,6 +591,8 @@ fn encode_loop(
 		ready.clone(),
 		audio_epoch.clone(),
 		raw_pending.clone(),
+		adapter,
+		video_settings.backend == model::voice_settings::VideoBackend::Experimental,
 	)?;
 	// The worker's stop also reaches a pending macOS picker, so call teardown closes it now.
 	#[cfg(not(target_os = "windows"))]
@@ -451,16 +609,30 @@ fn encode_loop(
 	let mut first_frame_deadline = Some(Instant::now() + Duration::from_secs(15));
 	let mut next_frame = Instant::now();
 	let mut next_preview = Instant::now();
+	let mut preview_supported = true;
+	let mut was_preview_visible = true;
 	let mut latest_frame = None;
 	let mut next_epoch = 0;
 	let mut current_output: Option<Output> = None;
+	let mut delivery = CaptureDelivery::default();
+	let mut metrics = crate::diagnostics::Metrics::new(crate::diagnostics::Scope::ScreenVideo);
+	#[cfg(target_os = "windows")]
+	if metrics.start().is_some() {
+		eprintln!(
+			"[Serein voice ScreenCapture] adapter_helper={} backend={:?} codec={:?} fps={}",
+			adapter.map_or_else(|| "unidentified".to_owned(), |adapter| adapter.helper_key()),
+			video_settings.backend,
+			video_settings.codec,
+			settings.fps
+		);
+	}
+	#[cfg(target_os = "windows")]
+	let mut capture_reports = (0u8, Instant::now() + Duration::from_secs(5));
 
 	while !stop.load(Ordering::Acquire) && !send.is_closed() {
 		#[cfg(target_os = "windows")]
 		if _native.failed() {
-			return Err(
-				"System audio capture stopped; check your output device or share without audio",
-			);
+			return Err("Screen sharing stopped; check the selected source or audio device");
 		}
 		if capture_stop.load(Ordering::Acquire) {
 			return Err("The selected screen or window stopped sharing");
@@ -468,7 +640,12 @@ fn encode_loop(
 		#[cfg(target_os = "macos")]
 		_native.refresh_dimensions()?;
 		let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
-		let frame = match raw.recv_timeout(interval.min(Duration::from_millis(100))) {
+		let wait = if delivery.needs_picture() || keyframe.load(Ordering::Acquire) {
+			interval.min(Duration::from_millis(100))
+		} else {
+			Duration::from_millis(100)
+		};
+		let frame = match raw.recv_timeout(wait) {
 			Ok(frame) => {
 				#[cfg(target_os = "windows")]
 				raw_pending.store(false, Ordering::Release);
@@ -495,10 +672,14 @@ fn encode_loop(
 		}
 		if reset != reset_generation {
 			reset_generation = reset;
-			if let Some(encoder) = &mut encoding {
-				encoder.reset_for_security(reset)?;
+			if let Some(encoder) = encoding.take() {
+				next_epoch = encoder
+					.epoch()
+					.checked_add(1)
+					.ok_or("Screen encoder epoch exhausted")?;
 			}
 			latest_frame = None;
+			delivery.retire();
 			keyframe.store(true, Ordering::Release);
 			// This input can span the transition. Restart the selected capture so an
 			// idle desktop supplies a new snapshot instead of waiting for damage.
@@ -508,15 +689,25 @@ fn encode_loop(
 			continue;
 		}
 		let now = Instant::now();
+		#[cfg(target_os = "windows")]
+		if capture_reports.0 < 8 && now >= capture_reports.1 {
+			if metrics.start().is_some() {
+				// Fixed-size counts only; never include source titles, handles or pixels.
+				eprintln!("[Serein voice ScreenCapture] {}", _native.stats().json());
+			}
+			capture_reports.0 += 1;
+			capture_reports.1 = now + Duration::from_secs(5);
+		}
 		if let Some(frame) = &frame {
-			validate_frame(frame)?;
+			frame.validate()?;
+			let source_dimensions = frame.source_dimensions();
 			let resolved = settings
-				.resolve((frame.width, frame.height))
+				.resolve(source_dimensions)
 				.ok_or("Unsupported screen source dimensions")?;
 			let current = publish_output(
 				&output,
 				resolved,
-				(frame.width, frame.height),
+				source_dimensions,
 				&ready,
 				&keyframe,
 				&bitrate,
@@ -530,26 +721,51 @@ fn encode_loop(
 				}
 				encoding = None;
 				latest_frame = None;
+				delivery.retire();
 				current_output = Some(current);
+				preview_supported = true;
 				next_frame = now;
 			}
 			first_frame_deadline = None;
-			if now >= next_preview {
-				let image = preview_frame(frame)?;
-				if let Ok(mut slot) = preview.try_lock() {
-					*slot = Some(image);
+		}
+		let fresh = frame.is_some();
+		metrics.poll(false, u64::from(send.capacity() == 0), !fresh, 0);
+		if let Some(frame) = frame {
+			delivery.fresh()?;
+			latest_frame = Some(frame);
+		}
+		let visible = preview_visible.load(Ordering::Acquire);
+		if visible && !was_preview_visible {
+			preview_supported = true;
+		}
+		was_preview_visible = visible;
+		if visible && preview_supported {
+			if now >= next_preview
+				&& let Some(frame) = &latest_frame
+			{
+				match frame.preview() {
+					Ok(Some(image)) => {
+						if let Ok(mut slot) = preview.try_lock() {
+							*slot = Some(image);
+						}
+						wake();
+					}
+					Ok(None) => {}
+					// Optional local presentation must not end an otherwise valid
+					// outgoing stream or retry a failed processor on every frame.
+					Err(_) => preview_supported = false,
 				}
 				next_preview = now + Duration::from_millis(100);
-				wake();
 			}
+		} else {
+			// Showing a static source again must not wait for new capture damage.
+			next_preview = now;
 		}
-		let encode = retain_screen_frame(
-			&mut latest_frame,
-			frame,
-			ready.load(Ordering::Acquire),
-			keyframe.load(Ordering::Acquire)
-				|| encoding.as_ref().is_some_and(ScreenEncoder::pending),
-		)?;
+		let encode = ready.load(Ordering::Acquire)
+			&& latest_frame.is_some()
+			&& (delivery.needs_picture()
+				|| keyframe.load(Ordering::Acquire)
+				|| encoding.as_ref().is_some_and(ScreenEncoder::pending));
 		// Local capture remains available while alone; only secure media is encoded or queued.
 		if !ready.load(Ordering::Acquire) {
 			if let Some(encoder) = &encoding {
@@ -559,6 +775,7 @@ fn encode_loop(
 					.ok_or("Screen encoder epoch exhausted")?;
 			}
 			encoding = None;
+			delivery.retire();
 			keyframe.store(true, Ordering::Release);
 			continue;
 		}
@@ -582,7 +799,8 @@ fn encode_loop(
 			.load(Ordering::Acquire)
 			.clamp(250_000, resolved.bit_rate());
 		if encoding.is_none() {
-			encoding = Some(ScreenEncoder::new_on_adapter(
+			encoding = Some(ScreenEncoder::new_for_capture(
+				latest_frame.as_ref().expect("resolved screen frame"),
 				resolved,
 				target,
 				video_settings,
@@ -603,17 +821,32 @@ fn encode_loop(
 		if audio_epoch.load(Ordering::Acquire) != reset_generation {
 			continue;
 		}
-		let packet = encoding
-			.as_mut()
-			.expect("secure screen encoder")
-			.encode_at(
+		let encoder = encoding.as_mut().expect("secure screen encoder");
+		let drained = if !fresh && !force_keyframe {
+			encoder.drain()?
+		} else {
+			None
+		};
+		let packet = if let Some(packet) = drained {
+			packet
+		} else if delivery.needs_picture() || force_keyframe {
+			let timestamp = (origin.elapsed().as_micros() * 90 / 1000) as u32;
+			let started = metrics.start();
+			let packet = encoder.encode_capture_at(
 				latest_frame.as_ref().expect("latest screen frame"),
 				force_keyframe,
-				(origin.elapsed().as_micros() * 90 / 1000) as u32,
+				timestamp,
 			)?;
+			metrics.finish(crate::diagnostics::Stage::Encode, started);
+			delivery.submitted(timestamp, encoder.epoch())?;
+			packet
+		} else {
+			continue;
+		};
 		if packet.data.is_empty() {
 			continue;
 		}
+		delivery.received(packet.timestamp, packet.epoch);
 		if !ready.load(Ordering::Acquire)
 			|| stop.load(Ordering::Acquire)
 			|| audio_epoch.load(Ordering::Acquire) != reset_generation
@@ -638,12 +871,14 @@ fn encode_loop(
 				.expect("secure screen encoder")
 				.restart()?;
 			keyframe.store(true, Ordering::Release);
+			delivery.retire();
 		}
 	}
 	capture_stop.store(true, Ordering::Release);
 	Ok(())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn retain_screen_frame(
 	latest: &mut Option<RawFrame>,
 	frame: Option<RawFrame>,
@@ -664,6 +899,11 @@ pub(super) struct ScreenEncoder {
 	encoder: Option<crate::video_backend::Encoder>,
 	video_settings: VideoSettings,
 	i420: Vec<u8>,
+	converter: convert::Converter,
+	#[cfg(target_os = "windows")]
+	capture_bytes: Vec<u8>,
+	#[cfg(target_os = "windows")]
+	surface_input: bool,
 	settings: Settings,
 	bitrate: u32,
 	adapter: Option<model::VideoAdapter>,
@@ -687,7 +927,28 @@ impl ScreenEncoder {
 		let mut config = Self::config(settings, bitrate, video_settings.codec);
 		config.adapter = adapter;
 		let encoder = crate::video_backend::Encoder::new(config, video_settings.backend)?;
-		Ok(Self {
+		Ok(Self::with_encoder(
+			settings,
+			bitrate,
+			video_settings,
+			adapter,
+			epoch_base,
+			reset_generation,
+			encoder,
+		))
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	fn with_encoder(
+		settings: Settings,
+		bitrate: u32,
+		video_settings: VideoSettings,
+		adapter: Option<model::VideoAdapter>,
+		epoch_base: u64,
+		reset_generation: u64,
+		encoder: crate::video_backend::Encoder,
+	) -> Self {
+		Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(
 				true,
 				encoder.hardware(),
@@ -696,13 +957,144 @@ impl ScreenEncoder {
 			encoder: Some(encoder),
 			video_settings,
 			i420: Vec::new(),
+			converter: convert::Converter::default(),
+			#[cfg(target_os = "windows")]
+			capture_bytes: Vec::new(),
+			#[cfg(target_os = "windows")]
+			surface_input: false,
 			settings,
 			bitrate,
 			adapter,
 			epoch_base,
 			awaiting_keyframe: true,
 			reset_generation,
-		})
+		}
+	}
+
+	#[cfg(not(target_os = "linux"))]
+	#[allow(clippy::too_many_arguments)]
+	fn new_for_capture(
+		frame: &CapturedFrame,
+		settings: Settings,
+		bitrate: u32,
+		video_settings: VideoSettings,
+		adapter: Option<model::VideoAdapter>,
+		epoch_base: u64,
+		reset_generation: u64,
+	) -> Result<Self, &'static str> {
+		if !settings.valid() || !video_settings.is_valid() || reset_generation == u64::MAX {
+			return Err("Invalid screen encoder settings");
+		}
+		frame.validate()?;
+		#[cfg(target_os = "windows")]
+		if video_settings.backend == model::voice_settings::VideoBackend::Experimental {
+			let CapturedFrame::Gpu(frame) = frame;
+			let mut config = Self::config(settings, bitrate, video_settings.codec);
+			config.adapter = adapter;
+			if let Ok(encoder) =
+				crate::video_backend::Encoder::new_on_surface(config, video_settings.backend, frame)
+			{
+				let mut screen = Self::with_encoder(
+					settings,
+					bitrate,
+					video_settings,
+					adapter,
+					epoch_base,
+					reset_generation,
+					encoder,
+				);
+				screen.surface_input = true;
+				return Ok(screen);
+			}
+			frame.prefer_cpu();
+		}
+		Self::new_on_adapter(
+			settings,
+			bitrate,
+			video_settings,
+			adapter,
+			epoch_base,
+			reset_generation,
+		)
+	}
+
+	#[cfg(not(target_os = "linux"))]
+	fn encode_capture_at(
+		&mut self,
+		frame: &CapturedFrame,
+		force: bool,
+		timestamp: u32,
+	) -> Result<crate::video_encode::EncodedPacket, &'static str> {
+		#[cfg(target_os = "windows")]
+		let captured = frame;
+		match frame {
+			#[cfg(not(target_os = "windows"))]
+			CapturedFrame::Cpu(frame) => self.encode_at(frame, force, timestamp),
+			#[cfg(target_os = "windows")]
+			CapturedFrame::Gpu(frame) => {
+				if self.surface_input
+					&& !self
+						.encoder
+						.as_ref()
+						.is_some_and(|encoder| encoder.uses_surface())
+				{
+					self.surface_input = false;
+					frame.prefer_cpu();
+				}
+				if self.surface_input
+					&& !self
+						.encoder
+						.as_ref()
+						.is_some_and(|encoder| encoder.accepts_surface(frame))
+				{
+					// A restarted capture owns a new pool, even if its dimensions
+					// are unchanged. Release the old device/session before opening it.
+					let epoch = self
+						.epoch()
+						.checked_add(1)
+						.ok_or("Screen encoder epoch exhausted")?;
+					self.encoder = None;
+					self.diagnostics.set(None);
+					let mut config =
+						Self::config(self.settings, self.bitrate, self.video_settings.codec);
+					config.adapter = self.adapter;
+					let encoder = crate::video_backend::Encoder::new_on_surface(
+						config,
+						self.video_settings.backend,
+						frame,
+					)
+					.or_else(|_| {
+						crate::video_backend::Encoder::new(config, self.video_settings.backend)
+					})?;
+					self.surface_input = encoder.uses_surface();
+					if !self.surface_input {
+						frame.prefer_cpu();
+					}
+					self.encoder = Some(encoder);
+					self.epoch_base = epoch;
+					self.awaiting_keyframe = true;
+				}
+				if self.surface_input {
+					if force {
+						self.restart()?;
+					}
+					let encoder = self.encoder.as_mut().ok_or("Screen encoder stopped")?;
+					if let Ok(result) = encoder.encode_surface_at(frame, false, timestamp) {
+						return self.finish_packet(result);
+					}
+					// The host API retires the old surface session and advances its
+					// prediction epoch before accepting this downloaded picture.
+					self.surface_input = false;
+					frame.prefer_cpu();
+					self.awaiting_keyframe = true;
+				}
+				let mut bytes = std::mem::take(&mut self.capture_bytes);
+				let result =
+					captured.with_cpu(&mut bytes, |raw| self.encode_at(raw, force, timestamp));
+				self.capture_bytes = bytes;
+				result
+			}
+		}
 	}
 
 	fn config(settings: Settings, bitrate: u32, codec: VideoCodec) -> crate::video_encode::Config {
@@ -761,6 +1153,16 @@ impl ScreenEncoder {
 			.is_some_and(|encoder| encoder.pending())
 	}
 
+	#[cfg(not(target_os = "linux"))]
+	fn drain(&mut self) -> Result<Option<crate::video_encode::EncodedPacket>, &'static str> {
+		let result = self
+			.encoder
+			.as_mut()
+			.ok_or("Screen encoder stopped")?
+			.drain_at()?;
+		result.map(|packet| self.finish_packet(packet)).transpose()
+	}
+
 	pub(super) fn epoch(&self) -> u64 {
 		self.epoch_base
 			.saturating_add(self.encoder.as_ref().map_or(0, |encoder| encoder.epoch()))
@@ -782,6 +1184,7 @@ impl ScreenEncoder {
 		self.reset_generation
 	}
 
+	#[cfg(any(test, target_os = "linux"))]
 	pub(super) fn reset_for_security(&mut self, generation: u64) -> Result<bool, &'static str> {
 		if generation == u64::MAX {
 			return Err("Screen security reset generation exhausted");
@@ -810,12 +1213,21 @@ impl ScreenEncoder {
 		}
 		let (width, height) = (self.settings.width as usize, self.settings.height as usize);
 		self.i420.resize(width * height * 3 / 2, 0);
-		convert::bgra_to_i420(frame, width, height, &mut self.i420)?;
+		self.converter
+			.convert(frame, width, height, &mut self.i420)?;
 		let encoder = self
 			.encoder
 			.as_mut()
 			.ok_or("FFmpeg screen encoder stopped")?;
-		let mut result = encoder.encode_at(&self.i420, false, timestamp)?;
+		let result = encoder.encode_at(&self.i420, false, timestamp)?;
+		self.finish_packet(result)
+	}
+
+	fn finish_packet(
+		&mut self,
+		mut result: crate::video_encode::EncodedPacket,
+	) -> Result<crate::video_encode::EncodedPacket, &'static str> {
+		let encoder = self.encoder.as_ref().ok_or("Screen encoder stopped")?;
 		self.diagnostics
 			.set(Some((encoder.hardware(), encoder.amf_split())));
 		result.epoch = result
@@ -853,14 +1265,19 @@ fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
 		|| matches!(frame.format, RawFormat::P010 { .. })
 			&& (!frame.width.is_multiple_of(2)
 				|| !frame.height.is_multiple_of(2)
-				|| frame.stride != frame.width as usize * 2
+				|| frame.stride != row_bytes
+				|| required + required / 2 != frame.data.len())
+		|| matches!(frame.format, RawFormat::Nv12)
+			&& (!frame.width.is_multiple_of(2)
+				|| !frame.height.is_multiple_of(2)
+				|| !frame.stride.is_multiple_of(2)
 				|| required + required / 2 != frame.data.len())
 	{
 		return Err("Screen capture returned an unsupported frame size");
 	}
 
 	let valid_color = match frame.format {
-		RawFormat::Bgra8 => true,
+		RawFormat::Bgra8 | RawFormat::Nv12 => true,
 		RawFormat::LinearRgba16 {
 			unit_nits,
 			white_nits,
@@ -890,6 +1307,7 @@ fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
 	Ok((row_bytes, required))
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 pub(super) fn preview_frame(frame: &RawFrame) -> Result<image::RgbaImage, &'static str> {
 	validate_frame(frame)?;
 	let scale = (640.0 / f64::from(frame.width))
@@ -911,7 +1329,7 @@ impl RawFrame {
 	fn conversion(&self) -> Option<platform::video::ffmpeg::SdrConverter> {
 		use platform::video::ffmpeg::{HdrTransfer, SdrConverter};
 		match self.format {
-			RawFormat::Bgra8 => None,
+			RawFormat::Bgra8 | RawFormat::Nv12 => None,
 			RawFormat::LinearRgba16 {
 				white_nits,
 				peak_nits,
@@ -935,6 +1353,7 @@ impl RawFrame {
 			)),
 		}
 	}
+	#[cfg(any(test, not(target_os = "windows")))]
 	fn sdr(
 		&self,
 		x: usize,
@@ -944,6 +1363,18 @@ impl RawFrame {
 		let at = y * self.stride + x * self.format.bytes();
 		if matches!(self.format, RawFormat::Bgra8) {
 			return [self.data[at + 2], self.data[at + 1], self.data[at]];
+		}
+		if matches!(self.format, RawFormat::Nv12) {
+			let luma = i32::from(self.data[at]).saturating_sub(16).max(0);
+			let uv = self.stride * self.height as usize + y / 2 * self.stride + (x & !1);
+			let u = i32::from(self.data[uv]) - 128;
+			let v = i32::from(self.data[uv + 1]) - 128;
+			return [
+				298 * luma + 409 * v,
+				298 * luma - 100 * u - 208 * v,
+				298 * luma + 516 * u,
+			]
+			.map(|value| ((value + 128) >> 8).clamp(0, 255) as u8);
 		}
 		let conversion = conversion.expect("validated HDR conversion");
 		conversion.to_sdr(self.nits(x, y, conversion))
@@ -996,7 +1427,7 @@ impl RawFrame {
 						.expect("validated capture transfer"),
 				)
 			}
-			RawFormat::Bgra8 => [0.0; 3],
+			RawFormat::Bgra8 | RawFormat::Nv12 => [0.0; 3],
 		}
 	}
 }
@@ -1004,6 +1435,77 @@ impl RawFrame {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn delayed_capture_output_finishes_the_latest_picture_without_an_idle_encode_loop() {
+		let mut delivery = CaptureDelivery::default();
+		assert!(!delivery.needs_picture());
+		delivery.fresh().unwrap();
+		// A 16-picture lookahead releases the original input after bounded priming.
+		for timestamp in 0..17 {
+			delivery.submitted(timestamp, 3).unwrap();
+		}
+		assert!(delivery.needs_picture());
+		delivery.received(0, 3);
+		assert!(!delivery.needs_picture());
+		// Receiving remaining duplicates never creates another input requirement.
+		for timestamp in 1..17 {
+			delivery.received(timestamp, 3);
+			assert!(!delivery.needs_picture());
+		}
+		assert!(delivery.inputs.is_empty());
+		delivery.fresh().unwrap();
+		delivery.submitted(20, 3).unwrap();
+		assert!(delivery.needs_picture());
+		delivery.received(20, 3);
+		assert!(!delivery.needs_picture());
+	}
+
+	#[test]
+	fn capture_delivery_rejects_old_epochs_and_bounds_priming() {
+		let mut delivery = CaptureDelivery::default();
+		delivery.fresh().unwrap();
+		delivery.submitted(5, 0).unwrap();
+		delivery.retire();
+		delivery.submitted(6, 1).unwrap();
+		delivery.received(5, 0);
+		assert!(delivery.needs_picture());
+		delivery.received(6, 1);
+		assert!(!delivery.needs_picture());
+		delivery.fresh().unwrap();
+		for timestamp in 0..crate::video_encode::MAX_PENDING_PICTURES as u32 {
+			delivery.submitted(timestamp, 1).unwrap();
+		}
+		assert!(delivery.submitted(1000, 1).is_err());
+		assert_eq!(
+			delivery.inputs.len(),
+			crate::video_encode::MAX_PENDING_PICTURES
+		);
+	}
+
+	#[test]
+	fn hiding_preview_discards_pending_images_without_changing_stream_readiness() {
+		let ready = Arc::new(AtomicBool::new(true));
+		let worker = Worker {
+			stop: Arc::new(AtomicBool::new(false)),
+			ready: ready.clone(),
+			output: Arc::new(Mutex::new(None)),
+			bitrate: Arc::new(AtomicU32::new(1_000_000)),
+			preview: Arc::new(Mutex::new(Some(image::RgbaImage::new(2, 2)))),
+			done: None,
+			#[cfg(target_os = "linux")]
+			status: Arc::new(Mutex::new("synthetic")),
+			preview_visible: Arc::new(AtomicBool::new(true)),
+		};
+		worker.set_preview_visible(false);
+		assert!(worker.take_preview().is_none());
+		assert!(worker.preview.lock().unwrap().is_none());
+		assert!(ready.load(Ordering::Acquire));
+		worker.set_preview_visible(true);
+		*worker.preview.lock().unwrap() = Some(image::RgbaImage::new(2, 2));
+		assert!(worker.take_preview().is_some());
+		assert!(ready.load(Ordering::Acquire));
+	}
 
 	#[test]
 	fn source_aspect_ratios_encode_the_resolved_dimensions_and_fresh_keyframes() {
@@ -1201,6 +1703,11 @@ mod tests {
 			encoder: Some(software),
 			video_settings,
 			i420: Vec::new(),
+			converter: convert::Converter::default(),
+			#[cfg(target_os = "windows")]
+			capture_bytes: Vec::new(),
+			#[cfg(target_os = "windows")]
+			surface_input: false,
 			settings,
 			bitrate: settings.bit_rate(),
 			adapter: None,
@@ -1294,7 +1801,6 @@ mod tests {
 			done: None,
 			#[cfg(target_os = "linux")]
 			status: Arc::new(Mutex::new("")),
-			#[cfg(target_os = "linux")]
 			preview_visible: Arc::new(AtomicBool::new(true)),
 		};
 		assert!(worker.take_preview().is_some());
@@ -1362,6 +1868,11 @@ mod tests {
 			encoder: Some(encoder),
 			video_settings,
 			i420: Vec::new(),
+			converter: convert::Converter::default(),
+			#[cfg(target_os = "windows")]
+			capture_bytes: Vec::new(),
+			#[cfg(target_os = "windows")]
+			surface_input: false,
 			settings,
 			bitrate: settings.bit_rate(),
 			adapter: None,

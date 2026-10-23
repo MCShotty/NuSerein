@@ -155,6 +155,12 @@ jobs:
             export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           fi
           cargo xtask check
+      - name: Windows capture surfaces and retirement (synthetic, no screen capture)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked -p platform --lib video::capture::tests::synthetic -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic Windows capture regression failed' }
       - name: HDR and SDR media shader (offline software Vulkan)
         if: runner.os == 'Linux'
         run: cargo test --locked -p serein --bin serein video::render_tests::media_shader_preserves_sdr_rotation_and_pq_hlg_highlights -- --exact --ignored
@@ -260,6 +266,53 @@ jobs:
             if ($speech.ExitCode -ne 0) { throw "Cached speech worker failed: $($speech.ExitCode)" }
             @{revision=$env:GITHUB_SHA; run='cached'; launchExit=$probe.ExitCode; bytes=(Get-Item $archive).Length; sha256=(Get-FileHash $archive -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content "$checkDir/result.json"
           } finally { $env:PATH = $buildPath }
+      - name: Build owner-operated Windows capture diagnostic tool
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked -p discord-voice --example windows_capture
+          if ($LASTEXITCODE -ne 0) { throw 'Capture probe CLI regression failed' }
+          cargo build --locked --release -p discord-voice --example windows_capture
+          if ($LASTEXITCODE -ne 0) { throw 'Capture probe build failed' }
+          $tokens = $null
+          $parseErrors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/stream-capture-sample.ps1'), [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -ne 0) { throw ($parseErrors | Out-String) }
+          # A separate diagnostic artifact; the verified package/installer stays untouched.
+          $tools = Join-Path $env:RUNNER_TEMP 'serein-capture-diagnostics'
+          New-Item -ItemType Directory -Path $tools -Force | Out-Null
+          Copy-Item target/release/examples/windows_capture.exe $tools
+          Get-ChildItem dist -Filter '*.dll' | Copy-Item -Destination $tools
+          foreach ($name in @('ffmpeg-source','licenses','LICENSE-MIT','LICENSE-APACHE','THIRD_PARTY_NOTICES.md')) {
+            Copy-Item (Join-Path 'dist' $name) $tools -Recurse
+          }
+          Copy-Item scripts/stream-capture-sample.ps1 $tools
+          Copy-Item docs/pr-evidence/capture-overhead/README.md $tools
+          @{revision=(git rev-parse HEAD); baseline='30d3437ffe6a3b5d06ecd2ae67c7d2f1c76cd28b';
+            probeSha256=(Get-FileHash "$tools/windows_capture.exe" -Algorithm SHA256).Hash;
+            libraries=@(Get-ChildItem $tools -Filter '*.dll' | ForEach-Object { @{name=$_.Name;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash} })
+          } | ConvertTo-Json -Depth 4 | Set-Content "$tools/build.json"
+          $buildPath = $env:PATH
+          try {
+            $nativeRoot = [IO.Path]::GetFullPath($env:FFMPEG_DIR).TrimEnd('\', '/')
+            $env:PATH = ($buildPath -split ';' | Where-Object {
+              try {
+                $entry = [IO.Path]::GetFullPath($_).TrimEnd('\', '/')
+                -not ($entry.Equals($nativeRoot, [StringComparison]::OrdinalIgnoreCase) -or $entry.StartsWith("$nativeRoot\", [StringComparison]::OrdinalIgnoreCase))
+              } catch { $true }
+            }) -join ';'
+            # Help parses only; no picker, capture, microphone, encoder or Discord session.
+            & "$tools/windows_capture.exe" --help
+            if ($LASTEXITCODE -ne 0) { throw 'Standalone capture tool failed to load from its artifact' }
+          } finally { $env:PATH = $buildPath }
+      - name: Preserve owner-operated Windows capture diagnostic tool
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: windows-capture-diagnostics-${{ runner.arch }}
+          path: ${{ runner.temp }}/serein-capture-diagnostics/
+          if-no-files-found: error
+          retention-days: 30
       - name: Preserve clean and cached package evidence
         if: runner.os == 'Windows' && always()
         uses: actions/upload-artifact@v7.0.1

@@ -206,6 +206,45 @@ unsafe extern "C" {
 		adapter: *const crate::video_gpu::Adapter,
 		features: i32,
 	) -> *mut c_void;
+	#[cfg(target_os = "windows")]
+	fn serein_avc_surface_context(frame: *const c_void) -> *mut c_void;
+	fn serein_avc_surface_context_free(context: *mut c_void);
+	fn serein_avc_open_on_surface(
+		width: i32,
+		height: i32,
+		fps: i32,
+		bitrate: i32,
+		baseline: i32,
+		backend: i32,
+		codec: i32,
+		max_bytes: usize,
+		adapter: *const crate::video_gpu::Adapter,
+		features: i32,
+		frames: *mut c_void,
+	) -> *mut c_void;
+	#[cfg(target_os = "windows")]
+	fn serein_avc_accepts_surface(context: *mut c_void, frame: *const c_void) -> i32;
+
+	#[cfg(target_os = "windows")]
+	fn serein_avc_encode_surface_timed(
+		context: *mut c_void,
+		frame: *const c_void,
+		force: i32,
+		output: *mut u8,
+		capacity: usize,
+		length_out: *mut usize,
+		keyframe_out: *mut i32,
+		presentation_index: *mut i64,
+	) -> i32;
+	fn serein_avc_receive_timed(
+		context: *mut c_void,
+		output: *mut u8,
+		capacity: usize,
+		length_out: *mut usize,
+		keyframe_out: *mut i32,
+		presentation_index: *mut i64,
+	) -> i32;
+
 	fn serein_avc_close(context: *mut c_void);
 	fn serein_avc_amf_split(context: *mut c_void) -> i32;
 	fn serein_avc_encode_timed(
@@ -230,6 +269,16 @@ impl Drop for Native {
 	}
 }
 
+/// A retained frames/device context, without retaining a capture picture. It
+/// remains on the encoder worker; restarts cannot borrow a callback-owned frame.
+struct SurfaceContext(NonNull<c_void>);
+impl Drop for SurfaceContext {
+	fn drop(&mut self) {
+		// SAFETY: Native creation gives this object one retained context reference.
+		unsafe { serein_avc_surface_context_free(self.0.as_ptr()) };
+	}
+}
+
 pub(crate) struct Encoder {
 	native: Option<Native>,
 	config: Config,
@@ -241,12 +290,44 @@ pub(crate) struct Encoder {
 	features: i32,
 	amf_split: crate::diagnostics::AmfSplit,
 	produced_output: bool,
+	surface: Option<Rc<SurfaceContext>>,
 }
 
 impl Encoder {
 	pub(crate) fn new(config: Config) -> Result<Self, &'static str> {
 		config.picture_bytes()?;
 		try_backends(config.codec, None, |backend| Self::open(config, backend))
+	}
+
+	#[cfg(target_os = "windows")]
+	pub(crate) fn new_on_surface(
+		config: Config,
+		frame: &platform::video::capture::Frame,
+	) -> Result<Self, &'static str> {
+		config.picture_bytes()?;
+		if config.hdr.is_some() {
+			return Err("HDR capture retains the existing CPU conversion path");
+		}
+		// SAFETY: Frame supplies a live, completed native AVFrame. The helper
+		// retains its frames context independently before the borrow ends.
+		let pointer = unsafe { serein_avc_surface_context(frame.as_encoder_frame()) };
+		let surface = Rc::new(SurfaceContext(
+			NonNull::new(pointer).ok_or("GPU capture frame is incompatible with FFmpeg")?,
+		));
+		Self::open_after_features_surface(config, Backend::Amf, None, Some(surface))
+	}
+
+	#[cfg(target_os = "windows")]
+	pub(crate) fn uses_surface(&self) -> bool {
+		self.surface.is_some()
+	}
+
+	#[cfg(target_os = "windows")]
+	pub(crate) fn accepts_surface(&self, frame: &platform::video::capture::Frame) -> bool {
+		self.native.as_ref().is_some_and(|native| {
+			// SAFETY: Both handles remain live; native reads immutable context identity only.
+			unsafe { serein_avc_accepts_surface(native.0.as_ptr(), frame.as_encoder_frame()) == 1 }
+		})
 	}
 
 	pub(crate) fn hardware_only(
@@ -295,11 +376,31 @@ impl Encoder {
 		self.native = None;
 		self.backend = Backend::Software;
 		self.config = config;
-		*self = Self::open_at_features(config, active, features).or_else(|_| {
-			try_backends(config.codec, Some(active), |backend| {
-				Self::open(config, backend)
-			})
-		})?;
+		*self = if let Some(surface) = self.surface.clone() {
+			let attempts = feature_attempts(active, config.profile, config.codec);
+			let previous = attempts
+				.iter()
+				.position(|value| *value == features)
+				.and_then(|index| index.checked_sub(1))
+				.map(|index| attempts[index]);
+			Self::open_after_features_surface(config, active, previous, Some(surface)).or_else(
+				|_| {
+					// Interop may disappear during a driver/session transition. Retire
+					// the old prediction state and keep the ordinary host retry policy.
+					Self::open_at_features(config, active, features).or_else(|_| {
+						try_backends(config.codec, Some(active), |backend| {
+							Self::open(config, backend)
+						})
+					})
+				},
+			)?
+		} else {
+			Self::open_at_features(config, active, features).or_else(|_| {
+				try_backends(config.codec, Some(active), |backend| {
+					Self::open(config, backend)
+				})
+			})?
+		};
 		self.epoch = epoch;
 		Ok(())
 	}
@@ -339,6 +440,15 @@ impl Encoder {
 		backend: Backend,
 		after: Option<i32>,
 	) -> Result<Self, &'static str> {
+		Self::open_after_features_surface(config, backend, after, None)
+	}
+
+	fn open_after_features_surface(
+		config: Config,
+		backend: Backend,
+		after: Option<i32>,
+		surface: Option<Rc<SurfaceContext>>,
+	) -> Result<Self, &'static str> {
 		config.picture_bytes()?;
 		if !matches_adapter(backend, config.adapter) {
 			return Err("This encoder does not belong to the selected rendering GPU");
@@ -355,24 +465,48 @@ impl Encoder {
 		let start = after
 			.and_then(|active| attempts.iter().position(|features| *features == active))
 			.map_or(0, |index| index + 1);
-		for features in &attempts[start..] {
+		// A capture-pool limitation must not silently disable quality features.
+		// Decline surface mode and let the unchanged host path negotiate instead.
+		let end = if surface.is_some() {
+			(start + 1).min(attempts.len())
+		} else {
+			attempts.len()
+		};
+		for features in &attempts[start..end] {
+			let codec = match config.codec {
+				VideoCodec::H264 => 0,
+				VideoCodec::H265 => 1,
+				VideoCodec::Av1 => 2,
+			};
 			pointer = unsafe {
-				serein_avc_open_on_adapter(
-					config.width as i32,
-					config.height as i32,
-					config.fps as i32,
-					config.bit_rate as i32,
-					i32::from(config.profile == Profile::Baseline),
-					backend as i32,
-					match config.codec {
-						VideoCodec::H264 => 0,
-						VideoCodec::H265 => 1,
-						VideoCodec::Av1 => 2,
-					},
-					config.max_bytes,
-					adapter.as_ref().map_or(std::ptr::null(), |value| value),
-					*features | config.hdr.map_or(0, hdr_flags),
-				)
+				if let Some(surface) = &surface {
+					serein_avc_open_on_surface(
+						config.width as i32,
+						config.height as i32,
+						config.fps as i32,
+						config.bit_rate as i32,
+						i32::from(config.profile == Profile::Baseline),
+						backend as i32,
+						codec,
+						config.max_bytes,
+						adapter.as_ref().map_or(std::ptr::null(), |value| value),
+						*features | config.hdr.map_or(0, hdr_flags),
+						surface.0.as_ptr(),
+					)
+				} else {
+					serein_avc_open_on_adapter(
+						config.width as i32,
+						config.height as i32,
+						config.fps as i32,
+						config.bit_rate as i32,
+						i32::from(config.profile == Profile::Baseline),
+						backend as i32,
+						codec,
+						config.max_bytes,
+						adapter.as_ref().map_or(std::ptr::null(), |value| value),
+						*features | config.hdr.map_or(0, hdr_flags),
+					)
+				}
 			};
 			if !pointer.is_null() {
 				selected_features = *features;
@@ -398,6 +532,7 @@ impl Encoder {
 			features: selected_features,
 			amf_split: crate::diagnostics::AmfSplit::from_native(amf_split),
 			produced_output: false,
+			surface,
 		})
 	}
 
@@ -449,6 +584,17 @@ impl Encoder {
 		if picture.len() != self.config.picture_bytes()? {
 			return Err("Invalid FFmpeg video encoder picture");
 		}
+		if self.surface.is_some() {
+			let epoch = self
+				.epoch
+				.checked_add(1)
+				.ok_or("FFmpeg encoder epoch exhausted")?;
+			let backend = self.backend;
+			let features = self.features;
+			self.native = None;
+			*self = Self::open_at_features(self.config, backend, features)?;
+			self.epoch = epoch;
+		}
 		// FFmpeg 7.1 AMF does not forward forced picture types. Restart only
 		// an established Main stream, rather than on every look-ahead input.
 		#[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -487,6 +633,81 @@ impl Encoder {
 				Err(error) => return Err(error),
 			}
 		}
+	}
+
+	/// GPU capture submits only completed surfaces on the bound physical device.
+	/// A failure is returned to the caller so it can download this same picture
+	/// and enter the ordinary, bounded host fallback without dropping it.
+	#[cfg(target_os = "windows")]
+	pub(crate) fn encode_surface_at(
+		&mut self,
+		frame: &platform::video::capture::Frame,
+		force: bool,
+		timestamp: u32,
+	) -> Result<EncodedPacket, &'static str> {
+		if self.surface.is_none() {
+			return Err("FFmpeg encoder is using host input");
+		}
+		if force && self.produced_output && self.config.profile == Profile::Main {
+			self.restart()?;
+		}
+		let native = self.native.as_ref().ok_or("FFmpeg video encoder stopped")?;
+		if self.timeline.len() >= MAX_PENDING_PICTURES || self.next_input == i64::MAX {
+			return Err("FFmpeg exceeded its pending picture limit");
+		}
+		let mut length = 0;
+		let mut keyframe = 0;
+		let mut presentation_index = -1;
+		// SAFETY: The native frame and its surfaces stay alive through this call.
+		// FFmpeg retains its own references when output is asynchronous.
+		let result = unsafe {
+			serein_avc_encode_surface_timed(
+				native.0.as_ptr(),
+				frame.as_encoder_frame(),
+				i32::from(force),
+				self.output.as_mut_ptr(),
+				self.output.len(),
+				&mut length,
+				&mut keyframe,
+				&mut presentation_index,
+			)
+		};
+		if result < 0 {
+			return Err("FFmpeg GPU surface encoding failed");
+		}
+		self.timeline.push_back((self.next_input, timestamp));
+		self.next_input += 1;
+		self.finish_packet(result, length, keyframe, presentation_index, timestamp)
+	}
+
+	/// Poll asynchronous output without submitting, uploading or timestamping
+	/// a duplicate picture. EAGAIN leaves the bounded timeline intact.
+	#[cfg_attr(target_os = "linux", allow(dead_code))] // Windows/macOS capture polling; exercised offline in tests.
+	pub(crate) fn drain_at(&mut self) -> Result<Option<EncodedPacket>, &'static str> {
+		if self.timeline.is_empty() {
+			return Ok(None);
+		}
+		let native = self.native.as_ref().ok_or("FFmpeg video encoder stopped")?;
+		let mut length = 0;
+		let mut keyframe = 0;
+		let mut presentation_index = -1;
+		// SAFETY: Output storage and initialized out-parameters remain live for
+		// this synchronous receive-only call on the owning encoder worker.
+		let result = unsafe {
+			serein_avc_receive_timed(
+				native.0.as_ptr(),
+				self.output.as_mut_ptr(),
+				self.output.len(),
+				&mut length,
+				&mut keyframe,
+				&mut presentation_index,
+			)
+		};
+		if result < 0 {
+			return Err("FFmpeg output polling failed");
+		}
+		let packet = self.finish_packet(result, length, keyframe, presentation_index, 0)?;
+		Ok((!packet.data.is_empty()).then_some(packet))
 	}
 
 	#[cfg(test)]
@@ -542,6 +763,17 @@ impl Encoder {
 		}
 		self.timeline.push_back((self.next_input, timestamp));
 		self.next_input += 1;
+		self.finish_packet(result, length, keyframe, presentation_index, timestamp)
+	}
+
+	fn finish_packet(
+		&mut self,
+		result: i32,
+		length: usize,
+		keyframe: i32,
+		presentation_index: i64,
+		timestamp: u32,
+	) -> Result<EncodedPacket, &'static str> {
 		if result == 0 {
 			return Ok(EncodedPacket {
 				data: Vec::new(),
@@ -663,6 +895,11 @@ mod tests {
 			assert_eq!(frame.epoch, 0);
 			assert!(!frame.data.is_empty());
 			assert!(!encoder.pending());
+			let submitted = encoder.next_input;
+			for _ in 0..3 {
+				assert!(encoder.drain_at().unwrap().is_none());
+			}
+			assert_eq!(encoder.next_input, submitted);
 		}
 		encoder.restart().unwrap();
 		let frame = encoder.encode_at(&picture, false, 6000).unwrap();

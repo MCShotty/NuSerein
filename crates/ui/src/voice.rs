@@ -1083,7 +1083,6 @@ impl MessagingUi {
 		if call.is_some_and(|call| {
 			self.screen.context == Some((state.generation, channel, call.request))
 				&& self.screen.busy
-				&& self.screen.preview.is_some()
 		}) {
 			tiles.push(Tile::LocalScreen);
 		}
@@ -1396,7 +1395,11 @@ impl MessagingUi {
 		None
 	}
 
-	fn screen_tile(&self, ui: &mut egui::Ui, rect: egui::Rect, compact: bool) {
+	fn screen_tile(&mut self, ui: &mut egui::Ui, rect: egui::Rect, compact: bool) {
+		if !ui.is_rect_visible(rect) {
+			return;
+		}
+		self.screen.preview_painted(ui.ctx());
 		let content = self
 			.screen
 			.preview
@@ -6257,6 +6260,66 @@ mod tests {
 			assert!(avatar <= size.x && avatar <= size.y.max(12.0));
 		}
 	}
+	#[test]
+	fn local_preview_starts_from_visible_tiles_and_stays_live_in_fullscreen() {
+		let mut state = test_support::voice_demo_state();
+		let call = state.voice.active.as_ref().unwrap();
+		let (channel, request) = (call.channel, call.request);
+		let entries = state.voice.roster.clone();
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		view.screen.context = Some((state.generation, channel, request));
+		view.screen.busy = true;
+		assert!(!view.screen.preview_requested(&ctx));
+		assert!(view.screen.preview.is_none());
+		let input = || egui::RawInput {
+			screen_rect: Some(egui::Rect::from_min_size(
+				egui::Pos2::ZERO,
+				egui::vec2(640.0, 480.0),
+			)),
+			..Default::default()
+		};
+		ctx.run_ui(input(), |ui| {
+			view.participant_tiles(ui, &state, channel, &entries, false);
+		})
+		.drop_without_applying_deltas();
+		assert!(view.screen.preview_requested(&ctx));
+		for _ in 0..2 {
+			ctx.run_ui(input(), |_| {}).drop_without_applying_deltas();
+		}
+		assert!(!view.screen.preview_requested(&ctx));
+		view.screen.preview = Some(ctx.load_texture(
+			"fullscreen-preview-test",
+			egui::ColorImage::filled([16, 9], egui::Color32::BLACK),
+			Default::default(),
+		));
+		view.voice_fullscreen = Some((
+			StageFocus::LocalScreen,
+			ctx.clone(),
+			false,
+			egui::Id::unique("fullscreen-preview-test"),
+		));
+		// Native areas perform an initial sizing pass before they are visible.
+		for _ in 0..2 {
+			ctx.run_ui(input(), |ui| {
+				assert!(view.show_fullscreen_voice(ui.ctx(), &mut state));
+			})
+			.drop_without_applying_deltas();
+		}
+		assert!(view.screen.preview_requested(&ctx));
+		for _ in 0..2 {
+			ctx.run_ui(input(), |ui| {
+				view.screen_tile(
+					ui,
+					egui::Rect::from_min_size(egui::pos2(2000.0, 2000.0), egui::vec2(320.0, 180.0)),
+					false,
+				);
+			})
+			.drop_without_applying_deltas();
+		}
+		assert!(!view.screen.preview_requested(&ctx));
+	}
+
 	#[test]
 	fn focused_call_strip_scrolls_to_participants_beyond_the_first_visible_row() {
 		let mut state = test_support::voice_demo_state();

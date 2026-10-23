@@ -88,6 +88,15 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
                                 int baseline, int backend, int codec,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features);
+/* Surface APIs accept only a trusted, completed D3D11 NV12 capture AVFrame.
+ * The context retains its frames/device binding, never the picture itself.
+ * Unsupported or physically mismatched devices fail without switching GPUs. */
+void *serein_avc_surface_context(const void *frame);
+void serein_avc_surface_context_free(void *context);
+void *serein_avc_open_on_surface(int width, int height, int fps, int bitrate,
+                                int baseline, int backend, int codec,
+                                size_t max_bytes, const SereinVideoAdapter *adapter,
+                                int features, void *frames_context);
 void serein_avc_close(void *encoder);
 /* AMF split request on this live session: 0 = off, 1 = declined, 2 = accepted.
  * Accepted means SetProperty succeeded and the encoder opened successfully.
@@ -106,6 +115,18 @@ int serein_avc_encode(void *encoder, const uint8_t *contiguous_i420,
                       int *keyframe);
 int serein_avc_encode_timed(void *encoder, const uint8_t *contiguous_i420,
                             size_t length, int force_keyframe, uint8_t *output,
+                            size_t output_capacity, size_t *output_length,
+                            int *keyframe, int64_t *presentation_index);
+
+/* Surface submission and output-only polling retain the byte, packet and
+ * presentation-timestamp validation of the host-picture API above. */
+/* Nonblocking identity check; equal dimensions alone do not establish compatibility. */
+int serein_avc_accepts_surface(void *encoder, const void *frame);
+int serein_avc_encode_surface_timed(void *encoder, const void *frame,
+                                    int force_keyframe, uint8_t *output,
+                                    size_t output_capacity, size_t *output_length,
+                                    int *keyframe, int64_t *presentation_index);
+int serein_avc_receive_timed(void *encoder, uint8_t *output,
                             size_t output_capacity, size_t *output_length,
                             int *keyframe, int64_t *presentation_index);
 

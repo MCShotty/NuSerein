@@ -3378,3 +3378,90 @@ Both package runs used the normal `cargo xtask package --format dir` command, em
 An intermediate `8a020e14` release attempt was killed at the 16-GiB container limit while RAM-backed test caches remained resident. No package or size measurement is claimed from that attempt. The final full gate passed, verified task-owned generated check caches were retired, and the normal final clean/cached package commands then completed. Frozen baselines, sources and license material were preserved.
 
 Windows/macOS GUI CPU/RSS and comparative package sizes, physical input/accessibility and live Discord acceptance remain unavailable locally. Platform CI results are reported separately on the PR; builds and synthetic fixtures do not establish live service interoperability. The primary reducer slowdown above remains unresolved by the inconsistent shared-host measurements.
+
+## Windows capture overhead — October 23, 2026
+
+Starting installer revision: `30d3437ffe6a3b5d06ecd2ae67c7d2f1c76cd28b`.
+The owner reported 250 → 115 game FPS during a 1440p60 SDR share. This is an
+observation, not a controlled measurement of capture or encoding cost. Codec,
+bitrate policy, vendor presets, lookahead and pre-analysis remain unchanged.
+
+The implementation reuses bounded asynchronous Windows capture resources,
+scales SDR on the GPU before necessary readback, and supports selected-adapter
+AMD/FFmpeg D3D11 surfaces. Unsupported processing/interop retains the CPU
+fallback. Half-float HDR retains the existing CPU color-conversion path.
+Hidden local previews stop thumbnail, texture-upload and preview-only repaint
+work; visible tiles, including fullscreen, request fresh previews.
+
+### Matched CPU conversion component
+
+The baseline converter is taken from `30d3437f`; the new converter is measured at
+`eb0a5b1226cce125ba0844ed6a447a206072d476`. The later `1f144bf0` change only
+replaces equivalent Windows preview iterators and clarifies a converter comment;
+it does not change the measured conversion algorithm.
+
+Both standalone binaries use pinned Rust 1.98.1, identical `rustc -O` settings,
+and the production converter source. The Linux 6.18.55 x86-64/glibc 2.41 host
+reports an Intel Xeon Platinum 8573C, five available logical CPUs and a four-CPU
+quota. No builds ran during measurement. Input is one synthetic 6144 × 2560
+BGRA picture, converted to 3456 × 1440 I420. Unused HDR helpers are stubbed in
+this isolated SDR benchmark; production HDR/color tests run separately.
+
+Each revision receives one unmeasured process warmup, followed by five
+alternating measured processes. Each process warms three pictures, then times
+five blocks of eight conversions. The table reports the median of the five
+per-process medians; ranges are those per-process medians. Every output checksum
+matches. OS `wait4` CPU and peak RSS include fixture preparation and process
+startup, not just conversion. There are no provider/helper processes in this
+component workload.
+
+| Component metric | Baseline | New | Delta |
+| --- | ---: | ---: | ---: |
+| Conversion median | 31.956 ms | 26.971 ms | −15.6% |
+| Per-process median range | 31.422–44.107 ms | 24.759–33.067 ms | Overlapping |
+| Whole-child CPU median | 4.255 s | 3.741 s | −12.1% |
+| Whole-child peak RSS median | 68.445 MiB | 68.527 MiB | +0.082 MiB |
+
+This is a conversion result, not capture cadence, GPU-engine time, GUI idle CPU,
+settled application memory or game FPS. It neither measures Windows GPU scaling
+nor demonstrates the ≤10% gaming penalty target. No overall application or live
+streaming performance improvement is claimed.
+
+Package comparisons use normal `cargo xtask package --format dir`, the pinned
+toolchain/lockfile and standard fat-LTO production profile, with separate empty
+output directories for clean and cached runs. The frozen baseline executable
+is SHA-256 `4f0a3615693b17b58215689c9bfd99e239db6d8007dd169c5b6e2c91acf84eff`:
+98,406,920 executable bytes, 227,165,939 installed bytes and 155,647,310 normalized
+ZIP bytes. It was built at `2ee93142`; changes from that runtime to installer
+revision `30d3437f` are documentation only. ZIP normalization uses sorted paths,
+fixed timestamps, preserved file modes and deflate level 6. The matching new
+package sizes, clean/cached validation outcomes and current native CI are
+reported in [PR #22](https://github.com/MCShotty/Serein/pull/22). Windows/macOS
+gaming, process-memory and comparative package measurements remain unavailable
+locally.
+
+### Verification and native comparison
+
+The pinned full `cargo xtask check` passed at `eb0a5b12`, including strict
+workspace Clippy, tests, the minimal application build and policy checks.
+Focused screen, conversion/color, preview-demand and encoder-buffering fixtures,
+login/workspace checks, packaging fixtures and license checks passed. Windows C
+sources also passed strict cross-target syntax checks. Windows CI owns the
+actual Rust/native build and WARP pool/readback, retirement and private-device
+removal tests; cross-target syntax checks do not replace those tests.
+
+Release replay passed. The 120-second synthetic soak completed 2,695 passes,
+86,240 channel visits, 51,744,000 live inserts and 11 logout cycles in 120.027
+seconds within retained-history budgets. It uses no renderer, network, storage
+or audio devices and does not measure capture, process RSS or game performance.
+
+The [owner-operated comparison procedure](pr-evidence/capture-overhead/README.md)
+separates capture-only, readback/conversion and encoding, then compares normal
+full sharing against the unchanged installer. It records actual geometry,
+capture/readback counters, game frame-time tails, process CPU/RSS and GPU engine
+activity. One warmup and five alternating native comparisons, receiver cadence
+and visual-quality checks remain required on the owner's Windows gaming machine.
+Physical high-refresh/fullscreen, resize, HDR, hybrid-adapter and driver-loss
+behavior are unverified locally. No Discord account, game, microphone or live
+capture was opened here. Native CI status and installer provenance are reported
+on the PR rather than treating synthetic success as proof of the reported case.

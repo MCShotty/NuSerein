@@ -16,6 +16,13 @@
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 
+#if defined(_WIN32)
+#define COBJMACROS
+#include <d3d11.h>
+#include <dxgi.h>
+#include <libavutil/hwcontext_d3d11va.h>
+#endif
+
 #define SEREIN_MAX_PACKET_BYTES ((size_t)2 * 1024 * 1024)
 #define SEREIN_MAX_IN_FLIGHT 48
 #define SEREIN_MAX_NALS 2048
@@ -36,6 +43,7 @@ typedef struct SereinAvc {
     int features;
     int split_requested;
     int amf_split;
+    int surface_mode;
 } SereinAvc;
 
 /* Use picture dimensions, including portrait capture, rather than pixel count:
@@ -238,10 +246,79 @@ void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
                                       backend, kind, max_bytes, NULL, 0);
 }
 
+/* Retain only the frames context, not a capture picture. A pending encoder
+ * restart must not pin a pool slot or borrow the capture callback's AVFrame. */
+void *serein_avc_surface_context(const void *opaque)
+{
+#if defined(_WIN32)
+    const AVFrame *frame = opaque;
+    if (!frame || frame->format != AV_PIX_FMT_D3D11 || !frame->hw_frames_ctx)
+        return NULL;
+    AVHWFramesContext *frames = (AVHWFramesContext *)frame->hw_frames_ctx->data;
+    if (!frames || frames->format != AV_PIX_FMT_D3D11 || frames->sw_format != AV_PIX_FMT_NV12 ||
+        !frames->device_ctx || frames->device_ctx->type != AV_HWDEVICE_TYPE_D3D11VA ||
+        frame->width != frames->width || frame->height != frames->height)
+        return NULL;
+    return av_buffer_ref(frame->hw_frames_ctx);
+#else
+    (void)opaque;
+    return NULL;
+#endif
+}
+
+void serein_avc_surface_context_free(void *opaque)
+{
+    AVBufferRef *context = opaque;
+    av_buffer_unref(&context);
+}
+
+static int bind_surface(AVCodecContext *codec, AVBufferRef *context,
+                        const SereinVideoAdapter *adapter, int features)
+{
+#if defined(_WIN32)
+    static const GUID dxgi_device_iid = {0x54ec77fa, 0x1377, 0x44e6,
+                                         {0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c}};
+    AVHWFramesContext *frames = context ? (AVHWFramesContext *)context->data : NULL;
+    if (!frames || frames->format != AV_PIX_FMT_D3D11 || frames->sw_format != AV_PIX_FMT_NV12 ||
+        frames->width != codec->width || frames->height != codec->height ||
+        frames->initial_pool_size < ((features & 2) ? 24 : (features & 1) ? 12 : 4) ||
+        !frames->device_ctx || frames->device_ctx->type != AV_HWDEVICE_TYPE_D3D11VA ||
+        !adapter || adapter->identity != SEREIN_GPU_WINDOWS_LUID ||
+        adapter->vendor_id != 0x1002 || !serein_video_adapter_valid(adapter))
+        return 0;
+    AVD3D11VADeviceContext *device = frames->device_ctx->hwctx;
+    IDXGIDevice *dxgi = NULL;
+    IDXGIAdapter *physical = NULL;
+    DXGI_ADAPTER_DESC description;
+    uint64_t luid = 0;
+    int matches = 0;
+    if (!device || !device->device ||
+        FAILED(ID3D11Device_QueryInterface(device->device, &dxgi_device_iid, (void **)&dxgi)))
+        goto done;
+    if (FAILED(IDXGIDevice_GetAdapter(dxgi, &physical)) ||
+        FAILED(IDXGIAdapter_GetDesc(physical, &description)))
+        goto done;
+    memcpy(&luid, &description.AdapterLuid, sizeof(luid));
+    matches = luid == adapter->value && description.VendorId == adapter->vendor_id &&
+              description.DeviceId == adapter->device_id;
+    if (matches) {
+        codec->hw_frames_ctx = av_buffer_ref(context);
+        matches = codec->hw_frames_ctx != NULL;
+    }
+ done:
+    if (physical) IDXGIAdapter_Release(physical);
+    if (dxgi) IDXGIDevice_Release(dxgi);
+    return matches;
+#else
+    (void)codec; (void)context; (void)adapter; (void)features;
+    return 0;
+#endif
+}
+
 static void *open_with_split(int width, int height, int fps, int bitrate,
                                 int baseline, int backend, int kind,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
-                                int features, int allow_split)
+                                int features, int allow_split, AVBufferRef *surface)
 {
     static const char *const names[][5] = {
         {"libopenh264", "h264_nvenc", "h264_videotoolbox", "h264_amf", "h264_qsv"},
@@ -263,6 +340,8 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
         max_bytes == 0 || max_bytes > SEREIN_MAX_PACKET_BYTES)
         return NULL;
 
+    if (surface && (backend != 3 || (features & 12)))
+        return NULL;
     if (!names[kind][backend])
         return NULL;
     if (backend == 1 && adapter && features) {
@@ -286,6 +365,7 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     encoder->baseline = baseline;
     encoder->kind = kind;
     encoder->features = features;
+    encoder->surface_mode = surface != NULL;
     encoder->split_requested = allow_split && wants_split(width, height, backend, kind);
     encoder->codec = avcodec_alloc_context3(implementation);
     encoder->frame = av_frame_alloc();
@@ -303,7 +383,7 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     codec->get_encode_buffer = bounded_encode_buffer;
     codec->width = width;
     codec->height = height;
-    codec->pix_fmt = (features & 12) ? AV_PIX_FMT_P010LE : backend == 4 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+    codec->pix_fmt = surface ? AV_PIX_FMT_D3D11 : (features & 12) ? AV_PIX_FMT_P010LE : backend == 4 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
     /* Both RGB/BGRA converters pack limited-range BT.601 samples, including
      * at HD resolutions. Signal that matrix instead of allowing a decoder or
      * hardware encoder to infer BT.709 from picture size. Matrix conversion
@@ -336,7 +416,8 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
      * untrusted extradata parser is needed here. Verify the result below. */
     codec->flags &= ~AV_CODEC_FLAG_GLOBAL_HEADER;
     if (!configure_backend(encoder, backend) ||
-        (adapter && backend != 0 ? !serein_video_bind_adapter(codec, backend, adapter) : !initialize_device(codec, backend)) ||
+        (surface ? !bind_surface(codec, surface, adapter, features) :
+         adapter && backend != 0 ? !serein_video_bind_adapter(codec, backend, adapter) : !initialize_device(codec, backend)) ||
         avcodec_open2(codec, implementation, NULL) < 0)
         goto failed;
 
@@ -350,7 +431,7 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     encoder->frame->colorspace = codec->colorspace;
     encoder->frame->color_primaries = codec->color_primaries;
     encoder->frame->color_trc = codec->color_trc;
-    if (av_frame_get_buffer(encoder->frame, 32) < 0)
+    if (!surface && av_frame_get_buffer(encoder->frame, 32) < 0)
         goto failed;
     return encoder;
 
@@ -365,15 +446,34 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
                                 int features)
 {
     void *encoder = open_with_split(width, height, fps, bitrate, baseline,
-                                    backend, kind, max_bytes, adapter, features, 1);
+                                    backend, kind, max_bytes, adapter, features, 1, NULL);
     /* Some older GPUs/drivers reject split mode or two-column tiling. Release
      * the complete failed context before one conservative retry on the same
      * physical adapter, codec and quality settings. No second session survives. */
     if (!encoder && wants_split(width, height, backend, kind)) {
         encoder = open_with_split(width, height, fps, bitrate, baseline,
-                                  backend, kind, max_bytes, adapter, features, 0);
+                                  backend, kind, max_bytes, adapter, features, 0, NULL);
         if (encoder && backend == 3)
             ((SereinAvc *)encoder)->amf_split = 1;
+    }
+    return encoder;
+}
+
+/* Surface mode shares the exact codec options and same-GPU split retry with
+ * host pictures. Only the input storage/device binding differs. */
+void *serein_avc_open_on_surface(int width, int height, int fps, int bitrate,
+                                int baseline, int backend, int kind,
+                                size_t max_bytes, const SereinVideoAdapter *adapter,
+                                int features, void *frames_context)
+{
+    if (!frames_context)
+        return NULL;
+    SereinAvc *encoder = open_with_split(width, height, fps, bitrate, baseline, backend, kind,
+                                        max_bytes, adapter, features, 1, frames_context);
+    if (!encoder && wants_split(width, height, backend, kind)) {
+        encoder = open_with_split(width, height, fps, bitrate, baseline, backend, kind,
+                                  max_bytes, adapter, features, 0, frames_context);
+        if (encoder) encoder->amf_split = 1;
     }
     return encoder;
 }
@@ -575,48 +675,30 @@ int serein_avc_encode(void *opaque, const uint8_t *input, size_t length,
                                    keyframe, &presentation_index);
 }
 
-int serein_avc_encode_timed(void *opaque, const uint8_t *input, size_t length,
-                            int force_keyframe, uint8_t *output,
-                            size_t output_capacity, size_t *output_length,
-                            int *keyframe, int64_t *presentation_index)
+static int output_arguments(SereinAvc *encoder, uint8_t *output,
+                             size_t output_capacity, size_t *output_length,
+                             int *keyframe, int64_t *presentation_index)
 {
-    SereinAvc *encoder = opaque;
+    if (output_length) *output_length = 0;
+    if (keyframe) *keyframe = 0;
+    if (presentation_index) *presentation_index = -1;
+    return encoder && !encoder->failed && output && output_capacity &&
+           output_length && keyframe && presentation_index;
+}
+
+static int receive_packet(SereinAvc *encoder, uint8_t *output,
+                           size_t output_capacity, size_t *output_length,
+                           int *keyframe, int64_t *presentation_index)
+{
     int status, reduced_still;
     PacketInfo info;
     unsigned int required;
     size_t prefix_bytes = 0, packet_bytes;
-
-    if (output_length)
-        *output_length = 0;
-    if (keyframe)
-        *keyframe = 0;
-    if (presentation_index)
-        *presentation_index = -1;
-    if (!encoder || !input || !output || !output_length || !keyframe || !presentation_index ||
-        encoder->failed || length != encoder->input_bytes || output_capacity == 0)
-        return -1;
-    if (encoder->in_flight >= SEREIN_MAX_IN_FLIGHT || encoder->next_pts == INT64_MAX)
-        goto failed;
-    if (av_frame_make_writable(encoder->frame) < 0)
-        goto failed;
-    copy_picture(encoder->frame, input);
-    encoder->frame->pts = encoder->next_pts++;
-    encoder->frame->duration = 1;
-    encoder->frame->pict_type = (force_keyframe || encoder->baseline) ?
-                               AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
-    status = avcodec_send_frame(encoder->codec, encoder->frame);
-    /* We drain output on every submission. Normal hardware modes can retain
-     * pictures up to the bounded in-flight limit. An unexpected send-side
-     * EAGAIN would mean this input was not accepted; the
-     * ABI cannot ambiguously return an older packet while losing that input. */
-    if (status < 0)
-        goto failed;
-    encoder->in_flight++;
     av_packet_unref(encoder->packet);
     status = avcodec_receive_packet(encoder->codec, encoder->packet);
     if (status == AVERROR(EAGAIN))
         return 0;
-    if (status < 0 || !packet_fits(encoder->packet, encoder->max_bytes, output_capacity))
+    if (status < 0 || encoder->in_flight <= 0 || !packet_fits(encoder->packet, encoder->max_bytes, output_capacity))
         goto failed;
     packet_bytes = (size_t)encoder->packet->size;
     required = encoder->kind == 0 ? 3U : encoder->kind == 1 ? 7U : 1U;
@@ -660,4 +742,99 @@ failed:
     encoder->failed = 1;
     av_packet_unref(encoder->packet);
     return -1;
+}
+
+int serein_avc_encode_timed(void *opaque, const uint8_t *input, size_t length,
+                            int force_keyframe, uint8_t *output,
+                            size_t output_capacity, size_t *output_length,
+                            int *keyframe, int64_t *presentation_index)
+{
+    SereinAvc *encoder = opaque;
+    if (!output_arguments(encoder, output, output_capacity, output_length, keyframe, presentation_index) ||
+        !input || encoder->surface_mode || length != encoder->input_bytes)
+        return -1;
+    if (encoder->in_flight >= SEREIN_MAX_IN_FLIGHT || encoder->next_pts == INT64_MAX ||
+        av_frame_make_writable(encoder->frame) < 0)
+        goto failed;
+    copy_picture(encoder->frame, input);
+    encoder->frame->pts = encoder->next_pts;
+    encoder->frame->duration = 1;
+    encoder->frame->pict_type = (force_keyframe || encoder->baseline) ?
+                               AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    if (avcodec_send_frame(encoder->codec, encoder->frame) < 0)
+        goto failed;
+    encoder->next_pts++;
+    encoder->in_flight++;
+    return receive_packet(encoder, output, output_capacity, output_length, keyframe, presentation_index);
+ failed:
+    encoder->failed = 1;
+    av_packet_unref(encoder->packet);
+    return -1;
+}
+
+/* Identity-only check: capture recreation can replace a frames context while
+ * keeping the same dimensions. Such a frame needs a fresh encoder session. */
+int serein_avc_accepts_surface(void *opaque, const void *picture)
+{
+    const SereinAvc *encoder = opaque;
+    const AVFrame *frame = picture;
+    return encoder && !encoder->failed && encoder->surface_mode && encoder->codec &&
+           frame && frame->format == AV_PIX_FMT_D3D11 && frame->buf[0] && frame->data[0] &&
+           frame->hw_frames_ctx && encoder->codec->hw_frames_ctx &&
+           frame->hw_frames_ctx->data == encoder->codec->hw_frames_ctx->data &&
+           frame->width == encoder->codec->width && frame->height == encoder->codec->height;
+}
+
+int serein_avc_encode_surface_timed(void *opaque, const void *picture,
+                                    int force_keyframe, uint8_t *output,
+                                    size_t output_capacity, size_t *output_length,
+                                    int *keyframe, int64_t *presentation_index)
+{
+    SereinAvc *encoder = opaque;
+    const AVFrame *frame = picture;
+    if (!output_arguments(encoder, output, output_capacity, output_length, keyframe, presentation_index) ||
+        !serein_avc_accepts_surface(encoder, frame))
+        return -1;
+    if (encoder->in_flight >= SEREIN_MAX_IN_FLIGHT || encoder->next_pts == INT64_MAX)
+        goto failed;
+    av_frame_unref(encoder->frame);
+    if (av_frame_ref(encoder->frame, frame) < 0)
+        goto failed;
+    /* Capture's NV12 processor uses the same matrix/range as host I420. Do
+     * not let default AVFrame properties override that existing contract. */
+    encoder->frame->color_range = encoder->codec->color_range;
+    encoder->frame->colorspace = encoder->codec->colorspace;
+    encoder->frame->color_primaries = encoder->codec->color_primaries;
+    encoder->frame->color_trc = encoder->codec->color_trc;
+    encoder->frame->pts = encoder->next_pts;
+    encoder->frame->duration = 1;
+    encoder->frame->pict_type = (force_keyframe || encoder->baseline) ?
+                               AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    /* The wrapper retains its own reference if the driver defers this surface. */
+    int status = avcodec_send_frame(encoder->codec, encoder->frame);
+    av_frame_unref(encoder->frame);
+    if (status < 0)
+        goto failed;
+    encoder->next_pts++;
+    encoder->in_flight++;
+    return receive_packet(encoder, output, output_capacity, output_length, keyframe, presentation_index);
+ failed:
+    encoder->failed = 1;
+    av_frame_unref(encoder->frame);
+    av_packet_unref(encoder->packet);
+    return -1;
+}
+
+/* Receive without adding another picture or flushing the live encoder. In
+ * particular EAGAIN does not authorize repeatedly uploading a stale snapshot. */
+int serein_avc_receive_timed(void *opaque, uint8_t *output,
+                            size_t output_capacity, size_t *output_length,
+                            int *keyframe, int64_t *presentation_index)
+{
+    SereinAvc *encoder = opaque;
+    if (!output_arguments(encoder, output, output_capacity, output_length, keyframe, presentation_index))
+        return -1;
+    if (!encoder->in_flight)
+        return 0;
+    return receive_packet(encoder, output, output_capacity, output_length, keyframe, presentation_index);
 }
