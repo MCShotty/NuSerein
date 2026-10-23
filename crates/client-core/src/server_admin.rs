@@ -127,17 +127,18 @@ pub struct View {
 	requested_permission_revision: u64,
 	sequence: u64,
 	action: Option<Action>,
+	/// One boxed transport command, including payloads omitted from the reconciliation copy.
+	transport_action_bytes: usize,
 	prune_days: Option<u8>,
 }
 impl View {
-	/// Validated administrative actions are bounded below 2 MiB. Reserve both the
-	/// retained reconciliation copy and the independently executing transport copy.
+	/// Charge retained allocations and the independently executing transport copy.
 	pub(crate) fn retained_action_bytes(&self) -> usize {
-		if self.action.is_some() {
-			4 * 1024 * 1024
-		} else {
-			0
-		}
+		self.action.as_ref().map_or(0, |action| {
+			action
+				.heap_bytes()
+				.saturating_add(self.transport_action_bytes)
+		})
 	}
 	pub(crate) fn transfer_pending(&self, guild: Id) -> bool {
 		self.guild == Some(guild)
@@ -794,6 +795,8 @@ impl State {
 		{
 			edit.icon = model::Patch::Absent;
 		}
+		self.server_admin.transport_action_bytes =
+			size_of::<Action>().saturating_add(action.heap_bytes());
 		self.server_admin.action = Some(retained);
 		self.enforce_admin_budget();
 		if !self.server_admin.pending {
