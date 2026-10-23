@@ -212,7 +212,8 @@ impl Browser {
 									{
 										if ui
 											.add_enabled(
-												available && state.can_view(id),
+												available
+													&& state.can_personally_manage_channel(id),
 												egui::Button::new(label).small(),
 											)
 											.clicked()

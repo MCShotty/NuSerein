@@ -4763,7 +4763,9 @@ impl MessagingUi {
 				.channels
 				.iter()
 				.filter(|channel| {
-					channel.guild == Some(guild) && channel.kind == 4 && state.can_view(channel.id)
+					channel.guild == Some(guild)
+						&& channel.kind == 4
+						&& state.can_personally_manage_channel(channel.id)
 				})
 				.map(|channel| channel.id)
 				.collect();

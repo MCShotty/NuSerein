@@ -838,7 +838,7 @@ impl State {
 		);
 		if !action.valid()
 			|| matches!(&action, Action::Personal(change) if !self.personal_change_allowed(guild, change, false))
-			|| !self.can_view(channel)
+			|| !(self.can_view(channel) || personal && self.can_personally_manage_channel(channel))
 			|| (!personal
 				&& !match &action {
 					Action::Reference => false,
@@ -999,7 +999,7 @@ impl State {
 			.as_ref()
 			.is_some_and(|(g, c, r, pending, _)| {
 				(*g, *c, *r) == (guild, channel, request) && pending == action
-			}) && self.can_view(channel)
+			}) && self.can_personally_manage_channel(channel)
 			&& matches!(action,Action::Personal(change) if self.personal_change_allowed(guild,change,false))
 	}
 	pub fn channel_description(&self, id: Id) -> Option<&str> {

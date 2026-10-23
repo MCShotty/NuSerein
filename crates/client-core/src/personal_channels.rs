@@ -3,6 +3,18 @@ use crate::{Command, State, channel_actions::Action};
 use model::{Id, channel_visibility as p};
 
 impl State {
+	pub fn can_personally_manage_channel(&self, channel: Id) -> bool {
+		self.can_view(channel)
+			|| self.channel(channel).is_some_and(|category| {
+				category.kind == 4
+					&& category.guild.is_some()
+					&& self.channels.iter().any(|child| {
+						child.guild == category.guild
+							&& child.parent_id == Some(channel)
+							&& self.can_view(child.id)
+					})
+			})
+	}
 	pub fn personal_channel_flags(&self, channel: Id) -> Option<u64> {
 		let guild = self.channel(channel)?.guild?;
 		self.account_channel_preference(guild, channel)
@@ -55,7 +67,7 @@ impl State {
 			}) && change.channels.iter().all(|row| {
 			self.channel(row.channel).is_some_and(|source| {
 				source.guild == Some(guild)
-					&& self.can_view(row.channel)
+					&& self.can_personally_manage_channel(row.channel)
 					&& (row.collapsed.is_none() || source.kind == 4)
 			}) && self
 				.account_channel_preference(guild, row.channel)
@@ -71,7 +83,9 @@ impl State {
 	pub fn personal_visibility_change(&self, target: Id, shown: bool) -> Option<Action> {
 		let source = self.channel(target)?;
 		let guild = source.guild?;
-		if !self.personal_channel_controls_available(guild) || !self.can_view(target) {
+		if !self.personal_channel_controls_available(guild)
+			|| !self.can_personally_manage_channel(target)
+		{
 			return None;
 		}
 		let category = source.kind == 4;
@@ -80,6 +94,7 @@ impl State {
 		};
 		let mut change = p::Change::default();
 		let all = self.personally_shows_all_channels(guild);
+		let initialize = !shown && all && self.account_guild_flags(guild)? & p::GUILD_MASK == 0;
 		if !shown && all {
 			let before = self.account_guild_flags(guild)?;
 			change.guild_flags = Some((before, (before & !p::GUILD_MASK) | p::OPT_IN_CHANNELS_ON));
@@ -91,7 +106,7 @@ impl State {
 		}) {
 			let selected = if targeted(channel) {
 				shown
-			} else if !shown && all {
+			} else if initialize {
 				true
 			} else {
 				continue;
@@ -191,7 +206,10 @@ impl State {
 		let mut change = p::Change::default();
 		for id in categories {
 			let source = self.channel(*id)?;
-			if source.guild != Some(guild) || source.kind != 4 || !self.can_view(*id) {
+			if source.guild != Some(guild)
+				|| source.kind != 4
+				|| !self.can_personally_manage_channel(*id)
+			{
 				return None;
 			}
 			let (_, before) = self.account_channel_preference(guild, *id)?;
@@ -549,5 +567,52 @@ mod tests {
 				.request_channel_action(Id(3), Action::Description)
 				.is_some()
 		);
+	}
+	#[test]
+	fn hiding_during_show_all_does_not_unhide_earlier_choices() {
+		let mut state = state();
+		let action = state.personal_visibility_change(Id(4), false).unwrap();
+		finish(&mut state, action);
+		assert!(state.channel_personally_selected(Id(3)));
+		assert!(!state.channel_personally_selected(Id(4)));
+		let action = state.personal_show_all_change(Id(2), true).unwrap();
+		finish(&mut state, action);
+		assert!(state.channel_personally_selected(Id(4)));
+		let action = state.personal_visibility_change(Id(6), false).unwrap();
+		finish(&mut state, action);
+		assert!(state.channel_personally_selected(Id(3)));
+		assert!(
+			!state.channel_personally_selected(Id(4)),
+			"hiding a different channel must preserve the earlier hidden channel"
+		);
+		assert!(!state.channel_personally_selected(Id(6)));
+	}
+	#[test]
+	fn accessible_children_allow_personal_category_controls_without_category_access() {
+		let mut state = state();
+		state
+			.permissions
+			.channels
+			.get_mut(&Id(5))
+			.unwrap()
+			.overwrites = Some(vec![model::permissions::Overwrite {
+			id: Id(2),
+			kind: 0,
+			allow: 0,
+			deny: model::permissions::VIEW_CHANNEL,
+		}]);
+		state.permissions.clear_cache();
+		assert!(!state.can_view(Id(5)) && state.can_view(Id(3)));
+		let action = state
+			.personal_collapse_change(Id(2), &[Id(5)], true)
+			.unwrap();
+		finish(&mut state, action);
+		assert_eq!(state.account_category_collapsed(Id(5)), Some(true));
+		let action = state.personal_visibility_change(Id(5), false).unwrap();
+		finish(&mut state, action);
+		assert!(
+			!state.channel_personally_selected(Id(3)) && !state.channel_personally_selected(Id(4))
+		);
+		assert!(state.channel_personally_selected(Id(6)));
 	}
 }
