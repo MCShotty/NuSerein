@@ -331,8 +331,8 @@ impl AuditLogUi {
 				let origin = ui.cursor().min;
 				let first = ((viewport.min.y - extra).max(0.0) / 80.0).floor() as usize;
 				let end = ((viewport.max.y / 80.0).ceil() as usize + 1).min(rows.len());
-				for index in first..end {
-					let entry = &page.entries[rows[index]];
+				for (index, &row) in rows.iter().enumerate().take(end).skip(first) {
+					let entry = &page.entries[row];
 					let expanded = expanded_index == Some(index);
 					let y = index as f32 * 80.0
 						+ if expanded_index.is_some_and(|open| index > open) {

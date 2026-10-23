@@ -277,9 +277,8 @@ impl PermissionsUi {
 					if ui
 						.add_enabled(valid, egui::Button::new("Add override"))
 						.clicked()
-					{
-						if let Some(id) = id {
-							if !draft
+						&& let Some(id) = id
+							&& !draft
 								.overrides
 								.iter()
 								.any(|r| r.id == id && r.kind == self.kind)
@@ -291,8 +290,6 @@ impl PermissionsUi {
 								});
 								self.target.clear();
 							}
-						}
-					}
 				});
 				if self.kind == 2 {
 					ui.menu_button("Choose a member",|ui|{

@@ -79,12 +79,12 @@ impl ChannelMenu {
 		scope: (u64, Id, Id, u64),
 		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
 	) {
-		if self.webhook_avatar_active(scope) {
-			if let Some(dialog) = &mut self.dialog {
-				dialog
-					.integrations
-					.accept_avatar(ctx, scope.2, scope.3, result);
-			}
+		if self.webhook_avatar_active(scope)
+			&& let Some(dialog) = &mut self.dialog
+		{
+			dialog
+				.integrations
+				.accept_avatar(ctx, scope.2, scope.3, result);
 		}
 	}
 

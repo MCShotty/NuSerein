@@ -123,12 +123,11 @@ impl AccessUi {
 				self.opened_channel = state.server_admin.access.interview;
 			}
 		}
-		if let Some(channel) = self.opened_channel.take() {
-			if state.channel(channel).is_some()
-				&& let Some(command) = state.select(channel)
-			{
-				commands.push(command);
-			}
+		if let Some(channel) = self.opened_channel.take()
+			&& state.channel(channel).is_some()
+			&& let Some(command) = state.select(channel)
+		{
+			commands.push(command);
 		}
 		if matches!(self.confirmation,Some(Confirmation::Decision{request,..}) if state.server_admin.access.removed_application==Some(request))
 			|| matches!(self.confirmation,Some(Confirmation::Transfer{..}) if !state.owns_guild(guild))

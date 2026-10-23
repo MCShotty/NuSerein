@@ -1628,12 +1628,12 @@ impl Editor {
 						crate::server_audit_log::Target::Channel(id) if state.can_view(id) => {
 							self.admin.message = Some(id)
 						}
-						crate::server_audit_log::Target::Role(id) => {
-							if self.select_page(Page::Roles, state) {
-								self.roles.select(Some(id), guild);
-								if let Some(command) = self.roles.load(state, guild) {
-									commands.push(command);
-								}
+						crate::server_audit_log::Target::Role(id)
+							if self.select_page(Page::Roles, state) =>
+						{
+							self.roles.select(Some(id), guild);
+							if let Some(command) = self.roles.load(state, guild) {
+								commands.push(command);
 							}
 						}
 						_ => {}

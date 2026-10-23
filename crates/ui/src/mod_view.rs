@@ -72,9 +72,8 @@ impl ModViewUi {
 		egui::Window::new("Mod View").id(egui::Id::unique("member-mod-view")).open(&mut open).collapsible(false).resizable(false).vscroll(true).default_width(420.0).max_height((ctx.content_rect().height()-100.0).max(180.0)).anchor(egui::Align2::RIGHT_TOP,egui::vec2(-16.0,64.0)).show(ctx,|ui| {
 			ui.horizontal(|ui| {
 				ui.weak("Member review");
-				if ui.add_enabled(!state.server_admin.pending,egui::Button::new("Refresh")).clicked() {
-					if let Some(command)=self.open(state,guild,user){commands.push(command);}
-				}
+				if ui.add_enabled(!state.server_admin.pending,egui::Button::new("Refresh")).clicked()
+					&& let Some(command)=self.open(state,guild,user){commands.push(command);}
 			});
 			if state.server_admin.pending {ui.spinner();}
 			if let Some(error)=state.server_admin.error {ui.colored_label(crate::design::palette(ui).danger,error);}

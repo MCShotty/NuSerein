@@ -83,23 +83,23 @@ impl PermissionsUi {
 		if !self.query_open {
 			self.search_at = None;
 		}
-		if self.query_open && !self.search.is_empty() {
-			if let Some(at) = self.search_at {
-				let now = ui.input(|input| input.time);
-				if now - at >= 0.3 {
-					if let Some(active) = state
-						.selected
-						.filter(|id| state.channel(*id).and_then(|c| c.guild) == Some(guild))
-					{
-						if let Some(command) = state.search_members(active, &self.search, 0) {
-							commands.push(command);
-						}
-					}
-					self.search_at = None;
-				} else {
-					ui.ctx()
-						.request_repaint_after(std::time::Duration::from_millis(300));
+		if self.query_open
+			&& !self.search.is_empty()
+			&& let Some(at) = self.search_at
+		{
+			let now = ui.input(|input| input.time);
+			if now - at >= 0.3 {
+				if let Some(active) = state
+					.selected
+					.filter(|id| state.channel(*id).and_then(|c| c.guild) == Some(guild))
+					&& let Some(command) = state.search_members(active, &self.search, 0)
+				{
+					commands.push(command);
 				}
+				self.search_at = None;
+			} else {
+				ui.ctx()
+					.request_repaint_after(std::time::Duration::from_millis(300));
 			}
 		}
 		ui.collapsing("Explain draft permissions", |ui| {
@@ -171,29 +171,29 @@ impl PermissionsUi {
 				self.sync_review = !self.sync_review;
 			}
 		});
-		if self.sync_review {
-			if let Some(source) = source {
-				ui.label(format!(
-					"Replace {} channel override entries with {} category entries. Changes apply only after Save.",
-					rows.len(),
-					source.len()
+		if self.sync_review
+			&& let Some(source) = source
+		{
+			ui.label(format!(
+				"Replace {} channel override entries with {} category entries. Changes apply only after Save.",
+				rows.len(),
+				source.len()
+			));
+			for before in rows.iter().filter(|row| !source.contains(row)).take(12) {
+				ui.weak(format!(
+					"Replace/remove: {}",
+					target_name(state, channel.guild.unwrap(), (before.kind, before.id))
 				));
-				for before in rows.iter().filter(|row| !source.contains(row)).take(12) {
-					ui.weak(format!(
-						"Replace/remove: {}",
-						target_name(state, channel.guild.unwrap(), (before.kind, before.id))
-					));
-				}
-				for after in source.iter().filter(|row| !rows.contains(row)).take(12) {
-					ui.weak(format!(
-						"Apply category: {}",
-						target_name(state, channel.guild.unwrap(), (after.kind, after.id))
-					));
-				}
-				if ui.button("Use category permissions in draft").clicked() {
-					*rows = source.to_vec();
-					self.sync_review = false;
-				}
+			}
+			for after in source.iter().filter(|row| !rows.contains(row)).take(12) {
+				ui.weak(format!(
+					"Apply category: {}",
+					target_name(state, channel.guild.unwrap(), (after.kind, after.id))
+				));
+			}
+			if ui.button("Use category permissions in draft").clicked() {
+				*rows = source.to_vec();
+				self.sync_review = false;
 			}
 		}
 	}

@@ -801,14 +801,13 @@ impl MessagingUi {
 									rect: response.rect,
 								});
 							}
-							if response.clicked() {
-								if let Some(action) = state.personal_collapse_change(
+							if response.clicked()
+								&& let Some(action) = state.personal_collapse_change(
 									category.guild.unwrap(),
 									&[category.id],
 									!collapsed,
 								) {
-									self.channel_move = Some((category.id, action));
-								}
+								self.channel_move = Some((category.id, action));
 							}
 							self.channel_menu.context(
 								&response,

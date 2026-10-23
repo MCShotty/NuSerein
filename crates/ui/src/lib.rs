@@ -2111,16 +2111,15 @@ impl MessagingUi {
 					};
 					commands.extend(command);
 				}
-				if let Some(guild) = self.guild {
-					if ui
+				if let Some(guild) = self.guild
+					&& ui
 						.add_sized(
 							[ui.available_width(), 30.0],
 							egui::Button::new("Browse Channels"),
 						)
 						.clicked()
-					{
-						self.browse_channels.open(state, guild);
-					}
+				{
+					self.browse_channels.open(state, guild);
 				}
 				ui.add_space(6.0);
 				if self.guild.is_none() {
