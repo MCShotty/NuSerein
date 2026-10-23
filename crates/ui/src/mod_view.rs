@@ -112,11 +112,16 @@ impl ModViewUi {
 			if state.guild_permission(guild,model::permissions::VIEW_AUDIT_LOG){
 				egui::CollapsingHeader::new("Recent audit activity").show(ui,|ui| {
 					ui.weak("Matching entries from the latest 50 audit events; this is not a complete disciplinary history.");
+					if let Some((oldest,newest))=review.audit_window {
+						let date=|id:Id|crate::local_time::discord_timestamp((((id.0>>22)+1_420_070_400_000)/1000)as i64,b'f').unwrap_or_else(||id.to_string());
+						ui.weak(format!("Loaded window: {} – {}",date(oldest),date(newest)));
+					}
 					if let Some(error)=review.audit_error{ui.weak(error);}
 					if review.audit.is_empty()&&review.audit_error.is_none(){ui.weak("No matching entries in this window.");}
 					for entry in &review.audit {
 						ui.separator();
 						ui.label(crate::i18n::translate_if_key(crate::server_audit_log::action_text(entry.action)));
+						if let Some(actor)=entry.actor {ui.weak(format!("Moderator: {actor}"));}
 						if let Some(at)=crate::local_time::discord_timestamp((((entry.id.0>>22)+1_420_070_400_000)/1000)as i64,b'f'){ui.weak(at);}
 						if let Some(reason)=&entry.reason{ui.label(reason);}
 					}

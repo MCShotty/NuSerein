@@ -237,6 +237,10 @@ pub fn execute_admin(
 						} else {
 							vec![]
 						},
+						audit_window: audit.then_some((
+							Id(1_000_000_000_000_000_000),
+							Id(1_000_000_000_000_000_000),
+						)),
 						messages_error: None,
 						audit_error: None,
 					}))
