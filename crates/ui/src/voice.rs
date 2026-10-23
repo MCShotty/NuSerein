@@ -1323,6 +1323,7 @@ impl MessagingUi {
 		let compact = rect.height() < 132.0;
 		let hint = match tile {
 			Tile::LocalScreen => {
+				self.screen.preview_painted(ui.ctx());
 				self.screen_tile(ui, rect, compact);
 				self.screen
 					.capture_status

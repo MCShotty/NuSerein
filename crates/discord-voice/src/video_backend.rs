@@ -87,6 +87,58 @@ impl Encoder {
 		Ok(Self { implementation })
 	}
 
+	#[cfg(target_os = "windows")]
+	pub(crate) fn new_on_surface(
+		config: Config,
+		backend: VideoBackend,
+		frame: &platform::video::capture::Frame,
+	) -> Result<Self, &'static str> {
+		picture_bytes(config)?;
+		if backend != VideoBackend::Experimental {
+			return Err("Stable video encoding uses host input");
+		}
+		Ok(Self {
+			implementation: Implementation::Experimental(
+				crate::video_encode::Encoder::new_on_surface(config, frame)?,
+			),
+		})
+	}
+
+	#[cfg(target_os = "windows")]
+	pub(crate) fn uses_surface(&self) -> bool {
+		matches!(&self.implementation, Implementation::Experimental(encoder) if encoder.uses_surface())
+	}
+
+	#[cfg(target_os = "windows")]
+	pub(crate) fn accepts_surface(&self, frame: &platform::video::capture::Frame) -> bool {
+		matches!(&self.implementation, Implementation::Experimental(encoder) if encoder.accepts_surface(frame))
+	}
+
+	#[cfg(target_os = "windows")]
+	pub(crate) fn encode_surface_at(
+		&mut self,
+		frame: &platform::video::capture::Frame,
+		force: bool,
+		timestamp: u32,
+	) -> Result<EncodedPacket, &'static str> {
+		match &mut self.implementation {
+			Implementation::Experimental(encoder) => {
+				encoder.encode_surface_at(frame, force, timestamp)
+			}
+			Implementation::Stable(_) => Err("Stable video encoding uses host input"),
+		}
+	}
+
+	#[cfg_attr(target_os = "linux", allow(dead_code))] // Windows/macOS capture polling; exercised offline in tests.
+	pub(crate) fn drain_at(&mut self) -> Result<Option<EncodedPacket>, &'static str> {
+		match &mut self.implementation {
+			Implementation::Experimental(encoder) => encoder.drain_at(),
+			// Native Stable backends currently couple output retrieval to encode.
+			// Keep their established, bounded input behavior until separately audited.
+			Implementation::Stable(_) => Ok(None),
+		}
+	}
+
 	#[cfg(test)]
 	pub(crate) fn encode(
 		&mut self,

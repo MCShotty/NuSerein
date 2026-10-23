@@ -190,7 +190,7 @@ fn choose_with_system_picker(
 
 #[derive(Clone)]
 struct Handler {
-	frames: SyncSender<RawFrame>,
+	frames: SyncSender<super::super::CapturedFrame>,
 	format: crate::screen::RawFormat,
 	stop: Arc<AtomicBool>,
 }
@@ -353,13 +353,15 @@ impl SCStreamOutputTrait for Handler {
 			self.stop.store(true, Ordering::Release);
 			return;
 		};
-		let _ = self.frames.try_send(RawFrame {
-			format: self.format,
-			width,
-			height,
-			stride: row_bytes,
-			data,
-		});
+		let _ = self
+			.frames
+			.try_send(super::super::CapturedFrame::cpu(RawFrame {
+				format: self.format,
+				width,
+				height,
+				stride: row_bytes,
+				data,
+			}));
 	}
 }
 
@@ -481,7 +483,7 @@ impl Capture {
 
 	pub(crate) fn request_frame(
 		&mut self,
-		frames: &std::sync::mpsc::Receiver<RawFrame>,
+		frames: &std::sync::mpsc::Receiver<super::super::CapturedFrame>,
 	) -> Result<(), &'static str> {
 		self.stream
 			.stop_capture()
@@ -499,7 +501,7 @@ impl Capture {
 
 	pub(crate) fn start(
 		settings: RequestSettings,
-		frames: SyncSender<RawFrame>,
+		frames: SyncSender<super::super::CapturedFrame>,
 		audio: Option<tokio::sync::mpsc::Sender<crate::screen::AudioChunk>>,
 		stop: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,

@@ -434,12 +434,15 @@ impl Screen {
 			self.request_stop(error);
 		}
 		if let Some(live) = &self.live {
-			live.worker.set_preview_visible(
-				ui.screen.preview.is_none()
-					|| (state.selected == Some(live.context.channel)
-						&& !ctx.input(|input| input.viewport().minimized.unwrap_or(false))),
-			);
-			if let Some(frame) = live.worker.take_preview() {
+			let preview_visible = ui
+				.screen
+				.preview_requested(ctx, state.selected == Some(live.context.channel));
+			live.worker.set_preview_visible(preview_visible);
+			// A picture queued before hiding is retired without a conversion or
+			// texture upload. Capture/encoding are independent of local preview demand.
+			if let Some(frame) = live.worker.take_preview()
+				&& preview_visible
+			{
 				let image = egui::ColorImage::from_rgba_unmultiplied(
 					[frame.width() as usize, frame.height() as usize],
 					frame.as_raw(),

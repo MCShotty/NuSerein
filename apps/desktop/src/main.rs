@@ -4615,6 +4615,8 @@ impl Desktop {
 		);
 	}
 	fn poll_voice(&mut self, ctx: &egui::Context) {
+		self.messaging.screen.preview_window_visible =
+			!self.tray_window.hidden && self.window.is_visible() != Some(false);
 		if let Some(command) =
 			self.voice
 				.poll(&self.runtime, &mut self.state, &mut self.messaging, ctx)

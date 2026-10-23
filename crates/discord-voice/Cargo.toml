@@ -21,6 +21,7 @@ openmls = { version = "=0.8.1", default-features = false }
 chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
 opus2 = { version = "=0.4.0", default-features = false, features = ["backend-libopus", "static", "bundled"] }
 rtrb = "=0.4.0"
+rayon = "=1.12.0"
 cpal = { version = "=0.18.2", default-features = false }
 sonora = { version = "=0.2.0", default-features = false }
 nnnoiseless = { version = "=0.5.2", default-features = false }
@@ -53,6 +54,7 @@ unsafe_code = "deny"
 windows-capture = "=2.0.1"
 windows = { version = "=0.61.3", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Media_DirectShow", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Graphics_Gdi", "Win32_System_Ole", "Win32_Media_Audio", "Win32_System_Threading", "Win32_Security"] }
 windows-core = "=0.61.2"
+windows-capture-core = { package = "windows-core", version = "=0.62.2" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "=0.18.2", default-features = false, features = ["pulseaudio"] }

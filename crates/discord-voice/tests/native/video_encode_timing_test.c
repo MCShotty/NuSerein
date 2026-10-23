@@ -275,12 +275,82 @@ static void check_ten_bit_input(void)
     assert(!serein_avc_open_on_adapter(16, 8, 30, 100000, 0, 0, 0, 4096, NULL, 4));
 }
 
+/* A receive-only poll must not upload another picture, advance its PTS or
+ * flush the encoder. Delayed/reordered output keeps its original index. */
+static void check_receive_only(void)
+{
+    uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
+    submitted = emitted = never_output = 0;
+    void *encoder = serein_avc_open(64, 64, 30, 100000, 0, 0, 0, sizeof(output));
+    assert(encoder);
+    size_t bytes;
+    int keyframe;
+    int64_t pts;
+    assert(serein_avc_receive_timed(encoder, output, sizeof(output), &bytes, &keyframe, &pts) == 0);
+    assert(!submitted && !bytes && !keyframe && pts == -1);
+    for (int index = 0; index < 17; index++) {
+        int result = serein_avc_encode_timed(encoder, input, sizeof(input), 0, output, sizeof(output), &bytes, &keyframe, &pts);
+        assert(result == (index == 16));
+        if (index < 16) {
+            assert(serein_avc_receive_timed(encoder, output, sizeof(output), &bytes, &keyframe, &pts) == 0);
+            assert(submitted == index + 1);
+        }
+    }
+    for (int index = 1; index < 4; index++) {
+        assert(serein_avc_receive_timed(encoder, output, sizeof(output), &bytes, &keyframe, &pts) == 1);
+        assert(bytes && !keyframe && pts == decode_order[index]);
+        assert(submitted == 17);
+    }
+    assert(serein_avc_receive_timed(encoder, output, sizeof(output), &bytes, &keyframe, &pts) == 0);
+    assert(submitted == 17 && !bytes && !keyframe && pts == -1);
+    assert(((SereinAvc *)encoder)->in_flight == 13);
+    serein_avc_close(encoder);
+    submitted = emitted = 0;
+}
+
+static void check_surface_identity(void)
+{
+    /* Identity validation itself performs no GPU calls. Synthetic contexts
+     * verify equal dimensions cannot admit an obsolete device/session. */
+    AVCodecContext *codec = avcodec_alloc_context3(NULL);
+    AVFrame *frame = av_frame_alloc();
+    assert(codec && frame);
+    codec->width = frame->width = 64;
+    codec->height = frame->height = 64;
+    frame->format = AV_PIX_FMT_D3D11;
+    frame->buf[0] = av_buffer_alloc(1);
+    frame->hw_frames_ctx = av_buffer_alloc(1);
+    assert(frame->buf[0] && frame->hw_frames_ctx);
+    frame->data[0] = frame->buf[0]->data;
+    codec->hw_frames_ctx = av_buffer_ref(frame->hw_frames_ctx);
+    SereinAvc encoder = {.codec = codec, .surface_mode = 1};
+    assert(serein_avc_accepts_surface(&encoder, frame));
+    frame->width = 62;
+    assert(!serein_avc_accepts_surface(&encoder, frame));
+    frame->width = 64;
+    av_buffer_unref(&codec->hw_frames_ctx);
+    codec->hw_frames_ctx = av_buffer_alloc(1);
+    assert(codec->hw_frames_ctx);
+    assert(!serein_avc_accepts_surface(&encoder, frame));
+    assert(!serein_avc_accepts_surface(NULL, frame));
+    av_frame_free(&frame);
+    avcodec_free_context(&codec);
+}
+
 int main(void)
 {
     check_presets();
     check_amf_acceptance();
     check_splitting();
     check_ten_bit_input();
+    check_receive_only();
+    check_surface_identity();
+    /* A host picture must never be mistaken for a GPU frames context. */
+    AVFrame *host = av_frame_alloc();
+    assert(host && !serein_avc_surface_context(host));
+    serein_avc_surface_context_free(NULL);
+    av_frame_free(&host);
+    assert(!serein_avc_open_on_surface(64, 64, 30, 100000, 0, 0, 0, 4096, NULL, 0, NULL));
     uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
     SereinVideoAdapter unknown = {0};
     /* A supplied unidentified renderer must still permit software fallback. */
@@ -314,6 +384,6 @@ int main(void)
     assert(submitted == 48);
     serein_avc_close(encoder);
     assert(!serein_avc_open_on_adapter(64, 64, 30, 100000, 0, 1, 0, sizeof(output), NULL, 1));
-    puts("Presets, AMF split acceptance ABI, NVENC/QSV 1440p and AMF 4K split policy, preserved AMF PA/quality, same-GPU retry/cleanup, delayed PTS and 48-picture bound passed");
+    puts("Presets, AMF split acceptance ABI, NVENC/QSV 1440p and AMF 4K split policy, preserved AMF PA/quality, same-GPU retry/cleanup, surface-context identity, receive-only delayed PTS and 48-picture bound passed");
     return 0;
 }
