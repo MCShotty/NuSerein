@@ -300,16 +300,18 @@ impl DiscordApi {
 							.await
 						{
 							Ok(Some(bytes)) => {
-								let value: Value = serde_json::from_slice(&bytes)
-									.map_err(|_| Failure::Protocol)?;
-								if value["user"]["id"]
-									.as_str()
+								let value = serde_json::from_slice::<Value>(&bytes).ok();
+								if value
+									.as_ref()
+									.and_then(|value| value["user"]["id"].as_str())
 									.and_then(|id| id.parse::<Id>().ok())
-									!= Some(user)
+									== Some(user)
 								{
-									return Err(Failure::Protocol);
+									m::BanStatus::Banned
+								} else {
+									// A bad target response cannot invalidate another target's readback.
+									m::BanStatus::Unknown
 								}
-								m::BanStatus::Banned
 							}
 							Ok(None) => m::BanStatus::NotBanned,
 							Err(error) if error.ends_session() => return Err(error),
@@ -714,6 +716,57 @@ mod member_review_tests {
 			};
 			assert!(report.users.contains(&(Id(7), m::BanStatus::Banned)));
 			assert!(report.users.contains(&(Id(8), m::BanStatus::NotBanned)));
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn bulk_readback_preserves_verified_targets_when_other_responses_are_invalid() {
+		tokio::time::timeout(Duration::from_secs(15), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_BULK_RECONCILE_TOKEN".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let server = tokio::spawn(async move {
+				for _ in 0..3 {
+					let (mut socket, _) = listener.accept().await.unwrap();
+					let (headers, body) = request(&mut socket).await;
+					assert_eq!(body, Value::Null);
+					let response = if headers.starts_with("GET /guilds/2/bans/7 ") {
+						r#"{"user":{"id":"7"}}"#
+					} else if headers.starts_with("GET /guilds/2/bans/8 ") {
+						"invalid JSON"
+					} else {
+						assert!(headers.starts_with("GET /guilds/2/bans/9 "));
+						r#"{"user":{"id":"99"}}"#
+					};
+					respond(&mut socket, "200 OK", response).await;
+				}
+				assert!(
+					tokio::time::timeout(Duration::from_millis(80), listener.accept())
+						.await
+						.is_err()
+				);
+			});
+			let m::Outcome::Bulk(report) = api
+				.moderation(
+					Id(2),
+					&m::Action::BulkRefresh {
+						users: vec![Id(7), Id(8), Id(9)],
+					},
+				)
+				.await
+				.unwrap()
+			else {
+				panic!()
+			};
+			assert!(report.valid());
+			assert!(report.users.contains(&(Id(7), m::BanStatus::Banned)));
+			assert!(report.users.contains(&(Id(8), m::BanStatus::Unknown)));
+			assert!(report.users.contains(&(Id(9), m::BanStatus::Unknown)));
 			server.await.unwrap();
 		})
 		.await
