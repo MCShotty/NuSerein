@@ -5671,6 +5671,9 @@ impl MessagingUi {
 		self.group_menu
 			.show(&ctx, state, &mut self.avatars, &mut commands);
 		self.group_create.show(&ctx, state, &mut commands);
+		if let Some(intent) = self.channel_menu.device_shortcut_requested.take() {
+			self.apply_device_shortcut(state, intent);
+		}
 		for intent in self
 			.channel_menu
 			.shortcut_requested

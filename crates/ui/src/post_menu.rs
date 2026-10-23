@@ -1,4 +1,4 @@
-//! Forum post menus share the bounded channel action worker and local favorites.
+//! Forum post menus share the bounded channel action worker and account favorites.
 use crate::{channel_menu::row, design, dialog, shortcuts::ShortcutView, user_menu};
 use client_core::{
 	Command, State,
@@ -31,6 +31,7 @@ struct TagEditor {
 #[derive(Default)]
 pub(super) struct PostMenu {
 	pub shortcut_requested: Option<crate::shortcuts::Intent>,
+	pub device_shortcut_requested: Option<crate::shortcuts::Intent>,
 	requested: Option<(Id, Intent)>,
 	load: Option<Id>,
 	opened: Option<egui::Id>,
@@ -48,7 +49,7 @@ impl PostMenu {
 		response: &egui::Response,
 		state: &State,
 		post: &Channel,
-		_view: ShortcutView<'_>,
+		view: ShortcutView<'_>,
 	) {
 		if self.generation != state.generation {
 			*self = Self {
@@ -110,6 +111,12 @@ impl PostMenu {
 						kind: Shortcut::Favorite,
 						on: !state.channel_account_favorite(post.id),
 					});
+					ui.close();
+				}
+				if view.contains(Shortcut::Favorite, post.id)
+					&& row(ui, "Remove from device favorites", view.available(), false).clicked()
+				{
+					self.device_shortcut_requested = Some(view.toggle(Shortcut::Favorite, post.id));
 					ui.close();
 				}
 				ui.separator();

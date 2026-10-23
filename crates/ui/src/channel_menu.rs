@@ -51,6 +51,7 @@ pub(super) struct ChannelMenu {
 	posts: crate::post_menu::PostMenu,
 	pub invite_requested: Option<(Id, Id)>,
 	pub shortcut_requested: Option<crate::shortcuts::Intent>,
+	pub device_shortcut_requested: Option<crate::shortcuts::Intent>,
 	pub categories_collapsed_requested: Option<bool>,
 	requested: Option<(Id, Intent)>,
 	dialog: Option<Dialog>,
@@ -126,6 +127,9 @@ impl ChannelMenu {
 			if let Some(intent) = self.posts.shortcut_requested.take() {
 				self.shortcut_requested = Some(intent);
 			}
+			if let Some(intent) = self.posts.device_shortcut_requested.take() {
+				self.device_shortcut_requested = Some(intent);
+			}
 			self.generation = state.generation;
 			return;
 		}
@@ -179,6 +183,13 @@ impl ChannelMenu {
 					kind: Shortcut::Favorite,
 					on: !state.channel_account_favorite(channel.id),
 				});
+				self.generation = state.generation;
+				ui.close();
+			}
+			if view.contains(Shortcut::Favorite, channel.id)
+				&& row(ui, "Remove from device favorites", view.available(), false).clicked()
+			{
+				self.device_shortcut_requested = Some(view.toggle(Shortcut::Favorite, channel.id));
 				self.generation = state.generation;
 				ui.close();
 			}
@@ -2335,6 +2346,43 @@ mod tests {
 			assert_eq!(after.name, before.name);
 			assert!(h.commands.is_empty());
 		}
+	}
+
+	#[test]
+	fn device_favorite_removal_has_a_separate_local_intent() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut h = Harness {
+			state: test_support::chat_demo_state(),
+			menu: ChannelMenu::default(),
+			prefs: ChannelPreferences {
+				favorites: vec![Id(20)],
+				..Default::default()
+			},
+			commands: vec![],
+			copied: vec![],
+			width: 320.0,
+		};
+		let (source, _) = h.frame(&ctx, vec![]);
+		h.click(&ctx, source.rect.center(), PointerButton::Secondary);
+		let (_, text) = h.frame(&ctx, vec![]);
+		assert!(text.iter().any(|(label, _)| label == "Add To Favorites"));
+		let remove = text
+			.iter()
+			.find(|(label, _)| label == "Remove from device favorites")
+			.unwrap()
+			.1;
+		h.click(&ctx, remove.center(), PointerButton::Primary);
+		assert_eq!(
+			h.menu.device_shortcut_requested,
+			Some(crate::shortcuts::Intent {
+				channel: Id(20),
+				kind: Shortcut::Favorite,
+				on: false
+			})
+		);
+		assert_eq!(h.menu.shortcut_requested, None);
+		assert!(h.commands.is_empty());
 	}
 
 	#[test]

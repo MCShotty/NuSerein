@@ -1,5 +1,5 @@
 //! Device-local pinned and favorite channels as sidebar rosters. Menus record an `Intent`;
-//! `MessagingUi::apply_shortcut` is the only writer of `channel_preferences` in this crate.
+//! `MessagingUi::apply_device_shortcut` is the only writer of `channel_preferences` in this crate.
 use crate::MessagingUi;
 use client_core::State;
 use model::{Channel, ChannelPreferences, Id, PreferenceEdit, Shortcut};
@@ -157,7 +157,7 @@ impl<'a> Roster<'a> {
 	}
 }
 
-/// A deferred local write recorded by a menu, applied once rows released their borrows.
+/// A deferred shortcut write recorded by a menu, applied once rows released their borrows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Intent {
 	pub channel: Id,
@@ -218,19 +218,25 @@ impl MessagingUi {
 			)?;
 			return state.request_channel_action(intent.channel, action);
 		}
+		self.apply_device_shortcut(state, intent);
+		None
+	}
+
+	/// Edit a device collection without changing the independent Discord-account favorite.
+	pub(crate) fn apply_device_shortcut(&mut self, state: &State, intent: Intent) {
 		if !self.shortcuts_available(state) {
-			return None;
+			return;
 		}
 		if intent.on {
 			let Some(channel) = state.channel(intent.channel) else {
-				return None;
+				return;
 			};
 			let allowed = match intent.kind {
 				Shortcut::Pinned => ChannelPreferences::can_pin(channel),
 				Shortcut::Favorite => ChannelPreferences::can_favorite(channel),
 			};
 			if !allowed {
-				return None;
+				return;
 			}
 		}
 		match self
@@ -244,6 +250,63 @@ impl MessagingUi {
 			PreferenceEdit::CapacityReached => self.channel_menu.report_capacity(state.generation),
 			PreferenceEdit::Unchanged => {}
 		}
-		None
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn removing_device_favorite_does_not_change_account_favorite_or_send_a_request() {
+		for account_favorite in [false, true] {
+			let mut state = test_support::demo_state();
+			state.apply_notification_preferences(client_core::notifications::Event::Settings {
+				entries: vec![client_core::notifications::Setting {
+					guild: Some(Id(10)),
+					flags: Some(0),
+					overrides_known: true,
+					channel_flags: vec![(
+						Id(20),
+						Some(if account_favorite {
+							model::channel_visibility::FAVORITED
+						} else {
+							0
+						}),
+						Some(false),
+					)],
+					..Default::default()
+				}],
+				replace: false,
+			});
+			let mut ui = MessagingUi {
+				channel_preferences: ChannelPreferences {
+					favorites: vec![Id(20)],
+					..Default::default()
+				},
+				..Default::default()
+			};
+			ui.apply_device_shortcut(
+				&state,
+				Intent {
+					channel: Id(20),
+					kind: Shortcut::Favorite,
+					on: false,
+				},
+			);
+			assert!(!ui.channel_preferences.contains(Shortcut::Favorite, Id(20)));
+			assert!(ui.channel_preferences_changed);
+			assert_eq!(state.channel_account_favorite(Id(20)), account_favorite);
+			assert!(!state.channel_action_pending());
+			let roster =
+				Roster::build(&state, &ui.channel_preferences, Scope::Guild(Id(10)), false);
+			assert!(
+				!roster
+					.sections()
+					.iter()
+					.any(|section| section.heading == Heading::DeviceFavorites)
+			);
+			assert_eq!(roster.lifted(Id(20)), account_favorite);
+		}
 	}
 }
