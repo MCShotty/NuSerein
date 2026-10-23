@@ -2640,6 +2640,11 @@ mod tests {
 				.collect(),
 			..State::default()
 		};
+		// Show All still admits bounded orphan rows; parent metadata must not silently
+		// hide a previously reachable recent thread. Access filtering remains in rows().
+		for id in [20, 21, 22, 23, 24, 25, 27] {
+			assert!(hierarchy_state.channel_personally_selected(Id(id)));
+		}
 		let expanded = tree(&hierarchy_state, BTreeSet::new());
 		assert_eq!(expanded.len(), hierarchy.len() - 1);
 		assert_eq!(

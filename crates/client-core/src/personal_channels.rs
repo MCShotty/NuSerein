@@ -32,13 +32,20 @@ impl State {
 		let Some(guild) = source.guild else {
 			return true;
 		};
-		if matches!(source.kind, 10..=12) {
-			return source
-				.parent_id
-				.and_then(|id| self.channel(id))
-				.filter(|parent| parent.guild == Some(guild) && !matches!(parent.kind, 10..=12))
-				.is_some_and(|parent| self.channel_personally_selected(parent.id));
+		if matches!(source.kind, 10..=12)
+			&& let Some(parent) =
+				source
+					.parent_id
+					.and_then(|id| self.channel(id))
+					.filter(|parent| {
+						parent.guild == Some(guild)
+							&& matches!(parent.kind, 0 | 5 | 15 | 16)
+							&& parent.parent_id != Some(source.id)
+					}) {
+			return self.channel_personally_selected(parent.id);
 		}
+		// Incomplete or malformed parent metadata already falls back to an orphan row
+		// in the sidebar. Keep Show All effective there; access is checked separately.
 		self.personally_shows_all_channels(guild)
 			|| self
 				.personal_channel_flags(channel)
@@ -614,5 +621,73 @@ mod tests {
 			!state.channel_personally_selected(Id(3)) && !state.channel_personally_selected(Id(4))
 		);
 		assert!(state.channel_personally_selected(Id(6)));
+	}
+	#[test]
+	fn orphan_threads_keep_show_all_and_never_inherit_an_unrelated_parent() {
+		let mut state = state();
+		let template = state.channel(Id(3)).unwrap().clone();
+		for (id, kind, parent, guild) in [
+			(10, 11, 999, 2),
+			(11, 11, 5, 2),
+			(12, 11, 13, 2),
+			(13, 12, 12, 2),
+			(14, 11, 14, 2),
+			(15, 11, 16, 2),
+			(16, 0, 0, 99),
+			(17, 11, 18, 2),
+			(18, 0, 17, 2),
+			(19, 11, 3, 2),
+			(20, 11, 6, 2),
+		] {
+			state.channels.push(model::Channel {
+				id: Id(id),
+				guild: Some(Id(guild)),
+				kind,
+				parent_id: (parent != 0).then_some(Id(parent)),
+				..template.clone()
+			});
+		}
+		let orphans = [10, 11, 12, 13, 14, 15, 17, 20];
+		for id in orphans {
+			assert!(
+				state.channel_personally_selected(Id(id)),
+				"Show All retains orphan {id}"
+			);
+		}
+		state
+			.apply_notification_preferences(notifications::Event::Settings {
+				entries: vec![Setting {
+					guild: Some(Id(2)),
+					flags: Some(p::OPT_IN_CHANNELS_ON),
+					overrides_known: true,
+					channel_flags: vec![
+						(Id(3), Some(p::OPT_IN_ENABLED), Some(false)),
+						(Id(5), Some(p::OPT_IN_ENABLED), Some(false)),
+						(Id(6), Some(p::OPT_IN_ENABLED), Some(false)),
+						(Id(10), Some(p::OPT_IN_ENABLED), Some(false)),
+						(Id(18), Some(p::OPT_IN_ENABLED), Some(false)),
+					],
+					..Default::default()
+				}],
+				replace: false,
+			})
+			.unwrap();
+		assert!(
+			state.channel_personally_selected(Id(10)),
+			"an orphan may retain its own selection"
+		);
+		for id in [11, 12, 13, 14, 15, 17, 20] {
+			assert!(
+				!state.channel_personally_selected(Id(id)),
+				"orphan {id} must not inherit a category, voice, cyclic or other-server source"
+			);
+		}
+		assert!(
+			state.channel_personally_selected(Id(19)),
+			"a valid thread inherits its text parent"
+		);
+		let action = state.personal_visibility_change(Id(3), false).unwrap();
+		finish(&mut state, action);
+		assert!(!state.channel_personally_selected(Id(19)));
 	}
 }
