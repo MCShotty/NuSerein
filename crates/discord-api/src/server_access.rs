@@ -289,6 +289,136 @@ mod tests {
 		io::{AsyncReadExt, AsyncWriteExt},
 		net::TcpListener,
 	};
+	type Reply = (
+		&'static str,
+		&'static str,
+		Option<serde_json::Value>,
+		serde_json::Value,
+	);
+	async fn fixture(replies: Vec<Reply>) -> (DiscordApi, tokio::task::JoinHandle<()>) {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let mut api = DiscordApi::new(Arc::new(
+			SessionSecret::from_owner_input("SYNTHETIC_SERVER_ACCESS_TOKEN".into()).unwrap(),
+		))
+		.unwrap();
+		api.base = format!("http://{}", listener.local_addr().unwrap());
+		let server = tokio::spawn(async move {
+			for (method, path, expected, response) in replies {
+				let (mut stream, _) = listener.accept().await.unwrap();
+				let mut bytes = Vec::new();
+				let end = loop {
+					let mut buf = [0; 4096];
+					let n = stream.read(&mut buf).await.unwrap();
+					assert!(n > 0);
+					bytes.extend_from_slice(&buf[..n]);
+					assert!(bytes.len() < 16384);
+					if let Some(i) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+						break i + 4;
+					}
+				};
+				let headers = std::str::from_utf8(&bytes[..end]).unwrap();
+				assert!(headers.starts_with(&format!("{method} {path} HTTP/1.1\r\n")));
+				let length = headers
+					.lines()
+					.find_map(|line| {
+						let (name, value) = line.split_once(':')?;
+						name.eq_ignore_ascii_case("content-length")
+							.then(|| value.trim().parse::<usize>().unwrap())
+					})
+					.unwrap_or(0);
+				assert!(length < 8192);
+				while bytes.len() < end + length {
+					let mut buf = [0; 4096];
+					let n = stream.read(&mut buf).await.unwrap();
+					assert!(n > 0);
+					bytes.extend_from_slice(&buf[..n]);
+				}
+				match expected {
+					Some(expected) => assert_eq!(
+						serde_json::from_slice::<serde_json::Value>(&bytes[end..end + length])
+							.unwrap(),
+						expected
+					),
+					None => assert_eq!(length, 0),
+				}
+				let body = response.to_string();
+				stream
+					.write_all(
+						format!(
+							"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+							body.len()
+						)
+						.as_bytes(),
+					)
+					.await
+					.unwrap();
+			}
+			assert!(
+				tokio::time::timeout(Duration::from_millis(80), listener.accept())
+					.await
+					.is_err()
+			);
+		});
+		(api, server)
+	}
+	fn guild() -> serde_json::Value {
+		json!({"id":"2","owner_id":"1","features":["FUTURE_FEATURE"],"mfa_level":0,"verification_level":1,"explicit_content_filter":2,"incidents_data":null})
+	}
+	fn application() -> serde_json::Value {
+		json!({"id":"10","join_request_id":"10","guild_id":"2","user_id":"3","application_status":"SUBMITTED","created_at":"2026-01-01T00:00:00Z"})
+	}
+	#[tokio::test]
+	async fn approved_applications_are_not_decided_again_and_interviews_reconcile_native_channels()
+	{
+		tokio::time::timeout(Duration::from_secs(5),async{
+			let pending=application();let mut approved=pending.clone();approved["application_status"]=json!("APPROVED");let mut interviewed=pending.clone();interviewed["interview_channel_id"]=json!("10");
+			let(api,server)=fixture(vec![
+				("GET","/join-requests/10",None,pending.clone()),
+				("PATCH","/guilds/2/requests/10",Some(json!({"action":"APPROVED"})),approved.clone()),
+				("GET","/join-requests/10",None,approved),
+				("GET","/join-requests/10",None,pending),
+				("POST","/join-requests/10/interview",None,json!({"id":"10","type":3,"name":"Interview","recipients":[{"id":"3","username":"Applicant","discriminator":"0","avatar":null},{"id":"1","username":"Moderator","discriminator":"0","avatar":null}]})),
+				("GET","/join-requests/10",None,interviewed),
+			]).await;
+			let action=Action::Decide{request:Id(10),status:Status::Approved,reason:String::new()};
+			assert!(matches!(api.server_access_action(Id(2),&action).await,Ok(Outcome::Application(v))if v.status==Status::Approved));
+			assert!(matches!(api.server_access_action(Id(2),&action).await,Err(Failure::ProtocolAt(_))));
+			let result=api.server_access_action(Id(2),&Action::Interview{request:Id(10)}).await.unwrap();assert!(result.valid());assert!(matches!(result,Outcome::Interview{channel,..}if channel.id==Id(10)&&channel.kind==3));server.await.unwrap();
+		}).await.unwrap();
+	}
+	#[tokio::test]
+	async fn security_actions_and_mfa_require_authoritative_readback_and_sparse_bodies() {
+		tokio::time::timeout(Duration::from_secs(5),async{
+			let before=guild();let incident=model::server_access::Incident{invites_until:Some(time::OffsetDateTime::now_utc().unix_timestamp_nanos()+3_600_000_000_000),dms_until:None};let body=wire::incident_body(incident).unwrap();
+			let mut active=before.clone();active["incidents_data"]=body.clone();let mut mfa=active.clone();mfa["mfa_level"]=json!(1);
+			let(api,server)=fixture(vec![
+				("GET","/guilds/2",None,before),
+				("PUT","/guilds/2/incident-actions",Some(body),json!({})),
+				("GET","/guilds/2",None,active.clone()),
+				("GET","/guilds/2",None,active),
+				("POST","/guilds/2/mfa",Some(json!({"level":1})),json!({"level":1})),
+				("GET","/guilds/2",None,mfa),
+			]).await;
+			assert!(matches!(api.server_access_action(Id(2),&Action::Incident{before:Default::default(),after:incident}).await,Ok(Outcome::Settings(v))if v.incident==Some(incident)&&v.features==["FUTURE_FEATURE"]));
+			assert!(matches!(api.server_access_action(Id(2),&Action::MfaLevel{before:0,after:1}).await,Ok(Outcome::Settings(v))if v.mfa_level==1&&v.incident==Some(incident)));server.await.unwrap();
+		}).await.unwrap();
+	}
+	#[tokio::test]
+	async fn owner_transfer_verifies_membership_and_rejects_changed_ownership_without_a_write() {
+		tokio::time::timeout(Duration::from_secs(5),async{
+			let before=guild();let mut after=before.clone();after["owner_id"]=json!("3");
+			let(api,server)=fixture(vec![
+				("GET","/guilds/2",None,before),
+				("GET","/guilds/2/members/3",None,json!({"user":{"id":"3","username":"Recipient","discriminator":"0","avatar":null},"roles":[],"nick":null})),
+				("PATCH","/guilds/2",Some(json!({"owner_id":"3"})),after.clone()),
+				("GET","/guilds/2",None,after.clone()),
+				("GET","/guilds/2",None,after),
+			]).await;
+			let action=Action::Transfer{before_owner:Id(1),recipient:Id(3)};
+			assert!(matches!(api.server_access_action(Id(2),&action).await,Ok(Outcome::Settings(v))if v.owner==Id(3)));
+			assert!(matches!(api.server_access_action(Id(2),&action).await,Err(Failure::ProtocolAt(_))));server.await.unwrap();
+		}).await.unwrap();
+	}
 	#[tokio::test]
 	async fn application_decision_reads_current_state_and_does_not_repeat_uncertain_write() {
 		tokio::time::timeout(Duration::from_secs(5),async{
