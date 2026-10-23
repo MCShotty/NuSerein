@@ -122,7 +122,7 @@ mod tests {
 		});
 		assert!(view.members.as_ref().unwrap().valid());
 		view.emojis = Some(admin::Emojis {
-			items: Vec::with_capacity(PANEL / size_of::<admin::Emoji>()),
+			items: Vec::with_capacity(128 * 1024 / size_of::<admin::Emoji>()),
 			..Default::default()
 		});
 		let page = admin::Result::Emojis(view.emojis.take().unwrap());
@@ -167,6 +167,12 @@ mod tests {
 			)),
 		});
 		assert!(view.integrations.as_ref().unwrap().valid());
+		view.invites = Some(model::server_invites::Snapshot {
+			guild: Id(2),
+			items: Vec::with_capacity(PANEL / size_of::<model::server_invites::Invite>()),
+			features: Vec::new(),
+		});
+		assert!(view.invites.as_ref().unwrap().valid());
 		assert!(state.retained_admin_bytes() > 6 * 1024 * 1024);
 		assert!(state.retained_admin_bytes() < MAX_ADMIN_BYTES);
 		state
