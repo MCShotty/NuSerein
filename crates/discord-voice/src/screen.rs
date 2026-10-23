@@ -878,6 +878,7 @@ fn encode_loop(
 	Ok(())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn retain_screen_frame(
 	latest: &mut Option<RawFrame>,
 	frame: Option<RawFrame>,
@@ -1184,6 +1185,7 @@ impl ScreenEncoder {
 		self.reset_generation
 	}
 
+	#[cfg(any(test, target_os = "linux"))]
 	pub(super) fn reset_for_security(&mut self, generation: u64) -> Result<bool, &'static str> {
 		if generation == u64::MAX {
 			return Err("Screen security reset generation exhausted");
@@ -1306,6 +1308,7 @@ fn validate_frame(frame: &RawFrame) -> Result<(usize, usize), &'static str> {
 	Ok((row_bytes, required))
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 pub(super) fn preview_frame(frame: &RawFrame) -> Result<image::RgbaImage, &'static str> {
 	validate_frame(frame)?;
 	let scale = (640.0 / f64::from(frame.width))
@@ -1351,6 +1354,7 @@ impl RawFrame {
 			)),
 		}
 	}
+	#[cfg(any(test, not(target_os = "windows")))]
 	fn sdr(
 		&self,
 		x: usize,

@@ -608,7 +608,10 @@ void *serein_capture_replacement(void *opaque, int gpu_export)
 void serein_capture_frame_prefer_cpu(void *opaque)
 {
     CaptureFrame *frame = opaque;
-    if (frame) InterlockedExchange(&frame->capture->force_cpu, 1);
+    /* Stable/HDR/oversized-pool fallback is already asynchronous staging.
+     * Rebuilding that pool would add work without changing its input path. */
+    if (frame && frame->slot->picture)
+        InterlockedExchange(&frame->capture->force_cpu, 1);
 }
 
 void serein_capture_frame_close(void *opaque)

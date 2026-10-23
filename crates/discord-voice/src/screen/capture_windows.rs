@@ -407,6 +407,7 @@ impl Capture {
 		Ok(())
 	}
 
+	#[allow(clippy::too_many_arguments)] // One capture's explicit media/control outputs.
 	pub(crate) fn start(
 		settings: CaptureSettings,
 		frames: SyncSender<CapturedFrame>,
@@ -437,6 +438,7 @@ impl Capture {
 		Ok(capture)
 	}
 
+	#[allow(clippy::too_many_arguments)] // Shared state for normal, refresh and probe entry points.
 	fn start_video(
 		settings: CaptureSettings,
 		frames: SyncSender<CapturedFrame>,
@@ -517,6 +519,10 @@ impl Capture {
 	pub(crate) fn failed(&self) -> bool {
 		self.audio.as_ref().is_some_and(audio::Audio::failed)
 			|| self.poll_failed.load(Ordering::Acquire)
+			|| self
+				.control
+				.as_ref()
+				.is_some_and(CaptureControl::is_finished)
 	}
 }
 
@@ -545,6 +551,7 @@ impl NativeSource for Window {
 	}
 }
 
+#[allow(clippy::too_many_arguments)] // A selected source plus the same bounded worker state.
 fn start_item<T>(
 	settings: CaptureSettings,
 	item: T,
@@ -620,6 +627,28 @@ where
 	);
 	let control = Handler::start_free_threaded(native)
 		.or_else(|_| {
+			// A reported optional property can still be rejected by the driver.
+			// Retry the same HDR/SDR format with OS defaults before SDR fallback.
+			Handler::start_free_threaded(Settings::new(
+				item.clone(),
+				if settings.cursor {
+					CursorCaptureSettings::Default
+				} else {
+					CursorCaptureSettings::WithoutCursor
+				},
+				DrawBorderSettings::Default,
+				SecondaryWindowSettings::Default,
+				MinimumUpdateIntervalSettings::Default,
+				DirtyRegionSettings::Default,
+				if luminance.is_some() {
+					ColorFormat::Rgba16F
+				} else {
+					ColorFormat::Bgra8
+				},
+				flags.clone(),
+			))
+		})
+		.or_else(|_| {
 			// Older capture devices may not accept a half-float surface. Retain
 			// their existing SDR path, using the same approved source and handlers.
 			Handler::start_free_threaded(Settings::new(
@@ -631,7 +660,7 @@ where
 				},
 				DrawBorderSettings::Default,
 				SecondaryWindowSettings::Default,
-				interval,
+				MinimumUpdateIntervalSettings::Default,
 				DirtyRegionSettings::Default,
 				ColorFormat::Bgra8,
 				flags,
@@ -640,10 +669,16 @@ where
 		.map_err(|_| "Screen capture could not be started")?;
 	let worker_stop = poll_stop.clone();
 	let worker_failed = poll_failed.clone();
-	let poll = std::thread::Builder::new()
+	let poll = match std::thread::Builder::new()
 		.name("serein-capture-readback".into())
 		.spawn(move || poll_processing(worker_flags, worker_stop, worker_failed))
-		.map_err(|_| "Capture readback worker could not start")?;
+	{
+		Ok(poll) => poll,
+		Err(_) => {
+			let _ = control.stop();
+			return Err("Capture readback worker could not start");
+		}
+	};
 	Ok(Capture {
 		control: Some(control),
 		audio: None,
