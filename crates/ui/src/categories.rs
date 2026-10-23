@@ -2731,7 +2731,53 @@ mod tests {
 			});
 			output.textures_delta.clear();
 		}
-		assert!(view.channel_preferences.category_collapsed(Id(4)));
+		assert!(
+			!view.channel_preferences.category_collapsed(Id(4)),
+			"category collapse is synchronized with the account, not saved to the device collection"
+		);
+		let (target, action) = view
+			.channel_move
+			.take()
+			.expect("keyboard activation queues a collapse save");
+		assert_eq!(target, Id(4));
+		let client_core::channel_actions::Action::Personal(change) = &action else {
+			panic!("category collapse uses the personal-preferences action");
+		};
+		assert_eq!(change.guild_flags, None);
+		assert_eq!(
+			change.channels,
+			[model::channel_visibility::RowChange {
+				channel: Id(4),
+				flags: None,
+				collapsed: Some((false, true)),
+			}]
+		);
+		let client_core::Command::ChannelAction {
+			guild,
+			channel,
+			request,
+			action: client_core::channel_actions::Action::Personal(change),
+		} = state.request_channel_action(target, action).unwrap()
+		else {
+			panic!("the same account collapse save must be dispatched");
+		};
+		assert_eq!(
+			state.account_category_collapsed(Id(4)),
+			Some(false),
+			"a pending save must not fabricate service confirmation"
+		);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ChannelAction(
+				client_core::channel_actions::Event::Finished {
+					guild,
+					channel,
+					request,
+					result: Ok(client_core::channel_actions::Outcome::Personal(change)),
+				},
+			),
+		});
+		assert_eq!(state.account_category_collapsed(Id(4)), Some(true));
 		assert_eq!(state.selected, Some(Id(8)));
 		ctx.run_ui(egui::RawInput::default(), |ui| {
 			assert!(view.channel_list(ui, &mut state).is_none());
