@@ -5033,6 +5033,16 @@ impl MessagingUi {
 						&mut commands,
 					);
 				}
+				if let Some(guild) = state
+					.selected
+					.and_then(|id| state.channel(id))
+					.and_then(|channel| channel.guild)
+					&& crate::server_access::AccessUi::banner(ui, state, guild)
+					&& let Some(command) = self.preview_server_settings(state, guild)
+				{
+					self.preview_server_safety();
+					commands.push(command);
+				}
 				let message_fill = (design::has_section_background(ui)
 					&& state.selected.is_some()
 					&& !selected_voice

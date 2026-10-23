@@ -59,6 +59,15 @@ pub struct View {
 	prune_days: Option<u8>,
 }
 impl View {
+	/// Validated administrative actions are bounded below 2 MiB. Reserve both the
+	/// retained reconciliation copy and the independently executing transport copy.
+	pub(crate) fn retained_action_bytes(&self) -> usize {
+		if self.action.is_some() {
+			4 * 1024 * 1024
+		} else {
+			0
+		}
+	}
 	pub(crate) fn transfer_pending(&self, guild: Id) -> bool {
 		self.guild == Some(guild)
 			&& self.pending

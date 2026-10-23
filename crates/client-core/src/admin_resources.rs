@@ -12,15 +12,20 @@ impl State {
 		let view = &self.server_admin;
 		let mut bytes = size_of_val(view)
 			+ view.query.search.capacity()
+			+ view.retained_action_bytes()
 			+ self.mfa.bytes()
 			+ view.access.bytes()
 			+ self.server_incidents.len()
 				* (size_of::<model::Id>() + size_of::<model::server_access::Incident>() + 64);
 		for charge in [
-			view.command_permissions.as_ref().map_or(0, |page| page.bytes()),
+			view.command_permissions
+				.as_ref()
+				.map_or(0, |page| page.bytes()),
 			view.community.as_ref().map_or(0, |page| page.bytes()),
 			view.automod.as_ref().map_or(0, |page| page.bytes()),
 			view.bans.as_ref().map_or(0, |page| page.bytes()),
+			view.member_review.as_ref().map_or(0, |page| page.bytes()),
+			view.bulk_report.as_ref().map_or(0, |page| page.bytes()),
 			view.moderation_target
 				.as_ref()
 				.map_or(0, |member| member.bytes()),
