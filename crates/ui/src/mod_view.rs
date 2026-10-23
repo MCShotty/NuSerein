@@ -236,6 +236,229 @@ fn visible_excerpt(text: &str) -> String {
 mod tests {
 	use super::*;
 	#[test]
+	fn members_context_menu_opens_an_actionable_drawer_above_the_conversation() {
+		fn render(
+			ctx: &egui::Context,
+			view: &mut crate::MessagingUi,
+			state: &mut State,
+			events: Vec<egui::Event>,
+		) -> (egui::FullOutput, Vec<Command>) {
+			let mut commands = vec![];
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1440.0, 1100.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| commands.extend(view.show(ui, state)),
+			);
+			(output, commands)
+		}
+		fn position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+			output
+				.shapes
+				.iter()
+				.find_map(|shape| match &shape.shape {
+					egui::Shape::Text(text) if text.galley.job.text == label => {
+						Some(text.pos + text.galley.size() / 2.0)
+					}
+					_ => None,
+				})
+				.unwrap_or_else(|| panic!("rendered production control {label}"))
+		}
+		fn click(pos: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
+			vec![
+				egui::Event::PointerMoved(pos),
+				egui::Event::PointerButton {
+					pos,
+					button,
+					pressed: true,
+					modifiers: egui::Modifiers::NONE,
+				},
+				egui::Event::PointerButton {
+					pos,
+					button,
+					pressed: false,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]
+		}
+		crate::i18n::set_current(crate::i18n::Language::English);
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let mut permissions = test_support::permission_snapshot(&state);
+		permissions
+			.guilds
+			.iter_mut()
+			.find(|entry| entry.id == guild)
+			.unwrap()
+			.owner = state.user.as_ref().map(|user| user.id);
+		state.permissions.replace(permissions).unwrap();
+		let mut user = state.user.as_ref().unwrap().clone();
+		user.id = Id(777);
+		user.name = "Route account".into();
+		user.username = Some("route.account".into());
+		user.avatar = None;
+		user.cosmetics = None;
+		let member = model::server_admin::Member {
+			user,
+			nick: Some("Route target".into()),
+			roles: vec![],
+			joined_at: Some(1_750_000_000_000),
+			join_source: None,
+			invite_code: None,
+			flags: None,
+			unusual_dm_until: None,
+			timeout_until: None,
+		};
+		let roles = state
+			.permissions
+			.guilds
+			.get(&guild)
+			.unwrap()
+			.roles
+			.as_ref()
+			.unwrap()
+			.iter()
+			.map(|role| model::server_admin::Role {
+				role: role.clone(),
+				managed: false,
+			})
+			.collect::<Vec<_>>();
+		let mut view = crate::MessagingUi::default();
+		let Command::ServerAdmin {
+			guild: target,
+			request,
+			..
+		} = view
+			.preview_server_admin(&mut state, guild, "members")
+			.unwrap()
+		else {
+			panic!("production Members read");
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ServerAdmin(client_core::server_admin::Event {
+				guild: target,
+				request,
+				result: Ok(server_admin::Result::Members(
+					model::server_admin::Members {
+						items: vec![member.clone()],
+						roles: roles.clone(),
+						total: 1,
+						..Default::default()
+					},
+				)),
+			}),
+		});
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		for _ in 0..3 {
+			render(&ctx, &mut view, &mut state, vec![])
+				.0
+				.drop_without_applying_deltas();
+		}
+		let history = state
+			.timeline
+			.iter()
+			.map(|message| message.id)
+			.collect::<Vec<_>>();
+		let history_request = state.request;
+		assert!(view.server_settings.is_open());
+		let (output, _) = render(&ctx, &mut view, &mut state, vec![]);
+		let row = position(&output, "Route target");
+		output.drop_without_applying_deltas();
+		render(
+			&ctx,
+			&mut view,
+			&mut state,
+			click(row, egui::PointerButton::Secondary),
+		)
+		.0
+		.drop_without_applying_deltas();
+		let (output, _) = render(&ctx, &mut view, &mut state, vec![]);
+		let open = position(&output, "Open Mod View");
+		output.drop_without_applying_deltas();
+		let (output, commands) = render(
+			&ctx,
+			&mut view,
+			&mut state,
+			click(open, egui::PointerButton::Primary),
+		);
+		output.drop_without_applying_deltas();
+		let mut reads = commands.into_iter().filter_map(|command| match command {
+			Command::ServerAdmin {guild, request, action} if matches!(action.as_ref(), server_admin::Action::Moderation(Action::Review {user, ..}) if *user == member.user.id) => Some((guild, request)),
+			_ => None,
+		});
+		let (target, request) = reads
+			.next()
+			.expect("clicked member dispatches the exact review");
+		assert!(reads.next().is_none(), "one click dispatches one review");
+		assert!(
+			!view.server_settings.is_open(),
+			"the foreground settings shell retires before the drawer opens"
+		);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ServerAdmin(client_core::server_admin::Event {
+				guild: target,
+				request,
+				result: Ok(server_admin::Result::Moderation(
+					model::moderation::Outcome::Review(Box::new(model::moderation::Review {
+						guild,
+						channel,
+						member,
+						roles,
+						messages: vec![],
+						audit: vec![],
+						audit_window: None,
+						messages_error: None,
+						audit_error: None,
+					})),
+				)),
+			}),
+		});
+		for _ in 0..3 {
+			render(&ctx, &mut view, &mut state, vec![])
+				.0
+				.drop_without_applying_deltas();
+		}
+		let (output, _) = render(&ctx, &mut view, &mut state, vec![]);
+		let refresh = position(&output, "Refresh");
+		assert!(ctx.memory(|memory| memory.top_modal_layer().is_none()));
+		assert_eq!(
+			ctx.layer_id_at(refresh),
+			Some(egui::LayerId::new(
+				egui::Order::Middle,
+				egui::Id::unique("member-mod-view")
+			))
+		);
+		output.drop_without_applying_deltas();
+		let (output, commands) = render(
+			&ctx,
+			&mut view,
+			&mut state,
+			click(refresh, egui::PointerButton::Primary),
+		);
+		output.drop_without_applying_deltas();
+		assert_eq!(commands.iter().filter(|command|matches!(command,Command::ServerAdmin {action,..} if matches!(action.as_ref(),server_admin::Action::Moderation(Action::Review {..})))).count(),1,
+			"the visible drawer action receives pointer input");
+		assert_eq!(state.selected, Some(channel));
+		assert_eq!(state.request, history_request);
+		assert_eq!(
+			state
+				.timeline
+				.iter()
+				.map(|message| message.id)
+				.collect::<Vec<_>>(),
+			history
+		);
+	}
+	#[test]
 	fn contextual_navigation_uses_member_ids_without_replacing_or_acknowledging_the_conversation() {
 		let mut state = test_support::demo_state();
 		state
