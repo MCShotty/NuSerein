@@ -1747,7 +1747,7 @@ mod tests {
 			let found = ids(&output);
 			assert_eq!(found.iter().filter(|id| **id == Id(7)).count(), 1);
 			assert_eq!(found.iter().filter(|id| **id == Id(9)).count(), 1);
-			assert!(matches!(output[0], Row::Heading(Heading::Favorites)));
+			assert!(matches!(output[0], Row::Heading(Heading::DeviceFavorites)));
 			assert!(matches!(
 				output[2],
 				Row::Channel(c, Slot::Roster(Shortcut::Favorite), true) if c.id == Id(8)
@@ -3019,7 +3019,6 @@ mod tests {
 			})
 			.unwrap()
 			.clone();
-		let guild = target.guild.unwrap();
 		state.selected = None;
 		let action = state.personal_visibility_change(target.id, false).unwrap();
 		let client_core::Command::ChannelAction {
