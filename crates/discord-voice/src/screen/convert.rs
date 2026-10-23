@@ -54,7 +54,7 @@ impl Axis {
 }
 
 /// A worker-owned conversion workspace. Geometry, row scratch and a small thread pool
-/// survive between pictures; no screen pixels are retained after `convert` returns.
+/// survive between pictures; full input pictures remain owned by the caller.
 pub(crate) struct Converter {
 	geometry: Option<Geometry>,
 	columns: Axis,

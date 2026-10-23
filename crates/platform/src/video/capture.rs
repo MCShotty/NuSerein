@@ -372,7 +372,9 @@ impl Frame {
 		match metadata.format {
 			PixelFormat::Bgra8 => {
 				for (source, destination) in pixels[..metadata.bytes]
-					.chunks_exact(4)
+					.as_chunks::<4>()
+					.0
+					.iter()
 					.zip(image.pixels_mut())
 				{
 					*destination = image::Rgba([source[2], source[1], source[0], 255]);
@@ -385,7 +387,9 @@ impl Frame {
 			} => {
 				let converter = SdrConverter::new(1, peak_nits as f32, white_nits as f32, None);
 				for (source, destination) in pixels[..metadata.bytes]
-					.chunks_exact(8)
+					.as_chunks::<8>()
+					.0
+					.iter()
 					.zip(image.pixels_mut())
 				{
 					let rgb = std::array::from_fn(|channel| {
