@@ -74,8 +74,9 @@ def counters(path):
 
 
 def sample(binary, workload, output, preload=None, reaction_history=False):
-    page = 'conversation' if workload.startswith('conversation-') else workload.removesuffix('-active')
-    active = workload in ('conversation-churn', 'gif-favorites') or workload.endswith('-active')
+    page = ('conversation' if workload.startswith('conversation-') else
+            'server-members' if workload == 'server-members-search' else workload.removesuffix('-active'))
+    active = workload in ('conversation-churn', 'gif-favorites', 'server-members-search') or workload.endswith('-active')
     metrics = output.with_suffix('.metrics.json')
     allocation = output.with_suffix('.counts')
     env = os.environ.copy()
@@ -117,6 +118,7 @@ def sample(binary, workload, output, preload=None, reaction_history=False):
             cpu_start = cpu.user + cpu.system
             started = time.monotonic()
             rss, helper_peak = [], 0
+            searches = 0
             while time.monotonic() - started < 5:
                 alive()
                 rss.append(process.memory_info().rss)
@@ -125,6 +127,15 @@ def sample(binary, workload, output, preload=None, reaction_history=False):
                     button = '4' if (len(rss) // 10) % 2 == 0 else '5'
                     subprocess.run(['xdotool', 'mousemove', '--window', window, '600', '400', 'click', button],
                                    check=True, stdout=subprocess.DEVNULL, timeout=5)
+                if workload == 'server-members-search' and time.monotonic() - started >= searches:
+                    # Verified common member-search bounds in both frozen 1120x760 fixtures.
+                    subprocess.run(['xdotool', 'mousemove', '--window', window, '420', '313',
+                                    'click', '1', 'key', '--clearmodifiers', 'ctrl+a', 'BackSpace'],
+                                   check=True, stdout=subprocess.DEVNULL, timeout=5)
+                    if searches % 2 == 0:
+                        subprocess.run(['xdotool', 'type', '--clearmodifiers', '--delay', '0', 'Avery'],
+                                       check=True, stdout=subprocess.DEVNULL, timeout=5)
+                    searches += 1
                 time.sleep(.1)
             alive()
             after = counters(allocation) if preload else None
@@ -148,6 +159,8 @@ def sample(binary, workload, output, preload=None, reaction_history=False):
                           cpu_one_core_percent=100 * (cpu.user + cpu.system - cpu_start) / elapsed,
                           peak_rss_bytes=max(rss + settled), settled_rss_bytes=statistics.median(settled),
                           helper_peak_rss_bytes=helper_peak, samples=len(rss), elapsed_seconds=elapsed)
+            if workload == 'server-members-search':
+                result['member_search_edits'] = searches
             if preload:
                 result['allocation_calls'] = dict(zip(['malloc', 'calloc', 'realloc', 'free', 'requested_bytes'],
                                                      (end - begin for begin, end in zip(before, after))))
@@ -170,6 +183,7 @@ def main():
     parser.add_argument('--only', choices=['language', 'gif-favorites', 'conversation-idle', 'conversation-churn',
                                           'server-members', 'server-roles', 'server-moderation',
                                           'server-members-active', 'server-roles-active',
+                                          'server-members-search',
                                           'channels', 'mod-view', 'server-applications', 'server-access'], required=True)
     parser.add_argument('--reaction-history', action='store_true', help='Hover the conversation with synthetic account ranking; older previews lack this fixture')
     parser.add_argument('--allocation-profile', action='store_true', help='One instrumented GIF diagnostic per build; never use its CPU timings for acceptance')
@@ -200,6 +214,10 @@ def main():
                                    hover_settle_seconds=.5 if args.reaction_history else 0,
                                    method='Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency'),
                   binaries=metadata, workloads={})
+    if args.only == 'server-members-search':
+        result['environment']['member_search'] = dict(position=[420, 313],
+            interval_seconds=1, alternating=['Avery', ''], fixture_members=8,
+            method='Native text input and debounced fixture replies; callbacks do not measure end-to-end search latency')
     with tempfile.TemporaryDirectory(prefix='serein-allocation-profile-') as temporary:
         preload = None
         if args.allocation_profile:
