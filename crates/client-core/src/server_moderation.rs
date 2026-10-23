@@ -920,7 +920,37 @@ mod tests {
 		else {
 			panic!()
 		};
+		let progress = |request| crate::server_admin::ReviewProgress {
+			guild: Id(2),
+			request,
+			review: Box::new(review()),
+			pending: crate::server_admin::REVIEW_MESSAGES,
+		};
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(progress(request)),
+		});
+		assert!(state.server_admin.pending);
+		assert_eq!(
+			state.server_admin.member_review_loading,
+			crate::server_admin::REVIEW_MESSAGES
+		);
+		assert_eq!(
+			state
+				.server_admin
+				.member_review
+				.as_ref()
+				.unwrap()
+				.messages
+				.len(),
+			1
+		);
 		state.close_member_review();
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(progress(request)),
+		});
+		assert!(state.server_admin.member_review.is_none());
 		state
 			.apply_server_admin(server_admin::Event {
 				guild: Id(2),
@@ -934,6 +964,28 @@ mod tests {
 		else {
 			panic!()
 		};
+		state.apply(crate::Envelope {
+			generation: state.generation.wrapping_sub(1),
+			event: crate::Event::MemberReviewProgress(progress(request)),
+		});
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(progress(request.wrapping_sub(1))),
+		});
+		assert!(state.server_admin.member_review.is_none());
+		let mut completed_messages = progress(request);
+		completed_messages.pending = crate::server_admin::REVIEW_ROLES;
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(completed_messages),
+		});
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::Delete {
+				channel: Id(6),
+				id: Id(50),
+			},
+		});
 		state
 			.apply_server_admin(server_admin::Event {
 				guild: Id(2),
@@ -949,7 +1001,7 @@ mod tests {
 				.unwrap()
 				.messages
 				.len(),
-			1
+			0
 		);
 		assert_eq!(state.selected, Some(Id(6)));
 		assert_eq!(state.request, 42);

@@ -15,6 +15,15 @@ pub struct Event {
 	pub request: u64,
 	pub result: Result<Outcome, Failure>,
 }
+pub const REVIEW_ROLES: u8 = 1;
+pub const REVIEW_MESSAGES: u8 = 2;
+pub const REVIEW_AUDIT: u8 = 4;
+pub struct ReviewProgress {
+	pub guild: Id,
+	pub request: u64,
+	pub review: Box<model::moderation::Review>,
+	pub pending: u8,
+}
 
 /// Independently replaceable read families. Mutations never enter this scheduler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +120,7 @@ pub struct View {
 	pub bans: Option<model::moderation::Bans>,
 	pub moderation_target: Option<model::server_admin::Member>,
 	pub member_review: Option<model::moderation::Review>,
+	pub member_review_loading: u8,
 	pub bulk_report: Option<model::moderation::BulkReport>,
 	pub bulk_started: Option<std::time::Instant>,
 	/// Only an active operation may consume a Gateway completion.
@@ -224,6 +234,7 @@ impl View {
 			self.bans = None;
 			self.moderation_target = None;
 			self.member_review = None;
+			self.member_review_loading = 0;
 			self.bulk_report = None;
 			self.bulk_started = None;
 			self.bulk_awaiting_completion = false;
@@ -781,11 +792,10 @@ impl State {
 			self.server_admin.bulk_started = Some(std::time::Instant::now());
 			self.server_admin.bulk_awaiting_completion = true;
 		}
-		if matches!(
-			action,
-			Action::Moderation(model::moderation::Action::Review { .. })
-		) {
+		if let Action::Moderation(model::moderation::Action::Review { audit, .. }) = &action {
 			self.server_admin.member_review = None;
+			self.server_admin.member_review_loading =
+				REVIEW_ROLES | REVIEW_MESSAGES | if *audit { REVIEW_AUDIT } else { 0 };
 		}
 		self.server_admin.webhook_url = None;
 		self.server_admin.guild = Some(guild);
@@ -903,6 +913,7 @@ impl State {
 	}
 	pub fn close_member_review(&mut self) {
 		self.server_admin.member_review = None;
+		self.server_admin.member_review_loading = 0;
 		if matches!(
 			self.server_admin.action,
 			Some(Action::Moderation(model::moderation::Action::Review { .. }))
@@ -911,6 +922,81 @@ impl State {
 			self.server_admin.pending = false;
 			self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
 		}
+	}
+	pub(crate) fn apply_member_review_progress(&mut self, progress: ReviewProgress) {
+		if self.server_admin.guild != Some(progress.guild)
+			|| self.server_admin.sequence != progress.request
+			|| !self.server_admin.pending
+			|| self.server_admin.saving
+			|| self.server_admin.requested_permission_revision
+				!= self.server_admin.permission_revision
+			|| progress.pending & !self.server_admin.member_review_loading != 0
+			|| !progress.review.valid()
+		{
+			return;
+		}
+		let Some(Action::Moderation(model::moderation::Action::Review {
+			user,
+			channel,
+			audit,
+		})) = &self.server_admin.action
+		else {
+			return;
+		};
+		if progress.review.guild != progress.guild
+			|| progress.review.member.user.id != *user
+			|| progress.review.channel != *channel
+			|| (!audit
+				&& (!progress.review.audit.is_empty() || progress.pending & REVIEW_AUDIT != 0))
+			|| !self.moderation_action_allowed(
+				progress.guild,
+				&model::moderation::Action::Review {
+					user: *user,
+					channel: *channel,
+					audit: *audit,
+				},
+			) {
+			return;
+		}
+		let completed = !self.server_admin.member_review_loading;
+		self.server_admin.member_review_loading = progress.pending;
+		self.install_member_review(progress.guild, *progress.review, completed);
+		self.server_admin.revision = self.server_admin.revision.wrapping_add(1);
+	}
+	fn install_member_review(
+		&mut self,
+		guild: Id,
+		mut review: model::moderation::Review,
+		completed: u8,
+	) {
+		// Later section snapshots cannot revive an excerpt retired by an intervening edit/delete.
+		if let Some(current) = &mut self.server_admin.member_review
+			&& current.guild == review.guild
+			&& current.channel == review.channel
+			&& current.member.user.id == review.member.user.id
+		{
+			if completed & REVIEW_MESSAGES != 0 {
+				review.messages = std::mem::take(&mut current.messages);
+				review.messages_error = current.messages_error;
+			}
+			if completed & REVIEW_AUDIT != 0 {
+				review.audit = std::mem::take(&mut current.audit);
+				review.audit_window = current.audit_window;
+				review.audit_error = current.audit_error;
+			}
+		}
+
+		review.messages.retain(|row| {
+			self.channel(row.channel)
+				.is_some_and(|channel| channel.guild == Some(guild))
+				&& self.can_view(row.channel)
+		});
+		if !self.guild_permission(guild, p::VIEW_AUDIT_LOG) {
+			review.audit.clear();
+			review.audit_window = None;
+		}
+		self.server_admin.moderation_target = Some(review.member.clone());
+		self.server_admin.member_review = Some(review);
 	}
 	pub fn expire_bulk_moderation(&mut self) {
 		if self
@@ -981,6 +1067,7 @@ impl State {
 	}
 	pub(crate) fn cancel_server_admin(&mut self) {
 		self.server_admin.webhook_url = None;
+		self.server_admin.member_review_loading = 0;
 		if self.server_admin.pending {
 			if self.server_admin.saving
 				&& matches!(self.server_admin.action, Some(Action::Community(_)))
@@ -1007,6 +1094,13 @@ impl State {
 			return Ok(());
 		}
 		let action = self.server_admin.action.take();
+		let completed_review_sections = !self.server_admin.member_review_loading;
+		if matches!(
+			action,
+			Some(Action::Moderation(model::moderation::Action::Review { .. }))
+		) {
+			self.server_admin.member_review_loading = 0;
+		}
 		// A confirmed ownership transfer can legitimately revoke this account's access
 		// before its HTTP readback arrives. Match the originally authorized recipient.
 		let transfer_confirmed = matches!((&action,&event.result),(Some(Action::Access(model::server_access::Action::Transfer{recipient,..})),Ok(Outcome::Access(model::server_access::Outcome::Settings(settings)))) if settings.guild==event.guild && settings.owner==*recipient && settings.valid());
@@ -1398,18 +1492,8 @@ impl State {
 			}
 			Outcome::AutoMod(page) => self.server_admin.automod = Some(page),
 			Outcome::Moderation(result) => match result {
-				model::moderation::Outcome::Review(mut review) => {
-					review.messages.retain(|row| {
-						self.channel(row.channel)
-							.is_some_and(|channel| channel.guild == Some(event.guild))
-							&& self.can_view(row.channel)
-					});
-					if !self.guild_permission(event.guild, p::VIEW_AUDIT_LOG) {
-						review.audit.clear();
-						review.audit_window = None;
-					}
-					self.server_admin.moderation_target = Some(review.member.clone());
-					self.server_admin.member_review = Some(*review);
+				model::moderation::Outcome::Review(review) => {
+					self.install_member_review(event.guild, *review, completed_review_sections)
 				}
 				model::moderation::Outcome::Bulk(report) => {
 					if matches!(

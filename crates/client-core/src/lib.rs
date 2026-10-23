@@ -570,6 +570,7 @@ pub enum Event {
 	},
 	ChannelAction(channel_actions::Event),
 	ServerAdmin(server_admin::Event),
+	MemberReviewProgress(server_admin::ReviewProgress),
 	BulkModeration {
 		guild: Id,
 		report: model::moderation::BulkReport,
@@ -3443,6 +3444,11 @@ impl State {
 				self.enforce_admin_budget();
 				result
 			}
+			Event::MemberReviewProgress(progress) => {
+				self.apply_member_review_progress(progress);
+				self.enforce_admin_budget();
+				Ok(())
+			}
 			Event::BulkModeration { guild, report } => {
 				self.apply_bulk_moderation(guild, report);
 				self.enforce_admin_budget();
@@ -5018,6 +5024,7 @@ impl Event {
 					.as_ref()
 					.map_or(0, model::community::Outcome::bytes),
 				Self::BulkModeration { report, .. } => report.bytes(),
+				Self::MemberReviewProgress(progress) => progress.review.bytes(),
 				Self::ServerAdmin(event) => event
 					.result
 					.as_ref()

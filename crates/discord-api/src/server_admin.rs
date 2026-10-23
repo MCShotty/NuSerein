@@ -108,7 +108,7 @@ impl DiscordApi {
 				.map(Outcome::Community),
 			Action::AutoMod(action) => self.automod(guild, action).await.map(Outcome::AutoMod),
 			Action::Moderation(action) => self
-				.moderation(guild, action)
+				.moderation_progress(guild, action, Some(request))
 				.await
 				.map(Outcome::Moderation),
 			Action::Voice { user, change, .. } => {

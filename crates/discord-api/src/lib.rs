@@ -69,6 +69,7 @@ use tokio::{
 tokio::task_local! {
 	/// Set while a hover preload runs.
 	static SPECULATIVE: ();
+	static ADMIN_READ: ();
 }
 /// REST permits a preload must leave free for requests the user is waiting for.
 const FOREGROUND_PERMITS: usize = 2;
@@ -95,6 +96,8 @@ pub struct DiscordApi {
 	secret: Arc<SessionSecret>,
 	cooldown: Mutex<Instant>,
 	requests: Semaphore,
+	admin_reads: Semaphore,
+	review_progress: std::sync::Mutex<Option<server_moderation::ReviewNotify>>,
 	stopped: AtomicBool,
 	catalog: std::sync::Mutex<collectibles::Catalog>,
 	mfa: mfa::Broker,
@@ -271,6 +274,8 @@ impl DiscordApi {
 			secret,
 			cooldown: Mutex::new(Instant::now()),
 			requests: Semaphore::new(4),
+			admin_reads: Semaphore::new(2),
+			review_progress: std::sync::Mutex::default(),
 			stopped: AtomicBool::new(false),
 			catalog: std::sync::Mutex::default(),
 			mfa: mfa::Broker::default(),
@@ -485,6 +490,18 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 		let speculative = SPECULATIVE.try_with(|()| ()).is_ok();
+		// Acquire at the HTTP boundary only: nested adapter methods cannot hold a permit
+		// while awaiting another permit. Review section futures share this two-read ceiling.
+		let _admin_read = if ADMIN_READ.try_with(|()| ()).is_ok() {
+			Some(
+				self.admin_reads
+					.acquire()
+					.await
+					.map_err(|_| Failure::Network)?,
+			)
+		} else {
+			None
+		};
 		let _permit = if speculative {
 			// A hover preload takes only spare capacity, so it never delays a click.
 			if self.requests.available_permits() <= FOREGROUND_PERMITS {
@@ -1106,6 +1123,13 @@ impl DiscordApi {
 		event
 	}
 	pub async fn execute(&self, command: Command) -> Event {
+		if client_core::server_admin::ReadKey::of(&command, 0).is_some() {
+			ADMIN_READ.scope((), self.execute_scoped(command)).await
+		} else {
+			self.execute_scoped(command).await
+		}
+	}
+	async fn execute_scoped(&self, command: Command) -> Event {
 		if let Some(target) = client_core::mfa::Target::from_command(&command) {
 			mfa::OPERATION
 				.scope(target, self.execute_unscoped(command))

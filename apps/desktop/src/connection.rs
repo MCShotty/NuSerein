@@ -449,6 +449,8 @@ impl Connection {
                 let emit=Arc::new(emit);
                 let mfa_emit=emit.clone();
                 api.set_mfa_notifier(move |event| mfa_emit(Event::Mfa(event)))?;
+                let review_emit=emit.clone();
+                api.set_member_review_notifier(move |event| review_emit(Event::MemberReviewProgress(event)))?;
                 let (member_send,member_receive)=watch::channel(None);
                 let (voice_send,voice_receive)=mpsc::channel(8);
 				let (activity_send,activity_receive)=watch::channel(None);

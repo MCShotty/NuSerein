@@ -1,5 +1,8 @@
 //! Member review is scoped separately from the visible conversation and read acknowledgements.
-use client_core::{Command, State};
+use client_core::{
+	Command, State,
+	server_admin::{REVIEW_AUDIT, REVIEW_MESSAGES, REVIEW_ROLES},
+};
 use model::{Id, moderation::Action, server_admin};
 pub(super) enum Intent {
 	Original(String),
@@ -89,6 +92,7 @@ impl ModViewUi {
 			let Some(review)=state.server_admin.member_review.as_ref().filter(|review|review.guild==guild&&review.member.user.id==user) else {
 				ui.weak(if state.server_admin.pending {"Loading member information…"}else{"Member details are unavailable. Refresh to try again."});return;
 			};
+			let loading=state.server_admin.member_review_loading;
 			let member=&review.member;
 			ui.heading(member.nick.as_deref().unwrap_or(&member.user.name));
 			if let Some(username)=member.user.username.as_deref(){ui.weak(format!("@{username} · {user}"));}
@@ -98,6 +102,8 @@ impl ModViewUi {
 			ui.label(format!("Join method: {}",member.join_source.map_or("Unknown",|source|match source {1=>"Bot",2=>"Integration",3=>"Discovery",4=>"Hub",5=>"Invite",6=>"Custom invite link",7=>"Application",8=>"Linked channel",_=>"Unknown"})));
 			ui.horizontal_wrapped(|ui| {
 				ui.label("Roles:");
+				if loading & REVIEW_ROLES != 0 {ui.spinner();}
+
 				for role in state.guild_roles(guild).unwrap_or_default().iter().filter(|role|member.roles.contains(&role.id)) {ui.label(&role.name);}
 				if member.roles.is_empty(){ui.weak("No additional roles");}
 			});
@@ -110,8 +116,9 @@ impl ModViewUi {
 				if ui.add_enabled(search_channel(state,guild).is_some(),egui::Button::new("Search messages from member"))
 					.on_disabled_hover_text("Open a text channel in this server to search its messages.").clicked(){jump=Some(Intent::Messages {guild,user});}
 				if state.user_content_restriction(user).is_some(){ui.weak("Messages are hidden for this blocked or ignored member.");return;}
+				if loading & REVIEW_MESSAGES != 0 {ui.horizontal(|ui|{ui.spinner();ui.weak("Loading recent messages…");});}
 				if let Some(error)=review.messages_error {ui.weak(error);}
-				if review.messages.is_empty()&&review.messages_error.is_none(){ui.weak("No recent messages returned.");}
+				if review.messages.is_empty()&&review.messages_error.is_none()&&loading & REVIEW_MESSAGES == 0{ui.weak("No recent messages returned.");}
 				for row in &review.messages {
 					if !state.can_view(row.channel){continue;}
 					ui.separator();
@@ -128,8 +135,9 @@ impl ModViewUi {
 						let date=|id:Id|crate::local_time::discord_timestamp((((id.0>>22)+1_420_070_400_000)/1000)as i64,b'f').unwrap_or_else(||id.to_string());
 						ui.weak(format!("Loaded window: {} – {}",date(oldest),date(newest)));
 					}
+					if loading & REVIEW_AUDIT != 0 {ui.horizontal(|ui|{ui.spinner();ui.weak("Loading audit activity…");});}
 					if let Some(error)=review.audit_error{ui.weak(error);}
-					if review.audit.is_empty()&&review.audit_error.is_none(){ui.weak("No matching entries in this window.");}
+					if review.audit.is_empty()&&review.audit_error.is_none()&&loading & REVIEW_AUDIT == 0{ui.weak("No matching entries in this window.");}
 					for entry in &review.audit {
 						ui.separator();
 						ui.label(crate::i18n::translate_if_key(crate::server_audit_log::action_text(entry.action)));

@@ -1,8 +1,22 @@
 //! Documented moderation routes. Writes are never retried after uncertain acceptance.
 use crate::{DiscordApi, Failure};
+use client_core::server_admin::{REVIEW_AUDIT, REVIEW_MESSAGES, REVIEW_ROLES, ReviewProgress};
 use model::{Id, automod as a, moderation as m};
 use reqwest::Method;
 use serde_json::{Value, json};
+pub(super) type ReviewNotify =
+	std::sync::Arc<dyn Fn(ReviewProgress) -> Result<(), Failure> + Send + Sync>;
+#[derive(Clone, Copy)]
+enum ReviewSection {
+	Roles,
+	Messages,
+	Audit,
+}
+enum ReviewPart {
+	Roles(Result<Vec<model::server_admin::Role>, Failure>),
+	Messages(Result<client_core::search::Outcome, Failure>),
+	Audit(Result<model::server_audit_log::Page, Failure>),
+}
 
 fn write_failure(failure: Failure) -> Failure {
 	if matches!(
@@ -227,10 +241,55 @@ impl DiscordApi {
 		}
 		self.automod_rules(guild).await.map_err(reconcile_failure)
 	}
+	pub fn set_member_review_notifier(
+		&self,
+		notify: impl Fn(ReviewProgress) -> Result<(), Failure> + Send + Sync + 'static,
+	) -> Result<(), Failure> {
+		*self.review_progress.lock().map_err(|_| Failure::Network)? =
+			Some(std::sync::Arc::new(notify));
+		Ok(())
+	}
+	fn publish_member_review(
+		&self,
+		guild: Id,
+		request: Option<u64>,
+		review: &m::Review,
+		pending: u8,
+	) -> Result<(), Failure> {
+		let Some(request) = request else {
+			return Ok(());
+		};
+		if !review.valid() {
+			return Err(Failure::Capacity);
+		}
+		let notify = self
+			.review_progress
+			.lock()
+			.map_err(|_| Failure::Network)?
+			.clone();
+		if let Some(notify) = notify {
+			notify(ReviewProgress {
+				guild,
+				request,
+				review: Box::new(review.clone()),
+				pending,
+			})?;
+		}
+		Ok(())
+	}
+	#[cfg(test)]
 	pub(super) async fn moderation(
 		&self,
 		guild: Id,
 		action: &m::Action,
+	) -> Result<m::Outcome, Failure> {
+		self.moderation_progress(guild, action, None).await
+	}
+	pub(super) async fn moderation_progress(
+		&self,
+		guild: Id,
+		action: &m::Action,
+		request: Option<u64>,
 	) -> Result<m::Outcome, Failure> {
 		if guild.0 == 0 || !action.valid() {
 			return Err(Failure::Protocol);
@@ -345,76 +404,113 @@ impl DiscordApi {
 					messages_error: None,
 					audit_error: None,
 				};
-				match self.admin_metadata(guild).await {
-					Ok(metadata) => {
-						if let Ok((roles, _)) = metadata.checked_roles() {
-							review.roles = roles;
-						}
-					}
-					Err(error) if error.ends_session() => return Err(error),
-					Err(_) => {}
-				}
-				match self
-					.search(
-						*channel,
-						Some(guild),
-						&format!("from:{user}"),
-						None,
-						0,
-						false,
-					)
-					.await
-				{
-					Ok(client_core::search::Outcome::Page(page)) => {
-						for hit in page
-							.hits
-							.into_iter()
-							.filter(|hit| hit.author.id == *user)
-							.take(25)
-						{
-							let excerpt: String = hit.excerpt.chars().take(512).collect();
-							review.messages.push(m::ReviewMessage {
-								id: hit.id,
-								channel: hit.channel,
-								excerpt,
-							});
-						}
-					}
-					Ok(_) => {
-						review.messages_error =
-							Some("Message search is still indexing. Retry later.")
-					}
-					Err(error) if error.ends_session() => return Err(error),
-					Err(error) => review.messages_error = Some(error.label()),
-				}
+				let mut pending =
+					REVIEW_ROLES | REVIEW_MESSAGES | if *audit { REVIEW_AUDIT } else { 0 };
+				self.publish_member_review(guild, request, &review, pending)?;
+				use futures_util::{StreamExt, stream};
+				let mut sections = vec![ReviewSection::Roles, ReviewSection::Messages];
 				if *audit {
-					match self
-						.server_audit_log(guild, &model::server_audit_log::Query::default())
-						.await
-					{
-						Ok(page) => {
-							review.audit_window = page
-								.entries
-								.iter()
-								.map(|entry| entry.id)
-								.min()
-								.zip(page.entries.iter().map(|entry| entry.id).max());
-							let target = user.to_string();
-							review.audit = page
-								.entries
-								.into_iter()
-								.filter(|entry| entry.target_id.as_deref() == Some(target.as_str()))
-								.take(20)
-								.map(|entry| m::ReviewAudit {
-									id: entry.id,
-									actor: entry.user_id,
-									action: entry.action_type,
-									reason: entry.reason,
-								})
-								.collect();
+					sections.push(ReviewSection::Audit);
+				}
+				let mut reads = stream::iter(sections)
+					.map(|section| async move {
+						match section {
+							ReviewSection::Roles => ReviewPart::Roles(
+								self.admin_metadata(guild).await.and_then(|value| {
+									value
+										.checked_roles()
+										.map(|(roles, _)| roles)
+										.map_err(|_| Failure::Protocol)
+								}),
+							),
+							ReviewSection::Messages => ReviewPart::Messages(
+								self.search(
+									*channel,
+									Some(guild),
+									&format!("from:{user}"),
+									None,
+									0,
+									false,
+								)
+								.await,
+							),
+							ReviewSection::Audit => ReviewPart::Audit(
+								self.server_audit_log(
+									guild,
+									&model::server_audit_log::Query::default(),
+								)
+								.await,
+							),
 						}
-						Err(error) if error.ends_session() => return Err(error),
-						Err(error) => review.audit_error = Some(error.label()),
+					})
+					.buffer_unordered(2);
+				while let Some(part) = reads.next().await {
+					match part {
+						ReviewPart::Roles(result) => {
+							pending &= !REVIEW_ROLES;
+							match result {
+								Ok(roles) => review.roles = roles,
+								Err(error) if error.ends_session() => return Err(error),
+								Err(_) => {}
+							}
+						}
+						ReviewPart::Messages(result) => {
+							pending &= !REVIEW_MESSAGES;
+							match result {
+								Ok(client_core::search::Outcome::Page(page)) => {
+									review.messages = page
+										.hits
+										.into_iter()
+										.filter(|hit| hit.author.id == *user)
+										.take(25)
+										.map(|hit| m::ReviewMessage {
+											id: hit.id,
+											channel: hit.channel,
+											excerpt: hit.excerpt.chars().take(512).collect(),
+										})
+										.collect()
+								}
+								Ok(_) => {
+									review.messages_error =
+										Some("Message search is still indexing. Retry later.")
+								}
+								Err(error) if error.ends_session() => return Err(error),
+								Err(error) => review.messages_error = Some(error.label()),
+							}
+						}
+						ReviewPart::Audit(result) => {
+							pending &= !REVIEW_AUDIT;
+							match result {
+								Ok(page) => {
+									review.audit_window = page
+										.entries
+										.iter()
+										.map(|entry| entry.id)
+										.min()
+										.zip(page.entries.iter().map(|entry| entry.id).max());
+									let target = user.to_string();
+									review.audit = page
+										.entries
+										.into_iter()
+										.filter(|entry| {
+											entry.target_id.as_deref() == Some(target.as_str())
+										})
+										.take(20)
+										.map(|entry| m::ReviewAudit {
+											id: entry.id,
+											actor: entry.user_id,
+											action: entry.action_type,
+											reason: entry.reason,
+										})
+										.collect();
+								}
+								Err(error) if error.ends_session() => return Err(error),
+								Err(error) => review.audit_error = Some(error.label()),
+							}
+						}
+					}
+					if pending != 0 {
+						self.publish_member_review(guild, request, &review, pending)?;
 					}
 				}
 				if !review.valid() {
@@ -773,23 +869,48 @@ mod member_review_tests {
 		.unwrap();
 	}
 	#[tokio::test]
-	async fn member_review_uses_bounded_search_and_latest_audit_without_history_or_ack_writes() {
+	async fn member_review_publishes_identity_and_fast_sections_before_delayed_messages_with_two_read_limit()
+	 {
 		tokio::time::timeout(Duration::from_secs(15),async {
 			let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
-			let mut api=DiscordApi::new(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_REVIEW_TOKEN".into()).unwrap())).unwrap();api.base=format!("http://{}",listener.local_addr().unwrap());
+			let mut api=DiscordApi::new(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_REVIEW_TOKEN".into()).unwrap())).unwrap();
+			api.base=format!("http://{}",listener.local_addr().unwrap());
+			let (progress_send,mut progress_receive)=tokio::sync::mpsc::channel(8);
+			api.set_member_review_notifier(move |progress|progress_send.try_send(progress).map_err(|_|Failure::Capacity)).unwrap();
+			let api=Arc::new(api);
+			let (held_send,held_receive)=tokio::sync::oneshot::channel();
+			let (release_send,release_receive)=tokio::sync::oneshot::channel();
 			let server=tokio::spawn(async move {
-				for step in 0..4 {let (mut socket,_)=listener.accept().await.unwrap();let (headers,body)=request(&mut socket).await;assert_eq!(body,Value::Null);
-					let response=match step {
-						0=>{assert!(headers.starts_with("GET /guilds/2/members/7 "));r#"{"user":{"id":"7","username":"account_name","global_name":"Display"},"nick":"Server nickname","roles":[],"joined_at":"2025-01-01T00:00:00Z"}"#},
-						1=>{assert!(headers.starts_with("GET /guilds/2 "));r#"{"id":"2","owner_id":"99","roles":[{"id":"2","name":"@everyone","permissions":"1024","position":0,"managed":false}],"features":[]}"#},
-						2=>{assert!(headers.starts_with("GET /guilds/2/messages/search?"));assert!(headers.contains("author_id=%37"));r#"{"messages":[[{"id":"9","channel_id":"3","author":{"id":"7","username":"account_name"},"content":"Recent ||spoiler||"}]],"total_results":1}"#},
-						_=>{assert!(headers.starts_with("GET /guilds/2/audit-logs?limit=50 "));r#"{"audit_log_entries":[{"id":"99","user_id":"1","target_id":"7","action_type":24,"reason":"Reviewed"},{"id":"98","user_id":"1","target_id":"8","action_type":24}],"users":[]}"#}
-					};respond(&mut socket,"200 OK",response).await;
+				let (mut member,_)=listener.accept().await.unwrap();
+				let (headers,body)=request(&mut member).await;assert_eq!(body,Value::Null);assert!(headers.starts_with("GET /guilds/2/members/7 "));
+				respond(&mut member,"200 OK",r#"{"user":{"id":"7","username":"account_name","global_name":"Display"},"nick":"Server nickname","roles":[],"joined_at":"2025-01-01T00:00:00Z"}"#).await;
+				let mut metadata=None;let mut messages=None;
+				for _ in 0..2 {
+					let (mut socket,_)=listener.accept().await.unwrap();let(headers,body)=request(&mut socket).await;assert_eq!(body,Value::Null);
+					if headers.starts_with("GET /guilds/2 "){metadata=Some(socket);}else{assert!(headers.starts_with("GET /guilds/2/messages/search?"));assert!(headers.contains("author_id=%37"));messages=Some(socket);}
 				}
+				held_send.send(()).unwrap();
+				assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err(),"third administrative HTTP read exceeded the shared ceiling");
+				respond(metadata.as_mut().unwrap(),"200 OK",r#"{"id":"2","owner_id":"99","roles":[{"id":"2","name":"@everyone","permissions":"1024","position":0,"managed":false}],"features":[]}"#).await;
+				for _ in 0..2 {
+					let(mut socket,_)=listener.accept().await.unwrap();let(headers,body)=request(&mut socket).await;assert_eq!(body,Value::Null);
+					if headers.starts_with("GET /guilds/2/audit-logs?limit=50 ") {respond(&mut socket,"200 OK",r#"{"audit_log_entries":[{"id":"99","user_id":"1","target_id":"7","action_type":24,"reason":"Reviewed"},{"id":"98","user_id":"1","target_id":"8","action_type":24}],"users":[]}"#).await;}
+					else {assert!(headers.starts_with("GET /guilds/2/bans?limit=100 "));respond(&mut socket,"200 OK","[]").await;}
+				}
+				release_receive.await.unwrap();
+				respond(messages.as_mut().unwrap(),"200 OK",r#"{"messages":[[{"id":"9","channel_id":"3","author":{"id":"7","username":"account_name"},"content":"Recent ||spoiler||"}]],"total_results":1}"#).await;
 				assert!(tokio::time::timeout(Duration::from_millis(80),listener.accept()).await.is_err());
 			});
-			let m::Outcome::Review(review)=api.moderation(Id(2),&m::Action::Review {user:Id(7),channel:Id(3),audit:true}).await.unwrap()else{panic!()};
-			assert!(review.valid());assert_eq!(review.audit_window,Some((Id(98),Id(99))));assert_eq!(review.member.nick.as_deref(),Some("Server nickname"));assert_eq!(review.messages[0].id,Id(9));assert_eq!(review.audit.len(),1);assert_eq!(review.audit[0].reason.as_deref(),Some("Reviewed"));
+			let operation={let api=api.clone();tokio::spawn(async move {api.execute(client_core::Command::ServerAdmin {guild:Id(2),request:44,action:Box::new(model::server_admin::Action::Moderation(m::Action::Review {user:Id(7),channel:Id(3),audit:true}))}).await})};
+			let identity=progress_receive.recv().await.unwrap();
+			assert_eq!(identity.request,44);assert_eq!(identity.pending,REVIEW_ROLES|REVIEW_MESSAGES|REVIEW_AUDIT);assert_eq!(identity.review.member.nick.as_deref(),Some("Server nickname"));assert!(identity.review.messages.is_empty()&&identity.review.audit.is_empty());
+			held_receive.await.unwrap();
+			let other={let api=api.clone();tokio::spawn(async move {api.execute(client_core::Command::ServerAdmin {guild:Id(2),request:45,action:Box::new(model::server_admin::Action::Moderation(m::Action::Bans {after:None}))}).await})};
+			loop {let progress=progress_receive.recv().await.unwrap();if progress.pending==REVIEW_MESSAGES {assert_eq!(progress.review.audit_window,Some((Id(98),Id(99))));assert_eq!(progress.review.audit.len(),1);assert!(progress.review.messages.is_empty());break;}}
+			release_send.send(()).unwrap();
+			let client_core::Event::ServerAdmin(client_core::server_admin::Event {result:Ok(model::server_admin::Result::Moderation(m::Outcome::Review(review))),..})=operation.await.unwrap()else{panic!()};
+			assert!(review.valid());assert_eq!(review.messages[0].id,Id(9));assert_eq!(review.audit[0].reason.as_deref(),Some("Reviewed"));
+			assert!(matches!(other.await.unwrap(),client_core::Event::ServerAdmin(client_core::server_admin::Event {result:Ok(_),..})));
 			server.await.unwrap();
 		}).await.unwrap();
 	}
