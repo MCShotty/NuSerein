@@ -74,8 +74,8 @@ def counters(path):
 
 
 def sample(binary, workload, output, preload=None, reaction_history=False):
-    page = 'conversation' if workload.startswith('conversation-') else workload
-    active = workload in ('conversation-churn', 'gif-favorites')
+    page = 'conversation' if workload.startswith('conversation-') else workload.removesuffix('-active')
+    active = workload in ('conversation-churn', 'gif-favorites') or workload.endswith('-active')
     metrics = output.with_suffix('.metrics.json')
     allocation = output.with_suffix('.counts')
     env = os.environ.copy()
@@ -167,7 +167,10 @@ def sample(binary, workload, output, preload=None, reaction_history=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--only', choices=['language', 'gif-favorites', 'conversation-idle', 'conversation-churn'], required=True)
+    parser.add_argument('--only', choices=['language', 'gif-favorites', 'conversation-idle', 'conversation-churn',
+                                          'server-members', 'server-roles', 'server-moderation',
+                                          'server-members-active', 'server-roles-active',
+                                          'channels', 'mod-view', 'server-applications', 'server-access'], required=True)
     parser.add_argument('--reaction-history', action='store_true', help='Hover the conversation with synthetic account ranking; older previews lack this fixture')
     parser.add_argument('--allocation-profile', action='store_true', help='One instrumented GIF diagnostic per build; never use its CPU timings for acceptance')
     parser.add_argument('binaries', nargs='+', help='LABEL=FROZEN_EXECUTABLE')
