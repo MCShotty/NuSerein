@@ -22,6 +22,7 @@ pub enum ReadKind {
 	Panel,
 	Settings,
 	Community,
+	Channel(Id),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadKey {
@@ -49,6 +50,12 @@ impl ReadKey {
 				action,
 				..
 			} if !action.write() => (ReadKind::Community, *guild, *request),
+			Command::ChannelAction {
+				guild,
+				channel,
+				request,
+				action: crate::channel_actions::Action::Load,
+			} => (ReadKind::Channel(*channel), *guild, *request),
 			_ => return None,
 		};
 		Some(Self {
@@ -76,11 +83,19 @@ impl ReadKey {
 				request: self.request,
 				result: Err(failure),
 			}),
+			ReadKind::Channel(channel) => {
+				crate::Event::ChannelAction(crate::channel_actions::Event::Finished {
+					guild: self.guild,
+					channel,
+					request: self.request,
+					result: Err(failure),
+				})
+			}
 		}
 	}
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ReadScopes(pub [Option<ReadKey>; 3]);
+pub struct ReadScopes(pub [Option<ReadKey>; 4]);
 impl ReadScopes {
 	pub fn contains(self, key: ReadKey) -> bool {
 		self.0.contains(&Some(key))
@@ -257,7 +272,16 @@ impl State {
 				guild,
 				request,
 			});
-		ReadScopes([panel, settings, community])
+		let channel =
+			self.channel_actions
+				.settings_read_request()
+				.map(|(guild, channel, request)| ReadKey {
+					generation: self.generation,
+					kind: ReadKind::Channel(channel),
+					guild,
+					request,
+				});
+		ReadScopes([panel, settings, community, channel])
 	}
 	/// Leaving a settings destination cancels its read without disturbing saved data or writes.
 	pub fn retire_server_admin_read(&mut self) {

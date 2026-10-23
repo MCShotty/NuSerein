@@ -520,6 +520,9 @@ impl ChannelMenu {
 					}
 				}
 				Intent::Dialog(kind) => {
+					if let Some(previous) = &self.dialog {
+						state.retire_channel_settings_read(previous.channel);
+					}
 					self.dialog = Some(Dialog {
 						channel: id,
 						guild,
@@ -595,6 +598,7 @@ impl ChannelMenu {
 			if dialog.integrations_opened {
 				state.close_server_admin();
 			}
+			state.retire_channel_settings_read(dialog.channel);
 			self.dialog = None;
 			return;
 		}
@@ -882,12 +886,14 @@ impl ChannelMenu {
 			if dialog.integrations_opened {
 				state.close_server_admin();
 			}
+			state.retire_channel_settings_read(dialog.channel);
 			self.dialog = None;
 		} else if dismiss {
 			if dialog.integrations_opened {
 				state.close_server_admin();
 			}
-			if pending {
+			state.retire_channel_settings_read(dialog.channel);
+			if state.channel_action_pending() {
 				self.feedback = Some(dialog.channel);
 			}
 			self.dialog = None;
@@ -1623,6 +1629,44 @@ mod tests {
 				self.frame(ctx, pointer(pos, button, pressed));
 			}
 		}
+	}
+	#[test]
+	fn leaving_channel_settings_retires_its_inflight_read() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut state = test_support::chat_demo_state();
+		let mut permissions = test_support::permission_snapshot(&state);
+		for guild in &mut permissions.guilds {
+			guild.owner = state.user.as_ref().map(|user| user.id);
+		}
+		state.permissions.replace(permissions).unwrap();
+		let mut h = Harness {
+			state,
+			menu: ChannelMenu::default(),
+			prefs: Default::default(),
+			commands: vec![],
+			copied: vec![],
+			width: 1000.0,
+		};
+		h.menu.generation = h.state.generation;
+		h.menu.requested = Some((Id(20), Intent::Dialog(Kind::Edit)));
+		h.frame(&ctx, vec![]);
+		let key =
+			client_core::server_admin::ReadKey::of(h.commands.last().unwrap(), h.state.generation)
+				.unwrap();
+		assert!(h.menu.is_open() && h.state.admin_read_scopes().contains(key));
+		let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+			h.menu.show(
+				ui.ctx(),
+				&mut h.state,
+				None,
+				&mut crate::avatars::Avatars::default(),
+				&mut h.commands,
+			);
+		});
+		output.drop_without_applying_deltas();
+		assert!(!h.menu.is_open() && !h.state.channel_action_pending());
+		assert!(!h.state.admin_read_scopes().contains(key));
 	}
 	#[test]
 	fn voice_and_stage_overviews_edit_message_controls_without_a_topic() {

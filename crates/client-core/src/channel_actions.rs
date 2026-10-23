@@ -408,6 +408,12 @@ pub struct Actions {
 	completed: Option<(Id, u64, bool)>,
 }
 impl Actions {
+	pub(crate) fn settings_read_request(&self) -> Option<(Id, Id, u64)> {
+		match self.pending.as_ref()? {
+			(guild, channel, request, Action::Load, _) => Some((*guild, *channel, *request)),
+			_ => None,
+		}
+	}
 	pub(crate) fn reset(&mut self) {
 		*self = Self {
 			sequence: self.sequence,
@@ -900,6 +906,11 @@ impl State {
 				|| self.voice.active.as_ref().is_some_and(|call|call.channel == channel))
 	}
 	pub fn request_channel_action(&mut self, channel: Id, action: Action) -> Option<Command> {
+		if matches!(action, Action::Load)
+			&& let Some((_, previous, _)) = self.channel_actions.settings_read_request()
+		{
+			self.retire_channel_settings_read(previous);
+		}
 		// Explicit actions supersede one optional topic read. Its late result is retired,
 		// and no further automatic read can start until it completes: at most one retired read.
 		if !matches!(action, Action::Description)
@@ -980,6 +991,17 @@ impl State {
 			request,
 			action,
 		})
+	}
+	/// Closing or replacing the channel editor retires only its settings read.
+	pub fn retire_channel_settings_read(&mut self, channel: Id) {
+		if self
+			.channel_actions
+			.settings_read_request()
+			.is_some_and(|(_, pending, _)| pending == channel)
+		{
+			self.channel_actions.pending = None;
+			self.channel_actions.sequence = self.channel_actions.sequence.wrapping_add(1);
+		}
 	}
 	pub fn request_channel_reference(&mut self, guild: Id, channel: Id) -> Option<Command> {
 		if self.channel_action_pending()
@@ -1779,6 +1801,68 @@ mod tests {
 				result,
 			}),
 		});
+	}
+	#[test]
+	fn channel_settings_reads_replace_and_retire_without_cancelling_other_actions() {
+		use crate::server_admin::{ReadKey, ReadKind};
+		let mut state = state();
+		let first = state.request_channel_action(Id(3), Action::Load).unwrap();
+		let first_key = ReadKey::of(&first, state.generation).unwrap();
+		assert_eq!(first_key.kind, ReadKind::Channel(Id(3)));
+		assert!(state.admin_read_scopes().contains(first_key));
+		let latest = state.request_channel_action(Id(3), Action::Load).unwrap();
+		let latest_key = ReadKey::of(&latest, state.generation).unwrap();
+		assert!(!state.admin_read_scopes().contains(first_key));
+		assert!(state.admin_read_scopes().contains(latest_key));
+		finish(&mut state, first, Err(Failure::Forbidden));
+		assert!(state.channel_action_pending());
+		state.retire_channel_settings_read(Id(99));
+		assert!(state.admin_read_scopes().contains(latest_key));
+		state.retire_channel_settings_read(Id(3));
+		assert!(!state.channel_action_pending());
+		assert!(!state.admin_read_scopes().contains(latest_key));
+		finish(
+			&mut state,
+			latest,
+			Ok(Outcome::Details(Edit {
+				name: "retired settings".into(),
+				..Edit::default()
+			})),
+		);
+		assert!(state.channel_details(Id(3)).is_none());
+		for action in [
+			Action::Reference,
+			Action::Description,
+			Action::PostLoad,
+			Action::Delete,
+		] {
+			assert!(
+				ReadKey::of(
+					&Command::ChannelAction {
+						guild: Id(2),
+						channel: Id(3),
+						request: 100,
+						action,
+					},
+					state.generation
+				)
+				.is_none()
+			);
+		}
+		let description = state
+			.request_channel_action(Id(3), Action::Description)
+			.unwrap();
+		state.retire_channel_settings_read(Id(3));
+		assert!(state.channel_action_pending());
+		finish(
+			&mut state,
+			description,
+			Ok(Outcome::Description("topic".into())),
+		);
+		let write = state.request_channel_action(Id(3), Action::Delete).unwrap();
+		state.retire_channel_settings_read(Id(3));
+		assert!(state.channel_action_pending());
+		finish(&mut state, write, Ok(Outcome::Deleted));
 	}
 	#[test]
 	fn channel_mfa_revalidates_exact_pending_write_and_current_permissions() {

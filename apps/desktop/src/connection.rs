@@ -191,6 +191,10 @@ fn admin_read_failure(event: &Event) -> Option<Failure> {
 		| Event::Community(client_core::community::Event {
 			result: Err(failure),
 			..
+		})
+		| Event::ChannelAction(client_core::channel_actions::Event::Finished {
+			result: Err(failure),
+			..
 		}) if failure.ends_session() => Some(*failure),
 		_ => None,
 	}
@@ -2241,7 +2245,7 @@ mod tests {
 		drop(release);
 	}
 	#[tokio::test]
-	async fn admin_read_replacement_cancels_held_http_and_leaves_message_work_running() {
+	async fn channel_admin_read_replacement_cancels_held_http_and_leaves_message_work_running() {
 		use tokio::{
 			io::{AsyncReadExt, AsyncWriteExt},
 			net::{TcpListener, TcpStream},
@@ -2272,12 +2276,12 @@ mod tests {
 			});
 			let key = ReadKey {
 				generation: 3,
-				kind: client_core::server_admin::ReadKind::Panel,
+				kind: client_core::server_admin::ReadKind::Channel(model::Id(3)),
 				guild: model::Id(2),
 				request: 7,
 			};
 			let latest = ReadKey { request: 8, ..key };
-			let (scope, updates) = watch::channel(ReadScopes([Some(key), None, None]));
+			let (scope, updates) = watch::channel(ReadScopes([Some(key), None, None, None]));
 			let old_scope = updates.clone();
 			let old = tokio::spawn(scoped_admin_read(
 				async move {
@@ -2300,7 +2304,7 @@ mod tests {
 			send.send(19u64).await.unwrap();
 			assert_eq!(message.await.unwrap(), 19);
 			assert!(!old.is_finished());
-			scope.send_replace(ReadScopes([Some(latest), None, None]));
+			scope.send_replace(ReadScopes([Some(latest), None, None, None]));
 			assert!(old.await.unwrap().is_none());
 			let event = scoped_admin_read(
 				async move {
@@ -2338,7 +2342,7 @@ mod tests {
 			..key
 		};
 		let third = ReadKey {
-			kind: client_core::server_admin::ReadKind::Community,
+			kind: client_core::server_admin::ReadKind::Channel(model::Id(3)),
 			..key
 		};
 		let mut reads = AdminReads::default();
@@ -2347,6 +2351,10 @@ mod tests {
 			reads.track(current, tokio::spawn(std::future::pending()));
 		}
 		assert!(!reads.replace(third));
+		assert!(!reads.replace(ReadKey {
+			kind: client_core::server_admin::ReadKind::Community,
+			..key
+		}));
 		let latest = ReadKey { request: 2, ..key };
 		assert!(reads.replace(latest));
 		reads.track(latest, tokio::spawn(std::future::pending()));
