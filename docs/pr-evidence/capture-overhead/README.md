@@ -89,3 +89,10 @@ synthetic tests and native CI alone do not establish that target.
 Keep raw logs and any private source/window metadata local. Commit only a reviewed aggregate
 comparison with revisions, hardware, settings, method and remaining limitations. No physical
 Windows gaming result has been collected in this cloud environment.
+
+The [local performance record](../../performance.md#windows-capture-overhead--october-23-2026)
+contains the matched SDR conversion method and results, baseline package
+provenance and verification limits. This component result is not a substitute
+for the owner-controlled gaming comparison above. Current installer provenance,
+package deltas and native CI status are recorded in
+[PR #22](https://github.com/MCShotty/Serein/pull/22).
