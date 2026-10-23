@@ -674,8 +674,11 @@ int serein_capture_frame_download(void *opaque, uint8_t *output, size_t capacity
         ID3D11DeviceContext_CopySubresourceRegion(capture->context, (ID3D11Resource *)staging, 0,
             0, 0, 0, (ID3D11Resource *)slot->texture, (UINT)(uintptr_t)slot->picture->data[1], NULL);
     }
+    /* Ordinary staging has already passed its GPU completion query. Never
+     * wait in that path; only the first compatibility download from a rejected
+     * hardware surface can wait, on its owning encoder worker. */
     if (FAILED(ID3D11DeviceContext_Map(capture->context, (ID3D11Resource *)staging, 0,
-            D3D11_MAP_READ, 0, &mapped))) goto failed;
+            D3D11_MAP_READ, slot->staging ? D3D11_MAP_FLAG_DO_NOT_WAIT : 0, &mapped))) goto failed;
     if (!mapped.pData || mapped.RowPitch < slot->description.stride) {
         ID3D11DeviceContext_Unmap(capture->context, (ID3D11Resource *)staging, 0);
         goto failed;

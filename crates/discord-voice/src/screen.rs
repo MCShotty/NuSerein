@@ -987,9 +987,8 @@ impl ScreenEncoder {
 		}
 		frame.validate()?;
 		#[cfg(target_os = "windows")]
-		if let CapturedFrame::Gpu(frame) = frame
-			&& video_settings.backend == model::voice_settings::VideoBackend::Experimental
-		{
+		if video_settings.backend == model::voice_settings::VideoBackend::Experimental {
+			let CapturedFrame::Gpu(frame) = frame;
 			let mut config = Self::config(settings, bitrate, video_settings.codec);
 			config.adapter = adapter;
 			if let Ok(encoder) =
@@ -1802,7 +1801,6 @@ mod tests {
 			done: None,
 			#[cfg(target_os = "linux")]
 			status: Arc::new(Mutex::new("")),
-			#[cfg(target_os = "linux")]
 			preview_visible: Arc::new(AtomicBool::new(true)),
 		};
 		assert!(worker.take_preview().is_some());
