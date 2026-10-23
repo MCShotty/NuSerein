@@ -312,7 +312,7 @@ impl CommunityUi {
 		if self.preview
 			&& let Some(data) = &self.draft
 		{
-			egui::Window::new("Member experience preview").id(egui::Id::new("community-member-preview")).open(&mut self.preview).default_width(620.0).max_height(600.0).show(ui.ctx(),|ui|{
+			egui::Window::new("Member experience preview").id(egui::Id::unique("community-member-preview")).open(&mut self.preview).default_width(620.0).max_height(600.0).show(ui.ctx(),|ui|{
 				ui.weak("Preview of your unsaved configuration. No answers are submitted and no roles or channels are changed.");
 				egui::ScrollArea::vertical().show(ui,|ui|member_preview(ui,state,data));
 			});

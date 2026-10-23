@@ -20,7 +20,7 @@ impl MfaUi {
 		self.scope = None;
 		self.method = None;
 		ctx.data_mut(|data| {
-			data.remove::<egui::text_edit::TextEditState>(egui::Id::new("admin-mfa-input"))
+			data.remove::<egui::text_edit::TextEditState>(egui::Id::unique("admin-mfa-input"))
 		});
 	}
 	pub fn retire(&mut self, ctx: &egui::Context, state: &State) {
@@ -85,7 +85,7 @@ impl MfaUi {
                                 if sms_sent { ui.weak("Use the code sent to your phone."); }
                             }
                             let mut edit = egui::TextEdit::singleline(&mut *self.input)
-                                .id(egui::Id::new("admin-mfa-input"))
+                                .id(egui::Id::unique("admin-mfa-input"))
                                 .password(true).char_limit(if method == Method::Password { 256 } else { 32 })
                                 .hint_text(method.label()).desired_width(f32::INFINITY).show(ui);
                             // Do not retain secret text in the persistent egui undo state.

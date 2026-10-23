@@ -3,7 +3,7 @@ use crate::{design, dialog, local_time};
 use client_core::{Command, State};
 use model::{
 	Id,
-	server_access::{self as m, Action, Configuration, Incident, Status},
+	server_access::{Action, Configuration, Incident, Status},
 	server_admin,
 };
 
@@ -654,7 +654,7 @@ impl AccessUi {
 		let mut open = true;
 		let mut dismiss = false;
 		egui::Window::new("Confirm server action")
-			.id(egui::Id::new("access-confirmation"))
+			.id(egui::Id::unique("access-confirmation"))
 			.open(&mut open)
 			.collapsible(false)
 			.resizable(false)

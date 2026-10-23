@@ -58,7 +58,7 @@ impl Browser {
 		let mut action = None;
 		let mut navigate = None;
 		egui::Window::new("Browse Channels")
-			.id(egui::Id::new(("browse-channels", generation, guild)))
+			.id(egui::Id::unique(("browse-channels", generation, guild)))
 			.open(&mut open)
 			.default_size(egui::vec2(700.0, 560.0))
 			.min_width(280.0)

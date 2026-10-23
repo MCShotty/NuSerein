@@ -69,7 +69,7 @@ impl ModViewUi {
 		let mut open = true;
 		let mut jump = None;
 		let mut member_action = None;
-		egui::Window::new("Mod View").id(egui::Id::new("member-mod-view")).open(&mut open).collapsible(false).resizable(false).vscroll(true).default_width(420.0).max_height((ctx.content_rect().height()-100.0).max(180.0)).anchor(egui::Align2::RIGHT_TOP,egui::vec2(-16.0,64.0)).show(ctx,|ui| {
+		egui::Window::new("Mod View").id(egui::Id::unique("member-mod-view")).open(&mut open).collapsible(false).resizable(false).vscroll(true).default_width(420.0).max_height((ctx.content_rect().height()-100.0).max(180.0)).anchor(egui::Align2::RIGHT_TOP,egui::vec2(-16.0,64.0)).show(ctx,|ui| {
 			ui.horizontal(|ui| {
 				ui.weak("Member review");
 				if ui.add_enabled(!state.server_admin.pending,egui::Button::new("Refresh")).clicked() {

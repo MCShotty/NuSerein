@@ -43,7 +43,7 @@ impl Preview {
 			.retain(|id| roles.iter().any(|role| role.id == *id));
 		let mut open = true;
 		egui::Window::new("View Server As Role")
-			.id(egui::Id::new("server-role-preview"))
+			.id(egui::Id::unique("server-role-preview"))
 			.open(&mut open)
 			.default_width(760.0)
 			.max_height(ctx.content_rect().height() * 0.85)

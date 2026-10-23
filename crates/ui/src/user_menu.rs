@@ -1,7 +1,7 @@
 //! Shared user actions; rendering only records intent, dispatched after borrowed rows finish.
 use crate::shortcuts::{Intent, ShortcutView};
 use client_core::{Command, State};
-use model::{Shortcut, User};
+use model::{Id, Shortcut, User};
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Action {

@@ -1176,8 +1176,7 @@ impl Editor {
 					egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
 						self.navigation_ime = !text.is_empty()
 					}
-					egui::Event::Ime(egui::ImeEvent::Commit(_))
-					| egui::Event::Ime(egui::ImeEvent::Disabled) => self.navigation_ime = false,
+					egui::Event::Ime(egui::ImeEvent::Commit(_)) => self.navigation_ime = false,
 					_ => {}
 				}
 			}
