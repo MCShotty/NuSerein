@@ -413,6 +413,31 @@ mod tests {
 	use super::*;
 	unsafe extern "C" {
 		fn serein_capture_synthetic_test(hardware: i32, hdr: i32) -> i32;
+		fn serein_capture_synthetic_device_loss() -> i32;
+	}
+	#[test]
+	fn synthetic_warp_device_removal_retires_pending_and_retained_pools() {
+		// SAFETY: Only a newly created private D3D12 WARP device is removed.
+		// Its D3D11On12 capture surfaces are synthetic; no hardware GPU,
+		// desktop capture session, display reset or system-wide TDR is used.
+		let result = unsafe { serein_capture_synthetic_device_loss() };
+		let unavailable = match result {
+			0 => Some("optional system D3D12/D3D11On12 entry points are unavailable"),
+			2 => Some("optional IDXGIFactory4 or ID3D12Device5 interface is unavailable"),
+			3 => Some("D3D12 WARP is unavailable"),
+			4 => Some("D3D11On12 cannot layer over the private WARP device"),
+			_ => None,
+		};
+		if let Some(reason) = unavailable {
+			eprintln!(
+				"Device-removal regression unavailable: {reason}; ordinary WARP pool tests remain mandatory"
+			);
+			return;
+		}
+		assert_eq!(
+			result, 1,
+			"Private WARP device-removal regression failed ({result}); -2 means removal was not observed, -3 means processing failed to stop within its bounded poll"
+		);
 	}
 	#[test]
 	fn synthetic_warp_pool_readback_and_retirement() {

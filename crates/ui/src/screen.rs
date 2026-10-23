@@ -62,11 +62,11 @@ impl Default for ScreenUi {
 }
 impl ScreenUi {
 	/// Local presentation demand is independent of whether the share has viewers.
-	pub fn preview_requested(&self, ctx: &egui::Context, selected: bool) -> bool {
+	pub fn preview_requested(&self, ctx: &egui::Context) -> bool {
 		self.preview_window_visible
 			&& ctx.input(|input| {
 				input.viewport().visible() != Some(false) && !input.viewport().close_requested()
-			}) && (self.preview.is_none() || (selected && self.preview_demand(ctx)))
+			}) && self.preview_demand(ctx)
 	}
 
 	/// The tile was painted in this pass or the immediately preceding one. The
@@ -561,28 +561,27 @@ mod tests {
 		let ctx = egui::Context::default();
 		let mut picker = ScreenUi::default();
 		assert!(!picker.preview_demand(&ctx));
-		assert!(picker.preview_requested(&ctx, true)); // Initial thumbnail, even while alone.
+		assert!(!picker.preview_requested(&ctx));
 		picker.preview_window_visible = false;
-		assert!(!picker.preview_requested(&ctx, true));
+		assert!(!picker.preview_requested(&ctx));
 		picker.preview_window_visible = true;
 		picker.preview = Some(ctx.load_texture(
 			"synthetic-screen",
 			egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
 			Default::default(),
 		));
-		assert!(!picker.preview_requested(&ctx, true));
+		assert!(!picker.preview_requested(&ctx));
 		ctx.run_ui(Default::default(), |ui| picker.preview_painted(ui.ctx()))
 			.drop_without_applying_deltas();
 		assert!(picker.preview_demand(&ctx));
-		assert!(picker.preview_requested(&ctx, true));
-		assert!(!picker.preview_requested(&ctx, false));
+		assert!(picker.preview_requested(&ctx));
 		for (minimized, occluded) in [(true, false), (false, true)] {
 			let mut input = egui::RawInput::default();
 			let viewport = input.viewports.get_mut(&input.viewport_id).unwrap();
 			viewport.minimized = Some(minimized);
 			viewport.occluded = Some(occluded);
 			ctx.run_ui(input, |_| {
-				assert!(!picker.preview_requested(&ctx, true));
+				assert!(!picker.preview_requested(&ctx));
 			})
 			.drop_without_applying_deltas();
 		}

@@ -361,7 +361,7 @@ impl Worker {
 		let status = Arc::new(Mutex::new("Choose a screen or window in the system picker"));
 		#[cfg(target_os = "linux")]
 		let worker_status = status.clone();
-		let preview_visible = Arc::new(AtomicBool::new(true));
+		let preview_visible = Arc::new(AtomicBool::new(false));
 		let worker_preview_visible = preview_visible.clone();
 		// A few frames of slack absorbs send jitter without forcing keyframes on every hiccup.
 		let (send, frames) = tokio::sync::mpsc::channel(3);

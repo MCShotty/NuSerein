@@ -323,9 +323,11 @@ fn poll_processing(flags: Flags, poll_stop: Arc<AtomicBool>, failed: Arc<AtomicB
 			failed.store(true, Ordering::Release);
 			break;
 		};
+		let mut waiting_gpu = false;
 		if let Some(processor) = processing.processor.as_mut() {
 			let result = processor.take();
 			let current = processor.stats();
+			waiting_gpu = current.submitted > current.completed;
 			let previous = processing.previous;
 			flags.stats.resources_created.fetch_add(
 				current
@@ -365,7 +367,10 @@ fn poll_processing(flags: Flags, poll_stop: Arc<AtomicBool>, failed: Arc<AtomicB
 				}
 			}
 		}
-		let delay = if flags.pending.load(Ordering::Acquire) {
+		// A completed frame can remain queued while encoding consumes the
+		// preceding picture. Poll quickly only for an actual GPU transfer;
+		// the next admitted capture wakes this condition variable itself.
+		let delay = if waiting_gpu {
 			Duration::from_millis(1)
 		} else {
 			Duration::from_millis(100)

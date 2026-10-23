@@ -11,7 +11,10 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d3d11_4.h>
+#include <d3d11on12.h>
+#include <d3d12.h>
 #include <dxgi.h>
+#include <dxgi1_4.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_d3d11va.h>
@@ -944,6 +947,149 @@ cleanup:
     if (texture) ID3D11Texture2D_Release(texture);
     if (context) ID3D11DeviceContext_Release(context);
     if (device) ID3D11Device_Release(device);
+    return status;
+}
+
+/* D3D11Device5 has no RemoveDevice method. Layer a private D3D11 device over
+ * a private D3D12 WARP device and remove only that device via D3D12Device5.
+ * There is no hardware adapter, WGC session, display reset or system TDR. */
+int serein_capture_synthetic_device_loss(void)
+{
+    static const GUID factory_iid =
+        {0x1bc6ea02,0xef36,0x464f,{0xbf,0x0c,0x21,0xca,0x39,0xe5,0x16,0x8a}};
+    static const GUID adapter_iid =
+        {0x2411e7e1,0x12ac,0x4ccf,{0xbd,0x14,0x97,0x98,0xe8,0x53,0x4d,0xc0}};
+    static const GUID device_iid =
+        {0x189819f1,0x1db6,0x4b57,{0xbe,0x54,0x18,0x21,0x33,0x9b,0x85,0xf7}};
+    static const GUID device5_iid =
+        {0x8b4f173b,0x2fea,0x4b80,{0x8f,0x58,0x43,0x07,0x19,0x1a,0xb9,0x5d}};
+    static const GUID queue_iid =
+        {0x0ec870a6,0x5d7e,0x4c22,{0x8c,0xfc,0x5b,0xaa,0xe0,0x76,0x16,0xed}};
+    HMODULE dxgi = NULL, d3d12 = NULL, d3d11 = NULL;
+    HRESULT (WINAPI *create_factory)(REFIID, void **) = NULL;
+    PFN_D3D12_CREATE_DEVICE create_device12 = NULL;
+    PFN_D3D11ON12_CREATE_DEVICE create_device11 = NULL;
+    IDXGIFactory4 *factory = NULL;
+    IDXGIAdapter *warp = NULL;
+    ID3D12Device *device12 = NULL;
+    ID3D12Device5 *device5 = NULL;
+    ID3D12CommandQueue *queue = NULL;
+    ID3D11Device *device = NULL;
+    ID3D11DeviceContext *context = NULL;
+    ID3D11Texture2D *texture = NULL;
+    D3D12_COMMAND_QUEUE_DESC queue_description = {0};
+    D3D11_TEXTURE2D_DESC texture_description = {0};
+    D3D11_SUBRESOURCE_DATA initial = {0};
+    D3D_FEATURE_LEVEL feature;
+    Capture *capture = NULL;
+    void *retained = NULL, *pending = NULL;
+    SereinCaptureDescription description;
+    uint8_t pixels[64 * 32 * 4] = {0}, downloaded[64 * 32 * 4];
+    FARPROC symbol;
+    HRESULT result;
+    ULONGLONG deadline;
+    int status = -1;
+    dxgi = LoadLibraryExW(L"dxgi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    d3d12 = LoadLibraryExW(L"d3d12.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    d3d11 = LoadLibraryExW(L"d3d11.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!dxgi || !d3d12 || !d3d11) { status = 0; goto cleanup; }
+    symbol = GetProcAddress(dxgi, "CreateDXGIFactory1");
+    memcpy(&create_factory, &symbol, sizeof(create_factory));
+    symbol = GetProcAddress(d3d12, "D3D12CreateDevice");
+    memcpy(&create_device12, &symbol, sizeof(create_device12));
+    symbol = GetProcAddress(d3d11, "D3D11On12CreateDevice");
+    memcpy(&create_device11, &symbol, sizeof(create_device11));
+    if (!create_factory || !create_device12 || !create_device11) { status = 0; goto cleanup; }
+    result = create_factory(&factory_iid, (void **)&factory);
+    if (result == E_NOINTERFACE) { status = 2; goto cleanup; }
+    if (FAILED(result) || !factory) goto cleanup;
+    result = IDXGIFactory4_EnumWarpAdapter(factory, &adapter_iid, (void **)&warp);
+    if (result == DXGI_ERROR_UNSUPPORTED || result == DXGI_ERROR_NOT_FOUND) { status = 3; goto cleanup; }
+    if (FAILED(result) || !warp) goto cleanup;
+    result = create_device12((IUnknown *)warp, D3D_FEATURE_LEVEL_11_0, &device_iid, (void **)&device12);
+    if (result == DXGI_ERROR_UNSUPPORTED) { status = 3; goto cleanup; }
+    if (FAILED(result) || !device12) goto cleanup;
+    result = ID3D12Device_QueryInterface(device12, &device5_iid, (void **)&device5);
+    if (result == E_NOINTERFACE) { status = 2; goto cleanup; }
+    if (FAILED(result) || !device5) goto cleanup;
+    queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (FAILED(ID3D12Device_CreateCommandQueue(device12, &queue_description, &queue_iid, (void **)&queue)) || !queue)
+        goto cleanup;
+    IUnknown *queues[] = {(IUnknown *)queue};
+    result = create_device11((IUnknown *)device12, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        NULL, 0, queues, 1, 0, &device, &context, &feature);
+    if (result == E_NOINTERFACE || result == DXGI_ERROR_UNSUPPORTED) { status = 4; goto cleanup; }
+    if (FAILED(result) || !device || !context) goto cleanup;
+    texture_description.Width = 64;
+    texture_description.Height = 32;
+    texture_description.MipLevels = texture_description.ArraySize = 1;
+    texture_description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texture_description.SampleDesc.Count = 1;
+    texture_description.Usage = D3D11_USAGE_DEFAULT;
+    texture_description.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    initial.pSysMem = pixels;
+    initial.SysMemPitch = 64 * 4;
+    if (FAILED(ID3D11Device_CreateTexture2D(device, &texture_description, &initial, &texture))) goto cleanup;
+    capture = serein_capture_open(device, context, NULL, 0);
+    if (!capture || serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL) != 1 ||
+        synthetic_take(capture, &retained) != 1 ||
+        serein_capture_frame_download(retained, downloaded, sizeof(downloaded)) != 1)
+        goto cleanup;
+    /* Keep one completed frame and one submitted transfer while removing this
+     * owned software device. Both pool states must be safe to retire. */
+    if (serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL) != 1) goto cleanup;
+    ID3D12Device5_RemoveDevice(device5);
+    deadline = GetTickCount64() + 2000;
+    while (SUCCEEDED(ID3D11Device_GetDeviceRemovedReason(device)) && GetTickCount64() < deadline) Sleep(1);
+    if (SUCCEEDED(ID3D11Device_GetDeviceRemovedReason(device))) { status = -2; goto cleanup; }
+    /* GetData must fail instead of keeping the poll worker pending forever.
+     * A transfer completed before removal may still be returned once; the
+     * next post-removal submission must then fail or report a query error. */
+    deadline = GetTickCount64() + 2000;
+    int processing = serein_capture_take(capture, &pending);
+    while (!processing && GetTickCount64() < deadline) {
+        Sleep(1);
+        processing = serein_capture_take(capture, &pending);
+    }
+    if (processing == 1) {
+        serein_capture_frame_close(pending);
+        pending = NULL;
+        processing = serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL);
+        if (processing == 1) {
+            deadline = GetTickCount64() + 2000;
+            processing = serein_capture_take(capture, &pending);
+            while (!processing && GetTickCount64() < deadline) {
+                Sleep(1);
+                processing = serein_capture_take(capture, &pending);
+            }
+        }
+    }
+    if (processing != -1 || pending) { status = -3; goto cleanup; }
+    serein_capture_close(capture);
+    capture = NULL;
+    if (!serein_capture_frame_description(retained, &description) ||
+        description.source_width != 64 || description.source_height != 32)
+        goto cleanup;
+    /* Description and lease teardown stay valid even though their GPU device
+     * is gone. No map or wait is needed to release the retained staging pool. */
+    serein_capture_frame_close(retained);
+    retained = NULL;
+    status = 1;
+cleanup:
+    serein_capture_frame_close(pending);
+    serein_capture_frame_close(retained);
+    serein_capture_close(capture);
+    if (texture) ID3D11Texture2D_Release(texture);
+    if (context) ID3D11DeviceContext_Release(context);
+    if (device) ID3D11Device_Release(device);
+    if (queue) ID3D12CommandQueue_Release(queue);
+    if (device5) ID3D12Device5_Release(device5);
+    if (device12) ID3D12Device_Release(device12);
+    if (warp) IDXGIAdapter_Release(warp);
+    if (factory) IDXGIFactory4_Release(factory);
+    if (d3d11) FreeLibrary(d3d11);
+    if (d3d12) FreeLibrary(d3d12);
+    if (dxgi) FreeLibrary(dxgi);
     return status;
 }
 

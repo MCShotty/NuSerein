@@ -434,9 +434,7 @@ impl Screen {
 			self.request_stop(error);
 		}
 		if let Some(live) = &self.live {
-			let preview_visible = ui
-				.screen
-				.preview_requested(ctx, state.selected == Some(live.context.channel));
+			let preview_visible = ui.screen.preview_requested(ctx);
 			live.worker.set_preview_visible(preview_visible);
 			// A picture queued before hiding is retired without a conversion or
 			// texture upload. Capture/encoding are independent of local preview demand.

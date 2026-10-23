@@ -445,49 +445,41 @@ fn convert(
 	frame.validate()?;
 	let (width, height) = (settings.width as usize, settings.height as usize);
 	output.resize(width * height * 3 / 2, 0);
-	match frame {
-		super::CapturedFrame::Cpu(raw) => {
-			let started = std::time::Instant::now();
-			converter.convert(raw, width, height, output)?;
-			Ok(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64)
-		}
-		super::CapturedFrame::Gpu(gpu) => {
-			let started = std::time::Instant::now();
-			let description = gpu.download_into(download)?;
-			let readback_ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-			stats.readback_ns.fetch_add(readback_ns, Ordering::Relaxed);
-			stats
-				.readback_max_ns
-				.fetch_max(readback_ns, Ordering::Relaxed);
-			stats
-				.readback_bytes
-				.fetch_add(download.len() as u64, Ordering::Relaxed);
-			use platform::video::capture::PixelFormat;
-			let format = match description.format {
-				PixelFormat::Bgra8 => super::RawFormat::Bgra8,
-				PixelFormat::Nv12 => super::RawFormat::Nv12,
-				PixelFormat::LinearRgba16 {
-					unit_nits,
-					white_nits,
-					peak_nits,
-				} => super::RawFormat::LinearRgba16 {
-					unit_nits,
-					white_nits,
-					peak_nits,
-				},
-			};
-			let raw = super::RawFrame {
-				format,
-				width: description.width,
-				height: description.height,
-				stride: description.stride,
-				data: std::mem::take(download),
-			};
-			let started = std::time::Instant::now();
-			let result = converter.convert(&raw, width, height, output);
-			let conversion_ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-			*download = raw.data;
-			result.map(|()| conversion_ns)
-		}
-	}
+	let super::CapturedFrame::Gpu(gpu) = frame;
+	let started = std::time::Instant::now();
+	let description = gpu.download_into(download)?;
+	let readback_ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+	stats.readback_ns.fetch_add(readback_ns, Ordering::Relaxed);
+	stats
+		.readback_max_ns
+		.fetch_max(readback_ns, Ordering::Relaxed);
+	stats
+		.readback_bytes
+		.fetch_add(download.len() as u64, Ordering::Relaxed);
+	use platform::video::capture::PixelFormat;
+	let format = match description.format {
+		PixelFormat::Bgra8 => super::RawFormat::Bgra8,
+		PixelFormat::Nv12 => super::RawFormat::Nv12,
+		PixelFormat::LinearRgba16 {
+			unit_nits,
+			white_nits,
+			peak_nits,
+		} => super::RawFormat::LinearRgba16 {
+			unit_nits,
+			white_nits,
+			peak_nits,
+		},
+	};
+	let raw = super::RawFrame {
+		format,
+		width: description.width,
+		height: description.height,
+		stride: description.stride,
+		data: std::mem::take(download),
+	};
+	let started = std::time::Instant::now();
+	let result = converter.convert(&raw, width, height, output);
+	let conversion_ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+	*download = raw.data;
+	result.map(|()| conversion_ns)
 }
