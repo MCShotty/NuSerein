@@ -112,6 +112,12 @@ Cancellation, expiry, permission loss, logout and account changes retire the che
 A real invalid session or revocation still stops authenticated traffic. An action
 MFA requirement alone does not disconnect the account.
 
+The server's separate moderator two-factor requirement is an owner-controlled server setting.
+Changing it uses the same protected-action flow when challenged; it does not enable, disable
+or recover two-factor authentication on any Discord account. Ownership transfer is not
+reported complete merely because verification or its write succeeded: the new owner must
+be confirmed by a fresh server read. Unconfirmed delivery is never automatically retried.
+
 Tickets, submitted input and proofs remain in bounded redacted session memory
 for at most five minutes and are never saved, logged or exposed to extensions.
 The HTTP transport may make transient copies; zeroizing Serein-owned buffers is

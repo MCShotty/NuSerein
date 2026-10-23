@@ -5,8 +5,9 @@
 This milestone connects the existing native administration pages with personal channel
 selection, member review, protected actions and community access controls. Normal-account
 settings, member search, bulk completion, application review, MFA and command-permission
-transport use **unofficial** interfaces described by [Userdoccers](https://docs.discord.food/); documented resource schemas do not establish
-normal-account authorization or service acceptance. Discord remains authoritative for
+transport use **unofficial** interfaces described by [Userdoccers](https://docs.discord.food/).
+Documented resource schemas do not establish normal-account authorization or service acceptance.
+Discord remains authoritative for
 permissions, eligibility and completion. Earlier dated sections below retain their original scope.
 
 Personal channel selection, account favorites and category collapse share the existing
@@ -48,22 +49,41 @@ or exposed to extensions. Passkey-only challenges require another advertised met
 official client; Serein does not emulate Discord's WebAuthn origin.
 
 Safety Setup uses service-provided incident state and expiry for temporary invitation/non-friend
-DM restrictions, with explicit early-resume actions and authoritative readback. It performs no
-local raid detection. Member applications have separate pending/approved/rejected views,
-bounded answers, explicit decisions and interview creation; opening an interview sends no message.
-Application review is distinct from rules acceptance. Application/command permission edits
+DM restrictions of at most 24 hours, with explicit early-resume actions and authoritative readback.
+The separate invitation pause in Invites remains independent. Missing incident metadata stays
+unknown and disables these writes; it does not mean restrictions were removed. There is no local
+raid detection. Owners can change the server's moderator MFA requirement; this does not enroll
+any member in two-factor authentication.
+
+Member applications use the **unofficial** [join-request interfaces](https://docs.discord.food/resources/guild#guild-join-request-object),
+with separate pending/approved/rejected views, bounded answers, explicit decisions and interview
+creation. Requests use their canonical request IDs. Opening an interview sends no message.
+Application review is distinct from rules acceptance. Queues load on demand; Members and
+Applications badges reflect the loaded pending count, becoming a neutral update marker when
+Gateway changes make that count unknown. They do not scan unopened servers or infer counts.
+Gateway changes fence late reads so a withdrawn application cannot be restored by an older response.
+Onboarding, screening and Guide previews display the unsaved draft without submitting answers.
+
+Application/command permission edits
 preserve untouched and unknown overrides, detect conflicting edits and confirm readback before
 refreshing command suggestions. Role preview evaluates selected roles in a separate read-only
 presentation context available to owners/administrators; it never replaces the account's
 permissions or dispatches simulated actions.
 Voice suppression, private-thread membership and member-specific restrictions are not simulated.
-Ownership transfer verifies the recipient and current owner, requires explicit confirmation and
-uses authoritative readback. Retained administration state shares an 8 MiB session budget in
+Community configuration preserves unknown server features and untouched channel fields. Ownership
+transfer verifies a current human member and the current owner, requires the server name to be
+confirmed, and succeeds only after an authoritative owner readback. If accepted delivery cannot
+be confirmed, the outcome stays unknown and is not automatically repeated. A confirmed transfer
+may legitimately remove the former owner's administration access.
+
+Core administration snapshots and retained actions share an 8 MiB session budget in
 addition to existing page limits; application pages contain at most 100 entries and stay below
 1 MiB. Typed contracts live in the model's `channel_visibility`, `moderation`, `server_access`
 and `command_permissions` modules; client-core owns scope validation and memory accounting,
-transports perform bounded reads/writes, and UI panels consume those snapshots. Live
-interoperability and native interaction evidence are separate from these contracts.
+transports perform bounded reads/writes, and UI panels consume those snapshots. At most two
+replaceable administrative reads and one mutation run concurrently; closed views retire their
+reads rather than polling. Live normal-account acceptance and native interaction checks require
+separate owner-controlled evidence; synthetic coverage does not establish them.
 
 ## Own server profiles and account privacy settings — October 17, 2026
 
