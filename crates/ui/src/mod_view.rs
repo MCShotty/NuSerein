@@ -91,7 +91,8 @@ impl ModViewUi {
 			};
 			let member=&review.member;
 			ui.heading(member.nick.as_deref().unwrap_or(&member.user.name));
-			ui.weak(format!("@{} · {}",member.user.username.as_deref().unwrap_or(&member.user.name),user));
+			if let Some(username)=member.user.username.as_deref(){ui.weak(format!("@{username} · {user}"));}
+			else{ui.weak(format!("Account ID: {user}"));}
 			if let Some(joined)=member.joined_at.and_then(|at|crate::local_time::discord_timestamp((at/1000)as i64,b'f')) {ui.label(format!("Joined server: {joined}"));}
 			if let Some(created)=crate::local_time::discord_timestamp((((user.0>>22)+1_420_070_400_000)/1000)as i64,b'f') {ui.label(format!("Account created: {created}"));}
 			ui.label(format!("Join method: {}",member.join_source.map_or("Unknown",|source|match source {1=>"Bot",2=>"Integration",3=>"Discovery",4=>"Hub",5=>"Invite",6=>"Custom invite link",7=>"Application",8=>"Linked channel",_=>"Unknown"})));
