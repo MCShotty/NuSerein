@@ -32,6 +32,7 @@ pub mod proxy;
 mod proxy_tests;
 mod reporting;
 pub mod rpc;
+mod server_access;
 mod server_actions;
 mod server_admin;
 mod server_audit_log;

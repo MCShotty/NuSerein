@@ -19,6 +19,7 @@ pub struct Event {
 #[derive(Default)]
 pub struct View {
 	pub command_permissions: Option<model::command_permissions::Snapshot>,
+	pub access: crate::server_access::View,
 	pub community: Option<model::community_admin::Snapshot>,
 	pub automod: Option<model::automod::Snapshot>,
 	pub bans: Option<model::moderation::Bans>,
@@ -53,6 +54,16 @@ pub struct View {
 	prune_days: Option<u8>,
 }
 impl View {
+	pub(crate) fn transfer_pending(&self, guild: Id) -> bool {
+		self.guild == Some(guild)
+			&& self.pending
+			&& matches!(
+				self.action,
+				Some(Action::Access(
+					model::server_access::Action::Transfer { .. }
+				))
+			)
+	}
 	pub(crate) fn invalidate_community(&mut self) {
 		self.permission_revision = self.permission_revision.wrapping_add(1);
 		if matches!(self.action, Some(Action::Community(_))) {
@@ -105,6 +116,7 @@ impl View {
 		};
 		if relevant {
 			self.command_permissions = None;
+			self.access.invalidate();
 			self.automod = None;
 			self.community = None;
 			self.bans = None;
@@ -457,6 +469,7 @@ impl State {
 				channel,
 				change,
 			} => self.can_moderate_voice(guild, *channel, *user, *change),
+			Action::Access(action) => self.access_action_allowed(guild, action),
 			Action::Community(action) => self.community_admin_action_allowed(guild, action),
 			Action::AutoMod(action) => self.automod_action_allowed(guild, action),
 			Action::Moderation(action) => self.moderation_action_allowed(guild, action),
@@ -687,11 +700,26 @@ impl State {
 			return Ok(());
 		}
 		let action = self.server_admin.action.take();
+		// A confirmed ownership transfer can legitimately revoke this account's access
+		// before its HTTP readback arrives. Match the originally authorized recipient.
+		let transfer_confirmed = matches!((&action,&event.result),(Some(Action::Access(model::server_access::Action::Transfer{recipient,..})),Ok(Outcome::Access(model::server_access::Outcome::Settings(settings)))) if settings.guild==event.guild && settings.owner==*recipient && settings.valid());
 		self.server_admin.pending = false;
 		self.server_admin.saving = false;
 		if action.as_ref().is_none_or(|action| {
 			if matches!(action, Action::Voice { .. }) {
 				self.guild(event.guild).is_none()
+			} else if let Action::Access(access) = action {
+				if matches!(
+					access,
+					model::server_access::Action::Applications { .. }
+						| model::server_access::Action::Application(_)
+						| model::server_access::Action::Decide { .. }
+						| model::server_access::Action::Interview { .. }
+				) {
+					!self.can_review_guild_applications(event.guild)
+				} else {
+					!transfer_confirmed && !self.can_manage_guild(event.guild)
+				}
 			} else if matches!(action, Action::Community(_)) {
 				!self.can_open_community_settings(event.guild)
 			} else if matches!(action, Action::AutoMod(_)) {
@@ -735,13 +763,15 @@ impl State {
 		if matches!(
 			action,
 			Some(
-				Action::AutoMod(_)
+				Action::Access(_)
+					| Action::AutoMod(_)
 					| Action::Moderation(_)
 					| Action::Community(_)
 					| Action::CommandPermissions(_)
 			)
-		) && self.server_admin.requested_permission_revision
-			!= self.server_admin.permission_revision
+		) && !transfer_confirmed
+			&& self.server_admin.requested_permission_revision
+				!= self.server_admin.permission_revision
 		{
 			self.server_admin.error = Some("Server permissions changed; reload before continuing");
 			self.server_admin.needs_refresh = true;
@@ -830,6 +860,9 @@ impl State {
 				})),
 				Outcome::WebhookUrl(url),
 			) => url.guild == event.guild && url.webhook == *webhook && url.channel == *channel,
+			(Some(Action::Access(action)), Outcome::Access(result)) => {
+				self.access_response_expected(event.guild, action, result)
+			}
 			(Some(Action::Community(action)), Outcome::Community(page)) => {
 				page.guild == event.guild
 					&& action.confirms(page)
@@ -1016,6 +1049,11 @@ impl State {
 			return Ok(());
 		}
 		match result {
+			Outcome::Access(result) => {
+				if let Some(Action::Access(action)) = &action {
+					self.apply_server_access(event.guild, action, result)?;
+				}
+			}
 			Outcome::AutoMod(page) => self.server_admin.automod = Some(page),
 			Outcome::Moderation(result) => match result {
 				model::moderation::Outcome::Bans(page) => self.server_admin.bans = Some(page),
@@ -1259,7 +1297,12 @@ impl State {
 			action,
 			Some(
 				Action::LoadEmojis
-					| Action::Community(model::community_admin::Action::Load(_))
+					| Action::Access(
+						model::server_access::Action::Settings
+							| model::server_access::Action::Applications { .. }
+							| model::server_access::Action::Application(_)
+							| model::server_access::Action::Recipient(_)
+					) | Action::Community(model::community_admin::Action::Load(_))
 					| Action::LoadStickers
 					| Action::LoadSounds
 					| Action::Invites(model::server_invites::Action::Load)

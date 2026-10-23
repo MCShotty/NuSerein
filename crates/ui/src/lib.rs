@@ -125,6 +125,7 @@ mod search;
 #[cfg(test)]
 mod search_navigation_tests;
 pub mod select;
+mod server_access;
 mod server_admin;
 mod server_audit_log;
 mod server_automod;

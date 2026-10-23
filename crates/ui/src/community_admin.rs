@@ -9,6 +9,7 @@ use model::{
 
 #[derive(Default)]
 pub(super) struct CommunityUi {
+	preview: bool,
 	scope: Option<(u64, Id)>,
 	section: Option<Section>,
 	baseline: Option<Data>,
@@ -192,6 +193,15 @@ impl CommunityUi {
 			{
 				action = Some(Action::Load(section));
 			}
+			if ui
+				.add_enabled(
+					self.draft.is_some(),
+					egui::Button::new("Preview member experience"),
+				)
+				.clicked()
+			{
+				self.preview = true;
+			}
 			if state.server_admin.needs_refresh {
 				ui.weak(i18n::translate("community-refresh-required"));
 			}
@@ -297,6 +307,14 @@ impl CommunityUi {
 					self.artwork_uri = None;
 					self.artwork_preview = None;
 				}
+			});
+		}
+		if self.preview
+			&& let Some(data) = &self.draft
+		{
+			egui::Window::new("Member experience preview").id(egui::Id::new("community-member-preview")).open(&mut self.preview).default_width(620.0).max_height(600.0).show(ui.ctx(),|ui|{
+				ui.weak("Preview of your unsaved configuration. No answers are submitted and no roles or channels are changed.");
+				egui::ScrollArea::vertical().show(ui,|ui|member_preview(ui,state,data));
 			});
 		}
 		if let Some(action) = action {
@@ -1268,6 +1286,133 @@ fn guide_channels(
 		rows.push(m::GuideChannel::default());
 	}
 }
+fn member_preview(ui: &mut egui::Ui, state: &State, data: &Data) {
+	match data {
+		Data::Onboarding(config) => {
+			ui.heading("Channels & Roles");
+			for prompt in &config.prompts {
+				ui.strong(format!(
+					"{}{}",
+					prompt.title,
+					if prompt.required { " *" } else { "" }
+				));
+				ui.weak(if prompt.single_select {
+					"Choose one answer"
+				} else {
+					"Choose any answers"
+				});
+				for option in &prompt.options {
+					egui::Frame::new()
+						.fill(design::palette(ui).raised)
+						.inner_margin(10)
+						.corner_radius(6)
+						.show(ui, |ui| {
+							ui.strong(&option.title);
+							if let Some(description) = &option.description {
+								ui.label(description);
+							}
+							let channels: Vec<_> = option
+								.channels
+								.iter()
+								.map(|id| {
+									state
+										.channel(*id)
+										.map(|c| format!("#{}", c.name))
+										.unwrap_or_else(|| "Unavailable channel".into())
+								})
+								.collect();
+							if !channels.is_empty() {
+								ui.weak(channels.join(", "));
+							}
+							let roles: Vec<_> = option
+								.roles
+								.iter()
+								.map(|id| {
+									state
+										.server_admin
+										.community
+										.as_ref()
+										.and_then(|s| s.roles.iter().find(|r| r.id == *id))
+										.map(|r| r.name.as_str())
+										.unwrap_or("Unavailable role")
+								})
+								.collect();
+							if !roles.is_empty() {
+								ui.weak(roles.join(", "));
+							}
+						});
+				}
+				ui.add_space(12.0);
+			}
+			ui.separator();
+			ui.strong("Default channels");
+			for id in &config.default_channels {
+				if let Some(channel) = state.channel(*id) {
+					ui.label(format!("#{}", channel.name));
+				}
+			}
+		}
+		Data::Screening(config) => {
+			ui.heading("Before you can participate");
+			if let Some(description) = &config.description {
+				ui.label(description);
+			}
+			for field in &config.fields {
+				ui.strong(&field.label);
+				if let Some(description) = &field.description {
+					ui.label(description);
+				}
+				for rule in &field.values {
+					ui.label(format!("• {rule}"));
+				}
+				if field.kind == "TERMS" {
+					let mut checked = false;
+					ui.add_enabled(
+						false,
+						egui::Checkbox::new(&mut checked, "I have read and agree to the rules"),
+					);
+				} else if field.kind == "MULTIPLE_CHOICE" {
+					for choice in &field.choices {
+						ui.add_enabled(false, egui::RadioButton::new(false, choice));
+					}
+				} else {
+					let mut placeholder = field
+						.placeholder
+						.clone()
+						.unwrap_or_else(|| "Your answer".into());
+					ui.add_enabled(false, egui::TextEdit::singleline(&mut placeholder));
+				}
+				ui.add_space(12.0);
+			}
+			if config.manual_approval {
+				ui.weak("Submitted applications require moderator review.");
+			}
+		}
+		Data::Guide(config) => {
+			ui.heading("Server Guide");
+			ui.label(&config.message);
+			ui.separator();
+			ui.strong("Get started");
+			for row in &config.actions {
+				ui.strong(&row.title);
+				ui.label(&row.description);
+				if let Some(channel) = state.channel(row.channel) {
+					ui.weak(format!("#{}", channel.name));
+				}
+			}
+			ui.separator();
+			ui.strong("Resources");
+			for row in &config.resources {
+				ui.strong(&row.title);
+				ui.label(&row.description);
+				if let Some(channel) = state.channel(row.channel) {
+					ui.weak(format!("#{}", channel.name));
+				}
+			}
+		}
+	}
+}
+
 fn author_name(state: &State, id: Id) -> String {
 	state
 		.user

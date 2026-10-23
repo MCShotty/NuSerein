@@ -40,6 +40,7 @@ pub mod guild_folders;
 pub mod message_options;
 pub mod permissions;
 mod reading_preferences;
+pub mod server_access;
 pub mod server_admin;
 pub mod server_audit_log;
 pub mod server_integrations;

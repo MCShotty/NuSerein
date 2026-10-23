@@ -108,6 +108,7 @@ pub enum VoiceChange {
 #[derive(Clone)]
 pub enum Action {
 	CommandPermissions(crate::command_permissions::Action),
+	Access(crate::server_access::Action),
 	Community(crate::community_admin::Action),
 	AutoMod(crate::automod::Action),
 	Moderation(crate::moderation::Action),
@@ -196,6 +197,9 @@ impl Action {
 		if let Self::CommandPermissions(action) = self {
 			return action.write();
 		}
+		if let Self::Access(action) = self {
+			return action.write();
+		}
 		if let Self::Community(action) = self {
 			return action.write();
 		}
@@ -253,6 +257,7 @@ impl Action {
 	}
 	pub fn valid(&self) -> bool {
 		match self {
+			Self::Access(action) => action.valid(),
 			Self::Community(action) => action.valid(),
 			Self::AutoMod(action) => action.valid(),
 			Self::Moderation(action) => action.valid(),
@@ -372,6 +377,7 @@ impl Action {
 }
 pub enum Result {
 	CommandPermissions(crate::command_permissions::Snapshot),
+	Access(crate::server_access::Outcome),
 	Community(crate::community_admin::Snapshot),
 	AutoMod(crate::automod::Snapshot),
 	Moderation(crate::moderation::Outcome),
@@ -459,6 +465,7 @@ impl Result {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				Self::Access(result) => result.bytes(),
 				Self::Community(page) => page.bytes(),
 				Self::AutoMod(page) => page.bytes(),
 				Self::Moderation(outcome) => outcome.bytes(),
@@ -509,6 +516,7 @@ impl Result {
 	pub fn valid(&self) -> bool {
 		self.bytes() <= MAX_BYTES
 			&& match self {
+				Self::Access(result) => result.valid(),
 				Self::Community(page) => page.valid(),
 				Self::AutoMod(page) => page.valid(),
 				Self::Moderation(outcome) => outcome.valid(),

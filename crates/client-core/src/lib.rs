@@ -49,6 +49,7 @@ pub mod onboarding;
 pub mod resident;
 pub mod screen;
 pub mod search;
+pub mod server_access;
 pub mod server_actions;
 pub mod server_admin;
 pub mod server_audit_log;
@@ -705,6 +706,15 @@ pub enum Event {
 		removed: Vec<Id>,
 	},
 	GuildChanged(GuildPatch),
+	ServerIncident {
+		guild: Id,
+		incident: Option<model::server_access::Incident>,
+	},
+	GuildApplicationChanged {
+		guild: Id,
+		request: Id,
+		deleted: bool,
+	},
 	GuildEmojis {
 		guild: Id,
 		emojis: Vec<CustomEmoji>,
@@ -857,6 +867,8 @@ pub struct State {
 	pub onboarding: onboarding::Onboarding,
 	pub server_admin: server_admin::View,
 	pub server_members_shortcuts: BTreeMap<Id, bool>,
+	/// Bounded service-reported security actions; no persistence or local detection.
+	pub server_incidents: BTreeMap<Id, model::server_access::Incident>,
 	pub group_actions: group_actions::Actions,
 	pub typing: typing::Typing,
 	pub permissions: permissions::Permissions,
@@ -1106,6 +1118,7 @@ impl Default for State {
 			onboarding: onboarding::Onboarding::default(),
 			server_admin: server_admin::View::default(),
 			server_members_shortcuts: BTreeMap::new(),
+			server_incidents: BTreeMap::new(),
 			group_actions: group_actions::Actions::default(),
 			typing: typing::Typing::default(),
 			permissions: permissions::Permissions::default(),
@@ -3475,7 +3488,20 @@ impl State {
 				}
 				Ok(())
 			}
+			Event::GuildApplicationChanged {
+				guild,
+				request,
+				deleted,
+			} => {
+				self.guild_application_changed(guild, request, deleted);
+				Ok(())
+			}
+			Event::ServerIncident { guild, incident } => {
+				self.apply_server_incident(guild, incident);
+				Ok(())
+			}
 			Event::GuildRemoved(guild) => {
+				self.server_incidents.remove(&guild);
 				self.remove_server(guild);
 				Ok(())
 			}
@@ -4017,6 +4043,7 @@ impl State {
 				self.member_guide.reset();
 				self.server_admin.reset();
 				self.server_members_shortcuts.clear();
+				self.server_incidents.clear();
 				self.group_actions.reset();
 				self.clear_own_profile();
 				self.own_server_profile.reset();
@@ -4639,6 +4666,15 @@ impl State {
 		}
 		if let Some(guild) = self.server_admin.guild {
 			self.prune_integration_access(guild);
+			if !self.can_review_guild_applications(guild) {
+				self.server_admin.access.applications = None;
+				self.server_admin.access.detail = None;
+				self.server_admin.access.pending_count = None;
+			}
+			if !self.can_manage_guild(guild) {
+				self.server_admin.access.settings = None;
+				self.server_admin.access.recipient = None;
+			}
 			if !self.can_open_community_settings(guild) {
 				self.server_admin.community = None;
 			}
@@ -4651,6 +4687,9 @@ impl State {
 				&& !self.can_open_integration_settings(guild)
 				&& !self.can_retain_channel_integrations(guild)
 				&& !self.can_open_audit_log_settings(guild)
+				&& !self.can_review_guild_applications(guild)
+				&& !self.can_manage_guild(guild)
+				&& !self.server_admin.transfer_pending(guild)
 			{
 				self.server_admin.reset();
 			} else {
@@ -4777,6 +4816,7 @@ impl State {
 			_ => {}
 		}
 		if failure.ends_session() {
+			self.server_incidents.clear();
 			self.community = Default::default();
 			self.reset_thread_starter();
 			self.application_commands.clear();

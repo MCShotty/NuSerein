@@ -98,6 +98,10 @@ impl DiscordApi {
 				.command_permissions(guild, action)
 				.await
 				.map(Outcome::CommandPermissions),
+			Action::Access(action) => self
+				.server_access_action(guild, action)
+				.await
+				.map(Outcome::Access),
 			Action::Community(action) => self
 				.community_admin(guild, action)
 				.await
