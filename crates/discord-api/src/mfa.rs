@@ -531,7 +531,7 @@ mod tests {
             let original=api.clone();
             let operation=tokio::spawn(async move { OPERATION.scope(target(),async {
                 original.request(reqwest::Method::POST,"/accepted",Some(json!({"first":"saved once"}))).await?;
-                original.request_reason_limited(reqwest::Method::PATCH,"/protected",Some(json!({"name":"Synthetic name"})),4096,"Synthetic reason").await?;
+                original.request_reason_limited(reqwest::Method::PATCH,"/protected",Some(json!({"name":"Synthetic name"})),4,"Synthetic reason").await?;
                 original.request(reqwest::Method::GET,"/readback",None).await
             }).await });
             let Some(core::Event::Required(notice))=receive.recv().await else {panic!("missing action-scoped challenge")};
@@ -598,12 +598,8 @@ mod tests {
 								json!({"name":"updated"})
 							);
 							rejected = Some(body);
-							answer(
-								&mut stream,
-								"401 Unauthorized",
-								r#"{"code":60003,"mfa":{"ticket":"SYNTHETIC_TICKET","methods":[{"type":"totp"}]}}"#,
-							)
-							.await;
+							let challenge = r#"{"code":60003,"mfa":{"ticket":"SYNTHETIC_TICKET","methods":[{"type":"totp"}]}}"#;
+							stream.write_all(format!("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset-after: NaN\r\nConnection: close\r\n\r\n{challenge}",challenge.len()).as_bytes()).await.unwrap();
 						}
 						3 => {
 							assert!(headers.starts_with("GET /unrelated "));

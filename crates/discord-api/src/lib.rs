@@ -597,7 +597,7 @@ impl DiscordApi {
 				}
 			})?;
 			let status = response.status();
-			let max_bytes = if status.is_success() {
+			let body_limit = if status.is_success() {
 				max_bytes
 			} else {
 				mfa::MAX_WIRE
@@ -618,17 +618,6 @@ impl DiscordApi {
 				.get("retry-after")
 				.and_then(|v| v.to_str().ok())
 				.and_then(|s| s.parse::<f64>().ok());
-			if exhausted && status != StatusCode::TOO_MANY_REQUESTS {
-				let mut next = self.cooldown.lock().await;
-				let delay = safe_delay(reset.or(retry_header)).map_err(|failure| {
-					if uncertain_write {
-						Failure::Ambiguous
-					} else {
-						failure
-					}
-				})?;
-				*next = (*next).max(Instant::now() + delay);
-			}
 			let cloudflare_block = response
 				.headers()
 				.get(CONTENT_TYPE)
@@ -644,7 +633,7 @@ impl DiscordApi {
 			};
 			if response
 				.content_length()
-				.is_some_and(|n| n > max_bytes as u64)
+				.is_some_and(|n| n > body_limit as u64)
 			{
 				if status == StatusCode::UNAUTHORIZED {
 					self.stop();
@@ -652,21 +641,29 @@ impl DiscordApi {
 				}
 				return Err(overflow);
 			}
+			let declared_overflow = response
+				.content_length()
+				.is_some_and(|n| n > max_bytes as u64);
 			let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(
-				response.content_length().unwrap_or(0).min(max_bytes as u64) as usize,
+				response
+					.content_length()
+					.unwrap_or(0)
+					.min(body_limit as u64) as usize,
 			));
 			while let Some(chunk) = response.chunk().await.map_err(|_| {
 				if status == StatusCode::UNAUTHORIZED {
 					self.stop();
 					return Failure::Expired;
 				}
-				if write {
+				if declared_overflow {
+					overflow
+				} else if write {
 					Failure::Ambiguous
 				} else {
 					Failure::Network
 				}
 			})? {
-				if bytes.len() + chunk.len() > max_bytes {
+				if bytes.len() + chunk.len() > body_limit {
 					if status == StatusCode::UNAUTHORIZED {
 						self.stop();
 						return Err(Failure::Expired);
@@ -675,8 +672,9 @@ impl DiscordApi {
 				}
 				bytes.extend_from_slice(&chunk);
 			}
-			if !status.is_success() {
-				let error = decode::<ErrorBody>(&bytes).unwrap_or_default();
+			let error =
+				(!status.is_success()).then(|| decode::<ErrorBody>(&bytes).unwrap_or_default());
+			if let Some(error) = &error {
 				if error.code == Some(60003)
 					&& !mfa_resumed && let (Some(target), Some(replay), Some(challenge)) =
 					(mfa_target, exact_retry, mfa::challenge(&bytes))
@@ -714,7 +712,24 @@ impl DiscordApi {
 					self.stop();
 					return Err(Failure::Expired);
 				}
-
+			}
+			// Error bodies are read up to the small MFA envelope limit only to classify a
+			// genuine authentication challenge. Other replies retain the caller's limit.
+			if bytes.len() > max_bytes {
+				return Err(overflow);
+			}
+			if exhausted && status != StatusCode::TOO_MANY_REQUESTS {
+				let mut next = self.cooldown.lock().await;
+				let delay = safe_delay(reset.or(retry_header)).map_err(|failure| {
+					if uncertain_write {
+						Failure::Ambiguous
+					} else {
+						failure
+					}
+				})?;
+				*next = (*next).max(Instant::now() + delay);
+			}
+			if let Some(error) = error {
 				if error.captcha_key.is_some() || matches!(error.code, Some(60003 | 50014)) {
 					let auth_challenge = matches!(error.code, Some(60003 | 50014));
 					if !auth_challenge
