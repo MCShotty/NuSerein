@@ -646,6 +646,16 @@ impl State {
 		self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
 		self.server_admin.pending = true;
 		self.server_admin.requested_permission_revision = self.server_admin.permission_revision;
+		if matches!(
+			action,
+			Action::Access(
+				model::server_access::Action::Applications { .. }
+					| model::server_access::Action::Application(_)
+			)
+		) {
+			self.server_admin.access.requested_applications_revision =
+				self.server_admin.access.applications_revision;
+		}
 		self.server_admin.saving = action.write();
 		self.server_admin.error = None;
 		let mut retained = action.clone();

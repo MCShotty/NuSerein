@@ -16,6 +16,8 @@ pub struct View {
 	pub revision: u64,
 	pub applications_changed: bool,
 	pub removed_application: Option<Id>,
+	pub(crate) applications_revision: u64,
+	pub(crate) requested_applications_revision: u64,
 }
 impl View {
 	pub fn bytes(&self) -> usize {
@@ -109,6 +111,7 @@ impl State {
 			return;
 		}
 		let view = &mut self.server_admin.access;
+		view.applications_revision = view.applications_revision.wrapping_add(1);
 		view.pending_count = None;
 		view.applications_changed = true;
 		if deleted {
@@ -260,6 +263,20 @@ impl State {
 		action: &Action,
 		outcome: Outcome,
 	) -> Result<(), &'static str> {
+		let view = &self.server_admin.access;
+		if matches!(action, Action::Applications { .. } | Action::Application(_))
+			&& view.applications_revision != view.requested_applications_revision
+		{
+			self.server_admin.error =
+				Some("Applications changed while loading; reload before continuing");
+			return Ok(());
+		}
+		if matches!(action, Action::Decide { request, .. } | Action::Interview { request } if view.removed_application == Some(*request))
+		{
+			self.server_admin.error =
+				Some("This application was removed; reload before continuing");
+			return Ok(());
+		}
 		if !self.access_response_expected(guild, action, &outcome) {
 			return Err("Unexpected server access result");
 		}
@@ -291,8 +308,6 @@ impl State {
 						*row = v.clone();
 					}
 				}
-				self.server_admin.access.applications_changed = false;
-				self.server_admin.access.removed_application = None;
 				self.server_admin.access.detail = Some(v);
 			}
 			Outcome::Interview {
@@ -489,6 +504,108 @@ mod tests {
 			}),
 		);
 		assert!(state.server_admin.access.applications.is_none());
+	}
+	#[test]
+	fn gateway_withdrawal_cannot_be_undone_by_a_late_http_detail_or_page() {
+		let mut state = state(p::KICK_MEMBERS);
+		load_applications(&mut state);
+		let request = dispatch(&mut state, Action::Application(Id(10)));
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::GuildApplicationChanged {
+				guild: Id(2),
+				request: Id(10),
+				deleted: true,
+			},
+		});
+		apply(&mut state, request, Outcome::Application(application()));
+		assert!(state.server_admin.access.detail.is_none());
+		assert!(
+			state
+				.server_admin
+				.access
+				.applications
+				.as_ref()
+				.unwrap()
+				.items
+				.is_empty()
+		);
+		assert_eq!(state.server_admin.access.removed_application, Some(Id(10)));
+		assert!(state.server_admin.error.is_some());
+		let request = dispatch(
+			&mut state,
+			Action::Applications {
+				status: Status::Pending,
+				before: None,
+			},
+		);
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::GuildApplicationChanged {
+				guild: Id(2),
+				request: Id(11),
+				deleted: false,
+			},
+		});
+		apply(
+			&mut state,
+			request,
+			Outcome::Applications(Applications {
+				guild: Id(2),
+				status: Status::Pending,
+				items: vec![application()],
+				total: Some(1),
+				next: None,
+			}),
+		);
+		assert!(
+			state
+				.server_admin
+				.access
+				.applications
+				.as_ref()
+				.unwrap()
+				.items
+				.is_empty()
+		);
+		assert!(state.server_admin.access.applications_changed);
+		assert!(!state.server_admin.pending);
+	}
+	#[test]
+	fn confirmed_decision_does_not_erase_a_concurrent_application_change() {
+		let mut state = state(p::KICK_MEMBERS);
+		load_applications(&mut state);
+		let request = dispatch(
+			&mut state,
+			Action::Decide {
+				request: Id(10),
+				status: Status::Approved,
+				reason: String::new(),
+			},
+		);
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::GuildApplicationChanged {
+				guild: Id(2),
+				request: Id(11),
+				deleted: false,
+			},
+		});
+		apply(
+			&mut state,
+			request,
+			Outcome::Application(Application {
+				status: Status::Approved,
+				..application()
+			}),
+		);
+		assert_eq!(
+			state.server_admin.access.detail.as_ref().unwrap().status,
+			Status::Approved
+		);
+		assert!(state.server_admin.access.applications_changed);
+		assert_eq!(state.guild_application_count(Id(2)), None);
+		assert!(state.server_admin.error.is_none());
 	}
 	#[test]
 	fn confirmed_owner_transfer_survives_its_own_gateway_permission_revocation() {
