@@ -263,20 +263,39 @@ impl GraphicsCaptureApiHandler for Handler {
 			processing.previous = NativeStats::default();
 		}
 		processing.signature = Some(signature);
-		let processor = processing
-			.processor
-			.as_mut()
-			.ok_or("Capture processing unavailable")?;
 		let started = Instant::now();
-		// SAFETY: This live texture belongs to the device supplied in new().
-		let submitted = unsafe {
-			processor.submit(
-				frame.as_raw_texture().as_raw(),
-				source,
-				(resolved.width, resolved.height),
-				format,
-			)
-		}?;
+		let mut submitted = false;
+		for attempt in 0..3 {
+			let processor = processing
+				.processor
+				.as_mut()
+				.ok_or("Capture processing unavailable")?;
+			// SAFETY: This live texture belongs to the device supplied in new().
+			submitted = unsafe {
+				processor.submit(
+					frame.as_raw_texture().as_raw(),
+					source,
+					(resolved.width, resolved.height),
+					format,
+				)
+			}?;
+			if submitted || !processor.wants_cpu() || attempt == 2 {
+				break;
+			}
+			// Retry this same WGC picture. An idle source might never produce
+			// another callback after the first unsupported processor operation.
+			let current = processor.stats();
+			let next = processor.replacement(false)?;
+			flags.stats.resources_created.fetch_add(
+				current
+					.resources_created
+					.saturating_sub(processing.previous.resources_created),
+				Ordering::Relaxed,
+			);
+			processing.processor = Some(next);
+			processing.previous = NativeStats::default();
+			processing.gpu_disabled = true;
+		}
 		let elapsed = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
 		flags.stats.submit_ns.fetch_add(elapsed, Ordering::Relaxed);
 		flags

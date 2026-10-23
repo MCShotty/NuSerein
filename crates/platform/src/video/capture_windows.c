@@ -70,6 +70,7 @@ struct Capture {
     uint32_t source_width, source_height, width, height, format;
     DXGI_FORMAT input_format, output_format;
     int configured, gpu_export, adapter_matches, scaled;
+    int disable_processing;
     LONG force_cpu;
     SereinVideoAdapter selected;
     int has_selected;
@@ -357,7 +358,7 @@ static int configure(Capture *capture, uint32_t width, uint32_t height,
     capture->format = format;
     capture->output_format = capture->input_format;
     capture->scaled = 0;
-    if (format == 0 && make_processor(capture, width, height, target_width, target_height,
+    if (format == 0 && !capture->disable_processing && make_processor(capture, width, height, target_width, target_height,
             capture->input_format, DXGI_FORMAT_NV12, &capture->enumerator, &capture->processor)) {
         gpu = initialize_gpu(capture, target_width, target_height);
         if (gpu) {
@@ -373,7 +374,7 @@ static int configure(Capture *capture, uint32_t width, uint32_t height,
     if (!gpu) {
         /* Preserve half-float HDR bytes for the existing shared tone mapper.
          * SDR fallback still scales on the video processor before readback. */
-        if (format == 0 && make_processor(capture, width, height, target_width, target_height,
+        if (format == 0 && !capture->disable_processing && make_processor(capture, width, height, target_width, target_height,
                 capture->input_format, DXGI_FORMAT_B8G8R8A8_UNORM, &capture->enumerator, &capture->processor)) {
             capture->width = target_width;
             capture->height = target_height;
@@ -503,7 +504,17 @@ int serein_capture_submit(void *opaque, void *native_texture, uint32_t width,
     ID3D11Texture2D_AddRef(texture);
     if (capture->scaled) {
         if (!process(capture, texture, 0, capture->enumerator, capture->processor, slot->view,
-                width, height, capture->width, capture->height, 0, capture->format == 2)) goto failed_slot;
+                width, height, capture->width, capture->height, 0, capture->format == 2)) {
+            /* Some drivers advertise a format then reject the actual blit or
+             * alignment. Request at most NV12->BGRA->raw staging, preserving
+             * the same approved texture and encoder quality. */
+            InterlockedExchange(&capture->force_cpu, capture->format == 2 ? 1 : 2);
+            ID3D11Texture2D_Release(slot->source);
+            slot->source = NULL;
+            capture->stats.skipped++;
+            capture_unlock(capture);
+            return 0;
+        }
         if (slot->staging)
             ID3D11DeviceContext_CopyResource(capture->context, (ID3D11Resource *)slot->staging, (ID3D11Resource *)slot->texture);
     } else {
@@ -526,9 +537,6 @@ int serein_capture_submit(void *opaque, void *native_texture, uint32_t width,
     capture->stats.submitted++;
     capture_unlock(capture);
     return 1;
-failed_slot:
-    ID3D11Texture2D_Release(slot->source);
-    slot->source = NULL;
 failed:
     capture_unlock(capture);
     return -1;
@@ -601,6 +609,8 @@ void *serein_capture_replacement(void *opaque, int gpu_export)
         synchronization_release(replacement->synchronization);
         replacement->synchronization = capture->synchronization;
         InterlockedIncrement(&replacement->synchronization->references);
+        replacement->disable_processing = capture->disable_processing ||
+            InterlockedCompareExchange(&capture->force_cpu, 0, 0) >= 2;
     }
     return replacement;
 }

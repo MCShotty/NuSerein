@@ -3,7 +3,7 @@
 #![allow(unsafe_code)]
 
 use super::ffmpeg::{Adapter, CaptureLuminance, SdrConverter, half};
-use std::{ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
+use std::{ffi::c_void, ptr::NonNull};
 
 const FAILED: &str = "Screen capture processing failed";
 const MAX_BYTES: usize = 7680 * 4320 * 8;
@@ -149,7 +149,6 @@ unsafe extern "C" {
 /// through one serialized owner. Frame leases retain their originating pool.
 pub struct Processor {
 	native: NonNull<c_void>,
-	_thread: PhantomData<Rc<()>>,
 }
 
 // SAFETY: Native owners serialize all generations sharing an immediate context.
@@ -181,7 +180,6 @@ impl Processor {
 		};
 		Ok(Self {
 			native: NonNull::new(native).ok_or(FAILED)?,
-			_thread: PhantomData,
 		})
 	}
 
@@ -275,7 +273,6 @@ impl Processor {
 		let native = unsafe { serein_capture_cpu_replacement(self.native.as_ptr()) };
 		Ok(Self {
 			native: NonNull::new(native).ok_or(FAILED)?,
-			_thread: PhantomData,
 		})
 	}
 	pub fn replacement(&self, gpu: bool) -> Result<Self, &'static str> {
@@ -283,7 +280,6 @@ impl Processor {
 		let native = unsafe { serein_capture_replacement(self.native.as_ptr(), i32::from(gpu)) };
 		Ok(Self {
 			native: NonNull::new(native).ok_or(FAILED)?,
-			_thread: PhantomData,
 		})
 	}
 }
