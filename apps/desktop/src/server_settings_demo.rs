@@ -967,7 +967,7 @@ fn execute_roles(
 			catalog.items.push(role);
 			selected = Some(id);
 		}
-		Action::Edit { id, edit } => {
+		Action::Edit { id, edit, .. } => {
 			if let Some(role) = catalog.items.iter_mut().find(|role| role.id == id) {
 				edit.apply(role);
 				if matches!(edit.icon, model::Patch::Value(_)) {

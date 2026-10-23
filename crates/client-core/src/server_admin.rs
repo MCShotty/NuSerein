@@ -411,22 +411,29 @@ impl State {
 		{
 			return false;
 		}
-		let Some(row) = self
+		let managed = self
 			.server_admin
 			.members
 			.as_ref()
 			.and_then(|page| page.roles.iter().find(|row| row.role.id == role))
+			.map(|row| row.managed)
 			.or_else(|| {
 				self.server_admin
 					.member_review
 					.as_ref()
 					.filter(|review| review.guild == guild)
 					.and_then(|review| review.roles.iter().find(|row| row.role.id == role))
+					.map(|row| row.managed)
 			})
-		else {
-			return false;
-		};
-		if row.managed {
+			.or_else(|| {
+				self.server_admin
+					.roles
+					.as_ref()
+					.filter(|catalog| catalog.guild == guild)
+					.and_then(|catalog| catalog.items.iter().find(|row| row.id == role))
+					.map(|row| row.managed)
+			});
+		if managed != Some(false) {
 			return false;
 		}
 		let Some(metadata) = self.permissions.guilds.get(&guild) else {

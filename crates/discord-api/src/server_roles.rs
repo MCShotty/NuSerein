@@ -104,7 +104,7 @@ impl DiscordApi {
 				}
 				Some(created.id)
 			}
-			Action::Edit { id, edit } => {
+			Action::Edit { id, before, edit } => {
 				let existing = latest
 					.items
 					.iter()
@@ -112,6 +112,11 @@ impl DiscordApi {
 					.ok_or(Failure::Forbidden)?;
 				if existing.managed || *id == guild && !edit.only_permissions() {
 					return Err(Failure::Forbidden);
+				}
+				if !edit.unchanged_since(before, existing) {
+					return Err(Failure::ProtocolAt(
+						"This role changed; reload and review your edits before saving",
+					));
 				}
 				let body =
 					wire::encode_edit(edit, Some(existing)).map_err(|_| Failure::Protocol)?;
@@ -236,6 +241,8 @@ mod tests {
 			let role = |id: &str, name: &str, bits: u128, position: i32| json!({"id":id,"name":name,"permissions":bits.to_string(),"position":position,"color":123,"hoist":false,"mentionable":false,"managed":false});
 			let before = role("4", "Member", unknown | 1024, 1);
 			let after = role("4", "Renamed", unknown | 2048, 1);
+			let mut reviewed = wire::role(&serde_json::to_vec(&before).unwrap()).unwrap();
+			reviewed.permissions &= !unknown; // A fresh, unrelated permission bit must survive.
 			let initial = json!({"id":"2","roles":[role("2","@everyone",0,0),before],"features":[]});
 			let final_catalog = json!({"id":"2","roles":[role("2","@everyone",0,0),after.clone()],"features":[]});
 			let server = tokio::spawn(async move {
@@ -262,7 +269,7 @@ mod tests {
 					stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 				}
 			});
-			let result = api.server_role_action(Id(2), &Action::Edit { id: Id(4), edit: model::server_roles::Edit { name: Some("Renamed".into()), permissions: Some(2048), permission_mask: 1024 | 2048, ..Default::default() } }).await.unwrap();
+			let result = api.server_role_action(Id(2), &Action::Edit { id: Id(4), before: Box::new(reviewed), edit: model::server_roles::Edit { name: Some("Renamed".into()), permissions: Some(2048), permission_mask: 1024 | 2048, ..Default::default() } }).await.unwrap();
 			let Outcome::Catalog { catalog, selected } = result else { panic!() };
 			assert_eq!(selected, Some(Id(4)));
 			let saved = catalog.items.iter().find(|role| role.id == Id(4)).unwrap();
@@ -270,6 +277,28 @@ mod tests {
 			assert_eq!(saved.member_count, Some(8));
 			assert_eq!(saved.colors.primary, 123);
 			server.await.unwrap();
+		}).await.unwrap();
+	}
+	#[tokio::test]
+	async fn stale_role_field_is_rejected_before_any_patch() {
+		tokio::time::timeout(Duration::from_secs(10), async {
+			let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api=DiscordApi::new(Arc::new(SessionSecret::from_owner_input("SYNTHETIC_ROLE_TOKEN".into()).unwrap())).unwrap();
+			api.base=format!("http://{}",listener.local_addr().unwrap());
+			let role=|id:&str,name:&str|json!({"id":id,"name":name,"permissions":"0","position":1,"color":0,"hoist":false,"mentionable":false,"managed":false});
+			let before=wire::role(&serde_json::to_vec(&role("4","Reviewed name")).unwrap()).unwrap();
+			let responses=[("/guilds/2",json!({"id":"2","roles":[role("2","@everyone"),role("4","Changed in another client")],"features":[]})),("/guilds/2/roles/member-counts",json!({}))];
+			let server=tokio::spawn(async move {
+				for(path,response)in responses {
+					let(mut stream,_)=listener.accept().await.unwrap();let mut bytes=vec![];
+					loop {let mut chunk=[0;2048];let n=stream.read(&mut chunk).await.unwrap();assert!(n>0);bytes.extend_from_slice(&chunk[..n]);assert!(bytes.len()<8192);if bytes.windows(4).any(|part|part==b"\r\n\r\n"){break;}}
+					assert!(std::str::from_utf8(&bytes).unwrap().starts_with(&format!("GET {path} HTTP/1.1\r\n")));
+					let body=response.to_string();stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+				}
+				assert!(tokio::time::timeout(Duration::from_millis(100),listener.accept()).await.is_err(),"a conflicting edit must never issue PATCH or retry");
+			});
+			let result=api.server_role_action(Id(2),&Action::Edit{id:Id(4),before:Box::new(before),edit:model::server_roles::Edit{name:Some("My name".into()),..Default::default()}}).await;
+			assert!(matches!(result,Err(Failure::ProtocolAt(_))));server.await.unwrap();
 		}).await.unwrap();
 	}
 }

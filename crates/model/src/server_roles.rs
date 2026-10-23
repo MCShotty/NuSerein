@@ -164,6 +164,28 @@ impl Edit {
 			},
 		}
 	}
+	/// Only edited fields must still match the reviewed snapshot. Unrelated service
+	/// changes, including unknown permission bits outside the mask, remain intact.
+	pub fn unchanged_since(&self, before: &Role, actual: &Role) -> bool {
+		before.id == actual.id
+			&& self
+				.name
+				.as_ref()
+				.is_none_or(|_| before.name == actual.name)
+			&& self.colors.is_none_or(|_| before.colors == actual.colors)
+			&& self.permissions.is_none_or(|_| {
+				(before.permissions ^ actual.permissions) & self.permission_mask == 0
+			}) && self.hoist.is_none_or(|_| before.hoist == actual.hoist)
+			&& self
+				.mentionable
+				.is_none_or(|_| before.mentionable == actual.mentionable)
+			&& (matches!(self.icon, Patch::Absent)
+				&& !matches!(self.unicode_emoji, Patch::Value(_))
+				|| before.icon == actual.icon)
+			&& (matches!(self.unicode_emoji, Patch::Absent)
+				&& !matches!(self.icon, Patch::Value(_))
+				|| before.unicode_emoji == actual.unicode_emoji)
+	}
 	pub fn is_empty(&self) -> bool {
 		self == &Self::default()
 	}
@@ -243,10 +265,20 @@ impl Edit {
 pub enum Action {
 	Load,
 	Create(Edit),
-	Edit { id: Id, edit: Edit },
+	Edit {
+		id: Id,
+		before: Box<Role>,
+		edit: Edit,
+	},
 	Delete(Id),
-	Move { id: Id, position: i32 },
-	Members { role: Option<Id>, query: Query },
+	Move {
+		id: Id,
+		position: i32,
+	},
+	Members {
+		role: Option<Id>,
+		query: Query,
+	},
 }
 impl Action {
 	pub fn write(&self) -> bool {
@@ -256,7 +288,9 @@ impl Action {
 		match self {
 			Self::Load => true,
 			Self::Create(edit) => edit.valid(),
-			Self::Edit { id, edit } => id.0 != 0 && edit.valid() && !edit.is_empty(),
+			Self::Edit { id, before, edit } => {
+				id.0 != 0 && before.id == *id && before.valid() && edit.valid() && !edit.is_empty()
+			}
 			Self::Delete(id) => id.0 != 0,
 			Self::Move { id, position } => id.0 != 0 && (1..=4096).contains(position),
 			Self::Members { role, query } => role.is_none_or(|role| role.0 != 0) && query.valid(),
@@ -309,4 +343,76 @@ fn valid_unicode(value: &str) -> bool {
 		&& value.len() <= 128
 		&& value.chars().count() <= 32
 		&& !value.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn edited_fields_conflict_while_unmodified_fields_and_permission_bits_survive() {
+		let before = Role {
+			id: Id(4),
+			name: "Member".into(),
+			permissions: 1 << 110,
+			icon: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+			..Default::default()
+		};
+		let mut after = before.clone();
+		after.name = "My draft".into();
+		after.permissions |= crate::permissions::SEND_MESSAGES;
+		let edit = Edit::between(&before, &after);
+		let mut actual = before.clone();
+		actual.hoist = true;
+		actual.permissions |= 1 << 111;
+		assert!(edit.unchanged_since(&before, &actual));
+		edit.apply(&mut actual);
+		assert_eq!(actual.name, "My draft");
+		assert!(actual.hoist);
+		assert_ne!(actual.permissions & (1 << 111), 0);
+		actual.name = "Another client".into();
+		assert!(!edit.unchanged_since(&before, &actual));
+		actual = before.clone();
+		actual.permissions |= crate::permissions::SEND_MESSAGES;
+		assert!(!edit.unchanged_since(&before, &actual));
+		let fields = [
+			Edit {
+				colors: Some(Colors {
+					primary: 123,
+					..Default::default()
+				}),
+				..Default::default()
+			},
+			Edit {
+				hoist: Some(true),
+				..Default::default()
+			},
+			Edit {
+				mentionable: Some(true),
+				..Default::default()
+			},
+			Edit {
+				icon: Patch::Null,
+				..Default::default()
+			},
+			Edit {
+				unicode_emoji: Patch::Value("🔥".into()),
+				..Default::default()
+			},
+		];
+		for edit in fields {
+			let mut actual = before.clone();
+			edit.apply(&mut actual);
+			assert!(!edit.unchanged_since(&before, &actual));
+		}
+		let icon = Edit {
+			icon: Patch::Value("data:image/png;base64,synthetic".into()),
+			..Default::default()
+		};
+		actual = before.clone();
+		actual.unicode_emoji = Some("✨".into());
+		assert!(
+			!icon.unchanged_since(&before, &actual),
+			"uploading an icon must not erase a concurrently chosen Unicode icon"
+		);
+	}
 }

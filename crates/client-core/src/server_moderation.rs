@@ -108,7 +108,10 @@ impl State {
 						.as_ref()
 						.is_some_and(|report| report.matches(users))
 			}
-			m::Action::Member(user) => self.user.as_ref().is_none_or(|actor| actor.id != *user),
+			m::Action::Member(user) => {
+				self.user.as_ref().is_none_or(|actor| actor.id != *user)
+					|| self.guild_permission(guild, p::MANAGE_ROLES)
+			}
 			m::Action::Unban { user, .. } => {
 				self.guild_permission(guild, p::BAN_MEMBERS)
 					&& self.server_admin.bans.as_ref().is_some_and(|page| {

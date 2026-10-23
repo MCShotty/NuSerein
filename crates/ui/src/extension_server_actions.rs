@@ -116,13 +116,26 @@ impl MessagingUi {
 				guild_id,
 				role_id,
 				role,
-			} => state.request_server_admin(
-				id(&guild_id)?,
-				server_admin::Action::Roles(server_roles::Action::Edit {
-					id: id(&role_id)?,
-					edit: role_edit(role)?,
-				}),
-			),
+			} => {
+				let guild = id(&guild_id)?;
+				let target = id(&role_id)?;
+				let before = state
+					.server_admin
+					.roles
+					.as_ref()
+					.filter(|catalog| catalog.guild == guild)
+					.and_then(|catalog| catalog.items.iter().find(|row| row.id == target))
+					.cloned()
+					.ok_or("Load this role before changing it")?;
+				state.request_server_admin(
+					guild,
+					server_admin::Action::Roles(server_roles::Action::Edit {
+						id: target,
+						before: Box::new(before),
+						edit: role_edit(role)?,
+					}),
+				)
+			}
 			AppAction::DeleteRole { guild_id, role_id } => state.request_server_admin(
 				id(&guild_id)?,
 				server_admin::Action::Roles(server_roles::Action::Delete(id(&role_id)?)),
