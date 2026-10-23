@@ -110,12 +110,17 @@ impl Browser {
 		});
 		if self.import {
 			ui.group(|ui| {
-					ui.label("Add this device’s existing favorites to your Discord account? Existing account favorites are kept.");
-					ui.horizontal(|ui| {
-						if ui.add_enabled(available,egui::Button::new("Import favorites")).clicked() {action=state.personal_import_favorites(guild,&local.favorites); self.import=false;}
-						if ui.button("Cancel").clicked() {self.import=false;}
-					});
+				ui.label("Add this device’s existing favorites to your Discord account? Existing account favorites are kept.");
+				ui.horizontal(|ui| {
+					if ui.add_enabled(available, egui::Button::new("Import favorites")).clicked() {
+						action = state.personal_import_favorites(guild, &local.favorites);
+						self.import = false;
+					}
+					if ui.button("Cancel").clicked() {
+						self.import = false;
+					}
 				});
+			});
 		}
 		ui.horizontal_wrapped(|ui| {
 			ui.add(
@@ -312,7 +317,7 @@ impl Browser {
 			.find_map(|c| {
 				state
 					.channel_action_status(c.id)
-					.map(|(message, success)| (c.id, message, success))
+					.map(|message| (c.id, message, state.channel_action_succeeded(c.id)))
 			}) {
 			ui.colored_label(design::palette(ui).danger, message);
 			if ui.button("Retry loading descriptions").clicked() {
