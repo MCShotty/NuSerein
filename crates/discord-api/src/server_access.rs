@@ -153,7 +153,11 @@ impl DiscordApi {
 						"Security actions changed; reload before saving",
 					));
 				}
-				let now = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
+				let now = std::time::SystemTime::now()
+					.duration_since(std::time::UNIX_EPOCH)
+					.ok()
+					.and_then(|elapsed| i128::try_from(elapsed.as_nanos()).ok())
+					.ok_or(Failure::ProtocolAt("The system clock could not be read"))?;
 				if !after.writable(now) {
 					return Err(Failure::ProtocolAt(
 						"Security actions must expire within 24 hours",
@@ -389,7 +393,7 @@ mod tests {
 	#[tokio::test]
 	async fn security_actions_and_mfa_require_authoritative_readback_and_sparse_bodies() {
 		tokio::time::timeout(Duration::from_secs(5),async{
-			let before=guild();let incident=model::server_access::Incident{invites_until:Some(time::OffsetDateTime::now_utc().unix_timestamp_nanos()+3_600_000_000_000),dms_until:None};let body=wire::incident_body(incident).unwrap();
+			let before=guild();let incident=model::server_access::Incident{invites_until:Some(i128::try_from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()).unwrap()+3_600_000_000_000),dms_until:None};let body=wire::incident_body(incident).unwrap();
 			let mut active=before.clone();active["incidents_data"]=body.clone();let mut mfa=active.clone();mfa["mfa_level"]=json!(1);
 			let(api,server)=fixture(vec![
 				("GET","/guilds/2",None,before),
