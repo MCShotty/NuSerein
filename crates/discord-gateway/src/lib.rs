@@ -1660,6 +1660,8 @@ async fn run_recoverable(
 												message_requests.push(channel.id);
 											}
 										}
+										let incident_now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as i128;
+										let incident_updates:Vec<_>=ready.guilds.iter().filter_map(|guild|match guild.incident_patch(){model::Patch::Value(incident) if incident.active(incident_now)=>Some((guild.id,incident)),_=>None}).take(256).collect();
 										let (guilds, channels) = ready.navigation().map_err(|_| Failure::ProtocolAt("Gateway login: invalid or oversized channel/thread navigation"))?;
 										warnings.entries |= ready.skipped;
 										let (read_entries,read_version,partial)=ready.read_state.take().map_or((None,None,false),|snapshot|(Some(snapshot.entries.into_iter().filter(|e|e.kind==0).map(|e|(e.id,e.last_message_id,e.mention_count)).collect()),snapshot.version,snapshot.partial));
@@ -1678,6 +1680,7 @@ async fn run_recoverable(
 											read_state: client_core::read_state::Event::Snapshot {entries:read_entries,version:read_version,partial},
 											notifications, session_dnd: ready.sessions.as_ref().and_then(|s| s.dnd()), warnings,
 										}.prepare()?)))?;
+										for(guild,incident)in incident_updates{emit(Event::ServerIncident{guild,incident:Some(incident)})?;}
 										// A new session does not replay settings changed while disconnected.
 										if was_ready { emit(Event::AccountSettings { status: true, folders: true })?; }
 										was_ready = true;
@@ -1948,6 +1951,7 @@ async fn run_recoverable(
 											emit(Event::GuildJoined(model::Guild { default_message_notifications: guild.default_notification_level(), id: guild.id, name, icon, stickers: None, emojis: None }))?;
 										}
 									emit(Event::GuildChanged(model::GuildPatch { id: guild.id, name: model::Patch::Absent, icon: model::Patch::Absent, default_message_notifications: guild.default_notification_patch() }))?;
+										if let model::Patch::Value(incident)=guild.incident_patch(){emit(Event::ServerIncident{guild:guild.id,incident:Some(incident)})?;}
 
 										if let Some(permissions)=permissions {emit(Event::Permissions(client_core::permissions::Event::Snapshot(permissions)))?;}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::guild(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
@@ -1966,11 +1970,20 @@ async fn run_recoverable(
 										if let Some(stickers) = guild.stickers { emit(Event::GuildStickers { guild: guild.id, stickers: discord_protocol::stickers::guild_catalog(stickers.0, guild.id).map_err(|_| Failure::Protocol)? })?; }
 										if let Some(emojis) = guild.emojis { emit(Event::GuildEmojis { guild: guild.id, emojis: emojis.0 })?; }
 									}
+									"GUILD_JOIN_REQUEST_CREATE"|"GUILD_JOIN_REQUEST_UPDATE"|"GUILD_JOIN_REQUEST_DELETE"=>{
+										let deleted=packet.t.as_deref()==Some("GUILD_JOIN_REQUEST_DELETE");
+										if let Ok(Some((guild,request)))=discord_protocol::server_access::application_update(packet.d.get().as_bytes(),deleted){emit(Event::GuildApplicationChanged{guild,request,deleted})?;}
+									}
 									"GUILD_UPDATE" => {
+										if let Ok(Some((guild,incident)))=discord_protocol::server_access::incident_update(packet.d.get().as_bytes()){emit(Event::ServerIncident{guild,incident})?;}
 										let owner=permissions::owner(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
 										emit(Event::GuildChanged(decode::<GuildPatchDto>(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?.into_model()))?;
 										if let Some((guild,owner))=owner {emit(Event::Permissions(client_core::permissions::Event::Owner {guild,owner}))?;}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::guild(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
+									}
+									"GUILD_BULK_BAN_UPDATE" => {
+										let (guild,report)=discord_protocol::moderation::bulk_update(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										emit(Event::BulkModeration {guild,report})?;
 									}
 									"GUILD_MEMBER_UPDATE" => {
 										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=permissions::member(packet.d.get().as_bytes(),owner).map_err(|_|Failure::Protocol)? {
@@ -2047,6 +2060,12 @@ fn notification_preferences(
 			.into_iter()
 			.map(discord_protocol::notifications::Setting::with_defaults)
 			.map(|s| client_core::notifications::Setting {
+				flags: s.flags,
+				channel_flags: s.channel_overrides.as_ref().map_or_else(Vec::new, |c| {
+					c.0.iter()
+						.map(|row| (row.channel_id, row.flags, row.collapsed))
+						.collect()
+				}),
 				overrides_known: true,
 				guild: s.guild_id,
 				muted: s.muted,

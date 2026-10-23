@@ -21,6 +21,8 @@ impl Dialog {
 #[derive(Default)]
 pub(super) struct ServerMenu {
 	pub guide_requested: Option<Id>,
+	pub browse_requested: Option<Id>,
+	pub channel_preferences_requested: Option<(Id, client_core::channel_actions::Action)>,
 	pub settings_requested: Option<Id>,
 	pub events_requested: Option<Id>,
 	pub mark_read_requested: Option<Id>,
@@ -299,6 +301,22 @@ impl ServerMenu {
 						ui.close();
 					}
 					self.settings_item(ui, state, guild);
+					if ui.button("Browse Channels").clicked() {
+						self.browse_requested = Some(guild);
+						ui.close();
+					}
+					let mut show_all = state.personally_shows_all_channels(guild);
+					if ui
+						.add_enabled(
+							state.personal_channel_controls_available(guild),
+							egui::Checkbox::new(&mut show_all, "Show All Channels"),
+						)
+						.changed() && let Some(action) =
+						state.personal_show_all_change(guild, show_all)
+					{
+						self.channel_preferences_requested = Some((guild, action));
+						ui.close();
+					}
 					self.notifications_item(ui, state, guild);
 					self.mute_item(ui, state, guild);
 					if ui

@@ -10,7 +10,9 @@ use serde_json::json;
 
 impl DiscordApi {
 	pub(super) async fn server_admin(&self, guild: Id, request: u64, action: &Action) -> Event {
-		let result = self.server_admin_action(guild, action).await;
+		let result = self
+			.server_admin_action_scoped(guild, action, Some(request))
+			.await;
 		Event {
 			guild,
 			request,
@@ -89,18 +91,35 @@ impl DiscordApi {
 			.await?;
 		wire::member(&bytes, user).map_err(|_| Failure::Protocol)
 	}
+	#[cfg(test)]
 	async fn server_admin_action(&self, guild: Id, action: &Action) -> Result<Outcome, Failure> {
+		self.server_admin_action_scoped(guild, action, None).await
+	}
+	async fn server_admin_action_scoped(
+		&self,
+		guild: Id,
+		action: &Action,
+		request: Option<u64>,
+	) -> Result<Outcome, Failure> {
 		if guild.0 == 0 || !action.valid() {
 			return Err(Failure::Protocol);
 		}
 		match action {
+			Action::CommandPermissions(action) => self
+				.command_permissions(guild, action)
+				.await
+				.map(Outcome::CommandPermissions),
+			Action::Access(action) => self
+				.server_access_action(guild, action)
+				.await
+				.map(Outcome::Access),
 			Action::Community(action) => self
 				.community_admin(guild, action)
 				.await
 				.map(Outcome::Community),
 			Action::AutoMod(action) => self.automod(guild, action).await.map(Outcome::AutoMod),
 			Action::Moderation(action) => self
-				.moderation(guild, action)
+				.moderation_progress(guild, action, request)
 				.await
 				.map(Outcome::Moderation),
 			Action::Voice { user, change, .. } => {
@@ -109,6 +128,7 @@ impl DiscordApi {
 						json!({"channel_id":channel.map(|id| id.to_string())})
 					}
 					VoiceChange::Mute(muted) => json!({"mute":muted}),
+					VoiceChange::Deafen(deafened) => json!({"deaf":deafened}),
 				};
 				let bytes = self
 					.request_limited(
@@ -125,6 +145,7 @@ impl DiscordApi {
 					.as_str()
 					.and_then(|id| id.parse::<u64>().ok())
 					!= Some(user.0) || matches!(change, VoiceChange::Mute(muted) if member["mute"].as_bool() != Some(*muted))
+					|| matches!(change, VoiceChange::Deafen(deafened) if member["deaf"].as_bool() != Some(*deafened))
 				{
 					return Err(Failure::Ambiguous);
 				}

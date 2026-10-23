@@ -49,14 +49,6 @@ impl State {
 			.iter()
 			.find(|value| value.id == role)
 	}
-	fn owns_guild(&self, guild: Id) -> bool {
-		self.user.as_ref().is_some_and(|user| {
-			self.permissions
-				.guilds
-				.get(&guild)
-				.is_some_and(|metadata| metadata.owner == Some(user.id))
-		})
-	}
 	pub fn can_edit_guild_role(&self, guild: Id, role: Id) -> bool {
 		if !self.can_open_role_settings(guild) {
 			return false;
@@ -147,8 +139,11 @@ impl State {
 			Action::Create(edit) => {
 				self.can_create_guild_role(guild) && self.role_edit_allowed(guild, None, edit)
 			}
-			Action::Edit { id, edit } => {
+			Action::Edit { id, before, edit } => {
 				self.can_edit_guild_role(guild, *id)
+					&& self
+						.settings_role(guild, *id)
+						.is_some_and(|actual| edit.unchanged_since(before, actual))
 					&& self.role_edit_allowed(guild, Some(*id), edit)
 			}
 			Action::Delete(id) => self.can_delete_guild_role(guild, *id),
@@ -370,6 +365,7 @@ mod tests {
 				Id(2),
 				&Action::Edit {
 					id: Id(2),
+					before: Box::new(state.settings_role(Id(2), Id(2)).unwrap().clone()),
 					edit: Edit {
 						name: Some("rename default".into()),
 						..Edit::default()
@@ -380,6 +376,7 @@ mod tests {
 				Id(2),
 				&Action::Edit {
 					id: Id(2),
+					before: Box::new(state.settings_role(Id(2), Id(2)).unwrap().clone()),
 					edit: Edit {
 						permissions: Some(p::VIEW_CHANNEL),
 						permission_mask: p::VIEW_CHANNEL,
@@ -391,6 +388,7 @@ mod tests {
 				Id(2),
 				&Action::Edit {
 					id: Id(4),
+					before: Box::new(state.settings_role(Id(2), Id(4)).unwrap().clone()),
 					edit: Edit {
 						permissions: Some(p::ADMINISTRATOR),
 						permission_mask: p::ADMINISTRATOR,
@@ -402,6 +400,7 @@ mod tests {
 				Id(2),
 				&Action::Edit {
 					id: Id(4),
+					before: Box::new(state.settings_role(Id(2), Id(4)).unwrap().clone()),
 					edit: Edit {
 						permissions: Some(0),
 						permission_mask: 1 << 110,
@@ -413,6 +412,7 @@ mod tests {
 				Id(2),
 				&Action::Edit {
 					id: Id(4),
+					before: Box::new(state.settings_role(Id(2), Id(4)).unwrap().clone()),
 					edit: Edit {
 						colors: Some(Colors {
 							primary: 1,
@@ -434,7 +434,11 @@ mod tests {
 			let Command::ServerAdmin { guild, request, .. } = state
 				.request_server_admin(
 					Id(2),
-					server_admin::Action::Roles(Action::Edit { id: Id(4), edit }),
+					server_admin::Action::Roles(Action::Edit {
+						id: Id(4),
+						before: Box::new(state.settings_role(Id(2), Id(4)).unwrap().clone()),
+						edit,
+					}),
 				)
 				.unwrap()
 			else {
@@ -748,5 +752,52 @@ mod tests {
 			assert!(state.server_admin.roles.is_none());
 			assert!(state.server_admin.guild.is_none());
 		}
+	}
+	#[test]
+	fn reviewed_role_fields_must_still_match_at_dispatch() {
+		let mut state = state();
+		let before = state.settings_role(Id(2), Id(4)).unwrap().clone();
+		let action = Action::Edit {
+			id: Id(4),
+			before: Box::new(before),
+			edit: Edit {
+				name: Some("Reviewed draft".into()),
+				..Default::default()
+			},
+		};
+		assert!(state.role_action_allowed(Id(2), &action));
+		state
+			.server_admin
+			.roles
+			.as_mut()
+			.unwrap()
+			.items
+			.iter_mut()
+			.find(|row| row.id == Id(4))
+			.unwrap()
+			.hoist = true;
+		assert!(
+			state.role_action_allowed(Id(2), &action),
+			"unmodified fields can change independently"
+		);
+		state
+			.server_admin
+			.roles
+			.as_mut()
+			.unwrap()
+			.items
+			.iter_mut()
+			.find(|row| row.id == Id(4))
+			.unwrap()
+			.name = "Another client".into();
+		assert!(
+			!state.role_action_allowed(Id(2), &action),
+			"a matching original snapshot is required for touched fields"
+		);
+		assert!(
+			state
+				.request_server_admin(Id(2), server_admin::Action::Roles(action))
+				.is_none()
+		);
 	}
 }

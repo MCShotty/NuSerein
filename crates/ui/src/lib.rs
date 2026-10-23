@@ -3,6 +3,7 @@
 mod account_badge;
 mod account_menu;
 mod account_settings;
+mod activity_alerts;
 mod announcements;
 #[cfg(test)]
 mod appearance_transparency_tests;
@@ -28,6 +29,7 @@ mod avatars;
 pub use avatars::media::debug_heic_layout_check;
 pub use avatars::media::{Lane, MAX_FRAMES, Motion, Rendition, Size, fit_edge, is_motion_video};
 pub use avatars::{EMBED_EDGE, FRAME_EDGE, GifFrames};
+mod browse_channels;
 mod categories;
 #[cfg(feature = "demo")]
 pub use categories::debug_thread_navigation_check;
@@ -108,6 +110,9 @@ mod keybinds;
 mod member_guide;
 mod message_menu;
 pub use message_menu::MessageSpeech;
+mod command_permissions;
+mod mod_view;
+mod moderation_bulk;
 mod name_styles;
 mod onboarding;
 mod polls;
@@ -116,12 +121,14 @@ mod reactions;
 mod reading;
 mod registered_games;
 mod restricted;
+mod role_preview;
 pub mod screen;
 pub mod scroll;
 mod search;
 #[cfg(test)]
 mod search_navigation_tests;
 pub mod select;
+mod server_access;
 mod server_admin;
 mod server_audit_log;
 mod server_automod;
@@ -144,6 +151,7 @@ mod text_menu;
 mod thumbhash;
 #[cfg(feature = "demo")]
 pub use polls::debug_poll_check;
+mod mfa;
 mod timeline;
 #[cfg(test)]
 mod title_bar_tests;
@@ -260,6 +268,7 @@ pub struct MessagingUi {
 	pub interaction_file_request: Option<String>,
 	interaction_components: components::Components,
 	pub verification: VerificationUi,
+	mfa: mfa::MfaUi,
 	onboarding: onboarding::OnboardingUi,
 	pub extensions: ExtensionUi,
 	friends: friends::Friends,
@@ -276,6 +285,7 @@ pub struct MessagingUi {
 	group_menu: group_menu::GroupMenu,
 	group_create: group_members::NewGroup,
 	server_menu: server_menu::ServerMenu,
+	browse_channels: browse_channels::Browser,
 	community_ui: community::CommunityUi,
 	channel_menu: channel_menu::ChannelMenu,
 	pub channel_preferences: model::ChannelPreferences,
@@ -297,6 +307,7 @@ pub struct MessagingUi {
 	search: search::SearchUi,
 	settings: settings::Settings,
 	server_settings: server_settings::Editor,
+	mod_view: mod_view::ModViewUi,
 	server_icon_sequence: u64,
 	server_emoji_sequence: u64,
 	server_sticker_sequence: u64,
@@ -693,6 +704,11 @@ enum MentionWrite {
 }
 
 impl MessagingUi {
+	/// Retire secret input even when the conversation UI is no longer drawn.
+	pub fn retire_mfa_input(&mut self, ctx: &egui::Context, state: &State) {
+		self.mfa.retire(ctx, state);
+	}
+
 	pub fn interaction_modal_id(&self) -> Option<Id> {
 		self.interaction_components.modal_id()
 	}
@@ -1266,6 +1282,9 @@ impl MessagingUi {
 			..Self::default()
 		};
 		self.timeline.video.fullscreen_request = video_fullscreen_request;
+	}
+	pub fn preview_mod_view(&mut self, state: &mut State, guild: Id, user: Id) -> Option<Command> {
+		self.mod_view.open(state, guild, user)
 	}
 	pub fn restore_channel_preferences(&mut self, preferences: model::ChannelPreferences) {
 		if !self.channel_preferences_changed && preferences.is_valid() {
@@ -2092,6 +2111,16 @@ impl MessagingUi {
 						}
 					};
 					commands.extend(command);
+				}
+				if let Some(guild) = self.guild
+					&& ui
+						.add_sized(
+							[ui.available_width(), 30.0],
+							egui::Button::new("Browse Channels"),
+						)
+						.clicked()
+				{
+					self.browse_channels.open(state, guild);
 				}
 				ui.add_space(6.0);
 				if self.guild.is_none() {
@@ -4523,6 +4552,11 @@ impl MessagingUi {
 					),
 				);
 			}
+			if let Some(guild) = self.server_settings.events_requested.take()
+				&& self.server_settings.navigate_away(state)
+			{
+				self.server_menu.events_requested = Some(guild);
+			}
 			if let Some(action) = self.server_settings.admin.user_action.take() {
 				self.user_action = Some(action);
 			}
@@ -4732,39 +4766,18 @@ impl MessagingUi {
 		if let Some(collapsed) = self.channel_menu.categories_collapsed_requested.take()
 			&& let Some(guild) = self.guild
 		{
-			let categories: Vec<_> = if collapsed {
-				state
-					.channels
-					.iter()
-					.filter(|channel| channel.guild == Some(guild) && channel.kind == 4)
-					.take(model::ChannelPreferences::MAX_ENTRIES + 1)
-					.map(|channel| channel.id)
-					.collect()
-			} else {
-				self.channel_preferences
-					.collapsed_categories
-					.iter()
-					.copied()
-					.filter(|id| {
-						state
-							.channel(*id)
-							.is_some_and(|channel| channel.guild == Some(guild))
-					})
-					.collect()
-			};
-			match self
-				.channel_preferences
-				.set_categories_collapsed(&categories, collapsed)
-			{
-				model::PreferenceEdit::Changed => {
-					self.channel_preferences_changed = true;
-					self.channel_cache.invalidate();
-					ctx.request_repaint();
-				}
-				model::PreferenceEdit::CapacityReached => {
-					self.channel_menu.report_capacity(state.generation)
-				}
-				model::PreferenceEdit::Unchanged => {}
+			let categories: Vec<_> = state
+				.channels
+				.iter()
+				.filter(|channel| {
+					channel.guild == Some(guild)
+						&& channel.kind == 4
+						&& state.can_personally_manage_channel(channel.id)
+				})
+				.map(|channel| channel.id)
+				.collect();
+			if let Some(action) = state.personal_collapse_change(guild, &categories, collapsed) {
+				commands.extend(state.request_personal_channel_action(guild, action));
 			}
 		}
 		if let Some((guild, channel)) = self.channel_menu.invite_requested.take() {
@@ -4782,6 +4795,24 @@ impl MessagingUi {
 			self.community_ui.open_events(state, guild, &mut commands);
 		}
 		self.community_ui.show(&ctx, state, &mut commands);
+		if let Some(guild) = self.server_menu.browse_requested.take() {
+			self.browse_channels.open(state, guild);
+		}
+		if let Some((guild, action)) = self.server_menu.channel_preferences_requested.take() {
+			commands.extend(state.request_personal_channel_action(guild, action));
+		}
+		let browse_shortcuts = shortcuts::ShortcutView::new(
+			&self.channel_preferences,
+			self.shortcuts_available(state),
+		);
+		self.browse_channels.show(
+			&ctx,
+			state,
+			self.guild,
+			(browse_shortcuts, self.show_hidden_channels),
+			&mut self.channel_menu,
+			&mut commands,
+		);
 		if let Some(guild) = self.server_menu.settings_requested.take()
 			&& let Some(command) = self.preview_server_settings(state, guild)
 		{
@@ -5005,6 +5036,16 @@ impl MessagingUi {
 						false,
 						&mut commands,
 					);
+				}
+				if let Some(guild) = state
+					.selected
+					.and_then(|id| state.channel(id))
+					.and_then(|channel| channel.guild)
+					&& crate::server_access::AccessUi::banner(ui, state, guild)
+					&& let Some(command) = self.preview_server_settings(state, guild)
+				{
+					self.preview_server_safety();
+					commands.push(command);
 				}
 				let message_fill = (design::has_section_background(ui)
 					&& state.selected.is_some()
@@ -5451,6 +5492,20 @@ impl MessagingUi {
 		if let Some(parent) = self.timeline.threads_request.take() {
 			self.archive_parent = Some(parent);
 		}
+		if let Some(request) = self.timeline.activity_review.take()
+			&& self.timeline.speech_allowed(state, request.message)
+			&& let Some(guild) = request.resolve(state)
+		{
+			let command = match request.choice {
+				activity_alerts::Choice::Members(filter) => {
+					self.review_activity_members(state, guild, filter.members())
+				}
+				activity_alerts::Choice::Member(user) => self.preview_mod_view(state, guild, user),
+			};
+			if let Some(command) = command {
+				commands.push(command);
+			}
+		}
 		if let Some((channel, message)) = self.timeline.thread_request.take() {
 			state.clear_channel_action_result(channel);
 			// Discord seeds the name from the starter's first line; the user can still edit it.
@@ -5650,6 +5705,9 @@ impl MessagingUi {
 		self.group_menu
 			.show(&ctx, state, &mut self.avatars, &mut commands);
 		self.group_create.show(&ctx, state, &mut commands);
+		if let Some(intent) = self.channel_menu.device_shortcut_requested.take() {
+			self.apply_device_shortcut(state, intent);
+		}
 		for intent in self
 			.channel_menu
 			.shortcut_requested
@@ -5657,10 +5715,18 @@ impl MessagingUi {
 			.into_iter()
 			.chain(self.group_menu.pin_requested.take())
 		{
-			self.apply_shortcut(state, intent);
+			commands.extend(self.apply_shortcut(state, intent));
 		}
 		if let Some(action) = self.user_action.take().or(self.timeline.user_action.take()) {
 			let command = match action {
+				user_menu::Action::ModView { guild, user } => {
+					if state.can_open_mod_view(guild) && self.server_settings.navigate_away(state) {
+						self.profile.hide();
+						self.mod_view.open(state, guild, user)
+					} else {
+						None
+					}
+				}
 				user_menu::Action::Message(user) => {
 					self.open_user_direct(state, user, user_direct::Intent::Message, &mut commands);
 					None
@@ -5678,7 +5744,7 @@ impl MessagingUi {
 					self.contact_editor.open(user, true, state)
 				}
 				user_menu::Action::Shortcut(intent) => {
-					self.apply_shortcut(state, intent);
+					commands.extend(self.apply_shortcut(state, intent));
 					None
 				}
 				user_menu::Action::Mention(user) => {
@@ -5949,7 +6015,12 @@ impl MessagingUi {
 			) {
 			commands.push(command);
 		}
+		if let Some(intent) = self.mod_view.show(&ctx, state, &mut commands) {
+			self.apply_mod_view_intent(intent, state, &mut commands);
+			ctx.request_repaint();
+		}
 		self.verification.show(&ctx, state);
+		self.mfa.show(&ctx, state, &mut commands);
 		// Discord's notice for a rate-limited send; the messages stay queued and go out on their own.
 		if state.send_throttled {
 			let result = dialog::Dialog::new(

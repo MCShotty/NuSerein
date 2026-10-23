@@ -72,8 +72,38 @@ pub struct Cursor {
 	pub user: Id,
 	pub joined_at: i64,
 }
+/// Server-side member filters. Empty fields never constrain the search.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MemberFilters {
+	pub role: Option<Id>,
+	pub joined_within_days: Option<u16>,
+	pub account_younger_than_days: Option<u16>,
+	pub join_source: Option<u8>,
+	pub signal: Option<MemberSignal>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemberSignal {
+	TimedOut,
+	UnusualDm,
+	Quarantined,
+	Rejoined,
+	Pending,
+}
+impl MemberFilters {
+	pub fn valid(&self) -> bool {
+		self.role.is_none_or(|id| id.0 != 0)
+			&& self
+				.joined_within_days
+				.is_none_or(|days| (1..=3650).contains(&days))
+			&& self
+				.account_younger_than_days
+				.is_none_or(|days| (1..=3650).contains(&days))
+			&& self.join_source.is_none_or(|source| source <= 8)
+	}
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
+	pub filters: MemberFilters,
 	pub search: String,
 	pub sort: u8,
 	pub recent: bool,
@@ -82,6 +112,7 @@ pub struct Query {
 impl Default for Query {
 	fn default() -> Self {
 		Self {
+			filters: MemberFilters::default(),
 			search: String::new(),
 			sort: 1,
 			recent: false,
@@ -91,7 +122,8 @@ impl Default for Query {
 }
 impl Query {
 	pub fn valid(&self) -> bool {
-		self.search.capacity() <= 400
+		self.filters.valid()
+			&& self.search.capacity() <= 400
 			&& self.search.chars().count() <= 100
 			&& !self.search.chars().any(char::is_control)
 			&& (1..=4).contains(&self.sort)
@@ -104,9 +136,12 @@ impl Query {
 pub enum VoiceChange {
 	Move(Option<Id>),
 	Mute(bool),
+	Deafen(bool),
 }
 #[derive(Clone)]
 pub enum Action {
+	CommandPermissions(crate::command_permissions::Action),
+	Access(crate::server_access::Action),
 	Community(crate::community_admin::Action),
 	AutoMod(crate::automod::Action),
 	Moderation(crate::moderation::Action),
@@ -191,7 +226,125 @@ pub enum Action {
 	},
 }
 impl Action {
+	/// Owned allocations below the inline enum. Includes boxed before/after drafts.
+	pub fn heap_bytes(&self) -> usize {
+		use crate::{
+			automod, command_permissions, moderation, server_access, server_integrations,
+			server_invites, server_roles,
+		};
+		match self {
+			Self::Community(action) => action.bytes(),
+			Self::AutoMod(action) => match action {
+				automod::Action::Load => 0,
+				automod::Action::Create { settings, reason } => {
+					settings.bytes() + reason.capacity()
+				}
+				automod::Action::Edit {
+					before,
+					after,
+					reason,
+					..
+				} => before.bytes() + after.bytes() + reason.capacity(),
+				automod::Action::Delete { reason, .. } => reason.capacity(),
+			},
+			Self::CommandPermissions(action) => match action {
+				command_permissions::Action::Load { .. } => 0,
+				command_permissions::Action::Save { before, after, .. } => {
+					before.bytes() + after.bytes()
+						- 2 * size_of::<command_permissions::Permissions>()
+				}
+			},
+			Self::Roles(action) => match action {
+				server_roles::Action::Create(edit) => role_edit_bytes(edit),
+				server_roles::Action::Edit { before, edit, .. } => {
+					before.bytes() + role_edit_bytes(edit)
+				}
+				server_roles::Action::Members { query, .. } => query.search.capacity(),
+				server_roles::Action::Load
+				| server_roles::Action::Delete(_)
+				| server_roles::Action::Move { .. } => 0,
+			},
+			Self::Access(server_access::Action::Decide { reason, .. }) => reason.capacity(),
+			Self::Access(_) => 0,
+			Self::Moderation(action) => match action {
+				moderation::Action::BulkBan { users, reason, .. } => {
+					users.capacity() * size_of::<Id>() + reason.capacity()
+				}
+				moderation::Action::BulkRefresh { users } => users.capacity() * size_of::<Id>(),
+				moderation::Action::Change { reason, .. }
+				| moderation::Action::Unban { reason, .. } => reason.capacity(),
+				moderation::Action::BanSearch { query } => query.capacity(),
+				moderation::Action::Bans { .. }
+				| moderation::Action::Member(_)
+				| moderation::Action::Review { .. } => 0,
+			},
+			Self::Invites(server_invites::Action::Revoke { code }) => code.capacity(),
+			Self::Invites(_) => 0,
+			Self::Integrations(action) => match action {
+				server_integrations::Action::CreateWebhook { name, .. }
+				| server_integrations::Action::EditWebhook { name, .. } => name.capacity(),
+				server_integrations::Action::SetWebhookAvatar { avatar, .. } => {
+					text_patch_bytes(avatar)
+				}
+				server_integrations::Action::Load { .. }
+				| server_integrations::Action::CopyWebhookUrl { .. }
+				| server_integrations::Action::DeleteWebhook { .. }
+				| server_integrations::Action::DeleteIntegration { .. } => 0,
+			},
+			Self::CreateEmoji { name, image } => name.capacity() + image.capacity(),
+			Self::RenameEmoji { name, .. } => name.capacity(),
+			Self::CreateSticker {
+				name,
+				description,
+				tags,
+				filename,
+				content_type,
+				file,
+			} => {
+				name.capacity()
+					+ description.capacity()
+					+ tags.capacity()
+					+ filename.capacity()
+					+ content_type.capacity()
+					+ file.capacity()
+			}
+			Self::EditSticker {
+				name,
+				description,
+				tags,
+				..
+			} => name.capacity() + description.capacity() + tags.capacity(),
+			Self::CreateSound {
+				name,
+				emoji,
+				content_type,
+				file,
+				..
+			} => name.capacity() + emoji.capacity() + content_type.capacity() + file.capacity(),
+			Self::EditSound { name, emoji, .. } => name.capacity() + text_patch_bytes(emoji),
+			Self::LoadMembers(query) => query.search.capacity(),
+			Self::SetNickname { nick, .. } => nick.capacity(),
+			Self::Voice { .. }
+			| Self::AuditLog(_)
+			| Self::LoadEmojis
+			| Self::DeleteEmoji { .. }
+			| Self::LoadStickers
+			| Self::DeleteSticker { .. }
+			| Self::LoadSounds
+			| Self::DeleteSound { .. }
+			| Self::SetRole { .. }
+			| Self::Kick { .. }
+			| Self::Prune { .. }
+			| Self::ShowMembers { .. } => 0,
+		}
+	}
 	pub fn write(&self) -> bool {
+		if let Self::CommandPermissions(action) = self {
+			return action.write();
+		}
+		if let Self::Access(action) = self {
+			return action.write();
+		}
 		if let Self::Community(action) = self {
 			return action.write();
 		}
@@ -249,6 +402,7 @@ impl Action {
 	}
 	pub fn valid(&self) -> bool {
 		match self {
+			Self::Access(action) => action.valid(),
 			Self::Community(action) => action.valid(),
 			Self::AutoMod(action) => action.valid(),
 			Self::Moderation(action) => action.valid(),
@@ -264,6 +418,7 @@ impl Action {
 			Self::Roles(action) => action.valid(),
 			Self::Invites(action) => action.valid(),
 			Self::Integrations(action) => action.valid(),
+			Self::CommandPermissions(action) => action.valid(),
 			Self::AuditLog(query) => query.valid(),
 			Self::CreateEmoji { name, image } => {
 				name.capacity() <= 128
@@ -365,7 +520,21 @@ impl Action {
 		}
 	}
 }
+
+fn text_patch_bytes(value: &crate::Patch<String>) -> usize {
+	match value {
+		crate::Patch::Value(value) => value.capacity(),
+		_ => 0,
+	}
+}
+fn role_edit_bytes(edit: &crate::server_roles::Edit) -> usize {
+	edit.name.as_ref().map_or(0, String::capacity)
+		+ text_patch_bytes(&edit.icon)
+		+ text_patch_bytes(&edit.unicode_emoji)
+}
 pub enum Result {
+	CommandPermissions(crate::command_permissions::Snapshot),
+	Access(crate::server_access::Outcome),
 	Community(crate::community_admin::Snapshot),
 	AutoMod(crate::automod::Snapshot),
 	Moderation(crate::moderation::Outcome),
@@ -453,12 +622,14 @@ impl Result {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				Self::Access(result) => result.bytes(),
 				Self::Community(page) => page.bytes(),
 				Self::AutoMod(page) => page.bytes(),
 				Self::Moderation(outcome) => outcome.bytes(),
 				Self::AuditLog(page) => page.bytes(),
 				Self::WebhookUrl(url) => url.bytes(),
 				Self::Integrations(snapshot) => snapshot.bytes(),
+				Self::CommandPermissions(snapshot) => snapshot.bytes(),
 				Self::Roles(result) => result.bytes(),
 				Self::Invites(snapshot) => snapshot.bytes(),
 				Self::Emojis(page) => {
@@ -502,11 +673,13 @@ impl Result {
 	pub fn valid(&self) -> bool {
 		self.bytes() <= MAX_BYTES
 			&& match self {
+				Self::Access(result) => result.valid(),
 				Self::Community(page) => page.valid(),
 				Self::AutoMod(page) => page.valid(),
 				Self::Moderation(outcome) => outcome.valid(),
 				Self::AuditLog(page) => page.valid_response(),
 				Self::Integrations(snapshot) => snapshot.valid(),
+				Self::CommandPermissions(snapshot) => snapshot.valid(),
 				Self::Roles(result) => result.valid(),
 				Self::Invites(snapshot) => snapshot.valid(),
 				Self::Emojis(page) => {
@@ -604,6 +777,84 @@ impl Members {
 #[cfg(test)]
 mod sound_tests {
 	use super::*;
+	#[test]
+	fn action_allocations_cover_nested_rules_permissions_roles_and_images() {
+		assert_eq!(Action::LoadEmojis.heap_bytes(), 0);
+		assert_eq!(Action::AuditLog(Default::default()).heap_bytes(), 0);
+		let mut image = String::with_capacity(300_000);
+		image.push_str("data:image/png;base64,AAAA");
+		let capacity = image.capacity();
+		assert_eq!(
+			Action::Integrations(crate::server_integrations::Action::SetWebhookAvatar {
+				scope: None,
+				webhook: Id(7),
+				avatar: crate::Patch::Value(image),
+			})
+			.heap_bytes(),
+			capacity
+		);
+
+		let before = crate::automod::Settings {
+			name: "Original".into(),
+			..Default::default()
+		};
+		let mut after = before.clone();
+		after.metadata.keywords = vec!["blocked word".into()];
+		let reason = String::from("Reviewed rule");
+		let expected = before.bytes() + after.bytes() + reason.capacity();
+		assert_eq!(
+			Action::AutoMod(crate::automod::Action::Edit {
+				id: Id(4),
+				before: Box::new(before),
+				after: Box::new(after),
+				reason,
+			})
+			.heap_bytes(),
+			expected
+		);
+
+		let before = crate::command_permissions::Permissions {
+			id: Id(4),
+			overrides: Vec::with_capacity(20),
+		};
+		let after = crate::command_permissions::Permissions {
+			id: Id(4),
+			overrides: Vec::with_capacity(30),
+		};
+		let expected = (before.overrides.capacity() + after.overrides.capacity())
+			* size_of::<crate::command_permissions::Override>();
+		assert_eq!(
+			Action::CommandPermissions(crate::command_permissions::Action::Save {
+				application: Id(3),
+				before,
+				after
+			})
+			.heap_bytes(),
+			expected
+		);
+
+		let before = crate::server_roles::Role {
+			id: Id(4),
+			name: "Role before editing".into(),
+			unicode_emoji: Some("🦆".into()),
+			..Default::default()
+		};
+		let mut name = String::with_capacity(128);
+		name.push_str("Updated role");
+		let expected = before.bytes() + name.capacity();
+		assert_eq!(
+			Action::Roles(crate::server_roles::Action::Edit {
+				id: Id(4),
+				before: Box::new(before),
+				edit: crate::server_roles::Edit {
+					name: Some(name),
+					..Default::default()
+				},
+			})
+			.heap_bytes(),
+			expected
+		);
+	}
 	#[test]
 	fn sound_changes_require_one_supported_standard_emoji_before_dispatch() {
 		for emoji in ["", "🦆", "❤️", "👍🏽", "🇨🇿", "1️⃣", "👨‍👩‍👧‍👦"]

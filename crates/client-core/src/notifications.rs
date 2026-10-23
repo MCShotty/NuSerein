@@ -128,6 +128,8 @@ impl Activity {
 
 #[derive(Clone, Default)]
 pub struct Setting {
+	pub flags: Option<u64>,
+	pub channel_flags: Vec<(Id, Option<u64>, Option<bool>)>,
 	/// True only after a validated full settings row or complete snapshot fallback.
 	pub overrides_known: bool,
 	pub mute_until: Option<i64>,
@@ -156,6 +158,7 @@ impl Setting {
 		size_of::<Self>()
 			+ self.channels.capacity() * size_of::<(Id, Option<bool>, Option<u8>)>()
 			+ self.channel_mute_until.capacity() * size_of::<(Id, i64)>()
+			+ self.channel_flags.capacity() * size_of::<(Id, Option<u64>, Option<bool>)>()
 	}
 	fn mute_expired(&self, channel: Id) -> bool {
 		self.channel_mute_until
@@ -181,6 +184,8 @@ impl Event {
 						.map(|e| {
 							e.channels.capacity() * size_of::<(Id, Option<bool>, Option<u8>)>()
 								+ e.channel_mute_until.capacity() * size_of::<(Id, i64)>()
+								+ e.channel_flags.capacity()
+									* size_of::<(Id, Option<u64>, Option<bool>)>()
 						})
 						.sum::<usize>()
 			}
@@ -205,6 +210,8 @@ impl Preferences {
 	}
 	fn setting(&self, guild: Option<Id>) -> Option<&Setting> {
 		static DEFAULT_GUILD: Setting = Setting {
+			flags: Some(0),
+			channel_flags: Vec::new(),
 			overrides_known: true,
 			guild: None,
 			muted: Some(false),
@@ -222,6 +229,61 @@ impl Preferences {
 	}
 }
 impl State {
+	pub(crate) fn account_guild_flags(&self, guild: Id) -> Option<u64> {
+		self.notification_preferences
+			.setting(Some(guild))
+			.and_then(|setting| setting.flags)
+			.or(self.demo.then_some(0))
+	}
+	pub(crate) fn account_channel_preference(&self, guild: Id, channel: Id) -> Option<(u64, bool)> {
+		let Some(setting) = self.notification_preferences.setting(Some(guild)) else {
+			return self.demo.then_some((0, false));
+		};
+		match setting.channel_flags.iter().find(|(id, ..)| *id == channel) {
+			Some((_, flags, collapsed)) => Some(((*flags)?, (*collapsed)?)),
+			None if setting.overrides_known => Some((0, false)),
+			None => None,
+		}
+	}
+	pub(crate) fn confirm_personal_channels(
+		&mut self,
+		guild: Id,
+		change: &model::channel_visibility::Change,
+	) -> Result<(), &'static str> {
+		let initial = self.notification_preferences.initial_guild_setting(guild);
+		let setting = self
+			.notification_preferences
+			.settings
+			.entry(Some(guild))
+			.or_insert_with(|| Setting {
+				guild: Some(guild),
+				..initial
+			});
+		if let Some((_, after)) = change.guild_flags {
+			setting.flags = Some(after);
+		}
+		for row in &change.channels {
+			if let Some((_, flags, collapsed)) = setting
+				.channel_flags
+				.iter_mut()
+				.find(|(id, ..)| *id == row.channel)
+			{
+				if let Some((_, after)) = row.flags {
+					*flags = Some(after);
+				}
+				if let Some((_, after)) = row.collapsed {
+					*collapsed = Some(after);
+				}
+			} else {
+				setting.channel_flags.push((
+					row.channel,
+					Some(row.flags.map_or(0, |(_, after)| after)),
+					Some(row.collapsed.is_some_and(|(_, after)| after)),
+				));
+			}
+		}
+		self.check_notification_capacity()
+	}
 	pub fn server_notification_settings(
 		&self,
 		guild: Id,
@@ -283,6 +345,11 @@ impl State {
 	fn check_notification_capacity(&mut self) -> Result<(), &'static str> {
 		let settings = &self.notification_preferences.settings;
 		if settings.len() > MAX_NAV
+			|| settings
+				.values()
+				.map(|setting| setting.channels.len().max(setting.channel_flags.len()))
+				.sum::<usize>()
+				> MAX_NAV
 			|| settings
 				.values()
 				.map(|setting| setting.bytes() + 64)
@@ -805,8 +872,14 @@ impl State {
 					.filter(|(key, _)| !replace && !keys.contains(key))
 					.map(|(_, setting)| setting)
 					.collect();
-				let overrides = entries.iter().map(|s| s.channels.len()).sum::<usize>();
-				let old_overrides: usize = old.iter().map(|s| s.channels.len()).sum();
+				let overrides = entries
+					.iter()
+					.map(|s| s.channels.len().max(s.channel_flags.len()))
+					.sum::<usize>();
+				let old_overrides: usize = old
+					.iter()
+					.map(|s| s.channels.len().max(s.channel_flags.len()))
+					.sum();
 				if old.len().saturating_add(entries.len()) > MAX_NAV
 					|| old
 						.iter()
@@ -823,7 +896,14 @@ impl State {
 							.iter()
 							.map(|(id, muted, _)| (*id, *muted))
 							.collect();
-						if s.channel_mute_until.len() > s.channels.len()
+						if s.channel_flags.len() > MAX_NAV
+							|| s.channel_flags.iter().any(|(id, ..)| id.0 == 0)
+							|| s.channel_flags
+								.iter()
+								.map(|(id, ..)| *id)
+								.collect::<BTreeSet<_>>()
+								.len() != s.channel_flags.len()
+							|| s.channel_mute_until.len() > s.channels.len()
 							|| s.channel_mute_until
 								.iter()
 								.map(|(id, _)| *id)
@@ -1484,6 +1564,8 @@ mod tests {
 		state
 			.apply_notification_preferences(Event::Settings {
 				entries: vec![Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					overrides_known: true,
 					guild: Some(Id(1)),
 					mute_until: None,
@@ -2062,6 +2144,8 @@ mod tests {
 			state
 				.apply_notification_preferences(Event::Settings {
 					entries: vec![Setting {
+						flags: Some(0),
+						channel_flags: Vec::new(),
 						muted: Some(false),
 						level: Some(0),
 						..Default::default()
@@ -2243,6 +2327,8 @@ mod tests {
 		state
 			.apply_notification_preferences(Event::Settings {
 				entries: vec![Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					muted: Some(false),
 					level: Some(3),
 					..Default::default()
@@ -2301,6 +2387,8 @@ mod tests {
 		state
 			.apply_notification_preferences(Event::Settings {
 				entries: vec![Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					guild: Some(Id(1)),
 					muted: Some(false),
 					level: Some(0),
@@ -2314,6 +2402,8 @@ mod tests {
 		state
 			.apply_notification_preferences(Event::Settings {
 				entries: vec![Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					guild: Some(Id(1)),
 					muted: Some(false),
 					level: Some(0),

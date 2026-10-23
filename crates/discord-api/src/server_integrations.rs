@@ -167,6 +167,60 @@ impl DiscordApi {
 				}
 				saved = Some(value.id);
 			}
+			Action::SetWebhookAvatar {
+				webhook, avatar, ..
+			} => {
+				let latest = self.integration_snapshot(guild, false, true, scope).await?;
+				let current = latest
+					.webhooks
+					.as_ref()
+					.and_then(|items| {
+						items
+							.iter()
+							.find(|hook| hook.id == *webhook && hook.kind == 1)
+					})
+					.ok_or(Failure::Forbidden)?;
+				let channel = current.channel.ok_or(Failure::Forbidden)?;
+				self.integration_channel(guild, channel).await?;
+				let body = match avatar {
+					model::Patch::Value(data) => json!({"avatar":data}),
+					model::Patch::Null => json!({"avatar":null}),
+					model::Patch::Absent => return Err(Failure::Protocol),
+				};
+				let bytes = self
+					.request_limited(
+						Method::PATCH,
+						&format!("/webhooks/{webhook}"),
+						Some(body),
+						64 * 1024,
+					)
+					.await
+					.map_err(write_failure)?;
+				let updated = wire::webhook(&bytes, guild).map_err(|_| Failure::Ambiguous)?;
+				if updated.id != *webhook
+					|| updated.channel != current.channel
+					|| updated.name != current.name
+					|| updated.kind != 1
+					|| match avatar {
+						model::Patch::Null => updated.avatar.is_some(),
+						model::Patch::Value(_) => updated.avatar.is_none(),
+						model::Patch::Absent => true,
+					} {
+					return Err(Failure::Ambiguous);
+				}
+				let page = self
+					.integration_snapshot(guild, false, true, scope)
+					.await
+					.map_err(reconcile_failure)?;
+				if !page.webhooks.as_ref().is_some_and(|items| {
+					items
+						.iter()
+						.any(|hook| hook.id == *webhook && hook.avatar == updated.avatar)
+				}) {
+					return Err(Failure::Ambiguous);
+				}
+				return Ok(page);
+			}
 			Action::DeleteWebhook { webhook, .. } => {
 				let latest = self.integration_snapshot(guild, false, true, scope).await?;
 				let Some(current) = latest
@@ -239,7 +293,9 @@ impl DiscordApi {
 				.integrations
 				.as_ref()
 				.is_some_and(|items| items.iter().any(|item| item.id == *integration)),
-			Action::Load { .. } | Action::CopyWebhookUrl { .. } => false,
+			Action::Load { .. }
+			| Action::CopyWebhookUrl { .. }
+			| Action::SetWebhookAvatar { .. } => false,
 		};
 		if failed {
 			return Err(Failure::Ambiguous);
@@ -271,6 +327,80 @@ mod tests {
 		io::{AsyncReadExt, AsyncWriteExt},
 		net::TcpListener,
 	};
+	#[tokio::test]
+	async fn webhook_avatar_is_a_narrow_write_with_confirmed_readback_and_no_retry() {
+		tokio::time::timeout(Duration::from_secs(10), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_AVATAR_TOKEN".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let old = "11111111111111111111111111111111";
+			let new = "22222222222222222222222222222222";
+			let data = "data:image/png;base64,U1lOVEhFVElD";
+			let server = tokio::spawn(async move {
+				let hook = |avatar: Option<&str>| {
+					json!({"id":"3","guild_id":"2","channel_id":"4","type":1,"name":"Unchanged name","avatar":avatar})
+				};
+				for (before, acknowledgement, readback, body) in [
+					(Some(old), Some(new), Some(new), json!({"avatar":data})),
+					(Some(new), None, None, json!({"avatar":null})),
+					(Some(old), Some(new), Some(old), json!({"avatar":data})),
+				] {
+					for (method, path, response, body) in [
+						("GET", "/channels/4/webhooks", json!([hook(before)]), None),
+						("GET", "/channels/4", json!({"id":"4","guild_id":"2","type":0}), None),
+						("PATCH", "/webhooks/3", hook(acknowledgement), Some(body)),
+						("GET", "/channels/4/webhooks", json!([hook(readback)]), None),
+					] {
+						let (mut stream, _) = listener.accept().await.unwrap();
+						let mut bytes = Vec::new();
+						let end = loop {
+							let mut chunk = [0; 4096];
+							let n = stream.read(&mut chunk).await.unwrap();
+							assert!(n > 0);
+							bytes.extend_from_slice(&chunk[..n]);
+							assert!(bytes.len() <= 16_384);
+							if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+								break end + 4;
+							}
+						};
+						let headers = std::str::from_utf8(&bytes[..end]).unwrap();
+						assert!(headers.starts_with(&format!("{method} {path} HTTP/1.1\r\n")));
+						let length = headers.lines().find_map(|line| {
+							let (name, value) = line.split_once(':')?;
+							name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+						}).unwrap_or(0);
+						assert!(length <= 4096);
+						while bytes.len() < end + length {
+							let mut chunk = [0; 4096];
+							let n = stream.read(&mut chunk).await.unwrap();
+							assert!(n > 0);
+							bytes.extend_from_slice(&chunk[..n]);
+						}
+						if let Some(body) = body {
+							assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes[end..end + length]).unwrap(), body);
+						} else {
+							assert_eq!(length, 0);
+						}
+						let response = response.to_string();
+						stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+					}
+				}
+				assert!(tokio::time::timeout(Duration::from_millis(80), listener.accept()).await.is_err());
+			});
+			for (avatar, expected) in [(model::Patch::Value(data.into()), Some(new)), (model::Patch::Null, None)] {
+				let page = api.server_integration_action(Id(2), &Action::SetWebhookAvatar {scope: Some(Id(4)), webhook: Id(3), avatar}).await.unwrap();
+				let hooks = page.webhooks.unwrap();
+				assert_eq!(hooks[0].avatar.as_deref(), expected);
+				assert_eq!(hooks[0].name.as_deref(), Some("Unchanged name"));
+				assert_eq!(hooks[0].channel, Some(Id(4)));
+			}
+			assert!(matches!(api.server_integration_action(Id(2), &Action::SetWebhookAvatar {scope:Some(Id(4)), webhook:Id(3), avatar:model::Patch::Value(data.into())}).await, Err(Failure::Ambiguous)));
+			server.await.unwrap();
+		}).await.unwrap();
+	}
 	#[tokio::test]
 	async fn webhook_url_copy_uses_authenticated_get_and_rejects_wrong_scope() {
 		tokio::time::timeout(Duration::from_secs(10), async {

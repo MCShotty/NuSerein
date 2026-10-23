@@ -22,9 +22,11 @@ struct DragRole {
 }
 #[derive(Default)]
 pub(super) struct RolesUi {
+	role_preview: crate::role_preview::Preview,
 	selected: Option<Id>,
 	draft: Option<Role>,
 	baseline: Option<Role>,
+	latest: Option<Role>,
 	revision: u64,
 	search: String,
 	permission_search: String,
@@ -48,6 +50,15 @@ pub(super) struct RolesUi {
 	preview_tab: Option<Tab>,
 }
 impl RolesUi {
+	pub fn preview_as_role(&mut self, state: &State, guild: Id, role: Id) {
+		self.role_preview.open(state, guild, role);
+	}
+	pub fn preview_open(&self) -> bool {
+		self.role_preview.active()
+	}
+	pub fn overlays(&mut self, ctx: &egui::Context, state: &State) {
+		self.role_preview.show(ctx, state);
+	}
 	pub fn preview_editor(&mut self, permissions: bool) {
 		self.preview_tab = Some(if permissions {
 			Tab::Permissions
@@ -68,6 +79,7 @@ impl RolesUi {
 		self.selected = role;
 		self.draft = None;
 		self.baseline = None;
+		self.latest = None;
 		self.tab = if role == Some(guild) {
 			Tab::Permissions
 		} else {
@@ -191,38 +203,61 @@ impl RolesUi {
 			self.select(None, guild);
 			return;
 		};
-		if !state.can_edit_guild_role(guild, role) {
-			self.draft = Some(fresh.clone());
-			self.baseline = Some(fresh.clone());
-			self.icon = Patch::Absent;
-			self.icon_texture = None;
+		// Losing access disables dispatch, but does not silently erase the user's draft.
+		if !state.can_edit_guild_role(guild, role) || !state.can_edit_role_icon(guild, role) {
+			if self.icon_pending || self.icon_requested {
+				self.icon_request = self.icon_request.wrapping_add(1);
+			}
 			self.icon_pending = false;
 			self.icon_requested = false;
 		}
 		if self.draft.is_none() || self.revision != state.server_admin.revision {
-			let changes = self
-				.baseline
-				.as_ref()
-				.zip(self.draft.as_ref())
-				.map(|(before, after)| Edit::between(before, after));
-			let mut draft = fresh.clone();
-			if let Some(changes) = changes {
-				changes.apply(&mut draft);
+			let edit = self.current_edit();
+			let conflict = self.latest.is_some()
+				|| self
+					.baseline
+					.as_ref()
+					.zip(edit.as_ref())
+					.is_some_and(|(before, edit)| !edit.unchanged_since(before, fresh));
+			if conflict {
+				self.latest = Some(fresh.clone());
+			} else {
+				let mut draft = fresh.clone();
+				if let Some(edit) = edit {
+					edit.apply(&mut draft);
+				}
+				self.baseline = Some(fresh.clone());
+				self.draft = Some(draft);
 			}
-			self.baseline = Some(fresh.clone());
-			self.draft = Some(draft);
 			self.revision = state.server_admin.revision;
 		}
-		if !state.can_edit_role_icon(guild, role) {
+	}
+	fn current_edit(&self) -> Option<Edit> {
+		let mut edit = Edit::between(self.baseline.as_ref()?, self.draft.as_ref()?);
+		if !matches!(self.icon, Patch::Absent) {
+			edit.icon = self.icon.clone();
+		}
+		Some(edit)
+	}
+	fn use_latest(&mut self, reapply: bool) {
+		let Some(latest) = self.latest.take() else {
+			return;
+		};
+		let mut draft = latest.clone();
+		if reapply {
+			if let Some(edit) = self.current_edit() {
+				edit.apply(&mut draft);
+			}
+		} else {
 			self.icon = Patch::Absent;
 			self.icon_texture = None;
 			self.icon_pending = false;
 			self.icon_requested = false;
-			if let Some(draft) = &mut self.draft {
-				draft.icon.clone_from(&fresh.icon);
-				draft.unicode_emoji.clone_from(&fresh.unicode_emoji);
-			}
+			self.icon_request = self.icon_request.wrapping_add(1);
 		}
+		self.baseline = Some(latest);
+		self.draft = Some(draft);
+		self.error = None;
 	}
 	pub fn navigation(
 		&mut self,
@@ -328,6 +363,10 @@ impl RolesUi {
 		commands: &mut Vec<Command>,
 	) {
 		self.sync(state, guild);
+		if self.role_preview.active() {
+			ui.weak("Role preview is open. Disable preview to edit roles.");
+			return;
+		}
 		ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 		if self.selected.is_none() {
 			design::page_header(
@@ -378,6 +417,36 @@ impl RolesUi {
 				self.error = None;
 				self.members_requested = false;
 			}
+		}
+		if self.latest.is_some() {
+			design::notice(
+				ui,
+				design::Level::Warning,
+				"This role changed in another client. Your edits are retained. Review the latest role before saving.",
+			);
+			ui.horizontal_wrapped(|ui| {
+				if ui
+					.add_enabled(
+						!state.server_admin.pending,
+						egui::Button::new("Discard edits and use latest role"),
+					)
+					.clicked()
+				{
+					self.use_latest(false);
+				}
+				if ui
+					.add_enabled(
+						!state.server_admin.pending
+							&& self
+								.selected
+								.is_some_and(|id| state.can_edit_guild_role(guild, id)),
+						egui::Button::new("Reapply my edits to latest role"),
+					)
+					.clicked()
+				{
+					self.use_latest(true);
+				}
+			});
 		}
 		if state.server_admin.pending {
 			ui.horizontal(|ui| {
@@ -532,6 +601,35 @@ impl RolesUi {
 						let menu =
 							boxed_icon(ui, icons::Icon::More, "server-roles-list-role-actions");
 						egui::Popup::menu(&menu).show(|ui| {
+							if state.guild_permission(guild, p::ADMINISTRATOR)
+								&& ui.button("View Server As Role").clicked()
+							{
+								self.preview_as_role(state, guild, role.id);
+								ui.close();
+							}
+							if !role.managed
+								&& state.can_create_guild_role(guild)
+								&& ui.button("Duplicate Role").clicked()
+							{
+								action = Some(Action::Create(Edit {
+									name: Some(format!(
+										"{} copy",
+										role.name.chars().take(95).collect::<String>()
+									)),
+									colors: Some(role.colors),
+									permissions: Some(role.permissions),
+									permission_mask: role.permissions,
+									hoist: Some(role.hoist),
+									mentionable: Some(role.mentionable),
+									unicode_emoji: role
+										.unicode_emoji
+										.clone()
+										.map_or(Patch::Absent, Patch::Value),
+									..Edit::default()
+								}));
+								ui.close();
+							}
+
 							if ui
 								.button(crate::i18n::translate("server-roles-list-edit-role-2"))
 								.clicked()
@@ -708,7 +806,9 @@ impl RolesUi {
 				Tab::Permissions,
 				"server-roles-editor-permissions",
 			);
-			if role != guild && state.can_open_member_settings(guild) {
+			if role != guild
+				&& (state.can_open_member_settings(guild) || state.can_edit_guild_role(guild, role))
+			{
 				tab_button(
 					ui,
 					&mut self.tab,
@@ -732,7 +832,7 @@ impl RolesUi {
 			}));
 		}
 		if self.tab == Tab::Members {
-			if state.can_open_member_settings(guild) {
+			if state.can_open_member_settings(guild) || state.can_edit_guild_role(guild, role) {
 				self.members(ui, state, guild, role, avatars, commands);
 			} else {
 				self.tab = Tab::Display;
@@ -740,6 +840,7 @@ impl RolesUi {
 			return;
 		}
 		let editable = state.can_edit_guild_role(guild, role)
+			&& self.latest.is_none()
 			&& !state.server_admin.pending
 			&& !state.server_admin.needs_refresh;
 		if self.tab == Tab::Display {
@@ -1121,14 +1222,24 @@ impl RolesUi {
 		guild: Id,
 		commands: &mut Vec<Command>,
 	) {
+		self.sync(state, guild);
+		let role = self.selected;
+		let editable = role.is_some_and(|id| state.can_edit_guild_role(guild, id))
+			&& self.latest.is_none()
+			&& (matches!(self.icon, Patch::Absent)
+				|| role.is_some_and(|id| state.can_edit_role_icon(guild, id)));
 		let (save, reset) = design::save_bar(
 			ui,
 			self.submitted
 				.then_some("server-roles-save-bar-saving-role"),
-			!state.server_admin.pending && !state.server_admin.needs_refresh && !self.icon_pending,
+			editable
+				&& !state.server_admin.pending
+				&& !state.server_admin.needs_refresh
+				&& !self.icon_pending,
 			!state.server_admin.pending,
 		);
 		if reset {
+			self.use_latest(false);
 			self.draft.clone_from(&self.baseline);
 			self.icon = Patch::Absent;
 			self.icon_texture = None;
@@ -1141,8 +1252,16 @@ impl RolesUi {
 			if !matches!(self.icon, Patch::Absent) {
 				edit.icon = self.icon.clone();
 			}
-			self.submitted =
-				Self::dispatch(state, guild, Action::Edit { id: draft.id, edit }, commands);
+			self.submitted = Self::dispatch(
+				state,
+				guild,
+				Action::Edit {
+					id: draft.id,
+					before: Box::new(before.clone()),
+					edit,
+				},
+				commands,
+			);
 			if !self.submitted {
 				self.error = Some(
 					"Could not save this role. Check the name, permissions, and your role hierarchy.",
@@ -1159,6 +1278,10 @@ impl RolesUi {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
+		if !state.can_open_member_settings(guild) {
+			self.gateway_members(ui, state, guild, role, avatars, commands);
+			return;
+		}
 		let filter = (!self.adding_members).then_some(role);
 		let mut load = (!self.members_requested || state.server_admin.member_role_filter != filter)
 			&& state.server_admin.error.is_none()
@@ -1197,7 +1320,7 @@ impl RolesUi {
 				load = true;
 			}
 		});
-		if !state.server_admin.pending
+		if !state.server_admin.saving
 			&& self
 				.member_search_changed
 				.is_some_and(|at| ui.input(|input| input.time) - at > 0.3)
@@ -1209,7 +1332,7 @@ impl RolesUi {
 			ui.ctx()
 				.request_repaint_after(std::time::Duration::from_millis(300));
 		}
-		if load && !state.server_admin.pending {
+		if load && !state.server_admin.saving {
 			self.members_requested = true;
 			if Self::dispatch(
 				state,
@@ -1305,6 +1428,144 @@ impl RolesUi {
 			&& let Some(command) = state.request_server_admin(guild, action)
 		{
 			commands.push(command);
+		}
+	}
+	/// Role-only managers can use ordinary member lookup without requesting the
+	/// privileged server-wide directory. Exact REST metadata fences every write.
+	fn gateway_members(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		guild: Id,
+		role: Id,
+		avatars: &mut Avatars,
+		commands: &mut Vec<Command>,
+	) {
+		ui.weak("Search a member to add or remove this role. A complete role-member roster requires Manage Server.");
+		let Some(channel) = state.selected.filter(|id| {
+			state.channel(*id).and_then(|row| row.guild) == Some(guild) && state.can_view(*id)
+		}) else {
+			ui.weak("Open an accessible channel in this server to search members.");
+			return;
+		};
+		if ui
+			.add(
+				egui::TextEdit::singleline(&mut self.member_query.search)
+					.hint_text("Search nickname, username or member ID")
+					.char_limit(64),
+			)
+			.changed()
+		{
+			self.member_search_changed = Some(ui.input(|input| input.time));
+		}
+		if let Some(at) = self.member_search_changed {
+			if ui.input(|input| input.time) - at >= 0.3 {
+				self.member_search_changed = None;
+				if let Some(command) = state.search_members(channel, &self.member_query.search, 0) {
+					commands.push(command);
+				}
+			} else {
+				ui.ctx()
+					.request_repaint_after(std::time::Duration::from_millis(300));
+			}
+		}
+		let lookup = &state.member_search[0];
+		if lookup.request.as_ref().is_some_and(|request| {
+			request.guild == guild
+				&& request.channel == channel
+				&& request.query == self.member_query.search
+		}) {
+			if !lookup.finished {
+				ui.spinner();
+			}
+			if let Some(error) = lookup.error {
+				ui.weak(error);
+				if ui.button("Retry member search").clicked() {
+					self.member_search_changed = Some(0.0);
+				}
+			}
+		}
+		let query = self.member_query.search.to_lowercase();
+		let candidates = role_member_candidates(state, channel, &query);
+		if candidates.is_empty() {
+			ui.weak("No matching members. Type a name to search the server.");
+		}
+		let mut action = None;
+		egui::ScrollArea::vertical().max_height(360.0).show_rows(
+			ui,
+			48.0,
+			candidates.len(),
+			|ui, range| {
+				for user in &candidates[range] {
+					ui.push_id(user.id, |ui| {
+						ui.horizontal(|ui| {
+							avatars.show(ui, user, 32.0, state.demo);
+							let name = state
+								.display_member(channel, user.id)
+								.and_then(|member| member.nick.as_deref())
+								.unwrap_or(&user.name);
+							ui.vertical(|ui| {
+								fixed_label(
+									ui,
+									name,
+									(ui.available_width() - 130.0).max(80.0),
+									false,
+								);
+								ui.weak(format!(
+									"@{}",
+									user.username.as_deref().unwrap_or(&user.name)
+								));
+							});
+							if let Some(member) = state
+								.server_admin
+								.moderation_target
+								.as_ref()
+								.filter(|member| member.user.id == user.id)
+							{
+								let assigned = member.roles.contains(&role);
+								if ui
+									.add_enabled(
+										!state.server_admin.pending
+											&& !state.server_admin.needs_refresh
+											&& state.can_edit_member_role(guild, user.id, role),
+										egui::Button::new(if assigned {
+											"Remove role"
+										} else {
+											"Add role"
+										}),
+									)
+									.clicked()
+								{
+									action = Some(server_admin::Action::SetRole {
+										user: user.id,
+										role,
+										assigned: !assigned,
+									});
+								}
+							} else if ui
+								.add_enabled(
+									!state.server_admin.pending,
+									egui::Button::new("Load member"),
+								)
+								.clicked()
+							{
+								action = Some(server_admin::Action::Moderation(
+									model::moderation::Action::Member(user.id),
+								));
+							}
+						})
+					});
+				}
+			},
+		);
+		if let Some(action) = action {
+			if let Some(command) = state.request_server_admin(guild, action) {
+				commands.push(command);
+			} else {
+				self.error = Some(
+					"This member action is unavailable. Check your role hierarchy and reload the member.",
+				);
+			}
 		}
 	}
 	fn confirmations(
@@ -1450,6 +1711,29 @@ fn fixed_label(ui: &mut egui::Ui, text: &str, width: f32, strong: bool) {
 		},
 	);
 }
+fn role_member_candidates(state: &State, channel: Id, query: &str) -> Vec<model::User> {
+	if !state.can_view(channel) {
+		return vec![];
+	}
+	let query = query.to_lowercase();
+	crate::mentions::known_users(state, channel)
+		.into_iter()
+		.filter(|user| {
+			let nick = state
+				.display_member(channel, user.id)
+				.and_then(|member| member.nick.as_deref());
+			nick.is_some_and(|nick| nick.to_lowercase().contains(&query))
+				|| user.name.to_lowercase().contains(&query)
+				|| user
+					.username
+					.as_deref()
+					.is_some_and(|name| name.to_lowercase().contains(&query))
+				|| user.id.to_string() == query
+		})
+		.take(client_core::member_search::LIMIT)
+		.collect()
+}
+
 fn permissions(
 	ui: &mut egui::Ui,
 	state: &State,
@@ -1770,7 +2054,7 @@ mod tests {
 		]
 	}
 	#[test]
-	fn role_list_selection_saves_partial_edit_and_revocation_discards_draft() {
+	fn role_list_selection_saves_guarded_partial_edit_and_revocation_retains_draft() {
 		let ctx = egui::Context::default();
 		design::apply(&ctx);
 		let mut state = fixture();
@@ -1829,21 +2113,272 @@ mod tests {
 		let Command::ServerAdmin { action, .. } = commands.pop().unwrap() else {
 			panic!("expected role edit");
 		};
-		let server_admin::Action::Roles(Action::Edit { id, edit }) = *action else {
+		let server_admin::Action::Roles(Action::Edit { id, before, edit }) = *action else {
 			panic!("expected role edit");
 		};
 		assert_eq!(id, Id(901));
+		assert_eq!(before.name, "Member");
 		assert_eq!(edit.name.as_deref(), Some("Renamed"));
 		assert_eq!(edit.permissions, None);
 		assert_eq!(edit.permission_mask, 0);
 		assert!(matches!(edit.icon, Patch::Absent));
 		state.server_admin.pending = false;
 		state.server_admin.error = Some("synthetic failed save");
+		editor.icon = Patch::Value("data:image/png;base64,kept-draft".into());
+		editor.icon_pending = true;
+		editor.icon_requested = true;
+		editor.icon_request = 40;
 		state.permissions.guilds.get_mut(&guild).unwrap().member = None;
 		state.permissions.clear_cache();
 		editor.sync(&state, guild);
-		assert!(!editor.has_changes());
-		assert_eq!(editor.draft.as_ref().unwrap().name, "Member");
+		assert!(
+			matches!(&editor.icon, Patch::Value(value) if value == "data:image/png;base64,kept-draft")
+		);
+		assert!(!editor.icon_pending && !editor.icon_requested);
+		assert_eq!(editor.icon_request, 41);
+		assert!(editor.has_changes());
+		assert_eq!(editor.draft.as_ref().unwrap().name, "Renamed");
 		assert_eq!(editor.draft.as_ref().unwrap().permissions, 1 << 110);
+	}
+	#[test]
+	fn role_conflict_requires_explicit_discard_or_reapply() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut state = fixture();
+		let guild = state.guilds[0].id;
+		let mut editor = RolesUi::default();
+		editor.select(Some(Id(901)), guild);
+		editor.sync(&state, guild);
+		editor.draft.as_mut().unwrap().name = "My local name".into();
+		let latest = state
+			.server_admin
+			.roles
+			.as_mut()
+			.unwrap()
+			.items
+			.iter_mut()
+			.find(|row| row.id == Id(901))
+			.unwrap();
+		latest.name = "Other client name".into();
+		latest.hoist = true;
+		latest.permissions |= 1 << 111;
+		state.server_admin.revision += 1;
+		editor.sync(&state, guild);
+		assert_eq!(editor.draft.as_ref().unwrap().name, "My local name");
+		assert_eq!(editor.baseline.as_ref().unwrap().name, "Member");
+		assert!(editor.latest.is_some());
+		let mut commands = vec![];
+		let save = frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			vec![],
+			true,
+			"Save Changes",
+		)
+		.unwrap();
+		frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			click(save),
+			true,
+			"",
+		);
+		assert!(commands.is_empty());
+		let reapply = frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			vec![],
+			false,
+			"Reapply my edits to latest role",
+		)
+		.unwrap();
+		frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			click(reapply),
+			false,
+			"",
+		);
+		assert!(editor.latest.is_none());
+		assert_eq!(editor.baseline.as_ref().unwrap().name, "Other client name");
+		let draft = editor.draft.as_ref().unwrap();
+		assert_eq!(draft.name, "My local name");
+		assert!(draft.hoist);
+		assert_ne!(draft.permissions & (1 << 111), 0);
+		state
+			.server_admin
+			.roles
+			.as_mut()
+			.unwrap()
+			.items
+			.iter_mut()
+			.find(|row| row.id == Id(901))
+			.unwrap()
+			.name = "Newest name".into();
+		state.server_admin.revision += 1;
+		editor.sync(&state, guild);
+		let discard = frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			vec![],
+			false,
+			"Discard edits and use latest role",
+		)
+		.unwrap();
+		frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			click(discard),
+			false,
+			"",
+		);
+		assert!(!editor.has_changes());
+		assert_eq!(editor.draft.as_ref().unwrap().name, "Newest name");
+		assert!(commands.is_empty());
+	}
+
+	#[test]
+	fn role_only_manager_loads_a_gateway_result_before_assigning_the_role() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut state = fixture();
+		state.demo = false;
+		let guild = state.guilds[0].id;
+		let channel = state.selected.unwrap();
+		assert!(!state.can_open_member_settings(guild));
+		assert!(state.can_edit_guild_role(guild, Id(901)));
+		let mut user = state.user.as_ref().unwrap().clone();
+		user.id = Id(81234);
+		user.name = "Remote display".into();
+		user.username = Some("unique.remote".into());
+		let Command::MemberSearch(request) =
+			state.search_members(channel, "unique.remote", 0).unwrap()
+		else {
+			panic!()
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberSearch {
+				request,
+				result: Ok(vec![model::Member {
+					user: user.clone(),
+					roles: vec![],
+					nick: Some("Server nickname".into()),
+					status: None,
+					custom_status: None,
+					activities: vec![],
+					clients: Default::default(),
+				}]),
+			},
+		});
+		assert_eq!(
+			role_member_candidates(&state, channel, "unique.remote")
+				.iter()
+				.map(|u| u.id)
+				.collect::<Vec<_>>(),
+			[user.id]
+		);
+		assert_eq!(
+			role_member_candidates(&state, channel, "server nick").len(),
+			1
+		);
+		assert!(
+			!state.can_edit_member_role(guild, user.id, Id(901)),
+			"Gateway labels alone cannot authorize a write"
+		);
+		let mut editor = RolesUi::default();
+		editor.select(Some(Id(901)), guild);
+		editor.sync(&state, guild);
+		editor.tab = Tab::Members;
+		editor.member_query.search = "unique.remote".into();
+		let mut commands = vec![];
+		let load = frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			vec![],
+			false,
+			"Load member",
+		)
+		.unwrap();
+		frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			click(load),
+			false,
+			"",
+		);
+		let Command::ServerAdmin {
+			guild,
+			request,
+			action,
+		} = commands.pop().unwrap()
+		else {
+			panic!()
+		};
+		assert!(
+			matches!(*action,server_admin::Action::Moderation(model::moderation::Action::Member(id))if id==user.id)
+		);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ServerAdmin(client_core::server_admin::Event {
+				guild,
+				request,
+				result: Ok(server_admin::Result::Moderation(
+					model::moderation::Outcome::Member(Box::new(server_admin::Member {
+						user: user.clone(),
+						nick: Some("Server nickname".into()),
+						roles: vec![],
+						joined_at: None,
+						join_source: None,
+						invite_code: None,
+						flags: None,
+						unusual_dm_until: None,
+						timeout_until: None,
+					})),
+				)),
+			}),
+		});
+		assert!(state.can_edit_member_role(guild, user.id, Id(901)));
+		let add = frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			vec![],
+			false,
+			"Add role",
+		)
+		.unwrap();
+		frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			&mut commands,
+			click(add),
+			false,
+			"",
+		);
+		assert!(
+			matches!(commands.as_slice(),[Command::ServerAdmin{action,..}]if matches!(**action,server_admin::Action::SetRole{user:target,role:Id(901),assigned:true}if target==user.id))
+		);
+		state.permissions.guilds.get_mut(&guild).unwrap().member = None;
+		state.permissions.clear_cache();
+		assert!(!state.can_edit_member_role(guild, user.id, Id(901)));
 	}
 }

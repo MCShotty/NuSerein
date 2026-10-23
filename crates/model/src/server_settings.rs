@@ -130,6 +130,15 @@ pub struct Edit {
 	pub explicit_content_filter: Option<u8>,
 }
 impl Edit {
+	pub fn heap_bytes(&self) -> usize {
+		self.name.as_ref().map_or(0, String::capacity)
+			+ self.description.as_ref().map_or(0, String::capacity)
+			+ self.traits.as_ref().map_or(0, trait_bytes)
+			+ match &self.icon {
+				Patch::Value(value) => value.capacity(),
+				_ => 0,
+			}
+	}
 	pub fn between(before: &Settings, after: &Settings) -> Self {
 		Self {
 			name: (before.name != after.name).then(|| after.name.clone()),

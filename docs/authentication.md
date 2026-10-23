@@ -91,3 +91,37 @@ synchronization queue limits remain enforced. Their capacity failures identify t
 fixed local text and still terminate the connection. An oversized frame stops immediately during
 Hello or subsequent startup instead of being retried as a network failure. No payload contents,
 account identifiers or credentials are added to the error. Credential saving still requires READY.
+
+## Administrative action verification
+
+Protected native server writes use the **unofficial** normal-account MFA contract
+(`60003`, `/mfa/finish` and explicitly requested `/auth/mfa/sms/send`), described by
+[Userdoccers](https://docs.discord.food/authentication#mfa-verification). A valid
+challenge suspends the exact rejected HTTP request while other connection work
+continues. It does not restart a multi-route settings operation or repeat its
+already accepted writes. The owner completes a native authenticator, permitted
+backup-code, SMS or password prompt using only methods offered by that challenge.
+An SMS is sent only after an explicit button press. Passkey-only/unknown methods
+explain the limitation and offer official Discord without emulating its origin.
+
+There is one pending administrative check. Its account generation, current
+permissions and original operation are checked before verification and again
+before the one-shot continuation. A rejected code can be deliberately retried;
+a resumed request is never automatically repeated after uncertain delivery.
+Cancellation, expiry, permission loss, logout and account changes retire the check.
+A real invalid session or revocation still stops authenticated traffic. An action
+MFA requirement alone does not disconnect the account.
+
+The server's separate moderator two-factor requirement is an owner-controlled server setting.
+Changing it uses the same protected-action flow when challenged; it does not enable, disable
+or recover two-factor authentication on any Discord account. Ownership transfer is not
+reported complete merely because verification or its write succeeded: the new owner must
+be confirmed by a fresh server read. Unconfirmed delivery is never automatically retried.
+
+Tickets, submitted input and proofs remain in bounded redacted session memory
+for at most five minutes and are never saved, logged or exposed to extensions.
+The HTTP transport may make transient copies; zeroizing Serein-owned buffers is
+not a forensic-erasure guarantee. The verification proof header is attached only
+to the suspended request, never unrelated reads or subsequent writes. Synthetic
+loopback/state tests cover these boundaries; live normal-account acceptance,
+physical input and actual MFA methods remain owner-controlled checks.

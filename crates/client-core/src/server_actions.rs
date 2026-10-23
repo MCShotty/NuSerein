@@ -284,6 +284,15 @@ impl State {
 		}
 		Ok(())
 	}
+	pub(crate) fn delete_server_mfa_allowed(&self, guild: Id, request: u64) -> bool {
+		self.can_delete_server(guild)
+			&& self
+				.server_actions
+				.pending
+				.is_some_and(|(action, sequence, _)| {
+					action == Action::Delete(guild) && sequence == request
+				})
+	}
 	pub fn server_action_pending(&self) -> bool {
 		self.server_actions.pending.is_some()
 	}

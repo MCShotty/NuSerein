@@ -248,7 +248,22 @@ fn rows<'a>(
 	let mut groups: BTreeMap<Option<Id>, Vec<&Channel>> = BTreeMap::new();
 	let mut threads: BTreeMap<Id, Vec<&Channel>> = BTreeMap::new();
 	for channel in channels.iter().filter(|c| {
-		scope.admits(c, state) && (show_hidden || state.can_view(c.id)) && !roster.lifted(c.id)
+		scope.admits(c, state)
+			&& (show_hidden || state.can_view(c.id))
+			&& !roster.lifted(c.id)
+			&& (c.guild.is_none()
+				|| state.channel_personally_selected(c.id)
+				|| mentions.contains_key(&c.id)
+				|| Some(c.id) == state.selected
+				|| state
+					.selected
+					.and_then(|id| state.channel(id))
+					.is_some_and(|selected| selected.parent_id == Some(c.id))
+				|| state
+					.voice
+					.active
+					.as_ref()
+					.is_some_and(|call| call.channel == c.id))
 	}) {
 		if matches!(channel.kind, 10..=12)
 			&& Some(channel.id) != state.selected
@@ -308,6 +323,11 @@ fn rows<'a>(
 	}
 	let important = |channel: &Channel| {
 		Some(channel.id) == state.selected
+			|| state
+				.voice
+				.active
+				.as_ref()
+				.is_some_and(|call| call.channel == channel.id)
 			|| mentions.contains_key(&channel.id)
 			|| state.unread_count(channel.id) > 0
 			|| (state.channel_unread(channel) == Some(true)
@@ -583,11 +603,19 @@ impl MessagingUi {
 				scope,
 				self.show_hidden_channels,
 			);
-			let collapsed: BTreeSet<_> = self
-				.channel_preferences
-				.collapsed_categories
+			let collapsed: BTreeSet<_> = state
+				.channels
 				.iter()
-				.copied()
+				.filter(|channel| {
+					channel.kind == 4
+						&& channel.guild == self.guild
+						&& state
+							.account_category_collapsed(channel.id)
+							.unwrap_or_else(|| {
+								self.channel_preferences.category_collapsed(channel.id)
+							})
+				})
+				.map(|channel| channel.id)
 				.collect();
 			let mut channel_rows = rows(
 				state,
@@ -602,6 +630,7 @@ impl MessagingUi {
 					!matches!(row, Row::Channel(channel, ..) if Some(channel.id) != state.selected
 						&& !self.channel_cache.mention_counts.contains_key(&channel.id)
 						&& !state.selected.and_then(|id| state.channel(id)).is_some_and(|selected| selected.parent_id == Some(channel.id))
+						&& !state.voice.active.as_ref().is_some_and(|call|call.channel==channel.id)
 						&& state.guild_channel_effectively_muted(channel.id) == Some(true))
 				});
 				let mut index = 0;
@@ -747,8 +776,11 @@ impl MessagingUi {
 							let category = &state.channels[category];
 							let draggable = !state.channel_action_pending()
 								&& state.can_manage_channel(category.id);
-							let collapsed =
-								self.channel_preferences.category_collapsed(category.id);
+							let collapsed = state
+								.account_category_collapsed(category.id)
+								.unwrap_or_else(|| {
+									self.channel_preferences.category_collapsed(category.id)
+								});
 							let response = category_header(
 								ui,
 								category.id,
@@ -769,20 +801,13 @@ impl MessagingUi {
 									rect: response.rect,
 								});
 							}
-							if response.clicked() {
-								self.channel_cache.key = None;
-								match self
-									.channel_preferences
-									.set_category_collapsed(category.id, !collapsed)
-								{
-									model::PreferenceEdit::Changed => {
-										self.channel_preferences_changed = true;
-									}
-									model::PreferenceEdit::CapacityReached => {
-										self.channel_menu.report_capacity(state.generation)
-									}
-									model::PreferenceEdit::Unchanged => {}
-								}
+							if response.clicked()
+								&& let Some(action) = state.personal_collapse_change(
+									category.guild.unwrap(),
+									&[category.id],
+									!collapsed,
+								) {
+								self.channel_move = Some((category.id, action));
 							}
 							self.channel_menu.context(
 								&response,
@@ -1726,7 +1751,7 @@ mod tests {
 			let found = ids(&output);
 			assert_eq!(found.iter().filter(|id| **id == Id(7)).count(), 1);
 			assert_eq!(found.iter().filter(|id| **id == Id(9)).count(), 1);
-			assert!(matches!(output[0], Row::Heading(Heading::Favorites)));
+			assert!(matches!(output[0], Row::Heading(Heading::DeviceFavorites)));
 			assert!(matches!(
 				output[2],
 				Row::Channel(c, Slot::Roster(Shortcut::Favorite), true) if c.id == Id(8)
@@ -2615,6 +2640,11 @@ mod tests {
 				.collect(),
 			..State::default()
 		};
+		// Show All still admits bounded orphan rows; parent metadata must not silently
+		// hide a previously reachable recent thread. Access filtering remains in rows().
+		for id in [20, 21, 22, 23, 24, 25, 27] {
+			assert!(hierarchy_state.channel_personally_selected(Id(id)));
+		}
 		let expanded = tree(&hierarchy_state, BTreeSet::new());
 		assert_eq!(expanded.len(), hierarchy.len() - 1);
 		assert_eq!(
@@ -2701,7 +2731,53 @@ mod tests {
 			});
 			output.textures_delta.clear();
 		}
-		assert!(view.channel_preferences.category_collapsed(Id(4)));
+		assert!(
+			!view.channel_preferences.category_collapsed(Id(4)),
+			"category collapse is synchronized with the account, not saved to the device collection"
+		);
+		let (target, action) = view
+			.channel_move
+			.take()
+			.expect("keyboard activation queues a collapse save");
+		assert_eq!(target, Id(4));
+		let client_core::channel_actions::Action::Personal(change) = &action else {
+			panic!("category collapse uses the personal-preferences action");
+		};
+		assert_eq!(change.guild_flags, None);
+		assert_eq!(
+			change.channels,
+			[model::channel_visibility::RowChange {
+				channel: Id(4),
+				flags: None,
+				collapsed: Some((false, true)),
+			}]
+		);
+		let client_core::Command::ChannelAction {
+			guild,
+			channel: saved_channel,
+			request,
+			action: client_core::channel_actions::Action::Personal(change),
+		} = state.request_channel_action(target, action).unwrap()
+		else {
+			panic!("the same account collapse save must be dispatched");
+		};
+		assert_eq!(
+			state.account_category_collapsed(Id(4)),
+			Some(false),
+			"a pending save must not fabricate service confirmation"
+		);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ChannelAction(
+				client_core::channel_actions::Event::Finished {
+					guild,
+					channel: saved_channel,
+					request,
+					result: Ok(client_core::channel_actions::Outcome::Personal(change)),
+				},
+			),
+		});
+		assert_eq!(state.account_category_collapsed(Id(4)), Some(true));
 		assert_eq!(state.selected, Some(Id(8)));
 		ctx.run_ui(egui::RawInput::default(), |ui| {
 			assert!(view.channel_list(ui, &mut state).is_none());
@@ -2985,6 +3061,131 @@ mod tests {
 			true,
 			true,
 			"a mention and the unread mark both show while connected",
+		);
+	}
+	#[test]
+	fn active_voice_channel_stays_visible_in_a_collapsed_category() {
+		let mut state = test_support::demo_state();
+		state.select(Id(20));
+		state
+			.apply_notification_preferences(client_core::notifications::Event::Settings {
+				entries: vec![client_core::notifications::Setting {
+					guild: Some(Id(10)),
+					flags: Some(0),
+					overrides_known: true,
+					channels: vec![(Id(24), Some(true), Some(3))],
+					hide_muted_channels: Some(true),
+					..Default::default()
+				}],
+				replace: false,
+			})
+			.unwrap();
+		let visible = |state: &State| {
+			rows(
+				state,
+				Scope::Guild(Id(10)),
+				&Roster::default(),
+				&BTreeSet::from([Id(24)]),
+				false,
+				false,
+			)
+			.iter()
+			.any(|row| matches!(row, Row::Channel(channel, ..) if channel.id == Id(25)))
+		};
+		assert!(!visible(&state));
+		state.voice.active = Some(client_core::voice::Call {
+			channel: Id(25),
+			guild: Some(Id(10)),
+			request: 1,
+			stage_revision: 0,
+			media_mode: client_core::voice::MediaMode::Dave,
+			stage_consent: false,
+			stage: client_core::voice::StageParticipation::Unknown,
+			connected_at: None,
+			channel_started_at: None,
+			server_muted: false,
+			server_deafened: false,
+			phase: client_core::voice::Phase::Connected,
+			muted: false,
+			deafened: false,
+			participants: vec![],
+			camera: false,
+			watching: None,
+			error: None,
+			reconnecting: None,
+		});
+		assert!(
+			visible(&state),
+			"a connected call must remain discoverable while another category is selected"
+		);
+		state.voice.active = None;
+		assert!(!visible(&state));
+	}
+
+	#[test]
+	fn personal_hidden_channels_reappear_for_selection_and_mentions() {
+		let mut state = test_support::demo_state();
+		let target = state
+			.channels
+			.iter()
+			.find(|channel| {
+				channel.guild.is_some() && channel.kind == 0 && state.can_view(channel.id)
+			})
+			.unwrap()
+			.clone();
+		state.selected = None;
+		let action = state.personal_visibility_change(target.id, false).unwrap();
+		let client_core::Command::ChannelAction {
+			guild,
+			channel,
+			request,
+			action: client_core::channel_actions::Action::Personal(change),
+		} = state.request_channel_action(target.id, action).unwrap()
+		else {
+			panic!()
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ChannelAction(
+				client_core::channel_actions::Event::Finished {
+					guild,
+					channel,
+					request,
+					result: Ok(client_core::channel_actions::Outcome::Personal(change)),
+				},
+			),
+		});
+		let shown = |state: &State| {
+			rows(
+				state,
+				Scope::Guild(guild),
+				&Roster::default(),
+				&BTreeSet::new(),
+				false,
+				false,
+			)
+			.iter()
+			.any(|row| matches!(row,Row::Channel(channel,..) if channel.id==target.id))
+		};
+		assert!(!shown(&state));
+		state.selected = Some(target.id);
+		assert!(shown(&state));
+		state.selected = None;
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::ReadState(client_core::read_state::Event::Snapshot {
+				entries: Some(vec![(target.id, None, 1)]),
+				version: Some(99),
+				partial: false,
+			}),
+		});
+		assert!(
+			shown(&state),
+			"a hidden channel with a ping must be recoverable"
+		);
+		assert!(
+			!state.channel_personally_selected(target.id),
+			"temporary exposure must not change the saved preference"
 		);
 	}
 }

@@ -2151,7 +2151,9 @@ Bans retain one page of at most 100 entries/256 KiB; a specific member lookup do
 create a directory cache. AutoMod retains at most 32 rules/512 KiB, with bounded metadata,
 20 exempt roles and 50 exempt channels per rule. Wire bodies are bounded separately.
 One existing server-administration worker owns reads/writes; its sequence, account generation,
-server scope and permission revision reject retired results. No new local store or telemetry
+server scope and permission revision reject retired results. The October 23 controls supersede
+that worker arrangement with at most two replaceable reads and one mutation; retired reads are
+cancelled without replaying mutations. No new local store or telemetry
 is introduced. Rule drafts and audit reasons stay in session RAM and clear on account/server
 change or explicit discard. Failed saves preserve the draft. Uncertain writes require an
 explicit reload before a further mutation; no queued automatic destructive retry exists.
@@ -2234,3 +2236,51 @@ Linux uses a separate ephemeral WebKit network session with persistent credentia
 disabled, and destroys its window/web process on retirement. Native browser processes,
 caches and decoder allocations are additional to Serein's bounded player bookkeeping;
 provider-process memory and live playback require separate native measurements.
+
+### Server controls and personal channel selection — October 23, 2026
+
+Account-synchronized channel selection, favorites and category collapse reuse the bounded
+notification-preference snapshot in session RAM. Raw flags retain unknown bits; a narrow
+change contains at most 1,024 channel rows and preserves unrelated preferences. These values
+are service-owned, not a new SQLite hiding list. The earlier device-local channel-preference
+records remain separate collections; importing their favorites requires an explicit action.
+Account-backed category collapse takes precedence when supplied. Logout/reset clears the
+remote snapshot without editing Discord's stored preferences.
+
+Core administration snapshots, retained actions and MFA target metadata share an 8 MiB
+session budget, in addition to each page's existing limits. This includes allocated spare
+capacity and the bounded incident map; it excludes independently bounded UI drafts and
+shared conversation/artwork caches and is not a whole-process RSS limit. Budget exhaustion
+retires local panels with a reload explanation and never retries their writes.
+
+Applications retain at most 100 entries below 1 MiB per page, one 32 KiB detail with at most
+five answers, a 64 KiB access-settings snapshot and one verified recipient, within a 2 MiB
+access-view cap. The pending count and changed marker describe only the loaded server view.
+Edits, withdrawals, permission loss and session/request changes invalidate relevant data.
+Timed incident metadata holds at most 256 server entries, preferring expired entries for
+eviction. Restrictions use service-provided absolute deadlines; no local incident history or
+raid detector is retained. None of these application, recipient or incident records persist.
+
+Mod View retains at most 256 KiB, including 25 bounded message excerpts and 20 member-related
+audit entries from the loaded server window. It shares existing search/history requests
+without retaining their media. A bulk-ban report retains at most 100 explicit targets under
+the same 256 KiB moderation-page cap; unconfirmed results become unknown after 30 seconds.
+Command-permission editing retains at most 256 commands and 100 overrides per permission
+layer within 512 KiB. Role-preview selection and permission explanations remain session-only
+and never become the account's effective permissions. Closing their view, losing access or
+changing account/server releases the applicable state. No administration archive is added.
+
+### Administrative MFA verification
+
+One protected HTTP request can wait for an owner-completed native MFA check.
+The transport retains one bounded ticket (8 KiB), at most eight advertised methods,
+one submitted input (1 KiB) and one proof (16 KiB), with a 64 KiB wire cap and a
+five-minute deadline. The state event contains only the challenge identifier,
+method choices and the original bounded administrative target, capped at 2 MiB. Its actual
+validated allocation is charged to the administration budget; the cap is not a reservation.
+No password, code, ticket or proof enters SQLite,
+preferences, the credential store, screenshots, extension snapshots or logs.
+Serein-owned secret buffers use redacted zeroizing wrappers. The native text field
+is masked and clears its undo history each frame. Transport/framework transient
+copies are not covered by a forensic-erasure claim. Completion, cancellation,
+expiry and session teardown release the pending check.

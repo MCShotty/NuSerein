@@ -16,6 +16,9 @@ pub(super) struct InvitesUi {
 	revoke: Option<String>,
 	revoking: bool,
 	copied: Option<(String, f64)>,
+	search: String,
+	matches: Vec<usize>,
+	filter_key: Option<(Id, u64, usize, u64)>,
 }
 
 impl InvitesUi {
@@ -191,6 +194,45 @@ impl InvitesUi {
 			});
 		}
 		if let Some(snapshot) = &state.server_admin.invites {
+			if ui
+				.add(
+					egui::TextEdit::singleline(&mut self.search)
+						.id_salt("invite-directory-search")
+						.char_limit(100)
+						.hint_text(crate::i18n::translate("server-invites-search"))
+						.desired_width(width.min(420.0)),
+				)
+				.changed()
+			{
+				self.filter_key = None;
+			}
+			let key = (
+				guild,
+				state.server_admin.revision,
+				snapshot.items.len(),
+				state.channel_list_revision(),
+			);
+			if self.filter_key != Some(key) {
+				let query = self.search.trim().to_lowercase();
+				self.matches = snapshot
+					.items
+					.iter()
+					.enumerate()
+					.filter(|(_, row)| invite_matches(row, &query, state))
+					.map(|(index, _)| index)
+					.collect();
+				self.filter_key = Some(key);
+			}
+			if !snapshot.items.is_empty() {
+				ui.weak(crate::i18n::translate_args(
+					"server-invites-match-count",
+					&[
+						("shown", &self.matches.len().to_string()),
+						("total", &snapshot.items.len().to_string()),
+					],
+				));
+				ui.add_space(8.0);
+			}
 			if snapshot.items.is_empty() {
 				design::empty_state(
 					ui,
@@ -202,7 +244,15 @@ impl InvitesUi {
 						""
 					},
 				);
+			} else if self.matches.is_empty() {
+				design::empty_state(
+					ui,
+					icons::Icon::Search,
+					"server-invites-no-matches",
+					"server-invites-search-help",
+				);
 			} else {
+				let rows = &self.matches;
 				let now = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
 				let mut ticking = false;
 				if width < 640.0 {
@@ -241,8 +291,9 @@ impl InvitesUi {
 							.id_salt("invites-table-y")
 							.max_height(height)
 							.auto_shrink([false, true])
-							.show_rows(ui, 62.0, snapshot.items.len(), |ui, range| {
-								for invite in &snapshot.items[range] {
+							.show_rows(ui, 62.0, rows.len(), |ui, range| {
+								for &index in &rows[range] {
+									let invite = &snapshot.items[index];
 									ui.push_id(&invite.code, |ui| {
 										let (rect, _) = ui.allocate_exact_size(
 											Vec2::new(table_width, 62.0),
@@ -388,7 +439,7 @@ impl InvitesUi {
 												)
 												.truncate(),
 											)
-											.on_hover_text(expiry);
+											.on_hover_text(invite_expiry_detail(invite, &expiry));
 										});
 										if let Some(roles) = &invite.roles {
 											let names = roles
@@ -540,6 +591,60 @@ impl InvitesUi {
 		}
 	}
 }
+fn invite_matches(invite: &Invite, query: &str, state: &State) -> bool {
+	if query.is_empty() {
+		return true;
+	}
+	invite.code.to_lowercase().contains(query)
+		|| invite.inviter.as_ref().is_some_and(|user| {
+			user.name.to_lowercase().contains(query)
+				|| user
+					.username
+					.as_deref()
+					.is_some_and(|name| name.to_lowercase().contains(query))
+				|| user.id.to_string() == query
+		}) || invite
+		.channel_name
+		.as_deref()
+		.or_else(|| {
+			invite
+				.channel
+				.and_then(|id| state.channel(id))
+				.map(|row| row.name.as_str())
+		})
+		.is_some_and(|name| name.to_lowercase().contains(query.trim_start_matches('#')))
+}
+fn invite_expiry_detail(invite: &Invite, fallback: &str) -> String {
+	let mut detail = Vec::with_capacity(3);
+	for (label, at) in [
+		("Created", invite.created_at),
+		(
+			"Expires",
+			invite.expires_at.or_else(|| {
+				invite
+					.created_at
+					.zip(invite.max_age.filter(|age| *age > 0))
+					.and_then(|(at, age)| at.checked_add(i128::from(age) * 1_000_000_000))
+			}),
+		),
+	] {
+		if let Some(formatted) = at
+			.and_then(|at| i64::try_from(at / 1_000_000_000).ok())
+			.and_then(|at| crate::local_time::discord_timestamp(at, b'f'))
+		{
+			detail.push(format!("{label}: {formatted}"));
+		}
+	}
+	if invite.temporary == Some(true) {
+		detail.push("Temporary membership".into());
+	}
+	if detail.is_empty() {
+		fallback.to_owned()
+	} else {
+		detail.join("\n")
+	}
+}
+
 fn column(rect: egui::Rect, columns: &[f32; 6], index: usize) -> egui::Rect {
 	let x = rect.left() + rect.width() * columns[..index].iter().sum::<f32>();
 	egui::Rect::from_min_size(
@@ -642,6 +747,30 @@ mod tests {
 		row.max_uses = Some(10);
 		assert_eq!(uses(&row), "2/10");
 	}
+	#[test]
+	fn invite_search_matches_username_inviter_channel_and_exact_invite_without_network() {
+		let mut state = test_support::demo_state();
+		let mut row = invite();
+		let mut user = state.user.as_ref().unwrap().clone();
+		user.name = "Public display".into();
+		user.username = Some("real_username".into());
+		row.inviter = Some(user);
+		row.channel_name = Some("Moderation Desk".into());
+		assert!(invite_matches(&row, "real_username", &state));
+		assert!(invite_matches(&row, "public", &state));
+		assert!(invite_matches(&row, "#moderation", &state));
+		assert!(invite_matches(&row, "synthetic", &state));
+		assert!(!invite_matches(&row, "missing", &state));
+		row.channel_name = None;
+		row.channel = Some(state.channels[0].id);
+		state.channels[0].name = "New channel name".into();
+		assert!(invite_matches(&row, "new channel", &state));
+		row.created_at = Some(0);
+		row.max_age = Some(3600);
+		let detail = invite_expiry_detail(&row, "Unknown");
+		assert!(detail.contains("Created:") && detail.contains("Expires:"));
+	}
+
 	fn text_position(shape: &egui::Shape, target: &str) -> Option<egui::Pos2> {
 		match shape {
 			egui::Shape::Text(text) if text.galley.job.text == target => {

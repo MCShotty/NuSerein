@@ -274,8 +274,61 @@ pub fn query(query: &Query, now_millis: i64) -> Result<Value, DecodeError> {
 			json!({"usernames":{"or_query":[query.search.trim()]}})
 		};
 	}
-	if query.recent {
-		value["and_query"] = json!({"guild_joined_at":{"range":{"gte":now_millis.saturating_sub(7 * 86400 * 1000)}}});
+	let filters = &query.filters;
+	let mut and = serde_json::Map::new();
+	if let Some(days) = filters.joined_within_days.or(query.recent.then_some(7)) {
+		and.insert(
+			"guild_joined_at".into(),
+			json!({"range":{"gte":now_millis.saturating_sub(i64::from(days) * 86400 * 1000)}}),
+		);
+	}
+	if let Some(days) = filters.account_younger_than_days {
+		let cutoff = now_millis
+			.saturating_sub(i64::from(days) * 86400 * 1000)
+			.saturating_sub(1_420_070_400_000)
+			.max(0) as u64;
+		and.insert(
+			"user_id".into(),
+			json!({"range":{"gte":(cutoff.min(u64::MAX >> 22) << 22).to_string()}}),
+		);
+	}
+	if let Some(role) = filters.role {
+		and.insert("role_ids".into(), json!({"and_query":[role]}));
+	}
+	if let Some(source) = filters.join_source {
+		and.insert("join_source_type".into(), json!({"or_query":[source]}));
+	}
+	if let Some(signal) = filters.signal {
+		use m::MemberSignal;
+		match signal {
+			MemberSignal::TimedOut => {
+				and.insert(
+					"safety_signals".into(),
+					json!({"communication_disabled_until":{"range":{"gte":now_millis}}}),
+				);
+			}
+			MemberSignal::UnusualDm => {
+				and.insert(
+					"safety_signals".into(),
+					json!({"unusual_dm_activity_until":{"range":{"gte":now_millis}}}),
+				);
+			}
+			MemberSignal::Quarantined => {
+				and.insert(
+					"safety_signals".into(),
+					json!({"automod_quarantined_username":true}),
+				);
+			}
+			MemberSignal::Rejoined => {
+				and.insert("did_rejoin".into(), json!(true));
+			}
+			MemberSignal::Pending => {
+				and.insert("is_pending".into(), json!(true));
+			}
+		}
+	}
+	if !and.is_empty() {
+		value["and_query"] = and.into();
 	}
 	if let Some(cursor) = query.after {
 		value["after"] = json!({"user_id":cursor.user,"guild_joined_at":cursor.joined_at});
@@ -450,5 +503,55 @@ mod sticker_tests {
 			"application/json",
 			br#"{"w":320,"h":320,"fr":60,"ip":0,"op":301}"#
 		));
+	}
+}
+#[cfg(test)]
+mod advanced_member_filters_tests {
+	use super::*;
+	#[test]
+	fn filters_combine_with_name_search_and_preserve_cursor_and_checked_dates() {
+		let now = 1_790_000_000_000;
+		let mut q = Query {
+			search: "nickname".into(),
+			filters: m::MemberFilters {
+				role: Some(Id(12)),
+				joined_within_days: Some(30),
+				account_younger_than_days: Some(7),
+				join_source: Some(5),
+				signal: Some(m::MemberSignal::TimedOut),
+			},
+			after: Some(Cursor {
+				user: Id(8),
+				joined_at: 1_700_000_000_000,
+			}),
+			..Default::default()
+		};
+		let value = query(&q, now).unwrap();
+		assert_eq!(
+			value["or_query"]["usernames"]["or_query"],
+			json!(["nickname"])
+		);
+		assert_eq!(value["and_query"]["role_ids"]["and_query"], json!(["12"]));
+		assert_eq!(
+			value["and_query"]["guild_joined_at"]["range"]["gte"],
+			now - 30 * 86400 * 1000
+		);
+		assert_eq!(
+			value["and_query"]["safety_signals"]["communication_disabled_until"]["range"]["gte"],
+			now
+		);
+		assert_eq!(value["after"]["user_id"], "8");
+		assert!(
+			value["and_query"]["user_id"]["range"]["gte"]
+				.as_str()
+				.unwrap()
+				.parse::<u64>()
+				.is_ok()
+		);
+		q.filters.joined_within_days = Some(0);
+		assert!(query(&q, now).is_err());
+		q.filters.joined_within_days = None;
+		q.filters.role = Some(Id(0));
+		assert!(query(&q, now).is_err());
 	}
 }

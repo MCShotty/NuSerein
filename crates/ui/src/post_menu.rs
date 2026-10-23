@@ -1,4 +1,4 @@
-//! Forum post menus share the bounded channel action worker and local favorites.
+//! Forum post menus share the bounded channel action worker and account favorites.
 use crate::{channel_menu::row, design, dialog, shortcuts::ShortcutView, user_menu};
 use client_core::{
 	Command, State,
@@ -31,6 +31,7 @@ struct TagEditor {
 #[derive(Default)]
 pub(super) struct PostMenu {
 	pub shortcut_requested: Option<crate::shortcuts::Intent>,
+	pub device_shortcut_requested: Option<crate::shortcuts::Intent>,
 	requested: Option<(Id, Intent)>,
 	load: Option<Id>,
 	opened: Option<egui::Id>,
@@ -91,20 +92,31 @@ impl PostMenu {
 				ui.separator();
 				if row(
 					ui,
-					if view.contains(Shortcut::Favorite, post.id) {
+					if state.channel_account_favorite(post.id) {
 						"post-menu-context-remove-from-favorites"
 					} else {
 						"post-menu-context-add-to-favorites"
 					},
-					view.available() && state.channel(post.id).is_some(),
+					state.personal_channel_controls_available(post.guild.unwrap())
+						&& state.channel(post.id).is_some(),
 					false,
 				)
 				.on_hover_text(crate::i18n::translate(
-					"post-menu-context-favorites-are-saved-on-this-device",
+					"Favorites are synchronized with your Discord account",
 				))
 				.clicked()
 				{
-					self.shortcut_requested = Some(view.toggle(Shortcut::Favorite, post.id));
+					self.shortcut_requested = Some(crate::shortcuts::Intent {
+						channel: post.id,
+						kind: Shortcut::Favorite,
+						on: !state.channel_account_favorite(post.id),
+					});
+					ui.close();
+				}
+				if view.contains(Shortcut::Favorite, post.id)
+					&& row(ui, "Remove from device favorites", view.available(), false).clicked()
+				{
+					self.device_shortcut_requested = Some(view.toggle(Shortcut::Favorite, post.id));
 					ui.close();
 				}
 				ui.separator();

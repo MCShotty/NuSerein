@@ -857,6 +857,22 @@ fn more_menu(
 	}
 	let enabled = actions_enabled(state);
 	let friend = state.friends().any(|friend| friend.id == user.id);
+	if let Some(guild) = state
+		.selected
+		.and_then(|id| state.channel(id))
+		.and_then(|channel| channel.guild)
+		.filter(|guild| state.can_open_mod_view(*guild))
+		&& ui
+			.add_enabled(enabled, egui::Button::new("Open Mod View"))
+			.clicked()
+	{
+		action = Some(Action::Menu(crate::user_menu::Action::ModView {
+			guild,
+			user: user.id,
+		}));
+		ui.close();
+	}
+
 	ui.separator();
 	if ui
 		.add_enabled(

@@ -22,7 +22,7 @@ jobs:
     env:
       # Keep this follow-up's original PR head in the same native comparison as main/nightly.
       SEREIN_REPLAY_CHECKPOINT: ${{ github.repository == 'MCShotty/Serein' && github.event.pull_request.head.ref == 'feat/conversation-qol' && '3179696b37ef85a5d9aebf1a3cf026b0ea488ef7' || '' }}
-      SEREIN_REPLAY_NIGHTLY: ${{ github.repository == 'MCShotty/Serein' && github.event.pull_request.head.ref == 'feat/conversation-qol' && 'v1.0.0-nightly.20261022.61' || '' }}
+      SEREIN_REPLAY_NIGHTLY: ${{ github.repository == 'MCShotty/Serein' && (github.event.pull_request.head.ref == 'feat/conversation-qol' || github.event.pull_request.head.ref == 'feat/server-controls-and-moderation') && 'v1.0.0-nightly.20261022.61' || '' }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:

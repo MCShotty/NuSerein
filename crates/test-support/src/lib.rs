@@ -676,6 +676,8 @@ pub fn demo_state() -> State {
 	state
 		.apply_notification_preferences(client_core::notifications::Event::Settings {
 			entries: vec![client_core::notifications::Setting {
+				flags: Some(0),
+				channel_flags: Vec::new(),
 				overrides_known: true,
 				mute_until: None,
 				guild: Some(Id(10)),
@@ -1299,6 +1301,8 @@ pub fn seed_access_marks(state: &mut State) {
 	state
 		.apply_notification_preferences(client_core::notifications::Event::Settings {
 			entries: vec![client_core::notifications::Setting {
+				flags: Some(0),
+				channel_flags: Vec::new(),
 				overrides_known: true,
 				mute_until: None,
 				guild: Some(GUILD),
@@ -2243,6 +2247,8 @@ mod tests {
 		state
 			.apply_notification_preferences(n::Event::Settings {
 				entries: vec![n::Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					overrides_known: true,
 					mute_until: None,
 					channel_mute_until: vec![],
@@ -2360,6 +2366,8 @@ mod tests {
 			.unwrap()
 			.clone();
 		let setting = n::Setting {
+			flags: Some(0),
+			channel_flags: Vec::new(),
 			overrides_known: true,
 			mute_until: None,
 			channel_mute_until: vec![],
@@ -2444,6 +2452,8 @@ mod tests {
 		state
 			.apply_notification_preferences(n::Event::Settings {
 				entries: vec![n::Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					overrides_known: true,
 					mute_until: None,
 					channel_mute_until: vec![],
@@ -2472,6 +2482,8 @@ mod tests {
 		state
 			.apply_notification_preferences(n::Event::Settings {
 				entries: vec![n::Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					overrides_known: true,
 					mute_until: None,
 					channel_mute_until: vec![],
@@ -2494,6 +2506,8 @@ mod tests {
 		state
 			.apply_notification_preferences(n::Event::Settings {
 				entries: vec![n::Setting {
+					flags: Some(0),
+					channel_flags: Vec::new(),
 					overrides_known: true,
 					mute_until: None,
 					channel_mute_until: vec![],

@@ -3255,3 +3255,126 @@ CI is reported on the PR, separately from the frozen runtime and measurement
 revisions. Live Discord account settings/nickname updates, physical DPI/input,
 real speech engines and Windows/macOS GUI CPU/RSS or comparative package-size
 measurements remain unverified or unavailable. No overall app speedup is claimed.
+
+## Server controls and moderation — October 23, 2026
+
+Compared the frozen starting PR #20 head `c7968095aadebe16078f698e8211a470b66caafd`
+with replay runtime `5dcaa97027a3f5498c398f3fbbee9fd90699fcb1` and current upstream
+nightly `v1.0.0-nightly.20261022.61` (`c2842aa762ca633e0ed4ba986c460a59ce6435fe`).
+The starting application's runtime source is unchanged from `26e87fd5`; its frozen
+binaries were reused and rehashed. Replay results are pinned separately from the
+native preview and package results below. The [evidence summary](pr-evidence/server-controls/README.md)
+and [compact measurements](pr-evidence/server-controls/measurements.json) retain
+the source-tree identifiers, binary hashes, primary samples and confirmation batches.
+Historical measurements above retain their original revisions and environments.
+
+### Build and measurement method
+
+All comparison builds use pinned Rust 1.98.1, their committed lockfiles and separate
+source/target directories. Core replay uses its default features and the standard
+release profile: opt-level 3, fat LTO, one codegen unit, stripped symbols and line-table
+debug information. Native previews use matching release settings with the explicit
+thin-LTO override on the final preview crate, `demo` enabled and application default features disabled. The normal
+application package retains fat LTO, includes voice and disables development data.
+Build commands, run separately in each pinned source tree, are:
+
+```sh
+cargo +1.98.1 build --locked --release -p replay-bench
+cargo +1.98.1 rustc --locked --release -p serein --example profile_preview --no-default-features --features demo -- -C lto=thin
+cargo +1.98.1 xtask package --format dir
+```
+
+The Linux 6.18.55 x86-64/glibc 2.41 container reports an Intel Xeon Platinum 8573C,
+five available logical CPUs, a four-CPU quota and a 16-GiB memory limit. No builds
+ran during the timed comparisons. The primary replay series pins the sampler and
+children to logical CPU 0, runs one warmup per revision/workload, then five measured
+repetitions with revision order rotated. Timed invocations use the frozen binaries:
+
+```sh
+taskset -c 0 "$replay_binary"
+taskset -c 0 "$replay_binary" --wide-channels
+taskset -c 0 "$replay_binary" --navigation
+```
+
+The first workload applies 100,000 synthetic events. The wide-channel workload
+applies 10,000 messages into the last of 20,001 channels; its inner timer excludes
+channel setup. Navigation measures 10,000 selections across three 50-message
+conversations. These are core-state timings, not native frames, input latency,
+connected-account traffic or process memory. Navigation p95 below is the median
+of five runs' reported p95 values, rather than a pooled percentile.
+
+### Local replay results
+
+| Core workload / median | Starting PR | Current nightly | New runtime | New vs starting |
+| --- | ---: | ---: | ---: | ---: |
+| Reducer, ms | 98.057 | 99.669 | 103.468 | +5.5% |
+| Wide-channel reducer, ms | 9.472 | 129.845 | 9.637 | +1.7% |
+| Selection, µs | 0.309 | 0.287 | 0.313 | +1.3% |
+| Selection p95, µs | 0.357 | 0.319 | 0.350 | −2.0% |
+
+The primary reducer result exceeds the 3% target against the starting PR. Its
+run ranges are 87.274–131.392 ms before and 87.427–139.876 ms after; nightly is
+78.819–142.435 ms. Overlapping ranges do not demonstrate that the target passes.
+The large wide-channel difference against nightly was already present in the
+starting runtime and is not a new administration-workflow improvement.
+
+Two longer confirmation series use the same frozen binaries on logical CPU 2.
+After one warmup, each measures five rotated batches of 20 fresh processes per
+revision/workload. The wall-time series averages the core-reported elapsed times
+within each batch and takes the median of those five means. A separate diagnostic
+also differences `resource.getrusage(RUSAGE_CHILDREN)` around each completed child
+to obtain user-plus-system process CPU. That includes startup, setup and logout,
+so it is not a replacement for the inner reducer/wide-channel timers.
+
+| Reducer confirmation / median | Starting PR | Current nightly | New runtime | New vs starting |
+| --- | ---: | ---: | ---: | ---: |
+| Core wall time, ms per process | 95.403 | 89.147 | 98.054 | +2.8% |
+| Separate whole-process CPU diagnostic, ms per process | 118.188 | 79.834 | 89.240 | −24.5% |
+
+The diagnostic reverses the direction of the primary result, while longer
+wide-channel batch means also vary substantially: starting-batch means range
+9.236–32.296 ms and new means 9.449–17.639 ms. These inconsistent shared-host
+results do not isolate a speedup or resolve the primary slowdown. The **3%
+reducer target remains unestablished**; separately labelled native-platform
+comparisons are needed before claiming it is demonstrated. No overall application
+speedup is claimed.
+
+### Native UI and packages
+
+Final native preview and normal package source: `2ee9314232945685c4dc81dc6cac1fc84c4f179a`. The unchanged core replay above stays pinned to `5dcaa970`.
+
+Native comparisons use `scripts/profile-native-ui.py` on Linux X11/Xvfb, llvmpipe (LLVM 19.1.7/Mesa 25.0.7, GL), 1120 × 760 and scale 1. Each fresh process gets three seconds of warmup, five seconds of sampling at 100 ms intervals and two seconds of settling. There is one warmup run and five measured repetitions, with build order rotated; sampler and children inherit logical CPU 0. No builds ran during these samples.
+
+The common Members fixture has eight members; the new build adds identity/filter metadata. Search alternates `Avery` and an empty query once per second through native text input. Active comparisons opt into the bounded preview callback collector, which requests periodic repaint; their CPU figures describe that instrumented workload, not ordinary idle CPU. Callback p50/p95 values are medians of five per-run percentiles for `MessagingUi::show`, excluding rendering/presentation and end-to-end input or service latency. Peak RSS means the maximum sampled after warmup, not a lifetime high-water mark; settled RSS is the median of the two-second settling window.
+
+Only the common idle view was sampled against the pinned nightly; its preview lacks the callback instrumentation used for active comparisons. Mod View and Browse Channels have no equivalent starting-build fixture and are characterized separately. No helper-process RSS was observed in these sampling windows. Live cache occupancy, outstanding transport tasks, large-server search latency and physical input remain unmeasured.
+
+| Native demo / median | Starting PR | Pinned nightly | New | New minus starting |
+| --- | ---: | ---: | ---: | ---: |
+| Members idle CPU, % of one core | 4.92 | 4.96 | 5.14 | +0.23 points |
+| Members sampled peak RSS, MiB | 150.14 | 141.31 | 151.84 | +1.70 MiB |
+| Members settled RSS, MiB | 150.14 | 141.31 | 151.84 | +1.70 MiB |
+| Member search callback p50, ms | 1.80 | — | 1.72 | -0.07 ms |
+| Member search callback p95, ms | 3.72 | — | 4.07 | +0.35 ms |
+| Instrumented search CPU, % of one core | 90.24 | — | 90.16 | -0.08 points |
+| Role editor callback p95, ms | 2.86 | — | 3.47 | +0.61 ms |
+| Instrumented role editor CPU, % of one core | 72.97 | — | 75.99 | +3.02 points |
+
+Members idle CPU increased by 0.23 percentage points, within the two-point target. Active callback tails increased: these costs are retained in the table and are not an overall speedup. One role-editor batch failed its callback-coverage gate: a live baseline process produced only two callbacks, ending at 3.621 seconds of the internal 3–8-second window. Its cause was not isolated. The entire batch was repeated once, with five valid samples for both builds; the rejected attempt is retained in the compact evidence. No per-sample substitution was used.
+
+| New-only panel / median | CPU, % of one core | Sampled peak RSS, MiB | Settled RSS, MiB |
+| --- | ---: | ---: | ---: |
+| Mod View | 13.74 | 150.46 | 150.46 |
+| Browse Channels | 15.17 | 150.87 | 150.87 |
+
+Both package runs used the normal `cargo xtask package --format dir` command, empty output directories and the standard fat-LTO production profile. Contents, modes and normalized deflate-6 archives matched. Both launch probes removed development FFmpeg paths, resolved private media libraries inside the installed tree, and passed encoder-query and synthetic LavaSRv2 worker checks. No microphone or account was used and no manual staging repair was applied.
+
+| Linux package size | Starting runtime | Final runtime | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 97,186,568 B | 98,406,920 B | +1,220,352 B (+1.256%) |
+| Installed payload | 225,945,587 B | 227,165,939 B | +1,220,352 B (+0.540%) |
+| Normalized ZIP | 155,151,237 B | 155,647,310 B | +496,073 B (+0.320%) |
+
+An intermediate `8a020e14` release attempt was killed at the 16-GiB container limit while RAM-backed test caches remained resident. No package or size measurement is claimed from that attempt. The final full gate passed, verified task-owned generated check caches were retired, and the normal final clean/cached package commands then completed. Frozen baselines, sources and license material were preserved.
+
+Windows/macOS GUI CPU/RSS and comparative package sizes, physical input/accessibility and live Discord acceptance remain unavailable locally. Platform CI results are reported separately on the PR; builds and synthetic fixtures do not establish live service interoperability. The primary reducer slowdown above remains unresolved by the inconsistent shared-host measurements.

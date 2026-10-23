@@ -262,6 +262,8 @@ fn checked_presences(raw: Option<&RawValue>, warning: &mut bool) -> Option<Box<R
 // Only READY tolerates unavailable optional catalogs. Ordinary guild responses remain strict.
 #[derive(Deserialize)]
 struct Guild<'a> {
+	#[serde(default, deserialize_with = "crate::server_access::incident_patch")]
+	incidents_data: model::Patch<model::server_access::Incident>,
 	#[serde(default)]
 	default_message_notifications: model::Patch<u8>,
 	#[serde(default, borrow)]
@@ -329,6 +331,7 @@ impl<'de> Deserialize<'de> for Guilds {
 						));
 					}
 					out.items.push(crate::GuildDto {
+						incidents_data: guild.incidents_data,
 						default_message_notifications: guild.default_message_notifications,
 						id: guild.id,
 						emojis: optional(guild.emojis, &mut unavailable),
@@ -412,6 +415,33 @@ mod tests {
 		json!({"user":{"id":"9","username":"Synthetic"},"session_id":"synthetic","resume_gateway_url":"wss://gateway.discord.gg/","guilds":[{"id":"1","owner_id":"9","name":"Synthetic","roles":[],"channels":[{"id":"2","type":0,"name":"general","permission_overwrites":[]}]}]})
 	}
 
+	#[test]
+	fn optional_incident_state_survives_ready_projection_without_breaking_login() {
+		let mut payload = fixture();
+		payload["guilds"][0]["incidents_data"] =
+			json!({"invites_disabled_until":"2027-01-01T00:00:00Z","dms_disabled_until":null});
+		let bytes = serde_json::to_vec(&payload).unwrap();
+		let (ready, warnings) = decode(&bytes).unwrap().navigation().unwrap();
+		assert!(!warnings.entries);
+		assert!(
+			matches!(ready.guilds[0].incident_patch(),model::Patch::Value(v) if v.invites_until.is_some())
+		);
+		payload["guilds"][0]["incidents_data"] = json!({"invites_disabled_until":"future-format"});
+		let bytes = serde_json::to_vec(&payload).unwrap();
+		let (ready, _) = decode(&bytes).unwrap().navigation().unwrap();
+		assert_eq!(ready.guilds.len(), 1);
+		assert!(matches!(
+			ready.guilds[0].incident_patch(),
+			model::Patch::Absent
+		));
+		payload["guilds"][0]["properties"] = json!({"incidents_data":null});
+		let bytes = serde_json::to_vec(&payload).unwrap();
+		let (ready, _) = decode(&bytes).unwrap().navigation().unwrap();
+		assert!(matches!(
+			ready.guilds[0].incident_patch(),
+			model::Patch::Null
+		));
+	}
 	#[test]
 	fn guild_notification_defaults_survive_flat_nested_and_patch_payloads() {
 		for (flat, nested, expected) in [

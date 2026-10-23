@@ -190,6 +190,11 @@ pub enum Action {
 		channel: Id,
 		name: String,
 	},
+	SetWebhookAvatar {
+		scope: Option<Id>,
+		webhook: Id,
+		avatar: crate::Patch<String>,
+	},
 	DeleteWebhook {
 		scope: Option<Id>,
 		webhook: Id,
@@ -205,7 +210,8 @@ impl Action {
 			Self::CopyWebhookUrl { scope, .. }
 			| Self::CreateWebhook { scope, .. }
 			| Self::EditWebhook { scope, .. }
-			| Self::DeleteWebhook { scope, .. } => *scope,
+			| Self::DeleteWebhook { scope, .. }
+			| Self::SetWebhookAvatar { scope, .. } => *scope,
 			Self::DeleteIntegration { .. } => None,
 		}
 	}
@@ -249,11 +255,31 @@ impl Action {
 				webhook,
 				channel,
 			} => webhook.0 != 0 && channel.0 != 0 && scope.is_none_or(|scope| scope == *channel),
+			Self::SetWebhookAvatar {
+				webhook, avatar, ..
+			} => {
+				webhook.0 != 0
+					&& match avatar {
+						crate::Patch::Value(data) => {
+							data.capacity() <= crate::server_admin::MAX_IMAGE_URI
+								&& data.starts_with("data:image/png;base64,")
+						}
+						crate::Patch::Null => true,
+						crate::Patch::Absent => false,
+					}
+			}
 			Self::DeleteWebhook { webhook, .. } => webhook.0 != 0,
 			Self::DeleteIntegration { integration } => integration.0 != 0,
 		}
 	}
 	pub fn normalize(&mut self) {
+		if let Self::SetWebhookAvatar {
+			avatar: crate::Patch::Value(data),
+			..
+		} = self
+		{
+			data.shrink_to_fit();
+		}
 		if let Self::CreateWebhook { name, .. } | Self::EditWebhook { name, .. } = self {
 			name.shrink_to_fit();
 		}

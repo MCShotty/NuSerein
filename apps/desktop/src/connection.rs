@@ -1,6 +1,7 @@
 use client_core::{
 	COMMAND_SLOTS, Command, EVENT_SLOTS, Envelope, Event, MAX_EVENT_BYTES,
 	auth::{AuthProvider, Failure, SessionSecret},
+	server_admin::{ReadKey, ReadScopes},
 };
 use discord_api::DiscordApi;
 use eframe::egui;
@@ -20,6 +21,7 @@ use tokio::{
 
 pub struct Connection {
 	pub commands: mpsc::Sender<Command>,
+	admin_scopes: watch::Sender<ReadScopes>,
 	pub uploads: mpsc::Sender<crate::uploads::UploadRequest>,
 	pub events: ReliableEvents,
 	pub typing: mpsc::Receiver<Envelope>,
@@ -95,9 +97,106 @@ impl Drop for Connection {
 /// Preload tasks kept at once: one per preload kind, plus room for one whose result was lost.
 const PREFETCHES: usize = 4;
 struct AbortTask(JoinHandle<()>);
+/// Community retains its Stage/call cancellation worker, but all administrative
+/// mutations share one admission slot across that worker and the general lane.
+fn admin_mutation_busy(administrative: &Option<AbortTask>, community: &Option<AbortTask>) -> bool {
+	[administrative, community]
+		.iter()
+		.any(|job| job.as_ref().is_some_and(|task| !task.0.is_finished()))
+}
+
+fn mfa_job_available(
+	job: &Option<AbortTask>,
+	request: &client_core::mfa::Request,
+	resume_ready: bool,
+) -> bool {
+	job.as_ref().is_none_or(|task| task.0.is_finished())
+		|| matches!(request.action, client_core::mfa::Action::Cancel)
+		|| matches!(request.action, client_core::mfa::Action::Resume) && resume_ready
+}
+
 impl Drop for AbortTask {
 	fn drop(&mut self) {
 		self.0.abort();
+	}
+}
+
+/// At most two replaceable reads. This container never owns a mutation task.
+#[derive(Default)]
+struct AdminReads {
+	slots: [Option<(ReadKey, AbortTask)>; 2],
+}
+impl AdminReads {
+	fn retire(&mut self, scopes: ReadScopes) {
+		for slot in &mut self.slots {
+			if slot
+				.as_ref()
+				.is_some_and(|(key, task)| !scopes.contains(*key) || task.0.is_finished())
+			{
+				*slot = None;
+			}
+		}
+	}
+	fn replace(&mut self, key: ReadKey) -> bool {
+		for slot in &mut self.slots {
+			if slot.as_ref().is_some_and(|(old, _)| old.kind == key.kind) {
+				*slot = None;
+			}
+		}
+		self.slots.iter().any(Option::is_none)
+	}
+	fn track(&mut self, key: ReadKey, task: JoinHandle<()>) {
+		let slot = self
+			.slots
+			.iter_mut()
+			.find(|slot| slot.is_none())
+			.expect("read capacity was admitted before spawning");
+		*slot = Some((key, AbortTask(task)));
+	}
+}
+
+async fn read_retired(scope: &mut watch::Receiver<ReadScopes>, key: ReadKey) {
+	loop {
+		let current = *scope.borrow_and_update();
+		if !current.contains(key) || scope.changed().await.is_err() {
+			return;
+		}
+	}
+}
+
+async fn scoped_admin_read(
+	operation: impl std::future::Future<Output = Event>,
+	mut scope: watch::Receiver<ReadScopes>,
+	key: ReadKey,
+) -> Option<Event> {
+	let event = tokio::select! {
+		biased;
+		_=read_retired(&mut scope,key)=>return None,
+		event=operation=>event,
+	};
+	// Account revocation remains global even if the page was closed as it arrived.
+	(scope.borrow().contains(key) || admin_read_failure(&event).is_some()).then_some(event)
+}
+
+fn admin_read_failure(event: &Event) -> Option<Failure> {
+	match event {
+		Event::ServerAdmin(client_core::server_admin::Event {
+			result: Err(failure),
+			..
+		})
+		| Event::ServerSettings(client_core::server_settings::Event {
+			result: Err(failure),
+			..
+		})
+		| Event::Community(client_core::community::Event {
+			result: Err(failure),
+			..
+		})
+		| Event::ChannelAction(client_core::channel_actions::Event::Finished {
+			result: Err(failure),
+			..
+		}) if failure.ends_session() => Some(*failure),
+		_ => None,
 	}
 }
 
@@ -258,6 +357,17 @@ impl Connection {
 		self.typing_channel
 			.store(channel.map_or(0, |id| id.0), Ordering::Relaxed);
 	}
+	pub fn sync_admin_reads(&self, state: &client_core::State) {
+		let latest = state.admin_read_scopes();
+		self.admin_scopes.send_if_modified(|current| {
+			if *current == latest {
+				false
+			} else {
+				*current = latest;
+				true
+			}
+		});
+	}
 	pub fn start(
 		runtime: &Handle,
 		secret: Arc<SessionSecret>,
@@ -268,6 +378,7 @@ impl Connection {
 		ctx: egui::Context,
 	) -> Self {
 		let (commands, mut receive) = mpsc::channel(COMMAND_SLOTS);
+		let (admin_scopes, mut admin_scope) = watch::channel(ReadScopes::default());
 		let (uploads, mut upload_receive) = mpsc::channel::<crate::uploads::UploadRequest>(1);
 		let (send, events) = reliable_events(ctx.clone());
 		let (typing_send, typing) = mpsc::channel(8);
@@ -336,6 +447,10 @@ impl Connection {
 				}
 				let _ = account_presence_send.send_replace(chosen);
                 let emit=Arc::new(emit);
+                let mfa_emit=emit.clone();
+                api.set_mfa_notifier(move |event| mfa_emit(Event::Mfa(event)))?;
+                let review_emit=emit.clone();
+                api.set_member_review_notifier(move |event| review_emit(Event::MemberReviewProgress(event)))?;
                 let (member_send,member_receive)=watch::channel(None);
                 let (voice_send,voice_receive)=mpsc::channel(8);
 				let (activity_send,activity_receive)=watch::channel(None);
@@ -411,6 +526,11 @@ impl Connection {
                         if let Some(error)=error {write_api.stop();let _=write_finished.send(Some(error));write_wake.request_repaint();break;}
                     }
                 }));
+                // Administrative writes may wait for owner verification without holding up
+                // the ordinary message-send queue. One protected operation and one check.
+                let mut administrative:Option<AbortTask>=None;
+				let mut admin_reads = AdminReads::default();
+                let mut mfa_job:Option<AbortTask>=None;
                 let mut history:Option<AbortTask>=None;
                 let mut reply_previews:Vec<AbortTask>=Vec::new();
                 // Preloads never cancel the open conversation's reads or each other; each kind
@@ -446,6 +566,10 @@ impl Connection {
 					let owner=voice_request.map(|(channel,request,_)|(channel,request));
 					soundboard_owner.send_if_modified(|current| {if *current==owner {false} else {*current=owner;true}});
                     tokio::select! {
+						changed=admin_scope.changed()=> {
+							if changed.is_err() {break;}
+							admin_reads.retire(*admin_scope.borrow_and_update());
+						}
                         _=&mut gateway_task.0=>{break;}
                         _=&mut writes.0=>{break;}
                         changed=recipient_scope_changed.changed()=> {
@@ -525,10 +649,69 @@ impl Connection {
                                 if apply_voice_lifecycle(&mut current_lifecycle,latest,&mut voice_request,&calls,&channels) {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                             }
                             let Some(command)=command else {break;};
+							if let Some(key)=ReadKey::of(&command,generation) {
+								let scopes=*admin_scope.borrow_and_update();
+								admin_reads.retire(scopes);
+								// A queued read can be superseded before the transport sees it.
+								if !scopes.contains(key) {continue;}
+								if let Command::Community {fence,action,..}=&command {
+									let call=match action.as_ref(){model::community::Action::GetStage {channel,call_request:Some(request)}=>Some((*channel,*request)),_=>None};
+									if *community_scope.borrow()!=*fence || call.is_some_and(|call|voice_request.map(|(c,r,_)|(c,r))!=Some(call)) {
+										emit(key.rejected(Failure::ProtocolAt("Community read expired; refresh to continue")))?;
+										continue;
+									}
+								}
+								if !admin_reads.replace(key) {
+									emit(key.rejected(Failure::ProtocolAt("Administration reads are busy; refresh to retry")))?;
+									continue;
+								}
+								let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();let scope=admin_scope.clone();
+								admin_reads.track(key,tokio::spawn(async move {
+									let Some(event)=scoped_admin_read(api.execute(command),scope,key).await else {return;};
+									let failure=admin_read_failure(&event);
+									if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+									wake.request_repaint();
+								}));
+								continue;
+							}
+                            if let Command::Mfa(request)=command {
+                                if !mfa_job_available(&mfa_job,&request,api.mfa_resume_ready(request.id)) {
+                                    emit(Event::Mfa(client_core::mfa::Event::Updated{id:request.id,result:Err(Failure::ProtocolAt("A security check is already in progress"))}))?;
+                                    continue;
+                                }
+                                drop(mfa_job.take());
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                mfa_job=Some(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(Command::Mfa(request)).await;
+                                    let failure=match &event {Event::Mfa(client_core::mfa::Event::Updated{result:Err(f),..}) if f.ends_session()=>Some(*f),_=>None};
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
+                            // Community writes keep their existing call/fence cancellation path below.
+                            if let Some(target)=client_core::mfa::Target::from_command(&command).filter(|_|!matches!(&command,Command::Community {..})) {
+                                if admin_mutation_busy(&administrative,&community_job) {
+                                    emit(target.rejected(Failure::ProtocolAt("Finish the current server action first")))?;
+                                    continue;
+                                }
+                                let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
+                                administrative=Some(AbortTask(tokio::spawn(async move {
+                                    let event=api.execute(command).await;
+                                    let failure=match &event {
+                                        Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})|Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})|Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})|Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})|Event::Onboarding(client_core::onboarding::Event::Submitted{result:Err(f),..}) if f.ends_session()=>Some(*f),
+                                        _=>None,
+                                    };
+                                    if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                                    wake.request_repaint();
+                                })));
+                                continue;
+                            }
+
                             if let Command::Community {guild,request,fence,action,..} = &command {
                                 let (guild,request,fence)=(*guild,*request,*fence);
                                 let call=match action.as_ref(){model::community::Action::StageVoice{channel,call_request,..}|model::community::Action::GetStage{channel,call_request:Some(call_request)}=>Some((*channel,*call_request)),_=>None};
-                                if call.is_some_and(|call|voice_request.map(|(c,r,_)|(c,r))!=Some(call)) || *community_scope.borrow()!=fence || community_job.as_ref().is_some_and(|job|!job.0.is_finished()) {
+                                if call.is_some_and(|call|voice_request.map(|(c,r,_)|(c,r))!=Some(call)) || *community_scope.borrow()!=fence || admin_mutation_busy(&administrative,&community_job) {
                                     emit(Event::Community(client_core::community::Event {guild,request,result:Err(Failure::ProtocolAt("Community action expired or is already pending; refresh to continue"))}))?;continue;
                                 }
                                 drop(community_job.take());
@@ -955,6 +1138,7 @@ impl Connection {
         });
 		Self {
 			commands,
+			admin_scopes,
 			uploads,
 			events,
 			typing,
@@ -1995,6 +2179,197 @@ fn scope_history_failure(event: Event, channel: model::Id, request: u64) -> Even
 
 #[cfg(test)]
 mod tests {
+	#[tokio::test]
+	async fn administrative_and_community_mutations_cannot_overlap() {
+		let (release, held) = tokio::sync::oneshot::channel::<()>();
+		let mut administrative = Some(AbortTask(tokio::spawn(async move {
+			let _ = held.await;
+		})));
+		let mut community = None;
+		assert!(
+			admin_mutation_busy(&administrative, &community),
+			"an active server mutation rejects a Community write"
+		);
+		drop(administrative.take());
+		drop(release);
+		assert!(!admin_mutation_busy(&administrative, &community));
+		let (release, held) = tokio::sync::oneshot::channel::<()>();
+		community = Some(AbortTask(tokio::spawn(async move {
+			let _ = held.await;
+		})));
+		assert!(
+			admin_mutation_busy(&administrative, &community),
+			"an active Community write rejects a server mutation"
+		);
+		drop(community.take());
+		drop(release);
+		assert!(!admin_mutation_busy(&administrative, &community));
+	}
+	#[tokio::test]
+	async fn verified_resume_handoff_does_not_wait_for_worker_exit() {
+		use client_core::mfa::{Action, Request};
+		let (published, verified) = tokio::sync::oneshot::channel();
+		let (release, held) = tokio::sync::oneshot::channel::<()>();
+		let mut job = Some(AbortTask(tokio::spawn(async move {
+			published.send(()).unwrap();
+			let _ = held.await;
+		})));
+		verified.await.unwrap();
+		assert!(!job.as_ref().unwrap().0.is_finished());
+		let resume = Request {
+			id: 7,
+			action: Action::Resume,
+		};
+		assert!(!mfa_job_available(&job, &resume, false));
+		assert!(
+			mfa_job_available(&job, &resume, true),
+			"published broker proof permits immediate resume"
+		);
+		assert!(!mfa_job_available(
+			&job,
+			&Request {
+				id: 7,
+				action: Action::SendSms
+			},
+			true
+		));
+		assert!(mfa_job_available(
+			&job,
+			&Request {
+				id: 7,
+				action: Action::Cancel
+			},
+			false
+		));
+		// Production hands the single bounded worker slot over at this point.
+		drop(job.take());
+		assert!(mfa_job_available(&job, &resume, false));
+		drop(release);
+	}
+	#[tokio::test]
+	async fn channel_admin_read_replacement_cancels_held_http_and_leaves_message_work_running() {
+		use tokio::{
+			io::{AsyncReadExt, AsyncWriteExt},
+			net::{TcpListener, TcpStream},
+		};
+		tokio::time::timeout(Duration::from_secs(5), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let address = listener.local_addr().unwrap();
+			let (entered, waiting) = tokio::sync::oneshot::channel();
+			let server = tokio::spawn(async move {
+				let (mut held, _) = listener.accept().await.unwrap();
+				let mut request = [0; 22];
+				held.read_exact(&mut request).await.unwrap();
+				assert_eq!(&request, b"GET /held HTTP/1.1\r\n\r\n");
+				entered.send(()).unwrap();
+				assert_eq!(
+					held.read(&mut [0]).await.unwrap(),
+					0,
+					"retired read releases its HTTP stream"
+				);
+				let (mut latest, _) = listener.accept().await.unwrap();
+				let mut request = [0; 24];
+				latest.read_exact(&mut request).await.unwrap();
+				assert_eq!(&request, b"GET /latest HTTP/1.1\r\n\r\n");
+				latest
+					.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+					.await
+					.unwrap();
+			});
+			let key = ReadKey {
+				generation: 3,
+				kind: client_core::server_admin::ReadKind::Channel(model::Id(3)),
+				guild: model::Id(2),
+				request: 7,
+			};
+			let latest = ReadKey { request: 8, ..key };
+			let (scope, updates) = watch::channel(ReadScopes([Some(key), None, None, None]));
+			let old_scope = updates.clone();
+			let old = tokio::spawn(scoped_admin_read(
+				async move {
+					let mut stream = TcpStream::connect(address).await.unwrap();
+					stream
+						.write_all(b"GET /held HTTP/1.1\r\n\r\n")
+						.await
+						.unwrap();
+					let mut response = Vec::new();
+					stream.read_to_end(&mut response).await.unwrap();
+					Event::Failure(Failure::Forbidden)
+				},
+				old_scope,
+				key,
+			));
+			waiting.await.unwrap();
+			// The ordinary message worker is independent of the held administration read.
+			let (send, mut receive) = mpsc::channel(1);
+			let message = tokio::spawn(async move { receive.recv().await.unwrap() });
+			send.send(19u64).await.unwrap();
+			assert_eq!(message.await.unwrap(), 19);
+			assert!(!old.is_finished());
+			scope.send_replace(ReadScopes([Some(latest), None, None, None]));
+			assert!(old.await.unwrap().is_none());
+			let event = scoped_admin_read(
+				async move {
+					let mut stream = TcpStream::connect(address).await.unwrap();
+					stream
+						.write_all(b"GET /latest HTTP/1.1\r\n\r\n")
+						.await
+						.unwrap();
+					let mut response = Vec::new();
+					stream.read_to_end(&mut response).await.unwrap();
+					assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+					Event::Failure(Failure::Forbidden)
+				},
+				updates,
+				latest,
+			)
+			.await;
+			assert!(matches!(event, Some(Event::Failure(Failure::Forbidden))));
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
+	}
+
+	#[tokio::test]
+	async fn administration_read_slots_are_bounded_and_cannot_cancel_a_mutation() {
+		let key = ReadKey {
+			generation: 1,
+			kind: client_core::server_admin::ReadKind::Panel,
+			guild: model::Id(2),
+			request: 1,
+		};
+		let settings = ReadKey {
+			kind: client_core::server_admin::ReadKind::Settings,
+			..key
+		};
+		let third = ReadKey {
+			kind: client_core::server_admin::ReadKind::Channel(model::Id(3)),
+			..key
+		};
+		let mut reads = AdminReads::default();
+		for current in [key, settings] {
+			assert!(reads.replace(current));
+			reads.track(current, tokio::spawn(std::future::pending()));
+		}
+		assert!(!reads.replace(third));
+		assert!(!reads.replace(ReadKey {
+			kind: client_core::server_admin::ReadKind::Community,
+			..key
+		}));
+		let latest = ReadKey { request: 2, ..key };
+		assert!(reads.replace(latest));
+		reads.track(latest, tokio::spawn(std::future::pending()));
+		assert_eq!(reads.slots.iter().flatten().count(), 2);
+		let (finish, wait) = tokio::sync::oneshot::channel();
+		let mutation = tokio::spawn(async move { wait.await.unwrap() });
+		reads.retire(ReadScopes::default());
+		assert!(reads.slots.iter().all(Option::is_none));
+		assert!(!mutation.is_finished());
+		finish.send(11u64).unwrap();
+		assert_eq!(mutation.await.unwrap(), 11);
+	}
+
 	#[tokio::test]
 	async fn soundboard_scope_cancels_unpolled_and_inflight_operations() {
 		use std::sync::{

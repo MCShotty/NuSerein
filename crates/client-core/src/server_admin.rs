@@ -15,13 +15,116 @@ pub struct Event {
 	pub request: u64,
 	pub result: Result<Outcome, Failure>,
 }
+pub const REVIEW_ROLES: u8 = 1;
+pub const REVIEW_MESSAGES: u8 = 2;
+pub const REVIEW_AUDIT: u8 = 4;
+pub struct ReviewProgress {
+	pub guild: Id,
+	pub request: u64,
+	pub review: Box<model::moderation::Review>,
+	pub pending: u8,
+}
+
+/// Independently replaceable read families. Mutations never enter this scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadKind {
+	Panel,
+	Settings,
+	Community,
+	Channel(Id),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadKey {
+	pub generation: u64,
+	pub kind: ReadKind,
+	pub guild: Id,
+	pub request: u64,
+}
+impl ReadKey {
+	pub fn of(command: &Command, generation: u64) -> Option<Self> {
+		let (kind, guild, request) = match command {
+			Command::ServerAdmin {
+				guild,
+				request,
+				action,
+			} if !action.write() => (ReadKind::Panel, *guild, *request),
+			Command::ServerSettings {
+				guild,
+				request,
+				edit: None,
+			} => (ReadKind::Settings, *guild, *request),
+			Command::Community {
+				guild,
+				request,
+				action,
+				..
+			} if !action.write() => (ReadKind::Community, *guild, *request),
+			Command::ChannelAction {
+				guild,
+				channel,
+				request,
+				action: crate::channel_actions::Action::Load,
+			} => (ReadKind::Channel(*channel), *guild, *request),
+			_ => return None,
+		};
+		Some(Self {
+			generation,
+			kind,
+			guild,
+			request,
+		})
+	}
+	pub fn rejected(self, failure: Failure) -> crate::Event {
+		match self.kind {
+			ReadKind::Panel => crate::Event::ServerAdmin(Event {
+				guild: self.guild,
+				request: self.request,
+				result: Err(failure),
+			}),
+			ReadKind::Settings => crate::Event::ServerSettings(crate::server_settings::Event {
+				guild: self.guild,
+				request: self.request,
+				result: Err(failure),
+				refreshed: None,
+			}),
+			ReadKind::Community => crate::Event::Community(crate::community::Event {
+				guild: self.guild,
+				request: self.request,
+				result: Err(failure),
+			}),
+			ReadKind::Channel(channel) => {
+				crate::Event::ChannelAction(crate::channel_actions::Event::Finished {
+					guild: self.guild,
+					channel,
+					request: self.request,
+					result: Err(failure),
+				})
+			}
+		}
+	}
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadScopes(pub [Option<ReadKey>; 4]);
+impl ReadScopes {
+	pub fn contains(self, key: ReadKey) -> bool {
+		self.0.contains(&Some(key))
+	}
+}
 
 #[derive(Default)]
 pub struct View {
+	pub command_permissions: Option<model::command_permissions::Snapshot>,
+	pub access: crate::server_access::View,
 	pub community: Option<model::community_admin::Snapshot>,
 	pub automod: Option<model::automod::Snapshot>,
 	pub bans: Option<model::moderation::Bans>,
 	pub moderation_target: Option<model::server_admin::Member>,
+	pub member_review: Option<model::moderation::Review>,
+	pub member_review_loading: u8,
+	pub bulk_report: Option<model::moderation::BulkReport>,
+	pub bulk_started: Option<std::time::Instant>,
+	/// Only an active operation may consume a Gateway completion.
+	pub bulk_awaiting_completion: bool,
 	webhook_url: Option<model::server_integrations::WebhookUrl>,
 	pub audit_log: Option<model::server_audit_log::Page>,
 	pub audit_query: Option<model::server_audit_log::Query>,
@@ -49,9 +152,29 @@ pub struct View {
 	requested_permission_revision: u64,
 	sequence: u64,
 	action: Option<Action>,
+	/// One boxed transport command, including payloads omitted from the reconciliation copy.
+	transport_action_bytes: usize,
 	prune_days: Option<u8>,
 }
 impl View {
+	/// Charge retained allocations and the independently executing transport copy.
+	pub(crate) fn retained_action_bytes(&self) -> usize {
+		self.action.as_ref().map_or(0, |action| {
+			action
+				.heap_bytes()
+				.saturating_add(self.transport_action_bytes)
+		})
+	}
+	pub(crate) fn transfer_pending(&self, guild: Id) -> bool {
+		self.guild == Some(guild)
+			&& self.pending
+			&& matches!(
+				self.action,
+				Some(Action::Access(
+					model::server_access::Action::Transfer { .. }
+				))
+			)
+	}
 	pub(crate) fn invalidate_community(&mut self) {
 		self.permission_revision = self.permission_revision.wrapping_add(1);
 		if matches!(self.action, Some(Action::Community(_))) {
@@ -93,6 +216,7 @@ impl View {
 				guild.is_none_or(|guild| guild == active)
 					&& (self.integrations.is_some()
 						|| self.automod.is_some()
+						|| self.member_review.is_some()
 						|| self.community.is_some()
 						|| matches!(
 							self.action,
@@ -103,10 +227,17 @@ impl View {
 			}
 		};
 		if relevant {
+			self.command_permissions = None;
+			self.access.invalidate();
 			self.automod = None;
 			self.community = None;
 			self.bans = None;
 			self.moderation_target = None;
+			self.member_review = None;
+			self.member_review_loading = 0;
+			self.bulk_report = None;
+			self.bulk_started = None;
+			self.bulk_awaiting_completion = false;
 			self.webhook_url = None;
 			self.permission_revision = self.permission_revision.wrapping_add(1);
 		}
@@ -120,6 +251,57 @@ impl View {
 	}
 }
 impl State {
+	/// Host publishes this after state/UI changes; closing a page retires only reads.
+	pub fn admin_read_scopes(&self) -> ReadScopes {
+		if !self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected) {
+			return ReadScopes::default();
+		}
+		let panel = (self.server_admin.pending && !self.server_admin.saving)
+			.then_some(self.server_admin.guild)
+			.flatten()
+			.map(|guild| ReadKey {
+				generation: self.generation,
+				kind: ReadKind::Panel,
+				guild,
+				request: self.server_admin.sequence,
+			});
+		let settings = self
+			.server_settings
+			.read_request()
+			.map(|(guild, request)| ReadKey {
+				generation: self.generation,
+				kind: ReadKind::Settings,
+				guild,
+				request,
+			});
+		let community = self
+			.community
+			.read_request()
+			.map(|(guild, request)| ReadKey {
+				generation: self.generation,
+				kind: ReadKind::Community,
+				guild,
+				request,
+			});
+		let channel =
+			self.channel_actions
+				.settings_read_request()
+				.map(|(guild, channel, request)| ReadKey {
+					generation: self.generation,
+					kind: ReadKind::Channel(channel),
+					guild,
+					request,
+				});
+		ReadScopes([panel, settings, community, channel])
+	}
+	/// Leaving a settings destination cancels its read without disturbing saved data or writes.
+	pub fn retire_server_admin_read(&mut self) {
+		if self.server_admin.pending && !self.server_admin.saving {
+			self.server_admin.pending = false;
+			self.server_admin.action = None;
+			self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
+		}
+	}
 	pub fn can_moderate_voice(
 		&self,
 		guild: Id,
@@ -139,6 +321,7 @@ impl State {
 		}
 		let permission = match change {
 			VoiceChange::Mute(_) => p::MUTE_MEMBERS,
+			VoiceChange::Deafen(_) => p::DEAFEN_MEMBERS,
 			VoiceChange::Move(_) => p::MOVE_MEMBERS,
 		};
 		self.permission(channel, permission) == Some(true)
@@ -377,15 +560,29 @@ impl State {
 		{
 			return false;
 		}
-		let Some(row) = self
+		let managed = self
 			.server_admin
 			.members
 			.as_ref()
 			.and_then(|page| page.roles.iter().find(|row| row.role.id == role))
-		else {
-			return false;
-		};
-		if row.managed {
+			.map(|row| row.managed)
+			.or_else(|| {
+				self.server_admin
+					.member_review
+					.as_ref()
+					.filter(|review| review.guild == guild)
+					.and_then(|review| review.roles.iter().find(|row| row.role.id == role))
+					.map(|row| row.managed)
+			})
+			.or_else(|| {
+				self.server_admin
+					.roles
+					.as_ref()
+					.filter(|catalog| catalog.guild == guild)
+					.and_then(|catalog| catalog.items.iter().find(|row| row.id == role))
+					.map(|row| row.managed)
+			});
+		if managed != Some(false) {
 			return false;
 		}
 		let Some(metadata) = self.permissions.guilds.get(&guild) else {
@@ -455,6 +652,7 @@ impl State {
 				channel,
 				change,
 			} => self.can_moderate_voice(guild, *channel, *user, *change),
+			Action::Access(action) => self.access_action_allowed(guild, action),
 			Action::Community(action) => self.community_admin_action_allowed(guild, action),
 			Action::AutoMod(action) => self.automod_action_allowed(guild, action),
 			Action::Moderation(action) => self.moderation_action_allowed(guild, action),
@@ -462,6 +660,9 @@ impl State {
 			Action::Roles(action) => self.role_action_allowed(guild, action),
 			Action::Invites(action) => self.invite_action_allowed(guild, action),
 			Action::Integrations(action) => self.integration_action_allowed(guild, action),
+			Action::CommandPermissions(action) => {
+				self.command_permissions_action_allowed(guild, action)
+			}
 			Action::LoadEmojis => self.can_open_emoji_settings(guild),
 			Action::CreateEmoji { .. } => self.can_create_guild_emoji(guild),
 			Action::RenameEmoji { id, .. } | Action::DeleteEmoji { id } => {
@@ -546,7 +747,8 @@ impl State {
 			}
 			_ => {}
 		}
-		if self.server_admin.pending
+		if self.server_admin.saving
+			|| (self.server_admin.pending && action.write())
 			|| self.server_settings.saving
 			|| (self.server_admin.needs_refresh
 				&& action.write()
@@ -583,11 +785,33 @@ impl State {
 			self.server_admin.query = query.clone();
 			self.server_admin.member_role_filter = *role;
 		}
+		if let Action::Moderation(model::moderation::Action::BulkBan { users, .. }) = &action {
+			let mut report = model::moderation::BulkReport::pending(users);
+			report.accepted = false;
+			self.server_admin.bulk_report = Some(report);
+			self.server_admin.bulk_started = Some(std::time::Instant::now());
+			self.server_admin.bulk_awaiting_completion = true;
+		}
+		if let Action::Moderation(model::moderation::Action::Review { audit, .. }) = &action {
+			self.server_admin.member_review = None;
+			self.server_admin.member_review_loading =
+				REVIEW_ROLES | REVIEW_MESSAGES | if *audit { REVIEW_AUDIT } else { 0 };
+		}
 		self.server_admin.webhook_url = None;
 		self.server_admin.guild = Some(guild);
 		self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
 		self.server_admin.pending = true;
 		self.server_admin.requested_permission_revision = self.server_admin.permission_revision;
+		if matches!(
+			action,
+			Action::Access(
+				model::server_access::Action::Applications { .. }
+					| model::server_access::Action::Application(_)
+			)
+		) {
+			self.server_admin.access.requested_applications_revision =
+				self.server_admin.access.applications_revision;
+		}
 		self.server_admin.saving = action.write();
 		self.server_admin.error = None;
 		let mut retained = action.clone();
@@ -605,7 +829,13 @@ impl State {
 		{
 			edit.icon = model::Patch::Absent;
 		}
+		self.server_admin.transport_action_bytes =
+			size_of::<Action>().saturating_add(action.heap_bytes());
 		self.server_admin.action = Some(retained);
+		self.enforce_admin_budget();
+		if !self.server_admin.pending {
+			return None;
+		}
 		Some(Command::ServerAdmin {
 			guild,
 			request: self.server_admin.sequence,
@@ -616,6 +846,8 @@ impl State {
 		self.server_admin.guild == Some(guild)
 			&& self.server_admin.sequence == request
 			&& self.server_admin.pending
+			&& self.server_admin.requested_permission_revision
+				== self.server_admin.permission_revision
 			&& self.server_admin_action_allowed(guild, action)
 	}
 	/// Consume a ready URL only while the same permission-scoped settings remain open.
@@ -649,6 +881,185 @@ impl State {
 			self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
 		}
 	}
+	/// Retire only the drawer's read, keeping unrelated server settings and selections intact.
+	pub(crate) fn invalidate_member_review(&mut self, event: &crate::Event) {
+		let Some(review) = &mut self.server_admin.member_review else {
+			return;
+		};
+		match event {
+			crate::Event::Patch(patch)
+				if review
+					.messages
+					.iter()
+					.any(|row| row.channel == patch.channel && row.id == patch.id) =>
+			{
+				review.messages.clear();
+				review.messages_error = Some("Messages changed. Refresh to view current content.");
+			}
+			crate::Event::Disconnected | crate::Event::Resync | crate::Event::Failure(_) => {
+				self.server_admin.member_review = None;
+			}
+			crate::Event::DeleteBulk { channel, ids } => review
+				.messages
+				.retain(|row| row.channel != *channel || !ids.contains(&row.id)),
+			crate::Event::Delete { channel, id } => review
+				.messages
+				.retain(|row| row.channel != *channel || row.id != *id),
+			crate::Event::Unavailable(channel) => {
+				review.messages.retain(|row| row.channel != *channel)
+			}
+			_ => {}
+		}
+	}
+	pub fn close_member_review(&mut self) {
+		self.server_admin.member_review = None;
+		self.server_admin.member_review_loading = 0;
+		if matches!(
+			self.server_admin.action,
+			Some(Action::Moderation(model::moderation::Action::Review { .. }))
+		) {
+			self.server_admin.action = None;
+			self.server_admin.pending = false;
+			self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
+		}
+	}
+	pub(crate) fn apply_member_review_progress(&mut self, progress: ReviewProgress) {
+		if self.server_admin.guild != Some(progress.guild)
+			|| self.server_admin.sequence != progress.request
+			|| !self.server_admin.pending
+			|| self.server_admin.saving
+			|| self.server_admin.requested_permission_revision
+				!= self.server_admin.permission_revision
+			|| progress.pending & !self.server_admin.member_review_loading != 0
+			|| !progress.review.valid()
+		{
+			return;
+		}
+		let Some(Action::Moderation(model::moderation::Action::Review {
+			user,
+			channel,
+			audit,
+		})) = &self.server_admin.action
+		else {
+			return;
+		};
+		if progress.review.guild != progress.guild
+			|| progress.review.member.user.id != *user
+			|| progress.review.channel != *channel
+			|| (!audit
+				&& (!progress.review.audit.is_empty() || progress.pending & REVIEW_AUDIT != 0))
+			|| !self.moderation_action_allowed(
+				progress.guild,
+				&model::moderation::Action::Review {
+					user: *user,
+					channel: *channel,
+					audit: *audit,
+				},
+			) {
+			return;
+		}
+		let completed = !self.server_admin.member_review_loading;
+		self.server_admin.member_review_loading = progress.pending;
+		self.install_member_review(progress.guild, *progress.review, completed);
+		self.server_admin.revision = self.server_admin.revision.wrapping_add(1);
+	}
+	fn install_member_review(
+		&mut self,
+		guild: Id,
+		mut review: model::moderation::Review,
+		completed: u8,
+	) {
+		// Later section snapshots cannot revive an excerpt retired by an intervening edit/delete.
+		if let Some(current) = &mut self.server_admin.member_review
+			&& current.guild == review.guild
+			&& current.channel == review.channel
+			&& current.member.user.id == review.member.user.id
+		{
+			if completed & REVIEW_MESSAGES != 0 {
+				review.messages = std::mem::take(&mut current.messages);
+				review.messages_error = current.messages_error;
+			}
+			if completed & REVIEW_AUDIT != 0 {
+				review.audit = std::mem::take(&mut current.audit);
+				review.audit_window = current.audit_window;
+				review.audit_error = current.audit_error;
+			}
+		}
+
+		review.messages.retain(|row| {
+			self.channel(row.channel)
+				.is_some_and(|channel| channel.guild == Some(guild))
+				&& self.can_view(row.channel)
+		});
+		if !self.guild_permission(guild, p::VIEW_AUDIT_LOG) {
+			review.audit.clear();
+			review.audit_window = None;
+		}
+		self.server_admin.moderation_target = Some(review.member.clone());
+		self.server_admin.member_review = Some(review);
+	}
+	pub fn expire_bulk_moderation(&mut self) {
+		if self
+			.server_admin
+			.bulk_started
+			.is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(30))
+		{
+			if let Some(report) = &mut self.server_admin.bulk_report {
+				for (_, status) in &mut report.users {
+					if *status == model::moderation::BanStatus::Pending {
+						*status = model::moderation::BanStatus::Unknown;
+					}
+				}
+			}
+			self.server_admin.bulk_started = None;
+		}
+	}
+	pub fn dismiss_bulk_moderation(&mut self) {
+		if !self.server_admin.pending {
+			self.server_admin.bulk_report = None;
+			self.server_admin.bulk_started = None;
+			self.server_admin.bulk_awaiting_completion = false;
+		}
+	}
+	pub fn apply_bulk_moderation(&mut self, guild: Id, report: model::moderation::BulkReport) {
+		if !self.server_admin.bulk_awaiting_completion
+			|| self.server_admin.guild != Some(guild)
+			|| !self.can_view_guild_bans(guild)
+			|| !report.valid()
+		{
+			return;
+		}
+		if report.users.iter().any(|(_, status)| {
+			!matches!(
+				status,
+				model::moderation::BanStatus::Banned | model::moderation::BanStatus::Failed
+			)
+		}) {
+			return;
+		}
+		let Some(current) = &self.server_admin.bulk_report else {
+			return;
+		};
+		let targets: Vec<_> = current.users.iter().map(|(id, _)| *id).collect();
+		if !report.matches(&targets) {
+			return;
+		}
+		if let Some(page) = &mut self.server_admin.members {
+			let before = page.items.len();
+			page.items.retain(|member| {
+				!report.users.iter().any(|(id, status)| {
+					*id == member.user.id && *status == model::moderation::BanStatus::Banned
+				})
+			});
+			page.total = page
+				.total
+				.saturating_sub((before - page.items.len()) as u64);
+		}
+		self.server_admin.bulk_report = Some(report);
+		self.server_admin.bulk_started = None;
+		self.server_admin.bulk_awaiting_completion = false;
+		self.server_admin.revision = self.server_admin.revision.wrapping_add(1);
+	}
 	pub fn close_server_admin(&mut self) {
 		if !self.server_admin.saving {
 			self.server_admin.reset();
@@ -656,6 +1067,7 @@ impl State {
 	}
 	pub(crate) fn cancel_server_admin(&mut self) {
 		self.server_admin.webhook_url = None;
+		self.server_admin.member_review_loading = 0;
 		if self.server_admin.pending {
 			if self.server_admin.saving
 				&& matches!(self.server_admin.action, Some(Action::Community(_)))
@@ -682,19 +1094,43 @@ impl State {
 			return Ok(());
 		}
 		let action = self.server_admin.action.take();
+		let completed_review_sections = !self.server_admin.member_review_loading;
+		if matches!(
+			action,
+			Some(Action::Moderation(model::moderation::Action::Review { .. }))
+		) {
+			self.server_admin.member_review_loading = 0;
+		}
+		// A confirmed ownership transfer can legitimately revoke this account's access
+		// before its HTTP readback arrives. Match the originally authorized recipient.
+		let transfer_confirmed = matches!((&action,&event.result),(Some(Action::Access(model::server_access::Action::Transfer{recipient,..})),Ok(Outcome::Access(model::server_access::Outcome::Settings(settings)))) if settings.guild==event.guild && settings.owner==*recipient && settings.valid());
 		self.server_admin.pending = false;
 		self.server_admin.saving = false;
 		if action.as_ref().is_none_or(|action| {
 			if matches!(action, Action::Voice { .. }) {
 				self.guild(event.guild).is_none()
+			} else if let Action::Access(access) = action {
+				if matches!(
+					access,
+					model::server_access::Action::Applications { .. }
+						| model::server_access::Action::Application(_)
+						| model::server_access::Action::Decide { .. }
+						| model::server_access::Action::Interview { .. }
+				) {
+					!self.can_review_guild_applications(event.guild)
+				} else {
+					!transfer_confirmed && !self.can_manage_guild(event.guild)
+				}
 			} else if matches!(action, Action::Community(_)) {
 				!self.can_open_community_settings(event.guild)
 			} else if matches!(action, Action::AutoMod(_)) {
 				!self.can_manage_guild(event.guild)
 			} else if matches!(action, Action::Moderation(_)) {
-				!self.can_open_moderation(event.guild)
+				!self.can_open_mod_view(event.guild)
 			} else if matches!(action, Action::AuditLog(_)) {
 				!self.can_open_audit_log_settings(event.guild)
+			} else if let Action::CommandPermissions(action) = action {
+				!self.command_permissions_action_allowed(event.guild, action)
 			} else if let Action::Integrations(action) = action {
 				!self.integration_action_allowed(event.guild, action)
 			} else if matches!(action, Action::Invites(_)) {
@@ -705,6 +1141,11 @@ impl State {
 						action,
 						Action::Roles(model::server_roles::Action::Members { .. })
 					) && !self.can_open_member_settings(event.guild)
+			} else if matches!(
+				action,
+				Action::SetRole { .. } | Action::SetNickname { .. } | Action::Kick { .. }
+			) {
+				!self.server_admin_action_allowed(event.guild, action)
 			} else if action.emoji() {
 				!self.can_open_emoji_settings(event.guild)
 			} else if action.sticker() {
@@ -727,9 +1168,16 @@ impl State {
 		}
 		if matches!(
 			action,
-			Some(Action::AutoMod(_) | Action::Moderation(_) | Action::Community(_))
-		) && self.server_admin.requested_permission_revision
-			!= self.server_admin.permission_revision
+			Some(
+				Action::Access(_)
+					| Action::AutoMod(_)
+					| Action::Moderation(_)
+					| Action::Community(_)
+					| Action::CommandPermissions(_)
+			)
+		) && !transfer_confirmed
+			&& self.server_admin.requested_permission_revision
+				!= self.server_admin.permission_revision
 		{
 			self.server_admin.error = Some("Server permissions changed; reload before continuing");
 			self.server_admin.needs_refresh = true;
@@ -747,6 +1195,17 @@ impl State {
 				return Ok(());
 			}
 			Err(failure) => {
+				if matches!(
+					action,
+					Some(Action::Moderation(
+						model::moderation::Action::BulkBan { .. }
+					))
+				) && failure != Failure::Ambiguous
+				{
+					self.server_admin.bulk_report = None;
+					self.server_admin.bulk_started = None;
+					self.server_admin.bulk_awaiting_completion = false;
+				}
 				if matches!(action, Some(Action::Community(_)))
 					&& matches!(failure, Failure::Forbidden | Failure::Ambiguous)
 				{
@@ -818,6 +1277,9 @@ impl State {
 				})),
 				Outcome::WebhookUrl(url),
 			) => url.guild == event.guild && url.webhook == *webhook && url.channel == *channel,
+			(Some(Action::Access(action)), Outcome::Access(result)) => {
+				self.access_response_expected(event.guild, action, result)
+			}
 			(Some(Action::Community(action)), Outcome::Community(page)) => {
 				page.guild == event.guild
 					&& action.confirms(page)
@@ -844,7 +1306,26 @@ impl State {
 			(Some(Action::Moderation(action)), Outcome::Moderation(result)) => {
 				match (action, result) {
 					(
-						model::moderation::Action::Bans { .. },
+						model::moderation::Action::Review {
+							user,
+							channel,
+							audit,
+						},
+						model::moderation::Outcome::Review(review),
+					) => {
+						review.guild == event.guild
+							&& review.channel == *channel
+							&& review.member.user.id == *user
+							&& (*audit || review.audit.is_empty())
+					}
+					(
+						model::moderation::Action::BulkBan { users, .. }
+						| model::moderation::Action::BulkRefresh { users },
+						model::moderation::Outcome::Bulk(report),
+					) => report.matches(users),
+					(
+						model::moderation::Action::Bans { .. }
+						| model::moderation::Action::BanSearch { .. },
 						model::moderation::Outcome::Bans(page),
 					) => page.guild == event.guild,
 					(
@@ -880,6 +1361,20 @@ impl State {
 			}
 			(Some(Action::AuditLog(query)), Outcome::AuditLog(page)) => {
 				page.guild == event.guild && page.matches_query(query)
+			}
+			(Some(Action::CommandPermissions(action)), Outcome::CommandPermissions(snapshot)) => {
+				snapshot.guild == event.guild
+					&& snapshot.application == action.application()
+					&& match action {
+						model::command_permissions::Action::Load { .. } => true,
+						model::command_permissions::Action::Save { before, after, .. } => {
+							snapshot.get(after.id).is_some_and(|actual| {
+								model::command_permissions::Permissions::confirms(
+									before, after, &actual,
+								)
+							})
+						}
+					}
 			}
 			(Some(Action::Integrations(action)), Outcome::Integrations(snapshot)) => {
 				snapshot.guild == event.guild
@@ -990,13 +1485,68 @@ impl State {
 			return Ok(());
 		}
 		match result {
+			Outcome::Access(result) => {
+				if let Some(Action::Access(action)) = &action {
+					self.apply_server_access(event.guild, action, result)?;
+				}
+			}
 			Outcome::AutoMod(page) => self.server_admin.automod = Some(page),
 			Outcome::Moderation(result) => match result {
+				model::moderation::Outcome::Review(review) => {
+					self.install_member_review(event.guild, *review, completed_review_sections)
+				}
+				model::moderation::Outcome::Bulk(report) => {
+					if matches!(
+						action,
+						Some(Action::Moderation(
+							model::moderation::Action::BulkRefresh { .. }
+						))
+					) {
+						self.server_admin.bulk_awaiting_completion = false;
+					}
+					// Gateway completion can precede the HTTP acknowledgement. Never replace it with Pending.
+					let completed = self
+						.server_admin
+						.bulk_report
+						.as_ref()
+						.is_some_and(|current| {
+							current.users.iter().any(|(_, status)| {
+								matches!(
+									status,
+									model::moderation::BanStatus::Banned
+										| model::moderation::BanStatus::Failed
+								)
+							})
+						});
+					if !completed
+						|| matches!(
+							action,
+							Some(Action::Moderation(
+								model::moderation::Action::BulkRefresh { .. }
+							))
+						) {
+						self.server_admin.bulk_started = report
+							.users
+							.iter()
+							.any(|(_, status)| *status == model::moderation::BanStatus::Pending)
+							.then(std::time::Instant::now);
+						self.server_admin.bulk_report = Some(report);
+					} else if let Some(current) = &mut self.server_admin.bulk_report {
+						current.accepted = true;
+					}
+				}
 				model::moderation::Outcome::Bans(page) => self.server_admin.bans = Some(page),
 				model::moderation::Outcome::Member(member) => {
 					self.server_admin.moderation_target = Some(*member)
 				}
 				model::moderation::Outcome::Changed { user, member } => {
+					if let Some(updated) = member.as_deref()
+						&& let Some(review) = &mut self.server_admin.member_review
+						&& review.member.user.id == user
+					{
+						review.member = updated.clone();
+					}
+
 					let removed = matches!(
 						action,
 						Some(Action::Moderation(model::moderation::Action::Change {
@@ -1005,6 +1555,15 @@ impl State {
 							..
 						}))
 					);
+					if removed
+						&& self
+							.server_admin
+							.member_review
+							.as_ref()
+							.is_some_and(|review| review.member.user.id == user)
+					{
+						self.server_admin.member_review = None;
+					}
 					if let Some(page) = &mut self.server_admin.members {
 						if let Some(updated) = member.as_deref() {
 							if let Some(existing) =
@@ -1050,6 +1609,12 @@ impl State {
 			Outcome::Community(page) => self.server_admin.community = Some(page),
 			Outcome::WebhookUrl(url) => self.server_admin.webhook_url = Some(url),
 			Outcome::AuditLog(page) => self.apply_audit_log(page),
+			Outcome::CommandPermissions(snapshot) => {
+				if action.as_ref().is_some_and(Action::write) {
+					self.application_commands.clear();
+				}
+				self.server_admin.command_permissions = Some(snapshot);
+			}
 			Outcome::Integrations(snapshot) => {
 				if let Some(Action::Integrations(action)) = &action {
 					self.apply_integrations(snapshot, action);
@@ -1105,6 +1670,20 @@ impl State {
 				self.server_admin.members = Some(page);
 			}
 			Outcome::Member(mut member) => {
+				if let Some(review) = &mut self.server_admin.member_review
+					&& review.member.user.id == member.user.id
+				{
+					review.member = member.clone();
+				}
+				if self
+					.server_admin
+					.moderation_target
+					.as_ref()
+					.is_some_and(|target| target.user.id == member.user.id)
+				{
+					self.server_admin.moderation_target = Some(member.clone());
+				}
+
 				if matches!(action, Some(Action::SetRole { .. }))
 					&& self
 						.user
@@ -1183,7 +1762,10 @@ impl State {
 							VoiceChange::Mute(muted) => *muted,
 							_ => participant.server_muted,
 						},
-						server_deafened: participant.server_deafened,
+						server_deafened: match change {
+							VoiceChange::Deafen(deafened) => *deafened,
+							_ => participant.server_deafened,
+						},
 						stage: participant.stage,
 						muted: participant.muted,
 						deafened: participant.deafened,
@@ -1227,11 +1809,17 @@ impl State {
 			action,
 			Some(
 				Action::LoadEmojis
-					| Action::Community(model::community_admin::Action::Load(_))
+					| Action::Access(
+						model::server_access::Action::Settings
+							| model::server_access::Action::Applications { .. }
+							| model::server_access::Action::Application(_)
+							| model::server_access::Action::Recipient(_)
+					) | Action::Community(model::community_admin::Action::Load(_))
 					| Action::LoadStickers
 					| Action::LoadSounds
 					| Action::Invites(model::server_invites::Action::Load)
 					| Action::Integrations(model::server_integrations::Action::Load { .. })
+					| Action::CommandPermissions(model::command_permissions::Action::Load { .. })
 					| Action::LoadMembers(_)
 					| Action::Roles(model::server_roles::Action::Load)
 			)
@@ -1328,6 +1916,65 @@ mod invite_tests {
 				result,
 			}),
 		});
+	}
+	#[test]
+	fn newer_admin_reads_replace_only_reads_and_old_results_cannot_finish_them() {
+		let mut state = state();
+		let settings = state.load_server_settings(Id(2)).unwrap();
+		let settings_key = ReadKey::of(&settings, state.generation).unwrap();
+		let old = state
+			.request_server_admin(Id(2), Action::Invites(InviteAction::Load))
+			.unwrap();
+		let old_key = ReadKey::of(&old, state.generation).unwrap();
+		assert!(state.admin_read_scopes().contains(old_key));
+		let latest = state
+			.request_server_admin(
+				Id(2),
+				Action::LoadMembers(Query {
+					search: "latest".into(),
+					..Query::default()
+				}),
+			)
+			.unwrap();
+		let latest_key = ReadKey::of(&latest, state.generation).unwrap();
+		assert!(!state.admin_read_scopes().contains(old_key));
+		assert!(state.admin_read_scopes().contains(latest_key));
+		deliver(
+			&mut state,
+			old_key.guild,
+			old_key.request,
+			Ok(Outcome::Invites(page())),
+		);
+		assert!(state.server_admin.pending);
+		assert_eq!(state.server_admin.query.search, "latest");
+		state.retire_server_admin_read();
+		assert!(!state.admin_read_scopes().contains(latest_key));
+		assert!(state.admin_read_scopes().contains(settings_key));
+		assert!(!state.server_admin.pending);
+		state.close_server_settings();
+
+		state
+			.request_server_admin(
+				Id(2),
+				Action::Invites(InviteAction::Revoke {
+					code: "synthetic_code".into(),
+				}),
+			)
+			.unwrap();
+		let sequence = state.server_admin.sequence;
+		assert!(state.server_admin.saving);
+		assert!(
+			state
+				.request_server_admin(Id(2), Action::LoadMembers(Query::default()))
+				.is_none()
+		);
+		state.retire_server_admin_read();
+		state.close_server_admin();
+		assert!(state.server_admin.pending && state.server_admin.saving);
+		assert_eq!(state.server_admin.sequence, sequence);
+		assert!(state.admin_read_scopes().0.iter().all(Option::is_none));
+		state.logout();
+		assert!(state.admin_read_scopes().0.iter().all(Option::is_none));
 	}
 	#[test]
 	fn invites_stale_requests_and_permission_loss_do_not_restore_codes() {

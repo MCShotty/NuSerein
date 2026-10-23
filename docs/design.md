@@ -1,5 +1,40 @@
 # Serein interface direction
 
+## Server and personal channel controls — October 23, 2026
+
+Browse Channels is the recovery route for a customized channel list, including an empty list.
+Its search, category groups and All / Shown / Hidden filters distinguish personal selection
+from muting and missing permissions. Show All Channels preserves individual choices. Channel,
+category and forum/thread menus reuse notification, favorite and read controls; hiding alone
+changes none of those settings. Account favorites and category collapse synchronize through
+account preferences, while device collections remain visibly separate and import explicitly.
+Selected channels, active voice and unsuppressed mentions remain discoverable without rewriting
+the saved selection.
+
+Server Settings groups searchable destinations under Server, People, Moderation, Community,
+Apps and Expressions. Narrow windows use the compact navigation picker. Existing editors
+retain their Save/Reset, rejected drafts and explicit reload/reapply workflow. Permissions
+control available pages and actions; limited moderators can open Mod View from member,
+profile, message or voice contexts without needing server-wide member search.
+
+Mod View stays beside the conversation with identity, roles, join information, timeout and
+service-supplied safety details. Recent messages and audit activity load independently and
+never replace the timeline or mark it read. Audit activity labels its actual loaded window.
+Actions share current hierarchy/permission checks and explicit confirmations. Bulk selection
+means the displayed members selected by the user, with a count, target review and history
+retention choice. Per-member results distinguish a submitted request, confirmed completion
+and an unknown result; Refresh checks state, and Done retires the view.
+
+Protected actions open a local verification dialog for the methods Discord advertises.
+Cancel and expiry retire that operation; an SMS is sent only from Send code. Unsupported
+passkey-only verification offers the official client. No input is reused for unrelated actions.
+Safety Setup shows active service restrictions and their expiry, with explicit resume controls.
+Application decisions and interview creation are separate actions. Integrations exposes
+application-wide and command overrides with conflict recovery. View Server As Role has a
+persistent read-only banner and exit control; it changes only the preview, with voice and
+member-specific simulation limits stated. Loading, unavailable and retry states stay within
+the owning panel, and hidden panels do not keep page-specific polling or repaint timers.
+
 ## Conversation navigation and local time
 
 Mention badges remain visible on pinged channels and posts, including through collapsed

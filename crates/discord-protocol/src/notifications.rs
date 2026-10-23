@@ -17,6 +17,8 @@ impl MuteConfig {
 #[derive(Deserialize)]
 #[serde(from = "OverrideWire")]
 pub struct Override {
+	pub flags: Option<u64>,
+	pub collapsed: Option<bool>,
 	pub channel_id: Id,
 	pub mute_config: Option<MuteConfig>,
 	pub muted: Option<bool>,
@@ -25,6 +27,10 @@ pub struct Override {
 }
 #[derive(Deserialize)]
 struct OverrideWire {
+	#[serde(default)]
+	flags: model::Patch<u64>,
+	#[serde(default)]
+	collapsed: model::Patch<bool>,
 	channel_id: Id,
 	#[serde(default)]
 	mute_config: Option<MuteConfig>,
@@ -36,6 +42,22 @@ struct OverrideWire {
 impl From<OverrideWire> for Override {
 	fn from(wire: OverrideWire) -> Self {
 		let mut absent = 0;
+		let flags = match wire.flags {
+			model::Patch::Value(v) => Some(v),
+			model::Patch::Null => None,
+			model::Patch::Absent => {
+				absent |= 4;
+				None
+			}
+		};
+		let collapsed = match wire.collapsed {
+			model::Patch::Value(v) => Some(v),
+			model::Patch::Null => None,
+			model::Patch::Absent => {
+				absent |= 8;
+				None
+			}
+		};
 		let muted = match wire.muted {
 			model::Patch::Value(value) => Some(value),
 			model::Patch::Null => None,
@@ -53,6 +75,8 @@ impl From<OverrideWire> for Override {
 			}
 		};
 		Self {
+			flags,
+			collapsed,
 			channel_id: wire.channel_id,
 			mute_config: wire.mute_config,
 			muted,
@@ -71,6 +95,7 @@ fn present_overrides<'de, D: serde::Deserializer<'de>>(
 	Overrides::deserialize(d).map(Some)
 }
 pub struct Setting {
+	pub flags: Option<u64>,
 	pub guild_id: Option<Id>,
 	pub mute_config: Option<MuteConfig>,
 	pub muted: Option<bool>,
@@ -85,6 +110,8 @@ impl<'de> Deserialize<'de> for Setting {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
 		#[derive(Deserialize)]
 		struct Wire {
+			#[serde(default)]
+			flags: model::Patch<u64>,
 			#[serde(default, deserialize_with = "crate::read_state::optional_id")]
 			guild_id: Option<Id>,
 			#[serde(default)]
@@ -115,6 +142,7 @@ impl<'de> Deserialize<'de> for Setting {
 		let wire = Wire::deserialize(deserializer)?;
 		let mut absent = 0;
 		Ok(Self {
+			flags: value(wire.flags, 32, &mut absent),
 			guild_id: wire.guild_id,
 			mute_config: wire.mute_config,
 			muted: value(wire.muted, 1, &mut absent),
@@ -131,6 +159,9 @@ impl Setting {
 	/// Gateway objects are full settings records. Only omitted fields use service defaults;
 	/// explicit null stays unknown. REST acknowledgements deliberately skip this conversion.
 	pub fn with_defaults(mut self) -> Self {
+		if self.absent & 32 != 0 {
+			self.flags = Some(0);
+		}
 		if self.absent & 1 != 0 {
 			self.muted = Some(false);
 		}
@@ -148,6 +179,12 @@ impl Setting {
 		}
 		if let Some(overrides) = &mut self.channel_overrides {
 			for row in &mut overrides.0 {
+				if row.absent & 4 != 0 {
+					row.flags = Some(0);
+				}
+				if row.absent & 8 != 0 {
+					row.collapsed = Some(false);
+				}
 				if row.absent & 1 != 0 {
 					row.muted = Some(false);
 				}
@@ -278,5 +315,25 @@ mod tests {
 		assert_eq!(crate::decode::<Sessions>(br#"[]"#).unwrap().dnd(), None);
 		let oversized = serde_json::json!({"entries":vec![serde_json::json!({"guild_id":null});model::account::MAX_ENTRIES+1]});
 		assert!(crate::decode::<Snapshot>(&serde_json::to_vec(&oversized).unwrap()).is_err());
+	}
+}
+
+#[cfg(test)]
+mod personal_tests {
+	use super::*;
+	#[test]
+	fn personal_flags_and_collapse_preserve_unknown_bits_and_explicit_null() {
+		let record: Setting=crate::decode(br#"{"guild_id":"2","flags":36028797018980352,"channel_overrides":[{"channel_id":"3","flags":18014398509486080,"collapsed":true}]}"#).unwrap();
+		let record = record.with_defaults();
+		assert_eq!(record.flags, Some((1 << 55) | (1 << 14)));
+		let row = &record.channel_overrides.unwrap().0[0];
+		assert_eq!(row.flags, Some((1 << 54) | (1 << 12)));
+		assert_eq!(row.collapsed, Some(true));
+		assert_eq!(row.muted, Some(false));
+		let record: Setting=crate::decode(br#"{"guild_id":"2","flags":null,"channel_overrides":[{"channel_id":"3","flags":null,"collapsed":null}]}"#).unwrap();
+		let record = record.with_defaults();
+		assert_eq!(record.flags, None);
+		let row = &record.channel_overrides.unwrap().0[0];
+		assert_eq!((row.flags, row.collapsed), (None, None));
 	}
 }

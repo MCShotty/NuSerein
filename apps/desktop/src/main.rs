@@ -1011,6 +1011,8 @@ struct Desktop {
 	server_icon: group_icon::GroupIcon,
 	community_artwork: group_icon::GroupIcon,
 	community_artwork_scope: Option<(u64, model::Id, Option<model::Id>, bool, u64)>,
+	webhook_avatar: group_icon::GroupIcon,
+	webhook_avatar_scope: Option<(u64, model::Id, model::Id, u64)>,
 	role_icon: group_icon::GroupIcon,
 	role_icon_scope: Option<(u64, model::Id, model::Id, u64)>,
 	emoji_upload: emoji_upload::EmojiUpload,
@@ -2404,6 +2406,8 @@ impl Desktop {
 			server_icon: group_icon::GroupIcon::default(),
 			community_artwork: group_icon::GroupIcon::default(),
 			community_artwork_scope: None,
+			webhook_avatar: group_icon::GroupIcon::default(),
+			webhook_avatar_scope: None,
 			role_icon: group_icon::GroupIcon::default(),
 			role_icon_scope: None,
 			emoji_upload: emoji_upload::EmojiUpload::default(),
@@ -3303,6 +3307,9 @@ impl Desktop {
 	}
 	/// Dispatches one queued command to the demo or live transport.
 	fn command(&mut self, command: Command) {
+		if let Some(connection) = &self.connection {
+			connection.sync_admin_reads(&self.state);
+		}
 		if let Command::Report(request) = &command
 			&& !self.state.report_command_allowed(request)
 		{
@@ -3359,6 +3366,26 @@ impl Desktop {
 			&& (self.state.inbox.request != *request
 				|| self.state.inbox.operation.as_ref() != Some(action)
 				|| !self.state.inbox_action_allowed(action))
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::ChannelAction {
+			guild,
+			channel,
+			request,
+			action,
+		} = &command
+			&& matches!(action, client_core::channel_actions::Action::Personal(_))
+			&& !self
+				.state
+				.personal_channel_dispatch_allowed(*guild, *channel, *request, action)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
+		if let Command::Mfa(request) = &command
+			&& !self.state.mfa_command_allowed(request)
 		{
 			self.state.command_rejected(command);
 			return;
@@ -3702,6 +3729,7 @@ impl Desktop {
 				}
 
 				// Demo preference changes are applied synchronously by client-core.
+				Command::Mfa(_) => return,
 				Command::MessagingPermissions { .. } => return,
 				Command::AccountOverview { .. } | Command::AccountConnections { .. } => return,
 				Command::ServerProfile {
@@ -5798,6 +5826,10 @@ impl eframe::App for Desktop {
 	}
 	fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
+		self.messaging.retire_mfa_input(&ctx, &self.state);
+		if let Some(connection) = &self.connection {
+			connection.sync_admin_reads(&self.state);
+		}
 		let title_bar_height = if self.login.is_some() {
 			platform::LOGIN_HEADER_HEIGHT
 		} else if self.state.user.is_some() {
@@ -6049,6 +6081,18 @@ impl eframe::App for Desktop {
 				}) && let Some(scope) = self.community_artwork_scope.take()
 		{
 			self.messaging.accept_community_artwork(&ctx, scope, result);
+		}
+		if let Some((_, result)) = self
+			.webhook_avatar
+			.poll_scoped(self.state.generation, |guild| {
+				self.webhook_avatar_scope.is_some_and(|scope| {
+					scope.1 == guild
+						&& self.state.can_set_webhook_avatar(guild, scope.2)
+						&& self.messaging.webhook_avatar_active(scope)
+				})
+			}) && let Some(scope) = self.webhook_avatar_scope.take()
+		{
+			self.messaging.accept_webhook_avatar(&ctx, scope, result);
 		}
 		if let Some((_, result)) = self.role_icon.poll_scoped(self.state.generation, |guild| {
 			self.role_icon_scope.is_some_and(|scope| {
@@ -6633,6 +6677,28 @@ impl eframe::App for Desktop {
 						.accept_community_artwork(&ctx, scope, Err(error)),
 				}
 			}
+			if let Some(scope) = self.messaging.take_webhook_avatar_request() {
+				let result = if scope.0 != self.state.generation
+					|| !self.state.can_set_webhook_avatar(scope.1, scope.2)
+				{
+					Err("You can no longer edit this webhook")
+				} else {
+					self.webhook_avatar.start(
+						(scope.0, scope.1, scope.3),
+						self.runtime.handle(),
+						&ctx,
+						self.window.clone(),
+						"Choose webhook avatar",
+						128,
+					)
+				};
+				match result {
+					Ok(()) => self.webhook_avatar_scope = Some(scope),
+					Err(error) => self
+						.messaging
+						.accept_webhook_avatar(&ctx, scope, Err(error)),
+				}
+			}
 			if let Some(scope) = self.messaging.take_server_role_icon_request() {
 				let result = if scope.0 != self.state.generation
 					|| !self.state.can_edit_role_icon(scope.1, scope.2)
@@ -6813,6 +6879,9 @@ impl eframe::App for Desktop {
 			commands.extend(self.state.take_preload_retries());
 			for command in commands {
 				self.command(command);
+			}
+			if let Some(connection) = &self.connection {
+				connection.sync_admin_reads(&self.state);
 			}
 			// A click that adopted a hover preload sends no request of its own.
 			self.load_cached_history();

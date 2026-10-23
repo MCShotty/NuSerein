@@ -27,6 +27,7 @@ use std::{
 
 struct Preview {
 	inbox_demo: inbox_demo::Store,
+	mfa_fixture_target: Option<client_core::mfa::Target>,
 	interactive: bool,
 	metrics: Option<NativeMetrics>,
 	timeline_churn: bool,
@@ -182,6 +183,58 @@ impl eframe::App for Preview {
 				client_core::Command::ServerAction { action, request } => {
 					server_settings_demo::execute_action(&mut self.state, action, request)
 				}
+				client_core::Command::Mfa(request) => {
+					if !self.state.mfa_command_allowed(&request) {
+						continue;
+					}
+					let result = if matches!(request.action, client_core::mfa::Action::Cancel) {
+						if let Some(target) = self.mfa_fixture_target.take() {
+							self.state.apply(client_core::Envelope {
+								generation: self.state.generation,
+								event: target.rejected(client_core::auth::Failure::ProtocolAt(
+									"Offline preview action cancelled",
+								)),
+							});
+						}
+						Ok(client_core::mfa::Status::Cancelled)
+					} else {
+						Err(client_core::auth::Failure::ProtocolAt(
+							"Offline preview: no code is sent and verification is unavailable",
+						))
+					};
+					client_core::Event::Mfa(client_core::mfa::Event::Updated {
+						id: request.id,
+						result,
+					})
+				}
+				client_core::Command::ChannelAction {
+					guild,
+					channel,
+					request,
+					action: client_core::channel_actions::Action::Personal(change),
+				} => client_core::Event::ChannelAction(
+					client_core::channel_actions::Event::Finished {
+						guild,
+						channel,
+						request,
+						result: Ok(client_core::channel_actions::Outcome::Personal(change)),
+					},
+				),
+				client_core::Command::ChannelAction {
+					guild,
+					channel,
+					request,
+					action: client_core::channel_actions::Action::Description,
+				} => client_core::Event::ChannelAction(
+					client_core::channel_actions::Event::Finished {
+						guild,
+						channel,
+						request,
+						result: Ok(client_core::channel_actions::Outcome::Description(
+							"Synthetic channel description for the community.".into(),
+						)),
+					},
+				),
 				client_core::Command::ChannelAction {
 					guild,
 					channel,
@@ -964,11 +1017,76 @@ fn prime_conversation(state: &mut client_core::State, inline_media: bool) {
 include!("fixtures/conversation_qol.rs");
 include!("fixtures/native_metrics.rs");
 
+fn apply_admin_preview(state: &mut client_core::State, command: Option<client_core::Command>) {
+	if let Some(client_core::Command::ServerAdmin {
+		guild,
+		request,
+		action,
+	}) = command
+	{
+		let event = server_settings_demo::execute_admin(state, guild, request, *action);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event,
+		});
+	}
+}
+
+fn prime_mod_view(state: &mut client_core::State, messaging: &mut ui::MessagingUi) {
+	// A temporary editor establishes the normal synthetic permissions/member snapshot while
+	// the displayed UI remains the conversation behind the real Mod View drawer.
+	let mut fixture_settings = ui::MessagingUi::default();
+	server_settings_demo::open(state, &mut fixture_settings);
+	let guild = state.guilds[0].id;
+	let command = fixture_settings.preview_server_admin(state, guild, "members");
+	apply_admin_preview(state, command);
+	let owner = state.user.as_ref().expect("fixture owner").id;
+	let user = state
+		.server_admin
+		.members
+		.as_ref()
+		.and_then(|page| page.items.iter().find(|row| row.user.id != owner))
+		.map_or(model::Id(2), |row| row.user.id);
+	let command = messaging.preview_mod_view(state, guild, user);
+	apply_admin_preview(state, command);
+}
+
+fn prime_mfa(state: &mut client_core::State) -> client_core::mfa::Target {
+	// This is a synthetic authenticated state with no adapters. Mint the real protected
+	// operation through State so the dialog exercises the production permission/scope checks.
+	state.auth = client_core::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	let command = state
+		.save_server_settings(model::server_settings::Edit {
+			name: Some("Synthetic server verification".into()),
+			..Default::default()
+		})
+		.expect("eligible synthetic protected settings action");
+	let target = client_core::mfa::Target::from_command(&command)
+		.expect("production protected action scope");
+	state.apply(client_core::Envelope {
+		generation: state.generation,
+		event: client_core::Event::Mfa(client_core::mfa::Event::Required(
+			client_core::mfa::Notice {
+				id: 1,
+				target: target.clone(),
+				methods: vec![
+					client_core::mfa::Method::Totp,
+					client_core::mfa::Method::Backup,
+					client_core::mfa::Method::Sms,
+					client_core::mfa::Method::Password,
+				],
+			},
+		)),
+	});
+	target
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|screen-share|emoji|gif-favorites] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--voice-channel-status] [--lavasr] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--conversation-qol] [--reaction-history] [--metrics=PATH.json] [--timeline-churn] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|server-applications|server-access|server-bans|server-mfa|mod-view|channels|screen-share|emoji|gif-favorites] [--video-backend=stable|experimental] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--voice-channel-status] [--lavasr] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--conversation-qol] [--reaction-history] [--metrics=PATH.json] [--timeline-churn] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -992,6 +1110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "collectibles"
 			| "member-tags"
 			| "conversation"
+			| "channels"
 			| "markdown"
 			| "embeds"
 			| "channel-links"
@@ -1020,6 +1139,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "server-soundboard"
 			| "server-automod"
 			| "server-moderation"
+			| "server-applications"
+			| "server-access"
+			| "server-bans"
+			| "server-mfa"
+			| "mod-view"
 			| "forum" | "forum-post"
 			| "forum-gallery"
 			| "forum-settings"
@@ -1027,7 +1151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "screen-share"
 			| "emoji" | "gif-favorites"
 	) {
-		return Err("Page must be events, event-detail, event-edit, stage, profile, conversation, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation, screen-share, emoji or gif-favorites".into());
+		return Err("Page must be events, event-detail, event-edit, stage, profile, conversation, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation, server-applications, server-access, server-bans, server-mfa, mod-view, screen-share, emoji or gif-favorites".into());
 	}
 	let slash_command = value("--command=").unwrap_or("help").to_owned();
 	if !matches!(slash_command.as_str(), "help" | "weather") {
@@ -1290,6 +1414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				prime_conversation(&mut state, args.iter().any(|arg| arg == "--inline-media"));
 			}
 			let mut messaging = ui::MessagingUi::default();
+			let mut mfa_fixture_target = None;
 			if styled {
 				messaging.cosmetics.name_styles = true;
 			}
@@ -1521,9 +1646,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						});
 					}
 				}
+			} else if page == "channels" {
+				messaging.preview_browse_channels(&state, model::Id(10));
+			} else if page == "mod-view" {
+				prime_mod_view(&mut state, &mut messaging);
 			} else if page.starts_with("server") {
 				server_settings_demo::open(&mut state, &mut messaging);
-				if page == "server-engagement" {
+				if page == "server-mfa" {
+					mfa_fixture_target = Some(prime_mfa(&mut state));
+				} else if page == "server-engagement" {
 					messaging.preview_server_engagement();
 				} else if page == "server-safety" {
 					messaging.preview_server_safety();
@@ -1704,6 +1835,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			}
 			Ok(Box::new(Preview {
 				inbox_demo: inbox_demo::Store::default(),
+				mfa_fixture_target,
 				timeline_churn: args.iter().any(|arg| arg == "--timeline-churn"),
 				interactive,
 				metrics: args
@@ -1733,6 +1865,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn mod_view_fixture_uses_scoped_production_review_without_replacing_chat() {
+		let mut state = test_support::demo_state();
+		let selected = state.selected;
+		let mut messaging = ui::MessagingUi::default();
+		super::prime_mod_view(&mut state, &mut messaging);
+		assert_eq!(state.selected, selected);
+		assert!(!state.server_admin.pending);
+		let review = state.server_admin.member_review.as_ref().unwrap();
+		assert_eq!(Some(review.guild), state.server_admin.guild);
+		assert_ne!(review.member.user.id, state.user.as_ref().unwrap().id);
+	}
+
+	#[test]
+	fn verification_fixture_mints_the_real_protected_action_without_any_proof() {
+		let mut state = test_support::demo_state();
+		let mut messaging = ui::MessagingUi::default();
+		super::server_settings_demo::open(&mut state, &mut messaging);
+		let target = super::prime_mfa(&mut state);
+		assert_eq!(Some(target.guild()), state.server_settings.guild);
+		assert!(state.server_settings.pending);
+		assert_eq!(
+			state.mfa.pending.as_ref().unwrap().phase,
+			client_core::mfa::Phase::Editing
+		);
+		let command = state
+			.submit_mfa(client_core::mfa::Method::Totp, "123456".into())
+			.unwrap();
+		let client_core::Command::Mfa(request) = command else {
+			panic!("production verification command");
+		};
+		assert!(state.mfa_command_allowed(&request));
+	}
+
 	#[test]
 	fn non_theme_catalog_loads_community_preview() {
 		super::seed_catalog(&mut ui::ExtensionUi::default(), false);

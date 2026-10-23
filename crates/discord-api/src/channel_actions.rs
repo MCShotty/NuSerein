@@ -521,9 +521,32 @@ impl DiscordApi {
 				Err(Failure::Ambiguous)
 			};
 		}
+		if matches!(action, Action::Description) {
+			let bytes = self
+				.request_limited(
+					Method::GET,
+					&format!("/channels/{channel}"),
+					None,
+					256 * 1024,
+				)
+				.await?;
+			#[derive(serde::Deserialize)]
+			struct Description {
+				id: Id,
+				guild_id: Id,
+				topic: Option<String>,
+			}
+			let row: Description =
+				discord_protocol::decode(&bytes).map_err(|_| Failure::Protocol)?;
+			if row.id != channel || row.guild_id != guild {
+				return Err(Failure::Protocol);
+			}
+			let excerpt: String = row.topic.unwrap_or_default().chars().take(512).collect();
+			return Ok(Outcome::Description(excerpt.into_boxed_str()));
+		}
 		if matches!(
 			action,
-			Action::Mute(_) | Action::Notifications(_) | Action::HideMuted(_)
+			Action::Mute(_) | Action::Notifications(_) | Action::HideMuted(_) | Action::Personal(_)
 		) {
 			return self
 				.channel_notification_action(guild, channel, action)
@@ -1089,6 +1112,65 @@ impl DiscordApi {
 		channel: Id,
 		action: &Action,
 	) -> Result<Outcome, Failure> {
+		if let Action::Personal(change) = action {
+			if !change.valid() {
+				return Err(Failure::Protocol);
+			}
+			let mut body = serde_json::Map::new();
+			if let Some((_, after)) = change.guild_flags {
+				body.insert("flags".into(), json!(after));
+			}
+			let mut overrides = serde_json::Map::new();
+			for row in &change.channels {
+				let mut value = serde_json::Map::new();
+				if let Some((_, after)) = row.flags {
+					value.insert("flags".into(), json!(after));
+				}
+				if let Some((_, after)) = row.collapsed {
+					value.insert("collapsed".into(), json!(after));
+				}
+				overrides.insert(row.channel.to_string(), Value::Object(value));
+			}
+			if !overrides.is_empty() {
+				body.insert("channel_overrides".into(), Value::Object(overrides));
+			}
+			let bytes = self
+				.request_limited(
+					Method::PATCH,
+					&format!("/users/@me/guilds/{guild}/settings"),
+					Some(Value::Object(body)),
+					512 * 1024,
+				)
+				.await
+				.map_err(write_failure)?;
+			let setting: discord_protocol::notifications::Setting =
+				discord_protocol::decode(&bytes).map_err(|_| Failure::Ambiguous)?;
+			if setting.guild_id != Some(guild)
+				|| change
+					.guild_flags
+					.is_some_and(|(_, after)| setting.flags != Some(after))
+			{
+				return Err(Failure::Ambiguous);
+			}
+			let rows = setting
+				.channel_overrides
+				.map_or_else(Vec::new, |rows| rows.0);
+			for wanted in &change.channels {
+				let mut matches = rows.iter().filter(|row| row.channel_id == wanted.channel);
+				let row = matches.next().ok_or(Failure::Ambiguous)?;
+				if matches.next().is_some()
+					|| wanted
+						.flags
+						.is_some_and(|(_, after)| row.flags != Some(after))
+					|| wanted
+						.collapsed
+						.is_some_and(|(_, after)| row.collapsed != Some(after))
+				{
+					return Err(Failure::Ambiguous);
+				}
+			}
+			return Ok(Outcome::Personal(change.clone()));
+		}
 		if let Action::HideMuted(hide) = action {
 			let bytes = self
 				.request_limited(
@@ -1184,7 +1266,12 @@ mod tests {
 	fn source() -> Value {
 		json!({"id":"3","guild_id":"2","name":"private","type":0,"parent_id":"4","topic":"Keep topic","nsfw":true,"rate_limit_per_user":30,"flags":0,"permission_overwrites":[{"id":"2","type":0,"allow":"0","deny":"1024"},{"id":"8","type":1,"allow":"1024","deny":"0"}]})
 	}
-	async fn reply(listener: &TcpListener, path: &str, status: u16, body: Value) -> Value {
+	pub(super) async fn reply(
+		listener: &TcpListener,
+		path: &str,
+		status: u16,
+		body: Value,
+	) -> Value {
 		let (mut socket, _) = listener.accept().await.unwrap();
 		let mut bytes = Vec::new();
 		let payload;
@@ -1781,5 +1868,56 @@ mod voice_edit_tests {
 		})
 		.await
 		.unwrap();
+	}
+}
+
+#[cfg(test)]
+mod personal_tests {
+	use super::*;
+	use client_core::auth::SessionSecret;
+	use model::channel_visibility as p;
+	use std::sync::Arc;
+	use tokio::net::TcpListener;
+	#[tokio::test]
+	async fn personal_preferences_write_only_requested_fields_and_require_confirmation() {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let mut api = DiscordApi::new(Arc::new(
+			SessionSecret::from_owner_input("SYNTHETIC_PERSONAL_CHANNEL_TOKEN".into()).unwrap(),
+		))
+		.unwrap();
+		api.base = format!("http://{}", listener.local_addr().unwrap());
+		let change = p::Change {
+			guild_flags: Some((1 << 55, (1 << 55) | p::OPT_IN_CHANNELS_ON)),
+			channels: vec![
+				p::RowChange {
+					channel: Id(3),
+					flags: Some((1 << 54, (1 << 54) | p::FAVORITED)),
+					collapsed: None,
+				},
+				p::RowChange {
+					channel: Id(4),
+					flags: None,
+					collapsed: Some((false, true)),
+				},
+			],
+		};
+		let action = Action::Personal(Box::new(change.clone()));
+		let server = async {
+			let body=tests::reply(&listener,"PATCH /users/@me/guilds/2/settings HTTP/1.1",200,json!({"guild_id":"2","flags":(1u64<<55)|p::OPT_IN_CHANNELS_ON,"muted":true,"channel_overrides":[{"channel_id":"3","flags":(1u64<<54)|p::FAVORITED,"muted":true},{"channel_id":"4","collapsed":true}]})).await;
+			assert_eq!(
+				body,
+				json!({"flags":(1u64<<55)|p::OPT_IN_CHANNELS_ON,"channel_overrides":{"3":{"flags":(1u64<<54)|p::FAVORITED},"4":{"collapsed":true}}})
+			);
+		};
+		let (result, ()) = tokio::join!(api.channel_action(Id(2), Id(3), &action), server);
+		assert!(matches!(result,Ok(Outcome::Personal(ref actual)) if actual.as_ref()==&change));
+		let server = async {
+			tests::reply(&listener,"PATCH /users/@me/guilds/2/settings HTTP/1.1",200,json!({"guild_id":"2","flags":(1u64<<55)|p::OPT_IN_CHANNELS_ON,"channel_overrides":[{"channel_id":"3","flags":(1u64<<54)|p::FAVORITED}]})).await;
+		};
+		let (result, ()) = tokio::join!(api.channel_action(Id(2), Id(3), &action), server);
+		assert!(
+			matches!(result, Err(Failure::Ambiguous)),
+			"missing category acknowledgement is not success"
+		);
 	}
 }

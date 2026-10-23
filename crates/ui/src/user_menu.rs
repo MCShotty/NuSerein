@@ -1,10 +1,14 @@
 //! Shared user actions; rendering only records intent, dispatched after borrowed rows finish.
 use crate::shortcuts::{Intent, ShortcutView};
 use client_core::{Command, State};
-use model::{Shortcut, User};
+use model::{Id, Shortcut, User};
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Action {
+	ModView {
+		guild: model::Id,
+		user: model::Id,
+	},
 	RefreshCommands,
 	ApplicationCommand {
 		command: model::Id,
@@ -62,7 +66,8 @@ pub(super) fn prepare(action: Action, state: &mut State) -> Option<Command> {
 				None
 			}
 		},
-		Action::Note(_)
+		Action::ModView { .. }
+		| Action::Note(_)
 		| Action::Nickname(_)
 		| Action::Shortcut(_)
 		| Action::Mention(_)
@@ -231,8 +236,36 @@ pub(super) fn contents(
 	action: &mut Option<Action>,
 	view: Option<ShortcutView<'_>>,
 ) {
+	let guild = state
+		.selected
+		.and_then(|id| state.channel(id))
+		.and_then(|channel| channel.guild);
+	contents_scoped(ui, state, user, profile, action, view, guild);
+}
+
+pub(super) fn contents_scoped(
+	ui: &mut egui::Ui,
+	state: &State,
+	user: &User,
+	profile: &mut crate::profiles::ProfileSession,
+	action: &mut Option<Action>,
+	view: Option<ShortcutView<'_>>,
+	guild: Option<Id>,
+) {
 	let colors = crate::design::palette(ui);
 	ui.set_min_width(200.0);
+	if let Some(guild) = guild.filter(|guild| state.can_open_mod_view(*guild))
+		&& !user.webhook
+		&& state.user.as_ref().is_some_and(|own| own.id != user.id)
+		&& ui.button("Open Mod View").clicked()
+	{
+		*action = Some(Action::ModView {
+			guild,
+			user: user.id,
+		});
+		ui.close();
+	}
+
 	if !user.webhook {
 		application_menu(ui, state, 2, user.id, action);
 	}

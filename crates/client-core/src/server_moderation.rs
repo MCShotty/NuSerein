@@ -2,12 +2,21 @@
 use crate::State;
 use model::{Id, automod as a, moderation as m, permissions as p};
 impl State {
+	pub fn can_open_mod_view(&self, guild: Id) -> bool {
+		self.can_open_moderation(guild)
+			|| self.can_manage_guild(guild)
+			|| self.guild_permission(guild, p::MANAGE_ROLES)
+			|| self.guild_permission(guild, p::MANAGE_NICKNAMES)
+	}
 	pub fn can_open_moderation(&self, guild: Id) -> bool {
 		[
 			p::KICK_MEMBERS,
 			p::BAN_MEMBERS,
 			p::MODERATE_MEMBERS,
 			p::VIEW_AUDIT_LOG,
+			p::MUTE_MEMBERS,
+			p::DEAFEN_MEMBERS,
+			p::MOVE_MEMBERS,
 		]
 		.into_iter()
 		.any(|bits| self.guild_permission(guild, bits))
@@ -48,10 +57,11 @@ impl State {
 				})
 	}
 	pub(super) fn moderation_action_allowed(&self, guild: Id, action: &m::Action) -> bool {
-		if !self.can_open_moderation(guild) || !action.valid() {
+		if !self.can_open_mod_view(guild) || !action.valid() {
 			return false;
 		}
 		match action {
+			m::Action::BanSearch { .. } => self.can_view_guild_bans(guild),
 			m::Action::Bans { after } => {
 				self.can_view_guild_bans(guild)
 					&& after.is_none_or(|after| {
@@ -61,7 +71,47 @@ impl State {
 							.is_some_and(|page| page.guild == guild && page.next == Some(after))
 					})
 			}
-			m::Action::Member(user) => self.user.as_ref().is_none_or(|actor| actor.id != *user),
+			m::Action::Review {
+				user,
+				channel,
+				audit,
+			} => {
+				self.user.as_ref().is_none_or(|actor| actor.id != *user)
+					&& self
+						.channel(*channel)
+						.is_some_and(|row| row.guild == Some(guild))
+					&& self.can_view(*channel)
+					&& (!audit || self.guild_permission(guild, p::VIEW_AUDIT_LOG))
+			}
+			m::Action::BulkBan { users, .. } => {
+				self.can_manage_guild(guild)
+					&& users
+						.iter()
+						.all(|user| self.can_ban_guild_member(guild, *user))
+					&& (self.server_admin.pending
+						&& self
+							.server_admin
+							.bulk_report
+							.as_ref()
+							.is_some_and(|report| report.matches(users))
+						|| self.server_admin.bulk_report.as_ref().is_none_or(|report| {
+							report.users.iter().all(|(_, status)| {
+								matches!(status, m::BanStatus::Banned | m::BanStatus::Failed)
+							})
+						}))
+			}
+			m::Action::BulkRefresh { users } => {
+				self.can_view_guild_bans(guild)
+					&& self
+						.server_admin
+						.bulk_report
+						.as_ref()
+						.is_some_and(|report| report.matches(users))
+			}
+			m::Action::Member(user) => {
+				self.user.as_ref().is_none_or(|actor| actor.id != *user)
+					|| self.guild_permission(guild, p::MANAGE_ROLES)
+			}
 			m::Action::Unban { user, .. } => {
 				self.guild_permission(guild, p::BAN_MEMBERS)
 					&& self.server_admin.bans.as_ref().is_some_and(|page| {
@@ -553,5 +603,428 @@ mod tests {
 			..Default::default()
 		});
 		assert!(!state.automod_action_allowed(Id(2), &edit(after)));
+	}
+	#[test]
+	fn bulk_acknowledgement_is_not_completion_and_only_exact_active_targets_are_admitted() {
+		let mut state = state(p::BAN_MEMBERS | p::MANAGE_GUILD);
+		state.server_admin.members = Some(model::server_admin::Members {
+			items: vec![member(7, vec![Id(4)]), member(8, vec![Id(4)])],
+			total: 2,
+			..Default::default()
+		});
+		let action = || m::Action::BulkBan {
+			users: vec![Id(7), Id(8)],
+			delete_seconds: 0,
+			reason: "Reviewed".into(),
+		};
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::Moderation(action()))
+			.unwrap()
+		else {
+			panic!()
+		};
+		assert!(state.server_admin_command_allowed(Id(2), request, &Action::Moderation(action())));
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Bulk(
+					m::BulkReport::pending(&[Id(7), Id(8)]),
+				))),
+			})
+			.unwrap();
+		assert!(
+			state
+				.server_admin
+				.bulk_report
+				.as_ref()
+				.unwrap()
+				.users
+				.iter()
+				.all(|(_, status)| *status == m::BanStatus::Pending)
+		);
+		assert_eq!(state.server_admin.members.as_ref().unwrap().items.len(), 2);
+		assert!(
+			state
+				.request_server_admin(Id(2), Action::Moderation(action()))
+				.is_none()
+		);
+		let report = |users| m::BulkReport {
+			users,
+			accepted: true,
+		};
+		state.apply_bulk_moderation(
+			Id(3),
+			report(vec![
+				(Id(7), m::BanStatus::Banned),
+				(Id(8), m::BanStatus::Failed),
+			]),
+		);
+		state.apply_bulk_moderation(
+			Id(2),
+			report(vec![
+				(Id(99), m::BanStatus::Banned),
+				(Id(8), m::BanStatus::Failed),
+			]),
+		);
+		assert!(
+			state
+				.server_admin
+				.bulk_report
+				.as_ref()
+				.unwrap()
+				.users
+				.iter()
+				.all(|(_, status)| *status == m::BanStatus::Pending)
+		);
+		state.apply_bulk_moderation(
+			Id(2),
+			report(vec![
+				(Id(7), m::BanStatus::Banned),
+				(Id(8), m::BanStatus::Failed),
+			]),
+		);
+		assert_eq!(
+			state.server_admin.members.as_ref().unwrap().items[0]
+				.user
+				.id,
+			Id(8)
+		);
+		state.close_server_admin();
+		state.apply_bulk_moderation(
+			Id(2),
+			report(vec![
+				(Id(7), m::BanStatus::Banned),
+				(Id(8), m::BanStatus::Failed),
+			]),
+		);
+		assert!(state.server_admin.bulk_report.is_none());
+	}
+	#[test]
+	fn gateway_completion_before_http_ack_remains_confirmed() {
+		let mut state = state(p::BAN_MEMBERS | p::MANAGE_GUILD);
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(
+				Id(2),
+				Action::Moderation(m::Action::BulkBan {
+					users: vec![Id(7)],
+					delete_seconds: 0,
+					reason: String::new(),
+				}),
+			)
+			.unwrap()
+		else {
+			panic!()
+		};
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Banned)],
+				accepted: true,
+			},
+		);
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Bulk(
+					m::BulkReport::pending(&[Id(7)]),
+				))),
+			})
+			.unwrap();
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::Banned
+		);
+	}
+	#[test]
+	fn unconfirmed_bulk_deadline_becomes_unknown_instead_of_failed_or_retried() {
+		let mut state = state(p::BAN_MEMBERS | p::MANAGE_GUILD);
+		state.server_admin.bulk_report = Some(m::BulkReport::pending(&[Id(7)]));
+		state.server_admin.bulk_started =
+			Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
+		state.expire_bulk_moderation();
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::Unknown
+		);
+		assert!(state.server_admin.bulk_started.is_none());
+		assert!(
+			state
+				.request_server_admin(
+					Id(2),
+					Action::Moderation(m::Action::BulkBan {
+						users: vec![Id(7)],
+						delete_seconds: 0,
+						reason: String::new()
+					})
+				)
+				.is_none()
+		);
+	}
+	#[test]
+	fn completed_or_reconciled_batches_ignore_late_duplicate_completion() {
+		let mut state = state(p::BAN_MEMBERS | p::MANAGE_GUILD);
+		let submit = m::Action::BulkBan {
+			users: vec![Id(7)],
+			delete_seconds: 0,
+			reason: String::new(),
+		};
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(Id(2), Action::Moderation(submit))
+			.unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Bulk(
+					m::BulkReport::pending(&[Id(7)]),
+				))),
+			})
+			.unwrap();
+		let Command::ServerAdmin { request, .. } = state
+			.request_server_admin(
+				Id(2),
+				Action::Moderation(m::Action::BulkRefresh { users: vec![Id(7)] }),
+			)
+			.unwrap()
+		else {
+			panic!()
+		};
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Bulk(m::BulkReport {
+					users: vec![(Id(7), m::BanStatus::NotBanned)],
+					accepted: true,
+				}))),
+			})
+			.unwrap();
+		assert!(!state.server_admin.bulk_awaiting_completion);
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Banned)],
+				accepted: true,
+			},
+		);
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::NotBanned
+		);
+		state.dismiss_bulk_moderation();
+		assert!(state.server_admin.bulk_report.is_none());
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Banned)],
+				accepted: true,
+			},
+		);
+		assert!(state.server_admin.bulk_report.is_none());
+	}
+	#[test]
+	fn timed_out_active_batch_can_finish_once_before_it_is_retired() {
+		let mut state = state(p::BAN_MEMBERS | p::MANAGE_GUILD);
+		state.server_admin.bulk_report = Some(m::BulkReport::pending(&[Id(7)]));
+		state.server_admin.bulk_awaiting_completion = true;
+		state.server_admin.bulk_started =
+			Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
+		state.expire_bulk_moderation();
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::Unknown
+		);
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Banned)],
+				accepted: true,
+			},
+		);
+		assert!(!state.server_admin.bulk_awaiting_completion);
+		state.apply_bulk_moderation(
+			Id(2),
+			m::BulkReport {
+				users: vec![(Id(7), m::BanStatus::Failed)],
+				accepted: true,
+			},
+		);
+		assert_eq!(
+			state.server_admin.bulk_report.as_ref().unwrap().users[0].1,
+			m::BanStatus::Banned
+		);
+	}
+	#[test]
+	fn member_review_is_scoped_and_never_installs_history_or_marks_it_read() {
+		let mut state = state(p::KICK_MEMBERS | p::VIEW_CHANNEL | p::READ_MESSAGE_HISTORY);
+		state.channels = vec![model::Channel {
+			icon: None,
+			last_message: None,
+			id: Id(6),
+			guild: Some(Id(2)),
+			parent_id: None,
+			position: 0,
+			name: "Synthetic channel".into(),
+			kind: 0,
+			recipients: vec![],
+			member_list_id: None,
+			message_count: None,
+			tags: None,
+		}];
+		state.permissions.channels.insert(
+			Id(6),
+			p::Channel {
+				id: Id(6),
+				guild: Id(2),
+				overwrites: Some(vec![]),
+			},
+		);
+		state.selected = Some(Id(6));
+		state.request = 42;
+		let review = || m::Review {
+			guild: Id(2),
+			channel: Id(6),
+			member: member(7, vec![Id(4)]),
+			roles: vec![],
+			messages: vec![
+				m::ReviewMessage {
+					id: Id(50),
+					channel: Id(6),
+					excerpt: "Visible excerpt".into(),
+				},
+				m::ReviewMessage {
+					id: Id(51),
+					channel: Id(999),
+					excerpt: "Must not be admitted".into(),
+				},
+			],
+			audit: vec![],
+			audit_window: None,
+			messages_error: None,
+			audit_error: None,
+		};
+		let action = || {
+			Action::Moderation(m::Action::Review {
+				user: Id(7),
+				channel: Id(6),
+				audit: false,
+			})
+		};
+		let Command::ServerAdmin { request, .. } =
+			state.request_server_admin(Id(2), action()).unwrap()
+		else {
+			panic!()
+		};
+		let progress = |request| crate::server_admin::ReviewProgress {
+			guild: Id(2),
+			request,
+			review: Box::new(review()),
+			pending: crate::server_admin::REVIEW_MESSAGES,
+		};
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(progress(request)),
+		});
+		assert!(state.server_admin.pending);
+		assert_eq!(
+			state.server_admin.member_review_loading,
+			crate::server_admin::REVIEW_MESSAGES
+		);
+		assert_eq!(
+			state
+				.server_admin
+				.member_review
+				.as_ref()
+				.unwrap()
+				.messages
+				.len(),
+			1
+		);
+		state.close_member_review();
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(progress(request)),
+		});
+		assert!(state.server_admin.member_review.is_none());
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Review(Box::new(review())))),
+			})
+			.unwrap();
+		assert!(state.server_admin.member_review.is_none());
+		let Command::ServerAdmin { request, .. } =
+			state.request_server_admin(Id(2), action()).unwrap()
+		else {
+			panic!()
+		};
+		state.apply(crate::Envelope {
+			generation: state.generation.wrapping_sub(1),
+			event: crate::Event::MemberReviewProgress(progress(request)),
+		});
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(progress(request.wrapping_sub(1))),
+		});
+		assert!(state.server_admin.member_review.is_none());
+		let mut completed_messages = progress(request);
+		completed_messages.pending = crate::server_admin::REVIEW_ROLES;
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::MemberReviewProgress(completed_messages),
+		});
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::Delete {
+				channel: Id(6),
+				id: Id(50),
+			},
+		});
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::Moderation(m::Outcome::Review(Box::new(review())))),
+			})
+			.unwrap();
+		assert_eq!(
+			state
+				.server_admin
+				.member_review
+				.as_ref()
+				.unwrap()
+				.messages
+				.len(),
+			0
+		);
+		assert_eq!(state.selected, Some(Id(6)));
+		assert_eq!(state.request, 42);
+		assert!(state.timeline.is_empty());
+		assert!(state.search.is_none());
+		assert!(!state.history_pending);
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: crate::Event::Delete {
+				channel: Id(6),
+				id: Id(50),
+			},
+		});
+		assert!(
+			state
+				.server_admin
+				.member_review
+				.as_ref()
+				.unwrap()
+				.messages
+				.is_empty()
+		);
+		state.close_member_review();
+		assert!(state.server_admin.member_review.is_none());
 	}
 }

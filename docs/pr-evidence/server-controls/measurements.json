@@ -1,0 +1,1823 @@
+{
+  "schema": 1,
+  "runtime_revision": "2ee9314232945685c4dc81dc6cac1fc84c4f179a",
+  "environment": {
+    "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+    "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "available_logical_cpus": 5,
+    "cgroup_memory_max_bytes": "17179869184",
+    "cgroup_cpu_max": "400000 100000",
+    "rust": "1.98.1",
+    "native_ui": "Linux X11/Xvfb synthetic offline, 1120x760, scale1 for comparisons",
+    "baseline_head": "c7968095aadebe16078f698e8211a470b66caafd",
+    "baseline_runtime_source": "26e87fd5908e15dc8f11efd04e57030efb70c731",
+    "nightly_tag": "v1.0.0-nightly.20261022.61",
+    "nightly_commit": "c2842aa762ca633e0ed4ba986c460a59ce6435fe"
+  },
+  "source_trees": {
+    "crates/model": "c124f3759f3599728e20fa7ede4dfae7500150ea",
+    "crates/client-core": "36384d18c4c00206a6faf0ad8a86273c1dfd1113",
+    "crates/discord-protocol": "64fa5021ce1a4bd6311183c02da089d1ff95a722",
+    "crates/discord-api": "84664cc34320d3981caea5e683a15586a6e8e275",
+    "crates/ui": "ffd93a464cc7d5eccac88a54b8c195f4ccd0306a",
+    "apps/desktop": "9ee367bd31ea17411382af707fd923cafa53bcc9",
+    "Cargo.lock": "a5b99ef37d57ebec2eb6290e1d517c5dc6c03ca4",
+    "tools/replay-bench": "536b0942d522ed7403c63371336b47bf1cf2c5da"
+  },
+  "verification": {
+    "toolchain": "1.98.1",
+    "cargo_xtask_check": "passed",
+    "workspace_tests_passed": 2208,
+    "workspace_tests_ignored": 36,
+    "strict_demo_clippy": "passed",
+    "preview_fixture_tests_passed": 7,
+    "login_handoff": "passed, offline",
+    "cached_xtask_workspace": "passed",
+    "license_graph": "passed, unchanged committed lockfiles",
+    "license_policy_fixtures_passed": 6,
+    "fuzz": {
+      "toolchain": "nightly-2026-09-09",
+      "cargo_fuzz": "0.13.2",
+      "rss_limit_mb": 512,
+      "results": [
+        {
+          "runs": 60502,
+          "seconds": 32,
+          "target": "decode"
+        },
+        {
+          "runs": 1304,
+          "seconds": 31,
+          "target": "state_transitions"
+        }
+      ],
+      "runtime_revision": "5dcaa97027a3f5498c398f3fbbee9fd90699fcb1"
+    },
+    "soak": {
+      "runtime_revision": "2ee9314232945685c4dc81dc6cac1fc84c4f179a",
+      "command": "cargo replay --soak 120",
+      "passes": 2052,
+      "channel_visits": 65664,
+      "live_inserts": 39398400,
+      "seconds": 120.063031782,
+      "logout_cycles": 9,
+      "method": "Lifecycle assertions under concurrent validation; counts are not throughput evidence",
+      "replay_binary_sha256": "c7eac786294bf63710a93bd36cb03648adbdbde7279b1b8886cd17fc00ab97d6"
+    },
+    "cargo_xtask_check_revision": "2ee9314232945685c4dc81dc6cac1fc84c4f179a",
+    "strict_demo_clippy_revision": "5dcaa97027a3f5498c398f3fbbee9fd90699fcb1",
+    "preview_fixture_tests_revision": "5dcaa97027a3f5498c398f3fbbee9fd90699fcb1",
+    "preview_fixture_source_unchanged": true
+  },
+  "replay": {
+    "primary": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "affinity_cpu": 0,
+        "warmup_runs": 1,
+        "measured_runs": 5,
+        "method": "Core-reported elapsed time; not process RSS, frame time or input latency"
+      },
+      "binary_sha256": {
+        "before": "ce693649254e332ceddc199201a3d1b1c0630b47dd970f71f05f6d6af2b52a85",
+        "nightly": "bf9da4b4cf933d6fb0a5d54bd29a069575b95e0308181c0b60ba83b21e6b2fd0",
+        "after": "c7eac786294bf63710a93bd36cb03648adbdbde7279b1b8886cd17fc00ab97d6"
+      },
+      "workloads": {
+        "reducer": {
+          "before": {
+            "samples_ms": [
+              87.274385,
+              98.057208,
+              87.439847,
+              131.391796,
+              98.104174
+            ],
+            "median_ms": 98.057208,
+            "min_ms": 87.274385,
+            "max_ms": 131.391796
+          },
+          "nightly": {
+            "samples_ms": [
+              104.060969,
+              99.668819,
+              78.819243,
+              142.43478,
+              95.939499
+            ],
+            "median_ms": 99.668819,
+            "min_ms": 78.819243,
+            "max_ms": 142.43478
+          },
+          "after": {
+            "samples_ms": [
+              89.210315,
+              87.426985,
+              139.875817,
+              119.639336,
+              103.467718
+            ],
+            "median_ms": 103.467718,
+            "min_ms": 87.426985,
+            "max_ms": 139.875817
+          }
+        },
+        "wide_channels": {
+          "before": {
+            "samples_ms": [
+              10.999745,
+              10.956221,
+              9.472302,
+              8.477353,
+              9.470445
+            ],
+            "median_ms": 9.472302,
+            "min_ms": 8.477353,
+            "max_ms": 10.999745
+          },
+          "nightly": {
+            "samples_ms": [
+              94.699476,
+              261.041794,
+              136.700347,
+              129.845008,
+              84.413136
+            ],
+            "median_ms": 129.845008,
+            "min_ms": 84.413136,
+            "max_ms": 261.041794
+          },
+          "after": {
+            "samples_ms": [
+              9.209397,
+              9.637448,
+              10.775787,
+              9.71921,
+              8.369572
+            ],
+            "median_ms": 9.637448,
+            "min_ms": 8.369572,
+            "max_ms": 10.775787
+          }
+        },
+        "navigation": {
+          "before": {
+            "selection_samples": [
+              {
+                "median_us": 0.306,
+                "p95_us": 0.34500000000000003
+              },
+              {
+                "median_us": 0.321,
+                "p95_us": 0.357
+              },
+              {
+                "median_us": 0.309,
+                "p95_us": 0.383
+              },
+              {
+                "median_us": 0.308,
+                "p95_us": 0.34800000000000003
+              },
+              {
+                "median_us": 0.31,
+                "p95_us": 0.357
+              }
+            ],
+            "selection_median_us": 0.309,
+            "selection_p95_us": 0.357
+          },
+          "nightly": {
+            "selection_samples": [
+              {
+                "median_us": 0.28600000000000003,
+                "p95_us": 0.317
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.318
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.319
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.324
+              },
+              {
+                "median_us": 0.28800000000000003,
+                "p95_us": 0.325
+              }
+            ],
+            "selection_median_us": 0.28700000000000003,
+            "selection_p95_us": 0.319
+          },
+          "after": {
+            "selection_samples": [
+              {
+                "median_us": 0.309,
+                "p95_us": 0.34700000000000003
+              },
+              {
+                "median_us": 0.313,
+                "p95_us": 0.35100000000000003
+              },
+              {
+                "median_us": 0.315,
+                "p95_us": 0.35000000000000003
+              },
+              {
+                "median_us": 0.333,
+                "p95_us": 0.383
+              },
+              {
+                "median_us": 0.309,
+                "p95_us": 0.34500000000000003
+              }
+            ],
+            "selection_median_us": 0.313,
+            "selection_p95_us": 0.35000000000000003
+          }
+        }
+      }
+    },
+    "longer_confirmation": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "affinity_cpu": 2,
+        "warmup_runs": 1,
+        "measured_batches": 5,
+        "runs_per_batch": 20,
+        "method": "Core reported elapsed milliseconds, average of20 fixed workload processes per measured batch; five rotated batches; longer confirmation after noisy single-run comparison. No GUI/RSS/input-latency claim."
+      },
+      "binary_sha256": {
+        "before": "ce693649254e332ceddc199201a3d1b1c0630b47dd970f71f05f6d6af2b52a85",
+        "nightly": "bf9da4b4cf933d6fb0a5d54bd29a069575b95e0308181c0b60ba83b21e6b2fd0",
+        "after": "c7eac786294bf63710a93bd36cb03648adbdbde7279b1b8886cd17fc00ab97d6"
+      },
+      "workloads": {
+        "reducer": {
+          "before": {
+            "median_ms": 95.40307145,
+            "min_ms": 89.36832964999999,
+            "max_ms": 197.23576725,
+            "batch_summaries": [
+              {
+                "mean_ms": 95.40307145
+              },
+              {
+                "mean_ms": 95.3264438
+              },
+              {
+                "mean_ms": 89.36832964999999
+              },
+              {
+                "mean_ms": 163.16285505
+              },
+              {
+                "mean_ms": 197.23576725
+              }
+            ]
+          },
+          "nightly": {
+            "median_ms": 89.14673105,
+            "min_ms": 80.7845854,
+            "max_ms": 181.90991655,
+            "batch_summaries": [
+              {
+                "mean_ms": 89.14673105
+              },
+              {
+                "mean_ms": 80.7845854
+              },
+              {
+                "mean_ms": 87.92702815
+              },
+              {
+                "mean_ms": 181.90991655
+              },
+              {
+                "mean_ms": 112.92286065
+              }
+            ]
+          },
+          "after": {
+            "median_ms": 98.0542781,
+            "min_ms": 93.1932109,
+            "max_ms": 182.66468175,
+            "batch_summaries": [
+              {
+                "mean_ms": 93.1932109
+              },
+              {
+                "mean_ms": 95.3754055
+              },
+              {
+                "mean_ms": 98.0542781
+              },
+              {
+                "mean_ms": 122.6744928
+              },
+              {
+                "mean_ms": 182.66468175
+              }
+            ]
+          }
+        },
+        "wide_channels": {
+          "before": {
+            "median_ms": 15.86455585,
+            "min_ms": 9.235901,
+            "max_ms": 32.29587635,
+            "batch_summaries": [
+              {
+                "mean_ms": 9.9931378
+              },
+              {
+                "mean_ms": 15.86455585
+              },
+              {
+                "mean_ms": 23.7184936
+              },
+              {
+                "mean_ms": 32.29587635
+              },
+              {
+                "mean_ms": 9.235901
+              }
+            ]
+          },
+          "nightly": {
+            "median_ms": 146.64886385,
+            "min_ms": 120.0094141,
+            "max_ms": 224.1397197,
+            "batch_summaries": [
+              {
+                "mean_ms": 124.747986
+              },
+              {
+                "mean_ms": 206.7611106
+              },
+              {
+                "mean_ms": 224.1397197
+              },
+              {
+                "mean_ms": 146.64886385
+              },
+              {
+                "mean_ms": 120.0094141
+              }
+            ]
+          },
+          "after": {
+            "median_ms": 11.19074165,
+            "min_ms": 9.44865985,
+            "max_ms": 17.6387852,
+            "batch_summaries": [
+              {
+                "mean_ms": 11.4975366
+              },
+              {
+                "mean_ms": 17.6387852
+              },
+              {
+                "mean_ms": 11.19074165
+              },
+              {
+                "mean_ms": 9.8625478
+              },
+              {
+                "mean_ms": 9.44865985
+              }
+            ]
+          }
+        },
+        "navigation": {
+          "before": {
+            "selection_median_us": 0.3075,
+            "selection_p95_us": 0.3405,
+            "batch_summaries": [
+              {
+                "median_us": 0.307,
+                "p95_us": 0.3405
+              },
+              {
+                "median_us": 0.3075,
+                "p95_us": 0.341
+              },
+              {
+                "median_us": 0.3075,
+                "p95_us": 0.3405
+              },
+              {
+                "median_us": 0.308,
+                "p95_us": 0.3425
+              },
+              {
+                "median_us": 0.307,
+                "p95_us": 0.339
+              }
+            ]
+          },
+          "nightly": {
+            "selection_median_us": 0.28700000000000003,
+            "selection_p95_us": 0.32,
+            "batch_summaries": [
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.3205
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.3185
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.3205
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.3175
+              },
+              {
+                "median_us": 0.28800000000000003,
+                "p95_us": 0.32
+              }
+            ]
+          },
+          "after": {
+            "selection_median_us": 0.3105,
+            "selection_p95_us": 0.34550000000000003,
+            "batch_summaries": [
+              {
+                "median_us": 0.311,
+                "p95_us": 0.35000000000000003
+              },
+              {
+                "median_us": 0.3105,
+                "p95_us": 0.34900000000000003
+              },
+              {
+                "median_us": 0.311,
+                "p95_us": 0.34550000000000003
+              },
+              {
+                "median_us": 0.31,
+                "p95_us": 0.3435
+              },
+              {
+                "median_us": 0.31,
+                "p95_us": 0.34550000000000003
+              }
+            ]
+          }
+        }
+      }
+    },
+    "process_cpu_diagnostic": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "affinity_cpu": 2,
+        "warmup_runs": 1,
+        "measured_batches": 5,
+        "runs_per_batch": 20,
+        "method": "Core wall elapsed and whole-process user+system CPU via resource.getrusage(RUSAGE_CHILDREN), including setup/logout/process startup, not just the reducer; average of20 fixed workload processes per measured batch; five rotated batches; longer confirmation after noisy single-run comparison. No GUI/RSS/input-latency claim."
+      },
+      "binary_sha256": {
+        "before": "ce693649254e332ceddc199201a3d1b1c0630b47dd970f71f05f6d6af2b52a85",
+        "nightly": "bf9da4b4cf933d6fb0a5d54bd29a069575b95e0308181c0b60ba83b21e6b2fd0",
+        "after": "c7eac786294bf63710a93bd36cb03648adbdbde7279b1b8886cd17fc00ab97d6"
+      },
+      "workloads": {
+        "reducer": {
+          "before": {
+            "median_process_cpu_ms": 118.18800000000032,
+            "median_ms": 115.72384515,
+            "min_ms": 90.7810394,
+            "max_ms": 121.4201595,
+            "batch_summaries": [
+              {
+                "mean_ms": 121.4201595,
+                "process_cpu_ms": 124.57614999999997
+              },
+              {
+                "mean_ms": 115.9998498,
+                "process_cpu_ms": 118.18800000000032
+              },
+              {
+                "mean_ms": 115.72384515,
+                "process_cpu_ms": 118.64559999999986
+              },
+              {
+                "mean_ms": 90.7810394,
+                "process_cpu_ms": 92.91840000000037
+              },
+              {
+                "mean_ms": 95.49691545,
+                "process_cpu_ms": 97.79065000000104
+              }
+            ]
+          },
+          "nightly": {
+            "median_process_cpu_ms": 79.83360000000022,
+            "median_ms": 78.17494310000001,
+            "min_ms": 78.0899624,
+            "max_ms": 126.4881228,
+            "batch_summaries": [
+              {
+                "mean_ms": 126.4881228,
+                "process_cpu_ms": 129.03125000000014
+              },
+              {
+                "mean_ms": 78.43816015,
+                "process_cpu_ms": 80.07585000000027
+              },
+              {
+                "mean_ms": 78.1067663,
+                "process_cpu_ms": 79.83360000000022
+              },
+              {
+                "mean_ms": 78.0899624,
+                "process_cpu_ms": 79.69389999999996
+              },
+              {
+                "mean_ms": 78.17494310000001,
+                "process_cpu_ms": 79.71849999999958
+              }
+            ]
+          },
+          "after": {
+            "median_process_cpu_ms": 89.24039999999977,
+            "median_ms": 87.44826185,
+            "min_ms": 85.4277639,
+            "max_ms": 147.1585851,
+            "batch_summaries": [
+              {
+                "mean_ms": 147.1585851,
+                "process_cpu_ms": 149.90070000000009
+              },
+              {
+                "mean_ms": 87.44826185,
+                "process_cpu_ms": 89.24039999999977
+              },
+              {
+                "mean_ms": 131.55102685,
+                "process_cpu_ms": 134.07150000000019
+              },
+              {
+                "mean_ms": 85.4277639,
+                "process_cpu_ms": 87.21555000000056
+              },
+              {
+                "mean_ms": 85.73802265,
+                "process_cpu_ms": 87.56999999999998
+              }
+            ]
+          }
+        },
+        "wide_channels": {
+          "before": {
+            "median_process_cpu_ms": 13.499900000000597,
+            "median_ms": 8.9909414,
+            "min_ms": 8.8096422,
+            "max_ms": 11.1765166,
+            "batch_summaries": [
+              {
+                "mean_ms": 11.1765166,
+                "process_cpu_ms": 17.46180000000018
+              },
+              {
+                "mean_ms": 8.98088415,
+                "process_cpu_ms": 13.471349999999976
+              },
+              {
+                "mean_ms": 9.0671187,
+                "process_cpu_ms": 13.873749999999562
+              },
+              {
+                "mean_ms": 8.8096422,
+                "process_cpu_ms": 13.499900000000597
+              },
+              {
+                "mean_ms": 8.9909414,
+                "process_cpu_ms": 13.48399999999973
+              }
+            ]
+          },
+          "nightly": {
+            "median_process_cpu_ms": 113.4582999999998,
+            "median_ms": 106.61612715,
+            "min_ms": 96.63643005,
+            "max_ms": 131.8679315,
+            "batch_summaries": [
+              {
+                "mean_ms": 131.8679315,
+                "process_cpu_ms": 139.1725000000002
+              },
+              {
+                "mean_ms": 106.61612715,
+                "process_cpu_ms": 113.4582999999998
+              },
+              {
+                "mean_ms": 100.34039695,
+                "process_cpu_ms": 106.31894999999938
+              },
+              {
+                "mean_ms": 96.63643005,
+                "process_cpu_ms": 102.6259500000002
+              },
+              {
+                "mean_ms": 112.9552241,
+                "process_cpu_ms": 119.75000000000034
+              }
+            ]
+          },
+          "after": {
+            "median_process_cpu_ms": 13.54550000000051,
+            "median_ms": 9.15551845,
+            "min_ms": 9.04853905,
+            "max_ms": 9.7715944,
+            "batch_summaries": [
+              {
+                "mean_ms": 9.7715944,
+                "process_cpu_ms": 14.657299999999934
+              },
+              {
+                "mean_ms": 9.2063536,
+                "process_cpu_ms": 13.793749999999921
+              },
+              {
+                "mean_ms": 9.15551845,
+                "process_cpu_ms": 13.47404999999996
+              },
+              {
+                "mean_ms": 9.04853905,
+                "process_cpu_ms": 13.54550000000051
+              },
+              {
+                "mean_ms": 9.0591526,
+                "process_cpu_ms": 13.487599999999734
+              }
+            ]
+          }
+        },
+        "navigation": {
+          "before": {
+            "selection_median_us": 0.307,
+            "selection_p95_us": 0.3405,
+            "batch_summaries": [
+              {
+                "median_us": 0.307,
+                "p95_us": 0.3405
+              },
+              {
+                "median_us": 0.3075,
+                "p95_us": 0.3405
+              },
+              {
+                "median_us": 0.307,
+                "p95_us": 0.339
+              },
+              {
+                "median_us": 0.308,
+                "p95_us": 0.3415
+              },
+              {
+                "median_us": 0.307,
+                "p95_us": 0.3395
+              }
+            ]
+          },
+          "nightly": {
+            "selection_median_us": 0.28700000000000003,
+            "selection_p95_us": 0.318,
+            "batch_summaries": [
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.3165
+              },
+              {
+                "median_us": 0.28600000000000003,
+                "p95_us": 0.32
+              },
+              {
+                "median_us": 0.28750000000000003,
+                "p95_us": 0.317
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.318
+              },
+              {
+                "median_us": 0.28700000000000003,
+                "p95_us": 0.321
+              }
+            ]
+          },
+          "after": {
+            "selection_median_us": 0.31,
+            "selection_p95_us": 0.34450000000000003,
+            "batch_summaries": [
+              {
+                "median_us": 0.31,
+                "p95_us": 0.34450000000000003
+              },
+              {
+                "median_us": 0.31,
+                "p95_us": 0.34400000000000003
+              },
+              {
+                "median_us": 0.31,
+                "p95_us": 0.34600000000000003
+              },
+              {
+                "median_us": 0.31,
+                "p95_us": 0.34650000000000003
+              },
+              {
+                "median_us": 0.31,
+                "p95_us": 0.3435
+              }
+            ]
+          }
+        }
+      }
+    },
+    "runtime_revision": "5dcaa97027a3f5498c398f3fbbee9fd90699fcb1",
+    "unchanged_source_after_route_fix": true
+  },
+  "limits": [
+    "All local workloads are synthetic/offline; no live actions or private accounts were used.",
+    "Reducer timing target is not established on this shared host. Preserve primary and longer confirmation series; do not present overlapping samples as proof of a pass or the unstable wide-channel batch as an improvement.",
+    "Native callbacks measure MessagingUi::show, not presented-frame latency or end-to-end input latency.",
+    "Runtime live cache occupancy/outstanding transport tasks and native assistive-technology/live Discord acceptance remain unmeasured."
+  ],
+  "native_captures": {
+    "runtime_revision": "2ee9314232945685c4dc81dc6cac1fc84c4f179a",
+    "preview_sha256": "e49552b934949083e581039a2fd0b96766d4b69fe6f023d29e81e35fa94c2a68",
+    "synthetic_only": true,
+    "files": {
+      "after-narrow.png": {
+        "bytes": 81462,
+        "sha256": "736332befdda7d89951154d227b2cb4bf3b5384ea660cb7319b4a5addf4a0497"
+      },
+      "after.png": {
+        "bytes": 202836,
+        "sha256": "d0b7129aa202660450b41413e19c244476cc0f83d04aaed1b6840cc7036f505e"
+      },
+      "application-confirm.png": {
+        "bytes": 131010,
+        "sha256": "94edeb25ca4f4dba8527ba36cde3c9f8b5e5f22471a91516ccc731f1370cfcd4"
+      },
+      "before-narrow.png": {
+        "bytes": 92588,
+        "sha256": "6e7c92af5e63564b2848d34f30a7747c06bb4ca61ff024a491e45be035d5e1b3"
+      },
+      "before.png": {
+        "bytes": 182219,
+        "sha256": "46a2fef1226453310238d40af4ca44e312fefbb8d67f57ce3ed05c745fadfa2d"
+      },
+      "channels.png": {
+        "bytes": 126403,
+        "sha256": "83f24049c14e095946d6d8d13a006b9791d6439c3e08873249267bf16ddb7bc6"
+      },
+      "community-preview.png": {
+        "bytes": 197592,
+        "sha256": "0a949b8d798fd6be216568414f25f5317281f463ef5d5643f92d4c7ea224c682"
+      },
+      "mfa.png": {
+        "bytes": 120162,
+        "sha256": "eb6ad4aa388181b617bc1ec9d970aa8228b16ddfd6c5c249d000983866542bd1"
+      },
+      "mod-view-actions.png": {
+        "bytes": 148772,
+        "sha256": "7eba92b9a3fdbd93378363664fed86f708dd17835cc5fb052be15fbe9b592898"
+      },
+      "mod-view.png": {
+        "bytes": 161146,
+        "sha256": "e148bb7fe33ed83d5aad35267293878e9540fd27381fd18f3b5e3c23c0c518c1"
+      },
+      "role-preview.png": {
+        "bytes": 120918,
+        "sha256": "35797dd3632a1553f73355f2bc05c176edb4dd2e80825b3541b17ed7db4f45e8"
+      }
+    },
+    "entry_checks": [
+      "Members context-menu opens actionable Mod View and preserves conversation",
+      "Rules Screening Preview/Hide toggles inline draft view",
+      "Application confirmation Escape preserves parent without submitting"
+    ],
+    "additional_inspected_variants": [
+      "light theme",
+      "150% synthetic scaling",
+      "narrow layout"
+    ]
+  },
+  "build_attempts": [
+    {
+      "runtime_revision": "5dcaa97027a3f5498c398f3fbbee9fd90699fcb1",
+      "normal_linux_package": "clean and cached matched; both isolated launch probes passed; historical intermediate result"
+    },
+    {
+      "runtime_revision": "8a020e14916448bb15a5c225e778853280102c1d",
+      "normal_linux_package": "release compiler killed at container memory limit while RAM-backed check cache remained; no package or measurement claimed",
+      "recovery": "Full validated task-owned check cache retired before final normal package rerun"
+    },
+    {
+      "runtime_revision": "2ee9314232945685c4dc81dc6cac1fc84c4f179a",
+      "normal_linux_package": "clean and cached normal commands passed after verified task cache retirement; no manual staging repair"
+    }
+  ],
+  "package": {
+    "baseline": {
+      "revision": "26e87fd5908e15dc8f11efd04e57030efb70c731",
+      "command": "cargo xtask package --format dir",
+      "rust": "1.98.1",
+      "profile": "standard release (fat LTO)",
+      "executable_bytes": 97186568,
+      "executable_sha256": "c20ed12432cf482c470ec88645dacb6acb21c458b92d42c56a20c46fc391fe88",
+      "installed_bytes": 225945587,
+      "installed_files": 303,
+      "zip_deflate6_bytes": 155151237,
+      "archive_sha256": "8f56e288671b27372dce0136e13c8f74353ca01708d4593797cebafa1ed63e31"
+    },
+    "after": {
+      "revision": "2ee9314232945685c4dc81dc6cac1fc84c4f179a",
+      "command": "cargo xtask package --format dir",
+      "rust": "1.98.1",
+      "profile": "standard release (fat LTO)",
+      "executable_bytes": 98406920,
+      "executable_sha256": "4f0a3615693b17b58215689c9bfd99e239db6d8007dd169c5b6e2c91acf84eff",
+      "installed_bytes": 227165939,
+      "installed_files": 303,
+      "zip_deflate6_bytes": 155647310,
+      "archive_sha256": "b4d37e2261b8a818846f0ca0fce891cff40ca3267232c2f4d76ed92bb7638558"
+    },
+    "clean_cached_identical": true,
+    "contents_modes_and_archives_matched": true,
+    "isolated_launch_probes": "both passed, development FFmpeg paths removed; encoder query and synthetic LavaSR worker only"
+  },
+  "native_sampling_failures": [
+    {
+      "workload": "server-roles-active",
+      "result": "Whole comparison rejected: a baseline repetition had only two callbacks, ending at 3.621 s during the internal 3\u20138 s window; the child stayed alive. Cause not isolated. Repeated the whole batch once, with no per-sample replacement.",
+      "coverage": [
+        {
+          "sample": "server-roles-active-after-0.metrics.json",
+          "callbacks": 44,
+          "first_elapsed": 3.015678833,
+          "last_elapsed": 7.990371585
+        },
+        {
+          "sample": "server-roles-active-after-1.metrics.json",
+          "callbacks": 41,
+          "first_elapsed": 3.054559126,
+          "last_elapsed": 7.979497511
+        },
+        {
+          "sample": "server-roles-active-before-0.metrics.json",
+          "callbacks": 45,
+          "first_elapsed": 3.00929637,
+          "last_elapsed": 7.966904984
+        },
+        {
+          "sample": "server-roles-active-before-1.metrics.json",
+          "callbacks": 49,
+          "first_elapsed": 3.003874993,
+          "last_elapsed": 7.960855746
+        },
+        {
+          "sample": "server-roles-active-before-2.metrics.json",
+          "callbacks": 2,
+          "first_elapsed": 3.002563127,
+          "last_elapsed": 3.6212934949999998
+        }
+      ],
+      "repeat": "one complete replacement batch passed all five samples for both builds; failed batch retained separately, never averaged into the completed series"
+    }
+  ],
+  "native_ui": {
+    "server-members": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "viewport": [
+          1120,
+          760
+        ],
+        "scale": 1,
+        "warmup_seconds": 3,
+        "sample_seconds": 5,
+        "settle_seconds": 2,
+        "sample_interval_seconds": 0.1,
+        "affinity": "one inherited logical CPU",
+        "display": ":99",
+        "reaction_history": false,
+        "hover_settle_seconds": 0,
+        "method": "Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency",
+        "warmup_runs": 1,
+        "measured_runs": 5
+      },
+      "binaries": {
+        "before": {
+          "path": "/workspace/scratch/account-reactions-20261022/new-bin/profile_preview",
+          "sha256": "b0f4bfdda9ffb86b2b522845ce843d46ef117e859785d1a87e663de15f2b7a26"
+        },
+        "after": {
+          "path": "/workspace/scratch/server-controls-20261023/new-bin/profile_preview",
+          "sha256": "e49552b934949083e581039a2fd0b96766d4b69fe6f023d29e81e35fa94c2a68"
+        },
+        "nightly": {
+          "path": "/workspace/scratch/server-controls-20261023/new-bin/profile_preview_nightly",
+          "sha256": "a8029a5cb0835b0afb67de16f1b6d6b2dbb1e976dc8a1d120f4e5d0e442d1972"
+        }
+      },
+      "workloads": {
+        "server-members": {
+          "before": {
+            "samples": [
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.918191351955933,
+                "peak_rss_bytes": 157073408,
+                "settled_rss_bytes": 157073408.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.083169443998486
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 17.078836401769884,
+                "peak_rss_bytes": 156880896,
+                "settled_rss_bytes": 156880896.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 36,
+                "elapsed_seconds": 5.035471853989293
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.57731141256903,
+                "peak_rss_bytes": 157433856,
+                "settled_rss_bytes": 157433856.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.024783749002381
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 5.682426022156568,
+                "peak_rss_bytes": 157700096,
+                "settled_rss_bytes": 157700096.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 25,
+                "elapsed_seconds": 5.103454033000162
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.705148133944298,
+                "peak_rss_bytes": 157831168,
+                "settled_rss_bytes": 157831168.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.100795834005112
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 0,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 4.918191351955933,
+              "peak_rss_bytes": 157433856,
+              "settled_rss_bytes": 157433856.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 48,
+              "elapsed_seconds": 5.083169443998486
+            }
+          },
+          "after": {
+            "samples": [
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 5.14392383427911,
+                "peak_rss_bytes": 158240768,
+                "settled_rss_bytes": 158240768.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.054507188993739
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.320147279005841,
+                "peak_rss_bytes": 159756288,
+                "settled_rss_bytes": 159756288.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.092418979998911
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 6.586068539279849,
+                "peak_rss_bytes": 159215616,
+                "settled_rss_bytes": 159215616.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.010576461994788
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 9.771298391955586,
+                "peak_rss_bytes": 159645696,
+                "settled_rss_bytes": 159645696.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 46,
+                "elapsed_seconds": 5.014686691007228
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.512021124335492,
+                "peak_rss_bytes": 158953472,
+                "settled_rss_bytes": 158953472.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 49,
+                "elapsed_seconds": 5.097493864988792
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 0,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 5.14392383427911,
+              "peak_rss_bytes": 159215616,
+              "settled_rss_bytes": 159215616.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 48,
+              "elapsed_seconds": 5.054507188993739
+            }
+          },
+          "nightly": {
+            "samples": [
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 5.175601590969675,
+                "peak_rss_bytes": 153632768,
+                "settled_rss_bytes": 153632768.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.023570601988467
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.5105375313199625,
+                "peak_rss_bytes": 154726400,
+                "settled_rss_bytes": 154726400.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 45,
+                "elapsed_seconds": 5.099170517991297
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.964667639019867,
+                "peak_rss_bytes": 148176896,
+                "settled_rss_bytes": 148176896.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.03558381300536
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 4.597613490097016,
+                "peak_rss_bytes": 147853312,
+                "settled_rss_bytes": 147853312.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 47,
+                "elapsed_seconds": 5.0025953790027415
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 10.659221878668664,
+                "peak_rss_bytes": 147509248,
+                "settled_rss_bytes": 147509248.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 46,
+                "elapsed_seconds": 5.066035834010108
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 0,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 4.964667639019867,
+              "peak_rss_bytes": 148176896,
+              "settled_rss_bytes": 148176896.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 47,
+              "elapsed_seconds": 5.03558381300536
+            }
+          }
+        }
+      }
+    },
+    "server-members-search": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "viewport": [
+          1120,
+          760
+        ],
+        "scale": 1,
+        "warmup_seconds": 3,
+        "sample_seconds": 5,
+        "settle_seconds": 2,
+        "sample_interval_seconds": 0.1,
+        "affinity": "one inherited logical CPU",
+        "display": ":99",
+        "reaction_history": false,
+        "hover_settle_seconds": 0,
+        "method": "Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency",
+        "member_search": {
+          "position": [
+            420,
+            313
+          ],
+          "interval_seconds": 1,
+          "alternating": [
+            "Avery",
+            ""
+          ],
+          "fixture_members": 8,
+          "method": "Native text input and debounced fixture replies; callbacks do not measure end-to-end search latency"
+        },
+        "warmup_runs": 1,
+        "measured_runs": 5
+      },
+      "binaries": {
+        "before": {
+          "path": "/workspace/scratch/account-reactions-20261022/new-bin/profile_preview",
+          "sha256": "b0f4bfdda9ffb86b2b522845ce843d46ef117e859785d1a87e663de15f2b7a26"
+        },
+        "after": {
+          "path": "/workspace/scratch/server-controls-20261023/new-bin/profile_preview",
+          "sha256": "e49552b934949083e581039a2fd0b96766d4b69fe6f023d29e81e35fa94c2a68"
+        }
+      },
+      "workloads": {
+        "server-members-search": {
+          "before": {
+            "samples": [
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 60,
+                "ui_callback_p50_ms": 1.614444,
+                "ui_callback_p95_ms": 3.506032,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 89.87105825409124,
+                "peak_rss_bytes": 157581312,
+                "settled_rss_bytes": 157581312.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 37,
+                "elapsed_seconds": 5.007173707999755,
+                "member_search_edits": 5
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 59,
+                "ui_callback_p50_ms": 1.795034,
+                "ui_callback_p95_ms": 3.720485,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.23990108567921,
+                "peak_rss_bytes": 158269440,
+                "settled_rss_bytes": 158269440.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 38,
+                "elapsed_seconds": 5.019952311005909,
+                "member_search_edits": 5
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 35,
+                "ui_callback_p50_ms": 2.92078,
+                "ui_callback_p95_ms": 9.381839,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 87.90655469905542,
+                "peak_rss_bytes": 157880320,
+                "settled_rss_bytes": 157880320.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 34,
+                "elapsed_seconds": 5.0280664680030895,
+                "member_search_edits": 5
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 45,
+                "ui_callback_p50_ms": 2.111057,
+                "ui_callback_p95_ms": 5.012569,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.55853208570798,
+                "peak_rss_bytes": 159088640,
+                "settled_rss_bytes": 159088640.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 36,
+                "elapsed_seconds": 5.0133321460016305,
+                "member_search_edits": 5
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 65,
+                "ui_callback_p50_ms": 1.639022,
+                "ui_callback_p95_ms": 2.935508,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 91.15019226267214,
+                "peak_rss_bytes": 157675520,
+                "settled_rss_bytes": 157675520.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 39,
+                "elapsed_seconds": 5.0575866990111535,
+                "member_search_edits": 5
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 59,
+              "ui_callback_p50_ms": 1.795034,
+              "ui_callback_p95_ms": 3.720485,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 90.23990108567921,
+              "peak_rss_bytes": 157880320,
+              "settled_rss_bytes": 157880320.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 37,
+              "elapsed_seconds": 5.019952311005909,
+              "member_search_edits": 5
+            }
+          },
+          "after": {
+            "samples": [
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 63,
+                "ui_callback_p50_ms": 1.594736,
+                "ui_callback_p95_ms": 2.99005,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.16440381568192,
+                "peak_rss_bytes": 159625216,
+                "settled_rss_bytes": 159625216.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 38,
+                "elapsed_seconds": 5.0352465140022105,
+                "member_search_edits": 5
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 57,
+                "ui_callback_p50_ms": 2.028825,
+                "ui_callback_p95_ms": 4.065499,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 89.50790166801015,
+                "peak_rss_bytes": 159551488,
+                "settled_rss_bytes": 159551488.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 38,
+                "elapsed_seconds": 5.005144704002305,
+                "member_search_edits": 5
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 56,
+                "ui_callback_p50_ms": 2.083347,
+                "ui_callback_p95_ms": 4.415963,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 89.61070139557258,
+                "peak_rss_bytes": 159993856,
+                "settled_rss_bytes": 159993856.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 37,
+                "elapsed_seconds": 5.066359183998429,
+                "member_search_edits": 5
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 62,
+                "ui_callback_p50_ms": 1.709227,
+                "ui_callback_p95_ms": 2.942823,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 91.22620666938737,
+                "peak_rss_bytes": 159506432,
+                "settled_rss_bytes": 159506432.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 39,
+                "elapsed_seconds": 5.272607702994719,
+                "member_search_edits": 6
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 53,
+                "ui_callback_p50_ms": 1.724217,
+                "ui_callback_p95_ms": 4.273286,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 90.75754594750437,
+                "peak_rss_bytes": 159604736,
+                "settled_rss_bytes": 159604736.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 38,
+                "elapsed_seconds": 5.046412342009717,
+                "member_search_edits": 5
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 57,
+              "ui_callback_p50_ms": 1.724217,
+              "ui_callback_p95_ms": 4.065499,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 90.16440381568192,
+              "peak_rss_bytes": 159604736,
+              "settled_rss_bytes": 159604736.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 38,
+              "elapsed_seconds": 5.046412342009717,
+              "member_search_edits": 5
+            }
+          }
+        }
+      }
+    },
+    "server-roles-active": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "viewport": [
+          1120,
+          760
+        ],
+        "scale": 1,
+        "warmup_seconds": 3,
+        "sample_seconds": 5,
+        "settle_seconds": 2,
+        "sample_interval_seconds": 0.1,
+        "affinity": "one inherited logical CPU",
+        "display": ":99",
+        "reaction_history": false,
+        "hover_settle_seconds": 0,
+        "method": "Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency",
+        "warmup_runs": 1,
+        "measured_runs": 5
+      },
+      "binaries": {
+        "before": {
+          "path": "/workspace/scratch/account-reactions-20261022/new-bin/profile_preview",
+          "sha256": "b0f4bfdda9ffb86b2b522845ce843d46ef117e859785d1a87e663de15f2b7a26"
+        },
+        "after": {
+          "path": "/workspace/scratch/server-controls-20261023/new-bin/profile_preview",
+          "sha256": "e49552b934949083e581039a2fd0b96766d4b69fe6f023d29e81e35fa94c2a68"
+        }
+      },
+      "workloads": {
+        "server-roles-active": {
+          "before": {
+            "samples": [
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 49,
+                "ui_callback_p50_ms": 1.501491,
+                "ui_callback_p95_ms": 2.52945,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 71.35602052653283,
+                "peak_rss_bytes": 157536256,
+                "settled_rss_bytes": 157536256.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.05913863099704
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 49,
+                "ui_callback_p50_ms": 1.475561,
+                "ui_callback_p95_ms": 2.861249,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 72.9696290646759,
+                "peak_rss_bytes": 157462528,
+                "settled_rss_bytes": 157462528.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.084307056997204
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 40,
+                "ui_callback_p50_ms": 1.654973,
+                "ui_callback_p95_ms": 6.594954,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 68.13362825792397,
+                "peak_rss_bytes": 157487104,
+                "settled_rss_bytes": 157487104.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 45,
+                "elapsed_seconds": 5.034224784001708
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 49,
+                "ui_callback_p50_ms": 1.793042,
+                "ui_callback_p95_ms": 3.62034,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 75.16504069997073,
+                "peak_rss_bytes": 156741632,
+                "settled_rss_bytes": 156741632.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 47,
+                "elapsed_seconds": 5.028933617009898
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 46,
+                "ui_callback_p50_ms": 1.739584,
+                "ui_callback_p95_ms": 2.72286,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 79.03316346781163,
+                "peak_rss_bytes": 157859840,
+                "settled_rss_bytes": 157859840.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 47,
+                "elapsed_seconds": 5.08647234099044
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 49,
+              "ui_callback_p50_ms": 1.654973,
+              "ui_callback_p95_ms": 2.861249,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 72.9696290646759,
+              "peak_rss_bytes": 157487104,
+              "settled_rss_bytes": 157487104.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 47,
+              "elapsed_seconds": 5.05913863099704
+            }
+          },
+          "after": {
+            "samples": [
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 36,
+                "ui_callback_p50_ms": 2.31492,
+                "ui_callback_p95_ms": 9.563212,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 67.48199705239794,
+                "peak_rss_bytes": 157507584,
+                "settled_rss_bytes": 157310976.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 38,
+                "elapsed_seconds": 5.008743291007704
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 44,
+                "ui_callback_p50_ms": 1.725067,
+                "ui_callback_p95_ms": 5.576261,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 78.84645958085596,
+                "peak_rss_bytes": 159272960,
+                "settled_rss_bytes": 159272960.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 45,
+                "elapsed_seconds": 5.073151060001692
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 49,
+                "ui_callback_p50_ms": 1.694572,
+                "ui_callback_p95_ms": 2.392536,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 71.38014086939954,
+                "peak_rss_bytes": 158879744,
+                "settled_rss_bytes": 158879744.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.029410079994705
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 44,
+                "ui_callback_p50_ms": 1.767151,
+                "ui_callback_p95_ms": 3.470429,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 82.2220131615917,
+                "peak_rss_bytes": 158806016,
+                "settled_rss_bytes": 158806016.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 47,
+                "elapsed_seconds": 5.083796709994203
+              },
+              {
+                "renderer": "Offline preview renderer: AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"4.5 (Core Profile) Mesa 25.0.7-2+deb13u1\", backend: Gl, subgroup_min_size: 4, subgroup_max_size: 128, transient_saves_memory: None, limit_bucket: None }",
+                "ui_callback_samples": 48,
+                "ui_callback_p50_ms": 1.798627,
+                "ui_callback_p95_ms": 3.040624,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 75.98616598906621,
+                "peak_rss_bytes": 156909568,
+                "settled_rss_bytes": 156909568.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 47,
+                "elapsed_seconds": 5.000910297996597
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 44,
+              "ui_callback_p50_ms": 1.767151,
+              "ui_callback_p95_ms": 3.470429,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 75.98616598906621,
+              "peak_rss_bytes": 158806016,
+              "settled_rss_bytes": 158806016.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 47,
+              "elapsed_seconds": 5.029410079994705
+            }
+          }
+        }
+      }
+    },
+    "mod-view": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "viewport": [
+          1120,
+          760
+        ],
+        "scale": 1,
+        "warmup_seconds": 3,
+        "sample_seconds": 5,
+        "settle_seconds": 2,
+        "sample_interval_seconds": 0.1,
+        "affinity": "one inherited logical CPU",
+        "display": ":99",
+        "reaction_history": false,
+        "hover_settle_seconds": 0,
+        "method": "Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency",
+        "warmup_runs": 1,
+        "measured_runs": 5
+      },
+      "binaries": {
+        "after": {
+          "path": "/workspace/scratch/server-controls-20261023/new-bin/profile_preview",
+          "sha256": "e49552b934949083e581039a2fd0b96766d4b69fe6f023d29e81e35fa94c2a68"
+        }
+      },
+      "workloads": {
+        "mod-view": {
+          "after": {
+            "samples": [
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 13.736559461169165,
+                "peak_rss_bytes": 157741056,
+                "settled_rss_bytes": 157741056.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.023091858995031
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 13.582636965569934,
+                "peak_rss_bytes": 155996160,
+                "settled_rss_bytes": 155996160.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.080015034996904
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 11.739101116805077,
+                "peak_rss_bytes": 157773824,
+                "settled_rss_bytes": 157773824.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.025938477992895
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 13.947802302566393,
+                "peak_rss_bytes": 157855744,
+                "settled_rss_bytes": 157855744.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.018711800003075
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 23.476941860359595,
+                "peak_rss_bytes": 157925376,
+                "settled_rss_bytes": 157925376.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 46,
+                "elapsed_seconds": 5.068803283997113
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 0,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 13.736559461169165,
+              "peak_rss_bytes": 157773824,
+              "settled_rss_bytes": 157773824.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 48,
+              "elapsed_seconds": 5.025938477992895
+            }
+          }
+        }
+      }
+    },
+    "channels": {
+      "environment": {
+        "os": "Linux-6.18.55-x86_64-with-glibc2.41",
+        "viewport": [
+          1120,
+          760
+        ],
+        "scale": 1,
+        "warmup_seconds": 3,
+        "sample_seconds": 5,
+        "settle_seconds": 2,
+        "sample_interval_seconds": 0.1,
+        "affinity": "one inherited logical CPU",
+        "display": ":99",
+        "reaction_history": false,
+        "hover_settle_seconds": 0,
+        "method": "Fresh offline native processes; UI callbacks are MessagingUi::show, not presented frames or input latency",
+        "warmup_runs": 1,
+        "measured_runs": 5
+      },
+      "binaries": {
+        "after": {
+          "path": "/workspace/scratch/server-controls-20261023/new-bin/profile_preview",
+          "sha256": "e49552b934949083e581039a2fd0b96766d4b69fe6f023d29e81e35fa94c2a68"
+        }
+      },
+      "workloads": {
+        "channels": {
+          "after": {
+            "samples": [
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 17.39328787354205,
+                "peak_rss_bytes": 158142464,
+                "settled_rss_bytes": 158142464.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 45,
+                "elapsed_seconds": 5.059422959006042
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 14.940278837924428,
+                "peak_rss_bytes": 158605312,
+                "settled_rss_bytes": 158605312.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.019986629005871
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 20.58912864832093,
+                "peak_rss_bytes": 158068736,
+                "settled_rss_bytes": 158068736.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 45,
+                "elapsed_seconds": 5.099778713003616
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 15.171543197679753,
+                "peak_rss_bytes": 158633984,
+                "settled_rss_bytes": 158633984.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.075291220986401
+              },
+              {
+                "renderer": null,
+                "ui_callback_samples": 0,
+                "ui_callback_p50_ms": null,
+                "ui_callback_p95_ms": null,
+                "ui_wheel_events": 0,
+                "cpu_one_core_percent": 13.796096361397652,
+                "peak_rss_bytes": 158195712,
+                "settled_rss_bytes": 158195712.0,
+                "helper_peak_rss_bytes": 0,
+                "samples": 48,
+                "elapsed_seconds": 5.001414762009517
+              }
+            ],
+            "median": {
+              "ui_callback_samples": 0,
+              "ui_wheel_events": 0,
+              "cpu_one_core_percent": 15.171543197679753,
+              "peak_rss_bytes": 158195712,
+              "settled_rss_bytes": 158195712.0,
+              "helper_peak_rss_bytes": 0,
+              "samples": 48,
+              "elapsed_seconds": 5.059422959006042
+            }
+          }
+        }
+      }
+    }
+  },
+  "native_ui_acceptance": {
+    "members_idle_cpu_delta_percentage_points": 0.22573248232317678,
+    "members_idle_cpu_increase_within_two_points": true,
+    "reducer_three_percent_target": "unestablished; inconsistent independent series, primary +5.5%",
+    "no_overall_speedup_claim": true
+  }
+}

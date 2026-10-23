@@ -51,6 +51,7 @@ pub(super) struct ChannelMenu {
 	posts: crate::post_menu::PostMenu,
 	pub invite_requested: Option<(Id, Id)>,
 	pub shortcut_requested: Option<crate::shortcuts::Intent>,
+	pub device_shortcut_requested: Option<crate::shortcuts::Intent>,
 	pub categories_collapsed_requested: Option<bool>,
 	requested: Option<(Id, Intent)>,
 	dialog: Option<Dialog>,
@@ -61,6 +62,32 @@ pub(super) struct ChannelMenu {
 }
 
 impl ChannelMenu {
+	pub fn take_webhook_avatar_request(&mut self) -> Option<(u64, Id, Id, u64)> {
+		let dialog = self.dialog.as_mut()?;
+		let (webhook, request) = dialog.integrations.take_avatar_request()?;
+		Some((self.generation, dialog.guild, webhook, request))
+	}
+	pub fn webhook_avatar_active(&self, scope: (u64, Id, Id, u64)) -> bool {
+		self.generation == scope.0
+			&& self.dialog.as_ref().is_some_and(|dialog| {
+				dialog.guild == scope.1 && dialog.integrations.avatar_active(scope.2, scope.3)
+			})
+	}
+	pub fn accept_webhook_avatar(
+		&mut self,
+		ctx: &egui::Context,
+		scope: (u64, Id, Id, u64),
+		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
+	) {
+		if self.webhook_avatar_active(scope)
+			&& let Some(dialog) = &mut self.dialog
+		{
+			dialog
+				.integrations
+				.accept_avatar(ctx, scope.2, scope.3, result);
+		}
+	}
+
 	pub fn is_open(&self) -> bool {
 		self.dialog.is_some()
 	}
@@ -100,6 +127,9 @@ impl ChannelMenu {
 			if let Some(intent) = self.posts.shortcut_requested.take() {
 				self.shortcut_requested = Some(intent);
 			}
+			if let Some(intent) = self.posts.device_shortcut_requested.take() {
+				self.device_shortcut_requested = Some(intent);
+			}
 			self.generation = state.generation;
 			return;
 		}
@@ -118,7 +148,7 @@ impl ChannelMenu {
 			ui.set_width(232.0);
 			ui.spacing_mut().button_padding = egui::vec2(12.0, 8.0);
 			let available = (state.demo || state.gateway_connected)
-				&& !state.channel_action_pending()
+				&& (!state.channel_action_pending() || state.channel_description_pending())
 				&& state.can_view(channel.id);
 			let mut intent = None;
 			if row(
@@ -135,22 +165,61 @@ impl ChannelMenu {
 			if channel.kind != 4
 				&& row(
 					ui,
-					if view.contains(Shortcut::Favorite, channel.id) {
+					if state.channel_account_favorite(channel.id) {
 						"channel-menu-context-remove-from-favorites"
 					} else {
 						"channel-menu-context-add-to-favorites"
 					},
-					view.available(),
+					state.personal_channel_controls_available(guild),
 					false,
 				)
 				.on_hover_text(crate::i18n::translate(
-					"channel-menu-context-favorites-are-saved-on-this-device",
+					"Favorites are synchronized with your Discord account",
 				))
 				.clicked()
 			{
-				self.shortcut_requested = Some(view.toggle(Shortcut::Favorite, channel.id));
+				self.shortcut_requested = Some(crate::shortcuts::Intent {
+					channel: channel.id,
+					kind: Shortcut::Favorite,
+					on: !state.channel_account_favorite(channel.id),
+				});
 				self.generation = state.generation;
 				ui.close();
+			}
+			if view.contains(Shortcut::Favorite, channel.id)
+				&& row(ui, "Remove from device favorites", view.available(), false).clicked()
+			{
+				self.device_shortcut_requested = Some(view.toggle(Shortcut::Favorite, channel.id));
+				self.generation = state.generation;
+				ui.close();
+			}
+			if !matches!(channel.kind, 10..=12) {
+				let shown = if channel.kind == 4 {
+					state
+						.channels
+						.iter()
+						.filter(|row| row.parent_id == Some(channel.id) && state.can_view(row.id))
+						.any(|row| state.channel_personally_selected(row.id))
+				} else {
+					state.channel_personally_selected(channel.id)
+				};
+				let label = match (channel.kind == 4, shown) {
+					(true, true) => "Hide Category",
+					(true, false) => "Show Category",
+					(false, true) => "Hide Channel",
+					(false, false) => "Show Channel",
+				};
+				if row(
+					ui,
+					label,
+					state.personal_channel_controls_available(guild),
+					false,
+				)
+				.clicked() && let Some(action) =
+					state.personal_visibility_change(channel.id, !shown)
+				{
+					intent = Some(Intent::Write(action));
+				}
 			}
 			ui.separator();
 			if state.can_create_server_invite(guild, channel.id)
@@ -222,6 +291,66 @@ impl ChannelMenu {
 						}
 					},
 				);
+			});
+			ui.add_enabled_ui(state.personal_channel_controls_available(guild), |ui| {
+				ui.menu_button("Unread Badges", |ui| {
+					let mask = model::channel_visibility::UNREADS_ONLY_MENTIONS
+						| model::channel_visibility::UNREADS_ALL_MESSAGES;
+					for (label, bits) in [
+						("Use notification setting", 0),
+						(
+							"All new messages",
+							model::channel_visibility::UNREADS_ALL_MESSAGES,
+						),
+						(
+							"Only mentions",
+							model::channel_visibility::UNREADS_ONLY_MENTIONS,
+						),
+					] {
+						if ui
+							.selectable_label(
+								state
+									.personal_channel_flags(channel.id)
+									.is_some_and(|flags| flags & mask == bits),
+								label,
+							)
+							.clicked() && let Some(action) =
+							state.personal_channel_flag_change(channel.id, mask, bits)
+						{
+							intent = Some(Intent::Write(action));
+						}
+					}
+				});
+				if matches!(channel.kind, 15 | 16) {
+					ui.menu_button("New Post Notifications", |ui| {
+						let mask = model::channel_visibility::NEW_FORUM_THREADS_OFF
+							| model::channel_visibility::NEW_FORUM_THREADS_ON;
+						for (label, bits) in [
+							("Use server default", 0),
+							(
+								"Show unread for new posts",
+								model::channel_visibility::NEW_FORUM_THREADS_ON,
+							),
+							(
+								"Do not mark unread for new posts",
+								model::channel_visibility::NEW_FORUM_THREADS_OFF,
+							),
+						] {
+							if ui
+								.selectable_label(
+									state
+										.personal_channel_flags(channel.id)
+										.is_some_and(|flags| flags & mask == bits),
+									label,
+								)
+								.clicked() && let Some(action) =
+								state.personal_channel_flag_change(channel.id, mask, bits)
+							{
+								intent = Some(Intent::Write(action));
+							}
+						}
+					});
+				}
 			});
 			if state.can_open_channel_settings(channel.id) {
 				ui.separator();
@@ -391,17 +520,21 @@ impl ChannelMenu {
 					}
 				}
 				Intent::Dialog(kind) => {
+					let name = if matches!(kind, Kind::Create | Kind::CreateCategory) {
+						String::new()
+					} else {
+						channel.name.chars().take(100).collect()
+					};
+					if let Some(previous) = &self.dialog {
+						state.retire_channel_settings_read(previous.channel);
+					}
 					self.dialog = Some(Dialog {
 						channel: id,
 						guild,
 						kind,
 						create_kind: CreateKind::Text,
 						draft: Edit {
-							name: if matches!(kind, Kind::Create | Kind::CreateCategory) {
-								String::new()
-							} else {
-								channel.name.chars().take(100).collect()
-							},
+							name,
 							topic: String::new(),
 							slowmode: 0,
 							nsfw: false,
@@ -466,6 +599,7 @@ impl ChannelMenu {
 			if dialog.integrations_opened {
 				state.close_server_admin();
 			}
+			state.retire_channel_settings_read(dialog.channel);
 			self.dialog = None;
 			return;
 		}
@@ -753,12 +887,14 @@ impl ChannelMenu {
 			if dialog.integrations_opened {
 				state.close_server_admin();
 			}
+			state.retire_channel_settings_read(dialog.channel);
 			self.dialog = None;
 		} else if dismiss {
 			if dialog.integrations_opened {
 				state.close_server_admin();
 			}
-			if pending {
+			state.retire_channel_settings_read(dialog.channel);
+			if state.channel_action_pending() {
 				self.feedback = Some(dialog.channel);
 			}
 			self.dialog = None;
@@ -1214,7 +1350,7 @@ impl Dialog {
 			Page::Permissions => {
 				design::page_title(ui, "server-roles-editor-permissions");
 				self.permissions
-					.show(ui, state, channel, &mut self.draft.overwrites);
+					.show(ui, state, channel, &mut self.draft.overwrites, commands);
 			}
 			Page::Integrations => {
 				self.integrations
@@ -1494,6 +1630,44 @@ mod tests {
 				self.frame(ctx, pointer(pos, button, pressed));
 			}
 		}
+	}
+	#[test]
+	fn leaving_channel_settings_retires_its_inflight_read() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut state = test_support::chat_demo_state();
+		let mut permissions = test_support::permission_snapshot(&state);
+		for guild in &mut permissions.guilds {
+			guild.owner = state.user.as_ref().map(|user| user.id);
+		}
+		state.permissions.replace(permissions).unwrap();
+		let mut h = Harness {
+			state,
+			menu: ChannelMenu::default(),
+			prefs: Default::default(),
+			commands: vec![],
+			copied: vec![],
+			width: 1000.0,
+		};
+		h.menu.generation = h.state.generation;
+		h.menu.requested = Some((Id(20), Intent::Dialog(Kind::Edit)));
+		h.frame(&ctx, vec![]);
+		let key =
+			client_core::server_admin::ReadKey::of(h.commands.last().unwrap(), h.state.generation)
+				.unwrap();
+		assert!(h.menu.is_open() && h.state.admin_read_scopes().contains(key));
+		let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+			h.menu.show(
+				ui.ctx(),
+				&mut h.state,
+				None,
+				&mut crate::avatars::Avatars::default(),
+				&mut h.commands,
+			);
+		});
+		output.drop_without_applying_deltas();
+		assert!(!h.menu.is_open() && !h.state.channel_action_pending());
+		assert!(!h.state.admin_read_scopes().contains(key));
 	}
 	#[test]
 	fn voice_and_stage_overviews_edit_message_controls_without_a_topic() {
@@ -2217,6 +2391,43 @@ mod tests {
 			assert_eq!(after.name, before.name);
 			assert!(h.commands.is_empty());
 		}
+	}
+
+	#[test]
+	fn device_favorite_removal_has_a_separate_local_intent() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut h = Harness {
+			state: test_support::chat_demo_state(),
+			menu: ChannelMenu::default(),
+			prefs: ChannelPreferences {
+				favorites: vec![Id(20)],
+				..Default::default()
+			},
+			commands: vec![],
+			copied: vec![],
+			width: 320.0,
+		};
+		let (source, _) = h.frame(&ctx, vec![]);
+		h.click(&ctx, source.rect.center(), PointerButton::Secondary);
+		let (_, text) = h.frame(&ctx, vec![]);
+		assert!(text.iter().any(|(label, _)| label == "Add To Favorites"));
+		let remove = text
+			.iter()
+			.find(|(label, _)| label == "Remove from device favorites")
+			.unwrap()
+			.1;
+		h.click(&ctx, remove.center(), PointerButton::Primary);
+		assert_eq!(
+			h.menu.device_shortcut_requested,
+			Some(crate::shortcuts::Intent {
+				channel: Id(20),
+				kind: Shortcut::Favorite,
+				on: false
+			})
+		);
+		assert_eq!(h.menu.shortcut_requested, None);
+		assert!(h.commands.is_empty());
 	}
 
 	#[test]

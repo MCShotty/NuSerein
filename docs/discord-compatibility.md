@@ -1,5 +1,95 @@
 # Discord compatibility — checked 2026-09-10
 
+## Server administration and personal channel controls — October 23, 2026
+
+This milestone connects the existing native administration pages with personal channel
+selection, member review, protected actions and community access controls. Normal-account
+settings, member search, bulk completion, application review, MFA and command-permission
+transport use **unofficial** interfaces described by [Userdoccers](https://docs.discord.food/).
+Documented resource schemas do not establish normal-account authorization or service acceptance.
+Discord remains authoritative for
+permissions, eligibility and completion. Earlier dated sections below retain their original scope.
+
+Personal channel selection, account favorites and category collapse share the existing
+`/users/@me/guilds/{guild}/settings` transport and Gateway settings reconciliation.
+Decoded raw flags retain unknown bits; edits change only their known masks and omit unrelated
+preferences. Unknown or null preference rows disable writes instead of supplying guessed values.
+Responses must confirm the requested flags. The first hide operation initializes the other
+accessible channels so enabling a customized list cannot accidentally hide everything.
+Show All Channels preserves those saved selections. Hiding changes sidebar presentation only:
+it does not mute, acknowledge messages, change thread membership or grant channel access.
+Selected conversations, active voice and unsuppressed mentions can temporarily reveal a hidden
+channel without changing its saved choice. Browse Channels remains available to restore it.
+Device-local collections stay separate; importing their favorites into account preferences is explicit.
+
+Member search supports names/IDs, role, join/account-age, join-method and supplied safety filters.
+Mod View uses a separate scoped snapshot, not the visible timeline, history or read state.
+It retains at most 256 KiB of metadata, 25 text excerpts and 20 member-related audit entries
+from the latest 50 server audit events. The loaded audit time window is shown; this is not a
+complete disciplinary record. Missing safety data remains unknown, and media is not loaded
+for these excerpts. Current access, blocked-user and spoiler handling still apply.
+Moderation rechecks hierarchy and permissions, offers explicit history-deletion choices,
+and never automatically resends an uncertain write. Server deafen uses the existing member
+voice PATCH alongside mute, move and disconnect.
+
+Service AutoMod and incident-message rows offer explicit member-review links. The reader
+chooses a recent-join or supplied-safety filter, or opens Mod View for a received mention.
+These links do not classify message text, identify a raid's participants, or treat a report
+as proof of misconduct. Ordinary messages cannot acquire the links by copying alert text.
+
+Bulk banning accepts at most 100 explicitly selected targets. The normal-account
+`POST /guilds/{guild}/bulk-ban/v2` HTTP acknowledgement means **accepted**, not completed.
+Only a valid account/guild-scoped `GUILD_BULK_BAN_UPDATE` matching the active target set
+confirms individual successes or failures. Unconfirmed targets become unknown after the
+bounded wait; an explicit refresh checks current bans without submitting another ban.
+Completion, readback or dismissal retires the operation's later events. The service supplies
+no operation nonce, so identical target sets cannot provide stronger correlation.
+
+A valid administrative MFA challenge suspends the exact rejected HTTP operation while the
+rest of the session remains usable. Only advertised authenticator, backup-code, SMS and
+password methods are offered; SMS transmission requires an explicit click. Account/request
+scope and current permissions are checked before one continuation. Tickets, inputs and
+proofs stay bounded, redacted and zeroizing, expire within five minutes and are not persisted
+or exposed to extensions. Passkey-only challenges require another advertised method or the
+official client; Serein does not emulate Discord's WebAuthn origin.
+
+Safety Setup uses service-provided incident state and expiry for temporary invitation/non-friend
+DM restrictions of at most 24 hours, with explicit early-resume actions and authoritative readback.
+The separate invitation pause in Invites remains independent. Missing incident metadata stays
+unknown and disables these writes; it does not mean restrictions were removed. There is no local
+raid detection. Owners can change the server's moderator MFA requirement; this does not enroll
+any member in two-factor authentication.
+
+Member applications use the **unofficial** [join-request interfaces](https://docs.discord.food/resources/guild#guild-join-request-object),
+with separate pending/approved/rejected views, bounded answers, explicit decisions and interview
+creation. Requests use their canonical request IDs. Opening an interview sends no message.
+Application review is distinct from rules acceptance. Queues load on demand; Applications
+shows the loaded pending count. Members and Applications show a neutral update marker when
+Gateway changes make that count unknown. They do not scan unopened servers or infer counts.
+Gateway changes fence late reads so a withdrawn application cannot be restored by an older response.
+Onboarding, screening and Guide previews display the unsaved draft without submitting answers.
+
+Application/command permission edits
+preserve untouched and unknown overrides, detect conflicting edits and confirm readback before
+refreshing command suggestions. Role preview evaluates selected roles in a separate read-only
+presentation context available to owners/administrators; it never replaces the account's
+permissions or dispatches simulated actions.
+Voice suppression, private-thread membership and member-specific restrictions are not simulated.
+Community configuration preserves unknown server features and untouched channel fields. Ownership
+transfer verifies a current human member and the current owner, requires the server name to be
+confirmed, and succeeds only after an authoritative owner readback. If accepted delivery cannot
+be confirmed, the outcome stays unknown and is not automatically repeated. A confirmed transfer
+may legitimately remove the former owner's administration access.
+
+Core administration snapshots and retained actions share an 8 MiB session budget in
+addition to existing page limits; application pages contain at most 100 entries and stay below
+1 MiB. Typed contracts live in the model's `channel_visibility`, `moderation`, `server_access`
+and `command_permissions` modules; client-core owns scope validation and memory accounting,
+transports perform bounded reads/writes, and UI panels consume those snapshots. At most two
+replaceable administrative reads and one mutation run concurrently; closed views retire their
+reads rather than polling. Live normal-account acceptance and native interaction checks require
+separate owner-controlled evidence; synthetic coverage does not establish them.
+
 ## Own server profiles and account privacy settings — October 17, 2026
 
 Own server-profile editing uses the **unofficial** normal-account forms of

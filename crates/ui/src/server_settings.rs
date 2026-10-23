@@ -7,7 +7,7 @@ use model::{
 	server_settings::{Edit, Settings, Trait},
 };
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
 	#[default]
 	Profile,
@@ -27,10 +27,26 @@ enum Page {
 	ChannelsRoles,
 	Screening,
 	Guide,
+	Applications,
+	Access,
+	Bans,
+	Events,
 }
 impl Page {
 	fn allowed(self, state: &State, guild: Id) -> bool {
 		match self {
+			Self::Applications => crate::server_access::AccessUi::allowed(
+				state,
+				guild,
+				crate::server_access::Page::Applications,
+			),
+			Self::Access => crate::server_access::AccessUi::allowed(
+				state,
+				guild,
+				crate::server_access::Page::Access,
+			),
+			Self::Bans => state.can_view_guild_bans(guild),
+			Self::Events => state.can_browse_events(guild),
 			Self::Onboarding | Self::ChannelsRoles | Self::Screening | Self::Guide => {
 				state.can_open_community_settings(guild)
 			}
@@ -49,6 +65,10 @@ impl Page {
 	}
 	fn label(self) -> &'static str {
 		match self {
+			Self::Applications => "server-settings-page-applications",
+			Self::Access => "server-settings-page-access",
+			Self::Bans => "server-settings-page-bans",
+			Self::Events => "server-settings-page-events",
 			Self::Onboarding => "community-onboarding",
 			Self::ChannelsRoles => "community-channels-roles",
 			Self::Screening => "community-screening",
@@ -68,15 +88,258 @@ impl Page {
 			Self::AuditLog => "server-settings-page-audit-log",
 		}
 	}
+	fn activity_label(self, state: &State, guild: Id, label: &str) -> Option<String> {
+		let count = state.guild_application_count(guild);
+		if self == Self::Applications
+			&& let Some(count) = count.filter(|count| *count > 0)
+		{
+			return Some(format!(
+				"{} ({})",
+				crate::i18n::translate_if_key(label),
+				if count > 99 {
+					"99+".into()
+				} else {
+					count.to_string()
+				}
+			));
+		}
+		(matches!(self, Self::Members | Self::Applications)
+			&& count.is_none()
+			&& state.server_admin.guild == Some(guild)
+			&& state.server_admin.access.applications_changed
+			&& state.can_review_guild_applications(guild))
+		.then(|| format!("{} •", crate::i18n::translate_if_key(label)))
+	}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Section {
+	Server,
+	People,
+	Moderation,
+	Community,
+	Apps,
+	Expressions,
+}
+impl Section {
+	fn label(self) -> &'static str {
+		match self {
+			Self::Server => "server-settings-section-server",
+			Self::People => "server-settings-show-people",
+			Self::Moderation => "server-settings-show-moderation",
+			Self::Community => "server-settings-section-community",
+			Self::Apps => "server-settings-show-apps",
+			Self::Expressions => "server-settings-show-expression",
+		}
+	}
+}
+const PAGES: [Page; 21] = [
+	Page::Profile,
+	Page::Engagement,
+	Page::Access,
+	Page::Members,
+	Page::Applications,
+	Page::Roles,
+	Page::Invites,
+	Page::Safety,
+	Page::AutoMod,
+	Page::Moderation,
+	Page::Bans,
+	Page::AuditLog,
+	Page::Onboarding,
+	Page::ChannelsRoles,
+	Page::Screening,
+	Page::Guide,
+	Page::Events,
+	Page::Integrations,
+	Page::Emoji,
+	Page::Stickers,
+	Page::Soundboard,
+];
+impl Page {
+	fn section(self) -> Section {
+		match self {
+			Self::Profile | Self::Engagement | Self::Access => Section::Server,
+			Self::Members | Self::Applications | Self::Roles | Self::Invites => Section::People,
+			Self::Safety | Self::AutoMod | Self::Moderation | Self::Bans | Self::AuditLog => {
+				Section::Moderation
+			}
+			Self::Onboarding
+			| Self::ChannelsRoles
+			| Self::Screening
+			| Self::Guide
+			| Self::Events => Section::Community,
+			Self::Integrations => Section::Apps,
+			Self::Emoji | Self::Stickers | Self::Soundboard => Section::Expressions,
+		}
+	}
+	fn keywords(self) -> &'static str {
+		match self {
+			Self::Applications => "members join requests pending approve reject interview answers",
+			Self::Access => "community owner ownership transfer rules updates channels access",
+			Self::Bans => "ban unban search reason history",
+			Self::Events => "schedule recurring events stage interested RSVP",
+			Self::Profile => "name icon banner traits description appearance",
+			Self::Engagement => {
+				"defaults notification system welcome boost inactivity afk timeout activity"
+			}
+			Self::Safety => "verification filter explicit content phone email security",
+			Self::Members => "people nickname username joined account age roles prune",
+			Self::Roles => "permissions hierarchy access reorder icon member",
+			Self::Invites => "links inviter uses expiry revoke pause access",
+			Self::AutoMod => "rules keywords spam mention exemptions alert",
+			Self::Moderation => "bans unban timeout kick member reason",
+			Self::AuditLog => "history changes actor actions reasons",
+			Self::Onboarding => "questions defaults join welcome",
+			Self::ChannelsRoles => "customize questions channels roles",
+			Self::Screening => "rules screening membership verification terms",
+			Self::Guide => "server guide resources tasks welcome",
+			Self::Integrations => "apps bots commands permissions webhooks followed channels",
+			Self::Emoji => "expressions custom emotes upload",
+			Self::Stickers => "expressions stickers upload",
+			Self::Soundboard => "expressions sounds upload volume",
+		}
+	}
+}
+#[derive(Clone, Copy)]
+struct Destination {
+	page: Page,
+	label: &'static str,
+	anchor: Option<&'static str>,
+}
+const SETTINGS: [Destination; 11] = [
+	Destination {
+		page: Page::Profile,
+		label: "server-settings-profile-form-name",
+		anchor: Some("name"),
+	},
+	Destination {
+		page: Page::Profile,
+		label: "server-settings-profile-form-icon",
+		anchor: Some("icon"),
+	},
+	Destination {
+		page: Page::Profile,
+		label: "server-settings-profile-form-banner",
+		anchor: Some("banner"),
+	},
+	Destination {
+		page: Page::Profile,
+		label: "server-settings-profile-form-traits",
+		anchor: Some("traits"),
+	},
+	Destination {
+		page: Page::Profile,
+		label: "server-settings-profile-form-description",
+		anchor: Some("description"),
+	},
+	Destination {
+		page: Page::Engagement,
+		label: "server-settings-engagement-system-messages",
+		anchor: Some("system"),
+	},
+	Destination {
+		page: Page::Engagement,
+		label: "server-settings-engagement-activity-feed-settings",
+		anchor: Some("activity"),
+	},
+	Destination {
+		page: Page::Engagement,
+		label: "server-settings-engagement-default-notification-settings",
+		anchor: Some("notifications"),
+	},
+	Destination {
+		page: Page::Engagement,
+		label: "server-settings-engagement-inactive-channel",
+		anchor: Some("inactive"),
+	},
+	Destination {
+		page: Page::Safety,
+		label: "server-settings-safety-verification",
+		anchor: Some("verification"),
+	},
+	Destination {
+		page: Page::Safety,
+		label: "server-settings-safety-filter",
+		anchor: Some("filter"),
+	},
+];
+fn destinations(state: &State, guild: Id, query: &str) -> Vec<Destination> {
+	let query = query.trim().to_lowercase();
+	if query.is_empty() {
+		return PAGES
+			.into_iter()
+			.filter(|page| page.allowed(state, guild))
+			.map(|page| Destination {
+				page,
+				label: page.label(),
+				anchor: None,
+			})
+			.collect();
+	}
+	let words: Vec<_> = query.split_whitespace().collect();
+	let mut results = Vec::with_capacity(PAGES.len() + SETTINGS.len());
+	for page in PAGES.into_iter().filter(|page| page.allowed(state, guild)) {
+		let label = crate::i18n::translate_if_key(page.label());
+		let section = crate::i18n::translate_if_key(page.section().label());
+		let searchable = format!("{label} {section} {}", page.keywords()).to_lowercase();
+		if words.iter().all(|word| searchable.contains(word)) {
+			results.push(Destination {
+				page,
+				label: page.label(),
+				anchor: None,
+			});
+		}
+	}
+	if !query.is_empty() {
+		for target in SETTINGS
+			.into_iter()
+			.filter(|target| target.page.allowed(state, guild))
+		{
+			let label = crate::i18n::translate_if_key(target.label).to_lowercase();
+			if words.iter().all(|word| label.contains(word)) {
+				results.push(target);
+			}
+		}
+	}
+	results.sort_by_key(|target| {
+		(
+			PAGES
+				.iter()
+				.position(|page| *page == target.page)
+				.unwrap_or(usize::MAX),
+			target.anchor.is_some(),
+		)
+	});
+	results
+}
+fn search_anchor(ui: &mut egui::Ui, guild: Id, name: &'static str) {
+	let key = egui::Id::unique(("server-settings-search-anchor", guild));
+	if ui.ctx().data(|data| data.get_temp::<&'static str>(key)) == Some(name) {
+		ui.ctx()
+			.data_mut(|data| data.remove_temp::<&'static str>(key));
+		ui.scroll_to_rect(
+			egui::Rect::from_min_size(ui.cursor().min, egui::vec2(1.0, 72.0)),
+			Some(egui::Align::Min),
+		);
+	}
 }
 
 #[derive(Default)]
 pub(super) struct Editor {
 	community: crate::community_admin::CommunityUi,
+	access: crate::server_access::AccessUi,
+	pub events_requested: Option<Id>,
 	automod: crate::server_automod::AutoModUi,
 	moderation: crate::server_moderation::ModerationUi,
 	scope: Option<(u64, Id)>,
 	page: Page,
+	navigation_search: String,
+	navigation_cursor: usize,
+	navigation_ime: bool,
+	navigation_error: Option<&'static str>,
+	refresh_conflict: bool,
+	show_all_pages: bool,
 	draft: Option<Settings>,
 	baseline: Option<Settings>,
 	revision: u64,
@@ -194,6 +457,41 @@ impl MessagingUi {
 		self.server_settings.roles.select(role, guild);
 		self.server_settings.roles.load(state, guild)
 	}
+	pub fn open_server_applications(&mut self, state: &mut State, guild: Id) -> Option<Command> {
+		self.preview_server_admin(state, guild, "applications")
+	}
+
+	pub fn take_webhook_avatar_request(&mut self) -> Option<(u64, Id, Id, u64)> {
+		if let Some(scope) = self.channel_menu.take_webhook_avatar_request() {
+			return Some(scope);
+		}
+		let (generation, guild) = self.server_settings.scope?;
+		let (webhook, request) = self.server_settings.integrations.take_avatar_request()?;
+		Some((generation, guild, webhook, request))
+	}
+	pub fn webhook_avatar_active(&self, scope: (u64, Id, Id, u64)) -> bool {
+		self.channel_menu.webhook_avatar_active(scope)
+			|| (self.server_settings.scope == Some((scope.0, scope.1))
+				&& self
+					.server_settings
+					.integrations
+					.avatar_active(scope.2, scope.3))
+	}
+	pub fn accept_webhook_avatar(
+		&mut self,
+		ctx: &egui::Context,
+		scope: (u64, Id, Id, u64),
+		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
+	) {
+		if self.channel_menu.webhook_avatar_active(scope) {
+			self.channel_menu.accept_webhook_avatar(ctx, scope, result);
+		} else if self.server_settings.scope == Some((scope.0, scope.1)) {
+			self.server_settings
+				.integrations
+				.accept_avatar(ctx, scope.2, scope.3, result);
+		}
+	}
+
 	pub fn take_server_role_icon_request(&mut self) -> Option<(u64, Id, Id, u64)> {
 		let (generation, guild) = self.server_settings.scope?;
 		let role = self.server_settings.roles.take_icon_request()?;
@@ -230,6 +528,36 @@ impl MessagingUi {
 		}
 		if page == "automod" {
 			return self.preview_server_automod(state, guild);
+		}
+		if matches!(page, "applications" | "access" | "bans" | "events") {
+			let destination = match page {
+				"applications" => Page::Applications,
+				"access" => Page::Access,
+				"bans" => Page::Bans,
+				_ => Page::Events,
+			};
+			if !destination.allowed(state, guild) || self.has_server_settings_changes() {
+				return None;
+			}
+			self.settings.open = false;
+			self.server_settings = Editor {
+				scope: Some((state.generation, guild)),
+				page: destination,
+				..Default::default()
+			};
+			return match destination {
+				Page::Applications => self.server_settings.access.load(
+					state,
+					guild,
+					crate::server_access::Page::Applications,
+				),
+				Page::Access => self.server_settings.access.load(
+					state,
+					guild,
+					crate::server_access::Page::Access,
+				),
+				_ => None,
+			};
 		}
 		if page == "moderation" {
 			return self.preview_server_moderation(state, guild, None);
@@ -299,6 +627,67 @@ impl MessagingUi {
 				.admin
 				.load(state, guild, page == Page::Members)
 		}
+	}
+	pub(super) fn open_member_audit(
+		&mut self,
+		state: &mut State,
+		guild: Id,
+		user: Id,
+	) -> Option<Command> {
+		if !state.can_open_audit_log_settings(guild) || user.0 == 0 {
+			return None;
+		}
+		if self.has_server_settings_changes() {
+			state.status = "Save or reset server settings before opening the member audit log.";
+			return None;
+		}
+		let command = state.request_server_admin(
+			guild,
+			model::server_admin::Action::AuditLog(Default::default()),
+		)?;
+		self.mod_view.close(state);
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::AuditLog,
+			..Default::default()
+		};
+		self.server_settings.audit_log.filter_member(user);
+		Some(command)
+	}
+	pub(super) fn review_activity_members(
+		&mut self,
+		state: &mut State,
+		guild: Id,
+		filters: model::server_admin::MemberFilters,
+	) -> Option<Command> {
+		if !state.can_open_member_settings(guild) {
+			return None;
+		}
+		if self.has_server_settings_changes() {
+			state.status = "Save or discard server settings changes before opening member review.";
+			return None;
+		}
+		if state.server_admin.saving {
+			state.status = "Finish the current server action before opening member review.";
+			return None;
+		}
+		let query = model::server_admin::Query {
+			filters,
+			..Default::default()
+		};
+		let command = state.request_server_admin(
+			guild,
+			model::server_admin::Action::LoadMembers(query.clone()),
+		)?;
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::Members,
+			admin: crate::server_admin::Admin::with_member_query(query),
+			..Default::default()
+		};
+		Some(command)
 	}
 	pub fn accepts_server_emoji_drops(&self) -> bool {
 		self.server_settings.is_open() && self.server_settings.page == Page::Emoji
@@ -419,6 +808,7 @@ impl MessagingUi {
 			&& (self.server_settings.dirty()
 				|| self.server_settings.submitted
 				|| self.server_settings.icon_pending)
+			|| self.server_settings.access.has_changes()
 			|| self.server_settings.community.has_changes()
 			|| self.server_settings.automod.has_changes()
 			|| self.server_settings.moderation.has_changes()
@@ -519,15 +909,18 @@ impl Editor {
 		if !self.is_open() {
 			return true;
 		}
-		if self.community.has_changes()
+		if self.access.has_changes()
+			|| self.community.has_changes()
 			|| self.automod.has_changes()
 			|| self.moderation.has_changes()
 			|| self.integrations.has_changes()
 			|| self.roles.has_changes()
+			|| self.stickers.has_changes()
+			|| self.sounds.has_changes()
 			|| self.invites.busy()
 			|| self.dirty()
-			|| self.automod.has_changes()
-			|| self.moderation.has_changes()
+			|| self.refresh_conflict
+			|| self.icon_pending
 			|| self.admin.has_changes()
 			|| state.server_admin.saving
 			|| state.server_settings.saving
@@ -554,6 +947,39 @@ impl Editor {
 		self.form_error = None;
 		self.icon_requested = false;
 		self.icon_pending = false;
+		self.refresh_conflict = false;
+	}
+	fn accept_latest(&mut self, state: &State, reapply: bool) {
+		let Some(snapshot) = state
+			.server_settings
+			.snapshot
+			.as_ref()
+			.filter(|snapshot| self.guild() == Some(snapshot.guild))
+		else {
+			return;
+		};
+		let changes = reapply
+			.then(|| {
+				self.baseline
+					.as_ref()
+					.zip(self.draft.as_ref())
+					.map(|(before, draft)| Edit::between(before, draft))
+			})
+			.flatten();
+		self.baseline = Some(snapshot.clone());
+		self.revision = state.server_settings.revision;
+		let icon = if reapply {
+			self.icon.clone()
+		} else {
+			Patch::Absent
+		};
+		let preview = reapply.then(|| self.icon_preview.take()).flatten();
+		self.reset();
+		self.icon_preview = preview;
+		if let Some(changes) = changes {
+			changes.apply(self.draft.as_mut().unwrap());
+		}
+		self.icon = icon;
 	}
 	pub fn show(
 		&mut self,
@@ -608,6 +1034,7 @@ impl Editor {
 			} else {
 				Page::AuditLog
 			};
+			self.access = crate::server_access::AccessUi::default();
 			self.community = crate::community_admin::CommunityUi::default();
 			self.automod = crate::server_automod::AutoModUi::default();
 			self.moderation = crate::server_moderation::ModerationUi::default();
@@ -619,6 +1046,15 @@ impl Editor {
 			self.integrations = crate::server_integrations::IntegrationsUi::default();
 			self.audit_log = crate::server_audit_log::AuditLogUi::default();
 			state.close_server_admin();
+		}
+		if let Some(page) = match self.page {
+			Page::Applications => Some(crate::server_access::Page::Applications),
+			Page::Access => Some(crate::server_access::Page::Access),
+			Page::Safety => Some(crate::server_access::Page::Safety),
+			_ => None,
+		} && let Some(command) = self.access.load(state, guild, page)
+		{
+			commands.push(command);
 		}
 		self.invites.sync(state, guild);
 		if self.page == Page::AuditLog
@@ -673,17 +1109,27 @@ impl Editor {
 					.as_ref()
 					.zip(self.draft.as_ref())
 					.map(|(before, draft)| Edit::between(before, draft));
-				let mut draft = snapshot.clone();
-				if let Some(changes) = changes {
-					changes.apply(&mut draft);
+				let conflict = self.baseline.as_ref().zip(self.draft.as_ref()).is_some_and(
+					|(before, draft)| settings_conflict(before, draft, snapshot, &self.icon),
+				);
+				if conflict || self.refresh_conflict {
+					self.refresh_conflict = true;
+				} else {
+					let mut draft = snapshot.clone();
+					if let Some(changes) = changes {
+						changes.apply(&mut draft);
+					}
+					self.draft = Some(draft);
+					self.baseline = Some(snapshot.clone());
 				}
-				self.draft = Some(draft);
-				self.baseline = Some(snapshot.clone());
 				self.revision = state.server_settings.revision;
 			}
 		}
-		let invite_overlay = self.invites.overlay_open() || self.integrations.overlay_open();
-		let settings_bar = self.dirty() || state.server_settings.saving;
+		let child_overlay = self.invites.overlay_open()
+			|| self.integrations.overlay_open()
+			|| self.access.overlay_open()
+			|| (self.page == Page::Roles && self.roles.preview_open());
+		let settings_bar = self.dirty() || self.refresh_conflict || state.server_settings.saving;
 		let roles_bar = self.page == Page::Roles && self.roles.has_changes();
 		let close = dialog::SettingsShell::new("server-settings")
 			.save_bar(settings_bar || roles_bar)
@@ -718,15 +1164,27 @@ impl Editor {
 					});
 				}
 			});
+		if self.page == Page::Roles {
+			self.roles.overlays(ctx, state);
+		}
+		if let Some(page) = match self.page {
+			Page::Applications => Some(crate::server_access::Page::Applications),
+			Page::Safety => Some(crate::server_access::Page::Safety),
+			Page::Access => Some(crate::server_access::Page::Access),
+			_ => None,
+		} {
+			self.access.overlays(ctx, state, guild, page, commands);
+		}
 		if self.page == Page::Invites {
 			self.invites.overlays(ctx, state, guild, avatars, commands);
 		}
 		if self.page == Page::Integrations {
 			self.integrations.overlays(ctx, state, guild, commands);
 		}
-		if !invite_overlay && close {
+		if !child_overlay && close {
 			if self.dirty()
 				|| state.server_settings.saving
+				|| self.access.has_changes()
 				|| self.community.has_changes()
 				|| self.automod.has_changes()
 				|| self.moderation.has_changes()
@@ -741,6 +1199,7 @@ impl Editor {
 				self.discard = true;
 			} else {
 				self.scope = None;
+				self.access = crate::server_access::AccessUi::default();
 				self.community = crate::community_admin::CommunityUi::default();
 				self.automod = crate::server_automod::AutoModUi::default();
 				self.moderation = crate::server_moderation::ModerationUi::default();
@@ -787,7 +1246,7 @@ impl Editor {
 		}
 	}
 
-	/// The page list: a sidebar when `compact` is off, inline tabs above the page otherwise.
+	/// Grouped destinations remain keyboard reachable in the compact picker and sidebar.
 	fn navigation(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -797,82 +1256,130 @@ impl Editor {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
-		const PAGES: [Page; 17] = [
-			Page::Profile,
-			Page::Engagement,
-			Page::Safety,
-			Page::Onboarding,
-			Page::ChannelsRoles,
-			Page::Screening,
-			Page::Guide,
-			Page::Emoji,
-			Page::Stickers,
-			Page::Soundboard,
-			Page::Members,
-			Page::Roles,
-			Page::Invites,
-			Page::Integrations,
-			Page::AutoMod,
-			Page::Moderation,
-			Page::AuditLog,
-		];
-		let colors = design::palette(ui);
-		if compact {
-			ui.horizontal_wrapped(|ui| {
-				for page in PAGES {
-					if page.allowed(state, guild) {
-						ui.selectable_value(
-							&mut self.page,
-							page,
-							crate::i18n::translate_if_key(page.label()),
-						);
-					}
-				}
-			});
-		} else {
-			if self.page == Page::Roles && self.roles.editing() {
-				self.roles.navigation(ui, state, guild, commands);
-				return;
-			}
+		if !compact {
 			self.navigation_header(ui, state, guild, avatars);
 			ui.add_space(12.0);
-			for page in PAGES {
-				if !page.allowed(state, guild) {
-					continue;
+		}
+		let search_id = egui::Id::unique(("server-settings-search", guild));
+		let has_ime_event = ui.input(|input| {
+			input
+				.events
+				.iter()
+				.any(|event| matches!(event, egui::Event::Ime(_)))
+		});
+		ui.input(|input| {
+			for event in &input.events {
+				match event {
+					egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+						self.navigation_ime = !text.is_empty()
+					}
+					egui::Event::Ime(egui::ImeEvent::Commit(_)) => self.navigation_ime = false,
+					_ => {}
 				}
-				if page == Page::Emoji
-					|| (page == Page::Stickers && !Page::Emoji.allowed(state, guild))
-					|| matches!(page, Page::Members | Page::Integrations | Page::AuditLog)
-					|| (page == Page::Roles && !Page::Members.allowed(state, guild))
-				{
-					ui.add_space(10.0);
-					ui.separator();
-					ui.add_space(8.0);
-					ui.label(design::eyebrow(
-						ui,
-						crate::i18n::translate_if_key(if page == Page::AuditLog {
-							"server-settings-show-moderation"
-						} else if page == Page::Integrations {
-							"server-settings-show-apps"
-						} else if matches!(page, Page::Emoji | Page::Stickers | Page::Soundboard) {
-							"server-settings-show-expression"
-						} else {
-							"server-settings-show-people"
-						}),
-						colors.muted,
-					));
-				}
-				if crate::settings::nav_item(ui, page.label(), self.page == page).clicked() {
-					self.page = page;
-				}
+			}
+		});
+		let composing = self.navigation_ime || has_ime_event;
+		let (down, up, enter, escape) =
+			if ui.memory(|memory| memory.has_focus(search_id)) && !composing {
+				ui.input_mut(|input| {
+					(
+						input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+						input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+						input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+						!self.navigation_search.is_empty()
+							&& input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+					)
+				})
+			} else {
+				(false, false, false, false)
+			};
+		// egui schedules directional focus before these keys are consumed, including
+		// the first focused frame before TextEdit installs its focus filter.
+		if down || up {
+			ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+		}
+		if escape {
+			self.navigation_search.clear();
+			self.navigation_cursor = 0;
+		}
+		let search = ui.add(
+			egui::TextEdit::singleline(&mut self.navigation_search)
+				.id(search_id)
+				.hint_text(crate::i18n::translate("server-settings-search"))
+				.char_limit(100)
+				.desired_width(ui.available_width()),
+		);
+		if search.changed() {
+			self.navigation_cursor = 0;
+		}
+		let results = destinations(state, guild, &self.navigation_search);
+		self.navigation_cursor = self.navigation_cursor.min(results.len().saturating_sub(1));
+		let mut chosen = None;
+		if !results.is_empty() {
+			if down {
+				self.navigation_cursor = (self.navigation_cursor + 1) % results.len();
+			}
+			if up {
+				self.navigation_cursor =
+					(self.navigation_cursor + results.len() - 1) % results.len();
+			}
+			if enter {
+				chosen = results.get(self.navigation_cursor).copied();
 			}
 		}
-		if state.can_delete_server(guild) {
-			if !compact {
-				ui.add_space(10.0);
-				ui.separator();
-				ui.add_space(8.0);
+
+		if compact {
+			egui::ComboBox::from_id_salt(("server-settings-page-picker", guild))
+				.width(ui.available_width())
+				.selected_text(crate::i18n::translate_if_key(self.page.label()))
+				.show_ui(ui, |ui| {
+					self.destination_rows(
+						ui,
+						state,
+						guild,
+						&results,
+						search.has_focus(),
+						&mut chosen,
+					)
+				});
+		} else if self.page == Page::Roles
+			&& self.roles.editing()
+			&& !self.show_all_pages
+			&& self.navigation_search.trim().is_empty()
+		{
+			if ui
+				.button(crate::i18n::translate("server-settings-all-pages"))
+				.clicked()
+			{
+				self.show_all_pages = true;
 			}
+			self.roles.navigation(ui, state, guild, commands);
+		} else {
+			self.destination_rows(ui, state, guild, &results, search.has_focus(), &mut chosen);
+		}
+		let previous = self.page;
+		if let Some(target) = chosen
+			&& self.select_page(target.page, state)
+		{
+			if previous != self.page {
+				state.retire_server_admin_read();
+			}
+			if let Some(anchor) = target.anchor {
+				ui.ctx().data_mut(|data| {
+					data.insert_temp(
+						egui::Id::unique(("server-settings-search-anchor", guild)),
+						anchor,
+					)
+				});
+			}
+			search.surrender_focus();
+		}
+		if let Some(error) = self.navigation_error {
+			dialog::notice(ui, dialog::Level::Warning, error);
+		}
+		if self.navigation_search.is_empty() && state.can_delete_server(guild) {
+			ui.add_space(10.0);
+			ui.separator();
 			if dialog::danger_nav_item(ui, "server-settings-delete-server-button-delete-server")
 				.clicked()
 			{
@@ -881,6 +1388,82 @@ impl Editor {
 				self.delete_name.clear();
 			}
 		}
+	}
+	fn destination_rows(
+		&self,
+		ui: &mut egui::Ui,
+		state: &State,
+		guild: Id,
+		results: &[Destination],
+		search_focused: bool,
+		chosen: &mut Option<Destination>,
+	) {
+		if results.is_empty() {
+			ui.weak(crate::i18n::translate("server-settings-no-results"));
+			return;
+		}
+		let colors = design::palette(ui);
+		let mut section = None;
+		for (index, target) in results.iter().enumerate() {
+			if section != Some(target.page.section()) {
+				section = Some(target.page.section());
+				ui.add_space(10.0);
+				ui.label(design::eyebrow(
+					ui,
+					crate::i18n::translate_if_key(target.page.section().label()),
+					colors.muted,
+				));
+			}
+			let selected = if search_focused && !self.navigation_search.trim().is_empty() {
+				index == self.navigation_cursor
+			} else {
+				target.page == self.page && target.anchor.is_none()
+			};
+			let label = target.page.activity_label(state, guild, target.label);
+			if crate::settings::nav_item(ui, label.as_deref().unwrap_or(target.label), selected)
+				.clicked()
+			{
+				*chosen = Some(*target);
+			}
+		}
+	}
+	fn page_has_draft(&self) -> bool {
+		match self.page {
+			Page::Applications | Page::Access => self.access.has_changes(),
+			Page::Safety => self.access.has_changes(),
+			Page::Bans => self.moderation.has_changes(),
+			Page::Onboarding | Page::ChannelsRoles | Page::Screening | Page::Guide => {
+				self.community.has_changes()
+			}
+			Page::AutoMod => self.automod.has_changes(),
+			Page::Moderation => self.moderation.has_changes(),
+			Page::Members | Page::Emoji => self.admin.has_changes(),
+			Page::Stickers => self.stickers.has_changes(),
+			Page::Soundboard => self.sounds.has_changes(),
+			Page::Roles => self.roles.has_changes(),
+			Page::Integrations => self.integrations.has_changes(),
+			Page::Invites => self.invites.busy() || self.invites.overlay_open(),
+			_ => false,
+		}
+	}
+	fn select_page(&mut self, page: Page, state: &State) -> bool {
+		if self
+			.scope
+			.is_none_or(|(_, guild)| !page.allowed(state, guild))
+		{
+			return false;
+		}
+		if page == self.page {
+			return true;
+		}
+		if self.page_has_draft() || state.server_admin.saving || state.server_settings.saving {
+			self.navigation_error = Some("server-settings-save-before-navigation");
+			return false;
+		}
+		self.page = page;
+		self.show_all_pages = false;
+		self.navigation_error = None;
+		true
 	}
 
 	/// The server's icon, name and member count above the page list.
@@ -1050,6 +1633,47 @@ impl Editor {
 		commands: &mut Vec<Command>,
 	) {
 		match self.page {
+			Page::Applications | Page::Access => {
+				self.access.show(
+					ui,
+					state,
+					guild,
+					if self.page == Page::Applications {
+						crate::server_access::Page::Applications
+					} else {
+						crate::server_access::Page::Access
+					},
+					commands,
+				);
+				return;
+			}
+			Page::Bans => {
+				self.moderation.show_bans(ui, state, guild, commands);
+				return;
+			}
+			Page::Events => {
+				design::page_header(
+					ui,
+					"server-settings-page-events",
+					Some("server-settings-events-help"),
+					|_| {},
+				);
+				if ui
+					.button(crate::i18n::translate("server-settings-open-events"))
+					.clicked()
+				{
+					if self.dirty()
+						|| self.page_has_draft()
+						|| state.server_admin.saving
+						|| state.server_settings.saving
+					{
+						self.navigation_error = Some("server-settings-save-before-navigation");
+					} else {
+						self.events_requested = Some(guild);
+					}
+				}
+				return;
+			}
 			Page::Onboarding | Page::ChannelsRoles | Page::Screening | Page::Guide => {
 				self.community.show(
 					ui,
@@ -1078,6 +1702,33 @@ impl Editor {
 			}
 			Page::AuditLog => {
 				self.audit_log.show(ui, state, guild, avatars, commands);
+				if let Some(target) = self.audit_log.target.take() {
+					match target {
+						crate::server_audit_log::Target::User(id) => {
+							if let Some(user) = state
+								.server_admin
+								.audit_log
+								.as_ref()
+								.and_then(|page| page.users.iter().find(|user| user.id == id))
+							{
+								profile.command_open(user.clone());
+							}
+						}
+						crate::server_audit_log::Target::Channel(id) if state.can_view(id) => {
+							self.admin.message = Some(id)
+						}
+						crate::server_audit_log::Target::Role(id)
+							if self.select_page(Page::Roles, state) =>
+						{
+							state.retire_server_admin_read();
+							self.roles.select(Some(id), guild);
+							if let Some(command) = self.roles.load(state, guild) {
+								commands.push(command);
+							}
+						}
+						_ => {}
+					}
+				}
 				return;
 			}
 			Page::Integrations => {
@@ -1148,6 +1799,16 @@ impl Editor {
 			}
 			return;
 		}
+		if self.page == Page::Safety {
+			self.access.show(
+				ui,
+				state,
+				guild,
+				crate::server_access::Page::Safety,
+				commands,
+			);
+			ui.add_space(24.0);
+		}
 		ui.add_enabled_ui(!state.server_settings.pending, |ui| {
 			if self.page == Page::Profile {
 				self.profile(ui, state, avatars);
@@ -1170,12 +1831,17 @@ impl Editor {
 				.saving
 				.then_some("server-settings-save-bar-saving-changes"),
 			available
+				&& !self.refresh_conflict
 				&& !state.server_settings.needs_refresh
 				&& (state.demo || state.gateway_connected),
 			available,
 		);
 		if reset {
-			self.reset();
+			if self.refresh_conflict {
+				self.accept_latest(state, false);
+			} else {
+				self.reset();
+			}
 		}
 		if save && let (Some(baseline), Some(draft)) = (&self.baseline, &self.draft) {
 			let mut edit = Edit::between(baseline, draft);
@@ -1198,6 +1864,25 @@ impl Editor {
 					"Could not save these changes. Check the selected channels, reconnect, or reload the server settings and try again.",
 				);
 			}
+		}
+		if self.refresh_conflict {
+			dialog::notice(ui, dialog::Level::Warning, "server-settings-conflict");
+			ui.add_enabled_ui(available, |ui| {
+				ui.horizontal_wrapped(|ui| {
+					if ui
+						.button(crate::i18n::translate("server-settings-conflict-reload"))
+						.clicked()
+					{
+						self.accept_latest(state, false);
+					}
+					if ui
+						.button(crate::i18n::translate("server-settings-conflict-reapply"))
+						.clicked()
+					{
+						self.accept_latest(state, true);
+					}
+				});
+			});
 		}
 		if state.server_settings.needs_refresh {
 			ui.add_space(8.0);
@@ -1263,6 +1948,7 @@ impl Editor {
 		let colors = design::palette(ui);
 		// Column spacing must not leak into the swatch, trait and button rows.
 		ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+		search_anchor(ui, draft.guild, "name");
 		design::group(ui, "server-settings-profile-form-name", |ui| {
 			design::input(
 				ui,
@@ -1274,6 +1960,7 @@ impl Editor {
 			.on_hover_text(crate::i18n::translate("server-settings-profile-form-name"));
 		});
 		ui.add_space(16.0);
+		search_anchor(ui, draft.guild, "icon");
 		let icon_pending = self.icon_pending;
 		let removable = draft.icon.is_some() || matches!(self.icon, Patch::Value(_));
 		let (change, remove) = design::group(ui, "server-settings-profile-form-icon", |ui| {
@@ -1301,6 +1988,7 @@ impl Editor {
 			design::notice(ui, design::Level::Error, error);
 		}
 		ui.add_space(16.0);
+		search_anchor(ui, draft.guild, "banner");
 		design::group(ui, "server-settings-profile-form-banner", |ui| {
 			ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 			let swatch_width = ((ui.available_width() - 32.0) / 5.0).max(20.0);
@@ -1326,6 +2014,7 @@ impl Editor {
 			);
 		});
 		ui.add_space(16.0);
+		search_anchor(ui, draft.guild, "traits");
 		design::group(ui, "server-settings-profile-form-traits", |ui| {
 			design::hint(
 				ui,
@@ -1368,6 +2057,7 @@ impl Editor {
 			draft.traits = traits;
 		});
 		ui.add_space(16.0);
+		search_anchor(ui, draft.guild, "description");
 		design::group(ui, "server-settings-profile-form-description", |ui| {
 			design::hint(
 				ui,
@@ -1513,6 +2203,36 @@ impl Editor {
 				});
 			});
 	}
+}
+
+fn settings_conflict(
+	before: &Settings,
+	draft: &Settings,
+	actual: &Settings,
+	icon: &Patch<String>,
+) -> bool {
+	macro_rules! field {
+		($field:ident) => {
+			before.$field != draft.$field
+				&& before.$field != actual.$field
+				&& draft.$field != actual.$field
+		};
+	}
+	field!(name)
+		|| field!(banner_color)
+		|| field!(traits)
+		|| field!(description)
+		|| field!(system_channel_id)
+		|| field!(system_channel_flags)
+		|| field!(activity_feed)
+		|| field!(default_message_notifications)
+		|| field!(afk_channel_id)
+		|| field!(afk_timeout)
+		|| field!(verification_level)
+		|| field!(explicit_content_filter)
+		|| (!matches!(icon, Patch::Absent)
+			&& before.icon != actual.icon
+			&& !(matches!(icon, Patch::Null) && actual.icon.is_none()))
 }
 
 const BANNER_SWATCHES: [u32; 10] = [
@@ -1704,6 +2424,7 @@ fn engagement(ui: &mut egui::Ui, state: &State, draft: &mut Settings) {
 		Some("server-settings-engagement-manage-settings-that-help-keep-your-server-active"),
 		|_| {},
 	);
+	search_anchor(ui, draft.guild, "system");
 	design::section(
 		ui,
 		"server-settings-engagement-system-messages",
@@ -1733,6 +2454,7 @@ fn engagement(ui: &mut egui::Ui, state: &State, draft: &mut Settings) {
 		);
 	});
 	ui.add_space(24.0);
+	search_anchor(ui, draft.guild, "activity");
 	design::section(
 		ui,
 		"server-settings-engagement-activity-feed-settings",
@@ -1755,6 +2477,7 @@ fn engagement(ui: &mut egui::Ui, state: &State, draft: &mut Settings) {
 		}
 	});
 	ui.add_space(24.0);
+	search_anchor(ui, draft.guild, "notifications");
 	design::section(
 		ui,
 		"server-settings-engagement-default-notification-settings",
@@ -1780,6 +2503,7 @@ fn engagement(ui: &mut egui::Ui, state: &State, draft: &mut Settings) {
 		}
 	});
 	ui.add_space(24.0);
+	search_anchor(ui, draft.guild, "inactive");
 	design::section(
 		ui,
 		"server-settings-engagement-inactive-channel",
@@ -1854,6 +2578,7 @@ fn safety(ui: &mut egui::Ui, draft: &mut Settings) {
 		);
 		ui.add_space(16.0);
 	}
+	search_anchor(ui, draft.guild, "verification");
 	design::section(
 		ui,
 		"server-settings-safety-verification",
@@ -1875,6 +2600,7 @@ fn safety(ui: &mut egui::Ui, draft: &mut Settings) {
 		}
 	});
 	ui.add_space(24.0);
+	search_anchor(ui, draft.guild, "filter");
 	design::section(
 		ui,
 		"server-settings-safety-filter",
@@ -1986,4 +2712,581 @@ fn timeout_picker(ui: &mut egui::Ui, timeout: &mut u32) {
 				);
 			}
 		});
+}
+
+#[cfg(test)]
+mod navigation_tests {
+	use super::*;
+	fn access_frame(
+		ctx: &egui::Context,
+		editor: &mut Editor,
+		state: &mut State,
+		events: Vec<egui::Event>,
+	) -> (egui::FullOutput, Vec<Command>) {
+		let mut commands = Vec::new();
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(1440.0, 1100.0),
+				)),
+				events,
+				..Default::default()
+			},
+			|ui| {
+				editor.show(
+					ui.ctx(),
+					state,
+					&mut Avatars::default(),
+					&mut crate::profiles::ProfileSession::default(),
+					&mut commands,
+				)
+			},
+		);
+		(output, commands)
+	}
+	fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+		output
+			.shapes
+			.iter()
+			.find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text) if text.galley.job.text == label => {
+					Some(text.pos + text.galley.size() / 2.0)
+				}
+				_ => None,
+			})
+			.unwrap_or_else(|| panic!("production button {label}"))
+	}
+	fn click(position: egui::Pos2) -> Vec<egui::Event> {
+		vec![
+			egui::Event::PointerMoved(position),
+			egui::Event::PointerButton {
+				pos: position,
+				button: egui::PointerButton::Primary,
+				pressed: true,
+				modifiers: egui::Modifiers::NONE,
+			},
+			egui::Event::PointerButton {
+				pos: position,
+				button: egui::PointerButton::Primary,
+				pressed: false,
+				modifiers: egui::Modifiers::NONE,
+			},
+		]
+	}
+	fn access_fixture() -> (State, Id, Editor) {
+		let (mut state, guild, mut editor) = fixture();
+		editor.page = Page::Safety;
+		state.server_admin.guild = Some(guild);
+		state.server_admin.access.settings = Some(model::server_access::Settings {
+			guild,
+			owner: state.user.as_ref().unwrap().id,
+			features: vec![],
+			configuration: Default::default(),
+			mfa_level: 0,
+			verification_level: 1,
+			content_filter: 2,
+			incident: Some(Default::default()),
+		});
+		(state, guild, editor)
+	}
+	fn access_settle(ctx: &egui::Context, editor: &mut Editor, state: &mut State) {
+		for _ in 0..3 {
+			let (output, commands) = access_frame(ctx, editor, state, vec![]);
+			assert!(
+				commands
+					.iter()
+					.all(|c| client_core::mfa::Target::from_command(c).is_none())
+			);
+			output.drop_without_applying_deltas();
+		}
+	}
+	fn open_access_confirmation(ctx: &egui::Context, editor: &mut Editor, state: &mut State) {
+		access_settle(ctx, editor, state);
+		let (output, commands) = access_frame(ctx, editor, state, vec![]);
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		let button = text_position(&output, "Require moderator MFA");
+		output.drop_without_applying_deltas();
+		let (output, commands) = access_frame(ctx, editor, state, click(button));
+		output.drop_without_applying_deltas();
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		assert!(editor.access.overlay_open());
+		access_settle(ctx, editor, state);
+	}
+	#[test]
+	fn access_confirmation_is_top_modal_cancel_and_escape_do_not_write_or_close_settings() {
+		let (mut state, _, mut editor) = access_fixture();
+		let selected = state.selected;
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		open_access_confirmation(&ctx, &mut editor, &mut state);
+		let layer = egui::LayerId::new(
+			egui::Order::Foreground,
+			egui::Id::unique("access-confirmation"),
+		);
+		assert_eq!(ctx.memory(|m| m.top_modal_layer()), Some(layer));
+		let (output, commands) =
+			access_frame(&ctx, &mut editor, &mut state, vec![key(egui::Key::Escape)]);
+		output.drop_without_applying_deltas();
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		assert!(!editor.access.overlay_open());
+		assert!(editor.is_open());
+		assert!(!editor.discard);
+		open_access_confirmation(&ctx, &mut editor, &mut state);
+		let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+		let cancel = text_position(&output, "Cancel");
+		assert_eq!(ctx.layer_id_at(cancel), Some(layer));
+		output.drop_without_applying_deltas();
+		let (output, commands) = access_frame(&ctx, &mut editor, &mut state, click(cancel));
+		output.drop_without_applying_deltas();
+		assert!(
+			commands
+				.iter()
+				.all(|c| client_core::mfa::Target::from_command(c).is_none())
+		);
+		assert!(!editor.access.overlay_open());
+		assert!(editor.is_open());
+		assert!(!editor.discard);
+		assert_eq!(state.selected, selected);
+	}
+	#[test]
+	fn access_confirmation_dispatches_once_and_rechecks_the_current_snapshot() {
+		for stale in [false, true] {
+			let (mut state, guild, mut editor) = access_fixture();
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			open_access_confirmation(&ctx, &mut editor, &mut state);
+			if stale {
+				state
+					.server_admin
+					.access
+					.settings
+					.as_mut()
+					.unwrap()
+					.mfa_level = 1;
+			}
+			let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+			let confirm = text_position(&output, "Confirm");
+			assert_eq!(
+				ctx.layer_id_at(confirm),
+				Some(egui::LayerId::new(
+					egui::Order::Foreground,
+					egui::Id::unique("access-confirmation")
+				))
+			);
+			output.drop_without_applying_deltas();
+			let (output, commands) = access_frame(&ctx, &mut editor, &mut state, click(confirm));
+			output.drop_without_applying_deltas();
+			let writes: Vec<_> = commands
+				.iter()
+				.filter(|c| client_core::mfa::Target::from_command(c).is_some())
+				.collect();
+			if stale {
+				assert!(writes.is_empty());
+				assert!(!state.server_admin.pending);
+			} else {
+				assert_eq!(writes.len(), 1);
+				assert!(
+					matches!(writes[0],Command::ServerAdmin {guild:target,action,..}if *target==guild&&matches!(action.as_ref(),model::server_admin::Action::Access(model::server_access::Action::MfaLevel {before:0,after:1})))
+				);
+				access_settle(&ctx, &mut editor, &mut state);
+			}
+		}
+	}
+	#[test]
+	fn role_preview_is_the_top_settings_modal_and_dismisses_without_closing_settings() {
+		fn render(
+			ctx: &egui::Context,
+			editor: &mut Editor,
+			state: &mut State,
+			events: Vec<egui::Event>,
+		) -> egui::FullOutput {
+			let mut commands = vec![];
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1440.0, 1100.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					editor.show(
+						ui.ctx(),
+						state,
+						&mut Avatars::default(),
+						&mut crate::profiles::ProfileSession::default(),
+						&mut commands,
+					)
+				},
+			);
+			assert!(
+				commands
+					.iter()
+					.all(|command| client_core::mfa::Target::from_command(command).is_none())
+			);
+			output
+		}
+		let (mut state, guild, mut editor) = fixture();
+		editor.page = Page::Roles;
+		editor.roles.preview_as_role(&state, guild, guild);
+		let selected = state.selected;
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		for _ in 0..3 {
+			render(&ctx, &mut editor, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		let preview_layer = egui::LayerId::new(
+			egui::Order::Foreground,
+			egui::Id::unique("server-role-preview"),
+		);
+		assert_eq!(
+			ctx.memory(|memory| memory.top_modal_layer()),
+			Some(preview_layer)
+		);
+		render(&ctx, &mut editor, &mut state, vec![key(egui::Key::Escape)])
+			.drop_without_applying_deltas();
+		assert!(!editor.roles.preview_open());
+		assert!(editor.is_open(), "Escape dismisses only the role preview");
+		assert_eq!(state.selected, selected);
+		render(&ctx, &mut editor, &mut state, vec![]).drop_without_applying_deltas();
+		editor.roles.preview_as_role(&state, guild, guild);
+		for _ in 0..2 {
+			render(&ctx, &mut editor, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		let output = render(&ctx, &mut editor, &mut state, vec![]);
+		let back = output
+			.shapes
+			.iter()
+			.find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text)
+					if text.galley.job.text == "Disable preview / Back to Roles" =>
+				{
+					Some(text.pos + text.galley.size() / 2.0)
+				}
+				_ => None,
+			})
+			.expect("rendered production preview exit button");
+		assert_eq!(
+			ctx.layer_id_at(back),
+			Some(preview_layer),
+			"the preview button receives input above SettingsShell"
+		);
+		output.drop_without_applying_deltas();
+		let events = vec![
+			egui::Event::PointerMoved(back),
+			egui::Event::PointerButton {
+				pos: back,
+				button: egui::PointerButton::Primary,
+				pressed: true,
+				modifiers: egui::Modifiers::NONE,
+			},
+			egui::Event::PointerButton {
+				pos: back,
+				button: egui::PointerButton::Primary,
+				pressed: false,
+				modifiers: egui::Modifiers::NONE,
+			},
+		];
+		render(&ctx, &mut editor, &mut state, events).drop_without_applying_deltas();
+		assert!(
+			!editor.roles.preview_open(),
+			"the visible exit button is actionable"
+		);
+		assert!(editor.is_open());
+		assert_eq!(state.selected, selected);
+	}
+	#[test]
+	fn activity_review_opens_members_with_the_explicit_filter_without_navigating_history() {
+		let (mut state, guild, _) = fixture();
+		let selected = state.selected;
+		let mut messaging = crate::MessagingUi::default();
+		let filters = model::server_admin::MemberFilters {
+			signal: Some(model::server_admin::MemberSignal::UnusualDm),
+			..Default::default()
+		};
+		let command = messaging
+			.review_activity_members(&mut state, guild, filters.clone())
+			.unwrap();
+		assert!(
+			matches!(command, Command::ServerAdmin { guild: target, action, .. } if target == guild && matches!(*action, model::server_admin::Action::LoadMembers(ref query) if query.filters == filters))
+		);
+		assert_eq!(state.selected, selected);
+		assert_eq!(state.server_admin.query.filters, filters);
+		assert!(messaging.server_settings.page == Page::Members);
+	}
+	#[test]
+	fn application_updates_show_a_neutral_marker_only_when_the_count_is_unknown() {
+		let (mut state, guild, _) = fixture();
+		state.server_admin.guild = Some(guild);
+		state.server_admin.access.applications_changed = true;
+		state.server_admin.access.pending_count = None;
+		for page in [Page::Members, Page::Applications] {
+			assert!(
+				page.activity_label(&state, guild, page.label())
+					.unwrap()
+					.ends_with('•')
+			);
+			assert!(
+				page.activity_label(&state, Id(999_999), page.label())
+					.is_none()
+			);
+		}
+		assert!(
+			Page::Roles
+				.activity_label(&state, guild, Page::Roles.label())
+				.is_none()
+		);
+		state.server_admin.access.pending_count = Some(0);
+		assert!(
+			Page::Applications
+				.activity_label(&state, guild, Page::Applications.label())
+				.is_none()
+		);
+		assert!(
+			Page::Members
+				.activity_label(&state, guild, Page::Members.label())
+				.is_none()
+		);
+		state.server_admin.access.pending_count = Some(100);
+		assert!(
+			Page::Applications
+				.activity_label(&state, guild, Page::Applications.label())
+				.unwrap()
+				.ends_with("(99+)")
+		);
+		state.server_admin.access.pending_count = None;
+		state.server_admin.access.applications_changed = false;
+		assert!(
+			Page::Applications
+				.activity_label(&state, guild, Page::Applications.label())
+				.is_none()
+		);
+		state.server_admin.access.applications_changed = true;
+		state.permissions.guilds.clear();
+		state.permissions.clear_cache();
+		assert!(
+			Page::Members
+				.activity_label(&state, guild, Page::Members.label())
+				.is_none()
+		);
+	}
+	fn fixture() -> (State, Id, Editor) {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		let mut state = test_support::demo_state();
+		let guild = state.guilds[0].id;
+		let mut permissions = test_support::permission_snapshot(&state);
+		for entry in &mut permissions.guilds {
+			entry.owner = state.user.as_ref().map(|user| user.id);
+		}
+		state.permissions.replace(permissions).unwrap();
+		let baseline = Settings {
+			guild,
+			name: "Synthetic server".into(),
+			..Settings::default()
+		};
+		let editor = Editor {
+			scope: Some((state.generation, guild)),
+			draft: Some(baseline.clone()),
+			baseline: Some(baseline),
+			..Default::default()
+		};
+		(state, guild, editor)
+	}
+	fn key(key: egui::Key) -> egui::Event {
+		egui::Event::Key {
+			key,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::NONE,
+		}
+	}
+	fn frame(
+		ctx: &egui::Context,
+		editor: &mut Editor,
+		state: &mut State,
+		width: f32,
+		compact: bool,
+		events: Vec<egui::Event>,
+	) -> egui::Rect {
+		let guild = editor.guild().unwrap();
+		let mut rect = egui::Rect::NOTHING;
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(width, 1400.0),
+				)),
+				events,
+				..Default::default()
+			},
+			|ui| {
+				ui.set_width(width);
+				editor.navigation(
+					ui,
+					state,
+					guild,
+					compact,
+					&mut Avatars::default(),
+					&mut vec![],
+				);
+				rect = ui.min_rect();
+			},
+		);
+		output.drop_without_applying_deltas();
+		rect
+	}
+	#[test]
+	fn settings_search_returns_authorized_destinations_and_setting_anchors() {
+		let (mut state, guild, _) = fixture();
+		assert!(
+			destinations(&state, guild, "nickname")
+				.iter()
+				.any(|row| row.page == Page::Members)
+		);
+		assert!(
+			destinations(&state, guild, "verification")
+				.iter()
+				.any(|row| row.anchor == Some("verification"))
+		);
+		assert_eq!(destinations(&state, guild, "").len(), PAGES.len());
+		state.permissions.guilds.clear();
+		state.permissions.clear_cache();
+		assert!(destinations(&state, guild, "permission").is_empty());
+	}
+	#[test]
+	fn navigation_search_keyboard_skips_headers_and_compact_picker_stays_short() {
+		for compact in [false, true] {
+			let (mut state, guild, mut editor) = fixture();
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			editor.navigation_search = "filter".into();
+			frame(&ctx, &mut editor, &mut state, 300.0, compact, vec![]);
+			ctx.memory_mut(|memory| {
+				memory.request_focus(egui::Id::unique(("server-settings-search", guild)))
+			});
+			frame(
+				&ctx,
+				&mut editor,
+				&mut state,
+				300.0,
+				compact,
+				vec![key(egui::Key::ArrowDown)],
+			);
+			assert_eq!(editor.navigation_cursor, 1);
+			assert_eq!(
+				destinations(&state, guild, &editor.navigation_search)[editor.navigation_cursor]
+					.anchor,
+				Some("filter")
+			);
+			assert!(ctx.memory(|memory| {
+				memory.has_focus(egui::Id::unique(("server-settings-search", guild)))
+			}));
+			frame(
+				&ctx,
+				&mut editor,
+				&mut state,
+				300.0,
+				compact,
+				vec![key(egui::Key::Enter)],
+			);
+			assert_eq!(editor.page, Page::Safety);
+			assert_eq!(
+				ctx.data(|data| data.get_temp::<&'static str>(egui::Id::unique((
+					"server-settings-search-anchor",
+					guild
+				)))),
+				Some("filter")
+			);
+			if compact {
+				editor.navigation_search.clear();
+				let rect = frame(&ctx, &mut editor, &mut state, 300.0, compact, vec![]);
+				assert!(rect.width() <= 301.0 && rect.height() < 160.0, "{rect:?}");
+			}
+		}
+	}
+	#[test]
+	fn navigation_ime_enter_and_pending_saves_preserve_current_page_and_draft() {
+		let (mut state, guild, mut editor) = fixture();
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		editor.navigation_search = "roles".into();
+		frame(&ctx, &mut editor, &mut state, 300.0, true, vec![]);
+		ctx.memory_mut(|memory| {
+			memory.request_focus(egui::Id::unique(("server-settings-search", guild)))
+		});
+		editor.navigation_ime = true;
+		frame(
+			&ctx,
+			&mut editor,
+			&mut state,
+			300.0,
+			true,
+			vec![key(egui::Key::Enter)],
+		);
+		assert_eq!(editor.page, Page::Profile);
+		editor.draft.as_mut().unwrap().description = "Unsaved description".into();
+		state.server_admin.saving = true;
+		assert!(!editor.select_page(Page::Roles, &state));
+		assert_eq!(editor.page, Page::Profile);
+		state.server_admin.saving = false;
+		assert!(editor.select_page(Page::Engagement, &state));
+		assert_eq!(
+			editor.draft.as_ref().unwrap().description,
+			"Unsaved description"
+		);
+		state.permissions.guilds.clear();
+		state.permissions.clear_cache();
+		assert!(!editor.select_page(Page::AuditLog, &state));
+	}
+	#[test]
+	fn concurrent_server_settings_edits_require_deliberate_reapplication() {
+		let (mut state, guild, mut editor) = fixture();
+		let before = editor.baseline.as_ref().unwrap().clone();
+		editor.draft.as_mut().unwrap().name = "My server name".into();
+		let mut latest = before.clone();
+		latest.description = "Changed elsewhere".into();
+		assert!(!settings_conflict(
+			&before,
+			editor.draft.as_ref().unwrap(),
+			&latest,
+			&Patch::Absent
+		));
+		latest.name = "Another server name".into();
+		assert!(settings_conflict(
+			&before,
+			editor.draft.as_ref().unwrap(),
+			&latest,
+			&Patch::Absent
+		));
+		state.server_settings.guild = Some(guild);
+		state.server_settings.snapshot = Some(latest.clone());
+		editor.refresh_conflict = true;
+		editor.accept_latest(&state, true);
+		assert!(!editor.refresh_conflict);
+		assert_eq!(editor.draft.as_ref().unwrap().name, "My server name");
+		assert_eq!(
+			editor.draft.as_ref().unwrap().description,
+			"Changed elsewhere"
+		);
+		assert_eq!(editor.baseline, Some(latest.clone()));
+		editor.refresh_conflict = true;
+		editor.accept_latest(&state, false);
+		assert_eq!(editor.draft, Some(latest));
+		assert!(!editor.dirty());
+	}
 }

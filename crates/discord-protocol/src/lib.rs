@@ -8,6 +8,7 @@ mod attachments;
 pub mod automod;
 pub mod badges;
 pub mod collectibles;
+pub mod command_permissions;
 pub mod community_admin;
 
 pub mod community;
@@ -40,6 +41,7 @@ pub mod relationships;
 pub mod reporting;
 pub mod rpc;
 pub mod search;
+pub mod server_access;
 pub mod server_admin;
 pub mod server_audit_log;
 pub mod server_integrations;
@@ -530,6 +532,8 @@ mod channel_tests {
 }
 #[derive(Deserialize)]
 pub struct GuildDto {
+	#[serde(default, deserialize_with = "server_access::incident_patch")]
+	pub incidents_data: Patch<model::server_access::Incident>,
 	#[serde(default)]
 	pub default_message_notifications: Patch<u8>,
 	#[serde(default)]
@@ -555,6 +559,13 @@ pub struct GuildDto {
 	pub members: Vec<VoiceMemberDto>,
 }
 impl GuildDto {
+	pub fn incident_patch(&self) -> Patch<model::server_access::Incident> {
+		match self.properties.as_ref().map(|v| &v.incidents_data) {
+			Some(Patch::Value(v)) => Patch::Value(*v),
+			Some(Patch::Null) => Patch::Null,
+			_ => self.incidents_data.clone(),
+		}
+	}
 	pub fn default_notification_level(&self) -> Option<u8> {
 		match self.default_notification_patch() {
 			Patch::Value(level) => Some(level),
@@ -579,6 +590,8 @@ impl GuildDto {
 }
 #[derive(Deserialize)]
 pub struct GuildProperties {
+	#[serde(default, deserialize_with = "server_access::incident_patch")]
+	pub incidents_data: Patch<model::server_access::Incident>,
 	#[serde(default)]
 	pub default_message_notifications: Patch<u8>,
 	#[serde(default)]

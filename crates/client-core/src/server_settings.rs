@@ -28,6 +28,9 @@ pub struct Editor {
 	pub needs_refresh: bool,
 }
 impl Editor {
+	pub(crate) fn read_request(&self) -> Option<(Id, u64)> {
+		(self.pending && !self.saving).then_some((self.guild?, self.sequence))
+	}
 	pub(crate) fn reset(&mut self) {
 		*self = Self {
 			sequence: self.sequence.wrapping_add(1),
@@ -58,7 +61,7 @@ impl State {
 	}
 	pub fn load_server_settings(&mut self, guild: Id) -> Option<Command> {
 		if !self.can_manage_guild(guild)
-			|| self.server_settings.pending
+			|| self.server_settings.saving
 			|| (!self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected))
 		{
 			return None;
@@ -113,6 +116,12 @@ impl State {
 			&& edit
 				.as_ref()
 				.is_none_or(|edit| self.valid_server_settings_edit(guild, edit))
+	}
+	pub(crate) fn server_settings_mfa_allowed(&self, guild: Id, request: u64, edit: &Edit) -> bool {
+		self.server_settings.guild == Some(guild)
+			&& self.server_settings.sequence == request
+			&& self.server_settings.pending
+			&& self.valid_server_settings_edit(guild, edit)
 	}
 	fn valid_server_settings_edit(&self, guild: Id, edit: &Edit) -> bool {
 		let Some(snapshot) = self

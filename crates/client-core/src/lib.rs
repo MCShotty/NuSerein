@@ -21,14 +21,17 @@ pub use permissions::ChannelAccess;
 mod permissions_tests;
 
 pub mod account_settings;
+pub mod admin_resources;
 mod forwarding;
 pub mod interactions;
 pub mod invites;
 pub mod member_search;
 pub mod message_actions;
 pub mod messaging_permissions;
+pub mod mfa;
 pub mod notifications;
 pub mod owned_cosmetics;
+mod personal_channels;
 pub mod polls;
 pub mod preload;
 pub mod presence;
@@ -46,6 +49,7 @@ pub mod onboarding;
 pub mod resident;
 pub mod screen;
 pub mod search;
+pub mod server_access;
 pub mod server_actions;
 pub mod server_admin;
 pub mod server_audit_log;
@@ -84,6 +88,7 @@ pub const EVENT_SLOTS: usize = 8; // UI drain batch; reliable events share a 32 
 pub const COMMAND_SLOTS: usize = 16; // ordinary commands <=16 KiB; bulk DM settings <=33 KiB; channel edit <=128 KiB; group icon <=350 KiB
 
 pub enum Command {
+	Mfa(Box<mfa::Request>),
 	Autocomplete(interactions::Request),
 	CancelAutocomplete,
 
@@ -516,6 +521,7 @@ fn prepare_navigation(
 	Ok(permission_state)
 }
 pub enum Event {
+	Mfa(mfa::Event),
 	Autocomplete(application_commands::CompletionEvent),
 
 	Community(community::Event),
@@ -564,6 +570,11 @@ pub enum Event {
 	},
 	ChannelAction(channel_actions::Event),
 	ServerAdmin(server_admin::Event),
+	MemberReviewProgress(server_admin::ReviewProgress),
+	BulkModeration {
+		guild: Id,
+		report: model::moderation::BulkReport,
+	},
 	ServerSettings(server_settings::Event),
 	MemberGuide(member_guide::Event),
 	Onboarding(onboarding::Event),
@@ -700,6 +711,15 @@ pub enum Event {
 		removed: Vec<Id>,
 	},
 	GuildChanged(GuildPatch),
+	ServerIncident {
+		guild: Id,
+		incident: Option<model::server_access::Incident>,
+	},
+	GuildApplicationChanged {
+		guild: Id,
+		request: Id,
+		deleted: bool,
+	},
 	GuildEmojis {
 		guild: Id,
 		emojis: Vec<CustomEmoji>,
@@ -852,6 +872,8 @@ pub struct State {
 	pub onboarding: onboarding::Onboarding,
 	pub server_admin: server_admin::View,
 	pub server_members_shortcuts: BTreeMap<Id, bool>,
+	/// Bounded service-reported security actions; no persistence or local detection.
+	pub server_incidents: BTreeMap<Id, model::server_access::Incident>,
 	pub group_actions: group_actions::Actions,
 	pub typing: typing::Typing,
 	pub permissions: permissions::Permissions,
@@ -949,6 +971,7 @@ pub struct State {
 	/// Search results run oldest first, sorted by Discord rather than per page.
 	pub search_oldest: bool,
 	pub send_verification: verification::SendVerification,
+	pub mfa: mfa::View,
 	pub reply: Option<Reply>,
 	/// Reply targets of conversations left before sending; at most 64, session RAM only.
 	#[doc(hidden)]
@@ -1100,6 +1123,7 @@ impl Default for State {
 			onboarding: onboarding::Onboarding::default(),
 			server_admin: server_admin::View::default(),
 			server_members_shortcuts: BTreeMap::new(),
+			server_incidents: BTreeMap::new(),
 			group_actions: group_actions::Actions::default(),
 			typing: typing::Typing::default(),
 			permissions: permissions::Permissions::default(),
@@ -1175,6 +1199,7 @@ impl Default for State {
 			send_throttle_seen: false,
 			search_oldest: false,
 			send_verification: Default::default(),
+			mfa: Default::default(),
 			reply: None,
 			parked_replies: ParkedReplies::default(),
 			send_sequence: 0,
@@ -2249,6 +2274,10 @@ impl State {
 			});
 			return;
 		}
+		if let Command::Mfa(request) = &command {
+			self.reject_mfa(request.id);
+			return;
+		}
 		if let Command::Soundboard(request) = &command {
 			self.soundboard_rejected(request);
 			return;
@@ -3016,6 +3045,20 @@ impl State {
 		) {
 			self.navigation_index.bytes.set(None);
 		}
+		// Ordinary arrivals cannot invalidate the drawer's snapshot. Keep their hot path
+		// away from the cold administrative state.
+		if matches!(
+			&envelope.event,
+			Event::Patch(_)
+				| Event::Delete { .. }
+				| Event::DeleteBulk { .. }
+				| Event::Unavailable(_)
+				| Event::Disconnected
+				| Event::Resync
+				| Event::Failure(_)
+		) {
+			self.invalidate_member_review(&envelope.event);
+		}
 		let access_changed = envelope.event.changes_access();
 		if access_changed && self.search_access_changed(&envelope.event) {
 			self.clear_search();
@@ -3357,10 +3400,19 @@ impl State {
 				self.apply_messaging_permissions(request, result);
 				Ok(())
 			}
+			Event::Mfa(event) => {
+				self.apply_mfa(event);
+				self.enforce_admin_budget();
+				Ok(())
+			}
 			Event::UserAction(event) => self.apply_user_action(event),
 			Event::ServerAction(event) => self.apply_server_action(event),
 			Event::ChannelAction(event) => self.apply_channel_action(event),
-			Event::ServerSettings(event) => self.apply_server_settings(event),
+			Event::ServerSettings(event) => {
+				let result = self.apply_server_settings(event);
+				self.enforce_admin_budget();
+				result
+			}
 			Event::MemberGuide(event) => self.apply_member_guide(event),
 			Event::Onboarding(event) => self.apply_onboarding(event),
 			Event::Community(event) => self.apply_community(event),
@@ -3387,7 +3439,21 @@ impl State {
 				}
 				Ok(())
 			}
-			Event::ServerAdmin(event) => self.apply_server_admin(event),
+			Event::ServerAdmin(event) => {
+				let result = self.apply_server_admin(event);
+				self.enforce_admin_budget();
+				result
+			}
+			Event::MemberReviewProgress(progress) => {
+				self.apply_member_review_progress(progress);
+				self.enforce_admin_budget();
+				Ok(())
+			}
+			Event::BulkModeration { guild, report } => {
+				self.apply_bulk_moderation(guild, report);
+				self.enforce_admin_budget();
+				Ok(())
+			}
 			Event::GroupAction(event) => self.apply_group_action(event),
 			Event::ThreadsSync {
 				guild,
@@ -3452,7 +3518,20 @@ impl State {
 				}
 				Ok(())
 			}
+			Event::GuildApplicationChanged {
+				guild,
+				request,
+				deleted,
+			} => {
+				self.guild_application_changed(guild, request, deleted);
+				Ok(())
+			}
+			Event::ServerIncident { guild, incident } => {
+				self.apply_server_incident(guild, incident);
+				Ok(())
+			}
 			Event::GuildRemoved(guild) => {
+				self.server_incidents.remove(&guild);
 				self.remove_server(guild);
 				Ok(())
 			}
@@ -3994,6 +4073,7 @@ impl State {
 				self.member_guide.reset();
 				self.server_admin.reset();
 				self.server_members_shortcuts.clear();
+				self.server_incidents.clear();
 				self.group_actions.reset();
 				self.clear_own_profile();
 				self.own_server_profile.reset();
@@ -4616,6 +4696,15 @@ impl State {
 		}
 		if let Some(guild) = self.server_admin.guild {
 			self.prune_integration_access(guild);
+			if !self.can_review_guild_applications(guild) {
+				self.server_admin.access.applications = None;
+				self.server_admin.access.detail = None;
+				self.server_admin.access.pending_count = None;
+			}
+			if !self.can_manage_guild(guild) {
+				self.server_admin.access.settings = None;
+				self.server_admin.access.recipient = None;
+			}
 			if !self.can_open_community_settings(guild) {
 				self.server_admin.community = None;
 			}
@@ -4628,6 +4717,9 @@ impl State {
 				&& !self.can_open_integration_settings(guild)
 				&& !self.can_retain_channel_integrations(guild)
 				&& !self.can_open_audit_log_settings(guild)
+				&& !self.can_review_guild_applications(guild)
+				&& !self.can_manage_guild(guild)
+				&& !self.server_admin.transfer_pending(guild)
 			{
 				self.server_admin.reset();
 			} else {
@@ -4754,6 +4846,7 @@ impl State {
 			_ => {}
 		}
 		if failure.ends_session() {
+			self.server_incidents.clear();
 			self.community = Default::default();
 			self.reset_thread_starter();
 			self.application_commands.clear();
@@ -4876,6 +4969,7 @@ impl Event {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				Self::Mfa(event) => event.bytes(),
 				Self::Report(event) => event.result.as_ref().map_or(0, reporting::Outcome::bytes),
 				Self::Interaction(event) => event.bytes(),
 				Self::Autocomplete(event) => event.bytes(),
@@ -4929,6 +5023,8 @@ impl Event {
 					.result
 					.as_ref()
 					.map_or(0, model::community::Outcome::bytes),
+				Self::BulkModeration { report, .. } => report.bytes(),
+				Self::MemberReviewProgress(progress) => progress.review.bytes(),
 				Self::ServerAdmin(event) => event
 					.result
 					.as_ref()
@@ -5235,6 +5331,92 @@ impl Event {
 
 #[cfg(test)]
 mod tests {
+
+	#[test]
+	fn member_review_invalidates_only_for_snapshot_mutations_or_session_loss() {
+		use model::{moderation, server_admin};
+		let review = || moderation::Review {
+			guild: Id(2),
+			channel: Id(1),
+			member: server_admin::Member {
+				user: message(50).author,
+				nick: None,
+				roles: vec![],
+				joined_at: None,
+				join_source: None,
+				invite_code: None,
+				flags: None,
+				unusual_dm_until: None,
+				timeout_until: None,
+			},
+			roles: vec![],
+			messages: [50, 51]
+				.into_iter()
+				.map(|id| moderation::ReviewMessage {
+					id: Id(id),
+					channel: Id(1),
+					excerpt: "Synthetic review excerpt".into(),
+				})
+				.collect(),
+			audit: vec![],
+			audit_window: None,
+			messages_error: None,
+			audit_error: None,
+		};
+		let mut state = State::default();
+		state.server_admin.member_review = Some(review());
+		apply(&mut state, Event::Message(message(50)));
+		let retained = state.server_admin.member_review.as_ref().unwrap();
+		assert_eq!(retained.messages.len(), 2);
+		assert_eq!(retained.messages[0].excerpt, "Synthetic review excerpt");
+		assert!(retained.messages_error.is_none());
+		apply(
+			&mut state,
+			Event::Patch(crate::message_actions::content_patch(
+				Id(1),
+				Id(50),
+				"Edited text".into(),
+			)),
+		);
+		let invalidated = state.server_admin.member_review.as_ref().unwrap();
+		assert!(invalidated.messages.is_empty() && invalidated.messages_error.is_some());
+		for event in [
+			Event::Delete {
+				channel: Id(1),
+				id: Id(50),
+			},
+			Event::DeleteBulk {
+				channel: Id(1),
+				ids: vec![Id(50)],
+			},
+		] {
+			state.server_admin.member_review = Some(review());
+			apply(&mut state, event);
+			let retained = &state.server_admin.member_review.as_ref().unwrap().messages;
+			assert_eq!(retained.len(), 1);
+			assert_eq!(retained[0].id, Id(51));
+		}
+		state.server_admin.member_review = Some(review());
+		apply(&mut state, Event::Unavailable(Id(1)));
+		assert!(
+			state
+				.server_admin
+				.member_review
+				.as_ref()
+				.unwrap()
+				.messages
+				.is_empty()
+		);
+		for event in [
+			Event::Disconnected,
+			Event::Resync,
+			Event::Failure(auth::Failure::Network),
+		] {
+			state.server_admin.member_review = Some(review());
+			apply(&mut state, event);
+			assert!(state.server_admin.member_review.is_none());
+		}
+	}
 
 	#[test]
 	#[ignore = "manual release timing; run with --release --ignored --nocapture"]

@@ -228,6 +228,28 @@ impl State {
 			f.guild == guild && f.request == request && (f.loading || f.submitting)
 		})
 	}
+	pub(crate) fn onboarding_mfa_allowed(
+		&self,
+		guild: Id,
+		request: u64,
+		form: &Form,
+		submission: &Submission,
+	) -> bool {
+		self.onboarding.flow.as_ref().is_some_and(|flow| {
+			flow.guild == guild
+				&& flow.request == request
+				&& flow.submitting
+				&& flow.form.as_ref() == Some(form)
+		}) && match (&form.onboarding, &submission.onboarding) {
+			(Some(form), Some(chosen)) => form.complete(chosen),
+			(_, None) => true,
+			_ => false,
+		} && match (&form.verification, &submission.verification) {
+			(Some(form), Some(answers)) => form.complete(answers),
+			(_, None) => true,
+			_ => false,
+		} && (submission.onboarding.is_some() || submission.verification.is_some())
+	}
 	pub(crate) fn cancel_onboarding(&mut self) {
 		if let Some(flow) = &mut self.onboarding.flow
 			&& (flow.loading || flow.submitting)

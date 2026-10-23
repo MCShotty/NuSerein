@@ -1,5 +1,5 @@
 //! Device-local pinned and favorite channels as sidebar rosters. Menus record an `Intent`;
-//! `MessagingUi::apply_shortcut` is the only writer of `channel_preferences` in this crate.
+//! `MessagingUi::apply_device_shortcut` is the only writer of `channel_preferences` in this crate.
 use crate::MessagingUi;
 use client_core::State;
 use model::{Channel, ChannelPreferences, Id, PreferenceEdit, Shortcut};
@@ -36,7 +36,10 @@ impl Scope {
 	pub fn rosters(self) -> &'static [(Shortcut, Heading)] {
 		match self {
 			Self::Home => &[(Shortcut::Pinned, Heading::Pinned)],
-			Self::Guild(_) => &[(Shortcut::Favorite, Heading::Favorites)],
+			Self::Guild(_) => &[
+				(Shortcut::Favorite, Heading::Favorites),
+				(Shortcut::Favorite, Heading::DeviceFavorites),
+			],
 		}
 	}
 
@@ -56,6 +59,7 @@ pub(crate) enum Heading {
 	Pinned,
 	DirectMessages,
 	Favorites,
+	DeviceFavorites,
 }
 
 impl Heading {
@@ -65,11 +69,12 @@ impl Heading {
 			Self::Pinned => "channel-list-heading-pinned",
 			Self::DirectMessages => "channel-list-heading-direct-messages",
 			Self::Favorites => "channel-list-heading-favorites",
+			Self::DeviceFavorites => "Favorites on this device",
 		}
 	}
 
 	pub fn shelf(self) -> bool {
-		matches!(self, Self::Pinned | Self::Favorites)
+		matches!(self, Self::Pinned | Self::Favorites | Self::DeviceFavorites)
 	}
 }
 
@@ -97,9 +102,22 @@ impl<'a> Roster<'a> {
 	) -> Self {
 		let rosters = scope.rosters();
 		let mut rank = BTreeMap::new();
-		for (index, (kind, _)) in rosters.iter().enumerate() {
-			for (position, id) in prefs.ids(*kind).iter().enumerate() {
-				rank.entry(*id).or_insert((index, position));
+		for (index, (kind, heading)) in rosters.iter().enumerate() {
+			if *kind == Shortcut::Favorite && *heading == Heading::Favorites {
+				for (position, channel) in state
+					.channels
+					.iter()
+					.filter(|channel| {
+						channel.guild == scope.guild() && state.channel_account_favorite(channel.id)
+					})
+					.enumerate()
+				{
+					rank.entry(channel.id).or_insert((index, position));
+				}
+			} else {
+				for (position, id) in prefs.ids(*kind).iter().enumerate() {
+					rank.entry(*id).or_insert((index, position));
+				}
 			}
 		}
 		let mut buckets: Vec<Vec<(usize, &Channel)>> = vec![Vec::new(); rosters.len()];
@@ -139,7 +157,7 @@ impl<'a> Roster<'a> {
 	}
 }
 
-/// A deferred local write recorded by a menu, applied once rows released their borrows.
+/// A deferred shortcut write recorded by a menu, applied once rows released their borrows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Intent {
 	pub channel: Id,
@@ -162,6 +180,9 @@ impl<'a> ShortcutView<'a> {
 	pub fn contains(self, kind: Shortcut, channel: Id) -> bool {
 		self.prefs.contains(kind, channel)
 	}
+	pub fn ids(self, kind: Shortcut) -> &'a [Id] {
+		self.prefs.ids(kind)
+	}
 
 	pub fn available(self) -> bool {
 		self.available
@@ -183,7 +204,29 @@ impl MessagingUi {
 		state.demo || self.channel_preferences_loaded
 	}
 
-	pub(crate) fn apply_shortcut(&mut self, state: &State, intent: Intent) {
+	pub(crate) fn apply_shortcut(
+		&mut self,
+		state: &mut State,
+		intent: Intent,
+	) -> Option<client_core::Command> {
+		if intent.kind == Shortcut::Favorite {
+			let action = state.personal_channel_flag_change(
+				intent.channel,
+				model::channel_visibility::FAVORITED,
+				if intent.on {
+					model::channel_visibility::FAVORITED
+				} else {
+					0
+				},
+			)?;
+			return state.request_channel_action(intent.channel, action);
+		}
+		self.apply_device_shortcut(state, intent);
+		None
+	}
+
+	/// Edit a device collection without changing the independent Discord-account favorite.
+	pub(crate) fn apply_device_shortcut(&mut self, state: &State, intent: Intent) {
 		if !self.shortcuts_available(state) {
 			return;
 		}
@@ -209,6 +252,66 @@ impl MessagingUi {
 			}
 			PreferenceEdit::CapacityReached => self.channel_menu.report_capacity(state.generation),
 			PreferenceEdit::Unchanged => {}
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn removing_device_favorite_does_not_change_account_favorite_or_send_a_request() {
+		for account_favorite in [false, true] {
+			let mut state = test_support::demo_state();
+			state
+				.apply_notification_preferences(client_core::notifications::Event::Settings {
+					entries: vec![client_core::notifications::Setting {
+						guild: Some(Id(10)),
+						flags: Some(0),
+						overrides_known: true,
+						channel_flags: vec![(
+							Id(20),
+							Some(if account_favorite {
+								model::channel_visibility::FAVORITED
+							} else {
+								0
+							}),
+							Some(false),
+						)],
+						..Default::default()
+					}],
+					replace: false,
+				})
+				.unwrap();
+			let mut ui = MessagingUi {
+				channel_preferences: ChannelPreferences {
+					favorites: vec![Id(20)],
+					..Default::default()
+				},
+				..Default::default()
+			};
+			ui.apply_device_shortcut(
+				&state,
+				Intent {
+					channel: Id(20),
+					kind: Shortcut::Favorite,
+					on: false,
+				},
+			);
+			assert!(!ui.channel_preferences.contains(Shortcut::Favorite, Id(20)));
+			assert!(ui.channel_preferences_changed);
+			assert_eq!(state.channel_account_favorite(Id(20)), account_favorite);
+			assert!(!state.channel_action_pending());
+			let roster =
+				Roster::build(&state, &ui.channel_preferences, Scope::Guild(Id(10)), false);
+			assert!(
+				!roster
+					.sections()
+					.iter()
+					.any(|section| section.heading == Heading::DeviceFavorites)
+			);
+			assert_eq!(roster.lifted(Id(20)), account_favorite);
 		}
 	}
 }

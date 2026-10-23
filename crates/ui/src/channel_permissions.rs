@@ -1,6 +1,6 @@
 //! Channel and category overwrites share one bounded, unsaved settings draft.
 use crate::{design, dialog};
-use client_core::State;
+use client_core::{Command, State};
 use model::{Channel, Id, User, permissions as p};
 
 #[derive(Default)]
@@ -8,18 +8,24 @@ pub(super) struct PermissionsUi {
 	selected: Option<(u8, Id)>,
 	search: String,
 	member_id: String,
+	search_at: Option<f64>,
+	query_open: bool,
+	sync_review: bool,
 }
 
 impl PermissionsUi {
 	pub fn show(
 		&mut self,
 		ui: &mut egui::Ui,
-		state: &State,
+		state: &mut State,
 		channel: &Channel,
 		rows: &mut Vec<p::Overwrite>,
+		commands: &mut Vec<Command>,
 	) {
 		let Some(guild) = channel.guild else { return };
 		let category = channel.kind == 4;
+		self.query_open = false;
+		self.category_sync(ui, state, channel, rows);
 		let colors = design::palette(ui);
 		let mut private = rows
 			.iter()
@@ -74,6 +80,122 @@ impl PermissionsUi {
 				self.permissions(ui, state, channel, rows);
 			}
 		});
+		if !self.query_open {
+			self.search_at = None;
+		}
+		if self.query_open
+			&& !self.search.is_empty()
+			&& let Some(at) = self.search_at
+		{
+			let now = ui.input(|input| input.time);
+			if now - at >= 0.3 {
+				if let Some(active) = state
+					.selected
+					.filter(|id| state.channel(*id).and_then(|c| c.guild) == Some(guild))
+					&& let Some(command) = state.search_members(active, &self.search, 0)
+				{
+					commands.push(command);
+				}
+				self.search_at = None;
+			} else {
+				ui.ctx()
+					.request_repaint_after(std::time::Duration::from_millis(300));
+			}
+		}
+		ui.collapsing("Explain draft permissions", |ui| {
+			let Some(metadata) = state.permissions.guilds.get(&guild) else {
+				ui.weak("Permissions are unavailable.");
+				return;
+			};
+			let key = self.selected.unwrap_or((0, guild));
+			if key.0 == 0 {
+				let roles = if key.1 == guild { vec![] } else { vec![key.1] };
+				if let Some(result) = p::preview_roles(metadata, &roles, Some(rows)) {
+					crate::role_preview::explanation(ui, &result);
+				}
+			} else {
+				let active = state
+					.selected
+					.filter(|id| state.channel(*id).and_then(|c| c.guild) == Some(guild));
+				let known = active.and_then(|id| state.display_member(id, key.1));
+				let mut subject = metadata.clone();
+				if state.user.as_ref().is_none_or(|user| user.id != key.1) {
+					let Some(member) = known else {
+						ui.weak("Load this member's current roles before evaluating their access.");
+						return;
+					};
+					subject.member = Some(p::Member {
+						roles: member.roles.clone(),
+						timeout_until: None,
+					});
+					ui.weak(
+						"Channel overrides and roles are shown; an unavailable member timeout is not simulated.",
+					);
+				}
+				let now = time::OffsetDateTime::now_utc().unix_timestamp();
+				if let Some(result) = p::explain(&subject, key.1, Some(rows), now) {
+					crate::role_preview::explanation(ui, &result);
+				}
+			}
+		});
+	}
+
+	fn category_sync(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &State,
+		channel: &Channel,
+		rows: &mut Vec<p::Overwrite>,
+	) {
+		let Some(parent) = channel.parent_id else {
+			return;
+		};
+		let source = state
+			.permissions
+			.channels
+			.get(&parent)
+			.and_then(|row| row.overwrites.as_deref());
+		ui.horizontal_wrapped(|ui| {
+			ui.label(if source == Some(rows.as_slice()) {
+				"Permissions synced with category"
+			} else {
+				"Channel has custom permissions"
+			});
+			if ui
+				.add_enabled(
+					source.is_some() && state.can_manage_channel_permissions(channel.id),
+					egui::Button::new("Review category sync"),
+				)
+				.clicked()
+			{
+				self.sync_review = !self.sync_review;
+			}
+		});
+		if self.sync_review
+			&& let Some(source) = source
+		{
+			ui.label(format!(
+				"Replace {} channel override entries with {} category entries. Changes apply only after Save.",
+				rows.len(),
+				source.len()
+			));
+			for before in rows.iter().filter(|row| !source.contains(row)).take(12) {
+				ui.weak(format!(
+					"Replace/remove: {}",
+					target_name(state, channel.guild.unwrap(), (before.kind, before.id))
+				));
+			}
+			for after in source.iter().filter(|row| !rows.contains(row)).take(12) {
+				ui.weak(format!(
+					"Apply category: {}",
+					target_name(state, channel.guild.unwrap(), (after.kind, after.id))
+				));
+			}
+			if ui.button("Use category permissions in draft").clicked() {
+				*rows = source.to_vec();
+				self.sync_review = false;
+			}
+		}
 	}
 
 	fn targets(
@@ -92,15 +214,21 @@ impl PermissionsUi {
 					crate::i18n::translate("channel-permissions-targets-add-role-or-member"),
 					|ui| {
 						ui.set_width(240.0);
-						ui.add(
-							egui::TextEdit::singleline(&mut self.search)
-								.align(egui::Align2::LEFT_CENTER)
-								.hint_text(crate::i18n::translate(
-									"channel-permissions-targets-search-roles-or-loaded-members",
-								))
-								.char_limit(64)
-								.desired_width(f32::INFINITY),
-						);
+						self.query_open = true;
+						if ui
+							.add(
+								egui::TextEdit::singleline(&mut self.search)
+									.align(egui::Align2::LEFT_CENTER)
+									.hint_text(crate::i18n::translate(
+										"channel-permissions-targets-search-roles-or-loaded-members",
+									))
+									.char_limit(64)
+									.desired_width(f32::INFINITY),
+							)
+							.changed()
+						{
+							self.search_at = Some(ui.input(|input| input.time));
+						}
 						let query = self.search.to_lowercase();
 						let roles = state
 							.permissions
@@ -140,7 +268,36 @@ impl PermissionsUi {
 										ui.close();
 									}
 								}
-								// ponytail: suggestions use the loaded member window; add service search when broader discovery is needed.
+								if let Some(request) = &state.member_search[0].request
+									&& request.guild == guild && request.query == self.search
+									&& !query.is_empty()
+								{
+									if !state.member_search[0].finished {
+										ui.spinner();
+									}
+									if let Some(error) = state.member_search[0].error {
+										ui.weak(error);
+									}
+									for member in &state.member_search[0].rows {
+										let name =
+											member.nick.as_deref().unwrap_or(&member.user.name);
+										let username = member
+											.user
+											.username
+											.as_deref()
+											.unwrap_or(&member.user.name);
+										if ui
+											.selectable_label(
+												false,
+												format!("{name} · @{username}"),
+											)
+											.clicked()
+										{
+											self.add(rows, (1, member.user.id));
+											ui.close();
+										}
+									}
+								}
 								for user in state
 									.members
 									.iter()
