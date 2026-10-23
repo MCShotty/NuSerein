@@ -473,8 +473,8 @@ mod tests {
 			generation: state.generation,
 			event: Event::Permissions(crate::permissions::Event::Member {
 				guild: Id(2),
-				roles: Vec::new(),
-				timeout_until: None,
+				roles: model::Patch::Value(Vec::new()),
+				timeout_until: model::Patch::Null,
 			}),
 		});
 		apply(
