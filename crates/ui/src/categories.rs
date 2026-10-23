@@ -2754,7 +2754,7 @@ mod tests {
 		);
 		let client_core::Command::ChannelAction {
 			guild,
-			channel,
+			channel: saved_channel,
 			request,
 			action: client_core::channel_actions::Action::Personal(change),
 		} = state.request_channel_action(target, action).unwrap()
@@ -2771,7 +2771,7 @@ mod tests {
 			event: client_core::Event::ChannelAction(
 				client_core::channel_actions::Event::Finished {
 					guild,
-					channel,
+					channel: saved_channel,
 					request,
 					result: Ok(client_core::channel_actions::Outcome::Personal(change)),
 				},
