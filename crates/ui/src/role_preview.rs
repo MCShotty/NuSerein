@@ -1,5 +1,5 @@
 //! Read-only role simulation. It never changes State or dispatches a command.
-use crate::design;
+use crate::{design, dialog};
 use client_core::State;
 use model::{Id, permissions as p};
 
@@ -99,13 +99,9 @@ impl Preview {
 			return;
 		};
 		self.refresh(state, guild, metadata);
-		let mut open = true;
-		egui::Window::new("View Server As Role")
-			.id(egui::Id::unique("server-role-preview"))
-			.open(&mut open)
-			.default_width(760.0)
-			.max_height(ctx.content_rect().height() * 0.85)
-			.show(ctx, |ui| {
+		let response = dialog::Dialog::new("server-role-preview", "View Server As Role")
+			.width(760.0)
+			.show(ctx, |body| body.scroll(130.0, |ui| {
 				egui::Frame::new().fill(design::palette(ui).raised).inner_margin(12).corner_radius(8).show(ui, |ui| {
 					ui.horizontal_wrapped(|ui| {
 						ui.strong("Previewing selected roles · Read only");
@@ -165,8 +161,8 @@ impl Preview {
 						explanation(ui, result);
 					} else { ui.weak("Permissions unavailable"); }
 				}
-			});
-		if !open || self.scope.is_none() {
+			}));
+		if response.close || self.scope.is_none() {
 			*self = Self::default();
 		}
 	}

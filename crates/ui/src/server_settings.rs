@@ -1125,7 +1125,9 @@ impl Editor {
 				self.revision = state.server_settings.revision;
 			}
 		}
-		let invite_overlay = self.invites.overlay_open() || self.integrations.overlay_open();
+		let child_overlay = self.invites.overlay_open()
+			|| self.integrations.overlay_open()
+			|| (self.page == Page::Roles && self.roles.preview_open());
 		let settings_bar = self.dirty() || self.refresh_conflict || state.server_settings.saving;
 		let roles_bar = self.page == Page::Roles && self.roles.has_changes();
 		let close = dialog::SettingsShell::new("server-settings")
@@ -1161,13 +1163,16 @@ impl Editor {
 					});
 				}
 			});
+		if self.page == Page::Roles {
+			self.roles.overlays(ctx, state);
+		}
 		if self.page == Page::Invites {
 			self.invites.overlays(ctx, state, guild, avatars, commands);
 		}
 		if self.page == Page::Integrations {
 			self.integrations.overlays(ctx, state, guild, commands);
 		}
-		if !invite_overlay && close {
+		if !child_overlay && close {
 			if self.dirty()
 				|| state.server_settings.saving
 				|| self.access.has_changes()
@@ -2703,6 +2708,110 @@ fn timeout_picker(ui: &mut egui::Ui, timeout: &mut u32) {
 #[cfg(test)]
 mod navigation_tests {
 	use super::*;
+	#[test]
+	fn role_preview_is_the_top_settings_modal_and_dismisses_without_closing_settings() {
+		fn render(
+			ctx: &egui::Context,
+			editor: &mut Editor,
+			state: &mut State,
+			events: Vec<egui::Event>,
+		) -> egui::FullOutput {
+			let mut commands = vec![];
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1440.0, 1100.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					editor.show(
+						ui.ctx(),
+						state,
+						&mut Avatars::default(),
+						&mut crate::profiles::ProfileSession::default(),
+						&mut commands,
+					)
+				},
+			);
+			assert!(
+				commands
+					.iter()
+					.all(|command| client_core::mfa::Target::from_command(command).is_none())
+			);
+			output
+		}
+		let (mut state, guild, mut editor) = fixture();
+		editor.page = Page::Roles;
+		editor.roles.preview_as_role(&state, guild, guild);
+		let selected = state.selected;
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		for _ in 0..3 {
+			render(&ctx, &mut editor, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		let preview_layer = egui::LayerId::new(
+			egui::Order::Foreground,
+			egui::Id::unique("server-role-preview"),
+		);
+		assert_eq!(
+			ctx.memory(|memory| memory.top_modal_layer()),
+			Some(preview_layer)
+		);
+		render(&ctx, &mut editor, &mut state, vec![key(egui::Key::Escape)])
+			.drop_without_applying_deltas();
+		assert!(!editor.roles.preview_open());
+		assert!(editor.is_open(), "Escape dismisses only the role preview");
+		assert_eq!(state.selected, selected);
+		render(&ctx, &mut editor, &mut state, vec![]).drop_without_applying_deltas();
+		editor.roles.preview_as_role(&state, guild, guild);
+		for _ in 0..2 {
+			render(&ctx, &mut editor, &mut state, vec![]).drop_without_applying_deltas();
+		}
+		let output = render(&ctx, &mut editor, &mut state, vec![]);
+		let back = output
+			.shapes
+			.iter()
+			.find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text)
+					if text.galley.job.text == "Disable preview / Back to Roles" =>
+				{
+					Some(text.pos + text.galley.size() / 2.0)
+				}
+				_ => None,
+			})
+			.expect("rendered production preview exit button");
+		assert_eq!(
+			ctx.layer_id_at(back),
+			Some(preview_layer),
+			"the preview button receives input above SettingsShell"
+		);
+		output.drop_without_applying_deltas();
+		let events = vec![
+			egui::Event::PointerMoved(back),
+			egui::Event::PointerButton {
+				pos: back,
+				button: egui::PointerButton::Primary,
+				pressed: true,
+				modifiers: egui::Modifiers::NONE,
+			},
+			egui::Event::PointerButton {
+				pos: back,
+				button: egui::PointerButton::Primary,
+				pressed: false,
+				modifiers: egui::Modifiers::NONE,
+			},
+		];
+		render(&ctx, &mut editor, &mut state, events).drop_without_applying_deltas();
+		assert!(
+			!editor.roles.preview_open(),
+			"the visible exit button is actionable"
+		);
+		assert!(editor.is_open());
+		assert_eq!(state.selected, selected);
+	}
 	#[test]
 	fn activity_review_opens_members_with_the_explicit_filter_without_navigating_history() {
 		let (mut state, guild, _) = fixture();

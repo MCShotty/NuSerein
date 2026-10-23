@@ -50,6 +50,15 @@ pub(super) struct RolesUi {
 	preview_tab: Option<Tab>,
 }
 impl RolesUi {
+	pub fn preview_as_role(&mut self, state: &State, guild: Id, role: Id) {
+		self.role_preview.open(state, guild, role);
+	}
+	pub fn preview_open(&self) -> bool {
+		self.role_preview.active()
+	}
+	pub fn overlays(&mut self, ctx: &egui::Context, state: &State) {
+		self.role_preview.show(ctx, state);
+	}
 	pub fn preview_editor(&mut self, permissions: bool) {
 		self.preview_tab = Some(if permissions {
 			Tab::Permissions
@@ -355,7 +364,6 @@ impl RolesUi {
 	) {
 		self.sync(state, guild);
 		if self.role_preview.active() {
-			self.role_preview.show(ui.ctx(), state);
 			ui.weak("Role preview is open. Disable preview to edit roles.");
 			return;
 		}
@@ -466,7 +474,6 @@ impl RolesUi {
 			self.list(ui, state, guild, commands);
 		}
 		self.confirmations(ui.ctx(), state, guild, commands);
-		self.role_preview.show(ui.ctx(), state);
 	}
 	fn list(
 		&mut self,
@@ -597,7 +604,7 @@ impl RolesUi {
 							if state.guild_permission(guild, p::ADMINISTRATOR)
 								&& ui.button("View Server As Role").clicked()
 							{
-								self.role_preview.open(state, guild, role.id);
+								self.preview_as_role(state, guild, role.id);
 								ui.close();
 							}
 							if !role.managed
