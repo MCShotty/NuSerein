@@ -107,6 +107,25 @@ pub enum Target {
 		guild: Id,
 		request: u64,
 	},
+	Channel {
+		guild: Id,
+		channel: Id,
+		request: u64,
+		action: Box<crate::channel_actions::Action>,
+	},
+	Community {
+		guild: Id,
+		user: Id,
+		fence: u64,
+		request: u64,
+		action: Box<model::community::Action>,
+	},
+	Onboarding {
+		guild: Id,
+		request: u64,
+		form: Box<model::onboarding::Form>,
+		submission: Box<model::onboarding::Submission>,
+	},
 }
 impl Target {
 	pub fn from_command(command: &Command) -> Option<Self> {
@@ -136,6 +155,40 @@ impl Target {
 				guild: *guild,
 				request: *request,
 			}),
+			Command::ChannelAction {
+				guild,
+				channel,
+				request,
+				action,
+			} if action.write() && action.valid() => Some(Self::Channel {
+				guild: *guild,
+				channel: *channel,
+				request: *request,
+				action: Box::new(action.clone()),
+			}),
+			Command::Community {
+				guild,
+				user,
+				fence,
+				request,
+				action,
+			} if action.write() && action.valid() => Some(Self::Community {
+				guild: *guild,
+				user: *user,
+				fence: *fence,
+				request: *request,
+				action: action.clone(),
+			}),
+			Command::Onboarding {
+				guild,
+				request,
+				action: crate::onboarding::Action::Submit { form, submission },
+			} => Some(Self::Onboarding {
+				guild: *guild,
+				request: *request,
+				form: form.clone(),
+				submission: submission.clone(),
+			}),
 			_ => None,
 		}
 	}
@@ -156,6 +209,31 @@ impl Target {
 					refreshed: None,
 				})
 			}
+			Self::Channel {
+				guild,
+				channel,
+				request,
+				..
+			} => crate::Event::ChannelAction(crate::channel_actions::Event::Finished {
+				guild,
+				channel,
+				request,
+				result: Err(failure),
+			}),
+			Self::Community { guild, request, .. } => {
+				crate::Event::Community(crate::community::Event {
+					guild,
+					request,
+					result: Err(failure),
+				})
+			}
+			Self::Onboarding { guild, request, .. } => {
+				crate::Event::Onboarding(crate::onboarding::Event::Submitted {
+					guild,
+					request,
+					result: Err(failure),
+				})
+			}
 			Self::Delete { guild, request } => {
 				crate::Event::ServerAction(crate::server_actions::Event::Written {
 					action: crate::server_actions::Action::Delete(guild),
@@ -169,12 +247,19 @@ impl Target {
 		match self {
 			Self::Admin { guild, .. }
 			| Self::Settings { guild, .. }
-			| Self::Delete { guild, .. } => *guild,
+			| Self::Delete { guild, .. }
+			| Self::Channel { guild, .. }
+			| Self::Community { guild, .. }
+			| Self::Onboarding { guild, .. } => *guild,
 		}
 	}
 	pub fn bytes(&self) -> usize {
 		match self {
-			Self::Admin { .. } | Self::Settings { .. } => MAX_TARGET_BYTES,
+			Self::Admin { .. }
+			| Self::Settings { .. }
+			| Self::Channel { .. }
+			| Self::Community { .. }
+			| Self::Onboarding { .. } => MAX_TARGET_BYTES,
 			Self::Delete { .. } => 0,
 		}
 	}
@@ -191,6 +276,29 @@ impl Target {
 				edit,
 			} => state.server_settings_mfa_allowed(*guild, *request, edit),
 			Self::Delete { guild, request } => state.delete_server_mfa_allowed(*guild, *request),
+			Self::Channel {
+				guild,
+				channel,
+				request,
+				action,
+			} => state.channel_action_mfa_allowed(*guild, *channel, *request, action),
+			Self::Community {
+				guild,
+				user,
+				fence,
+				request,
+				action,
+			} => {
+				state.user.as_ref().is_some_and(|owner| owner.id == *user)
+					&& state.community.fence == *fence
+					&& state.community_command_allowed(*guild, *request, action)
+			}
+			Self::Onboarding {
+				guild,
+				request,
+				form,
+				submission,
+			} => state.onboarding_mfa_allowed(*guild, *request, form, submission),
 		}
 	}
 }

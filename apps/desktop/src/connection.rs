@@ -97,6 +97,16 @@ impl Drop for Connection {
 /// Preload tasks kept at once: one per preload kind, plus room for one whose result was lost.
 const PREFETCHES: usize = 4;
 struct AbortTask(JoinHandle<()>);
+fn mfa_job_available(
+	job: &Option<AbortTask>,
+	request: &client_core::mfa::Request,
+	resume_ready: bool,
+) -> bool {
+	job.as_ref().is_none_or(|task| task.0.is_finished())
+		|| matches!(request.action, client_core::mfa::Action::Cancel)
+		|| matches!(request.action, client_core::mfa::Action::Resume) && resume_ready
+}
+
 impl Drop for AbortTask {
 	fn drop(&mut self) {
 		self.0.abort();
@@ -651,7 +661,7 @@ impl Connection {
 								continue;
 							}
                             if let Command::Mfa(request)=command {
-                                if !matches!(request.action,client_core::mfa::Action::Cancel) && mfa_job.as_ref().is_some_and(|task|!task.0.is_finished()) {
+                                if !mfa_job_available(&mfa_job,&request,api.mfa_resume_ready(request.id)) {
                                     emit(Event::Mfa(client_core::mfa::Event::Updated{id:request.id,result:Err(Failure::ProtocolAt("A security check is already in progress"))}))?;
                                     continue;
                                 }
@@ -665,7 +675,8 @@ impl Connection {
                                 })));
                                 continue;
                             }
-                            if let Some(target)=client_core::mfa::Target::from_command(&command) {
+                            // Community writes keep their existing call/fence cancellation path below.
+                            if let Some(target)=client_core::mfa::Target::from_command(&command).filter(|_|!matches!(&command,Command::Community {..})) {
                                 if administrative.as_ref().is_some_and(|task|!task.0.is_finished()) {
                                     emit(target.rejected(Failure::ProtocolAt("Finish the current server action first")))?;
                                     continue;
@@ -674,7 +685,7 @@ impl Connection {
                                 administrative=Some(AbortTask(tokio::spawn(async move {
                                     let event=api.execute(command).await;
                                     let failure=match &event {
-                                        Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})|Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})|Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..}) if f.ends_session()=>Some(*f),
+                                        Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})|Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})|Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})|Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})|Event::Onboarding(client_core::onboarding::Event::Submitted{result:Err(f),..}) if f.ends_session()=>Some(*f),
                                         _=>None,
                                     };
                                     if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
@@ -2154,6 +2165,47 @@ fn scope_history_failure(event: Event, channel: model::Id, request: u64) -> Even
 
 #[cfg(test)]
 mod tests {
+	#[tokio::test]
+	async fn verified_resume_handoff_does_not_wait_for_worker_exit() {
+		use client_core::mfa::{Action, Request};
+		let (published, verified) = tokio::sync::oneshot::channel();
+		let (release, held) = tokio::sync::oneshot::channel::<()>();
+		let mut job = Some(AbortTask(tokio::spawn(async move {
+			published.send(()).unwrap();
+			let _ = held.await;
+		})));
+		verified.await.unwrap();
+		assert!(!job.as_ref().unwrap().0.is_finished());
+		let resume = Request {
+			id: 7,
+			action: Action::Resume,
+		};
+		assert!(!mfa_job_available(&job, &resume, false));
+		assert!(
+			mfa_job_available(&job, &resume, true),
+			"published broker proof permits immediate resume"
+		);
+		assert!(!mfa_job_available(
+			&job,
+			&Request {
+				id: 7,
+				action: Action::SendSms
+			},
+			true
+		));
+		assert!(mfa_job_available(
+			&job,
+			&Request {
+				id: 7,
+				action: Action::Cancel
+			},
+			false
+		));
+		// Production hands the single bounded worker slot over at this point.
+		drop(job.take());
+		assert!(mfa_job_available(&job, &resume, false));
+		drop(release);
+	}
 	#[tokio::test]
 	async fn admin_read_replacement_cancels_held_http_and_leaves_message_work_running() {
 		use tokio::{

@@ -198,6 +198,16 @@ impl Broker {
 			let _ = sender.send(Err(failure));
 		}
 	}
+	fn resume_ready(&self, id: u64) -> bool {
+		self.pending.lock().is_ok_and(|pending| {
+			pending.as_ref().is_some_and(|pending| {
+				pending.id == id
+					&& pending.at.elapsed() < core::LIFETIME
+					&& !pending.busy
+					&& pending.proof.is_some()
+			})
+		})
+	}
 	pub(super) fn cancel_all(&self) {
 		if let Ok(mut pending) = self.pending.lock()
 			&& let Some(mut old) = pending.take()
@@ -304,6 +314,11 @@ impl Drop for Lease<'_> {
 }
 
 impl DiscordApi {
+	/// A verifier can publish its result before its worker exits. The broker's proof
+	/// transition, rather than JoinHandle completion, authorizes the continuation.
+	pub fn mfa_resume_ready(&self, id: u64) -> bool {
+		self.mfa.resume_ready(id)
+	}
 	/// Registers the connection's generation-tagged, bounded event queue. No secrets cross it.
 	pub fn set_mfa_notifier(
 		&self,
@@ -532,6 +547,261 @@ mod tests {
             operation.await.unwrap().unwrap();server.await.unwrap();assert!(!api.stopped());
             assert!(matches!(api.execute(Command::Mfa(Box::new(core::Request{id:notice.id,action:Action::Resume}))).await,client_core::Event::Mfa(core::Event::Updated{result:Err(_),..})));
         }).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn channel_edit_challenge_keeps_session_and_resumes_before_verifier_worker_exits() {
+		use client_core::channel_actions::{
+			Action as ChannelAction, Edit, Event as ChannelEvent, Outcome,
+		};
+		tokio::time::timeout(std::time::Duration::from_secs(10), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_MFA_ACCOUNT_TOKEN".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let api = Arc::new(api);
+			let (send, mut receive) = tokio::sync::mpsc::channel(4);
+			api.set_mfa_notifier(move |notice| {
+				send.try_send(notice).map_err(|_| Failure::Capacity)
+			})
+			.unwrap();
+			let server = tokio::spawn(async move {
+				let mut rejected = None;
+				for index in 0..6 {
+					let (mut stream, _) = listener.accept().await.unwrap();
+					let (headers, body) = read(&mut stream).await;
+					match index {
+						0 => {
+							assert!(headers.starts_with("POST /accepted "));
+							answer(&mut stream, "200 OK", "{}").await;
+						}
+						1 => {
+							assert!(headers.starts_with("GET /channels/3 "));
+							answer(
+								&mut stream,
+								"200 OK",
+								r#"{"id":"3","guild_id":"2","type":0,"name":"general","permission_overwrites":[]}"#,
+							)
+							.await;
+						}
+						2 => {
+							assert!(headers.starts_with("PATCH /channels/3 "));
+							assert!(
+								!headers
+									.to_lowercase()
+									.contains("x-discord-mfa-authorization")
+							);
+							assert_eq!(
+								serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+								json!({"name":"updated"})
+							);
+							rejected = Some(body);
+							answer(
+								&mut stream,
+								"401 Unauthorized",
+								r#"{"code":60003,"mfa":{"ticket":"SYNTHETIC_TICKET","methods":[{"type":"totp"}]}}"#,
+							)
+							.await;
+						}
+						3 => {
+							assert!(headers.starts_with("GET /unrelated "));
+							assert!(
+								!headers
+									.to_lowercase()
+									.contains("x-discord-mfa-authorization")
+							);
+							answer(&mut stream, "200 OK", "{}").await;
+						}
+						4 => {
+							assert!(headers.starts_with("POST /mfa/finish "));
+							answer(&mut stream, "200 OK", r#"{"token":"SYNTHETIC_MFA_PROOF"}"#)
+								.await;
+						}
+						5 => {
+							assert!(headers.starts_with("PATCH /channels/3 "));
+							assert_eq!(Some(body), rejected.take());
+							assert!(
+								headers
+									.to_lowercase()
+									.contains("x-discord-mfa-authorization: synthetic_mfa_proof")
+							);
+							answer(
+								&mut stream,
+								"200 OK",
+								r#"{"id":"3","guild_id":"2","type":0,"name":"updated","permission_overwrites":[]}"#,
+							)
+							.await;
+						}
+						_ => unreachable!(),
+					}
+				}
+			});
+			let original = api.clone();
+			let operation = tokio::spawn(async move {
+				original
+					.request(
+						reqwest::Method::POST,
+						"/accepted",
+						Some(json!({"saved":"once"})),
+					)
+					.await
+					.unwrap();
+				let before = Edit {
+					name: "general".into(),
+					..Edit::default()
+				};
+				let after = Edit {
+					name: "updated".into(),
+					..Edit::default()
+				};
+				original
+					.execute(Command::ChannelAction {
+						guild: model::Id(2),
+						channel: model::Id(3),
+						request: 17,
+						action: ChannelAction::Edit { before, after },
+					})
+					.await
+			});
+			let Some(core::Event::Required(notice)) = receive.recv().await else {
+				panic!("channel edit did not open MFA")
+			};
+			assert!(matches!(
+				notice.target,
+				Target::Channel {
+					guild: model::Id(2),
+					channel: model::Id(3),
+					request: 17,
+					..
+				}
+			));
+			assert!(!api.stopped());
+			api.request(reqwest::Method::GET, "/unrelated", None)
+				.await
+				.unwrap();
+			assert!(!api.mfa_resume_ready(notice.id));
+			let verifier = api.clone();
+			let id = notice.id;
+			let (published, verified) = tokio::sync::oneshot::channel();
+			let (release, held) = tokio::sync::oneshot::channel();
+			let worker = tokio::spawn(async move {
+				let event = verifier
+					.execute(Command::Mfa(Box::new(core::Request {
+						id,
+						action: Action::Verify {
+							method: Method::Totp,
+							input: core::Input::new(Method::Totp, "123456".into()).unwrap(),
+						},
+					})))
+					.await;
+				published.send(event).ok().unwrap();
+				held.await.unwrap();
+			});
+			assert!(matches!(
+				verified.await.unwrap(),
+				client_core::Event::Mfa(core::Event::Updated {
+					result: Ok(Status::Verified),
+					..
+				})
+			));
+			assert!(
+				!worker.is_finished(),
+				"verifier is held after publishing its completion"
+			);
+			assert!(api.mfa_resume_ready(id));
+			assert!(matches!(
+				api.execute(Command::Mfa(Box::new(core::Request {
+					id,
+					action: Action::Resume
+				})))
+				.await,
+				client_core::Event::Mfa(core::Event::Updated {
+					result: Ok(Status::Resumed),
+					..
+				})
+			));
+			assert!(!api.mfa_resume_ready(id));
+			assert!(matches!(
+				operation.await.unwrap(),
+				client_core::Event::ChannelAction(ChannelEvent::Finished {
+					guild: model::Id(2),
+					channel: model::Id(3),
+					request: 17,
+					result: Ok(Outcome::Channel { .. })
+				})
+			));
+			release.send(()).unwrap();
+			worker.await.unwrap();
+			server.await.unwrap();
+			assert!(!api.stopped());
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn unsupported_valid_action_challenge_is_local_but_malformed_401_still_revokes() {
+		tokio::time::timeout(std::time::Duration::from_secs(5), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("SYNTHETIC_MFA_ACCOUNT_TOKEN".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let server = tokio::spawn(async move {
+				for index in 0..3 {
+					let (mut stream, _) = listener.accept().await.unwrap();
+					let _ = read(&mut stream).await;
+					match index {
+						0 => {
+							answer(
+								&mut stream,
+								"401 Unauthorized",
+								r#"{"code":60003,"mfa":{"ticket":"SYNTHETIC_TICKET","methods":[{"type":"webauthn"}]}}"#,
+							)
+							.await
+						}
+						1 => answer(&mut stream, "200 OK", "{}").await,
+						_ => {
+							answer(
+								&mut stream,
+								"401 Unauthorized",
+								r#"{"code":60003,"mfa":{"ticket":"","methods":[]}}"#,
+							)
+							.await
+						}
+					}
+				}
+			});
+			assert!(matches!(
+				api.request(
+					reqwest::Method::PATCH,
+					"/unsupported",
+					Some(json!({"enabled":true}))
+				)
+				.await,
+				Err(Failure::ProtocolAt(_))
+			));
+			assert!(!api.stopped());
+			api.request(reqwest::Method::GET, "/unrelated", None)
+				.await
+				.unwrap();
+			assert_eq!(
+				api.request(
+					reqwest::Method::PATCH,
+					"/malformed",
+					Some(json!({"enabled":true}))
+				)
+				.await
+				.unwrap_err(),
+				Failure::Expired
+			);
+			assert!(api.stopped());
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
 	}
 	#[tokio::test]
 	async fn cancellation_never_repeats_the_rejected_write_and_revocation_still_stops() {

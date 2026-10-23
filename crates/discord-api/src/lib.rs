@@ -696,6 +696,13 @@ impl DiscordApi {
 						"Discord did not accept verification; review the operation before trying again",
 					));
 				}
+				// A well-formed action challenge is not evidence that the account was revoked.
+				// Unsupported command families keep the session usable and hand off explicitly.
+				if error.code == Some(60003) && mfa::challenge(&bytes).is_some() {
+					return Err(Failure::ProtocolAt(
+						"This action requires verification in the official Discord client",
+					));
+				}
 				if status == StatusCode::UNAUTHORIZED {
 					if matches!(path, "/mfa/finish" | "/auth/mfa/sms/send")
 						&& matches!(error.code, Some(60006 | 60008 | 60009))

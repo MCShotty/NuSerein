@@ -285,6 +285,13 @@ pub enum Action {
 	Personal(Box<model::channel_visibility::Change>),
 }
 impl Action {
+	/// Reads never acquire an MFA continuation or enter the administrative write slot.
+	pub fn write(&self) -> bool {
+		!matches!(
+			self,
+			Self::Reference | Self::Description | Self::Load | Self::PostLoad
+		)
+	}
 	pub fn valid(&self) -> bool {
 		match self {
 			Self::Personal(change) => change.valid(),
@@ -811,36 +818,22 @@ impl State {
 			self.channel_actions.status = None;
 		}
 	}
-	pub fn request_channel_action(&mut self, channel: Id, action: Action) -> Option<Command> {
-		// Explicit actions supersede one optional topic read. Its late result is retired,
-		// and no further automatic read can start until it completes: at most one retired read.
-		if !matches!(action, Action::Description)
-			&& self.channel_description_pending()
-			&& self.channel_actions.retired_description.is_none()
-			&& let Some((guild, channel, request, _, _)) = self.channel_actions.pending.take()
+	fn channel_action_allowed(&self, guild: Id, channel: Id, action: &Action) -> bool {
+		if self
+			.channel(channel)
+			.is_none_or(|source| source.guild != Some(guild))
 		{
-			self.channel_actions.retired_description = Some((guild, channel, request));
+			return false;
 		}
-		if matches!(action, Action::Description)
-			&& self.channel_actions.retired_description.is_some()
-		{
-			return None;
-		}
-		if self.channel_action_pending() {
-			return None;
-		}
-		self.clear_channel_action_result(channel);
-		let source = self.channel(channel)?;
-		let guild = source.guild?;
 		let personal = matches!(
 			action,
 			Action::Mute(_) | Action::Notifications(_) | Action::HideMuted(_) | Action::Personal(_)
 		);
-		if !action.valid()
-			|| matches!(&action, Action::Personal(change) if !self.personal_change_allowed(guild, change, false))
-			|| !(self.can_view(channel) || personal && self.can_personally_manage_channel(channel))
-			|| (!personal
-				&& !match &action {
+		action.valid()
+			&& !matches!(action, Action::Personal(change) if !self.personal_change_allowed(guild, change, false))
+			&& (self.can_view(channel) || personal && self.can_personally_manage_channel(channel))
+			&& (personal
+				|| match action {
 					Action::Reference => false,
 					Action::Description => self.can_view(channel),
 					Action::Publish(message) => self.can_publish_message(channel, *message),
@@ -886,7 +879,48 @@ impl State {
 						..
 					} => self.channel_move_allowed(channel, *parent, *lock_permissions, shifts),
 					_ => self.can_manage_channel(channel),
-				}) {
+				})
+	}
+	pub(crate) fn channel_action_mfa_allowed(
+		&self,
+		guild: Id,
+		channel: Id,
+		request: u64,
+		action: &Action,
+	) -> bool {
+		self.channel_actions
+			.pending
+			.as_ref()
+			.is_some_and(|(g, c, r, pending, _)| {
+				(*g, *c, *r) == (guild, channel, request) && pending == action
+			}) && action.write()
+			&& self.channel_action_allowed(guild, channel, action)
+			&& !matches!(action,Action::Edit {before,..} if self.channel_details(channel) != Some(before))
+			&& !matches!(action,Action::Delete if self.pending.iter().any(|p|p.channel == channel)
+				|| self.voice.active.as_ref().is_some_and(|call|call.channel == channel))
+	}
+	pub fn request_channel_action(&mut self, channel: Id, action: Action) -> Option<Command> {
+		// Explicit actions supersede one optional topic read. Its late result is retired,
+		// and no further automatic read can start until it completes: at most one retired read.
+		if !matches!(action, Action::Description)
+			&& self.channel_description_pending()
+			&& self.channel_actions.retired_description.is_none()
+			&& let Some((guild, channel, request, _, _)) = self.channel_actions.pending.take()
+		{
+			self.channel_actions.retired_description = Some((guild, channel, request));
+		}
+		if matches!(action, Action::Description)
+			&& self.channel_actions.retired_description.is_some()
+		{
+			return None;
+		}
+		if self.channel_action_pending() {
+			return None;
+		}
+		self.clear_channel_action_result(channel);
+		let source = self.channel(channel)?;
+		let guild = source.guild?;
+		if !self.channel_action_allowed(guild, channel, &action) {
 			self.channel_actions.status =
 				Some((channel, "Channel action unavailable or invalid", false));
 			return None;
@@ -1745,6 +1779,64 @@ mod tests {
 				result,
 			}),
 		});
+	}
+	#[test]
+	fn channel_mfa_revalidates_exact_pending_write_and_current_permissions() {
+		let mut state = state();
+		state.demo = false;
+		state.auth = AuthState::Authenticated;
+		let before = Edit {
+			name: "general".into(),
+			..Edit::default()
+		};
+		state.channel_actions.details = Some((Id(3), before.clone()));
+		let mut after = before.clone();
+		after.name = "updated".into();
+		let command = state
+			.request_channel_action(Id(3), Action::Edit { before, after })
+			.unwrap();
+		let target = crate::mfa::Target::from_command(&command).unwrap();
+		let Command::ChannelAction {
+			guild,
+			channel,
+			request,
+			action,
+		} = command
+		else {
+			panic!()
+		};
+		assert!(state.channel_action_mfa_allowed(guild, channel, request, &action));
+		assert!(!state.channel_action_mfa_allowed(guild, channel, request + 1, &action));
+		assert!(!state.channel_action_mfa_allowed(Id(99), channel, request, &action));
+		state.apply_mfa(crate::mfa::Event::Required(crate::mfa::Notice {
+			id: 7,
+			target,
+			methods: vec![crate::mfa::Method::Totp],
+		}));
+		assert!(state.mfa.pending.is_some());
+		member_permissions(&mut state, VIEW_CHANNEL);
+		assert!(!state.channel_action_mfa_allowed(guild, channel, request, &action));
+		let Some(Command::Mfa(cancel)) = state.maintain_mfa() else {
+			panic!()
+		};
+		assert!(matches!(cancel.action, crate::mfa::Action::Cancel));
+		assert!(state.mfa.pending.is_none());
+		for action in [
+			Action::Reference,
+			Action::Description,
+			Action::Load,
+			Action::PostLoad,
+		] {
+			assert!(
+				crate::mfa::Target::from_command(&Command::ChannelAction {
+					guild,
+					channel,
+					request,
+					action
+				})
+				.is_none()
+			);
+		}
 	}
 	fn member_permissions(state: &mut State, bits: u128) {
 		let guild = state.permissions.guilds.get_mut(&Id(2)).unwrap();
