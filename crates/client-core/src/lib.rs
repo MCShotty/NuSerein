@@ -3383,6 +3383,7 @@ impl State {
 			}
 			Event::Mfa(event) => {
 				self.apply_mfa(event);
+				self.enforce_admin_budget();
 				Ok(())
 			}
 			Event::UserAction(event) => self.apply_user_action(event),

@@ -10,8 +10,14 @@ impl State {
 	/// Shared conversation/image caches remain in their existing independent budgets.
 	pub fn retained_admin_bytes(&self) -> usize {
 		let view = &self.server_admin;
-		let mut bytes = size_of_val(view) + view.query.search.capacity();
+		let mut bytes = size_of_val(view)
+			+ view.query.search.capacity()
+			+ self.mfa.bytes()
+			+ view.access.bytes()
+			+ self.server_incidents.len()
+				* (size_of::<model::Id>() + size_of::<model::server_access::Incident>() + 64);
 		for charge in [
+			view.command_permissions.as_ref().map_or(0, |page| page.bytes()),
 			view.community.as_ref().map_or(0, |page| page.bytes()),
 			view.automod.as_ref().map_or(0, |page| page.bytes()),
 			view.bans.as_ref().map_or(0, |page| page.bytes()),
