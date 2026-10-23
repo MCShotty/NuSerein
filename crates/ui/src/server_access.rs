@@ -445,10 +445,7 @@ impl AccessUi {
 				{
 					self.confirmation = Some(Confirmation::Incident {
 						before,
-						after: Incident {
-							invites_until: None,
-							..before
-						},
+						after: resume_incident(before, true, false, now),
 					});
 				}
 				if before.dms_until.is_some_and(|v| v > now)
@@ -456,10 +453,7 @@ impl AccessUi {
 				{
 					self.confirmation = Some(Confirmation::Incident {
 						before,
-						after: Incident {
-							dms_until: None,
-							..before
-						},
+						after: resume_incident(before, false, true, now),
 					});
 				}
 				if before.active(now) && ui.button("Resume both now").clicked() {
@@ -516,12 +510,33 @@ impl AccessUi {
 		else {
 			return;
 		};
-		if self.baseline.is_none() {
+		if self.baseline.is_none() || self.draft == self.baseline {
 			self.baseline = Some(settings.configuration);
 			self.draft = self.baseline;
 		}
 		let before = self.baseline.unwrap_or_default();
 		let mut after = self.draft.unwrap_or(before);
+		let conflicted = settings.configuration != before;
+		if conflicted {
+			dialog::notice(
+				ui,
+				dialog::Level::Warning,
+				"Server access changed elsewhere. Review the current settings before reapplying or discarding your changes.",
+			);
+			ui.add_enabled_ui(available && !state.server_admin.needs_refresh, |ui| {
+				ui.horizontal_wrapped(|ui| {
+					if ui.button("Reapply my changes").clicked() {
+						self.baseline = Some(settings.configuration);
+						self.draft =
+							Some(reapply_configuration(before, after, settings.configuration));
+					}
+					if ui.button("Use current settings").clicked() {
+						self.baseline = Some(settings.configuration);
+						self.draft = self.baseline;
+					}
+				});
+			});
+		}
 		ui.add_enabled_ui(available && !state.server_admin.needs_refresh, |ui| {
 			ui.checkbox(&mut after.community, "Enable Community");
 			channel_picker(ui, state, guild, "Rules channel", &mut after.rules);
@@ -534,7 +549,11 @@ impl AccessUi {
 			);
 			channel_picker(ui, state, guild, "Safety alerts channel", &mut after.alerts);
 		});
-		self.draft = Some(after);
+		// Conflict choices above replace the draft; do not overwrite that choice
+		// with this frame's old values.
+		if self.baseline == Some(before) {
+			self.draft = Some(after);
+		}
 		if after.community && (settings.verification_level < 1 || settings.content_filter != 2) {
 			ui.colored_label(design::palette(ui).danger,"Community requires verification level Low or higher and the content filter for all members. Set these in Safety Setup first.");
 		}
@@ -542,7 +561,9 @@ impl AccessUi {
 			ui.horizontal_wrapped(|ui| {
 				if ui
 					.add_enabled(
-						available && !state.server_admin.needs_refresh && after.valid(),
+						available
+							&& !state.server_admin.needs_refresh
+							&& !conflicted && after.valid(),
 						egui::Button::new("Save changes"),
 					)
 					.clicked()
@@ -556,13 +577,6 @@ impl AccessUi {
 					self.draft = Some(before);
 				}
 			});
-		}
-		if settings.configuration != before && before != after {
-			dialog::notice(
-				ui,
-				dialog::Level::Warning,
-				"Server access changed elsewhere. Reload and review your draft before saving.",
-			);
 		}
 		if !state.owns_guild(guild) {
 			return;
@@ -788,6 +802,42 @@ impl AccessUi {
 		review
 	}
 }
+fn resume_incident(before: Incident, invitations: bool, dms: bool, now: i128) -> Incident {
+	Incident {
+		invites_until: before
+			.invites_until
+			.filter(|until| !invitations && *until > now),
+		dms_until: before.dms_until.filter(|until| !dms && *until > now),
+	}
+}
+fn reapply_configuration(
+	before: Configuration,
+	draft: Configuration,
+	current: Configuration,
+) -> Configuration {
+	Configuration {
+		community: if draft.community != before.community {
+			draft.community
+		} else {
+			current.community
+		},
+		rules: if draft.rules != before.rules {
+			draft.rules
+		} else {
+			current.rules
+		},
+		updates: if draft.updates != before.updates {
+			draft.updates
+		} else {
+			current.updates
+		},
+		alerts: if draft.alerts != before.alerts {
+			draft.alerts
+		} else {
+			current.alerts
+		},
+	}
+}
 fn channel_picker(
 	ui: &mut egui::Ui,
 	state: &State,
@@ -846,6 +896,57 @@ fn duration(seconds: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn incident_resume_drops_expired_companion_without_renewing_it() {
+		let before = Incident {
+			invites_until: Some(200),
+			dms_until: Some(50),
+		};
+		let after = resume_incident(before, true, false, 100);
+		assert_eq!(after, Incident::default());
+		assert!(after.writable(100));
+		let before = Incident {
+			invites_until: Some(50),
+			dms_until: Some(200),
+		};
+		assert_eq!(
+			resume_incident(before, false, true, 100),
+			Incident::default()
+		);
+		let both_active = Incident {
+			invites_until: Some(200),
+			dms_until: Some(300),
+		};
+		assert_eq!(
+			resume_incident(both_active, true, false, 100).dms_until,
+			Some(300)
+		);
+	}
+	#[test]
+	fn explicit_draft_reapplication_keeps_unedited_remote_fields() {
+		let before = Configuration {
+			community: true,
+			rules: Some(Id(1)),
+			updates: Some(Id(2)),
+			alerts: None,
+		};
+		let draft = Configuration {
+			rules: Some(Id(3)),
+			..before
+		};
+		let current = Configuration {
+			updates: Some(Id(4)),
+			alerts: Some(Id(5)),
+			..before
+		};
+		assert_eq!(
+			reapply_configuration(before, draft, current),
+			Configuration {
+				rules: Some(Id(3)),
+				..current
+			}
+		);
+	}
 	#[test]
 	fn application_selection_and_confirmation_do_not_survive_an_account_generation_change() {
 		let state = test_support::demo_state();
