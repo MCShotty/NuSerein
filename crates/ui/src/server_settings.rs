@@ -668,6 +668,10 @@ impl MessagingUi {
 			state.status = "Save or discard server settings changes before opening member review.";
 			return None;
 		}
+		if state.server_admin.saving {
+			state.status = "Finish the current server action before opening member review.";
+			return None;
+		}
 		let query = model::server_admin::Query {
 			filters,
 			..Default::default()
