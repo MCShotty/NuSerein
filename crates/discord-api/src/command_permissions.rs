@@ -138,13 +138,12 @@ impl DiscordApi {
 				Failure::Capacity
 			});
 		}
-		if let m::Action::Save { before, after, .. } = action {
-			if !snapshot
+		if let m::Action::Save { before, after, .. } = action
+			&& !snapshot
 				.get(after.id)
 				.is_some_and(|actual| m::Permissions::confirms(before, after, &actual))
-			{
-				return Err(Failure::Ambiguous);
-			}
+		{
+			return Err(Failure::Ambiguous);
 		}
 		Ok(snapshot)
 	}

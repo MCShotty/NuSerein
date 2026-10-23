@@ -192,21 +192,18 @@ impl Broker {
 	fn cancel(&self, id: u64, failure: Failure) {
 		if let Ok(mut pending) = self.pending.lock()
 			&& pending.as_ref().is_some_and(|p| p.id == id)
+			&& let Some(mut old) = pending.take()
+			&& let Some(sender) = old.sender.take()
 		{
-			if let Some(mut old) = pending.take()
-				&& let Some(sender) = old.sender.take()
-			{
-				let _ = sender.send(Err(failure));
-			}
+			let _ = sender.send(Err(failure));
 		}
 	}
 	pub(super) fn cancel_all(&self) {
-		if let Ok(mut pending) = self.pending.lock() {
-			if let Some(mut old) = pending.take()
-				&& let Some(sender) = old.sender.take()
-			{
-				let _ = sender.send(Err(Failure::Expired));
-			}
+		if let Ok(mut pending) = self.pending.lock()
+			&& let Some(mut old) = pending.take()
+			&& let Some(sender) = old.sender.take()
+		{
+			let _ = sender.send(Err(Failure::Expired));
 		}
 	}
 	fn ticket(&self, id: u64, method: Option<Method>) -> Result<Zeroizing<String>, Failure> {
