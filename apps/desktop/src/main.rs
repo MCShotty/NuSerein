@@ -3307,6 +3307,9 @@ impl Desktop {
 	}
 	/// Dispatches one queued command to the demo or live transport.
 	fn command(&mut self, command: Command) {
+		if let Some(connection) = &self.connection {
+			connection.sync_admin_reads(&self.state);
+		}
 		if let Command::Report(request) = &command
 			&& !self.state.report_command_allowed(request)
 		{
@@ -5824,6 +5827,9 @@ impl eframe::App for Desktop {
 	fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
 		let ctx = ui.ctx().clone();
 		self.messaging.retire_mfa_input(&ctx, &self.state);
+		if let Some(connection) = &self.connection {
+			connection.sync_admin_reads(&self.state);
+		}
 		let title_bar_height = if self.login.is_some() {
 			platform::LOGIN_HEADER_HEIGHT
 		} else if self.state.user.is_some() {
@@ -6873,6 +6879,9 @@ impl eframe::App for Desktop {
 			commands.extend(self.state.take_preload_retries());
 			for command in commands {
 				self.command(command);
+			}
+			if let Some(connection) = &self.connection {
+				connection.sync_admin_reads(&self.state);
 			}
 			// A click that adopted a hover preload sends no request of its own.
 			self.load_cached_history();

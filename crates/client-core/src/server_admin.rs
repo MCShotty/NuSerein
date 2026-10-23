@@ -16,6 +16,77 @@ pub struct Event {
 	pub result: Result<Outcome, Failure>,
 }
 
+/// Independently replaceable read families. Mutations never enter this scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadKind {
+	Panel,
+	Settings,
+	Community,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadKey {
+	pub generation: u64,
+	pub kind: ReadKind,
+	pub guild: Id,
+	pub request: u64,
+}
+impl ReadKey {
+	pub fn of(command: &Command, generation: u64) -> Option<Self> {
+		let (kind, guild, request) = match command {
+			Command::ServerAdmin {
+				guild,
+				request,
+				action,
+			} if !action.write() => (ReadKind::Panel, *guild, *request),
+			Command::ServerSettings {
+				guild,
+				request,
+				edit: None,
+			} => (ReadKind::Settings, *guild, *request),
+			Command::Community {
+				guild,
+				request,
+				action,
+				..
+			} if !action.write() => (ReadKind::Community, *guild, *request),
+			_ => return None,
+		};
+		Some(Self {
+			generation,
+			kind,
+			guild,
+			request,
+		})
+	}
+	pub fn rejected(self, failure: Failure) -> crate::Event {
+		match self.kind {
+			ReadKind::Panel => crate::Event::ServerAdmin(Event {
+				guild: self.guild,
+				request: self.request,
+				result: Err(failure),
+			}),
+			ReadKind::Settings => crate::Event::ServerSettings(crate::server_settings::Event {
+				guild: self.guild,
+				request: self.request,
+				result: Err(failure),
+				refreshed: None,
+			}),
+			ReadKind::Community => crate::Event::Community(crate::community::Event {
+				guild: self.guild,
+				request: self.request,
+				result: Err(failure),
+			}),
+		}
+	}
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadScopes(pub [Option<ReadKey>; 3]);
+impl ReadScopes {
+	pub fn contains(self, key: ReadKey) -> bool {
+		self.0.contains(&Some(key))
+	}
+}
+
 #[derive(Default)]
 pub struct View {
 	pub command_permissions: Option<model::command_permissions::Snapshot>,
@@ -153,6 +224,48 @@ impl View {
 	}
 }
 impl State {
+	/// Host publishes this after state/UI changes; closing a page retires only reads.
+	pub fn admin_read_scopes(&self) -> ReadScopes {
+		if !self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected) {
+			return ReadScopes::default();
+		}
+		let panel = (self.server_admin.pending && !self.server_admin.saving)
+			.then_some(self.server_admin.guild)
+			.flatten()
+			.map(|guild| ReadKey {
+				generation: self.generation,
+				kind: ReadKind::Panel,
+				guild,
+				request: self.server_admin.sequence,
+			});
+		let settings = self
+			.server_settings
+			.read_request()
+			.map(|(guild, request)| ReadKey {
+				generation: self.generation,
+				kind: ReadKind::Settings,
+				guild,
+				request,
+			});
+		let community = self
+			.community
+			.read_request()
+			.map(|(guild, request)| ReadKey {
+				generation: self.generation,
+				kind: ReadKind::Community,
+				guild,
+				request,
+			});
+		ReadScopes([panel, settings, community])
+	}
+	/// Leaving a settings destination cancels its read without disturbing saved data or writes.
+	pub fn retire_server_admin_read(&mut self) {
+		if self.server_admin.pending && !self.server_admin.saving {
+			self.server_admin.pending = false;
+			self.server_admin.action = None;
+			self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
+		}
+	}
 	pub fn can_moderate_voice(
 		&self,
 		guild: Id,
@@ -598,7 +711,8 @@ impl State {
 			}
 			_ => {}
 		}
-		if self.server_admin.pending
+		if self.server_admin.saving
+			|| (self.server_admin.pending && action.write())
 			|| self.server_settings.saving
 			|| (self.server_admin.needs_refresh
 				&& action.write()
@@ -681,6 +795,10 @@ impl State {
 			edit.icon = model::Patch::Absent;
 		}
 		self.server_admin.action = Some(retained);
+		self.enforce_admin_budget();
+		if !self.server_admin.pending {
+			return None;
+		}
 		Some(Command::ServerAdmin {
 			guild,
 			request: self.server_admin.sequence,
@@ -1687,6 +1805,65 @@ mod invite_tests {
 				result,
 			}),
 		});
+	}
+	#[test]
+	fn newer_admin_reads_replace_only_reads_and_old_results_cannot_finish_them() {
+		let mut state = state();
+		let settings = state.load_server_settings(Id(2)).unwrap();
+		let settings_key = ReadKey::of(&settings, state.generation).unwrap();
+		let old = state
+			.request_server_admin(Id(2), Action::Invites(InviteAction::Load))
+			.unwrap();
+		let old_key = ReadKey::of(&old, state.generation).unwrap();
+		assert!(state.admin_read_scopes().contains(old_key));
+		let latest = state
+			.request_server_admin(
+				Id(2),
+				Action::LoadMembers(Query {
+					search: "latest".into(),
+					..Query::default()
+				}),
+			)
+			.unwrap();
+		let latest_key = ReadKey::of(&latest, state.generation).unwrap();
+		assert!(!state.admin_read_scopes().contains(old_key));
+		assert!(state.admin_read_scopes().contains(latest_key));
+		deliver(
+			&mut state,
+			old_key.guild,
+			old_key.request,
+			Ok(Outcome::Invites(page())),
+		);
+		assert!(state.server_admin.pending);
+		assert_eq!(state.server_admin.query.search, "latest");
+		state.retire_server_admin_read();
+		assert!(!state.admin_read_scopes().contains(latest_key));
+		assert!(state.admin_read_scopes().contains(settings_key));
+		assert!(!state.server_admin.pending);
+		state.close_server_settings();
+
+		state
+			.request_server_admin(
+				Id(2),
+				Action::Invites(InviteAction::Revoke {
+					code: "synthetic_code".into(),
+				}),
+			)
+			.unwrap();
+		let sequence = state.server_admin.sequence;
+		assert!(state.server_admin.saving);
+		assert!(
+			state
+				.request_server_admin(Id(2), Action::LoadMembers(Query::default()))
+				.is_none()
+		);
+		state.retire_server_admin_read();
+		state.close_server_admin();
+		assert!(state.server_admin.pending && state.server_admin.saving);
+		assert_eq!(state.server_admin.sequence, sequence);
+		assert!(state.admin_read_scopes().0.iter().all(Option::is_none));
+		state.logout();
+		assert!(state.admin_read_scopes().0.iter().all(Option::is_none));
 	}
 	#[test]
 	fn invites_stale_requests_and_permission_loss_do_not_restore_codes() {

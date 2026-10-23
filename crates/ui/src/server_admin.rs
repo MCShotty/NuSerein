@@ -763,7 +763,7 @@ impl Admin {
 		if self
 			.query_changed
 			.is_some_and(|at| ui.input(|input| input.time) - at >= 0.3)
-			&& !state.server_admin.pending
+			&& !state.server_admin.saving
 		{
 			action = Some(Action::LoadMembers(self.query.clone()));
 			self.query_changed = None;

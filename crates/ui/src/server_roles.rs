@@ -1313,7 +1313,7 @@ impl RolesUi {
 				load = true;
 			}
 		});
-		if !state.server_admin.pending
+		if !state.server_admin.saving
 			&& self
 				.member_search_changed
 				.is_some_and(|at| ui.input(|input| input.time) - at > 0.3)
@@ -1325,7 +1325,7 @@ impl RolesUi {
 			ui.ctx()
 				.request_repaint_after(std::time::Duration::from_millis(300));
 		}
-		if load && !state.server_admin.pending {
+		if load && !state.server_admin.saving {
 			self.members_requested = true;
 			if Self::dispatch(
 				state,

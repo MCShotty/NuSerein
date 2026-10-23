@@ -1255,9 +1255,13 @@ impl Editor {
 		} else {
 			self.destination_rows(ui, state, guild, &results, search.has_focus(), &mut chosen);
 		}
+		let previous = self.page;
 		if let Some(target) = chosen
 			&& self.select_page(target.page, state)
 		{
+			if previous != self.page {
+				state.retire_server_admin_read();
+			}
 			if let Some(anchor) = target.anchor {
 				ui.ctx().data_mut(|data| {
 					data.insert_temp(
@@ -1631,6 +1635,7 @@ impl Editor {
 						crate::server_audit_log::Target::Role(id)
 							if self.select_page(Page::Roles, state) =>
 						{
+							state.retire_server_admin_read();
 							self.roles.select(Some(id), guild);
 							if let Some(command) = self.roles.load(state, guild) {
 								commands.push(command);

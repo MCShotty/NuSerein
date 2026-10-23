@@ -46,7 +46,7 @@ impl AuditLogUi {
 		avatars: &mut Avatars,
 		commands: &mut Vec<Command>,
 	) {
-		let available = !state.server_admin.pending && !state.server_settings.saving;
+		let available = !state.server_admin.saving && !state.server_settings.saving;
 		let mut query = self.query.clone();
 		query.before = None;
 		let width = ui.available_width();

@@ -22,6 +22,12 @@ pub struct Community {
 	pending: Option<(Id, u64, Action)>,
 }
 impl Community {
+	pub(crate) fn read_request(&self) -> Option<(Id, u64)> {
+		self.pending
+			.as_ref()
+			.filter(|(_, _, action)| !action.write())
+			.map(|(guild, request, _)| (*guild, *request))
+	}
 	pub fn pending(&self) -> bool {
 		self.pending.is_some()
 	}

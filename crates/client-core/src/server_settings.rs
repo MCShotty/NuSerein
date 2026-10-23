@@ -28,6 +28,9 @@ pub struct Editor {
 	pub needs_refresh: bool,
 }
 impl Editor {
+	pub(crate) fn read_request(&self) -> Option<(Id, u64)> {
+		(self.pending && !self.saving).then_some((self.guild?, self.sequence))
+	}
 	pub(crate) fn reset(&mut self) {
 		*self = Self {
 			sequence: self.sequence.wrapping_add(1),
@@ -58,7 +61,7 @@ impl State {
 	}
 	pub fn load_server_settings(&mut self, guild: Id) -> Option<Command> {
 		if !self.can_manage_guild(guild)
-			|| self.server_settings.pending
+			|| self.server_settings.saving
 			|| (!self.demo && (self.auth != AuthState::Authenticated || !self.gateway_connected))
 		{
 			return None;
