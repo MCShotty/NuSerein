@@ -323,6 +323,11 @@ fn rows<'a>(
 	}
 	let important = |channel: &Channel| {
 		Some(channel.id) == state.selected
+			|| state
+				.voice
+				.active
+				.as_ref()
+				.is_some_and(|call| call.channel == channel.id)
 			|| mentions.contains_key(&channel.id)
 			|| state.unread_count(channel.id) > 0
 			|| (state.channel_unread(channel) == Some(true)
@@ -3008,6 +3013,63 @@ mod tests {
 			"a mention and the unread mark both show while connected",
 		);
 	}
+	#[test]
+	fn active_voice_channel_stays_visible_in_a_collapsed_category() {
+		let mut state = test_support::demo_state();
+		state.select(Id(20));
+		state.apply_notification_preferences(client_core::notifications::Event::Settings {
+			entries: vec![client_core::notifications::Setting {
+				guild: Some(Id(10)),
+				flags: Some(0),
+				overrides_known: true,
+				channels: vec![(Id(24), Some(true), Some(3))],
+				hide_muted_channels: Some(true),
+				..Default::default()
+			}],
+			replace: false,
+		});
+		let visible = |state: &State| {
+			rows(
+				state,
+				Scope::Guild(Id(10)),
+				&Roster::default(),
+				&BTreeSet::from([Id(24)]),
+				false,
+				false,
+			)
+			.iter()
+			.any(|row| matches!(row, Row::Channel(channel, ..) if channel.id == Id(25)))
+		};
+		assert!(!visible(&state));
+		state.voice.active = Some(client_core::voice::Call {
+			channel: Id(25),
+			guild: Some(Id(10)),
+			request: 1,
+			stage_revision: 0,
+			media_mode: client_core::voice::MediaMode::Dave,
+			stage_consent: false,
+			stage: client_core::voice::StageParticipation::Unknown,
+			connected_at: None,
+			channel_started_at: None,
+			server_muted: false,
+			server_deafened: false,
+			phase: client_core::voice::Phase::Connected,
+			muted: false,
+			deafened: false,
+			participants: vec![],
+			camera: false,
+			watching: None,
+			error: None,
+			reconnecting: None,
+		});
+		assert!(
+			visible(&state),
+			"a connected call must remain discoverable while another category is selected"
+		);
+		state.voice.active = None;
+		assert!(!visible(&state));
+	}
+
 	#[test]
 	fn personal_hidden_channels_reappear_for_selection_and_mentions() {
 		let mut state = test_support::demo_state();
