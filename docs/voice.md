@@ -1259,6 +1259,13 @@ Start-Process .\dist\serein.exe -RedirectStandardError "$PWD\stream-debug-retest
 Start sharing promptly after launch so the bounded diagnostic budget covers the test.
 Keep these local logs out of commits.
 
+For an owner-operated Windows capture-overhead investigation, use the optional
+[`windows_capture` diagnostic tool and game sampler](pr-evidence/capture-overhead/README.md).
+They distinguish native capture without readback, readback/conversion, local encoding and
+normal full sharing while holding encoder quality settings fixed. The source is always
+explicitly selected; ordinary startup and CI never run live capture. Game present intervals,
+GPU-engine counters and receiver delivery are separate measurements.
+
 ## Explicit voice messages
 
 **Voice Messages** is an opt-in bundled Starter plugin under Settings → Extensions.
