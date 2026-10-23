@@ -76,7 +76,8 @@ impl State {
 			settings.incident = Some(incident.unwrap_or_default());
 			self.server_admin.access.revision = self.server_admin.access.revision.wrapping_add(1);
 		}
-		if let Some(incident) = incident.filter(|v| v.active(now())) {
+		let now = now();
+		if let Some(incident) = incident.filter(|v| v.active(now)) {
 			const MAX: usize = 256;
 			if !self.server_incidents.contains_key(&guild) && self.server_incidents.len() >= MAX {
 				let selected = self
@@ -85,9 +86,14 @@ impl State {
 					.and_then(|c| c.guild);
 				let evict = self
 					.server_incidents
-					.keys()
-					.copied()
-					.find(|id| Some(*id) != selected)
+					.iter()
+					.find_map(|(id, incident)| (!incident.active(now)).then_some(*id))
+					.or_else(|| {
+						self.server_incidents
+							.keys()
+							.copied()
+							.find(|id| Some(*id) != selected)
+					})
 					.or_else(|| self.server_incidents.keys().next().copied());
 				if let Some(id) = evict {
 					self.server_incidents.remove(&id);
@@ -317,7 +323,7 @@ impl State {
 						generation: self.generation,
 						event: Event::Permissions(crate::permissions::Event::Owner {
 							guild,
-							owner: model::permissions::Patch::Value(owner),
+							owner: model::Patch::Value(owner),
 						}),
 					});
 					self.server_admin.access.recipient = None;
@@ -534,7 +540,7 @@ mod tests {
 			generation: state.generation,
 			event: Event::Permissions(crate::permissions::Event::Owner {
 				guild: Id(2),
-				owner: model::permissions::Patch::Value(Id(3)),
+				owner: model::Patch::Value(Id(3)),
 			}),
 		});
 		assert!(!state.owns_guild(Id(2)));
@@ -570,5 +576,32 @@ mod tests {
 		assert!(!state.server_incidents.contains_key(&Id(399)));
 		state.logout();
 		assert!(state.server_incidents.is_empty());
+	}
+	#[test]
+	fn incident_capacity_prefers_expired_entries_over_active_servers() {
+		let mut state = state(0);
+		let template = state.guilds[0].clone();
+		let incident = model::server_access::Incident {
+			invites_until: Some(now() + 60_000_000_000),
+			dms_until: None,
+		};
+		for id in 100..357 {
+			let mut guild = template.clone();
+			guild.id = Id(id);
+			state.guilds.push(guild);
+			if id < 356 {
+				state.apply_server_incident(Id(id), Some(incident));
+			}
+		}
+		state
+			.server_incidents
+			.get_mut(&Id(300))
+			.unwrap()
+			.invites_until = Some(1);
+		state.apply_server_incident(Id(356), Some(incident));
+		assert_eq!(state.server_incidents.len(), 256);
+		assert!(!state.server_incidents.contains_key(&Id(300)));
+		assert!(state.server_incidents.contains_key(&Id(100)));
+		assert!(state.server_incidents.contains_key(&Id(356)));
 	}
 }

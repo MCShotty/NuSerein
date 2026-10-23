@@ -65,9 +65,12 @@ impl Request {
 							.as_u64()
 							.and_then(|v| usize::try_from(v).ok())
 							.ok_or(DecodeError)?;
-						let choices = field.choices.or(field.values);
+						let choices = field
+							.choices
+							.map(|v| v.0)
+							.or_else(|| field.values.map(|v| v.0));
 						if let Some(choices) = choices {
-							choices.0.get(index).cloned().ok_or(DecodeError)?
+							choices.get(index).cloned().ok_or(DecodeError)?
 						} else {
 							format!("Choice {}", index.checked_add(1).ok_or(DecodeError)?)
 						}
