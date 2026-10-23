@@ -120,7 +120,7 @@ impl Browser {
 		ui.horizontal_wrapped(|ui| {
 			ui.add(
 				egui::TextEdit::singleline(&mut self.search)
-					.hint_text("Search channels or descriptions")
+					.hint_text("Search channels")
 					.char_limit(100)
 					.desired_width(260.0),
 			);

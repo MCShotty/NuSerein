@@ -186,6 +186,34 @@ impl eframe::App for Preview {
 					guild,
 					channel,
 					request,
+					action: client_core::channel_actions::Action::Personal(change),
+				} => client_core::Event::ChannelAction(
+					client_core::channel_actions::Event::Finished {
+						guild,
+						channel,
+						request,
+						result: Ok(client_core::channel_actions::Outcome::Personal(change)),
+					},
+				),
+				client_core::Command::ChannelAction {
+					guild,
+					channel,
+					request,
+					action: client_core::channel_actions::Action::Description,
+				} => client_core::Event::ChannelAction(
+					client_core::channel_actions::Event::Finished {
+						guild,
+						channel,
+						request,
+						result: Ok(client_core::channel_actions::Outcome::Description(
+							"Synthetic channel description for the community.".into(),
+						)),
+					},
+				),
+				client_core::Command::ChannelAction {
+					guild,
+					channel,
+					request,
 					action: client_core::channel_actions::Action::Load,
 				} => client_core::Event::ChannelAction(
 					client_core::channel_actions::Event::Finished {
