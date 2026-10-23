@@ -21,6 +21,7 @@ pub use permissions::ChannelAccess;
 mod permissions_tests;
 
 pub mod account_settings;
+pub mod admin_resources;
 mod forwarding;
 pub mod interactions;
 pub mod invites;
@@ -3360,7 +3361,11 @@ impl State {
 			Event::UserAction(event) => self.apply_user_action(event),
 			Event::ServerAction(event) => self.apply_server_action(event),
 			Event::ChannelAction(event) => self.apply_channel_action(event),
-			Event::ServerSettings(event) => self.apply_server_settings(event),
+			Event::ServerSettings(event) => {
+				let result = self.apply_server_settings(event);
+				self.enforce_admin_budget();
+				result
+			}
 			Event::MemberGuide(event) => self.apply_member_guide(event),
 			Event::Onboarding(event) => self.apply_onboarding(event),
 			Event::Community(event) => self.apply_community(event),
@@ -3387,7 +3392,11 @@ impl State {
 				}
 				Ok(())
 			}
-			Event::ServerAdmin(event) => self.apply_server_admin(event),
+			Event::ServerAdmin(event) => {
+				let result = self.apply_server_admin(event);
+				self.enforce_admin_budget();
+				result
+			}
 			Event::GroupAction(event) => self.apply_group_action(event),
 			Event::ThreadsSync {
 				guild,
