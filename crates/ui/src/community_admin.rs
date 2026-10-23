@@ -196,16 +196,36 @@ impl CommunityUi {
 			if ui
 				.add_enabled(
 					self.draft.is_some(),
-					egui::Button::new("Preview member experience"),
+					egui::Button::new(if self.preview {
+						"Hide member preview"
+					} else {
+						"Preview member experience"
+					}),
 				)
 				.clicked()
 			{
-				self.preview = true;
+				self.preview = !self.preview;
 			}
 			if state.server_admin.needs_refresh {
 				ui.weak(i18n::translate("community-refresh-required"));
 			}
 		});
+		if self.preview
+			&& let Some(data) = &self.draft
+		{
+			egui::Frame::new()
+				.fill(design::palette(ui).raised)
+				.inner_margin(12)
+				.corner_radius(8)
+				.show(ui, |ui| {
+					ui.strong("Member experience preview");
+					ui.weak("Preview of your unsaved configuration. No answers are submitted and no roles or channels are changed.");
+					egui::ScrollArea::vertical()
+						.id_salt("community-member-preview")
+						.max_height(320.0)
+						.show(ui, |ui| member_preview(ui, state, data));
+				});
+		}
 		if !state.can_edit_community_settings(guild, section) {
 			dialog::notice(
 				ui,
@@ -307,14 +327,6 @@ impl CommunityUi {
 					self.artwork_uri = None;
 					self.artwork_preview = None;
 				}
-			});
-		}
-		if self.preview
-			&& let Some(data) = &self.draft
-		{
-			egui::Window::new("Member experience preview").id(egui::Id::unique("community-member-preview")).open(&mut self.preview).default_width(620.0).max_height(600.0).show(ui.ctx(),|ui|{
-				ui.weak("Preview of your unsaved configuration. No answers are submitted and no roles or channels are changed.");
-				egui::ScrollArea::vertical().show(ui,|ui|member_preview(ui,state,data));
 			});
 		}
 		if let Some(action) = action {
@@ -1451,6 +1463,122 @@ fn artwork_hash(guide: &m::Guide, channel: Option<Id>, resource: bool) -> Option
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn draft_preview_is_usable_inside_the_production_settings_shell_without_saving() {
+		fn frame(
+			ctx: &egui::Context,
+			editor: &mut CommunityUi,
+			state: &mut State,
+			guild: Id,
+			events: Vec<egui::Event>,
+		) -> egui::FullOutput {
+			let mut commands = Vec::new();
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1440.0, 1100.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					let close = dialog::SettingsShell::new("server-settings").show(
+						ui.ctx(),
+						|ui, region| {
+							if matches!(region, dialog::ShellRegion::Body) {
+								dialog::settings_page(ui, "community-preview-regression", |ui| {
+									editor.show(
+										ui,
+										state,
+										guild,
+										(Section::Screening, false),
+										&mut Avatars::default(),
+										&mut commands,
+									)
+								});
+							}
+						},
+					);
+					assert!(!close);
+				},
+			);
+			assert!(
+				commands.is_empty(),
+				"previewing and hiding a draft never submits a change or answer"
+			);
+			output
+		}
+		fn text_position(output: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+			output.shapes.iter().find_map(|shape| match &shape.shape {
+				egui::Shape::Text(text) if text.galley.job.text == label => {
+					Some(text.pos + text.galley.size() / 2.0)
+				}
+				_ => None,
+			})
+		}
+		fn click(point: egui::Pos2) -> Vec<egui::Event> {
+			vec![
+				egui::Event::PointerMoved(point),
+				egui::Event::PointerButton {
+					pos: point,
+					button: egui::PointerButton::Primary,
+					pressed: true,
+					modifiers: egui::Modifiers::NONE,
+				},
+				egui::Event::PointerButton {
+					pos: point,
+					button: egui::PointerButton::Primary,
+					pressed: false,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]
+		}
+		let (mut state, guild) = fixture();
+		let mut editor = CommunityUi::default();
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		for _ in 0..3 {
+			frame(&ctx, &mut editor, &mut state, guild, vec![]).drop_without_applying_deltas();
+		}
+		let Data::Screening(draft) = editor.draft.as_mut().unwrap() else {
+			panic!("screening draft")
+		};
+		draft.fields[0].values[0] = "Unsaved preview rule".into();
+		let output = frame(&ctx, &mut editor, &mut state, guild, vec![]);
+		let show =
+			text_position(&output, "Preview member experience").expect("production preview button");
+		output.drop_without_applying_deltas();
+		frame(&ctx, &mut editor, &mut state, guild, click(show)).drop_without_applying_deltas();
+		for _ in 0..3 {
+			frame(&ctx, &mut editor, &mut state, guild, vec![]).drop_without_applying_deltas();
+		}
+		let output = frame(&ctx, &mut editor, &mut state, guild, vec![]);
+		assert!(editor.preview);
+		assert!(text_position(&output, "Member experience preview").is_some());
+		let preview = text_position(&output, "• Unsaved preview rule")
+			.expect("preview renders the unsaved draft");
+		let hide =
+			text_position(&output, "Hide member preview").expect("usable inline preview control");
+		let shell =
+			egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("server-settings"));
+		assert_eq!(ctx.memory(|memory| memory.top_modal_layer()), Some(shell));
+		assert_eq!(ctx.layer_id_at(preview), Some(shell));
+		assert_eq!(ctx.layer_id_at(hide), Some(shell));
+		output.drop_without_applying_deltas();
+		frame(&ctx, &mut editor, &mut state, guild, click(hide)).drop_without_applying_deltas();
+		assert!(!editor.preview);
+		let output = frame(&ctx, &mut editor, &mut state, guild, vec![]);
+		assert!(text_position(&output, "Member experience preview").is_none());
+		assert!(text_position(&output, "Preview member experience").is_some());
+		output.drop_without_applying_deltas();
+		let Data::Screening(current) = &state.server_admin.community.as_ref().unwrap().data else {
+			panic!("saved snapshot")
+		};
+		assert_eq!(current.fields[0].values[0], "Be kind");
+		assert!(editor.has_changes());
+		assert!(!state.server_admin.pending);
+	}
 	fn fixture() -> (State, Id) {
 		let mut state = test_support::demo_state();
 		let guild = state.guilds[0].id;
