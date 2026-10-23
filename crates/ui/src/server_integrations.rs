@@ -369,6 +369,13 @@ impl IntegrationsUi {
 				channel,
 			});
 		}
+		if let Some(query) = self.command_permissions.take_member_search()
+			&& let Some(channel) = state.selected.filter(|channel| {
+				state.channel(*channel).and_then(|channel| channel.guild) == Some(guild)
+			}) && let Some(command) = state.search_members(channel, &query, 0)
+		{
+			commands.push(command);
+		}
 		if let Some(action) = self.command_action.take() {
 			if let Some(command) =
 				state.request_server_admin(guild, server_admin::Action::CommandPermissions(action))

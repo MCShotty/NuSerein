@@ -11,13 +11,23 @@ pub(super) struct PermissionsUi {
 	submitted: bool,
 	reset_defaults: bool,
 	error: Option<&'static str>,
+	reload_required: bool,
+	reload_revision: Option<u64>,
+	member_query: String,
+	member_due: Option<f64>,
+	member_intent: Option<String>,
+	member_popup: bool,
 	kind: u8,
 	target: String,
 	search: String,
 }
 impl PermissionsUi {
+	pub fn take_member_search(&mut self) -> Option<String> {
+		self.member_intent.take()
+	}
 	pub fn rejected(&mut self) {
 		self.submitted = false;
+		self.reload_required = true;
 		self.error =
 			Some("Could not save permissions; your draft is retained. Check access and reload.");
 	}
@@ -43,6 +53,17 @@ impl PermissionsUi {
 			ui.weak("Manage Server and Manage Roles are required to edit command permissions.");
 			return None;
 		}
+		self.member_popup = false;
+		if self
+			.reload_revision
+			.is_some_and(|revision| revision != state.server_admin.revision)
+			&& !state.server_admin.pending
+			&& state.server_admin.error.is_none()
+		{
+			self.reload_required = false;
+			self.reload_revision = None;
+			self.error = None;
+		}
 		let mut action = None;
 		let snapshot = state
 			.server_admin
@@ -54,6 +75,8 @@ impl PermissionsUi {
 			if state.server_admin.error.is_none() {
 				self.baseline = snapshot.and_then(|page| page.get(self.selected.unwrap_or(app)));
 				self.draft = self.baseline.clone();
+			} else {
+				self.reload_required = true;
 			}
 		}
 		ui.separator();
@@ -63,6 +86,9 @@ impl PermissionsUi {
 		);
 		if let Some(error) = self.error.or(state.server_admin.error) {
 			ui.colored_label(crate::design::palette(ui).danger, error);
+		}
+		if self.reload_required {
+			ui.weak("Reload command permissions before saving again. Your draft is retained.");
 		}
 		ui.horizontal_wrapped(|ui| {
 			if ui
@@ -74,6 +100,7 @@ impl PermissionsUi {
 			{
 				action = Some(m::Action::Load { application: app });
 				self.loaded = true;
+				self.reload_revision = Some(state.server_admin.revision);
 				self.error = None;
 			}
 			if state.server_admin.pending {
@@ -257,6 +284,27 @@ impl PermissionsUi {
 						}
 					}
 				});
+				if self.kind == 2 {
+					ui.menu_button("Choose a member",|ui|{
+						self.member_popup=true;
+						if ui.add(egui::TextEdit::singleline(&mut self.member_query).hint_text("Search nickname or username").char_limit(64)).changed(){self.member_due=Some(ui.input(|input|input.time));}
+						let active=state.selected.filter(|id|state.channel(*id).and_then(|channel|channel.guild)==Some(guild) && state.can_view(*id));
+						if let Some(active)=active {
+							let lookup=&state.member_search[0];
+							if lookup.request.as_ref().is_some_and(|request|request.guild==guild && request.channel==active && request.query==self.member_query){
+								if !lookup.finished{ui.spinner();}
+								if let Some(error)=lookup.error{ui.weak(error);if ui.button("Retry member search").clicked(){self.member_due=Some(0.0);}}
+							}
+							egui::ScrollArea::vertical().max_height(260.0).show(ui,|ui|{
+								let matches=member_matches(state,active,&self.member_query);
+								if matches.is_empty(){ui.weak("No matching members. Type a name to search the server.");}
+								for(id,name,username) in matches {
+									if ui.selectable_label(false,format!("{name}  ·  @{username}")).clicked(){self.target=id.to_string();ui.close();}
+								}
+							});
+						}else{ui.weak("Open an accessible channel in this server to search members. An exact member ID can also be entered above.");}
+					});
+				}
 				if self.kind == 1 {
 					ui.menu_button("Choose a role", |ui| {
 						if let Some(roles) = state
@@ -309,6 +357,7 @@ impl PermissionsUi {
 			if ui
 				.add_enabled(
 					!stale
+						&& !self.reload_required
 						&& !state.server_admin.needs_refresh
 						&& (state.demo || state.gateway_connected)
 						&& !state.server_admin.pending
@@ -358,6 +407,51 @@ impl PermissionsUi {
 			self.draft = actual;
 			self.error = None;
 		}
+		if !self.member_popup {
+			self.member_due = None;
+		}
+		if self.member_popup
+			&& !self.member_query.is_empty()
+			&& let Some(at) = self.member_due
+		{
+			if ui.input(|input| input.time) - at >= 0.3 {
+				self.member_intent = Some(self.member_query.clone());
+				self.member_due = None;
+			} else {
+				ui.ctx()
+					.request_repaint_after(std::time::Duration::from_millis(300));
+			}
+		}
 		action
 	}
+}
+
+fn member_matches(state: &State, channel: Id, query: &str) -> Vec<(Id, String, String)> {
+	if !state.can_view(channel) {
+		return vec![];
+	}
+	let query = query.to_lowercase();
+	let mut rows = crate::mentions::known_users(state, channel)
+		.into_iter()
+		.filter_map(|user| {
+			let name = state
+				.display_member(channel, user.id)
+				.and_then(|member| member.nick.as_deref())
+				.unwrap_or(&user.name);
+			let username = user.username.as_deref().unwrap_or(&user.name);
+			(name.to_lowercase().contains(&query)
+				|| user.name.to_lowercase().contains(&query)
+				|| username.to_lowercase().contains(&query)
+				|| user.id.to_string() == query)
+				.then(|| (user.id, name.to_owned(), username.to_owned()))
+		})
+		.take(client_core::member_search::LIMIT)
+		.collect::<Vec<_>>();
+	rows.sort_by(|a, b| {
+		a.1.to_lowercase()
+			.cmp(&b.1.to_lowercase())
+			.then(a.2.cmp(&b.2))
+			.then(a.0.cmp(&b.0))
+	});
+	rows
 }

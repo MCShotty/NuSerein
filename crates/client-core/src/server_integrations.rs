@@ -138,18 +138,7 @@ impl State {
 								})
 						})
 			}
-			Action::SetWebhookAvatar {
-				webhook, avatar, ..
-			} => page.webhooks.as_ref().is_some_and(|items| {
-				items.iter().any(|hook| {
-					hook.id == *webhook
-						&& match avatar {
-							model::Patch::Null => hook.avatar.is_none(),
-							model::Patch::Value(_) => hook.avatar.is_some(),
-							model::Patch::Absent => false,
-						}
-				})
-			}),
+
 			Action::DeleteWebhook { webhook, .. } => {
 				webhook_access
 					&& self
@@ -233,6 +222,18 @@ pub(crate) fn expected(action: &Action, page: &Snapshot) -> bool {
 				.is_some_and(|items| items.iter().all(|item| item.id != *integration))
 				&& page.webhooks.is_none()
 		}
+		Action::SetWebhookAvatar {
+			webhook, avatar, ..
+		} => page.webhooks.as_ref().is_some_and(|items| {
+			items.iter().any(|hook| {
+				hook.id == *webhook
+					&& match avatar {
+						model::Patch::Null => hook.avatar.is_none(),
+						model::Patch::Value(_) => hook.avatar.is_some(),
+						model::Patch::Absent => false,
+					}
+			})
+		}),
 		Action::DeleteWebhook { webhook, .. } => {
 			page.webhooks
 				.as_ref()
