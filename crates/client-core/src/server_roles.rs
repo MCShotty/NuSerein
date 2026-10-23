@@ -49,14 +49,6 @@ impl State {
 			.iter()
 			.find(|value| value.id == role)
 	}
-	fn owns_guild(&self, guild: Id) -> bool {
-		self.user.as_ref().is_some_and(|user| {
-			self.permissions
-				.guilds
-				.get(&guild)
-				.is_some_and(|metadata| metadata.owner == Some(user.id))
-		})
-	}
 	pub fn can_edit_guild_role(&self, guild: Id, role: Id) -> bool {
 		if !self.can_open_role_settings(guild) {
 			return false;

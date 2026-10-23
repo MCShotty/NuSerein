@@ -317,7 +317,7 @@ impl State {
 						generation: self.generation,
 						event: Event::Permissions(crate::permissions::Event::Owner {
 							guild,
-							owner,
+							owner: model::permissions::Patch::Value(owner),
 						}),
 					});
 					self.server_admin.access.recipient = None;
@@ -534,7 +534,7 @@ mod tests {
 			generation: state.generation,
 			event: Event::Permissions(crate::permissions::Event::Owner {
 				guild: Id(2),
-				owner: Id(3),
+				owner: model::permissions::Patch::Value(Id(3)),
 			}),
 		});
 		assert!(!state.owns_guild(Id(2)));
