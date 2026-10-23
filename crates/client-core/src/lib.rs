@@ -3044,7 +3044,20 @@ impl State {
 		) {
 			self.navigation_index.bytes.set(None);
 		}
-		self.invalidate_member_review(&envelope.event);
+		// Ordinary arrivals cannot invalidate the drawer's snapshot. Keep their hot path
+		// away from the cold administrative state.
+		if matches!(
+			&envelope.event,
+			Event::Patch(_)
+				| Event::Delete { .. }
+				| Event::DeleteBulk { .. }
+				| Event::Unavailable(_)
+				| Event::Disconnected
+				| Event::Resync
+				| Event::Failure(_)
+		) {
+			self.invalidate_member_review(&envelope.event);
+		}
 		let access_changed = envelope.event.changes_access();
 		if access_changed && self.search_access_changed(&envelope.event) {
 			self.clear_search();
@@ -5311,6 +5324,92 @@ impl Event {
 
 #[cfg(test)]
 mod tests {
+
+	#[test]
+	fn member_review_invalidates_only_for_snapshot_mutations_or_session_loss() {
+		use model::{moderation, server_admin};
+		let review = || moderation::Review {
+			guild: Id(2),
+			channel: Id(1),
+			member: server_admin::Member {
+				user: message(50).author,
+				nick: None,
+				roles: vec![],
+				joined_at: None,
+				join_source: None,
+				invite_code: None,
+				flags: None,
+				unusual_dm_until: None,
+				timeout_until: None,
+			},
+			roles: vec![],
+			messages: [50, 51]
+				.into_iter()
+				.map(|id| moderation::ReviewMessage {
+					id: Id(id),
+					channel: Id(1),
+					excerpt: "Synthetic review excerpt".into(),
+				})
+				.collect(),
+			audit: vec![],
+			audit_window: None,
+			messages_error: None,
+			audit_error: None,
+		};
+		let mut state = State::default();
+		state.server_admin.member_review = Some(review());
+		apply(&mut state, Event::Message(message(50)));
+		let retained = state.server_admin.member_review.as_ref().unwrap();
+		assert_eq!(retained.messages.len(), 2);
+		assert_eq!(retained.messages[0].excerpt, "Synthetic review excerpt");
+		assert!(retained.messages_error.is_none());
+		apply(
+			&mut state,
+			Event::Patch(crate::message_actions::content_patch(
+				Id(1),
+				Id(50),
+				"Edited text".into(),
+			)),
+		);
+		let invalidated = state.server_admin.member_review.as_ref().unwrap();
+		assert!(invalidated.messages.is_empty() && invalidated.messages_error.is_some());
+		for event in [
+			Event::Delete {
+				channel: Id(1),
+				id: Id(50),
+			},
+			Event::DeleteBulk {
+				channel: Id(1),
+				ids: vec![Id(50)],
+			},
+		] {
+			state.server_admin.member_review = Some(review());
+			apply(&mut state, event);
+			let retained = &state.server_admin.member_review.as_ref().unwrap().messages;
+			assert_eq!(retained.len(), 1);
+			assert_eq!(retained[0].id, Id(51));
+		}
+		state.server_admin.member_review = Some(review());
+		apply(&mut state, Event::Unavailable(Id(1)));
+		assert!(
+			state
+				.server_admin
+				.member_review
+				.as_ref()
+				.unwrap()
+				.messages
+				.is_empty()
+		);
+		for event in [
+			Event::Disconnected,
+			Event::Resync,
+			Event::Failure(auth::Failure::Network),
+		] {
+			state.server_admin.member_review = Some(review());
+			apply(&mut state, event);
+			assert!(state.server_admin.member_review.is_none());
+		}
+	}
 
 	#[test]
 	#[ignore = "manual release timing; run with --release --ignored --nocapture"]
