@@ -88,6 +88,28 @@ impl Page {
 			Self::AuditLog => "server-settings-page-audit-log",
 		}
 	}
+	fn activity_label(self, state: &State, guild: Id, label: &str) -> Option<String> {
+		let count = state.guild_application_count(guild);
+		if self == Self::Applications
+			&& let Some(count) = count.filter(|count| *count > 0)
+		{
+			return Some(format!(
+				"{} ({})",
+				crate::i18n::translate_if_key(label),
+				if count > 99 {
+					"99+".into()
+				} else {
+					count.to_string()
+				}
+			));
+		}
+		(matches!(self, Self::Members | Self::Applications)
+			&& count.is_none()
+			&& state.server_admin.guild == Some(guild)
+			&& state.server_admin.access.applications_changed
+			&& state.can_review_guild_applications(guild))
+		.then(|| format!("{} •", crate::i18n::translate_if_key(label)))
+	}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1317,24 +1339,7 @@ impl Editor {
 			} else {
 				target.page == self.page && target.anchor.is_none()
 			};
-			let label = if target.page == Page::Applications {
-				state
-					.guild_application_count(guild)
-					.filter(|count| *count > 0)
-					.map(|count| {
-						format!(
-							"{} ({})",
-							crate::i18n::translate_if_key(target.label),
-							if count > 99 {
-								"99+".into()
-							} else {
-								count.to_string()
-							}
-						)
-					})
-			} else {
-				None
-			};
+			let label = target.page.activity_label(state, guild, target.label);
 			if crate::settings::nav_item(ui, label.as_deref().unwrap_or(target.label), selected)
 				.clicked()
 			{
@@ -2632,6 +2637,62 @@ fn timeout_picker(ui: &mut egui::Ui, timeout: &mut u32) {
 #[cfg(test)]
 mod navigation_tests {
 	use super::*;
+	#[test]
+	fn application_updates_show_a_neutral_marker_only_when_the_count_is_unknown() {
+		let (mut state, guild, _) = fixture();
+		state.server_admin.guild = Some(guild);
+		state.server_admin.access.applications_changed = true;
+		state.server_admin.access.pending_count = None;
+		for page in [Page::Members, Page::Applications] {
+			assert!(
+				page.activity_label(&state, guild, page.label())
+					.unwrap()
+					.ends_with('•')
+			);
+			assert!(
+				page.activity_label(&state, Id(999_999), page.label())
+					.is_none()
+			);
+		}
+		assert!(
+			Page::Roles
+				.activity_label(&state, guild, Page::Roles.label())
+				.is_none()
+		);
+		state.server_admin.access.pending_count = Some(0);
+		assert!(
+			Page::Applications
+				.activity_label(&state, guild, Page::Applications.label())
+				.is_none()
+		);
+		assert!(
+			Page::Members
+				.activity_label(&state, guild, Page::Members.label())
+				.is_none()
+		);
+		state.server_admin.access.pending_count = Some(100);
+		assert!(
+			Page::Applications
+				.activity_label(&state, guild, Page::Applications.label())
+				.unwrap()
+				.ends_with("(99+)")
+		);
+		state.server_admin.access.pending_count = None;
+		state.server_admin.access.applications_changed = false;
+		assert!(
+			Page::Applications
+				.activity_label(&state, guild, Page::Applications.label())
+				.is_none()
+		);
+		state.server_admin.access.applications_changed = true;
+		state.permissions.guilds.clear();
+		state.permissions.clear_cache();
+		assert!(
+			Page::Members
+				.activity_label(&state, guild, Page::Members.label())
+				.is_none()
+		);
+	}
 	fn fixture() -> (State, Id, Editor) {
 		crate::i18n::set_current(crate::i18n::Language::English);
 		let mut state = test_support::demo_state();
