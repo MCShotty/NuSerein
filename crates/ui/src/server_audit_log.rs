@@ -7,11 +7,23 @@ use model::{
 	server_audit_log::{Change, Entry, Page, Query},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Target {
+	User(Id),
+	Channel(Id),
+	Role(Id),
+}
 #[derive(Default)]
 pub(super) struct AuditLogUi {
 	query: Query,
 	expanded: Option<Id>,
 	preview_expand: bool,
+	actor_search: String,
+	action_search: String,
+	search: String,
+	filtered: Vec<usize>,
+	filter_key: Option<(u64, usize, u64, crate::i18n::Language)>,
+	pub target: Option<Target>,
 }
 impl AuditLogUi {
 	pub fn preview(&mut self, expanded: bool) {
@@ -90,6 +102,15 @@ impl AuditLogUi {
 				.width(picker_width)
 				.truncate()
 				.show_ui(ui, |ui| {
+					ui.add(
+						egui::TextEdit::singleline(&mut self.actor_search)
+							.char_limit(100)
+							.hint_text(crate::i18n::translate("server-audit-search-actors")),
+					);
+					let actor_query = self.actor_search.trim().to_lowercase();
+					if let Ok(id) = actor_query.parse::<Id>() {
+						ui.selectable_value(&mut query.user, Some(id), format!("ID {id}"));
+					}
 					ui.selectable_value(
 						&mut query.user,
 						None,
@@ -100,6 +121,11 @@ impl AuditLogUi {
 							page.entries
 								.iter()
 								.any(|entry| entry.user_id == Some(user.id))
+								&& (actor_query.is_empty()
+									|| user.name.to_lowercase().contains(&actor_query)
+									|| user.username.as_deref().is_some_and(|name| {
+										name.to_lowercase().contains(&actor_query)
+									}))
 						}) {
 							ui.selectable_value(&mut query.user, Some(user.id), &user.name);
 						}
@@ -129,12 +155,24 @@ impl AuditLogUi {
 				.width(picker_width)
 				.truncate()
 				.show_ui(ui, |ui| {
+					ui.add(
+						egui::TextEdit::singleline(&mut self.action_search)
+							.char_limit(100)
+							.hint_text(crate::i18n::translate("server-audit-search-actions")),
+					);
+					let action_query = self.action_search.trim().to_lowercase();
 					ui.selectable_value(
 						&mut query.action,
 						None,
 						crate::i18n::translate("server-audit-log-show-all-actions"),
 					);
 					for &(action, label) in ACTIONS {
+						if !crate::i18n::translate_if_key(label)
+							.to_lowercase()
+							.contains(&action_query)
+						{
+							continue;
+						}
 						ui.selectable_value(
 							&mut query.action,
 							Some(action),
@@ -161,6 +199,54 @@ impl AuditLogUi {
 			crate::dialog::notice(ui, crate::dialog::Level::Error, error);
 		}
 		if let Some(page) = &state.server_admin.audit_log {
+			if ui
+				.add(
+					egui::TextEdit::singleline(&mut self.search)
+						.char_limit(100)
+						.hint_text(crate::i18n::translate("server-audit-search-loaded"))
+						.desired_width(width.min(420.0)),
+				)
+				.changed()
+			{
+				self.filter_key = None;
+			}
+			if self.filter_key
+				!= Some((
+					state.server_admin.revision,
+					page.entries.len(),
+					state.channel_list_revision(),
+					crate::i18n::current(),
+				)) {
+				let text = self.search.trim().to_lowercase();
+				self.filtered = page
+					.entries
+					.iter()
+					.enumerate()
+					.filter(|(_, entry)| audit_matches(entry, page, state, &text))
+					.map(|(index, _)| index)
+					.collect();
+				self.filter_key = Some((
+					state.server_admin.revision,
+					page.entries.len(),
+					state.channel_list_revision(),
+					crate::i18n::current(),
+				));
+			}
+			ui.weak(crate::i18n::translate_args(
+				"server-audit-loaded-range",
+				&[
+					("shown", &self.filtered.len().to_string()),
+					("total", &page.entries.len().to_string()),
+				],
+			));
+			if let Some(oldest) = page.entries.last().zip(page.entries.first()) {
+				ui.weak(format!(
+					"{} — {}",
+					timestamp(oldest.0.id),
+					timestamp(oldest.1.id)
+				));
+			}
+			ui.add_space(8.0);
 			if self.preview_expand {
 				self.expanded = page
 					.entries
@@ -169,7 +255,7 @@ impl AuditLogUi {
 					.map(|entry| entry.id);
 				self.preview_expand = false;
 			}
-			if page.entries.is_empty() && !state.server_admin.pending {
+			if self.filtered.is_empty() && !state.server_admin.pending {
 				design::empty_state(
 					ui,
 					crate::icons::Icon::Search,
@@ -181,7 +267,9 @@ impl AuditLogUi {
 			// the paging controls pinned below it.
 			let paging = state.server_admin.audit_limit_reached || page.has_more;
 			let height = design::list_height(ui, if paging { 60.0 } else { 0.0 });
-			self.entries(ui, state, page, avatars, height);
+			let rows = std::mem::take(&mut self.filtered);
+			self.entries(ui, state, page, avatars, height, &rows);
+			self.filtered = rows;
 			if paging {
 				ui.add_space(12.0);
 			}
@@ -226,13 +314,14 @@ impl AuditLogUi {
 		page: &Page,
 		avatars: &mut Avatars,
 		height: f32,
+		rows: &[usize],
 	) {
 		let expanded_index = self
 			.expanded
-			.and_then(|id| page.entries.iter().position(|entry| entry.id == id));
-		let extra = expanded_index.map_or(0.0, |i| details_height(&page.entries[i]));
+			.and_then(|id| rows.iter().position(|&index| page.entries[index].id == id));
+		let extra = expanded_index.map_or(0.0, |i| details_height(&page.entries[rows[i]]));
 		let width = ui.available_width();
-		let total_height = page.entries.len() as f32 * 80.0 + extra;
+		let total_height = rows.len() as f32 * 80.0 + extra;
 		egui::ScrollArea::vertical()
 			.id_salt("audit-log-entries")
 			.max_height(height)
@@ -241,9 +330,9 @@ impl AuditLogUi {
 				ui.set_min_height(total_height);
 				let origin = ui.cursor().min;
 				let first = ((viewport.min.y - extra).max(0.0) / 80.0).floor() as usize;
-				let end = ((viewport.max.y / 80.0).ceil() as usize + 1).min(page.entries.len());
+				let end = ((viewport.max.y / 80.0).ceil() as usize + 1).min(rows.len());
 				for index in first..end {
-					let entry = &page.entries[index];
+					let entry = &page.entries[rows[index]];
 					let expanded = expanded_index == Some(index);
 					let y = index as f32 * 80.0
 						+ if expanded_index.is_some_and(|open| index > open) {
@@ -376,7 +465,9 @@ impl AuditLogUi {
 								.max_height(body.height())
 								.auto_shrink([false, true])
 								.show(ui, |ui| {
-									details(ui, entry, state);
+									if let Some(target) = details(ui, entry, state, page) {
+										self.target = Some(target);
+									}
 								});
 						}
 					}
@@ -387,7 +478,7 @@ impl AuditLogUi {
 fn details_height(entry: &Entry) -> f32 {
 	((entry.changes.len() + entry.options.len() + usize::from(entry.reason.is_some())).max(1)
 		as f32 * 28.0
-		+ 20.0)
+		+ 68.0)
 		.min(420.0)
 }
 fn user_name(page: Option<&Page>, id: Id) -> String {
@@ -448,7 +539,7 @@ fn timestamp(id: Id) -> String {
 	};
 	format!("{date} at {}", crate::local_time::clock(local))
 }
-fn details(ui: &mut egui::Ui, entry: &Entry, state: &State) {
+fn details(ui: &mut egui::Ui, entry: &Entry, state: &State, page: &Page) -> Option<Target> {
 	let colors = design::palette(ui);
 	let mut index = 1;
 	let mut line = |ui: &mut egui::Ui, text: String| {
@@ -477,6 +568,71 @@ fn details(ui: &mut egui::Ui, entry: &Entry, state: &State) {
 			"server-audit-log-details-no-additional-details-were-provided-for-this-event",
 		));
 	}
+	let mut target = None;
+	ui.horizontal_wrapped(|ui| {
+		if let Some(actor) = entry
+			.user_id
+			.filter(|id| page.users.iter().any(|user| user.id == *id))
+		{
+			if ui
+				.link(crate::i18n::translate("server-audit-view-actor"))
+				.clicked()
+			{
+				target = Some(Target::User(actor));
+			}
+		}
+		if let Some(id) = entry
+			.target_id
+			.as_deref()
+			.and_then(|id| id.parse::<Id>().ok())
+		{
+			let destination = match entry.action_type {
+				10..=15 | 110..=112 if state.can_view(id) => {
+					Some(("server-audit-view-channel", Target::Channel(id)))
+				}
+				30..=32
+					if state.can_open_role_settings(page.guild)
+						&& state
+							.guild_roles(page.guild)
+							.is_some_and(|roles| roles.iter().any(|role| role.id == id)) =>
+				{
+					Some(("server-audit-view-role", Target::Role(id)))
+				}
+				20..=28 if page.users.iter().any(|user| user.id == id) => {
+					Some(("server-audit-view-member", Target::User(id)))
+				}
+				_ => None,
+			};
+			if let Some((label, destination)) = destination {
+				if ui.link(crate::i18n::translate(label)).clicked() {
+					target = Some(destination);
+				}
+			}
+			if ui
+				.link(crate::i18n::translate("server-audit-copy-target-id"))
+				.clicked()
+			{
+				ui.ctx().copy_text(id.to_string());
+			}
+		}
+	});
+	target
+}
+fn audit_matches(entry: &Entry, page: &Page, state: &State, query: &str) -> bool {
+	query.is_empty()
+		|| summary(entry, page, state).to_lowercase().contains(query)
+		|| entry
+			.reason
+			.as_deref()
+			.is_some_and(|reason| reason.to_lowercase().contains(query))
+		|| entry
+			.target_id
+			.as_deref()
+			.is_some_and(|target| target == query)
+		|| entry
+			.changes
+			.iter()
+			.any(|change| change_text(change, state).to_lowercase().contains(query))
 }
 fn change_text(change: &Change, state: &State) -> String {
 	if matches!(change.old, Patch::Absent)
@@ -666,6 +822,49 @@ const ACTIONS: &[(u16, &str)] = &[
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn audit_loaded_filter_keeps_exact_targets_and_reasons_without_changing_server_query() {
+		let state = State::default();
+		let entry = Entry {
+			id: Id(123),
+			user_id: None,
+			target_id: Some("456".into()),
+			action_type: 22,
+			reason: Some("Repeated spam".into()),
+			options: vec![],
+			changes: vec![],
+		};
+		let page = Page {
+			guild: Id(1),
+			entries: vec![entry],
+			users: vec![],
+			has_more: true,
+		};
+		assert!(audit_matches(&page.entries[0], &page, &state, "spam"));
+		assert!(audit_matches(&page.entries[0], &page, &state, "456"));
+		assert!(!audit_matches(
+			&page.entries[0],
+			&page,
+			&state,
+			"unknown target"
+		));
+		let query = Query {
+			user: Some(Id(3)),
+			action: Some(22),
+			before: None,
+		};
+		let view = AuditLogUi {
+			query: query.clone(),
+			search: "spam".into(),
+			..Default::default()
+		};
+		assert_eq!(view.query, query);
+		assert!(
+			page.has_more,
+			"local filtering does not claim the archive is exhausted"
+		);
+	}
+
 	#[test]
 	fn audit_layout_fits_and_entry_expansion_is_bounded() {
 		for width in [280.0, 360.0, 800.0] {

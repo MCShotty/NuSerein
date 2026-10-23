@@ -5538,3 +5538,36 @@ menu-close = Close
 menu-back = Back
 menu-open-discord = Open in Discord
 menu-application = Application
+
+# Searchable server administration navigation.
+server-settings-section-server = SERVER
+server-settings-section-community = COMMUNITY
+server-settings-search = Search server settings
+server-settings-no-results = No matching settings available to you.
+server-settings-all-pages = All server settings
+server-settings-save-before-navigation = Save or reset the changes on this page before switching settings.
+server-settings-conflict = These settings changed elsewhere. Your edits are preserved. Reload the latest settings or reapply your edits before saving.
+server-settings-conflict-reload = Reload latest
+server-settings-conflict-reapply = Reapply my edits
+
+server-invites-search = Search by inviter, channel or invite code
+server-invites-match-count = { $shown } of { $total } loaded invites
+server-invites-no-matches = No matching invite links
+server-invites-search-help = Try an inviter name, username, channel or invite code.
+
+server-audit-search-actors = Search actors or enter an actor ID
+server-audit-search-actions = Search actions
+server-audit-search-loaded = Search loaded targets, changes and reasons
+server-audit-loaded-range = { $shown } of { $total } loaded entries · use actor/action filters to search the server
+server-audit-view-actor = View actor
+server-audit-view-member = View member
+server-audit-view-channel = View channel
+server-audit-view-role = View role
+server-audit-copy-target-id = Copy target ID
+
+server-settings-page-applications = Applications
+server-settings-page-access = Access & Ownership
+server-settings-page-bans = Bans
+server-settings-page-events = Events
+server-settings-events-help = Manage scheduled events, recurring occurrences and event participation.
+server-settings-open-events = Open events

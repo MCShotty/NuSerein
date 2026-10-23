@@ -4536,6 +4536,11 @@ impl MessagingUi {
 					),
 				);
 			}
+			if let Some(guild) = self.server_settings.events_requested.take()
+				&& self.server_settings.navigate_away(state)
+			{
+				self.server_menu.events_requested = Some(guild);
+			}
 			if let Some(action) = self.server_settings.admin.user_action.take() {
 				self.user_action = Some(action);
 			}
