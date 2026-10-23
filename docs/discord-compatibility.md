@@ -32,6 +32,11 @@ Moderation rechecks hierarchy and permissions, offers explicit history-deletion 
 and never automatically resends an uncertain write. Server deafen uses the existing member
 voice PATCH alongside mute, move and disconnect.
 
+Service AutoMod and incident-message rows offer explicit member-review links. The reader
+chooses a recent-join or supplied-safety filter, or opens Mod View for a received mention.
+These links do not classify message text, identify a raid's participants, or treat a report
+as proof of misconduct. Ordinary messages cannot acquire the links by copying alert text.
+
 Bulk banning accepts at most 100 explicitly selected targets. The normal-account
 `POST /guilds/{guild}/bulk-ban/v2` HTTP acknowledgement means **accepted**, not completed.
 Only a valid account/guild-scoped `GUILD_BULK_BAN_UPDATE` matching the active target set

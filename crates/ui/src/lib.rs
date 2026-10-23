@@ -3,6 +3,7 @@
 mod account_badge;
 mod account_menu;
 mod account_settings;
+mod activity_alerts;
 mod announcements;
 #[cfg(test)]
 mod appearance_transparency_tests;
@@ -5486,6 +5487,20 @@ impl MessagingUi {
 		}
 		if let Some(parent) = self.timeline.threads_request.take() {
 			self.archive_parent = Some(parent);
+		}
+		if let Some(request) = self.timeline.activity_review.take()
+			&& self.timeline.speech_allowed(state, request.message)
+			&& let Some(guild) = request.resolve(state)
+		{
+			let command = match request.choice {
+				activity_alerts::Choice::Members(filter) => {
+					self.review_activity_members(state, guild, filter.members())
+				}
+				activity_alerts::Choice::Member(user) => self.preview_mod_view(state, guild, user),
+			};
+			if let Some(command) = command {
+				commands.push(command);
+			}
 		}
 		if let Some((channel, message)) = self.timeline.thread_request.take() {
 			state.clear_channel_action_result(channel);

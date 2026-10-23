@@ -39,6 +39,13 @@ pub(super) struct Admin {
 	pub message: Option<Id>,
 }
 impl Admin {
+	pub fn with_member_query(query: Query) -> Self {
+		Self {
+			query,
+			query_initialized: true,
+			..Self::default()
+		}
+	}
 	pub fn preparing(&self) -> bool {
 		self.preparing || self.uploading
 	}

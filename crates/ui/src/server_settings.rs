@@ -655,6 +655,36 @@ impl MessagingUi {
 		self.server_settings.audit_log.filter_member(user);
 		Some(command)
 	}
+	pub(super) fn review_activity_members(
+		&mut self,
+		state: &mut State,
+		guild: Id,
+		filters: model::server_admin::MemberFilters,
+	) -> Option<Command> {
+		if !state.can_open_member_settings(guild) {
+			return None;
+		}
+		if self.has_server_settings_changes() {
+			state.status = "Save or discard server settings changes before opening member review.";
+			return None;
+		}
+		let query = model::server_admin::Query {
+			filters,
+			..Default::default()
+		};
+		let command = state.request_server_admin(
+			guild,
+			model::server_admin::Action::LoadMembers(query.clone()),
+		)?;
+		self.settings.open = false;
+		self.server_settings = Editor {
+			scope: Some((state.generation, guild)),
+			page: Page::Members,
+			admin: crate::server_admin::Admin::with_member_query(query),
+			..Default::default()
+		};
+		Some(command)
+	}
 	pub fn accepts_server_emoji_drops(&self) -> bool {
 		self.server_settings.is_open() && self.server_settings.page == Page::Emoji
 	}
@@ -2669,6 +2699,25 @@ fn timeout_picker(ui: &mut egui::Ui, timeout: &mut u32) {
 #[cfg(test)]
 mod navigation_tests {
 	use super::*;
+	#[test]
+	fn activity_review_opens_members_with_the_explicit_filter_without_navigating_history() {
+		let (mut state, guild, _) = fixture();
+		let selected = state.selected;
+		let mut messaging = crate::MessagingUi::default();
+		let filters = model::server_admin::MemberFilters {
+			signal: Some(model::server_admin::MemberSignal::UnusualDm),
+			..Default::default()
+		};
+		let command = messaging
+			.review_activity_members(&mut state, guild, filters.clone())
+			.unwrap();
+		assert!(
+			matches!(command, Command::ServerAdmin { guild: target, action, .. } if target == guild && matches!(*action, model::server_admin::Action::LoadMembers(ref query) if query.filters == filters))
+		);
+		assert_eq!(state.selected, selected);
+		assert_eq!(state.server_admin.query.filters, filters);
+		assert!(messaging.server_settings.page == Page::Members);
+	}
 	#[test]
 	fn application_updates_show_a_neutral_marker_only_when_the_count_is_unknown() {
 		let (mut state, guild, _) = fixture();

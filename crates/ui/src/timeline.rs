@@ -111,6 +111,7 @@ pub struct TimelineView {
 	pub(super) thread_request: Option<(Id, Id)>,
 	/// Channel whose Threads dialog a system row asked to open.
 	pub(super) threads_request: Option<Id>,
+	pub(super) activity_review: Option<crate::activity_alerts::Request>,
 	/// The starter message shown as a pseudo-row at the top of an exhausted thread.
 	starter_row: Option<Id>,
 	/// Whether the direct-message introduction leads the rows of an exhausted conversation.
@@ -3850,6 +3851,9 @@ impl TimelineView {
 												&mut self.threads_request,
 											),
 										);
+										if self.restricted.allows(state, crate::restricted::Key::message(message)) {
+											crate::activity_alerts::show(ui, state, message, &mut self.activity_review);
+										}
 									}
 									let body = egui::Frame::NONE
 										.inner_margin(egui::Margin {
