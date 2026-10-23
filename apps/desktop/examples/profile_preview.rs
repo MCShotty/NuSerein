@@ -1414,9 +1414,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				prime_conversation(&mut state, args.iter().any(|arg| arg == "--inline-media"));
 			}
 			let mut messaging = ui::MessagingUi::default();
-			if page == "channels" {
-				messaging.preview_browse_channels(&state, model::Id(10));
-			}
 			let mut mfa_fixture_target = None;
 			if styled {
 				messaging.cosmetics.name_styles = true;
@@ -1649,6 +1646,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						});
 					}
 				}
+			} else if page == "channels" {
+				messaging.preview_browse_channels(&state, model::Id(10));
 			} else if page == "mod-view" {
 				prime_mod_view(&mut state, &mut messaging);
 			} else if page.starts_with("server") {
