@@ -61,6 +61,32 @@ pub(super) struct ChannelMenu {
 }
 
 impl ChannelMenu {
+	pub fn take_webhook_avatar_request(&mut self) -> Option<(u64, Id, Id, u64)> {
+		let dialog = self.dialog.as_mut()?;
+		let (webhook, request) = dialog.integrations.take_avatar_request()?;
+		Some((self.generation, dialog.guild, webhook, request))
+	}
+	pub fn webhook_avatar_active(&self, scope: (u64, Id, Id, u64)) -> bool {
+		self.generation == scope.0
+			&& self.dialog.as_ref().is_some_and(|dialog| {
+				dialog.guild == scope.1 && dialog.integrations.avatar_active(scope.2, scope.3)
+			})
+	}
+	pub fn accept_webhook_avatar(
+		&mut self,
+		ctx: &egui::Context,
+		scope: (u64, Id, Id, u64),
+		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
+	) {
+		if self.webhook_avatar_active(scope) {
+			if let Some(dialog) = &mut self.dialog {
+				dialog
+					.integrations
+					.accept_avatar(ctx, scope.2, scope.3, result);
+			}
+		}
+	}
+
 	pub fn is_open(&self) -> bool {
 		self.dialog.is_some()
 	}
@@ -1306,7 +1332,7 @@ impl Dialog {
 			Page::Permissions => {
 				design::page_title(ui, "server-roles-editor-permissions");
 				self.permissions
-					.show(ui, state, channel, &mut self.draft.overwrites);
+					.show(ui, state, channel, &mut self.draft.overwrites, commands);
 			}
 			Page::Integrations => {
 				self.integrations

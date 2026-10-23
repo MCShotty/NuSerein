@@ -25,6 +25,7 @@ mod profile_edit;
 mod server_profile;
 #[cfg(debug_assertions)]
 pub use profile_edit::debug_profile_board_request_check;
+mod command_permissions;
 mod inbox;
 pub mod proxy;
 #[cfg(test)]

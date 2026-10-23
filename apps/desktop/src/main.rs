@@ -1011,6 +1011,8 @@ struct Desktop {
 	server_icon: group_icon::GroupIcon,
 	community_artwork: group_icon::GroupIcon,
 	community_artwork_scope: Option<(u64, model::Id, Option<model::Id>, bool, u64)>,
+	webhook_avatar: group_icon::GroupIcon,
+	webhook_avatar_scope: Option<(u64, model::Id, model::Id, u64)>,
 	role_icon: group_icon::GroupIcon,
 	role_icon_scope: Option<(u64, model::Id, model::Id, u64)>,
 	emoji_upload: emoji_upload::EmojiUpload,
@@ -2404,6 +2406,8 @@ impl Desktop {
 			server_icon: group_icon::GroupIcon::default(),
 			community_artwork: group_icon::GroupIcon::default(),
 			community_artwork_scope: None,
+			webhook_avatar: group_icon::GroupIcon::default(),
+			webhook_avatar_scope: None,
 			role_icon: group_icon::GroupIcon::default(),
 			role_icon_scope: None,
 			emoji_upload: emoji_upload::EmojiUpload::default(),
@@ -6072,6 +6076,18 @@ impl eframe::App for Desktop {
 		{
 			self.messaging.accept_community_artwork(&ctx, scope, result);
 		}
+		if let Some((_, result)) = self
+			.webhook_avatar
+			.poll_scoped(self.state.generation, |guild| {
+				self.webhook_avatar_scope.is_some_and(|scope| {
+					scope.1 == guild
+						&& self.state.can_set_webhook_avatar(guild, scope.2)
+						&& self.messaging.webhook_avatar_active(scope)
+				})
+			}) && let Some(scope) = self.webhook_avatar_scope.take()
+		{
+			self.messaging.accept_webhook_avatar(&ctx, scope, result);
+		}
 		if let Some((_, result)) = self.role_icon.poll_scoped(self.state.generation, |guild| {
 			self.role_icon_scope.is_some_and(|scope| {
 				scope.1 == guild
@@ -6653,6 +6669,28 @@ impl eframe::App for Desktop {
 					Err(error) => self
 						.messaging
 						.accept_community_artwork(&ctx, scope, Err(error)),
+				}
+			}
+			if let Some(scope) = self.messaging.take_webhook_avatar_request() {
+				let result = if scope.0 != self.state.generation
+					|| !self.state.can_set_webhook_avatar(scope.1, scope.2)
+				{
+					Err("You can no longer edit this webhook")
+				} else {
+					self.webhook_avatar.start(
+						(scope.0, scope.1, scope.3),
+						self.runtime.handle(),
+						&ctx,
+						self.window.clone(),
+						"Choose webhook avatar",
+						128,
+					)
+				};
+				match result {
+					Ok(()) => self.webhook_avatar_scope = Some(scope),
+					Err(error) => self
+						.messaging
+						.accept_webhook_avatar(&ctx, scope, Err(error)),
 				}
 			}
 			if let Some(scope) = self.messaging.take_server_role_icon_request() {

@@ -8,6 +8,7 @@ mod attachments;
 pub mod automod;
 pub mod badges;
 pub mod collectibles;
+pub mod command_permissions;
 pub mod community_admin;
 
 pub mod community;

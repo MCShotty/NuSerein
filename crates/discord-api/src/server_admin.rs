@@ -94,6 +94,10 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 		match action {
+			Action::CommandPermissions(action) => self
+				.command_permissions(guild, action)
+				.await
+				.map(Outcome::CommandPermissions),
 			Action::Community(action) => self
 				.community_admin(guild, action)
 				.await

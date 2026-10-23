@@ -33,6 +33,14 @@ struct Deletion {
 }
 #[derive(Default)]
 pub(super) struct IntegrationsUi {
+	command_permissions: crate::command_permissions::PermissionsUi,
+	command_action: Option<model::command_permissions::Action>,
+	avatar: model::Patch<String>,
+	avatar_texture: Option<egui::TextureHandle>,
+	avatar_pending: bool,
+	avatar_requested: bool,
+	avatar_request: u64,
+	avatar_submitted: bool,
 	page: Page,
 	channel: Option<Id>,
 	draft: Option<Draft>,
@@ -45,6 +53,50 @@ pub(super) struct IntegrationsUi {
 	copied: Option<Id>,
 }
 impl IntegrationsUi {
+	pub fn take_avatar_request(&mut self) -> Option<(Id, u64)> {
+		if !std::mem::take(&mut self.avatar_requested) {
+			return None;
+		}
+		Some((self.draft.as_ref()?.id?, self.avatar_request))
+	}
+	pub fn avatar_active(&self, webhook: Id, request: u64) -> bool {
+		self.page == Page::Editor
+			&& self.avatar_pending
+			&& self.avatar_request == request
+			&& self.draft.as_ref().and_then(|draft| draft.id) == Some(webhook)
+	}
+	pub fn accept_avatar(
+		&mut self,
+		ctx: &egui::Context,
+		webhook: Id,
+		request: u64,
+		result: Result<Option<(String, egui::ColorImage)>, &'static str>,
+	) {
+		if !self.avatar_active(webhook, request) {
+			return;
+		}
+		self.avatar_pending = false;
+		match result {
+			Ok(Some((data, image)))
+				if data.len() <= server_admin::MAX_IMAGE_URI
+					&& data.starts_with("data:image/png;base64,")
+					&& (1..=128).contains(&image.size[0])
+					&& (1..=128).contains(&image.size[1])
+					&& image.pixels.len() == image.size[0] * image.size[1] =>
+			{
+				self.avatar = model::Patch::Value(data);
+				self.avatar_texture = Some(ctx.load_texture(
+					"webhook-avatar-draft",
+					image,
+					egui::TextureOptions::LINEAR,
+				));
+			}
+			Ok(None) => {}
+			Ok(Some(_)) => self.error = Some("Prepared webhook avatar exceeds its limits"),
+			Err(error) => self.error = Some(error),
+		}
+	}
+
 	pub fn for_channel(channel: Id) -> Self {
 		Self {
 			channel: Some(channel),
@@ -66,6 +118,13 @@ impl IntegrationsUi {
 		};
 	}
 	pub fn has_changes(&self) -> bool {
+		if self.command_permissions.has_changes()
+			|| self.avatar_pending
+			|| self.avatar_submitted
+			|| !matches!(self.avatar, model::Patch::Absent)
+		{
+			return true;
+		}
 		self.draft != self.baseline || self.submitted
 	}
 	/// Overview and the webhook lists virtualize their own rows, so they own the page scroll.
@@ -77,6 +136,13 @@ impl IntegrationsUi {
 		self.delete.is_some()
 	}
 	pub fn sync(&mut self, state: &State, guild: Id) {
+		if self.avatar_submitted && !state.server_admin.pending {
+			self.avatar_submitted = false;
+			if state.server_admin.error.is_none() {
+				self.avatar = model::Patch::Absent;
+				self.avatar_texture = None;
+			}
+		}
 		if !self.channel.map_or_else(
 			|| state.can_open_integration_settings(guild),
 			|channel| state.can_manage_webhook_channel(guild, channel),
@@ -303,13 +369,27 @@ impl IntegrationsUi {
 				channel,
 			});
 		}
+		if let Some(action) = self.command_action.take() {
+			if let Some(command) =
+				state.request_server_admin(guild, server_admin::Action::CommandPermissions(action))
+			{
+				commands.push(command);
+			} else {
+				self.command_permissions.rejected();
+			}
+		}
 		if let Some(action) = action {
+			let avatar_write = matches!(action, Action::SetWebhookAvatar { .. });
 			let saving = action.write();
 			if let Some(command) =
 				state.request_server_admin(guild, server_admin::Action::Integrations(action))
 			{
 				commands.push(command);
-				self.submitted = saving;
+				if avatar_write {
+					self.avatar_submitted = saving;
+				} else {
+					self.submitted = saving;
+				}
 				self.error = None;
 			} else {
 				self.error = Some(
@@ -724,6 +804,9 @@ impl IntegrationsUi {
 				));
 			});
 		}
+		if let Some(app) = &integration.application {
+			self.command_action = self.command_permissions.show(ui, state, guild, app.id);
+		}
 		design::divider(ui);
 		if let Some(app) = &integration.application
 			&& let Some(webhooks) = &snapshot.webhooks
@@ -793,6 +876,60 @@ impl IntegrationsUi {
 			ui.add_space(12.0);
 			self.copy_button(ui, state, guild, webhook);
 			design::divider(ui);
+		}
+		if let Some(webhook) = self.draft.as_ref().and_then(|draft| draft.id) {
+			ui.horizontal_wrapped(|ui| {
+				if let Some(texture) = &self.avatar_texture {
+					ui.image((texture.id(), egui::vec2(48.0, 48.0)));
+				}
+				if ui
+					.add_enabled(
+						!self.avatar_pending && writable(state),
+						egui::Button::new("Choose avatar…"),
+					)
+					.clicked()
+				{
+					static NEXT: std::sync::atomic::AtomicU64 =
+						std::sync::atomic::AtomicU64::new(1);
+					self.avatar_request = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+					self.avatar_requested = true;
+					self.avatar_pending = true;
+				}
+				if ui
+					.add_enabled(
+						!self.avatar_pending && writable(state),
+						egui::Button::new("Remove avatar"),
+					)
+					.clicked()
+				{
+					self.avatar = model::Patch::Null;
+					self.avatar_texture = None;
+				}
+				if self.avatar_pending {
+					ui.spinner();
+				}
+			});
+			if !matches!(self.avatar, model::Patch::Absent) {
+				ui.horizontal(|ui| {
+					if ui
+						.add_enabled(
+							writable(state) && !self.avatar_pending,
+							egui::Button::new("Save avatar"),
+						)
+						.clicked()
+					{
+						*action = Some(Action::SetWebhookAvatar {
+							scope: self.channel,
+							webhook,
+							avatar: self.avatar.clone(),
+						});
+					}
+					if ui.button("Discard avatar change").clicked() {
+						self.avatar = model::Patch::Absent;
+						self.avatar_texture = None;
+					}
+				});
+			}
 		}
 		let Some(draft) = &mut self.draft else {
 			return;
@@ -883,7 +1020,11 @@ impl IntegrationsUi {
 				} else {
 					"profile-edit-show-save-changes"
 				},
-				valid && writable(state) && self.draft != self.baseline,
+				valid
+					&& writable(state)
+					&& matches!(self.avatar, model::Patch::Absent)
+					&& !self.avatar_pending
+					&& self.draft != self.baseline,
 			)
 			.clicked()
 			{

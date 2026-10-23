@@ -3,6 +3,7 @@ pub mod account;
 pub mod account_settings;
 pub mod application_commands;
 pub mod automod;
+pub mod command_permissions;
 pub mod community_admin;
 mod image_sharing;
 pub mod moderation;

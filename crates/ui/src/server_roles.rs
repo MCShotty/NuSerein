@@ -22,6 +22,7 @@ struct DragRole {
 }
 #[derive(Default)]
 pub(super) struct RolesUi {
+	role_preview: crate::role_preview::Preview,
 	selected: Option<Id>,
 	draft: Option<Role>,
 	baseline: Option<Role>,
@@ -328,6 +329,11 @@ impl RolesUi {
 		commands: &mut Vec<Command>,
 	) {
 		self.sync(state, guild);
+		if self.role_preview.active() {
+			self.role_preview.show(ui.ctx(), state);
+			ui.weak("Role preview is open. Disable preview to edit roles.");
+			return;
+		}
 		ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
 		if self.selected.is_none() {
 			design::page_header(
@@ -405,6 +411,7 @@ impl RolesUi {
 			self.list(ui, state, guild, commands);
 		}
 		self.confirmations(ui.ctx(), state, guild, commands);
+		self.role_preview.show(ui.ctx(), state);
 	}
 	fn list(
 		&mut self,
@@ -532,6 +539,35 @@ impl RolesUi {
 						let menu =
 							boxed_icon(ui, icons::Icon::More, "server-roles-list-role-actions");
 						egui::Popup::menu(&menu).show(|ui| {
+							if state.guild_permission(guild, p::ADMINISTRATOR)
+								&& ui.button("View Server As Role").clicked()
+							{
+								self.role_preview.open(state, guild, role.id);
+								ui.close();
+							}
+							if !role.managed
+								&& state.can_create_guild_role(guild)
+								&& ui.button("Duplicate Role").clicked()
+							{
+								action = Some(Action::Create(Edit {
+									name: Some(format!(
+										"{} copy",
+										role.name.chars().take(95).collect::<String>()
+									)),
+									colors: Some(role.colors),
+									permissions: Some(role.permissions),
+									permission_mask: role.permissions,
+									hoist: Some(role.hoist),
+									mentionable: Some(role.mentionable),
+									unicode_emoji: role
+										.unicode_emoji
+										.clone()
+										.map_or(Patch::Absent, Patch::Value),
+									..Edit::default()
+								}));
+								ui.close();
+							}
+
 							if ui
 								.button(crate::i18n::translate("server-roles-list-edit-role-2"))
 								.clicked()

@@ -6,6 +6,67 @@ use model::{
 };
 
 impl State {
+	pub fn can_set_webhook_avatar(&self, guild: Id, webhook: Id) -> bool {
+		self.server_admin.guild == Some(guild)
+			&& self
+				.server_admin
+				.integrations
+				.as_ref()
+				.and_then(|page| page.webhooks.as_ref())
+				.is_some_and(|items| {
+					items.iter().any(|hook| {
+						hook.id == webhook
+							&& hook.kind == 1 && hook
+							.channel
+							.is_some_and(|channel| self.can_manage_webhook_channel(guild, channel))
+					})
+				})
+	}
+
+	pub fn can_manage_command_permissions(&self, guild: Id) -> bool {
+		self.guild_permission(guild, p::MANAGE_GUILD | p::MANAGE_ROLES)
+	}
+	pub(crate) fn command_permissions_action_allowed(
+		&self,
+		guild: Id,
+		action: &model::command_permissions::Action,
+	) -> bool {
+		if !self.can_manage_command_permissions(guild) || !action.valid() {
+			return false;
+		}
+		match action {
+			model::command_permissions::Action::Load { application } => {
+				self.server_admin.guild == Some(guild)
+					&& self
+						.server_admin
+						.integrations
+						.as_ref()
+						.and_then(|page| page.integrations.as_ref())
+						.is_some_and(|items| {
+							items.iter().any(|item| {
+								item.application
+									.as_ref()
+									.is_some_and(|app| app.id == *application)
+							})
+						})
+			}
+			model::command_permissions::Action::Save {
+				application,
+				before,
+				..
+			} => self
+				.server_admin
+				.command_permissions
+				.as_ref()
+				.is_some_and(|page| {
+					page.guild == guild
+						&& page.application == *application
+						&& page
+							.get(before.id)
+							.is_some_and(|actual| actual.equivalent(before))
+				}),
+		}
+	}
 	pub fn can_open_integration_settings(&self, guild: Id) -> bool {
 		self.can_manage_guild(guild) || self.can_manage_guild_webhooks(guild)
 	}
@@ -66,6 +127,29 @@ impl State {
 								})
 						})
 			}
+			Action::SetWebhookAvatar { webhook, .. } => {
+				webhook_access
+					&& self
+						.integration_webhook(guild, action.scope(), *webhook)
+						.is_some_and(|hook| {
+							hook.kind == 1
+								&& hook.channel.is_some_and(|channel| {
+									self.can_manage_webhook_channel(guild, channel)
+								})
+						})
+			}
+			Action::SetWebhookAvatar {
+				webhook, avatar, ..
+			} => page.webhooks.as_ref().is_some_and(|items| {
+				items.iter().any(|hook| {
+					hook.id == *webhook
+						&& match avatar {
+							model::Patch::Null => hook.avatar.is_none(),
+							model::Patch::Value(_) => hook.avatar.is_some(),
+							model::Patch::Absent => false,
+						}
+				})
+			}),
 			Action::DeleteWebhook { webhook, .. } => {
 				webhook_access
 					&& self
@@ -192,6 +276,94 @@ mod tests {
 	use super::*;
 	use crate::{Command, Envelope, Event, auth::AuthState, server_admin};
 	use model::server_admin::{Action as AdminAction, Result as Outcome};
+	#[test]
+	fn command_permission_results_confirm_intent_clear_picker_and_retire_on_lost_access() {
+		use model::command_permissions as m;
+		let mut state = state(p::MANAGE_GUILD | p::MANAGE_ROLES);
+		let before = m::Permissions {
+			id: Id(5),
+			overrides: vec![m::Override {
+				id: Id(2),
+				kind: 1,
+				permission: true,
+			}],
+		};
+		let mut after = before.clone();
+		after.overrides[0].permission = false;
+		let snapshot = m::Snapshot {
+			guild: Id(2),
+			application: Id(5),
+			commands: vec![m::Command {
+				id: Id(6),
+				name: "Ping".into(),
+				kind: 1,
+			}],
+			permissions: vec![before.clone()],
+		};
+		state.server_admin.guild = Some(Id(2));
+		state.server_admin.command_permissions = Some(snapshot.clone());
+		state.application_commands.scope = Some(Id(2));
+		let action = m::Action::Save {
+			application: Id(5),
+			before: before.clone(),
+			after: after.clone(),
+		};
+		let Some(Command::ServerAdmin { request, .. }) =
+			state.request_server_admin(Id(2), AdminAction::CommandPermissions(action))
+		else {
+			panic!("explicit admin save");
+		};
+		let mut saved = snapshot;
+		saved.permissions = vec![after.clone()];
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::CommandPermissions(saved)),
+			})
+			.unwrap();
+		assert_eq!(state.application_commands.scope, None);
+		assert!(
+			state
+				.server_admin
+				.command_permissions
+				.as_ref()
+				.unwrap()
+				.get(Id(5))
+				.unwrap()
+				.equivalent(&after)
+		);
+		let Some(Command::ServerAdmin { request, .. }) = state.request_server_admin(
+			Id(2),
+			AdminAction::CommandPermissions(m::Action::Save {
+				application: Id(5),
+				before: after,
+				after: before,
+			}),
+		) else {
+			panic!("second explicit save");
+		};
+		state
+			.permissions
+			.guilds
+			.get_mut(&Id(2))
+			.unwrap()
+			.roles
+			.as_mut()
+			.unwrap()[0]
+			.bits = p::MANAGE_GUILD;
+		state.permissions.clear_cache();
+		let result = state.server_admin.command_permissions.clone().unwrap();
+		state
+			.apply_server_admin(server_admin::Event {
+				guild: Id(2),
+				request,
+				result: Ok(Outcome::CommandPermissions(result)),
+			})
+			.unwrap();
+		assert!(state.server_admin.command_permissions.is_none());
+	}
+
 	fn state(bits: u128) -> State {
 		let mut state = State {
 			auth: AuthState::Authenticated,

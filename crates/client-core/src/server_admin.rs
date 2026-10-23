@@ -18,6 +18,7 @@ pub struct Event {
 
 #[derive(Default)]
 pub struct View {
+	pub command_permissions: Option<model::command_permissions::Snapshot>,
 	pub community: Option<model::community_admin::Snapshot>,
 	pub automod: Option<model::automod::Snapshot>,
 	pub bans: Option<model::moderation::Bans>,
@@ -103,6 +104,7 @@ impl View {
 			}
 		};
 		if relevant {
+			self.command_permissions = None;
 			self.automod = None;
 			self.community = None;
 			self.bans = None;
@@ -462,6 +464,9 @@ impl State {
 			Action::Roles(action) => self.role_action_allowed(guild, action),
 			Action::Invites(action) => self.invite_action_allowed(guild, action),
 			Action::Integrations(action) => self.integration_action_allowed(guild, action),
+			Action::CommandPermissions(action) => {
+				self.command_permissions_action_allowed(guild, action)
+			}
 			Action::LoadEmojis => self.can_open_emoji_settings(guild),
 			Action::CreateEmoji { .. } => self.can_create_guild_emoji(guild),
 			Action::RenameEmoji { id, .. } | Action::DeleteEmoji { id } => {
@@ -695,6 +700,8 @@ impl State {
 				!self.can_open_moderation(event.guild)
 			} else if matches!(action, Action::AuditLog(_)) {
 				!self.can_open_audit_log_settings(event.guild)
+			} else if let Action::CommandPermissions(action) = action {
+				!self.command_permissions_action_allowed(event.guild, action)
 			} else if let Action::Integrations(action) = action {
 				!self.integration_action_allowed(event.guild, action)
 			} else if matches!(action, Action::Invites(_)) {
@@ -727,7 +734,12 @@ impl State {
 		}
 		if matches!(
 			action,
-			Some(Action::AutoMod(_) | Action::Moderation(_) | Action::Community(_))
+			Some(
+				Action::AutoMod(_)
+					| Action::Moderation(_)
+					| Action::Community(_)
+					| Action::CommandPermissions(_)
+			)
 		) && self.server_admin.requested_permission_revision
 			!= self.server_admin.permission_revision
 		{
@@ -880,6 +892,20 @@ impl State {
 			}
 			(Some(Action::AuditLog(query)), Outcome::AuditLog(page)) => {
 				page.guild == event.guild && page.matches_query(query)
+			}
+			(Some(Action::CommandPermissions(action)), Outcome::CommandPermissions(snapshot)) => {
+				snapshot.guild == event.guild
+					&& snapshot.application == action.application()
+					&& match action {
+						model::command_permissions::Action::Load { .. } => true,
+						model::command_permissions::Action::Save { before, after, .. } => {
+							snapshot.get(after.id).is_some_and(|actual| {
+								model::command_permissions::Permissions::confirms(
+									before, after, &actual,
+								)
+							})
+						}
+					}
 			}
 			(Some(Action::Integrations(action)), Outcome::Integrations(snapshot)) => {
 				snapshot.guild == event.guild
@@ -1050,6 +1076,12 @@ impl State {
 			Outcome::Community(page) => self.server_admin.community = Some(page),
 			Outcome::WebhookUrl(url) => self.server_admin.webhook_url = Some(url),
 			Outcome::AuditLog(page) => self.apply_audit_log(page),
+			Outcome::CommandPermissions(snapshot) => {
+				if action.as_ref().is_some_and(Action::write) {
+					self.application_commands.clear();
+				}
+				self.server_admin.command_permissions = Some(snapshot);
+			}
 			Outcome::Integrations(snapshot) => {
 				if let Some(Action::Integrations(action)) = &action {
 					self.apply_integrations(snapshot, action);
@@ -1232,6 +1264,7 @@ impl State {
 					| Action::LoadSounds
 					| Action::Invites(model::server_invites::Action::Load)
 					| Action::Integrations(model::server_integrations::Action::Load { .. })
+					| Action::CommandPermissions(model::command_permissions::Action::Load { .. })
 					| Action::LoadMembers(_)
 					| Action::Roles(model::server_roles::Action::Load)
 			)

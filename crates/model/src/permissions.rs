@@ -249,20 +249,119 @@ impl Snapshot {
 /// Compute explicit bits, or None when the available metadata cannot establish them.
 /// Owners and administrators bypass overwrites and timeouts. No implicit action mask
 /// (such as SEND_MESSAGES versus SEND_MESSAGES_IN_THREADS) is applied here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionSource {
+	Owner,
+	Everyone,
+	AssignedRoles,
+	Administrator,
+	EveryoneOverwrite,
+	RoleOverwrites,
+	MemberOverwrite,
+	Timeout,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PermissionStep {
+	pub source: PermissionSource,
+	pub before: u128,
+	pub after: u128,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionEvaluation {
+	pub bits: u128,
+	/// At most eight aggregate stages, never one retained entry per role/overwrite.
+	pub steps: Vec<PermissionStep>,
+}
+
 pub fn effective(
 	guild: &Guild,
 	user: Id,
 	overwrites: Option<&[Overwrite]>,
 	now: i64,
 ) -> Option<u128> {
-	if guild.id.0 == 0 || user.0 == 0 || guild.owner.is_some_and(|owner| owner.0 == 0) {
+	evaluate(
+		guild,
+		Some(user),
+		guild.member.as_ref(),
+		overwrites,
+		now,
+		None,
+	)
+}
+
+/// The same evaluator as `effective`, with a bounded explanation for an explicit request.
+pub fn explain(
+	guild: &Guild,
+	user: Id,
+	overwrites: Option<&[Overwrite]>,
+	now: i64,
+) -> Option<PermissionEvaluation> {
+	let mut steps = Vec::with_capacity(8);
+	let bits = evaluate(
+		guild,
+		Some(user),
+		guild.member.as_ref(),
+		overwrites,
+		now,
+		Some(&mut steps),
+	)?;
+	Some(PermissionEvaluation { bits, steps })
+}
+
+/// A role-only subject has no owner, member overwrite or live voice/timeout state.
+/// This is a presentation query; it never mutates the real member or permissions cache.
+pub fn preview_roles(
+	guild: &Guild,
+	roles: &[Id],
+	overwrites: Option<&[Overwrite]>,
+) -> Option<PermissionEvaluation> {
+	if roles.len() > MAX_MEMBER_ROLES {
 		return None;
 	}
-	if guild.owner == Some(user) {
+	let member = Member {
+		roles: roles.to_vec(),
+		timeout_until: None,
+	};
+	let mut steps = Vec::with_capacity(8);
+	let bits = evaluate(guild, None, Some(&member), overwrites, 0, Some(&mut steps))?;
+	Some(PermissionEvaluation { bits, steps })
+}
+
+fn record(
+	trace: &mut Option<&mut Vec<PermissionStep>>,
+	source: PermissionSource,
+	before: u128,
+	after: u128,
+) {
+	if let Some(steps) = trace.as_deref_mut() {
+		steps.push(PermissionStep {
+			source,
+			before,
+			after,
+		});
+	}
+}
+
+fn evaluate(
+	guild: &Guild,
+	user: Option<Id>,
+	member: Option<&Member>,
+	overwrites: Option<&[Overwrite]>,
+	now: i64,
+	mut trace: Option<&mut Vec<PermissionStep>>,
+) -> Option<u128> {
+	if guild.id.0 == 0
+		|| user.is_some_and(|user| user.0 == 0)
+		|| guild.owner.is_some_and(|owner| owner.0 == 0)
+	{
+		return None;
+	}
+	if user.is_some() && guild.owner == user {
+		record(&mut trace, PermissionSource::Owner, 0, u128::MAX);
 		return Some(u128::MAX);
 	}
 	let roles = guild.roles.as_ref()?;
-	let member = guild.member.as_ref()?;
+	let member = member?;
 	if roles.len() > MAX_ROLES || member.roles.len() > MAX_MEMBER_ROLES {
 		return None;
 	}
@@ -273,6 +372,8 @@ pub fn effective(
 		}
 	}
 	let mut bits = *role_bits.get(&guild.id)?;
+	record(&mut trace, PermissionSource::Everyone, 0, bits);
+	let before = bits;
 	let mut self_roles = BTreeSet::new();
 	for id in &member.roles {
 		if *id == guild.id || !self_roles.insert(*id) {
@@ -280,11 +381,15 @@ pub fn effective(
 		}
 		bits |= *role_bits.get(id)?;
 	}
+	record(&mut trace, PermissionSource::AssignedRoles, before, bits);
 	if bits & ADMINISTRATOR != 0 {
+		record(&mut trace, PermissionSource::Administrator, bits, u128::MAX);
 		return Some(u128::MAX);
 	}
-	// Without the owner identity a non-administrator may still be the owner.
-	guild.owner?;
+	// A role-only preview intentionally does not inherit the real account's ownership.
+	if user.is_some() {
+		guild.owner?;
+	}
 	let overwrites = overwrites?;
 	if overwrites.len() > MAX_OVERWRITES {
 		return None;
@@ -308,19 +413,32 @@ pub fn effective(
 				role_allow |= overwrite.allow;
 				role_deny |= overwrite.deny;
 			}
-			1 if overwrite.id == user => own = Some(overwrite),
+			1 if Some(overwrite.id) == user => own = Some(overwrite),
 			_ => {}
 		}
 	}
 	if let Some(overwrite) = everyone {
+		let before = bits;
 		bits = (bits & !overwrite.deny) | overwrite.allow;
+		record(
+			&mut trace,
+			PermissionSource::EveryoneOverwrite,
+			before,
+			bits,
+		);
 	}
+	let before = bits;
 	bits = (bits & !role_deny) | role_allow;
+	record(&mut trace, PermissionSource::RoleOverwrites, before, bits);
 	if let Some(overwrite) = own {
+		let before = bits;
 		bits = (bits & !overwrite.deny) | overwrite.allow;
+		record(&mut trace, PermissionSource::MemberOverwrite, before, bits);
 	}
 	if member.timeout_until.is_some_and(|until| until > now) {
+		let before = bits;
 		bits &= VIEW_CHANNEL | READ_MESSAGE_HISTORY;
+		record(&mut trace, PermissionSource::Timeout, before, bits);
 	}
 	Some(bits)
 }
@@ -328,6 +446,56 @@ pub fn effective(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn explanation_uses_the_production_evaluator_and_role_preview_never_inherits_owner() {
+		let mut data = guild();
+		let overwrites = [
+			Overwrite {
+				id: Id(1),
+				kind: 0,
+				allow: 0,
+				deny: VIEW_CHANNEL,
+			},
+			Overwrite {
+				id: Id(2),
+				kind: 0,
+				allow: VIEW_CHANNEL,
+				deny: SEND_MESSAGES,
+			},
+			Overwrite {
+				id: Id(7),
+				kind: 1,
+				allow: SEND_MESSAGES,
+				deny: 0,
+			},
+		];
+		for user in [Id(7), Id(9)] {
+			let result = explain(&data, user, Some(&overwrites), 100).unwrap();
+			assert_eq!(
+				Some(result.bits),
+				effective(&data, user, Some(&overwrites), 100)
+			);
+			assert!(result.steps.len() <= 8);
+		}
+		data.owner = Some(Id(7));
+		let before = data.clone();
+		let preview = preview_roles(&data, &[Id(2)], Some(&overwrites)).unwrap();
+		assert_ne!(preview.bits, u128::MAX);
+		assert_ne!(preview.bits & VIEW_CHANNEL, 0);
+		assert_eq!(
+			preview.bits & SEND_MESSAGES,
+			0,
+			"Preview has no member-specific allow"
+		);
+		assert_eq!(data, before);
+		assert_eq!(
+			effective(&data, Id(7), Some(&overwrites), 100),
+			Some(u128::MAX)
+		);
+		assert!(preview_roles(&data, &[Id(99)], Some(&overwrites)).is_none());
+		assert!(preview_roles(&data, &[Id(2), Id(2)], Some(&overwrites)).is_none());
+	}
 
 	#[test]
 	fn guild_budget_includes_allocated_role_icon_metadata() {

@@ -167,6 +167,60 @@ impl DiscordApi {
 				}
 				saved = Some(value.id);
 			}
+			Action::SetWebhookAvatar {
+				webhook, avatar, ..
+			} => {
+				let latest = self.integration_snapshot(guild, false, true, scope).await?;
+				let current = latest
+					.webhooks
+					.as_ref()
+					.and_then(|items| {
+						items
+							.iter()
+							.find(|hook| hook.id == *webhook && hook.kind == 1)
+					})
+					.ok_or(Failure::Forbidden)?;
+				let channel = current.channel.ok_or(Failure::Forbidden)?;
+				self.integration_channel(guild, channel).await?;
+				let body = match avatar {
+					model::Patch::Value(data) => json!({"avatar":data}),
+					model::Patch::Null => json!({"avatar":null}),
+					model::Patch::Absent => return Err(Failure::Protocol),
+				};
+				let bytes = self
+					.request_limited(
+						Method::PATCH,
+						&format!("/webhooks/{webhook}"),
+						Some(body),
+						64 * 1024,
+					)
+					.await
+					.map_err(write_failure)?;
+				let updated = wire::webhook(&bytes, guild).map_err(|_| Failure::Ambiguous)?;
+				if updated.id != *webhook
+					|| updated.channel != current.channel
+					|| updated.name != current.name
+					|| updated.kind != 1
+					|| match avatar {
+						model::Patch::Null => updated.avatar.is_some(),
+						model::Patch::Value(_) => updated.avatar.is_none(),
+						model::Patch::Absent => true,
+					} {
+					return Err(Failure::Ambiguous);
+				}
+				let page = self
+					.integration_snapshot(guild, false, true, scope)
+					.await
+					.map_err(reconcile_failure)?;
+				if !page.webhooks.as_ref().is_some_and(|items| {
+					items
+						.iter()
+						.any(|hook| hook.id == *webhook && hook.avatar == updated.avatar)
+				}) {
+					return Err(Failure::Ambiguous);
+				}
+				return Ok(page);
+			}
 			Action::DeleteWebhook { webhook, .. } => {
 				let latest = self.integration_snapshot(guild, false, true, scope).await?;
 				let Some(current) = latest
@@ -239,7 +293,9 @@ impl DiscordApi {
 				.integrations
 				.as_ref()
 				.is_some_and(|items| items.iter().any(|item| item.id == *integration)),
-			Action::Load { .. } | Action::CopyWebhookUrl { .. } => false,
+			Action::Load { .. }
+			| Action::CopyWebhookUrl { .. }
+			| Action::SetWebhookAvatar { .. } => false,
 		};
 		if failed {
 			return Err(Failure::Ambiguous);
