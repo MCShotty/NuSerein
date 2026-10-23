@@ -188,6 +188,7 @@ fn fingerprint(state: &State) -> u64 {
 		.hash(&mut hash);
 	for channel in &state.channels {
 		channel.id.hash(&mut hash);
+		state.personal_channel_flags(channel.id).hash(&mut hash);
 	}
 	for id in state.timeline.row_ids() {
 		id.hash(&mut hash);
@@ -233,7 +234,7 @@ fuzz_target!(|data: &[u8]| {
 	for op in data.as_chunks::<8>().0.iter().take(256) {
 		let channel = Id(20 + u64::from(op[1] % 3));
 		let id = Id(1 + u64::from(u16::from_le_bytes([op[2], op[3]])));
-		match op[0] % 25 {
+		match op[0] % 27 {
 			0 => {
 				state.select(channel);
 			}
@@ -242,7 +243,7 @@ fuzz_target!(|data: &[u8]| {
 				state.history(before);
 			}
 			2 | 3 => {
-				let stale = op[0] % 25 == 3;
+				let stale = op[0] % 27 == 3;
 				let prior = stale.then(|| fingerprint(&state));
 				let request = if stale {
 					state.request.wrapping_sub(1)
@@ -314,7 +315,7 @@ fuzz_target!(|data: &[u8]| {
 				},
 			),
 			8 | 9 => {
-				let revoked = op[0] % 25 == 8;
+				let revoked = op[0] % 27 == 8;
 				apply(
 					&mut state,
 					Event::Permissions(PermissionEvent::Channel {
@@ -445,6 +446,63 @@ fuzz_target!(|data: &[u8]| {
 			}
 			23 => {
 				state.return_from_reply();
+			}
+			25 => {
+				let flags = u64::from(op[4]) << 32;
+				apply(
+					&mut state,
+					Event::NotificationPreferences(client_core::notifications::Event::Settings {
+						entries: vec![client_core::notifications::Setting {
+							guild: Some(Id(10)),
+							flags: Some(if op[6] & 1 == 0 {
+								flags
+							} else {
+								flags | model::channel_visibility::OPT_IN_CHANNELS_ON
+							}),
+							overrides_known: true,
+							channel_flags: (20..23)
+								.map(|id| {
+									(
+										Id(id),
+										Some(
+											flags
+												| if op[5] & 1 != 0 {
+													model::channel_visibility::OPT_IN_ENABLED
+												} else {
+													0
+												},
+										),
+										Some(false),
+									)
+								})
+								.collect(),
+							..Default::default()
+						}],
+						replace: op[7] & 1 != 0,
+					}),
+				);
+			}
+			26 => {
+				if let Some(action) = state.personal_visibility_change(channel, op[6] & 1 != 0)
+					&& let Some(client_core::Command::ChannelAction {
+						guild,
+						channel,
+						request,
+						action: client_core::channel_actions::Action::Personal(change),
+					}) = state.request_personal_channel_action(Id(10), action)
+				{
+					state.apply(Envelope {
+						generation: state.generation.wrapping_sub(u64::from(op[7] & 1)),
+						event: Event::ChannelAction(
+							client_core::channel_actions::Event::Finished {
+								guild,
+								channel,
+								request,
+								result: Ok(client_core::channel_actions::Outcome::Personal(change)),
+							},
+						),
+					});
+				}
 			}
 			_ => {
 				let prior = fingerprint(&state);

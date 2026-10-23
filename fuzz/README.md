@@ -73,3 +73,10 @@ Command parity also exercises the bounded autocomplete-choice and private-contex
 
 Soundboard catalogs, administration rows and Gateway effects also use synthetic seeds
 (selectors 13 and 14); successful parsing does not establish live soundboard support.
+
+Personal channel preferences use selector 16, including unknown raw flags and partial
+settings snapshots. Selector 17 exercises bounded access settings, member applications and
+service-provided incident updates. State operations 25 and 26 reconcile channel selections
+and accepted changes, including stale-generation responses; the fingerprint includes retained
+preference flags. These paths use synthetic identifiers and never contact Discord or mutate
+an account.

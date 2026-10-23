@@ -65,6 +65,32 @@ fuzz_target!(|data: &[u8]| {
 		}
 		return;
 	}
+	if selector == 16 {
+		if let Ok(settings) =
+			discord_protocol::decode::<discord_protocol::notifications::Snapshot>(payload)
+		{
+			let (entries, complete) = settings.entries();
+			black_box(complete);
+			for entry in entries {
+				black_box(entry.with_defaults());
+			}
+		}
+		return;
+	}
+	if selector == 17 {
+		use discord_protocol::server_access as access;
+		let _ = black_box(access::settings(payload, model::Id(2)));
+		let _ = black_box(access::application(payload, model::Id(2), model::Id(10)));
+		let _ = black_box(access::applications(
+			payload,
+			model::Id(2),
+			model::server_access::Status::Pending,
+		));
+		let _ = black_box(access::incident_update(payload));
+		let _ = black_box(access::application_update(payload, false));
+		let _ = black_box(access::application_update(payload, true));
+		return;
+	}
 	// These are the same public decode/normalization boundaries used by the API
 	// and Gateway. A decoded message need not pass the separate timeline policy.
 	if selector == 9 {
