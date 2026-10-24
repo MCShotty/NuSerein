@@ -96,6 +96,7 @@ impl Permissions {
 	pub fn clear_cache(&self) {
 		self.cache.borrow_mut().clear();
 	}
+
 	#[cfg(test)]
 	pub(crate) fn cached_decisions(&self, channel: Id) -> usize {
 		self.cache
@@ -1072,6 +1073,94 @@ impl State {
 		{
 			self.end_voice_channel(channel);
 		}
+	}
+}
+
+impl crate::State {
+	pub(super) fn reconcile_feature_access(&mut self, access_changed: bool) {
+		if self.search.is_some() && !self.can_search() {
+			self.clear_search();
+		}
+		if self
+			.archives
+			.as_ref()
+			.is_some_and(|view| !self.can_archive(view.parent, view.kind))
+		{
+			self.clear_archives();
+		}
+		if access_changed {
+			self.prune_direct_presence();
+		}
+		if self
+			.server_settings
+			.guild
+			.is_some_and(|guild| !self.can_manage_guild(guild))
+		{
+			self.server_settings.reset();
+		}
+		if self
+			.own_server_profile
+			.guild
+			.is_some_and(|guild| !self.can_edit_server_profile(guild))
+		{
+			self.own_server_profile.reset();
+		}
+		if self
+			.owned_cosmetics
+			.guild
+			.is_some_and(|guild| !self.can_edit_server_profile(guild))
+		{
+			self.owned_cosmetics.reset();
+		}
+		if access_changed && !self.server_members_shortcuts.is_empty() {
+			let guilds: BTreeSet<_> = self.guilds.iter().map(|guild| guild.id).collect();
+			self.server_members_shortcuts
+				.retain(|id, _| guilds.contains(id));
+		}
+		if let Some(guild) = self.server_admin.guild {
+			self.prune_integration_access(guild);
+			if !self.can_review_guild_applications(guild) {
+				self.server_admin.access.applications = None;
+				self.server_admin.access.detail = None;
+				self.server_admin.access.pending_count = None;
+			}
+			if !self.can_manage_guild(guild) {
+				self.server_admin.access.settings = None;
+				self.server_admin.access.recipient = None;
+			}
+			if !self.can_open_community_settings(guild) {
+				self.server_admin.community = None;
+			}
+			if !self.can_open_audit_log_settings(guild) {
+				self.server_admin.revoke_audit_access();
+			}
+			if !self.can_open_emoji_settings(guild)
+				&& !self.can_open_member_settings(guild)
+				&& !self.can_open_role_settings(guild)
+				&& !self.can_open_integration_settings(guild)
+				&& !self.can_retain_channel_integrations(guild)
+				&& !self.can_open_audit_log_settings(guild)
+				&& !self.can_review_guild_applications(guild)
+				&& !self.can_manage_guild(guild)
+				&& !self.server_admin.transfer_pending(guild)
+			{
+				self.server_admin.reset();
+			} else {
+				if !self.can_open_emoji_settings(guild) {
+					self.server_admin.emojis = None;
+				}
+				if !self.can_open_member_settings(guild) {
+					self.server_admin.members = None;
+					self.server_admin.revoke_invite_access();
+				}
+				if !self.can_open_role_settings(guild) {
+					self.server_admin.roles = None;
+					self.server_admin.selected_role = None;
+				}
+			}
+		}
+		self.reconcile_member_guide_access();
+		self.sync_reporting();
 	}
 }
 

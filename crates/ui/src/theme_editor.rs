@@ -1815,19 +1815,7 @@ fn pair_metric(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
-		match shape {
-			egui::Shape::Text(text) => {
-				labels.push((text.galley.job.text.clone(), text.visual_bounding_rect()))
-			}
-			egui::Shape::Vec(shapes) => {
-				for shape in shapes {
-					collect(shape, labels);
-				}
-			}
-			_ => {}
-		}
-	}
+	use crate::test_ui::visual_text as collect;
 
 	fn map_frame(
 		ctx: &egui::Context,

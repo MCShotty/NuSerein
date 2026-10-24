@@ -6959,16 +6959,7 @@ mod tests {
 
 	#[test]
 	fn camera_popup_selects_second_device_without_starting_capture() {
-		fn labels(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => out.push((
-					text.galley.job.text.clone(),
-					text.galley.rect.translate(text.pos.to_vec2()),
-				)),
-				egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| labels(shape, out)),
-				_ => {}
-			}
-		}
+		use crate::test_ui::logical_text as labels;
 		let ctx = egui::Context::default();
 		let frame = |messaging: &mut MessagingUi, events: Vec<egui::Event>| {
 			let mut output = ctx.run_ui(
@@ -7328,16 +7319,7 @@ mod tests {
 			width: f32,
 			events: Vec<egui::Event>,
 		) -> (Vec<(String, egui::Rect)>, Vec<Command>) {
-			fn labels(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
-				match shape {
-					egui::Shape::Text(text) => out.push((
-						text.galley.job.text.clone(),
-						text.galley.rect.translate(text.pos.to_vec2()),
-					)),
-					egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| labels(shape, out)),
-					_ => {}
-				}
-			}
+			use crate::test_ui::logical_text as labels;
 			let mut commands = vec![];
 			let mut output = ctx.run_ui(
 				egui::RawInput {
@@ -7451,16 +7433,7 @@ mod tests {
 
 	#[test]
 	fn voice_popup_keeps_device_selection_open_and_demo_controls_inert() {
-		fn labels(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => out.push((
-					text.galley.job.text.clone(),
-					text.galley.rect.translate(text.pos.to_vec2()),
-				)),
-				egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| labels(shape, out)),
-				_ => {}
-			}
-		}
+		use crate::test_ui::logical_text as labels;
 		fn frame(
 			ctx: &egui::Context,
 			messaging: &mut MessagingUi,
@@ -7982,16 +7955,7 @@ mod tests {
 	}
 	#[test]
 	fn soundboard_panel_plays_one_available_sound_per_click_and_respects_gates() {
-		fn labels(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => out.push((
-					text.galley.job.text.clone(),
-					text.galley.rect.translate(text.pos.to_vec2()),
-				)),
-				egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| labels(shape, out)),
-				_ => {}
-			}
-		}
+		use crate::test_ui::logical_text as labels;
 		fn frame(
 			ctx: &egui::Context,
 			messaging: &mut MessagingUi,

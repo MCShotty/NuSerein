@@ -814,20 +814,7 @@ mod tests {
 		events: Vec<egui::Event>,
 	) -> Vec<(String, egui::Rect)> {
 		let mut avatars = crate::avatars::Avatars::default();
-		fn labels(shape: &egui::Shape, output: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => output.push((
-					text.galley.job.text.clone(),
-					text.galley.rect.translate(text.pos.to_vec2()),
-				)),
-				egui::Shape::Vec(shapes) => {
-					for shape in shapes {
-						labels(shape, output);
-					}
-				}
-				_ => {}
-			}
-		}
+		use crate::test_ui::logical_text as labels;
 		let output = ctx.run_ui(
 			egui::RawInput {
 				screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),

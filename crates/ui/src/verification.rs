@@ -198,20 +198,7 @@ mod tests {
 		events: Vec<egui::Event>,
 	) -> Vec<(String, egui::Rect)> {
 		/// Collects text labels from a shape tree.
-		fn labels(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => out.push((
-					text.galley.job.text.clone(),
-					text.galley.rect.translate(text.pos.to_vec2()),
-				)),
-				egui::Shape::Vec(shapes) => {
-					for shape in shapes {
-						labels(shape, out);
-					}
-				}
-				_ => {}
-			}
-		}
+		use crate::test_ui::logical_text as labels;
 		let output = ctx.run_ui(
 			egui::RawInput {
 				screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),

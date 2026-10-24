@@ -3465,3 +3465,93 @@ Physical high-refresh/fullscreen, resize, HDR, hybrid-adapter and driver-loss
 behavior are unverified locally. No Discord account, game, microphone or live
 capture was opened here. Native CI status and installer provenance are reported
 on the PR rather than treating synthetic success as proof of the reported case.
+
+## Codebase simplification
+
+Baseline: merged fork `6d71c738` (tree-equivalent to `be2f6eca`). Runtime implementation: `fd181b4e`.
+The following build-profile guard commit changes only offline checks. Production and UI-library inputs are unchanged.
+Upstream reference: published nightly `v1.0.0-nightly.20261023.62`, pinned to `18e557ef710840e22f8ddf5d38f1d6065a9de5a5`.
+
+### Core comparisons on native CI
+
+Rust 1.98.1, locked dependencies, release opt-level 3, thin LTO, one codegen unit, line tables,
+stripped symbols and abort-on-panic. Each OS uses one warmup and five rotating measurements
+on the same runner; CPU affinity is pinned where the platform supports it. Different OS rows
+are independent comparisons. The nightly gap includes inherited fork work.
+
+| OS / workload | Nightly median (ms) | Frozen fork (ms) | Refactor (ms) | Refactor vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| linux / reducer | 57.771 | 59.865 | 57.718 | -3.59% |
+| linux / wide channels | 111.306 | 6.649 | 6.490 | -2.39% |
+| windows / reducer | 87.427 | 88.192 | 86.621 | -1.78% |
+| windows / wide channels | 75.799 | 9.721 | 9.207 | -5.28% |
+| macos / reducer | 60.994 | 59.680 | 60.992 | +2.20% |
+| macos / wide channels | 93.978 | 6.537 | 6.463 | -1.13% |
+
+All reducer medians meet the 3% regression threshold. Full sample ranges and runner
+metadata are retained in [CI artifacts](https://github.com/MCShotty/Serein/actions/runs/40049052574).
+
+### Linux native UI and memory
+
+Intel Xeon Platinum 8573C cloud host, 16 GiB cgroup memory limit, one inherited logical CPU,
+Xvfb with server resets disabled, 1120 × 760 viewport at scale 1, llvmpipe LLVM 19.1.7 /
+Mesa 25.0.7 OpenGL.
+Both binaries use pinned Rust and matching normal release/fat-LTO settings. One full warmup
+and five alternating fresh-process observations per workload; five-second samples, 100 ms
+process observations and two seconds for settled RSS. No compilation runs during sampling.
+
+Idle rows use the original frozen previews. Active rows use the same optional recorder gate
+in both application revisions: after the first painted frame, apply input during three seconds
+of warmup, trigger the native recorder and observe its acknowledged five-second window.
+Callback times cover `MessagingUi::show`; they exclude presentation and input-to-display latency.
+Peak RSS below is a sampled steady-workload peak, not process launch peak.
+
+| Workload | CPU before → after (% of one core) | Callback p50 before → after (ms) | Callback p95 before → after (ms) | Peak / settled RSS before → after (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| conversation-idle | 5.50 → 5.51 | not sampled | not sampled | 143.88 / 143.88 → 144.18 / 144.18 |
+| language | 0.00 → 0.00 | not sampled | not sampled | 146.98 / 146.98 → 146.73 / 146.73 |
+| conversation-churn | 87.79 → 88.57 | 1.072 → 1.116 | 1.755 → 1.776 | 146.41 / 146.41 → 146.98 / 146.98 |
+| gif-favorites | 91.91 → 87.91 | 0.781 → 0.803 | 1.101 → 1.202 | 149.96 / 149.96 → 149.99 / 149.99 |
+| server-members-active | 65.27 → 63.54 | 1.397 → 1.324 | 2.035 → 1.822 | 149.09 / 149.09 → 149.15 / 149.15 |
+
+Idle CPU remains within two percentage points of the frozen baseline. Helper-process
+RSS was zero for these fixtures; no web provider was opened. Full-desktop asynchronous task
+occupancy is not measured by this preview. Windows/macOS UI CPU/RSS, physical input latency,
+media throughput and owner-controlled capture/HDR performance are not established here.
+
+Churn callback medians change by +0.044 ms (p50) and +0.020 ms (p95); GIF medians by
++0.022 ms and +0.100 ms. Each has slower results in three of five paired observations,
+with mixed directions and large tail variation. These runs do not establish a repeatable
+regression or improvement. Member-panel medians change by −0.073 ms and −0.213 ms.
+The single GIF allocation diagnostic records 210,077 → 208,480 malloc calls and
+761,466,874 → 755,578,492 requested bytes over five seconds, with 130 → 128 callbacks.
+These process-wide counts include native libraries, omit aligned/direct allocation paths,
+and describe allocation traffic rather than live heap. Instrumented timings are excluded
+from acceptance; the diagnostic supplies no evidence of a new allocation surge.
+
+The nightly comparison above covers reducer workloads on all three operating systems.
+The UI and package comparison uses the frozen fork baseline; no equivalent nightly UI
+fixture/package comparison or Windows/macOS UI measurement was completed.
+
+Initial fixed-clock active trials are diagnostic only: a cold renderer could enter late or
+miss the native recorder window, and the external process/input window could differ from it.
+Initial churn p95 was 1.736 → 2.418 ms; an independent repetition was 1.949 → 1.940 ms.
+Initial GIF p95 was 2.324 → 3.013 ms; its repetition did not complete a valid callback window.
+These values are not used as proof of either regression or improvement. The gated rows above
+align the measured windows; the identical timing-only patch is recorded in the linked evidence.
+
+### Linux package comparison
+
+Normal clean and cached directory packages have identical file contents and modes. Both
+passed codec and speech self-tests after removing development native-library paths. Same
+installed file set, same ZIP/deflate level 6 and normalized timestamps; only `usr/bin/serein`
+differs in the installed payload. Libraries, models, sources and licenses are unchanged.
+
+| Metric | Frozen fork (bytes) | Refactor (bytes) | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 98,429,704 | 98,431,752 | +2,048 (+0.00%) |
+| Installed payload | 227,188,723 | 227,190,771 | +2,048 (+0.00%) |
+| Normalized compressed package | 155,648,014 | 155,649,345 | +1,331 (+0.00%) |
+
+Windows/macOS package-size comparisons were not measured locally; their native build
+and package checks are separate evidence. See [review and verification details](pr-evidence/codebase-refactor/README.md).
