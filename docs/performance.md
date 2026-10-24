@@ -3591,7 +3591,8 @@ establish those outcomes.
 
 ### Follow-up: idle delivery and missing output
 
-Review baseline: `3ddc0099`. Follow-up runtime: `fbdb85da`.
+Review baseline: `3ddc0099`. Idle-delivery fix: `fbdb85da`; all-platform
+progress deadline: `e5fd3554`.
 The Linux worker previously treated any buffered encoder input as demand for
 another upload, including duplicates of a static capture already delivered.
 It now shares the capture-delivery ledger, feeds only undelivered snapshots or
@@ -3610,19 +3611,25 @@ passes after the correction. It is not a native encoder or GPU-overhead
 measurement. Selected FPS, bitrate, presets, lookahead and quality options are
 unchanged.
 
-Windows/macOS now apply a 15-second progress deadline to repeatedly empty encode
-results while a picture is still needed. Dropped inputs consume no credits, so the queue limit alone
-cannot detect that failure. Valid output, deliberate transport pauses, geometry
-changes and security resets retire the deadline; completed static shares do not
-expire. The regression uses injected monotonic time, without sleeping or
-opening a capture source.
+All screen workers now apply a 15-second progress deadline while a picture is
+still needed, including empty Linux polls after the first keyframe. Dropped
+inputs consume no credits, so the queue limit alone cannot detect that failure.
+Valid output resets the deadline even when a newer capture is outstanding.
+Deliberate transport pauses, geometry changes and security resets retire it;
+completed static shares do not expire. Injected monotonic-time regressions cover
+a minute of healthy output followed by a stall, startup, idle completion and
+pause/resume, without sleeping or opening a capture source.
 
-The follow-up workspace gate passed 2,223 distinct tests plus the locale child
-check, with 36 default-ignored cases. Formatting, strict Clippy, the minimal
-build and policy checks passed. Handoff/workspace checks and the offline Linux
-pipeline diagnostic passed; its pre-existing trailing-caps fixture was corrected
-and its affected format, Clippy, build and execution checks rerun. No live
-capture, microphone or Discord traffic was used.
+At `162d17a2`, the follow-up workspace gate passed 2,223 distinct tests plus the
+locale child check, with 36 default-ignored cases. Formatting, strict Clippy,
+the minimal build and policy checks passed. Handoff/workspace checks and the
+offline Linux pipeline diagnostic passed; its pre-existing trailing-caps
+fixture was corrected and its affected checks rerun. The all-platform deadline
+extension passed the 218 voice and 64 platform tests, plus the locale child
+check. Pinned formatting, strict workspace/all-target Clippy, the minimal app
+build and the rebuilt offline Linux pipeline diagnostic also passed. The
+current-head native CI results are recorded in the PR. No live capture,
+microphone or Discord traffic was used.
 
 Release package comparisons and current-head native CI are recorded in the PR.
 The core replay graph is unchanged, so the earlier verified release replay and
