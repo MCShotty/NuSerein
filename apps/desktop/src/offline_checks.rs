@@ -1,10 +1,12 @@
 //! Explicit synthetic command-line checks, kept outside native application startup.
+#[cfg(debug_assertions)]
 use super::{
-	Command, Envelope, Event, app_settings, audio, avatars, cache, egui, extensions, font_import,
-	notification_runtime, spotify, updater, uploads, voice,
+	Command, audio, avatars, cache, components_demo, font_import, notification_runtime, spotify,
+	uploads, voice,
 };
+use super::{Envelope, Event, app_settings, egui, extensions, updater};
 #[cfg(feature = "demo")]
-use super::{access_marks_demo, components_demo, dm_demo, polls_demo, post_menu_demo, slash_demo};
+use super::{access_marks_demo, dm_demo, polls_demo, post_menu_demo, slash_demo};
 
 pub(super) fn before_startup() -> bool {
 	#[cfg(all(debug_assertions, feature = "demo"))]
