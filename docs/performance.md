@@ -3555,3 +3555,36 @@ differs in the installed payload. Libraries, models, sources and licenses are un
 
 Windows/macOS package-size comparisons were not measured locally; their native build
 and package checks are separate evidence. See [review and verification details](pr-evidence/codebase-refactor/README.md).
+
+## Screen encoder input accounting
+
+Baseline: fork `main` at `149644aa`. Runtime fix: `f12543a7`.
+The capture ledger previously counted every encode call as a new pending picture.
+Windows Media Foundation can instead return older output without accepting input;
+macOS can drop a synchronous picture. Counting those attempts creates phantom
+credits and can stop a valid share at the 48-picture limit. Results now carry
+input acceptance independently of output. FFmpeg's receive-only polling remains
+excluded from input accounting through the same result contract.
+
+| Synthetic pressure check | Before | After |
+| --- | --- | --- |
+| 96 delayed/output-only/retry cycles | Fails with the pending-picture-limit error | Completes and decodes the final H.264 picture |
+| Output-only encode results and dropped pictures | Counted as attempted inputs | No new capture credit |
+| Actual pending-picture limit | 48 | 48 |
+
+The ordering fixture runs the production Stable result validator, timestamp FIFO
+and capture accounting with a real encoded picture; it models MFT event order
+without opening a capture source or native hardware encoder. Separate checks
+cover FFmpeg polling, dropped input, RTP timestamp wrapping, full queues and epoch
+retirement. These are correctness/resource checks, not capture-FPS measurements.
+
+The pinned workspace gate passed 2,221 distinct tests plus one locale child-process
+check, with 36 default-ignored cases. The release replay and 120-second soak reuse
+the verified artifact because their core source/dependency graph is unchanged;
+their timings are not a before/after comparison for this fix. Capture, codec,
+bitrate, quality presets, lookahead and native ABI are unchanged.
+
+Release package comparisons and current native CI outcomes are recorded in the
+delivery PR. Real Windows capture, game-FPS overhead, media throughput and live
+Discord acceptance remain owner-controlled checks; synthetic success does not
+establish those outcomes.
