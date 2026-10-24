@@ -3588,3 +3588,43 @@ Release package comparisons and current native CI outcomes are recorded in the
 delivery PR. Real Windows capture, game-FPS overhead, media throughput and live
 Discord acceptance remain owner-controlled checks; synthetic success does not
 establish those outcomes.
+
+### Follow-up: idle delivery and missing output
+
+Review baseline: `3ddc0099`. Follow-up runtime: `fbdb85da`.
+The Linux worker previously treated any buffered encoder input as demand for
+another upload, including duplicates of a static capture already delivered.
+It now shares the capture-delivery ledger, feeds only undelivered snapshots or
+explicit keepalives/keyframe requests, and polls ready output independently.
+Reordered tail pictures remain drainable without creating more input credits.
+
+| Bounded scheduling model | Before | After |
+| --- | --- | --- |
+| Two captures and two keepalives over 240 scheduling opportunities, with 16-picture lookahead | 240 uploads | 36 uploads |
+| Latest capture and receive-only reordered tail | Latest H.264 picture decodes | Latest picture decodes; tail drains without new uploads |
+| Actual pending-picture limit | 48 | 48 |
+
+The model uses production raw-frame retention and capture accounting with real
+encoded H.264 pictures. It fails on the previous Linux demand condition and
+passes after the correction. It is not a native encoder or GPU-overhead
+measurement. Selected FPS, bitrate, presets, lookahead and quality options are
+unchanged.
+
+Windows/macOS now apply a 15-second progress deadline to repeatedly empty encode
+results while a picture is still needed. Dropped inputs consume no credits, so the queue limit alone
+cannot detect that failure. Valid output, deliberate transport pauses, geometry
+changes and security resets retire the deadline; completed static shares do not
+expire. The regression uses injected monotonic time, without sleeping or
+opening a capture source.
+
+The follow-up workspace gate passed 2,223 distinct tests plus the locale child
+check, with 36 default-ignored cases. Formatting, strict Clippy, the minimal
+build and policy checks passed. Handoff/workspace checks and the offline Linux
+pipeline diagnostic passed; its pre-existing trailing-caps fixture was corrected
+and its affected format, Clippy, build and execution checks rerun. No live
+capture, microphone or Discord traffic was used.
+
+Release package comparisons and current-head native CI are recorded in the PR.
+The core replay graph is unchanged, so the earlier verified release replay and
+120-second soak remain applicable. Capture/game FPS, media throughput, CPU/RSS
+and physical Windows/macOS behavior remain unmeasured for these corrections.
