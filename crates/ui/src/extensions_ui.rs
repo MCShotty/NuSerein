@@ -3310,19 +3310,7 @@ mod tests {
 		width: f32,
 		events: Vec<egui::Event>,
 	) -> Vec<(String, egui::Rect)> {
-		fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => {
-					labels.push((text.galley.job.text.clone(), text.visual_bounding_rect()))
-				}
-				egui::Shape::Vec(shapes) => {
-					for shape in shapes {
-						collect(shape, labels);
-					}
-				}
-				_ => {}
-			}
-		}
+		use crate::test_ui::visual_text as collect;
 		let output = ctx.run_ui(
 			egui::RawInput {
 				screen_rect: Some(egui::Rect::from_min_size(

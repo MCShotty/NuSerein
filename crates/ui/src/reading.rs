@@ -310,20 +310,7 @@ mod tests {
 
 	#[test]
 	fn reading_controls_reset_retry_and_preserve_session_notification_opt_in() {
-		fn labels(shape: &egui::Shape, found: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => found.push((
-					text.galley.job.text.clone(),
-					text.galley.rect.translate(text.pos.to_vec2()),
-				)),
-				egui::Shape::Vec(shapes) => {
-					for shape in shapes {
-						labels(shape, found);
-					}
-				}
-				_ => {}
-			}
-		}
+		use crate::test_ui::logical_text as labels;
 		// Labels are looked up by their English text, whatever the host locale is.
 		crate::i18n::set_current(crate::i18n::Language::English);
 		let ctx = egui::Context::default();

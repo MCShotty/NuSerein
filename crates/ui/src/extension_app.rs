@@ -1055,19 +1055,7 @@ mod tests {
 		state: &mut State,
 		events: Vec<egui::Event>,
 	) -> Vec<(String, egui::Rect)> {
-		fn labels(shape: &egui::Shape, output: &mut Vec<(String, egui::Rect)>) {
-			match shape {
-				egui::Shape::Text(text) => {
-					output.push((text.galley.job.text.clone(), text.visual_bounding_rect()))
-				}
-				egui::Shape::Vec(shapes) => {
-					for shape in shapes {
-						labels(shape, output);
-					}
-				}
-				_ => {}
-			}
-		}
+		use crate::test_ui::visual_text as labels;
 		let output = ctx.run_ui(
 			egui::RawInput {
 				screen_rect: Some(egui::Rect::from_min_size(

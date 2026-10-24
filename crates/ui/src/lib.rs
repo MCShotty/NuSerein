@@ -17,6 +17,8 @@ mod panels;
 mod privacy_settings;
 mod role_names;
 mod server_profile;
+#[cfg(test)]
+mod test_ui;
 mod view;
 pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;

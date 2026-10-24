@@ -138,20 +138,7 @@ pub(super) fn label(restriction: ContentRestriction) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
-		match shape {
-			egui::Shape::Text(text) => labels.push((
-				text.galley.job.text.clone(),
-				text.galley.rect.translate(text.pos.to_vec2()),
-			)),
-			egui::Shape::Vec(shapes) => {
-				for shape in shapes {
-					collect(shape, labels);
-				}
-			}
-			_ => {}
-		}
-	}
+	use crate::test_ui::logical_text as collect;
 	fn frame(
 		ctx: &egui::Context,
 		state: &mut State,

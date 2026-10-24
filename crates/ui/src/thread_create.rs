@@ -206,20 +206,7 @@ impl ThreadCreateUi {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	fn labels(shape: &egui::Shape, output: &mut Vec<(String, egui::Rect)>) {
-		match shape {
-			egui::Shape::Text(text) => output.push((
-				text.galley.job.text.clone(),
-				text.galley.rect.translate(text.pos.to_vec2()),
-			)),
-			egui::Shape::Vec(shapes) => {
-				for shape in shapes {
-					labels(shape, output);
-				}
-			}
-			_ => {}
-		}
-	}
+	use crate::test_ui::logical_text as labels;
 	fn frame(
 		ctx: &egui::Context,
 		state: &mut State,
