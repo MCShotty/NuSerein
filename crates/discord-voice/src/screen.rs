@@ -31,7 +31,6 @@ use std::sync::{
 	mpsc,
 };
 
-#[cfg(any(test, not(target_os = "linux")))]
 use std::time::{Duration, Instant};
 
 pub const MAX_RAW_BYTES: usize = 7680 * 4320 * 8;
@@ -572,13 +571,13 @@ impl CaptureDelivery {
 	}
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
-fn check_output_deadline(
+pub(super) fn check_output_deadline(
 	deadline: &mut Option<Instant>,
-	waiting: bool,
+	needs_picture: bool,
+	progressed: bool,
 	now: Instant,
 ) -> Result<(), &'static str> {
-	if !waiting {
+	if !needs_picture || progressed {
 		*deadline = None;
 	} else if now >= *deadline.get_or_insert(now + Duration::from_secs(15)) {
 		return Err("Screen video encoder did not produce a picture");
@@ -883,7 +882,8 @@ fn encode_loop(
 		// separately so a native encoder cannot leave the viewer waiting forever.
 		check_output_deadline(
 			&mut first_output_deadline,
-			packet.data.is_empty() && (encoder.awaiting_keyframe || delivery.needs_picture()),
+			encoder.awaiting_keyframe || delivery.needs_picture(),
+			!packet.data.is_empty(),
 			Instant::now(),
 		)?;
 		if packet.data.is_empty() {
@@ -1498,22 +1498,63 @@ mod tests {
 			check_output_deadline(
 				&mut deadline,
 				true,
+				false,
 				start + Duration::from_secs(u64::from(second)),
 			)
 			.unwrap();
 			assert_eq!(deadline, Some(start + Duration::from_secs(15)));
 		}
 		assert!(
-			check_output_deadline(&mut deadline, true, start + Duration::from_secs(15)).is_err()
+			check_output_deadline(&mut deadline, true, false, start + Duration::from_secs(15))
+				.is_err()
 		);
 		// Successful output or a security pause retires the previous deadline.
-		check_output_deadline(&mut deadline, false, start + Duration::from_secs(15)).unwrap();
+		check_output_deadline(&mut deadline, false, false, start + Duration::from_secs(15))
+			.unwrap();
 		let resumed = start + Duration::from_secs(3600);
-		check_output_deadline(&mut deadline, false, resumed).unwrap();
+		check_output_deadline(&mut deadline, false, false, resumed).unwrap();
 		assert!(deadline.is_none());
-		check_output_deadline(&mut deadline, true, resumed).unwrap();
+		check_output_deadline(&mut deadline, true, false, resumed).unwrap();
 		assert_eq!(deadline, Some(resumed + Duration::from_secs(15)));
-		check_output_deadline(&mut deadline, false, resumed + Duration::from_secs(1)).unwrap();
+		check_output_deadline(&mut deadline, true, true, resumed + Duration::from_secs(1)).unwrap();
+		assert!(deadline.is_none());
+		// Continuous capture can still need a newer picture when an older one is
+		// returned. Actual progress must reset the deadline even in that case.
+		for second in 1..=60 {
+			let now = resumed + Duration::from_secs(second);
+			check_output_deadline(&mut deadline, true, false, now).unwrap();
+			check_output_deadline(&mut deadline, true, true, now + Duration::from_millis(1))
+				.unwrap();
+			assert!(deadline.is_none());
+		}
+		// Once startup succeeded, empty polls/dropped pictures must still time out.
+		let stalled = resumed + Duration::from_secs(61);
+		for second in 0..15 {
+			check_output_deadline(
+				&mut deadline,
+				true,
+				false,
+				stalled + Duration::from_secs(second),
+			)
+			.unwrap();
+			assert_eq!(deadline, Some(stalled + Duration::from_secs(15)));
+		}
+		assert!(
+			check_output_deadline(
+				&mut deadline,
+				true,
+				false,
+				stalled + Duration::from_secs(15)
+			)
+			.is_err()
+		);
+		check_output_deadline(
+			&mut deadline,
+			false,
+			false,
+			stalled + Duration::from_secs(3600),
+		)
+		.unwrap();
 		assert!(deadline.is_none());
 	}
 

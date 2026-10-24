@@ -5,7 +5,7 @@ use super::{
 	portal_linux::Portal,
 	preview_frame,
 };
-use crate::screen::CaptureDelivery;
+use crate::screen::{CaptureDelivery, check_output_deadline};
 use ::gstreamer as gst;
 /// A capture source that has nothing new to send still emits a keepalive picture once a
 /// second, so a frozen share is not a gap between pictures but a run of seconds carrying
@@ -184,6 +184,7 @@ pub(super) fn run(
 			// without waiting for another compositor damage event.
 			let mut latest_frame = None;
 			let mut delivery = CaptureDelivery::default();
+			let mut output_deadline = None;
 			let mut capture_reset = false;
 			let mut last_encoded: Option<Instant> = None;
 			let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
@@ -229,6 +230,7 @@ pub(super) fn run(
 					}
 					latest_frame = None;
 					delivery.retire();
+					output_deadline = None;
 					waiting_keyframe = true;
 					first_frame = None;
 					last_encoded = None;
@@ -262,6 +264,7 @@ pub(super) fn run(
 						encoding = None;
 						latest_frame = None;
 						delivery.retire();
+						output_deadline = None;
 						current_output = Some(current);
 						waiting_keyframe = true;
 						first_frame = None;
@@ -331,6 +334,7 @@ pub(super) fn run(
 					// snapshot so the resumed share starts from newly captured contents.
 					latest_frame = None;
 					delivery.retire();
+					output_deadline = None;
 					slow = None;
 					waiting_keyframe = true;
 					first_frame = None;
@@ -350,6 +354,7 @@ pub(super) fn run(
 					// and this iteration still reaches the await below. Skipping the await
 					// here would spin the worker and starve the portal on this runtime.
 					let room = send.capacity() > 0;
+					let mut picture_progress = false;
 					withheld = u64::from(!room);
 					let now = Instant::now();
 					let paced = now + Duration::from_millis(2) >= next_frame;
@@ -429,6 +434,7 @@ pub(super) fn run(
 								None
 							};
 							if let Some((packet, submitted_at)) = encoded {
+								picture_progress = !packet.data.is_empty();
 								delivery.record_packet(submitted_at, &packet)?;
 								// Advance from the schedule, with jitter tolerance and no catch-up burst.
 								next_frame = (next_frame + interval).max(now + interval / 2);
@@ -478,7 +484,15 @@ pub(super) fn run(
 							}
 						}
 					}
-					// Only startup has a frame deadline: an unchanged desktop can stop producing frames.
+					// Empty output after startup still needs a bound, including a poll
+					// with no packet. Successful output and backpressure retire it.
+					check_output_deadline(
+						&mut output_deadline,
+						room && (waiting_keyframe || delivery.needs_picture()),
+						picture_progress,
+						Instant::now(),
+					)?;
+					// Keep the startup keyframe deadline separate from active-share progress.
 					if waiting_keyframe && started.elapsed() > Duration::from_secs(15) {
 						return Err("Screen video encoder did not produce a keyframe");
 					}
