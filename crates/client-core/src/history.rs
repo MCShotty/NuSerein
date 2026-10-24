@@ -1,5 +1,5 @@
 //! History requests, reading positions and pagination.
-use super::*;
+use super::{Command, Freshness, Id, ReadingCursor, State};
 
 impl State {
 	pub fn history(&mut self, before: Option<Id>) -> Command {

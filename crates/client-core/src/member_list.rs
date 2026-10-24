@@ -1,5 +1,5 @@
 //! Bounded member-list requests and cached ranges.
-use super::*;
+use super::{Command, Freshness, Id, Member, MemberList, MemberSlot, State};
 
 impl State {
 	pub(super) fn shared_member_list_id(&self, next: Id) -> Option<String> {

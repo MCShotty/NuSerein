@@ -1,5 +1,10 @@
 //! Event reduction; common validation and reconciliation preserve their order.
-use super::*;
+use super::{
+	BTreeSet, Channel, Command, Delivery, Envelope, Event, Freshness, Guild, Id,
+	MAX_GUILD_STICKERS, MAX_MEMBER_PRESENCE_BYTES, MAX_NAV, MemberSlot, Patch, State, Timeline,
+	auth, custom_emoji_bytes, navigable, notifications, permissions, preload, prepare_navigation,
+	sticker_bytes, valid_avatar_hash, valid_custom_emojis, valid_stickers,
+};
 
 impl State {
 	pub fn apply(&mut self, envelope: Envelope) {
@@ -24,54 +29,7 @@ impl State {
 			return;
 		}
 		if let Event::Startup(startup) = envelope.event {
-			if startup.bytes() > model::account::MAX_BYTES {
-				self.cancel_history();
-				self.auth = auth::AuthState::Failed;
-				self.status = "Account startup exceeds safe capacity";
-				return;
-			}
-			let PreparedStartup {
-				data,
-				permissions: prepared,
-				..
-			} = *startup;
-			let Startup {
-				premium_type,
-				user,
-				guilds,
-				channels,
-				permissions,
-				read_state,
-				notifications,
-				session_dnd,
-				mut warnings,
-			} = data;
-			self.apply_with_permissions(
-				Envelope {
-					generation: envelope.generation,
-					event: Event::Ready {
-						user,
-						guilds,
-						channels,
-						permissions,
-					},
-				},
-				Some(prepared),
-			);
-			if self.auth != auth::AuthState::Authenticated {
-				return;
-			}
-			self.set_premium_type(premium_type);
-			warnings.read_state |= self.apply_read_state(read_state).is_err();
-			if let Some(settings) = notifications {
-				warnings.notifications |= self.apply_notification_preferences(settings).is_err();
-			}
-			let _ =
-				self.apply_notification_preferences(notifications::Event::Presence(session_dnd));
-			self.apply(Envelope {
-				generation: envelope.generation,
-				event: Event::StartupWarnings(warnings),
-			});
+			self.apply_startup(startup, envelope.generation);
 			return;
 		}
 		if matches!(envelope.event, Event::Ready { .. } | Event::Resync) {
@@ -1357,62 +1315,7 @@ impl State {
 				self.apply_reply_preview(event);
 				Ok(())
 			}
-			Event::Message(mut m) => {
-				self.ingest_reply_preview(&mut m);
-				if self.message_actions.edit_pending(m.channel, m.id)
-					&& self.timeline.get(m.id).is_some_and(|old| {
-						old.edited_at
-							.is_none_or(|at| m.edited_at.is_some_and(|new| new >= at))
-					}) {
-					self.message_actions.observe_content(m.channel, m.id);
-				}
-				self.typing_message(&m);
-				if let Some(post) = self
-					.channel_index(m.channel)
-					.and_then(|index| self.channels.get_mut(index))
-					.filter(|c| matches!(c.kind, 10..=12))
-				{
-					post.message_count = post.message_count.map(|n| n.saturating_add(1));
-				}
-				let deletion = if m.reply_deleted && self.accepts_reply_source(&m) {
-					self.record_reply_deletion(&m);
-					if self.selected == Some(m.channel) {
-						self.timeline.observe_deleted_reference(&m)
-					} else {
-						Ok(())
-					}
-				} else {
-					Ok(())
-				};
-				self.observe_notification(&m);
-				self.observe_last_message(m.channel, m.id);
-				if self.selected == Some(m.channel)
-					&& self.reactions.invalidated(m.id)
-					&& m.reactions.is_some()
-				{
-					self.queue_reaction_read(m.id);
-				}
-				if self.reactions.invalidated(m.id) {
-					m.reactions = self
-						.timeline
-						.get(m.id)
-						.and_then(|old| old.reactions.clone());
-				}
-				self.confirm(&m);
-				if deletion.is_err() {
-					deletion
-				} else if self.selected == Some(m.channel)
-                    && self.can_view(m.channel)
-                    && self.freshness != Freshness::Unavailable
-                    // Do not splice a new live tail into a deliberately browsed history page.
-                    // Loaded edits still reconcile; navigation/read state continues to observe it.
-                    && (!self.history_targeted || self.timeline.get(m.id).is_some())
-				{
-					self.timeline.insert(m, true, false)
-				} else {
-					Ok(())
-				}
-			}
+			Event::Message(m) => self.apply_message(m),
 			Event::Patch(mut p) => {
 				if !matches!(p.content, Patch::Absent)
 					&& self.message_actions.edit_pending(p.channel, p.id)
@@ -1510,84 +1413,7 @@ impl State {
 					Ok(())
 				}
 			}
-			Event::SendResult { nonce, result } => {
-				let mut reconciliation = Ok(());
-				match result {
-					Ok(m) => {
-						let correlated = self
-							.user
-							.as_ref()
-							.is_some_and(|user| user.id == m.author.id)
-							&& (self.pending.iter().any(|pending| {
-								pending.nonce == nonce && pending.channel == m.channel
-							}) || self.timeline.get(m.id).is_some_and(|known| {
-								known.channel == m.channel
-									&& known.author.id == m.author.id
-									&& known.nonce.as_deref() == Some(nonce.as_str())
-							}));
-						if correlated {
-							if let Some(sticker) = self
-								.pending
-								.iter()
-								.find(|p| p.nonce == nonce && p.channel == m.channel)
-								.and_then(|p| p.sticker.clone())
-							{
-								self.remember_sticker(sticker);
-							}
-							self.observe_last_message(m.channel, m.id);
-						}
-						let accepted_reference = correlated && self.accepts_reply_source(&m);
-						if accepted_reference {
-							self.record_reply_deletion(&m);
-						}
-						if let Some(p) = self.pending.iter_mut().find(|p| p.nonce == nonce) {
-							p.delivery = Delivery::Confirmed;
-							p.confirmed = Some(m.id);
-						}
-						if accepted_reference
-							&& self.selected == Some(m.channel)
-							&& let Err(status) = self.timeline.observe_deleted_reference(&m)
-						{
-							reconciliation = Err(status);
-						}
-						// A correlated send is a live mutation even before its gateway echo.
-						if reconciliation.is_ok()
-							&& self.selected == Some(m.channel)
-							&& self.can_view(m.channel)
-							&& self.freshness != Freshness::Unavailable
-							&& self.timeline.get(m.id).is_none()
-							&& !self.history_targeted
-							&& (!m.reply_deleted || accepted_reference)
-							&& self.timeline.insert(m, correlated, false).is_err()
-						{
-							reconciliation = Err("Message exceeds safe capacity");
-						}
-					}
-					Err(f) => {
-						if let Some(p) = self
-							.pending
-							.iter_mut()
-							.find(|p| p.nonce == nonce && p.delivery != Delivery::Confirmed)
-						{
-							p.delivery = if f == auth::Failure::Ambiguous {
-								Delivery::Ambiguous
-							} else {
-								Delivery::Rejected
-							};
-						}
-						if f.ends_session() {
-							self.fail(f);
-						} else {
-							self.status = f.label();
-						}
-					}
-				}
-				self.pending.retain(|p| p.delivery != Delivery::Confirmed);
-				if !self.pending.iter().any(|p| p.delivery == Delivery::Sending) {
-					self.send_throttle_seen = false;
-				}
-				reconciliation
-			}
+			Event::SendResult { nonce, result } => self.apply_send_result(nonce, result),
 			Event::SendThrottled { nonce } => {
 				// Once per burst, like Discord: a dismissed notice stays away until every queued
 				// message has gone out.
@@ -1748,89 +1574,7 @@ impl State {
 			self.prune_post_summaries();
 			self.prune_thread_starter();
 		}
-		if self.search.is_some() && !self.can_search() {
-			self.clear_search();
-		}
-		if self
-			.archives
-			.as_ref()
-			.is_some_and(|view| !self.can_archive(view.parent, view.kind))
-		{
-			self.clear_archives();
-		}
-		if access_changed {
-			self.prune_direct_presence();
-		}
-		if self
-			.server_settings
-			.guild
-			.is_some_and(|guild| !self.can_manage_guild(guild))
-		{
-			self.server_settings.reset();
-		}
-		if self
-			.own_server_profile
-			.guild
-			.is_some_and(|guild| !self.can_edit_server_profile(guild))
-		{
-			self.own_server_profile.reset();
-		}
-		if self
-			.owned_cosmetics
-			.guild
-			.is_some_and(|guild| !self.can_edit_server_profile(guild))
-		{
-			self.owned_cosmetics.reset();
-		}
-		if access_changed && !self.server_members_shortcuts.is_empty() {
-			let guilds: BTreeSet<_> = self.guilds.iter().map(|guild| guild.id).collect();
-			self.server_members_shortcuts
-				.retain(|id, _| guilds.contains(id));
-		}
-		if let Some(guild) = self.server_admin.guild {
-			self.prune_integration_access(guild);
-			if !self.can_review_guild_applications(guild) {
-				self.server_admin.access.applications = None;
-				self.server_admin.access.detail = None;
-				self.server_admin.access.pending_count = None;
-			}
-			if !self.can_manage_guild(guild) {
-				self.server_admin.access.settings = None;
-				self.server_admin.access.recipient = None;
-			}
-			if !self.can_open_community_settings(guild) {
-				self.server_admin.community = None;
-			}
-			if !self.can_open_audit_log_settings(guild) {
-				self.server_admin.revoke_audit_access();
-			}
-			if !self.can_open_emoji_settings(guild)
-				&& !self.can_open_member_settings(guild)
-				&& !self.can_open_role_settings(guild)
-				&& !self.can_open_integration_settings(guild)
-				&& !self.can_retain_channel_integrations(guild)
-				&& !self.can_open_audit_log_settings(guild)
-				&& !self.can_review_guild_applications(guild)
-				&& !self.can_manage_guild(guild)
-				&& !self.server_admin.transfer_pending(guild)
-			{
-				self.server_admin.reset();
-			} else {
-				if !self.can_open_emoji_settings(guild) {
-					self.server_admin.emojis = None;
-				}
-				if !self.can_open_member_settings(guild) {
-					self.server_admin.members = None;
-					self.server_admin.revoke_invite_access();
-				}
-				if !self.can_open_role_settings(guild) {
-					self.server_admin.roles = None;
-					self.server_admin.selected_role = None;
-				}
-			}
-		}
-		self.reconcile_member_guide_access();
-		self.sync_reporting();
+		self.reconcile_feature_access(access_changed);
 		self.enforce_resident_budget();
 	}
 	pub(super) fn remove_channels(&mut self, removed: &BTreeSet<Id>) {

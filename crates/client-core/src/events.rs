@@ -1,5 +1,13 @@
 //! Generation-tagged adapter results and their bounded allocation charges.
-use super::*;
+use super::{
+	Channel, ChannelPatch, CustomEmoji, Guild, GuildPatch, Id, Member, MemberList, MemberPresence,
+	MemberSlot, Message, MessagePatch, Patch, PreparedStartup, Reply, Sticker, User, UserProfile,
+	application_commands, auth, captcha, channel_actions, community, custom_emoji_bytes,
+	group_actions, inbox, interactions, member_guide, member_search, mfa, notifications,
+	onboarding, owned_cosmetics, permissions, polls, presence, reactions, read_state,
+	reply_previews, reporting, search, server_actions, server_admin, server_profile,
+	server_settings, soundboard, sticker_bytes, stickers, typing, user_actions, voice,
+};
 
 pub enum Event {
 	Mfa(mfa::Event),

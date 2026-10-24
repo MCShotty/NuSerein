@@ -1,5 +1,9 @@
 //! Validated account startup and permission preparation.
-use super::*;
+use super::{
+	BTreeSet, Channel, Envelope, Event, Guild, Id, MAX_CONTENT, MAX_GUILD_STICKERS, MAX_NAV,
+	MAX_PREMIUM_CONTENT, State, User, auth, notifications, permissions, read_state,
+	valid_custom_emojis, valid_stickers,
+};
 
 pub struct Startup {
 	/// Discord's `premium_type`: 0 none, 1 Nitro Classic, 2 Nitro, 3 Nitro Basic.
@@ -166,5 +170,57 @@ impl State {
 			1 | 3 => 50 * MIB,
 			_ => 20 * MIB,
 		}
+	}
+}
+
+impl State {
+	pub(super) fn apply_startup(&mut self, startup: Box<PreparedStartup>, generation: u64) {
+		if startup.bytes() > model::account::MAX_BYTES {
+			self.cancel_history();
+			self.auth = auth::AuthState::Failed;
+			self.status = "Account startup exceeds safe capacity";
+			return;
+		}
+		let PreparedStartup {
+			data,
+			permissions: prepared,
+			..
+		} = *startup;
+		let Startup {
+			premium_type,
+			user,
+			guilds,
+			channels,
+			permissions,
+			read_state,
+			notifications,
+			session_dnd,
+			mut warnings,
+		} = data;
+		self.apply_with_permissions(
+			Envelope {
+				generation,
+				event: Event::Ready {
+					user,
+					guilds,
+					channels,
+					permissions,
+				},
+			},
+			Some(prepared),
+		);
+		if self.auth != auth::AuthState::Authenticated {
+			return;
+		}
+		self.set_premium_type(premium_type);
+		warnings.read_state |= self.apply_read_state(read_state).is_err();
+		if let Some(settings) = notifications {
+			warnings.notifications |= self.apply_notification_preferences(settings).is_err();
+		}
+		let _ = self.apply_notification_preferences(notifications::Event::Presence(session_dnd));
+		self.apply(Envelope {
+			generation,
+			event: Event::StartupWarnings(warnings),
+		});
 	}
 }

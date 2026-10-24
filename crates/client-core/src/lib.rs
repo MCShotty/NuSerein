@@ -3,6 +3,7 @@ mod commands;
 mod events;
 mod history;
 mod member_list;
+mod messages;
 mod navigation;
 mod outgoing;
 mod reducer;

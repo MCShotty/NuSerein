@@ -1,5 +1,8 @@
 //! Message preparation, send outcomes and unsent draft recovery.
-use super::*;
+use super::{
+	Command, Delivery, Envelope, Event, Freshness, Id, MAX_ATTACHMENTS, MAX_DRAFT_BYTES, Message,
+	Pending, Reply, State, Sticker, auth, fingerprint, inbox,
+};
 
 impl State {
 	pub fn has_unsent(&self) -> bool {
@@ -323,5 +326,92 @@ impl State {
 			self.cancel_history();
 		}
 		self.freshness = Freshness::Stale;
+	}
+}
+
+impl State {
+	pub(super) fn apply_send_result(
+		&mut self,
+		nonce: String,
+		result: Result<Message, auth::Failure>,
+	) -> Result<(), &'static str> {
+		let mut reconciliation = Ok(());
+		match result {
+			Ok(m) => {
+				let correlated = self
+					.user
+					.as_ref()
+					.is_some_and(|user| user.id == m.author.id)
+					&& (self
+						.pending
+						.iter()
+						.any(|pending| pending.nonce == nonce && pending.channel == m.channel)
+						|| self.timeline.get(m.id).is_some_and(|known| {
+							known.channel == m.channel
+								&& known.author.id == m.author.id
+								&& known.nonce.as_deref() == Some(nonce.as_str())
+						}));
+				if correlated {
+					if let Some(sticker) = self
+						.pending
+						.iter()
+						.find(|p| p.nonce == nonce && p.channel == m.channel)
+						.and_then(|p| p.sticker.clone())
+					{
+						self.remember_sticker(sticker);
+					}
+					self.observe_last_message(m.channel, m.id);
+				}
+				let accepted_reference = correlated && self.accepts_reply_source(&m);
+				if accepted_reference {
+					self.record_reply_deletion(&m);
+				}
+				if let Some(p) = self.pending.iter_mut().find(|p| p.nonce == nonce) {
+					p.delivery = Delivery::Confirmed;
+					p.confirmed = Some(m.id);
+				}
+				if accepted_reference
+					&& self.selected == Some(m.channel)
+					&& let Err(status) = self.timeline.observe_deleted_reference(&m)
+				{
+					reconciliation = Err(status);
+				}
+				// A correlated send is a live mutation even before its gateway echo.
+				if reconciliation.is_ok()
+					&& self.selected == Some(m.channel)
+					&& self.can_view(m.channel)
+					&& self.freshness != Freshness::Unavailable
+					&& self.timeline.get(m.id).is_none()
+					&& !self.history_targeted
+					&& (!m.reply_deleted || accepted_reference)
+					&& self.timeline.insert(m, correlated, false).is_err()
+				{
+					reconciliation = Err("Message exceeds safe capacity");
+				}
+			}
+			Err(f) => {
+				if let Some(p) = self
+					.pending
+					.iter_mut()
+					.find(|p| p.nonce == nonce && p.delivery != Delivery::Confirmed)
+				{
+					p.delivery = if f == auth::Failure::Ambiguous {
+						Delivery::Ambiguous
+					} else {
+						Delivery::Rejected
+					};
+				}
+				if f.ends_session() {
+					self.fail(f);
+				} else {
+					self.status = f.label();
+				}
+			}
+		}
+		self.pending.retain(|p| p.delivery != Delivery::Confirmed);
+		if !self.pending.iter().any(|p| p.delivery == Delivery::Sending) {
+			self.send_throttle_seen = false;
+		}
+		reconciliation
 	}
 }

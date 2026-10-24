@@ -1,5 +1,8 @@
 //! Navigation identity, selection and Back/Forward transitions.
-use super::*;
+use super::{
+	Apply, Channel, Command, Freshness, Guild, Id, MAX_NAV, MAX_VIEWED_SERVERS, NavStep, Place,
+	State, navigable, voice,
+};
 
 impl State {
 	pub(crate) fn navigation_bytes(&self) -> usize {
