@@ -129,7 +129,6 @@ impl Encoder {
 		}
 	}
 
-	#[cfg_attr(target_os = "linux", allow(dead_code))] // Windows/macOS capture polling; exercised offline in tests.
 	pub(crate) fn drain_at(&mut self) -> Result<Option<EncodedPacket>, &'static str> {
 		match &mut self.implementation {
 			Implementation::Experimental(encoder) => encoder.drain_at(),

@@ -16,8 +16,6 @@ pub(crate) struct EncodedPacket {
 	pub epoch: u64,
 	/// This call accepted an input for eventual output. False for output-only
 	/// polling or a dropped picture; output may belong to an earlier input.
-	#[cfg_attr(target_os = "linux", allow(dead_code))]
-	// Windows/macOS capture accounting; exercised offline in tests.
 	pub input_accepted: bool,
 }
 

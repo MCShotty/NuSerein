@@ -82,7 +82,7 @@ fn main() {
 		let stop = Arc::new(AtomicBool::new(false));
 		let ready = Arc::new(AtomicBool::new(false));
 		let keyframe = Arc::new(AtomicBool::new(true));
-		let source = gst::parse::bin_from_description("videotestsrc is-live=true ! video/x-raw,width=1280,height=720,framerate=30/1", true).unwrap().upcast::<gst::Element>();
+		let source = gst::parse::bin_from_description("videotestsrc is-live=true ! capsfilter caps=\"video/x-raw,width=1280,height=720,framerate=30/1\"", true).unwrap().upcast::<gst::Element>();
 		// Niri 26.04 leaves SPA header PTS at zero. GstBaseSrc adds a constant
 		// startup offset but does not replace that valid (stuck) presentation time.
 		if std::env::args().any(|arg| arg == "--niri-timestamps") {

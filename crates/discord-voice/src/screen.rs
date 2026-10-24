@@ -31,7 +31,7 @@ use std::sync::{
 	mpsc,
 };
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(test, not(target_os = "linux")))]
 use std::time::{Duration, Instant};
 
 pub const MAX_RAW_BYTES: usize = 7680 * 4320 * 8;
@@ -505,7 +505,6 @@ impl Drop for Worker {
 
 /// Delayed encoders may need a few copies to release the last fresh picture.
 /// Pending output alone must not keep a static screen encoding forever.
-#[cfg(any(test, not(target_os = "linux")))]
 #[derive(Default)]
 pub(super) struct CaptureDelivery {
 	latest: u64,
@@ -514,7 +513,6 @@ pub(super) struct CaptureDelivery {
 	inputs: std::collections::VecDeque<(u32, u64)>,
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
 impl CaptureDelivery {
 	pub(super) fn fresh(&mut self) -> Result<(), &'static str> {
 		self.latest = self
@@ -526,7 +524,7 @@ impl CaptureDelivery {
 	pub(super) fn needs_picture(&self) -> bool {
 		self.latest != self.delivered
 	}
-	fn retire(&mut self) {
+	pub(super) fn retire(&mut self) {
 		self.inputs.clear();
 		self.epoch = None;
 		self.delivered = 0;
@@ -572,6 +570,20 @@ impl CaptureDelivery {
 		}
 		Ok(())
 	}
+}
+
+#[cfg(any(test, not(target_os = "linux")))]
+fn check_output_deadline(
+	deadline: &mut Option<Instant>,
+	waiting: bool,
+	now: Instant,
+) -> Result<(), &'static str> {
+	if !waiting {
+		*deadline = None;
+	} else if now >= *deadline.get_or_insert(now + Duration::from_secs(15)) {
+		return Err("Screen video encoder did not produce a picture");
+	}
+	Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -626,6 +638,7 @@ fn encode_loop(
 	)?;
 	let mut encoding: Option<ScreenEncoder> = None;
 	let mut first_frame_deadline = Some(Instant::now() + Duration::from_secs(15));
+	let mut first_output_deadline = None;
 	let mut next_frame = Instant::now();
 	let mut next_preview = Instant::now();
 	let mut preview_supported = true;
@@ -699,6 +712,7 @@ fn encode_loop(
 			}
 			latest_frame = None;
 			delivery.retire();
+			first_output_deadline = None;
 			keyframe.store(true, Ordering::Release);
 			// This input can span the transition. Restart the selected capture so an
 			// idle desktop supplies a new snapshot instead of waiting for damage.
@@ -741,6 +755,7 @@ fn encode_loop(
 				encoding = None;
 				latest_frame = None;
 				delivery.retire();
+				first_output_deadline = None;
 				current_output = Some(current);
 				preview_supported = true;
 				next_frame = now;
@@ -795,6 +810,7 @@ fn encode_loop(
 			}
 			encoding = None;
 			delivery.retire();
+			first_output_deadline = None;
 			keyframe.store(true, Ordering::Release);
 			continue;
 		}
@@ -810,6 +826,7 @@ fn encode_loop(
 		// Drop before encoding while the transport is behind, so the encoder never references
 		// a picture the receiver did not get.
 		if send.capacity() == 0 {
+			first_output_deadline = None;
 			continue;
 		}
 		let current = current_output.ok_or("Screen dimensions are unresolved")?;
@@ -862,6 +879,13 @@ fn encode_loop(
 			continue;
 		};
 		delivery.record_packet(submitted_at, &packet)?;
+		// Dropped inputs consume no picture credits. Bound missing output
+		// separately so a native encoder cannot leave the viewer waiting forever.
+		check_output_deadline(
+			&mut first_output_deadline,
+			packet.data.is_empty() && (encoder.awaiting_keyframe || delivery.needs_picture()),
+			Instant::now(),
+		)?;
 		if packet.data.is_empty() {
 			continue;
 		}
@@ -1171,8 +1195,9 @@ impl ScreenEncoder {
 			.is_some_and(|encoder| encoder.pending())
 	}
 
-	#[cfg(not(target_os = "linux"))]
-	fn drain(&mut self) -> Result<Option<crate::video_encode::EncodedPacket>, &'static str> {
+	pub(super) fn drain(
+		&mut self,
+	) -> Result<Option<crate::video_encode::EncodedPacket>, &'static str> {
 		let result = self
 			.encoder
 			.as_mut()
@@ -1453,6 +1478,148 @@ impl RawFrame {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn output_deadline_bounds_dropped_pictures_and_allows_idle_completed_shares() {
+		let start = Instant::now();
+		let mut deadline = None;
+		let mut delivery = CaptureDelivery::default();
+		delivery.fresh().unwrap();
+		let dropped = crate::video_encode::EncodedPacket {
+			data: Vec::new(),
+			keyframe: false,
+			timestamp: 0,
+			epoch: 0,
+			input_accepted: false,
+		};
+		for second in 0..15 {
+			delivery.record_packet(second * 90_000, &dropped).unwrap();
+			assert!(delivery.inputs.is_empty() && delivery.needs_picture());
+			check_output_deadline(
+				&mut deadline,
+				true,
+				start + Duration::from_secs(u64::from(second)),
+			)
+			.unwrap();
+			assert_eq!(deadline, Some(start + Duration::from_secs(15)));
+		}
+		assert!(
+			check_output_deadline(&mut deadline, true, start + Duration::from_secs(15)).is_err()
+		);
+		// Successful output or a security pause retires the previous deadline.
+		check_output_deadline(&mut deadline, false, start + Duration::from_secs(15)).unwrap();
+		let resumed = start + Duration::from_secs(3600);
+		check_output_deadline(&mut deadline, false, resumed).unwrap();
+		assert!(deadline.is_none());
+		check_output_deadline(&mut deadline, true, resumed).unwrap();
+		assert_eq!(deadline, Some(resumed + Duration::from_secs(15)));
+		check_output_deadline(&mut deadline, false, resumed + Duration::from_secs(1)).unwrap();
+		assert!(deadline.is_none());
+	}
+
+	#[test]
+	fn buffered_static_captures_stop_uploading_after_delivery_and_keep_the_keepalive() {
+		use openh264::formats::YUVSource;
+		use std::collections::VecDeque;
+		let settings = Settings {
+			source: SourceId::Display(1),
+			width: 320,
+			height: 240,
+			fps: 60,
+			cursor: false,
+			audio: false,
+		};
+		let mut encoder = crate::video_backend::Encoder::software(ScreenEncoder::config(
+			settings,
+			settings.bit_rate(),
+			model::voice_settings::VideoCodec::H264,
+		))
+		.unwrap();
+		let mut pictures = Vec::new();
+		for value in [128, 64] {
+			pictures.push(
+				encoder
+					.encode_at(&vec![value; 320 * 240 * 3 / 2], true, 0)
+					.unwrap()
+					.data,
+			);
+		}
+		let mut latest = None;
+		let mut delivery = CaptureDelivery::default();
+		let mut pending = VecDeque::new();
+		let mut uploads = 0;
+		let mut last = Vec::new();
+		// Two captures and two keepalives over 240 scheduling opportunities. Model
+		// sixteen-picture lookahead with real encoded pictures and capture accounting.
+		for tick in 0..240 {
+			let raw = (tick == 0 || tick == 120).then(|| RawFrame {
+				format: RawFormat::Bgra8,
+				width: 320,
+				height: 240,
+				stride: 320 * 4,
+				data: vec![if tick == 0 { 128 } else { 64 }; 320 * 240 * 4],
+			});
+			if raw.is_some() {
+				delivery.fresh().unwrap();
+			}
+			let keepalive = tick == 60 || tick == 180;
+			if !retain_screen_frame(
+				&mut latest,
+				raw,
+				true,
+				keepalive || delivery.needs_picture(),
+			)
+			.unwrap()
+			{
+				continue;
+			}
+			let picture = usize::from(latest.as_ref().unwrap().data[0] == 64);
+			pending.push_back((tick * 1500, picture));
+			uploads += 1;
+			let mut packet = crate::video_encode::EncodedPacket {
+				data: Vec::new(),
+				keyframe: false,
+				timestamp: 0,
+				epoch: 0,
+				input_accepted: true,
+			};
+			if pending.len() > 16 {
+				let (timestamp, picture) = pending.pop_front().unwrap();
+				packet.timestamp = timestamp;
+				packet.data = pictures[picture].clone();
+				packet.keyframe = true;
+				last = packet.data.clone();
+			}
+			delivery.record_packet(tick * 1500, &packet).unwrap();
+		}
+		assert_eq!(
+			uploads, 36,
+			"buffered output must not keep uploading an unchanged capture"
+		);
+		assert!(!delivery.needs_picture());
+		assert_eq!(pending.len(), 16);
+		// Reordered, receive-only tail output still drains after the latest
+		// capture was delivered, without turning polling into more uploads.
+		while let Some((timestamp, picture)) = pending.pop_back() {
+			assert!(
+				!retain_screen_frame(&mut latest, None, true, delivery.needs_picture()).unwrap()
+			);
+			let packet = crate::video_encode::EncodedPacket {
+				data: pictures[picture].clone(),
+				keyframe: true,
+				timestamp,
+				epoch: 0,
+				input_accepted: false,
+			};
+			delivery.record_packet(0, &packet).unwrap();
+			last = packet.data;
+		}
+		assert!(delivery.inputs.is_empty() && !delivery.needs_picture());
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		let decoded = decoder.decode(&last).unwrap().unwrap();
+		assert_eq!(decoded.dimensions(), (320, 240));
+		assert!((60..=68).contains(&decoded.y()[0]));
+	}
 
 	#[test]
 	fn delayed_capture_output_finishes_the_latest_picture_without_an_idle_encode_loop() {
