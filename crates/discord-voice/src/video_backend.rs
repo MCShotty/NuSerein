@@ -359,6 +359,7 @@ impl Stable {
 				keyframe: false,
 				timestamp,
 				epoch: self.epoch,
+				input_accepted: false,
 			});
 		}
 		let mut frame = Vec::with_capacity(length);
@@ -371,6 +372,7 @@ impl Stable {
 			keyframe,
 			timestamp,
 			epoch: self.epoch,
+			input_accepted: true,
 		})
 	}
 
@@ -445,6 +447,7 @@ impl Stable {
 				keyframe: false,
 				timestamp,
 				epoch: self.epoch,
+				input_accepted: submitted && !cfg!(target_os = "macos"),
 			});
 		}
 		validate_h264(&frame.0, frame.1, self.config, !self.produced_output)?;
@@ -458,6 +461,7 @@ impl Stable {
 			keyframe: frame.1,
 			timestamp,
 			epoch: self.epoch,
+			input_accepted: submitted,
 		})
 	}
 }
@@ -631,14 +635,100 @@ mod tests {
 		let drained = stable
 			.finish_hardware((packet.data.clone(), true), 9000, false)
 			.unwrap();
+		assert!(!drained.input_accepted);
 		assert_eq!(drained.timestamp, 3000);
 		assert_eq!(stable.timeline.iter().copied().collect::<Vec<_>>(), [6000]);
 		stable.submit_timestamp(12000).unwrap();
 		let next = stable
 			.finish_hardware((packet.data, true), 12000, true)
 			.unwrap();
+		assert!(next.input_accepted);
 		assert_eq!(next.timestamp, 6000);
 		assert_eq!(stable.timeline.iter().copied().collect::<Vec<_>>(), [12000]);
+	}
+
+	#[cfg(not(target_os = "macos"))] // macOS CompleteFrames drops empty output instead of deferring it.
+	#[test]
+	fn output_only_native_pictures_do_not_exhaust_screen_capture_credits() {
+		use openh264::formats::YUVSource;
+		let mut source = software_only(CAMERA);
+		let picture = vec![128; picture_bytes(CAMERA).unwrap()];
+		let idr = source.encode_at(&picture, true, 0).unwrap();
+		let mut target = software_only(CAMERA);
+		let Implementation::Stable(stable) = &mut target.implementation else {
+			unreachable!()
+		};
+		let mut delivery = crate::screen::CaptureDelivery::default();
+		// Exercise more than the entire capture ledger. Model the production MFT
+		// order: delayed input, output without input credit, retry of the latest
+		// capture. Actual native-result validation and timestamp reconciliation run.
+		for cycle in 0..96 {
+			let timestamp = cycle * 9000;
+			delivery.fresh().unwrap();
+			stable.submit_timestamp(timestamp).unwrap();
+			let delayed = stable
+				.finish_hardware((Vec::new(), false), timestamp, true)
+				.unwrap();
+			assert!(delayed.input_accepted && delayed.data.is_empty());
+			delivery.record_packet(timestamp, &delayed).unwrap();
+
+			delivery.fresh().unwrap();
+			stable.submit_timestamp(timestamp + 3000).unwrap();
+			let output_only = stable
+				.finish_hardware((idr.data.clone(), true), timestamp + 3000, false)
+				.unwrap();
+			assert!(!output_only.input_accepted);
+			assert_eq!(output_only.timestamp, timestamp);
+			delivery
+				.record_packet(timestamp + 3000, &output_only)
+				.unwrap();
+			assert!(delivery.needs_picture());
+
+			stable.submit_timestamp(timestamp + 6000).unwrap();
+			let retried = stable
+				.finish_hardware((idr.data.clone(), true), timestamp + 6000, true)
+				.unwrap();
+			assert!(retried.input_accepted);
+			delivery.record_packet(timestamp + 6000, &retried).unwrap();
+			assert!(!delivery.needs_picture());
+			assert!(stable.timeline.is_empty());
+			if cycle == 95 {
+				let mut decoder = openh264::decoder::Decoder::new().unwrap();
+				assert_eq!(
+					decoder.decode(&retried.data).unwrap().unwrap().dimensions(),
+					(CAMERA.width as usize, CAMERA.height as usize)
+				);
+			}
+		}
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn dropped_native_pictures_do_not_exhaust_screen_capture_credits() {
+		let mut source = software_only(CAMERA);
+		let picture = vec![128; picture_bytes(CAMERA).unwrap()];
+		let idr = source.encode_at(&picture, true, 0).unwrap();
+		let mut target = software_only(CAMERA);
+		let Implementation::Stable(stable) = &mut target.implementation else {
+			unreachable!()
+		};
+		let mut delivery = crate::screen::CaptureDelivery::default();
+		for timestamp in 0..96 {
+			delivery.fresh().unwrap();
+			stable.submit_timestamp(timestamp).unwrap();
+			let dropped = stable
+				.finish_hardware((Vec::new(), false), timestamp, true)
+				.unwrap();
+			assert!(!dropped.input_accepted && dropped.data.is_empty());
+			delivery.record_packet(timestamp, &dropped).unwrap();
+			assert!(stable.timeline.is_empty() && delivery.needs_picture());
+		}
+		stable.submit_timestamp(1000).unwrap();
+		let packet = stable
+			.finish_hardware((idr.data, true), 1000, true)
+			.unwrap();
+		delivery.record_packet(1000, &packet).unwrap();
+		assert!(packet.input_accepted && !delivery.needs_picture());
 	}
 
 	#[test]

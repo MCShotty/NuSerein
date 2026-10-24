@@ -14,6 +14,11 @@ pub(crate) struct EncodedPacket {
 	pub keyframe: bool,
 	pub timestamp: u32,
 	pub epoch: u64,
+	/// This call accepted an input for eventual output. False for output-only
+	/// polling or a dropped picture; output may belong to an earlier input.
+	#[cfg_attr(target_os = "linux", allow(dead_code))]
+	// Windows/macOS capture accounting; exercised offline in tests.
+	pub input_accepted: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -677,7 +682,13 @@ impl Encoder {
 		}
 		self.timeline.push_back((self.next_input, timestamp));
 		self.next_input += 1;
-		self.finish_packet(result, length, keyframe, presentation_index, timestamp)
+		self.finish_packet(
+			result,
+			length,
+			keyframe,
+			presentation_index,
+			Some(timestamp),
+		)
 	}
 
 	/// Poll asynchronous output without submitting, uploading or timestamping
@@ -706,7 +717,7 @@ impl Encoder {
 		if result < 0 {
 			return Err("FFmpeg output polling failed");
 		}
-		let packet = self.finish_packet(result, length, keyframe, presentation_index, 0)?;
+		let packet = self.finish_packet(result, length, keyframe, presentation_index, None)?;
 		Ok((!packet.data.is_empty()).then_some(packet))
 	}
 
@@ -763,7 +774,13 @@ impl Encoder {
 		}
 		self.timeline.push_back((self.next_input, timestamp));
 		self.next_input += 1;
-		self.finish_packet(result, length, keyframe, presentation_index, timestamp)
+		self.finish_packet(
+			result,
+			length,
+			keyframe,
+			presentation_index,
+			Some(timestamp),
+		)
 	}
 
 	fn finish_packet(
@@ -772,14 +789,15 @@ impl Encoder {
 		length: usize,
 		keyframe: i32,
 		presentation_index: i64,
-		timestamp: u32,
+		input_timestamp: Option<u32>,
 	) -> Result<EncodedPacket, &'static str> {
 		if result == 0 {
 			return Ok(EncodedPacket {
 				data: Vec::new(),
 				keyframe: false,
-				timestamp,
+				timestamp: input_timestamp.unwrap_or(0),
 				epoch: self.epoch,
+				input_accepted: input_timestamp.is_some(),
 			});
 		}
 		if result != 1 || length == 0 || length > self.config.max_bytes {
@@ -802,6 +820,7 @@ impl Encoder {
 			keyframe,
 			timestamp,
 			epoch: self.epoch,
+			input_accepted: input_timestamp.is_some(),
 		})
 	}
 }
@@ -820,6 +839,30 @@ mod tests {
 		adapter: None,
 		hdr: None,
 	};
+	#[test]
+	fn delayed_ffmpeg_output_reports_input_acceptance_separately_from_polling() {
+		let mut encoder = Encoder::software(CAMERA).unwrap();
+		let picture = vec![128; CAMERA.picture_bytes().unwrap()];
+		let first = encoder.encode_at(&picture, true, 3000).unwrap();
+		assert!(first.input_accepted && !first.data.is_empty());
+		assert!(encoder.timeline.is_empty());
+		let timestamp = u32::MAX - 42;
+		// Model a deferred native result using the actual output validator and a
+		// real encoded picture. Polling must preserve the original timestamp and
+		// never claim that its dummy zero timestamp was a new input.
+		encoder.timeline.push_back((1, timestamp));
+		let delayed = encoder.finish_packet(0, 0, 0, -1, Some(timestamp)).unwrap();
+		assert!(delayed.input_accepted && delayed.data.is_empty() && encoder.pending());
+		let pending = encoder.finish_packet(0, 0, 0, -1, None).unwrap();
+		assert!(!pending.input_accepted && pending.data.is_empty() && encoder.pending());
+		let received = encoder
+			.finish_packet(1, first.data.len(), 1, 1, None)
+			.unwrap();
+		assert!(!received.input_accepted && !encoder.pending());
+		assert_eq!(received.timestamp, timestamp);
+		assert_eq!(received.data, first.data);
+	}
+
 	#[test]
 	fn rendering_adapter_excludes_other_vendors_and_unknown_hardware() {
 		for backend in BACKENDS {

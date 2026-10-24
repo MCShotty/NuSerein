@@ -936,6 +936,7 @@ mod tests {
 					keyframe: false,
 					timestamp: 1234,
 					epoch: 0,
+					input_accepted: true,
 				},
 			)
 			.unwrap();

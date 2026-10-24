@@ -507,7 +507,7 @@ impl Drop for Worker {
 /// Pending output alone must not keep a static screen encoding forever.
 #[cfg(any(test, not(target_os = "linux")))]
 #[derive(Default)]
-struct CaptureDelivery {
+pub(super) struct CaptureDelivery {
 	latest: u64,
 	delivered: u64,
 	epoch: Option<u64>,
@@ -516,14 +516,14 @@ struct CaptureDelivery {
 
 #[cfg(any(test, not(target_os = "linux")))]
 impl CaptureDelivery {
-	fn fresh(&mut self) -> Result<(), &'static str> {
+	pub(super) fn fresh(&mut self) -> Result<(), &'static str> {
 		self.latest = self
 			.latest
 			.checked_add(1)
 			.ok_or("Screen capture sequence exhausted")?;
 		Ok(())
 	}
-	fn needs_picture(&self) -> bool {
+	pub(super) fn needs_picture(&self) -> bool {
 		self.latest != self.delivered
 	}
 	fn retire(&mut self) {
@@ -531,10 +531,18 @@ impl CaptureDelivery {
 		self.epoch = None;
 		self.delivered = 0;
 	}
-	fn submitted(&mut self, timestamp: u32, epoch: u64) -> Result<(), &'static str> {
+	fn submitted(
+		&mut self,
+		timestamp: u32,
+		epoch: u64,
+		accepted: bool,
+	) -> Result<(), &'static str> {
 		if self.epoch != Some(epoch) {
 			self.retire();
 			self.epoch = Some(epoch);
+		}
+		if !accepted {
+			return Ok(());
 		}
 		if self.inputs.len() >= crate::video_encode::MAX_PENDING_PICTURES {
 			return Err("Screen encoder exceeded its pending picture limit");
@@ -552,6 +560,17 @@ impl CaptureDelivery {
 		{
 			self.delivered = self.delivered.max(source);
 		}
+	}
+	pub(super) fn record_packet(
+		&mut self,
+		timestamp: u32,
+		packet: &crate::video_encode::EncodedPacket,
+	) -> Result<(), &'static str> {
+		self.submitted(timestamp, packet.epoch, packet.input_accepted)?;
+		if !packet.data.is_empty() {
+			self.received(packet.timestamp, packet.epoch);
+		}
+		Ok(())
 	}
 }
 
@@ -827,8 +846,8 @@ fn encode_loop(
 		} else {
 			None
 		};
-		let packet = if let Some(packet) = drained {
-			packet
+		let (packet, submitted_at) = if let Some(packet) = drained {
+			(packet, 0)
 		} else if delivery.needs_picture() || force_keyframe {
 			let timestamp = (origin.elapsed().as_micros() * 90 / 1000) as u32;
 			let started = metrics.start();
@@ -838,15 +857,14 @@ fn encode_loop(
 				timestamp,
 			)?;
 			metrics.finish(crate::diagnostics::Stage::Encode, started);
-			delivery.submitted(timestamp, encoder.epoch())?;
-			packet
+			(packet, timestamp)
 		} else {
 			continue;
 		};
+		delivery.record_packet(submitted_at, &packet)?;
 		if packet.data.is_empty() {
 			continue;
 		}
-		delivery.received(packet.timestamp, packet.epoch);
 		if !ready.load(Ordering::Acquire)
 			|| stop.load(Ordering::Acquire)
 			|| audio_epoch.load(Ordering::Acquire) != reset_generation
@@ -1443,7 +1461,7 @@ mod tests {
 		delivery.fresh().unwrap();
 		// A 16-picture lookahead releases the original input after bounded priming.
 		for timestamp in 0..17 {
-			delivery.submitted(timestamp, 3).unwrap();
+			delivery.submitted(timestamp, 3, true).unwrap();
 		}
 		assert!(delivery.needs_picture());
 		delivery.received(0, 3);
@@ -1455,7 +1473,7 @@ mod tests {
 		}
 		assert!(delivery.inputs.is_empty());
 		delivery.fresh().unwrap();
-		delivery.submitted(20, 3).unwrap();
+		delivery.submitted(20, 3, true).unwrap();
 		assert!(delivery.needs_picture());
 		delivery.received(20, 3);
 		assert!(!delivery.needs_picture());
@@ -1465,22 +1483,62 @@ mod tests {
 	fn capture_delivery_rejects_old_epochs_and_bounds_priming() {
 		let mut delivery = CaptureDelivery::default();
 		delivery.fresh().unwrap();
-		delivery.submitted(5, 0).unwrap();
+		delivery.submitted(5, 0, true).unwrap();
 		delivery.retire();
-		delivery.submitted(6, 1).unwrap();
+		delivery.submitted(6, 1, true).unwrap();
 		delivery.received(5, 0);
 		assert!(delivery.needs_picture());
 		delivery.received(6, 1);
 		assert!(!delivery.needs_picture());
 		delivery.fresh().unwrap();
 		for timestamp in 0..crate::video_encode::MAX_PENDING_PICTURES as u32 {
-			delivery.submitted(timestamp, 1).unwrap();
+			delivery.submitted(timestamp, 1, true).unwrap();
 		}
-		assert!(delivery.submitted(1000, 1).is_err());
+		assert!(delivery.submitted(1000, 1, true).is_err());
 		assert_eq!(
 			delivery.inputs.len(),
 			crate::video_encode::MAX_PENDING_PICTURES
 		);
+		// A poll without new input must remain legal when every real credit is used.
+		delivery.submitted(1000, 1, false).unwrap();
+		assert_eq!(
+			delivery.inputs.len(),
+			crate::video_encode::MAX_PENDING_PICTURES
+		);
+	}
+
+	#[test]
+	fn dropped_and_polled_pictures_do_not_create_capture_inputs() {
+		let mut delivery = CaptureDelivery::default();
+		let mut packet = crate::video_encode::EncodedPacket {
+			data: Vec::new(),
+			keyframe: false,
+			timestamp: u32::MAX - 50,
+			epoch: 4,
+			input_accepted: false,
+		};
+		for timestamp in 0..96 {
+			delivery.fresh().unwrap();
+			delivery.record_packet(timestamp, &packet).unwrap();
+			assert!(delivery.inputs.is_empty() && delivery.needs_picture());
+		}
+		packet.input_accepted = true;
+		delivery.record_packet(packet.timestamp, &packet).unwrap();
+		assert_eq!(delivery.inputs.len(), 1);
+		// Receive-only output identifies its original input, including wrapping RTP
+		// values; the dummy polling timestamp must never enter the ledger.
+		packet.input_accepted = false;
+		packet.data.push(1);
+		delivery.record_packet(0, &packet).unwrap();
+		assert!(delivery.inputs.is_empty() && !delivery.needs_picture());
+
+		delivery.fresh().unwrap();
+		delivery.submitted(1000, 4, true).unwrap();
+		packet.data.clear();
+		packet.epoch = 5;
+		delivery.record_packet(0, &packet).unwrap();
+		delivery.received(1000, 4);
+		assert!(delivery.inputs.is_empty() && delivery.needs_picture());
 	}
 
 	#[test]
