@@ -516,6 +516,8 @@ pub struct MessagingUi {
 	pub voice_deafened: bool,
 	pub voice_processing: model::voice_settings::VoiceProcessing,
 	pub video_settings: model::voice_settings::VideoSettings,
+	/// Rendered visibility of the advanced panel, used to retire hidden probes.
+	pub video_encoding_advanced_visible: bool,
 	/// Session-local driver reports; the host queries outside the render thread.
 	pub video_capabilities: Option<model::voice_settings::DriverCapabilities>,
 	pub video_capabilities_loading: bool,
@@ -524,6 +526,8 @@ pub struct MessagingUi {
 	pub video_encoder_tests: Option<model::voice_settings::VideoCapabilities>,
 	pub video_encoder_tests_loading: bool,
 	pub video_encoder_tests_request: Option<model::voice_settings::VideoCodec>,
+	pub video_encoder_tests_preset: Option<model::voice_settings::EncoderPreset>,
+	pub video_encoder_test_presets: [Option<model::voice_settings::EncoderPreset>; 3],
 	/// Codec of the active or last test, independent of changes to the selected codec.
 	pub video_encoder_tests_codec: Option<model::voice_settings::VideoCodec>,
 	pub voice_preview_requested: bool,

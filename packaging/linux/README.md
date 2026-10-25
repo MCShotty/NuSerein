@@ -38,18 +38,7 @@ these are native package dependencies (`gstreamer1.0-pipewire` on Debian/Ubuntu,
 `pipewire-gstreamer` on Fedora, `gstreamer-plugin-pipewire` on openSUSE and
 `gst-plugin-pipewire` on Arch). Use a ScreenCast-capable portal backend matching your
 desktop; the GTK fallback alone does not provide screen capture.
-Stable camera and screen encoders use system GStreamer `vah264enc` or `nvh264enc`
-and `h264parse`, with source-built OpenH264 fallback. The hardware path needs
-optional Bad plugins: `gstreamer1.0-plugins-bad` on Ubuntu,
-`gstreamer1-plugins-bad-free` on Fedora, `gstreamer-plugins-bad` on openSUSE, and
-`gst-plugins-bad-libs` (parser/NVENC) plus the separately packaged `gst-plugin-va`
-on Arch for VA-API.
-DEB/RPM recommend these packages; Arch lists them as
-optional. Distribution builds may omit a vendor encoder, and compatible GPU
-drivers/device access are still required. Base/Good remain required for raw
-capture and media playback. Software fallback works without hardware plugins.
-
-Experimental camera and screen encoders use bundled FFmpeg with NVENC, AMF,
+Camera and screen encoding uses bundled FFmpeg with NVENC, AMF,
 Quick Sync and software OpenH264/H264. Compatible hardware can supply HEVC/AV1;
 those codecs have no bundled software encoder. Linux x64 Quick Sync links
 libva/libva-drm/libdrm for device setup; native package tools derive these runtime

@@ -253,6 +253,7 @@ pub(super) fn run(
 						&ready,
 						&keyframe,
 						&bitrate,
+						video_settings.bandwidth,
 					)?;
 					if current_output != Some(current) {
 						if let Some(encoder) = &encoding {
@@ -278,8 +279,10 @@ pub(super) fn run(
 					return Err("Screen capture did not report source dimensions");
 				}
 				let target = bitrate.load(Ordering::Acquire).clamp(
-					250_000,
-					current_output.map_or(250_000, |output| output.settings.bit_rate()),
+					model::voice_settings::VideoBitrate::MINIMUM,
+					current_output.map_or(model::voice_settings::VideoBitrate::MINIMUM, |output| {
+						output.rates.maximum
+					}),
 				);
 				// A rate change updates only the encoder, preserving the approved
 				// source, preview and audio. Do not restart while waiting for its first IDR.

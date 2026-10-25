@@ -123,7 +123,6 @@ impl AppPreferences {
 			&& self
 				.voice_processing
 				.is_none_or(|value| value.custom.is_valid())
-			&& self.video_settings.is_valid()
 			&& self.expanded_folders.len() <= 256
 			&& self.user_volumes.len() <= 64
 			&& self.user_volumes.iter().all(|(_, volume)| *volume <= 200)

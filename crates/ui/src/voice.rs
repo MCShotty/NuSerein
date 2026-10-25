@@ -2675,67 +2675,21 @@ impl MessagingUi {
 	}
 
 	fn video_settings_controls(&mut self, ui: &mut egui::Ui) {
-		use model::voice_settings::{VideoBackend, VideoCodec, VideoFrameRate, VideoResolution};
+		use model::voice_settings::{VideoFrameRate, VideoResolution};
 		let colors = design::palette(ui);
-		ui.label(crate::i18n::translate("voice-video-backend"));
-		ui.horizontal_wrapped(|ui| {
-			ui.selectable_value(
-				&mut self.video_settings.backend,
-				VideoBackend::Stable,
-				crate::i18n::translate("voice-video-backend-stable"),
-			);
-			ui.selectable_value(
-				&mut self.video_settings.backend,
-				VideoBackend::Experimental,
-				crate::i18n::translate("voice-video-backend-experimental"),
-			);
-		});
-		let experimental = self.video_settings.backend == VideoBackend::Experimental;
-		if !experimental {
-			self.video_settings.codec = VideoCodec::H264;
-		}
 		ui.add(
 			egui::Label::new(
-				RichText::new(crate::i18n::translate(if experimental {
-					"voice-video-experimental-description"
-				} else {
-					"voice-video-stable-description"
-				}))
-				.size(12.0)
-				.color(colors.muted),
+				RichText::new(crate::i18n::translate("voice-video-ffmpeg-description"))
+					.size(12.0)
+					.color(colors.muted),
 			)
 			.wrap(),
 		);
-		ui.label(crate::i18n::translate("voice-video-codec"));
-		ui.horizontal_wrapped(|ui| {
-			for (codec, label) in [
-				(VideoCodec::H264, "H.264"),
-				(VideoCodec::H265, "H.265"),
-				(VideoCodec::Av1, "AV1"),
-			] {
-				let unavailable = !self.video_capabilities_loading
-					&& !self.video_capabilities_refresh
-					&& self
-						.video_capabilities
-						.is_some_and(|caps| caps.confirmed_unavailable(codec));
-				let enabled = codec == VideoCodec::H264 || experimental && !unavailable;
-				let response = ui.add_enabled(
-					enabled,
-					egui::Button::selectable(self.video_settings.codec == codec, label),
-				);
-				if response.clicked() {
-					self.video_settings.codec = codec;
-				}
-				if experimental && unavailable && codec != VideoCodec::H264 {
-					response.on_disabled_hover_text(crate::i18n::translate(
-						"voice-video-hardware-codec-unavailable",
-					));
-				}
-			}
-		});
-		if experimental {
-			self.video_hardware_capabilities(ui);
-		}
+		let advanced = egui::CollapsingHeader::new(crate::i18n::translate("voice-video-advanced"))
+			.id_salt("advanced-video-encoding")
+			.default_open(true)
+			.show(ui, |ui| self.advanced_video_encoding_controls(ui));
+		self.video_encoding_advanced_visible = advanced.body_returned.is_some();
 		ui.add_space(8.0);
 		ui.label(crate::i18n::translate("voice-video-camera-resolution"));
 		ui.horizontal_wrapped(|ui| {
@@ -2786,6 +2740,104 @@ impl MessagingUi {
 			)
 			.wrap(),
 		);
+	}
+
+	fn advanced_video_encoding_controls(&mut self, ui: &mut egui::Ui) {
+		use model::voice_settings::{EncoderPreset, VideoBandwidth, VideoCodec};
+		let colors = design::palette(ui);
+		ui.label(crate::i18n::translate("voice-video-codec"));
+		ui.horizontal_wrapped(|ui| {
+			for (codec, label) in [
+				(VideoCodec::H264, "H.264"),
+				(VideoCodec::H265, "H.265"),
+				(VideoCodec::Av1, "AV1"),
+			] {
+				let enabled = !self.video_capabilities_loading
+					&& !self.video_capabilities_refresh
+					&& self
+						.video_capabilities
+						.is_some_and(|caps| caps.available(codec));
+				let response = ui.add_enabled(
+					enabled,
+					egui::Button::selectable(self.video_settings.codec == codec, label),
+				);
+				if response.clicked() {
+					self.video_settings.codec = codec;
+				}
+				if !enabled {
+					response.on_disabled_hover_text(crate::i18n::translate(
+						"voice-video-hardware-codec-unavailable",
+					));
+				}
+			}
+		});
+		ui.add_space(8.0);
+		ui.label(crate::i18n::translate("voice-video-bandwidth"));
+		ui.horizontal_wrapped(|ui| {
+			for (profile, label) in [
+				(VideoBandwidth::Low, "voice-video-bandwidth-low"),
+				(VideoBandwidth::Medium, "voice-video-bandwidth-medium"),
+				(VideoBandwidth::High, "voice-video-bandwidth-high"),
+			] {
+				ui.selectable_value(
+					&mut self.video_settings.bandwidth,
+					profile,
+					crate::i18n::translate(label),
+				);
+			}
+		});
+		ui.add(
+			egui::Label::new(
+				egui::RichText::new(crate::i18n::translate("voice-video-bandwidth-description"))
+					.size(12.0)
+					.color(colors.muted),
+			)
+			.wrap(),
+		);
+		let codec = self.video_settings.codec;
+		let presets = self
+			.video_capabilities
+			.map(|caps| caps.presets(codec))
+			.unwrap_or_default();
+		let ready = !self.video_capabilities_loading
+			&& !self.video_capabilities_refresh
+			&& self
+				.video_capabilities
+				.is_some_and(|caps| caps.presets_ready(codec));
+		if ready && !presets.contains(self.video_settings.quality) {
+			self.video_settings.quality = EncoderPreset::Automatic;
+		}
+		ui.add_space(8.0);
+		ui.label(crate::i18n::translate("voice-video-quality-preset"));
+		egui::ComboBox::from_id_salt("video-quality-preset")
+			.width(ui.available_width().min(240.0))
+			.selected_text(self.video_settings.quality.label())
+			.truncate()
+			.show_ui(ui, |ui| {
+				for preset in EncoderPreset::ALL {
+					if preset == EncoderPreset::Automatic || ready && presets.contains(preset) {
+						ui.selectable_value(
+							&mut self.video_settings.quality,
+							preset,
+							preset.label(),
+						);
+					}
+				}
+			});
+		if !ready {
+			ui.label(
+				egui::RichText::new(crate::i18n::translate("voice-video-presets-pending"))
+					.size(12.0)
+					.color(colors.muted),
+			);
+		} else if presets.bits() == 0 {
+			ui.label(
+				egui::RichText::new(crate::i18n::translate("voice-video-presets-none"))
+					.size(12.0)
+					.color(colors.muted),
+			);
+		}
+		self.video_hardware_capabilities(ui);
 	}
 
 	fn video_hardware_capabilities(&mut self, ui: &mut egui::Ui) {
@@ -2909,6 +2961,7 @@ impl MessagingUi {
 				.clicked()
 			{
 				self.video_encoder_tests_request = Some(selected);
+				self.video_encoder_tests_preset = Some(self.video_settings.quality);
 				ui.ctx().request_repaint();
 			}
 		});
@@ -2925,6 +2978,21 @@ impl MessagingUi {
 		let active_codec = self
 			.video_encoder_tests_request
 			.or(self.video_encoder_tests_codec);
+		let preset = if self.video_encoder_tests_request == Some(selected) {
+			self.video_encoder_tests_preset
+		} else {
+			self.video_encoder_test_presets[selected.index()]
+		};
+		if let Some(preset) = preset {
+			ui.label(
+				RichText::new(crate::i18n::translate_args(
+					"voice-video-test-preset",
+					&[("preset", preset.label())],
+				))
+				.size(12.0)
+				.color(colors.muted),
+			);
+		}
 		let selected_testing = testing && active_codec == Some(selected);
 		if testing && let Some(codec) = active_codec {
 			ui.horizontal_wrapped(|ui| {
@@ -5688,6 +5756,7 @@ mod tests {
 		DriverCapabilities {
 			support: [[ProbeResult::Unavailable; 4]; 3],
 			ten_bit: [[ProbeResult::Pending; 4]; 3],
+			quality_presets: Default::default(),
 		}
 	}
 
@@ -5708,71 +5777,74 @@ mod tests {
 		}
 	}
 
-	#[test]
-	fn camera_resolution_controls_are_selectable_through_8k_on_both_backends() {
-		use model::voice_settings::{VideoBackend, VideoResolution};
-		for backend in [VideoBackend::Stable, VideoBackend::Experimental] {
-			let ctx = egui::Context::default();
-			let mut messaging = MessagingUi::default();
-			messaging.video_settings.backend = backend;
-			for resolution in VideoResolution::ALL {
-				video_controls_click(&ctx, &mut messaging, 320.0, resolution.label());
-				assert_eq!(messaging.video_settings.camera_resolution, resolution);
-				assert_eq!(messaging.video_settings.backend, backend);
+	fn video_controls_focus(ctx: &egui::Context, messaging: &mut MessagingUi, label: &str) {
+		for _ in 0..32 {
+			video_controls_key(ctx, messaging, egui::Key::Tab);
+			let text = video_controls_frame(ctx, messaging, 320.0, vec![]);
+			if let Some(response) = ctx
+				.memory(|memory| memory.focused())
+				.and_then(|id| ctx.read_response(id))
+			{
+				assert!(
+					!text.iter().any(|(text, rect)| text == "H.265"
+						&& messaging.video_capabilities.is_some_and(
+							|caps| !caps.available(model::voice_settings::VideoCodec::H265)
+						) && response.rect.contains(rect.center())),
+					"Unsupported codec must never receive keyboard focus"
+				);
+				if text
+					.iter()
+					.any(|(text, rect)| text == label && response.rect.contains(rect.center()))
+				{
+					return;
+				}
 			}
+		}
+		panic!("Video control not reachable by keyboard: {label}");
+	}
+
+	#[test]
+	fn camera_resolution_controls_are_selectable_through_8k() {
+		use model::voice_settings::VideoResolution;
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi::default();
+		for resolution in VideoResolution::ALL {
+			video_controls_click(&ctx, &mut messaging, 320.0, resolution.label());
+			assert_eq!(messaging.video_settings.camera_resolution, resolution);
 		}
 	}
 
 	#[test]
-	fn camera_frame_rate_controls_are_selectable_through_60_fps_on_both_backends() {
-		use model::voice_settings::{VideoBackend, VideoFrameRate};
-		for backend in [VideoBackend::Stable, VideoBackend::Experimental] {
-			let ctx = egui::Context::default();
-			let mut messaging = MessagingUi::default();
-			messaging.video_settings.backend = backend;
-			for frame_rate in VideoFrameRate::ALL {
-				video_controls_click(&ctx, &mut messaging, 320.0, frame_rate.label());
-				assert_eq!(messaging.video_settings.camera_frame_rate, frame_rate);
-				assert_eq!(messaging.video_settings.backend, backend);
-			}
-			// Start keyboard navigation with a fresh focus chain: pointer selection
-			// does not imply keyboard focus for egui selectable-value buttons.
-			let ctx = egui::Context::default();
-			let mut messaging = MessagingUi::default();
-			messaging.video_settings.backend = backend;
-			messaging.video_capabilities = Some(Default::default());
-			video_controls_frame(&ctx, &mut messaging, 320.0, vec![]);
-			// Backend (2), enabled codecs (1/3), experimental actions (0/2),
-			// resolutions (6), then 15 fps and 30 fps.
-			let tabs = if backend == VideoBackend::Stable {
-				11
-			} else {
-				15
-			};
-			for _ in 0..tabs {
-				video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
-			}
-			video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
-			assert_eq!(
-				messaging.video_settings.camera_frame_rate,
-				VideoFrameRate::Fps30
-			);
-			video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
-			video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
-			assert_eq!(
-				messaging.video_settings.camera_frame_rate,
-				VideoFrameRate::Fps60
-			);
+	fn camera_frame_rate_controls_are_selectable_through_60_fps() {
+		use model::voice_settings::VideoFrameRate;
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi::default();
+		for rate in VideoFrameRate::ALL {
+			video_controls_click(&ctx, &mut messaging, 320.0, rate.label());
+			assert_eq!(messaging.video_settings.camera_frame_rate, rate);
 		}
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi::default();
+		video_controls_focus(&ctx, &mut messaging, "30 fps");
+		video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
+		assert_eq!(
+			messaging.video_settings.camera_frame_rate,
+			VideoFrameRate::Fps30
+		);
+		video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
+		video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
+		assert_eq!(
+			messaging.video_settings.camera_frame_rate,
+			VideoFrameRate::Fps60
+		);
 	}
 
 	#[test]
 	fn video_hardware_negative_results_disable_codecs_but_preserve_saved_selection() {
-		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
+		use model::voice_settings::{VideoCodec, VideoSettings};
 		let ctx = egui::Context::default();
 		let mut messaging = MessagingUi {
 			video_settings: VideoSettings {
-				backend: VideoBackend::Experimental,
 				codec: VideoCodec::H265,
 				..Default::default()
 			},
@@ -5790,16 +5862,16 @@ mod tests {
 		video_controls_click(&ctx, &mut messaging, 500.0, "AV1");
 		assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
 		video_controls_click(&ctx, &mut messaging, 500.0, "H.264");
-		assert_eq!(messaging.video_settings.codec, VideoCodec::H264);
+		assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
 		video_controls_click(&ctx, &mut messaging, 500.0, "H.265");
-		assert_eq!(messaging.video_settings.codec, VideoCodec::H264);
+		assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
 		video_controls_click(&ctx, &mut messaging, 500.0, "AV1");
-		assert_eq!(messaging.video_settings.codec, VideoCodec::H264);
+		assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
 	}
 
 	#[test]
-	fn video_hardware_partial_or_active_checks_keep_codecs_selectable() {
-		use model::voice_settings::{ProbeResult, VideoBackend, VideoCodec, VideoSettings};
+	fn video_hardware_only_positive_completed_checks_enable_codec_selection() {
+		use model::voice_settings::{ProbeResult, VideoCodec, VideoSettings};
 		for result in [
 			ProbeResult::Available,
 			ProbeResult::Pending,
@@ -5812,7 +5884,6 @@ mod tests {
 			caps.support[VideoCodec::Av1.index()][0] = result;
 			let mut messaging = MessagingUi {
 				video_settings: VideoSettings {
-					backend: VideoBackend::Experimental,
 					codec: VideoCodec::H264,
 					..Default::default()
 				},
@@ -5830,13 +5901,21 @@ mod tests {
 			video_controls_click(&ctx, &mut messaging, 500.0, "H.265");
 			assert_eq!(
 				messaging.video_settings.codec,
-				VideoCodec::H265,
+				if result == ProbeResult::Available {
+					VideoCodec::H265
+				} else {
+					VideoCodec::H264
+				},
 				"{result:?}"
 			);
 			video_controls_click(&ctx, &mut messaging, 500.0, "AV1");
 			assert_eq!(
 				messaging.video_settings.codec,
-				VideoCodec::Av1,
+				if result == ProbeResult::Available {
+					VideoCodec::Av1
+				} else {
+					VideoCodec::H264
+				},
 				"{result:?}"
 			);
 		}
@@ -5844,7 +5923,6 @@ mod tests {
 			let ctx = egui::Context::default();
 			let mut messaging = MessagingUi {
 				video_settings: VideoSettings {
-					backend: VideoBackend::Experimental,
 					codec: VideoCodec::H264,
 					..Default::default()
 				},
@@ -5854,25 +5932,23 @@ mod tests {
 				..Default::default()
 			};
 			video_controls_click(&ctx, &mut messaging, 500.0, "H.265");
-			assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
+			assert_eq!(messaging.video_settings.codec, VideoCodec::H264);
 			video_controls_click(&ctx, &mut messaging, 500.0, "AV1");
-			assert_eq!(messaging.video_settings.codec, VideoCodec::Av1);
+			assert_eq!(messaging.video_settings.codec, VideoCodec::H264);
 		}
 	}
 
 	#[test]
-	fn video_hardware_scan_starts_only_in_experimental_and_recheck_waits_for_completion() {
-		use model::voice_settings::VideoBackend;
+	fn video_hardware_scan_starts_by_default_and_recheck_waits_for_completion() {
 		let ctx = egui::Context::default();
 		let mut messaging = MessagingUi::default();
 		let text = video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
-		assert!(!messaging.video_capabilities_refresh);
+		assert!(messaging.video_capabilities_refresh);
 		assert!(
-			!text
-				.iter()
+			text.iter()
 				.any(|(label, _)| label == "Driver-reported hardware support")
 		);
-		messaging.video_settings.backend = VideoBackend::Experimental;
+
 		let text = video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
 		assert!(messaging.video_capabilities_refresh);
 		assert!(messaging.video_encoder_tests_request.is_none());
@@ -5892,16 +5968,17 @@ mod tests {
 
 	#[test]
 	fn video_encoder_test_is_explicit_and_keeps_requested_codec_when_selection_changes() {
-		use model::voice_settings::{DriverCapabilities, ProbeResult, VideoBackend, VideoCodec};
+		use model::voice_settings::{DriverCapabilities, ProbeResult, VideoCodec};
 		let ctx = egui::Context::default();
 		let mut messaging = MessagingUi {
 			video_capabilities: Some(DriverCapabilities {
 				support: [[ProbeResult::Available; 4]; 3],
 				ten_bit: [[ProbeResult::Pending; 4]; 3],
+				quality_presets: Default::default(),
 			}),
 			..Default::default()
 		};
-		messaging.video_settings.backend = VideoBackend::Experimental;
+
 		messaging.video_settings.codec = VideoCodec::H265;
 		let text = video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
 		assert!(messaging.video_encoder_tests_request.is_none());
@@ -5947,8 +6024,8 @@ mod tests {
 	#[test]
 	fn video_encoder_test_reports_are_per_codec_and_do_not_override_driver_support() {
 		use model::voice_settings::{
-			DriverCapabilities, HardwareBackend, HardwareSupport, ProbeResult, VideoBackend,
-			VideoCapabilities, VideoCodec,
+			DriverCapabilities, HardwareBackend, HardwareSupport, ProbeResult, VideoCapabilities,
+			VideoCodec,
 		};
 		let ctx = egui::Context::default();
 		let mut driver = no_video_hardware();
@@ -5981,7 +6058,7 @@ mod tests {
 			video_encoder_tests_codec: Some(VideoCodec::Av1),
 			..Default::default()
 		};
-		messaging.video_settings.backend = VideoBackend::Experimental;
+
 		video_controls_click(&ctx, &mut messaging, 500.0, "H.265");
 		assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
 		let text = video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
@@ -6005,6 +6082,7 @@ mod tests {
 		messaging.video_capabilities = Some(DriverCapabilities {
 			support: [[ProbeResult::Unavailable; 4]; 3],
 			ten_bit: [[ProbeResult::Pending; 4]; 3],
+			quality_presets: Default::default(),
 		});
 		video_controls_click(&ctx, &mut messaging, 500.0, "AV1");
 		assert_eq!(messaging.video_settings.codec, VideoCodec::H264);
@@ -6012,35 +6090,38 @@ mod tests {
 
 	#[test]
 	fn video_hardware_keyboard_skips_disabled_codecs_and_reaches_query_and_test_actions() {
-		use model::voice_settings::{ProbeResult, VideoBackend, VideoCodec, VideoSettings};
+		use model::voice_settings::{ProbeResult, VideoCodec, VideoSettings};
 		for test_encoder in [false, true] {
 			let ctx = egui::Context::default();
 			let mut caps = no_video_hardware();
-			caps.support[VideoCodec::Av1.index()][0] = ProbeResult::TimedOut;
+			caps.support[VideoCodec::H264.index()][0] = ProbeResult::Available;
+			caps.support[VideoCodec::Av1.index()][0] = ProbeResult::Available;
 			let mut messaging = MessagingUi {
 				video_settings: VideoSettings {
-					backend: VideoBackend::Experimental,
 					codec: VideoCodec::H264,
 					..Default::default()
 				},
 				video_capabilities: Some(caps),
 				..Default::default()
 			};
-			video_controls_frame(&ctx, &mut messaging, 320.0, vec![]);
-			// Stable, Experimental, H.264, then AV1: unsupported H.265 is skipped.
-			for _ in 0..4 {
-				video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
-			}
+			// Traverse actual focused responses; mouse clicks need not retain
+			// keyboard focus in this egui revision. H.265 must always be skipped.
+			video_controls_focus(&ctx, &mut messaging, "AV1");
 			video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
 			assert_eq!(messaging.video_settings.codec, VideoCodec::Av1);
 			assert!(!messaging.video_capabilities_refresh);
 			assert!(messaging.video_encoder_tests_request.is_none());
 			// Recheck and Test encoder are independently reachable before starting
 			// either operation. Starting an operation disables both and releases focus.
-			video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
-			if test_encoder {
-				video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
-			}
+			video_controls_focus(
+				&ctx,
+				&mut messaging,
+				if test_encoder {
+					"Test encoder"
+				} else {
+					"Recheck"
+				},
+			);
 			video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
 			if test_encoder {
 				assert_eq!(messaging.video_encoder_tests_request, Some(VideoCodec::Av1));
@@ -6054,7 +6135,7 @@ mod tests {
 
 	#[test]
 	fn video_hardware_support_wraps_and_recheck_remains_reachable_at_large_scale() {
-		use model::voice_settings::{DriverCapabilities, ProbeResult, VideoBackend};
+		use model::voice_settings::{DriverCapabilities, ProbeResult};
 		for scale in [1.0, 1.5] {
 			for width in [220.0, 320.0, 600.0] {
 				let ctx = egui::Context::default();
@@ -6067,10 +6148,11 @@ mod tests {
 					video_capabilities: Some(DriverCapabilities {
 						support: [[ProbeResult::Available; 4]; 3],
 						ten_bit: [[ProbeResult::Pending; 4]; 3],
+						quality_presets: Default::default(),
 					}),
 					..Default::default()
 				};
-				messaging.video_settings.backend = VideoBackend::Experimental;
+
 				let text = video_controls_frame(&ctx, &mut messaging, width, vec![]);
 				for (label, rect) in &text {
 					assert!(
@@ -6092,67 +6174,118 @@ mod tests {
 	}
 
 	#[test]
-	fn video_settings_select_codecs_and_reset_when_returning_to_stable() {
-		use model::voice_settings::{VideoBackend, VideoCodec};
-		fn label_rect(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
-			match shape {
-				egui::Shape::Text(text) if text.galley.job.text == label => {
-					Some(text.visual_bounding_rect())
-				}
-				egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| label_rect(s, label)),
-				_ => None,
-			}
-		}
-		let mut messaging = MessagingUi::default();
+	fn ffmpeg_settings_select_codecs_without_a_backend_switch() {
+		use model::voice_settings::VideoCodec;
 		let ctx = egui::Context::default();
-		for label in ["H.265", "Experimental (FFmpeg)", "H.265", "AV1", "Stable"] {
-			let output = ctx.run_ui(Default::default(), |ui| {
-				messaging.video_settings_controls(ui)
-			});
-			let rect = output
-				.shapes
-				.iter()
-				.find_map(|s| label_rect(&s.shape, label))
-				.unwrap();
-			output.drop_without_applying_deltas();
-			for pressed in [true, false] {
-				let pos = rect.center();
-				ctx.run_ui(
-					egui::RawInput {
-						events: vec![
-							egui::Event::PointerMoved(pos),
-							egui::Event::PointerButton {
-								pos,
-								button: egui::PointerButton::Primary,
-								pressed,
-								modifiers: egui::Modifiers::NONE,
-							},
-						],
-						..Default::default()
-					},
-					|ui| messaging.video_settings_controls(ui),
-				)
-				.drop_without_applying_deltas();
-			}
-			match label {
-				"Experimental (FFmpeg)" => {
-					assert_eq!(messaging.video_settings.backend, VideoBackend::Experimental)
-				}
-				"H.265" => assert_eq!(
-					messaging.video_settings.codec,
-					if messaging.video_settings.backend == VideoBackend::Stable {
-						VideoCodec::H264
-					} else {
-						VideoCodec::H265
-					}
-				),
-				"AV1" => assert_eq!(messaging.video_settings.codec, VideoCodec::Av1),
-				"Stable" => assert_eq!(messaging.video_settings, Default::default()),
-				_ => unreachable!(),
-			}
-			assert!(messaging.video_settings.is_valid());
+		let mut caps = no_video_hardware();
+		caps.support = [[model::voice_settings::ProbeResult::Available; 4]; 3];
+		let mut messaging = MessagingUi {
+			video_capabilities: Some(caps),
+			..Default::default()
+		};
+		for (label, codec) in [
+			("H.265", VideoCodec::H265),
+			("AV1", VideoCodec::Av1),
+			("H.264", VideoCodec::H264),
+		] {
+			video_controls_click(&ctx, &mut messaging, 500.0, label);
+			assert_eq!(messaging.video_settings.codec, codec);
+			let labels = video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
+			assert!(
+				!labels
+					.iter()
+					.any(|(label, _)| label.contains("Experimental")
+						|| label == "Stable"
+						|| label == "Video backend")
+			);
 		}
 		assert!(!messaging.voice_refresh_devices && !messaging.camera_test_requested);
+	}
+
+	#[test]
+	fn bandwidth_choices_and_quality_menu_use_confirmed_codec_specific_presets() {
+		use model::voice_settings::{
+			EncoderPreset, EncoderPresets, HardwareBackend, ProbeResult, VideoBandwidth, VideoCodec,
+		};
+		let ctx = egui::Context::default();
+		let mut caps = no_video_hardware();
+		caps.set(
+			HardwareBackend::Amf,
+			VideoCodec::H265,
+			ProbeResult::Available,
+		);
+		caps.quality_presets[VideoCodec::H265.index()][HardwareBackend::Amf.index()] =
+			Some(EncoderPresets::from_bits(
+				(1 << EncoderPreset::AmfSpeed as u32) | (1 << EncoderPreset::AmfQuality as u32),
+			));
+		let mut messaging = MessagingUi {
+			video_capabilities: Some(caps),
+			..Default::default()
+		};
+		video_controls_click(&ctx, &mut messaging, 500.0, "H.265");
+		for (profile, label) in [
+			(VideoBandwidth::Low, "Low"),
+			(VideoBandwidth::Medium, "Medium (Recommended)"),
+			(VideoBandwidth::High, "High"),
+		] {
+			video_controls_click(&ctx, &mut messaging, 500.0, label);
+			assert_eq!(messaging.video_settings.bandwidth, profile);
+		}
+		video_controls_click(&ctx, &mut messaging, 500.0, "Automatic");
+		let labels = video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
+		assert!(labels.iter().any(|(label, _)| label == "Speed"));
+		assert!(labels.iter().any(|(label, _)| label == "Quality"));
+		for unavailable in ["Balanced", "High quality", "P5", "Very slow"] {
+			assert!(!labels.iter().any(|(label, _)| label == unavailable));
+		}
+		video_controls_click(&ctx, &mut messaging, 500.0, "Quality");
+		assert_eq!(messaging.video_settings.quality, EncoderPreset::AmfQuality);
+		video_controls_click(&ctx, &mut messaging, 500.0, "Test encoder");
+		assert_eq!(
+			messaging.video_encoder_tests_preset,
+			Some(EncoderPreset::AmfQuality)
+		);
+		messaging.video_encoder_tests_request = None;
+		// An incomplete query preserves the saved choice, but exposes no new
+		// unsupported choices. A complete negative resets only the preset.
+		messaging
+			.video_capabilities
+			.as_mut()
+			.unwrap()
+			.quality_presets[VideoCodec::H265.index()][HardwareBackend::Amf.index()] = None;
+		video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
+		assert_eq!(messaging.video_settings.quality, EncoderPreset::AmfQuality);
+		messaging
+			.video_capabilities
+			.as_mut()
+			.unwrap()
+			.quality_presets[VideoCodec::H265.index()][HardwareBackend::Amf.index()] =
+			Some(EncoderPresets::default());
+		video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
+		assert_eq!(messaging.video_settings.quality, EncoderPreset::Automatic);
+		assert_eq!(messaging.video_settings.bandwidth, VideoBandwidth::High);
+	}
+
+	#[test]
+	fn collapsing_advanced_encoding_keeps_camera_controls_and_settings() {
+		let ctx = egui::Context::default();
+		ctx.global_style_mut(|style| style.animation_time = 0.0);
+		let mut messaging = MessagingUi::default();
+		video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
+		assert!(messaging.video_encoding_advanced_visible);
+		video_controls_click(&ctx, &mut messaging, 500.0, "Advanced Video Encoding");
+		let labels = video_controls_frame(&ctx, &mut messaging, 500.0, vec![]);
+		assert!(!messaging.video_encoding_advanced_visible);
+		assert!(
+			!labels
+				.iter()
+				.any(|(label, _)| label == "Medium (Recommended)")
+		);
+		video_controls_click(&ctx, &mut messaging, 500.0, "60 fps");
+		assert_eq!(
+			messaging.video_settings.camera_frame_rate,
+			model::voice_settings::VideoFrameRate::Fps60
+		);
 	}
 
 	#[test]

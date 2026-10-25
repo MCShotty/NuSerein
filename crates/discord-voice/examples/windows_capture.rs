@@ -1,12 +1,12 @@
 //! Owner-operated Windows capture isolation; no Discord traffic or audio devices.
 use client_core::screen::{RequestSettings, Resolution, SourceId};
-use model::voice_settings::{VideoBackend, VideoCodec, VideoResolution, VideoSettings};
+use model::voice_settings::{VideoCodec, VideoResolution, VideoSettings};
 
 const USAGE: &str = "Owner-controlled Windows capture probe (never started by Serein or CI).
   windows_capture --list
   windows_capture --owner-controlled --source display:0xHANDLE --stage capture-only|readback|encode
     --resolution source|480|720|1080|1440|2160|4320 --fps 15|30|60
-    --warmup 10 --seconds 30 [--backend ffmpeg|stable] [--codec h264|h265|av1]
+    --warmup 10 --seconds 30 [--backend ffmpeg] [--codec h264|h265|av1]
     [--adapter VENDOR:DEVICE:luid:WINDOWS_LUID] [--revision COMMIT]
 Encode requires the explicit codec and exact renderer adapter helper key. All runs disable
 system audio and local preview. Capture/readback stages never construct an encoder.
@@ -52,7 +52,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, &'static str
 	let mut resolution = Resolution::Preset(VideoResolution::P1440);
 	let mut fps = 60;
 	let mut video = VideoSettings {
-		backend: VideoBackend::Experimental,
 		..Default::default()
 	};
 	let mut codec_set = false;
@@ -132,10 +131,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, &'static str
 					.ok_or("Sample must be 5..600 seconds")?
 			}
 			"--backend" => {
-				video.backend = match value.as_str() {
-					"ffmpeg" => VideoBackend::Experimental,
-					"stable" => VideoBackend::Stable,
-					_ => return Err("Backend must be ffmpeg or stable"),
+				if value != "ffmpeg" {
+					return Err("Backend must be ffmpeg");
 				}
 			}
 			"--codec" => {
@@ -176,9 +173,6 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Command, &'static str
 	let stage = stage.ok_or("Select an explicit --stage")?;
 	if stage == Stage::Encode && (!codec_set || adapter.is_none()) {
 		return Err("Encode requires explicit --codec and --adapter matching the app");
-	}
-	if !video.is_valid() {
-		return Err("Backend/codec combination is invalid");
 	}
 	Ok(Command::Run(Arguments {
 		owner,

@@ -2072,18 +2072,16 @@ the native projection retains its existing URL and allocated-byte limits.
 
 ## Video backend preferences — October 5, 2026
 
-The bounded 16 KiB device-wide `app_preferences` row stores backend, codec,
-camera resolution and frame-rate enums in `video_settings`. Missing fields default
-to Stable/H264 and 480p/15 fps without a schema migration. Camera selections run
-through 8K and 60 fps. Unknown enum strings from newer versions fall back per field
-without discarding unrelated preferences. An unknown backend selects Stable/H264;
-unknown codecs, resolutions and frame rates select H264, 480p and 15 fps respectively.
-Malformed values and new writes of Stable with a non-H264 codec are rejected;
-the UI resets to H264 when Stable is selected. These choices survive logout and
-restart. The call and screen worker each retain one immutable settings snapshot;
-changing settings does not allocate another encoder or renegotiate an active stream.
-Camera previews stop on a settings change and require another explicit start.
-The existing camera/screen pixel, encoded-byte and packet/queue limits remain.
+The bounded 16 KiB device-wide `app_preferences` row stores codec, camera resolution/FPS,
+bandwidth profile and quality preset in `video_settings`. Missing fields default to
+H264, 480p/15 fps, Medium and Automatic without a schema migration. Legacy backend
+strings are ignored without resetting known choices. Unknown enum strings recover
+per field; malformed values retain the existing rejection policy. The removed backend
+is no longer written. Choices survive logout/restart; driver/preset reports remain
+process-local. Calls and shares retain immutable settings snapshots; changes do not
+allocate another encoder or renegotiate an active stream. Camera previews stop on
+settings changes and require another explicit start. Existing pixel, encoded-byte,
+packet and queue limits remain.
 No new capture files, media cache, driver installer or secrets are persisted.
 
 Schema 28 adds the device-wide double-click reaction preset to the reading settings singleton. The bounded index selects one of six Unicode emoji, defaults to ❤️, and persists independently of session emoji recommendations.

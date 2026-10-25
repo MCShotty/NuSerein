@@ -2,18 +2,243 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VideoBackend {
-	#[default]
-	Stable,
-	Experimental,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VideoCodec {
 	#[default]
 	H264,
 	H265,
 	Av1,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoBandwidth {
+	Low,
+	#[default]
+	Medium,
+	High,
+}
+
+impl VideoBandwidth {
+	pub const ALL: [Self; 3] = [Self::Low, Self::Medium, Self::High];
+
+	pub fn rates(self, width: u32, height: u32, fps: u32) -> VideoBitrate {
+		let medium = VideoBitrate::for_dimensions(width, height);
+		match self {
+			Self::Medium => medium,
+			Self::Low => VideoBitrate {
+				average: (medium.average / 2).max(VideoBitrate::MINIMUM),
+				maximum: (medium.maximum / 2).max(VideoBitrate::MINIMUM),
+				..medium
+			},
+			Self::High => {
+				let pixels = (u64::from(width) * u64::from(height)).min(7680 * 4320);
+				let points = [
+					(854u64 * 480, 2_000_000u64),
+					(1280 * 720, 4_000_000),
+					(1920 * 1080, 8_000_000),
+					(2560 * 1440, 12_000_000),
+					(3840 * 2160, 20_000_000),
+					(7680 * 4320, 40_000_000),
+				];
+				let mut average = points[0].1;
+				for [(low, rate), (high, high_rate)] in points.windows(2).map(|p| [p[0], p[1]]) {
+					if pixels <= low {
+						break;
+					}
+					average = rate + (pixels.min(high) - low) * (high_rate - rate) / (high - low);
+					if pixels <= high {
+						break;
+					}
+				}
+				let average = (average * if fps == 60 { 2 } else { 1 }).min(50_000_000) as u32;
+				let average = average.max(medium.average);
+				VideoBitrate {
+					average,
+					maximum: average.max(medium.maximum),
+					..medium
+				}
+			}
+		}
+	}
+}
+
+/// Stable IDs shared with the native encoder/query shim. Automatic retains the
+/// vendor-specific defaults; explicit choices are filtered by driver and codec.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(i32)]
+pub enum EncoderPreset {
+	#[default]
+	Automatic = 0,
+	NvencP1,
+	NvencP2,
+	NvencP3,
+	NvencP4,
+	NvencP5,
+	NvencP6,
+	NvencP7,
+	AmfSpeed,
+	AmfBalanced,
+	AmfQuality,
+	AmfHighQuality,
+	QsvVerySlow,
+	QsvSlower,
+	QsvSlow,
+	QsvMedium,
+	QsvFast,
+	QsvFaster,
+	QsvVeryFast,
+}
+
+impl EncoderPreset {
+	pub const ALL: [Self; 19] = [
+		Self::Automatic,
+		Self::NvencP1,
+		Self::NvencP2,
+		Self::NvencP3,
+		Self::NvencP4,
+		Self::NvencP5,
+		Self::NvencP6,
+		Self::NvencP7,
+		Self::AmfSpeed,
+		Self::AmfBalanced,
+		Self::AmfQuality,
+		Self::AmfHighQuality,
+		Self::QsvVerySlow,
+		Self::QsvSlower,
+		Self::QsvSlow,
+		Self::QsvMedium,
+		Self::QsvFast,
+		Self::QsvFaster,
+		Self::QsvVeryFast,
+	];
+
+	pub fn backend(self) -> Option<HardwareBackend> {
+		match self as i32 {
+			1..=7 => Some(HardwareBackend::Nvenc),
+			8..=11 => Some(HardwareBackend::Amf),
+			12..=18 => Some(HardwareBackend::Qsv),
+			_ => None,
+		}
+	}
+
+	pub fn label(self) -> &'static str {
+		match self {
+			Self::Automatic => "Automatic",
+			Self::NvencP1 => "P1 — fastest",
+			Self::NvencP2 => "P2",
+			Self::NvencP3 => "P3",
+			Self::NvencP4 => "P4",
+			Self::NvencP5 => "P5",
+			Self::NvencP6 => "P6",
+			Self::NvencP7 => "P7 — highest quality",
+			Self::AmfSpeed => "Speed",
+			Self::AmfBalanced => "Balanced",
+			Self::AmfQuality => "Quality",
+			Self::AmfHighQuality => "High quality",
+			Self::QsvVerySlow => "Very slow",
+			Self::QsvSlower => "Slower",
+			Self::QsvSlow => "Slow",
+			Self::QsvMedium => "Medium",
+			Self::QsvFast => "Fast",
+			Self::QsvFaster => "Faster",
+			Self::QsvVeryFast => "Very fast",
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EncoderPresets(u32);
+impl EncoderPresets {
+	pub fn from_bits(bits: u32) -> Self {
+		Self(bits & 0x7fffe)
+	}
+	pub fn bits(self) -> u32 {
+		self.0
+	}
+	pub fn contains(self, preset: EncoderPreset) -> bool {
+		preset == EncoderPreset::Automatic || self.0 & (1 << preset as u32) != 0
+	}
+	pub fn for_backend(self, backend: HardwareBackend) -> Self {
+		Self(Self::all_for_backend(backend).0 & self.0)
+	}
+	fn all_for_backend(backend: HardwareBackend) -> Self {
+		Self(
+			EncoderPreset::ALL
+				.into_iter()
+				.filter(|preset| preset.backend() == Some(backend))
+				.fold(0, |bits, preset| bits | 1 << preset as u32),
+		)
+	}
+}
+
+/// Shared bandwidth budget for every codec and frame rate, in bits per second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoBitrate {
+	pub minimum: u32,
+	pub average: u32,
+	pub maximum: u32,
+}
+
+impl VideoBitrate {
+	pub const MINIMUM: u32 = 200_000;
+
+	/// The short edge follows screen presets in either orientation. Custom Source
+	/// sizes interpolate between those budgets without increasing ultrawide rates.
+	pub fn for_dimensions(width: u32, height: u32) -> Self {
+		let edge = width.min(height).min(4320);
+		let points = [
+			(480, 600_000, 1_000_000),
+			(720, 2_000_000, 3_000_000),
+			(1080, 6_000_000, 8_000_000),
+			(1440, 10_000_000, 14_000_000),
+			(2160, 14_000_000, 16_000_000),
+			(4320, 24_000_000, 28_000_000),
+		];
+		let mut rates = Self {
+			minimum: Self::MINIMUM,
+			average: points[0].1,
+			maximum: points[0].2,
+		};
+		for [(low, average, maximum), (high, high_average, high_maximum)] in
+			points.windows(2).map(|points| [points[0], points[1]])
+		{
+			if edge <= low {
+				break;
+			}
+			let portion = u64::from(edge.min(high) - low);
+			let span = u64::from(high - low);
+			rates.average = average + (u64::from(high_average - average) * portion / span) as u32;
+			rates.maximum = maximum + (u64::from(high_maximum - maximum) * portion / span) as u32;
+			if edge <= high {
+				break;
+			}
+		}
+		rates
+	}
+
+	/// Feedback is a peak ceiling; do not exceed it to retain the average target.
+	pub fn limited_to(self, ceiling: u32) -> Self {
+		let maximum = ceiling.clamp(self.minimum, self.maximum);
+		Self {
+			average: self.average.min(maximum),
+			maximum,
+			..self
+		}
+	}
+
+	pub const fn fixed(rate: u32) -> Self {
+		Self {
+			minimum: rate,
+			average: rate,
+			maximum: rate,
+		}
+	}
+
+	pub fn is_valid(self) -> bool {
+		self.minimum >= 1_000
+			&& self.minimum <= self.average
+			&& self.average <= self.maximum
+			&& self.maximum <= 50_000_000
+	}
 }
 
 /// Output presets shared by screen sharing and the device-local camera preference.
@@ -182,9 +407,44 @@ pub struct DriverCapabilities {
 	pub support: [[ProbeResult; 4]; 3],
 	/// Ten-bit profile support, independently queried; never inferred from codec presence.
 	pub ten_bit: [[ProbeResult; 4]; 3],
+	/// None is an incomplete/failed query; Some(empty) reports no named presets.
+	pub quality_presets: [[Option<EncoderPresets>; 4]; 3],
 }
 
 impl DriverCapabilities {
+	pub fn available(&self, codec: VideoCodec) -> bool {
+		self.codec(codec).contains(&ProbeResult::Available)
+	}
+
+	pub fn presets(&self, codec: VideoCodec) -> EncoderPresets {
+		let bits = [
+			HardwareBackend::Nvenc,
+			HardwareBackend::Amf,
+			HardwareBackend::Qsv,
+			HardwareBackend::VideoToolbox,
+		]
+		.into_iter()
+		.filter(|backend| self.codec(codec)[backend.index()] == ProbeResult::Available)
+		.fold(0, |bits, backend| {
+			bits | self.quality_presets[codec.index()][backend.index()]
+				.unwrap_or_default()
+				.for_backend(backend)
+				.bits()
+		});
+		EncoderPresets::from_bits(bits)
+	}
+
+	pub fn presets_ready(&self, codec: VideoCodec) -> bool {
+		self.available(codec)
+			&& self
+				.codec(codec)
+				.iter()
+				.enumerate()
+				.all(|(index, support)| {
+					*support != ProbeResult::Available
+						|| self.quality_presets[codec.index()][index].is_some()
+				})
+	}
 	pub fn codec(&self, codec: VideoCodec) -> &[ProbeResult; 4] {
 		&self.support[codec.index()]
 	}
@@ -227,8 +487,9 @@ impl VideoCapabilities {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct VideoSettings {
-	pub backend: VideoBackend,
 	pub codec: VideoCodec,
+	pub bandwidth: VideoBandwidth,
+	pub quality: EncoderPreset,
 	pub camera_resolution: VideoResolution,
 	pub camera_frame_rate: VideoFrameRate,
 }
@@ -245,9 +506,14 @@ impl<'de> Deserialize<'de> for VideoSettings {
 		#[serde(default)]
 		struct Saved {
 			#[serde(deserialize_with = "known")]
-			backend: Option<VideoBackend>,
+			#[serde(rename = "backend")]
+			_legacy_backend: Option<String>,
 			#[serde(deserialize_with = "known")]
 			codec: Option<VideoCodec>,
+			#[serde(deserialize_with = "known")]
+			bandwidth: Option<VideoBandwidth>,
+			#[serde(deserialize_with = "known")]
+			quality: Option<EncoderPreset>,
 			#[serde(deserialize_with = "known")]
 			camera_resolution: Option<VideoResolution>,
 			#[serde(deserialize_with = "known")]
@@ -255,21 +521,12 @@ impl<'de> Deserialize<'de> for VideoSettings {
 		}
 		let saved = Saved::deserialize(deserializer)?;
 		Ok(Self {
-			backend: saved.backend.unwrap_or_default(),
-			// Stable cannot use a future backend's HEVC/AV1 selection.
-			codec: if saved.backend.is_none() {
-				VideoCodec::H264
-			} else {
-				saved.codec.unwrap_or_default()
-			},
+			codec: saved.codec.unwrap_or_default(),
+			bandwidth: saved.bandwidth.unwrap_or_default(),
+			quality: saved.quality.unwrap_or_default(),
 			camera_resolution: saved.camera_resolution.unwrap_or_default(),
 			camera_frame_rate: saved.camera_frame_rate.unwrap_or_default(),
 		})
-	}
-}
-impl VideoSettings {
-	pub fn is_valid(self) -> bool {
-		self.backend == VideoBackend::Experimental || self.codec == VideoCodec::H264
 	}
 }
 
@@ -362,5 +619,92 @@ impl VoiceProcessing {
 		}
 		self.profile = InputProfile::Custom;
 		&mut self.custom
+	}
+}
+
+#[cfg(test)]
+mod video_policy_tests {
+	use super::*;
+
+	#[test]
+	fn bandwidth_profiles_match_the_shared_table_and_high_keeps_previous_fps_scaling() {
+		for (width, height, average, maximum) in [
+			(1280, 720, 2_000_000, 3_000_000),
+			(1920, 1080, 6_000_000, 8_000_000),
+			(2560, 1440, 10_000_000, 14_000_000),
+			(3840, 2160, 14_000_000, 16_000_000),
+			(7680, 4320, 24_000_000, 28_000_000),
+		] {
+			for fps in [15, 30, 60] {
+				for dimensions in [(width, height), (height, width)] {
+					let medium = VideoBandwidth::Medium.rates(dimensions.0, dimensions.1, fps);
+					assert_eq!(
+						medium,
+						VideoBitrate {
+							minimum: 200_000,
+							average,
+							maximum
+						}
+					);
+					let low = VideoBandwidth::Low.rates(dimensions.0, dimensions.1, fps);
+					assert_eq!(low.average, average / 2);
+					assert_eq!(low.maximum, maximum / 2);
+					assert_eq!(low.minimum, 200_000);
+				}
+			}
+		}
+		assert_eq!(
+			VideoBandwidth::High.rates(2560, 1440, 30).average,
+			12_000_000
+		);
+		assert_eq!(
+			VideoBandwidth::High.rates(2560, 1440, 60).average,
+			24_000_000
+		);
+		assert_eq!(
+			VideoBandwidth::High.rates(7680, 4320, 60).maximum,
+			50_000_000
+		);
+		assert_eq!(
+			VideoBandwidth::Medium.rates(5120, 1440, 60).average,
+			10_000_000
+		);
+		let native = VideoBandwidth::Medium.rates(6144, 2560, 60);
+		assert!(native.average > 14_000_000 && native.average < 24_000_000);
+		let limited = native.limited_to(400_000);
+		assert_eq!(
+			(limited.minimum, limited.average, limited.maximum),
+			(200_000, 400_000, 400_000)
+		);
+		assert_eq!(native.limited_to(0).maximum, 200_000);
+	}
+
+	#[test]
+	fn preset_reports_cannot_advertise_another_vendor_or_an_unavailable_codec() {
+		let mut caps = DriverCapabilities::default();
+		caps.quality_presets[VideoCodec::H265.index()][HardwareBackend::Amf.index()] =
+			Some(EncoderPresets::from_bits(u32::MAX));
+		assert!(!caps.available(VideoCodec::H265));
+		assert!(
+			!caps
+				.presets(VideoCodec::H265)
+				.contains(EncoderPreset::AmfQuality)
+		);
+		caps.set(
+			HardwareBackend::Amf,
+			VideoCodec::H265,
+			ProbeResult::Available,
+		);
+		assert!(caps.presets_ready(VideoCodec::H265));
+		assert!(
+			caps.presets(VideoCodec::H265)
+				.contains(EncoderPreset::AmfQuality)
+		);
+		assert!(
+			!caps
+				.presets(VideoCodec::H265)
+				.contains(EncoderPreset::NvencP5)
+		);
+		assert!(!caps.presets_ready(VideoCodec::Av1));
 	}
 }

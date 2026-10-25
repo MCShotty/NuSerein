@@ -173,12 +173,12 @@ async fn reject_h264_selection(codec: VideoCodec) {
 	let (_frames_tx, frames) = tokio::sync::mpsc::channel(1);
 	let video = Video {
 		video_settings: VideoSettings {
-			backend: model::voice_settings::VideoBackend::Experimental,
 			codec,
 			..Default::default()
 		},
 		output: Arc::new(std::sync::Mutex::new(Some(crate::screen::Output {
 			source_dimensions: (320, 240),
+			rates: model::voice_settings::VideoBitrate::for_dimensions(320, 240),
 			settings: Settings {
 				source: SourceId::Display(1),
 				width: 320,
@@ -296,6 +296,7 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 	} else {
 		Some(crate::screen::Output {
 			source_dimensions: (width, height),
+			rates: model::voice_settings::VideoBitrate::for_dimensions(width, height),
 			settings: Settings {
 				source: SourceId::Display(1),
 				width,
@@ -311,11 +312,6 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 	let video = Video {
 		video_settings: VideoSettings {
 			codec,
-			backend: if hdr {
-				model::voice_settings::VideoBackend::Experimental
-			} else {
-				model::voice_settings::VideoBackend::Stable
-			},
 			..Default::default()
 		},
 		output: output.clone(),
@@ -445,6 +441,7 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 			&ready,
 			&keyframe,
 			&std::sync::atomic::AtomicU32::new(0),
+			Default::default(),
 		)
 		.unwrap();
 	}
@@ -467,7 +464,7 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 			assert_eq!(value["d"]["streams"][0]["max_resolution"]["height"], height);
 			assert_eq!(
 				value["d"]["streams"][0]["max_bitrate"],
-				output.lock().unwrap().unwrap().settings.bit_rate()
+				output.lock().unwrap().unwrap().rates.maximum
 			);
 			value["d"]["user_id"] = json!("1");
 			event(&mut view_ws, value).await;
@@ -513,6 +510,7 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 			&ready,
 			&keyframe,
 			&std::sync::atomic::AtomicU32::new(0),
+			Default::default(),
 		)
 		.unwrap();
 		geometry_generation.store(current.generation, Ordering::Release);

@@ -4763,11 +4763,6 @@ screen-macos-system-picker-kind = System content picker
 
 member-in-voice = In voice
 voice-video-settings-title = Video encoding
-voice-video-backend = Video backend
-voice-video-backend-stable = Stable
-voice-video-backend-experimental = Experimental (FFmpeg)
-voice-video-stable-description = Original platform encoders with H.264 software fallback.
-voice-video-experimental-description = FFmpeg hardware encoding with H.264 software fallback. H.265 and AV1 require compatible hardware and support from the call.
 voice-video-codec = Video codec
 voice-video-settings-apply = Camera changes apply on your next call or local preview. Screen sharing changes apply on your next share.
 voice-video-camera-resolution = Camera resolution
@@ -4784,8 +4779,8 @@ voice-video-hardware-software-fallback = Software fallback
 voice-video-hardware-camera = Camera: { $support }
 voice-video-hardware-screen = Screen sharing: { $support }
 voice-video-hardware-codec-support = { $codec }: { $support }
-voice-video-hardware-codec-unavailable = The drivers report no hardware encoder for this codec. Choose H.264 for software fallback.
-voice-video-hardware-selection-unavailable = The drivers report no hardware encoder for your saved codec. Choose H.264 to use software fallback.
+voice-video-hardware-codec-unavailable = Hardware support for this codec is not confirmed. Recheck or choose a confirmed codec.
+voice-video-hardware-selection-unavailable = The drivers report no hardware encoder for your saved codec. H.265/AV1 require compatible hardware; H.264 retains software fallback.
 voice-video-hardware-query-description = Reported by the drivers. No frames are encoded during detection.
 voice-video-hardware-query-detail = Queries hardware codec capabilities without encoding. Reported support does not guarantee that an encoder will open with the current settings. Unknown results stay selectable. Call compatibility is checked separately.
 voice-video-encoder-test-title = Encoder test — { $codec }
@@ -5575,3 +5570,17 @@ server-settings-page-bans = Bans
 server-settings-page-events = Events
 server-settings-events-help = Manage scheduled events, recurring occurrences and event participation.
 server-settings-open-events = Open events
+
+voice-video-ffmpeg-description = FFmpeg hardware encoding with H.264 software fallback. H.265 and AV1 require compatible hardware and support from the call.
+
+voice-video-advanced = Advanced Video Encoding
+voice-video-bandwidth = Bitrate
+voice-video-bandwidth-low = Low
+voice-video-bandwidth-medium = Medium (Recommended)
+voice-video-bandwidth-high = High
+voice-video-bandwidth-description = Low saves the most bandwidth. Medium uses the same budget at every frame rate. High increases the budget for higher frame rates. Rates also depend on resolution.
+voice-video-quality-preset = Encoder quality preset
+voice-video-presets-pending = Recheck hardware support to load the presets available for this codec.
+voice-video-presets-none = This encoder reports no named quality presets. Automatic keeps its default.
+
+voice-video-test-preset = Tested quality preset: { $preset }

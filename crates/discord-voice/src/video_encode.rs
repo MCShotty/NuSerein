@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 use model::voice_settings::VideoResolution;
-use model::voice_settings::{HardwareBackend, VideoCodec};
+use model::voice_settings::{EncoderPreset, HardwareBackend, VideoBitrate, VideoCodec};
 use std::{collections::VecDeque, ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
 
 pub(crate) const MAX_PENDING_PICTURES: usize = 48;
@@ -24,7 +24,8 @@ pub(crate) struct Config {
 	pub width: u32,
 	pub height: u32,
 	pub fps: u32,
-	pub bit_rate: u32,
+	pub rates: VideoBitrate,
+	pub preset: EncoderPreset,
 	pub max_bytes: usize,
 	pub profile: Profile,
 	pub codec: VideoCodec,
@@ -53,7 +54,7 @@ impl Config {
 			|| !self.width.is_multiple_of(2)
 			|| !self.height.is_multiple_of(2)
 			|| !(1..=60).contains(&self.fps)
-			|| !(1_000..=50_000_000).contains(&self.bit_rate)
+			|| !self.rates.is_valid()
 			|| self.max_bytes == 0
 			|| self.max_bytes > 2 * 1024 * 1024
 		{
@@ -202,6 +203,9 @@ unsafe extern "C" {
 		height: i32,
 		fps: i32,
 		bitrate: i32,
+		minimum: i32,
+		maximum: i32,
+		preset: i32,
 		baseline: i32,
 		backend: i32,
 		codec: i32,
@@ -217,6 +221,9 @@ unsafe extern "C" {
 		height: i32,
 		fps: i32,
 		bitrate: i32,
+		minimum: i32,
+		maximum: i32,
+		preset: i32,
 		baseline: i32,
 		backend: i32,
 		codec: i32,
@@ -487,7 +494,10 @@ impl Encoder {
 						config.width as i32,
 						config.height as i32,
 						config.fps as i32,
-						config.bit_rate as i32,
+						config.rates.average as i32,
+						config.rates.minimum as i32,
+						config.rates.maximum as i32,
+						config.preset as i32,
 						i32::from(config.profile == Profile::Baseline),
 						backend as i32,
 						codec,
@@ -501,7 +511,10 @@ impl Encoder {
 						config.width as i32,
 						config.height as i32,
 						config.fps as i32,
-						config.bit_rate as i32,
+						config.rates.average as i32,
+						config.rates.minimum as i32,
+						config.rates.maximum as i32,
+						config.preset as i32,
 						i32::from(config.profile == Profile::Baseline),
 						backend as i32,
 						codec,
@@ -830,7 +843,8 @@ mod tests {
 		width: 640,
 		height: 480,
 		fps: 15,
-		bit_rate: 600_000,
+		rates: VideoBitrate::fixed(600_000),
+		preset: EncoderPreset::Automatic,
 		max_bytes: 128 * 1024,
 		profile: Profile::Baseline,
 		codec: VideoCodec::H264,
@@ -1085,7 +1099,8 @@ mod tests {
 		assert!(encoder.encode(&picture, true).unwrap().1);
 		encoder
 			.reconfigure(Config {
-				bit_rate: 450_000,
+				rates: VideoBitrate::fixed(450_000),
+				preset: EncoderPreset::Automatic,
 				..CAMERA
 			})
 			.unwrap();
@@ -1197,7 +1212,8 @@ mod tests {
 				..CAMERA
 			},
 			Config {
-				bit_rate: 50_000_001,
+				rates: VideoBitrate::fixed(50_000_001),
+				preset: EncoderPreset::Automatic,
 				..CAMERA
 			},
 		] {
@@ -1211,7 +1227,8 @@ mod tests {
 		let config = Config {
 			width: 2560,
 			height: 1440,
-			bit_rate: 12_000_000,
+			rates: VideoBitrate::fixed(12_000_000),
+			preset: EncoderPreset::Automatic,
 			max_bytes: 2 * 1024 * 1024,
 			profile: Profile::Main,
 			..CAMERA

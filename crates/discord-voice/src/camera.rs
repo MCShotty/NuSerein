@@ -30,17 +30,14 @@ pub fn encoded_limit(resolution: VideoResolution) -> usize {
 	}
 }
 
-/// Camera bitrate, bounded by the selected preset and rate.
-pub fn bit_rate(resolution: VideoResolution, frame_rate: VideoFrameRate) -> u32 {
-	let base = match resolution {
-		VideoResolution::P480 => 600_000,
-		VideoResolution::P720 => 2_000_000,
-		VideoResolution::P1080 => 4_000_000,
-		VideoResolution::P1440 => 8_000_000,
-		VideoResolution::P2160 => 16_000_000,
-		VideoResolution::P4320 => 40_000_000,
-	};
-	(base * (frame_rate.fps() / 15)).min(50_000_000)
+/// Shared bandwidth-first policy; FPS does not multiply the selected budget.
+pub fn bit_rate(resolution: VideoResolution, _frame_rate: VideoFrameRate) -> u32 {
+	bit_rates(resolution).average
+}
+
+pub fn bit_rates(resolution: VideoResolution) -> model::voice_settings::VideoBitrate {
+	let (width, height) = resolution.camera_dimensions();
+	model::voice_settings::VideoBitrate::for_dimensions(width, height)
 }
 pub const SUPPORTED: bool = cfg!(any(
 	target_os = "macos",
@@ -143,9 +140,6 @@ impl Camera {
 		wake: Arc<dyn Fn() + Send + Sync>,
 		capacity: Arc<dyn Fn() -> bool + Send + Sync>,
 	) -> Result<Self, &'static str> {
-		if !video.is_valid() {
-			return Err("Stable video encoding supports H.264 only");
-		}
 		if !SUPPORTED {
 			return Err("Camera capture is unavailable on this platform");
 		}
@@ -229,10 +223,10 @@ impl Camera {
 	}
 }
 
-/// Stable cameras keep independent pictures. Experimental cameras preserve prediction order.
+/// Camera encoding preserves prediction order through the shared FFmpeg worker.
 struct CameraEncoder {
 	diagnostics: crate::diagnostics::EncoderRegistration,
-	encoder: crate::video_backend::Encoder,
+	encoder: crate::video_encode::Encoder,
 	codec: VideoCodec,
 	yuv: YUVBuffer,
 	i420: Vec<u8>,
@@ -251,13 +245,12 @@ impl CameraEncoder {
 			width,
 			height,
 			fps: video.camera_frame_rate.fps(),
-			bit_rate: bit_rate(video.camera_resolution, video.camera_frame_rate),
+			rates: video
+				.bandwidth
+				.rates(width, height, video.camera_frame_rate.fps()),
+			preset: video.quality,
 			max_bytes: encoded_limit(video.camera_resolution),
-			profile: if video.backend == model::voice_settings::VideoBackend::Stable {
-				crate::video_encode::Profile::Baseline
-			} else {
-				crate::video_encode::Profile::Main
-			},
+			profile: crate::video_encode::Profile::Main,
 			codec: video.codec,
 			adapter: None,
 			hdr: None,
@@ -283,7 +276,7 @@ impl CameraEncoder {
 		let mut config = Self::config(video);
 		config.adapter = adapter;
 		let (width, height) = (config.width as usize, config.height as usize);
-		let encoder = crate::video_backend::Encoder::new(config, video.backend)?;
+		let encoder = crate::video_encode::Encoder::new(config)?;
 		Ok(Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(
 				false,
@@ -866,15 +859,11 @@ mod tests {
 	#[test]
 	fn camera_preview_does_not_advance_encoding_and_recovery_starts_a_fresh_epoch() {
 		let request = Arc::new(AtomicBool::new(false));
-		let video = VideoSettings {
-			backend: model::voice_settings::VideoBackend::Experimental,
-			..VideoSettings::default()
-		};
+		let video = VideoSettings::default();
 		assert!(
 			CameraEncoder::config(VideoSettings::default()).profile
-				== crate::video_encode::Profile::Baseline
+				== crate::video_encode::Profile::Main
 		);
-		assert!(CameraEncoder::config(video).profile == crate::video_encode::Profile::Main);
 		// An unidentified renderer cannot select another GPU, so this is deterministic software.
 		let mut encoder = CameraEncoder::new_on_adapter(
 			video,
@@ -918,7 +907,6 @@ mod tests {
 		let reset = Arc::new(AtomicU64::new(0));
 		let mut encoder = CameraEncoder::new_on_adapter(
 			VideoSettings {
-				backend: model::voice_settings::VideoBackend::Experimental,
 				camera_resolution: VideoResolution::P720,
 				..VideoSettings::default()
 			},
@@ -967,10 +955,7 @@ mod tests {
 		let request = Arc::new(AtomicBool::new(true));
 		let reset = Arc::new(AtomicU64::new(0));
 		let mut encoder = CameraEncoder::new_on_adapter(
-			VideoSettings {
-				backend: model::voice_settings::VideoBackend::Experimental,
-				..VideoSettings::default()
-			},
+			VideoSettings::default(),
 			Some(model::VideoAdapter::default()),
 			request,
 			reset.clone(),
@@ -1001,10 +986,10 @@ mod tests {
 		assert!(encoder.encode(vec![192; WIDTH * HEIGHT * 3]).is_err());
 	}
 	#[test]
-	fn selected_camera_rate_configures_encoding_and_scales_bitrate_with_a_ceiling() {
+	fn selected_camera_rate_configures_the_selected_bandwidth_profile() {
 		let default = CameraEncoder::config(VideoSettings::default());
 		assert_eq!(default.fps, 15);
-		assert_eq!(default.bit_rate, 600_000);
+		assert_eq!(default.rates.average, 600_000);
 		for rate in VideoFrameRate::ALL {
 			for resolution in VideoResolution::ALL {
 				let config = CameraEncoder::config(VideoSettings {
@@ -1013,31 +998,23 @@ mod tests {
 					..VideoSettings::default()
 				});
 				assert_eq!(config.fps, rate.fps());
-				assert_eq!(config.bit_rate, bit_rate(resolution, rate));
-				assert!(config.bit_rate <= 50_000_000);
+				assert_eq!(config.rates.average, bit_rate(resolution, rate));
+				assert!(config.rates.average <= 50_000_000);
 				assert_eq!(config.max_bytes, encoded_limit(resolution));
 			}
 		}
-		assert_eq!(
-			bit_rate(VideoResolution::P480, VideoFrameRate::Fps30),
-			1_200_000
-		);
-		assert_eq!(
-			bit_rate(VideoResolution::P480, VideoFrameRate::Fps60),
-			2_400_000
-		);
-		assert_eq!(
-			bit_rate(VideoResolution::P2160, VideoFrameRate::Fps30),
-			32_000_000
-		);
-		assert_eq!(
-			bit_rate(VideoResolution::P2160, VideoFrameRate::Fps60),
-			50_000_000
-		);
-		assert_eq!(
-			bit_rate(VideoResolution::P4320, VideoFrameRate::Fps60),
-			50_000_000
-		);
+		for bandwidth in model::voice_settings::VideoBandwidth::ALL {
+			let video = VideoSettings {
+				bandwidth,
+				camera_resolution: VideoResolution::P1440,
+				camera_frame_rate: VideoFrameRate::Fps60,
+				quality: model::voice_settings::EncoderPreset::AmfQuality,
+				..VideoSettings::default()
+			};
+			let config = CameraEncoder::config(video);
+			assert_eq!(config.rates, bandwidth.rates(2560, 1440, 60));
+			assert_eq!(config.preset, video.quality);
+		}
 	}
 	#[test]
 	fn encoded_camera_allocations_follow_the_selected_preset() {
@@ -1063,7 +1040,6 @@ mod tests {
 	#[test]
 	fn selected_camera_resolution_is_encoded_separately_from_its_small_preview() {
 		let mut encoder = CameraEncoder::new(VideoSettings {
-			backend: model::voice_settings::VideoBackend::Experimental,
 			camera_resolution: VideoResolution::P720,
 			..VideoSettings::default()
 		})
@@ -1125,7 +1101,6 @@ mod tests {
 	#[test]
 	fn camera_frames_preserve_prediction_order_and_stop_is_immediate() {
 		let mut encoder = CameraEncoder::new(VideoSettings {
-			backend: model::voice_settings::VideoBackend::Experimental,
 			codec: VideoCodec::H264,
 			..VideoSettings::default()
 		})
@@ -1163,7 +1138,6 @@ mod tests {
 
 		{
 			let mut encoder = CameraEncoder::new(VideoSettings {
-				backend: model::voice_settings::VideoBackend::Experimental,
 				codec: VideoCodec::H264,
 				..VideoSettings::default()
 			})
@@ -1217,7 +1191,6 @@ mod tests {
 #[ignore = "synthetic release workload; no capture devices or network"]
 fn synthetic_camera_encode_workload() {
 	synthetic_camera_encode(VideoSettings {
-		backend: model::voice_settings::VideoBackend::Experimental,
 		codec: VideoCodec::H264,
 		..VideoSettings::default()
 	});
@@ -1226,8 +1199,11 @@ fn synthetic_camera_encode_workload() {
 #[cfg(test)]
 #[test]
 #[ignore = "synthetic release workload; no capture devices or network"]
-fn synthetic_stable_camera_encode_workload() {
-	synthetic_camera_encode(VideoSettings::default());
+fn synthetic_high_bandwidth_camera_encode_workload() {
+	synthetic_camera_encode(VideoSettings {
+		bandwidth: model::voice_settings::VideoBandwidth::High,
+		..Default::default()
+	});
 }
 
 #[cfg(test)]

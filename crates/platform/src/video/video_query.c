@@ -100,7 +100,7 @@ typedef struct {
 
 static int query_adapter(const SereinNvCuda *cuda,
                          NV_ENCODE_API_FUNCTION_LIST *api, int index, GUID codec,
-                         int *max_b_frames, int *lookahead, int ten_bit)
+                         int *max_b_frames, int *lookahead, int mode)
 {
     CUdevice device;
     CUcontext context = NULL;
@@ -156,10 +156,28 @@ static int query_adapter(const SereinNvCuda *cuda,
             break;
         }
         result = width > 0 && height > 0 ? 1 : 0;
-        if (result == 1 && ten_bit) {
+        if (result == 1 && mode == 1) {
             int supported = 0;
             caps.capsToQuery = NV_ENC_CAPS_SUPPORT_10BIT_ENCODE;
             result = api->nvEncGetEncodeCaps(encoder, codec, &caps, &supported) != NV_ENC_SUCCESS ? -1 : supported ? 1 : 0;
+        }
+        if (result == 1 && mode == 2) {
+            static const GUID *const presets[] = {&NV_ENC_PRESET_P1_GUID, &NV_ENC_PRESET_P2_GUID,
+                &NV_ENC_PRESET_P3_GUID, &NV_ENC_PRESET_P4_GUID, &NV_ENC_PRESET_P5_GUID,
+                &NV_ENC_PRESET_P6_GUID, &NV_ENC_PRESET_P7_GUID};
+            count = written = 0;
+            if (!api->nvEncGetEncodePresetCount || !api->nvEncGetEncodePresetGUIDs ||
+                api->nvEncGetEncodePresetCount(encoder, codec, &count) != NV_ENC_SUCCESS ||
+                count > SEREIN_NV_MAX_CODEC_GUIDS ||
+                (count && (api->nvEncGetEncodePresetGUIDs(encoder, codec, guids, count, &written) != NV_ENC_SUCCESS || written != count))) {
+                result = -1;
+                break;
+            }
+            result = 0;
+            for (uint32_t j = 0; j < written; ++j)
+                for (unsigned int preset = 0; preset < 7; ++preset)
+                    if (memcmp(&guids[j], presets[preset], sizeof(GUID)) == 0)
+                        result |= 1 << (preset + 1);
         }
         if (result == 1 && max_b_frames && lookahead) {
             caps.capsToQuery = NV_ENC_CAPS_NUM_MAX_BFRAMES;
@@ -198,11 +216,11 @@ static int query_nvenc(int codec, const SereinVideoAdapter *target,
     uint32_t version = 0;
     int result = -1, adapters = 0, incomplete = 0;
     CUresult cuda_status;
-    const int ten_bit = codec >= 3;
-    if (codec < 0 || codec > 5)
+    const int mode = codec >= 6 ? 2 : codec >= 3 ? 1 : 0;
+    if (codec < 0 || codec > 8)
         return 0;
     codec %= 3;
-    if (ten_bit && codec == 0) return 0;
+    if (mode == 1 && codec == 0) return 0;
     const int selected = target ? serein_video_cuda_device(target) : -1;
     if (target && selected < 0)
         return -1;
@@ -254,9 +272,9 @@ static int query_nvenc(int codec, const SereinVideoAdapter *target,
     for (int i = 0; i < adapters && i < SEREIN_NV_MAX_ADAPTERS; i++) {
         if (target && i != selected)
             continue;
-        int adapter = query_adapter(&cuda, &api, i, *codecs[codec], max_b_frames, lookahead, ten_bit);
-        if (adapter == 1) {
-            result = 1;
+        int adapter = query_adapter(&cuda, &api, i, *codecs[codec], max_b_frames, lookahead, mode);
+        if (adapter > 0) {
+            result = adapter;
             goto cleanup;
         }
         if (adapter < 0)
@@ -318,6 +336,7 @@ int serein_nvenc_features(int codec, const SereinVideoAdapter *adapter,
     (defined(_WIN32) || defined(__linux__))
 #include <vpl/mfxdispatcher.h>
 #include <vpl/mfxstructures.h>
+#include <vpl/mfxvideo.h>
 
 #define SEREIN_QSV_MAX_IMPLEMENTATIONS 32
 #define SEREIN_QSV_MAX_CODECS 64
@@ -392,14 +411,49 @@ static int implementation_matches(mfxLoader loader, mfxU32 index, const SereinVi
     return result;
 }
 
+static int query_qsv_presets(mfxLoader loader, mfxU32 index, mfxU32 codec)
+{
+    mfxSession session = NULL;
+    if (MFXCreateSession(loader, index, &session) != MFX_ERR_NONE || !session)
+        return -1;
+    int presets = 0;
+    for (mfxU16 usage = 1; usage <= 7; ++usage) {
+        mfxVideoParam input = {0}, output = {0};
+        input.mfx.CodecId = output.mfx.CodecId = codec;
+        input.mfx.TargetUsage = usage;
+        input.mfx.RateControlMethod = MFX_RATECONTROL_VBR;
+        input.mfx.TargetKbps = 6000;
+        input.mfx.MaxKbps = 8000;
+        input.mfx.BufferSizeInKB = 1000;
+        input.mfx.FrameInfo.Width = 1920;
+        input.mfx.FrameInfo.Height = 1088;
+        input.mfx.FrameInfo.CropW = 1920;
+        input.mfx.FrameInfo.CropH = 1080;
+        input.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+        input.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
+        input.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
+        input.mfx.FrameInfo.FrameRateExtN = 30;
+        input.mfx.FrameInfo.FrameRateExtD = 1;
+        input.IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+        const mfxStatus status = MFXVideoENCODE_Query(session, &input, &output);
+        if ((status == MFX_ERR_NONE || status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM) &&
+            output.mfx.TargetUsage == usage && output.mfx.RateControlMethod == MFX_RATECONTROL_VBR)
+            presets |= 1 << (usage + 11);
+    }
+    if (MFXClose(session) != MFX_ERR_NONE)
+        return -1;
+    return presets;
+}
+
 static int query_qsv(int codec, const SereinVideoAdapter *target)
 {
     static const mfxU32 codecs[] = {MFX_CODEC_AVC, MFX_CODEC_HEVC, MFX_CODEC_AV1};
     mfxLoader loader;
     int result = -1, incomplete = 0;
     mfxU32 acceleration;
-    const int ten_bit = codec >= 3;
-    if (codec < 0 || codec > 5)
+    const int preset_query = codec >= 6;
+    const int ten_bit = codec >= 3 && codec < 6;
+    if (codec < 0 || codec > 8)
         return 0;
     codec %= 3;
     if (ten_bit && codec == 0) return 0;
@@ -438,7 +492,7 @@ static int query_qsv(int codec, const SereinVideoAdapter *target)
         if (MFXDispReleaseImplDescription(loader, handle) != MFX_ERR_NONE)
             supported = -1;
         if (supported == 1) {
-            result = 1;
+            result = preset_query ? query_qsv_presets(loader, i, codecs[codec]) : 1;
             goto cleanup;
         }
         if (supported < 0)
@@ -643,6 +697,7 @@ int serein_query_videotoolbox_on_adapter(int codec, const SereinVideoAdapter *ta
  * No encoder is initialized and no picture, capture or network session is opened.
  */
 #include <libavcodec/avcodec.h>
+#include <libavutil/opt.h>
 #include "video_encode_ffmpeg.h"
 
 int serein_query_nvenc(int codec);
@@ -687,20 +742,38 @@ int serein_video_query_on_adapter(int backend, int codec, const SereinVideoAdapt
         {"h264_amf", "hevc_amf", "av1_amf"},
         {"h264_qsv", "hevc_qsv", "av1_qsv"},
     };
-    if (backend < 1 || backend > 4 || codec < 0 || codec > 5 ||
+    if (backend < 1 || backend > 4 || codec < 0 || codec > 8 ||
         !serein_video_adapter_valid(adapter))
         return -1;
     const char *name = names[backend - 1][codec % 3];
     if (!name || !avcodec_find_encoder_by_name(name))
         return 0;
     /* A capability on another GPU must not advertise the selected adapter. */
+    if (codec >= 6 && backend == 2)
+        return 0; /* VideoToolbox has no named encoder presets. */
+    int result = -1;
     switch (backend) {
-    case 1: return adapter->vendor_id == 0x10de ? serein_query_nvenc_on_adapter(codec, adapter) : 0;
-    case 2: return serein_query_videotoolbox_on_adapter(codec, adapter);
-    case 3: return adapter->vendor_id == 0x1002 ? serein_query_amf_on_adapter(codec, adapter) : 0;
-    case 4: return adapter->vendor_id == 0x8086 ? serein_query_qsv_on_adapter(codec, adapter) : 0;
-    default: return -1;
+    case 1: result = adapter->vendor_id == 0x10de ? serein_query_nvenc_on_adapter(codec, adapter) : 0; break;
+    case 2: result = serein_query_videotoolbox_on_adapter(codec, adapter); break;
+    case 3: result = adapter->vendor_id == 0x1002 ? serein_query_amf_on_adapter(codec, adapter) : 0; break;
+    case 4: result = adapter->vendor_id == 0x8086 ? serein_query_qsv_on_adapter(codec, adapter) : 0; break;
     }
+    if (codec < 6 || result <= 0)
+        return result;
+    AVCodecContext *context = avcodec_alloc_context3(avcodec_find_encoder_by_name(name));
+    if (!context) return -1;
+    const char *property = backend == 3 ? "quality" : "preset";
+    const AVOption *range = av_opt_find(context->priv_data, property, NULL, 0, 0);
+    unsigned int accepted = 0;
+    for (int preset = 1; preset <= 18; ++preset) {
+        const char *value = serein_video_preset_name(backend, preset);
+        const AVOption *option = value ? av_opt_find(context->priv_data, value, property, 0, 0) : NULL;
+        if ((result & (1 << preset)) && option && range &&
+            option->default_val.i64 >= range->min && option->default_val.i64 <= range->max)
+            accepted |= 1u << preset;
+    }
+    avcodec_free_context(&context);
+    return (int)accepted;
 }
 
 #endif

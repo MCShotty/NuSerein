@@ -274,8 +274,11 @@ fn apply_crop(
 					size.0 - (left + right) as u32,
 					size.1 - (top + bottom) as u32,
 				);
+				let settings = settings.resolve(geometry).ok_or(INVALID)?;
 				let output = Output {
-					settings: settings.resolve(geometry).ok_or(INVALID)?,
+					settings,
+					// The worker applies the selected profile before publication.
+					rates: settings.bit_rates(),
 					source_dimensions: geometry,
 					generation: 0,
 				};

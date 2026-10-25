@@ -64,10 +64,13 @@ impl Sender {
 			announced: false,
 			pacer: crate::video::Pacer::new(),
 			dimensions: settings.camera_resolution.camera_dimensions(),
-			bitrate: crate::camera::bit_rate(
-				settings.camera_resolution,
-				settings.camera_frame_rate,
-			),
+			bitrate: {
+				let (width, height) = settings.camera_resolution.camera_dimensions();
+				settings
+					.bandwidth
+					.rates(width, height, settings.camera_frame_rate.fps())
+					.maximum
+			},
 			frame_rate: settings.camera_frame_rate.fps(),
 			max_dave_bytes: crate::camera::encoded_limit(settings.camera_resolution) + 64 * 1024,
 			epoch: None,
@@ -427,7 +430,6 @@ mod tests {
 	#[test]
 	fn av1_camera_does_not_mark_delta_frames_as_new_sequences() {
 		let mut sender = Sender::new(VideoSettings {
-			backend: model::voice_settings::VideoBackend::Experimental,
 			codec: VideoCodec::Av1,
 			..VideoSettings::default()
 		});
@@ -503,24 +505,27 @@ mod tests {
 	}
 	#[test]
 	fn camera_announces_the_selected_resolution_and_rate() {
-		use model::voice_settings::{VideoFrameRate, VideoResolution};
-		for resolution in VideoResolution::ALL {
-			for frame_rate in VideoFrameRate::ALL {
-				let sender = Sender::new(VideoSettings {
-					camera_resolution: resolution,
-					camera_frame_rate: frame_rate,
-					..VideoSettings::default()
-				});
-				let announcement = sender.announcement(1, true);
-				let stream = &announcement["d"]["streams"][0];
-				let (width, height) = resolution.camera_dimensions();
-				assert_eq!(stream["max_resolution"]["width"], width);
-				assert_eq!(stream["max_resolution"]["height"], height);
-				assert_eq!(
-					stream["max_bitrate"],
-					crate::camera::bit_rate(resolution, frame_rate)
-				);
-				assert_eq!(stream["max_framerate"], frame_rate.fps());
+		use model::voice_settings::{VideoBandwidth, VideoFrameRate, VideoResolution};
+		for bandwidth in VideoBandwidth::ALL {
+			for resolution in VideoResolution::ALL {
+				for frame_rate in VideoFrameRate::ALL {
+					let sender = Sender::new(VideoSettings {
+						camera_resolution: resolution,
+						bandwidth,
+						camera_frame_rate: frame_rate,
+						..VideoSettings::default()
+					});
+					let announcement = sender.announcement(1, true);
+					let stream = &announcement["d"]["streams"][0];
+					let (width, height) = resolution.camera_dimensions();
+					assert_eq!(stream["max_resolution"]["width"], width);
+					assert_eq!(stream["max_resolution"]["height"], height);
+					assert_eq!(
+						stream["max_bitrate"],
+						bandwidth.rates(width, height, frame_rate.fps()).maximum
+					);
+					assert_eq!(stream["max_framerate"], frame_rate.fps());
+				}
 			}
 		}
 	}

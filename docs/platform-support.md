@@ -86,8 +86,8 @@ requests are honored; native X11/Wayland verification of this toggle remains pen
 
 Debian/Ubuntu development packages typically include `build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxrandr-dev libxcursor-dev libvulkan-dev`. Package names vary by distribution. SQLite is bundled through rusqlite; it is an embedded client cache, with no database service.
 
-The Experimental camera/screen backend requires the pinned shared FFmpeg libraries;
-standard packages include them alongside the Stable platform encoders.
+Camera/screen encoding uses the pinned shared FFmpeg libraries, included in standard
+packages. The former platform encoder engine has been removed.
 Build them before Cargo:
 
 ```sh
@@ -358,18 +358,17 @@ available with a visible recovery path on the next update attempt.
 The system screen-sharing picker requires PipeWire, a ScreenCast-capable portal backend for the current
 desktop (GNOME, KDE or the compositor-specific backend), and GStreamer Base/Good plus
 the PipeWire source plugin. GStreamer supplies bounded raw capture, CPU scaling
-and preview. Stable uses GStreamer VA/NV encoders with direct OpenH264 fallback;
-the optional Bad/VA/NVCodec plugins enable those hardware paths. Experimental uses
-the shared FFmpeg NVENC, AMD AMF or Intel Quick Sync encoders. H.264 has software
+and preview. Encoding uses the shared FFmpeg NVENC, AMD AMF or Intel Quick Sync
+encoders. H.264 has software
 fallback; H.265/AV1 require compatible hardware. Incoming playback uses the shared,
 bounded FFmpeg H.264/HEVC/AV1 decoder, with hardware decoding on the selected GPU
 and software fallback. HDR playback falls back to SDR on unsupported displays.
 NVENC requires the NVIDIA runtime; AMF
 requires AMD's AMF runtime (Vulkan on Linux); Quick Sync requires an Intel GPU
-runtime and iHD VA driver. Experimental excludes VA-API encoders while permitting
+runtime and iHD VA driver. FFmpeg excludes VA-API encoders while permitting
 Quick Sync's Linux VA device interface. Device permissions and matching runtimes
-must be available, including inside Flatpak's sandbox. Experimental on Windows ARM64 is H.264
-software-only. macOS Experimental supports H.264/H.265 VideoToolbox and H.264
+must be available, including inside Flatpak's sandbox. Windows ARM64 is H.264
+software-only. macOS supports H.264/H.265 VideoToolbox and H.264
 software fallback; this pinned build has no macOS AV1 encoder. Hardware and live
 codec compatibility remain unverified. See [video settings](voice.md#video-backend-and-codec-settings).
 
@@ -410,8 +409,7 @@ anonymous reads; FFmpeg receives only bounded headers and compressed packets.
 Unsupported audio codecs retain the existing Symphonia/libopus fallback. A decode
 failure does not restart playback through another decoder. Gapless trimming,
 the one-second PCM queue, cancellation and audio preview limits remain enforced.
-This playback selection is independent of the Stable/Experimental video encoding
-setting. Still images and animated GIFs keep their existing image decoders.
+This playback selection is independent of outgoing video encoding settings. Still images and animated GIFs keep their existing image decoders.
 Direct embed videos use the same bounded decoder, including extensionless Discord proxy
 URLs and WebM/Matroska containers. Unknown dimensions reserve a usable 16:9 stage;
 decoded pictures retain their aspect ratio within it. Small servers that ignore a range probe can supply

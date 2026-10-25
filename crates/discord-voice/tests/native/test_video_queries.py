@@ -124,12 +124,17 @@ def run_amf(include_path):
     }
     with tempfile.TemporaryDirectory(prefix="serein-amf-query-") as temp:
         directory = Path(temp)
+        property_object = directory / "property.o"
+        subprocess.run(cpp_compiler + ["-std=c++11"] + warnings + sdk_flags + [
+            "-DSEREIN_AMF_PROPERTY_FIXTURE=1", "-fPIC", "-c",
+            str(fixture_dir / "video_query_amf_test.cpp"), "-o", str(property_object),
+        ], check=True)
         library = directory / "mock-amf.so"
         executable = directory / "query-test"
         subprocess.run(
             c_compiler + ["-std=c11"] + warnings + sdk_flags + [
                 "-fPIC", "-shared", str(fixture_dir / "video_query_amf_mock.c"),
-                "-o", str(library),
+                str(property_object), "-lstdc++", "-o", str(library),
             ],
             check=True,
         )
@@ -193,7 +198,7 @@ def run_amf(include_path):
             gpu_object = directory / "gpu.o"
             subprocess.run(c_compiler + ["-std=c11"] + warnings + sdk_flags + [
                 "-DSEREIN_AMF_SCOPED_FIXTURE=1", "-fPIC", "-shared",
-                str(fixture_dir / "video_query_amf_mock.c"), "-o", str(scoped_library),
+                str(fixture_dir / "video_query_amf_mock.c"), str(property_object), "-lstdc++", "-o", str(scoped_library),
             ], check=True)
             subprocess.run(c_compiler + ["-std=c11"] + warnings + sdk_flags + [
                 "-c", str(source_dir / "video_gpu.c"), "-o", str(gpu_object),
@@ -208,7 +213,7 @@ def run_amf(include_path):
             subprocess.run([str(scoped_executable)],
                 env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(scoped_library), "AMF_MOCK_MODE": "scoped"},
                 timeout=5, check=True)
-            print("AMF scoped query: identical models retain exact Vulkan handles; missing targets stay unknown; all objects released")
+            print("AMF scoped query: exact Vulkan handles; 27 preset outcomes; no encoder Init or submitted frames; all objects released")
         print(
             "AMF query: 51 capability cases, invalid codecs, missing/bad runtime "
             "and missing ABI entry point passed; no encoder Init or submitted frames."
@@ -384,7 +389,7 @@ def run_patch(archive):
         reproduced = root / "reproduced"
         # Only these upstream files are involved; no large build/capture fixture.
         paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavformat/libavformat.v", "libavutil/hwcontext_videotoolbox.h", "libavutil/hwcontext_videotoolbox.c", "libavcodec/videotoolbox.c",
-                 "libswscale/libswscale.v", "libswresample/libswresample.v", "libavcodec/qsvenc.c",
+                 "libswscale/libswscale.v", "libswresample/libswresample.v", "libavcodec/qsvenc.c", "libavcodec/qsvenc.h",
                  "libavcodec/amfenc.c", "libavcodec/amfenc.h", "libavcodec/amfenc_hevc.c",
                  "libavcodec/amfenc_av1.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c", "libavcodec/libdav1d.c"]
         with tarfile.open(archive) as source:

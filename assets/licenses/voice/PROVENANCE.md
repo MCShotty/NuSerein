@@ -240,9 +240,11 @@ FFmpeg source patch also routes QSV packet requests through the capped native
 allocation callback and selects missing internal HEVC SEI helpers for the
 pinned HEVC-QSV encoder; no decoder is enabled. Its unmodified source archive
 and applied patch ship together. The same LGPL-only hardware wrappers supply
-HEVC/AV1 when supported; software encoding stays OpenH264/H264. Stable uses
-OS/distribution H264 encoders and Rust OpenH264 separately, with no newly bundled
-framework/plugin sources.
+HEVC/AV1 when supported; software encoding stays OpenH264/H264. FFmpeg is now
+the sole outgoing encoder engine; native capture and incoming decoder fallback
+remain separate. The retained QSV patch preserves the requested CBR/VBR mode and
+quality TargetUsage while validating lookahead and negotiated reference counts.
+No source versions, notices or license scope change with these controls.
 
 ## Exact GPU binding — October 6, 2026
 

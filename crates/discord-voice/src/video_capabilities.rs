@@ -3,7 +3,9 @@
 //! during open or cleanup, so the caller owns the wall-clock timeout.
 
 use crate::video_encode::{Config, Encoder, Profile};
-use model::voice_settings::{HardwareBackend, HardwareSupport, ProbeResult, VideoCodec};
+use model::voice_settings::{
+	EncoderPreset, HardwareBackend, HardwareSupport, ProbeResult, VideoBitrate, VideoCodec,
+};
 
 const MAX_PROBE_FRAMES: usize = crate::video_encode::MAX_PENDING_PICTURES;
 
@@ -65,6 +67,21 @@ fn query_result(result: i32) -> ProbeResult {
 	}
 }
 
+pub fn query_presets(
+	backend: HardwareBackend,
+	codec: VideoCodec,
+	adapter: model::VideoAdapter,
+) -> Option<model::voice_settings::EncoderPresets> {
+	let native = match backend {
+		HardwareBackend::Nvenc => 1,
+		HardwareBackend::VideoToolbox => 2,
+		HardwareBackend::Amf => 3,
+		HardwareBackend::Qsv => 4,
+	};
+	crate::video_gpu::query_presets(native, codec.index() as i32, adapter)
+		.map(|bits| model::voice_settings::EncoderPresets::from_bits(bits).for_backend(backend))
+}
+
 pub fn backends() -> &'static [HardwareBackend] {
 	&[
 		#[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -90,8 +107,18 @@ pub fn probe_on_adapter(
 	codec: VideoCodec,
 	adapter: Option<model::VideoAdapter>,
 ) -> HardwareSupport {
+	probe_on_adapter_with_preset(backend, codec, adapter, EncoderPreset::Automatic)
+}
+
+pub fn probe_on_adapter_with_preset(
+	backend: HardwareBackend,
+	codec: VideoCodec,
+	adapter: Option<model::VideoAdapter>,
+	preset: EncoderPreset,
+) -> HardwareSupport {
 	probe_with(backend, codec, |mut config, backend| {
 		config.adapter = adapter;
+		config.preset = preset;
 		Encoder::hardware_only(config, backend)
 	})
 }
@@ -115,7 +142,8 @@ fn probe_with<E: ProbeEncoder>(
 		width: 640,
 		height: 480,
 		fps: 15,
-		bit_rate: 600_000,
+		rates: VideoBitrate::fixed(600_000),
+		preset: EncoderPreset::Automatic,
 		max_bytes: 128 * 1024,
 		profile: Profile::Main,
 		codec,
@@ -126,7 +154,8 @@ fn probe_with<E: ProbeEncoder>(
 		width: 1280,
 		height: 720,
 		fps: 30,
-		bit_rate: 4_000_000,
+		rates: VideoBitrate::fixed(4_000_000),
+		preset: EncoderPreset::Automatic,
 		max_bytes: 2 * 1024 * 1024,
 		profile: Profile::Main,
 		codec,
@@ -260,11 +289,11 @@ mod tests {
 				(1280, 720, 30)
 			);
 			assert_eq!(
-				(requests[0].0.bit_rate, requests[0].0.max_bytes),
+				(requests[0].0.rates.average, requests[0].0.max_bytes),
 				(600_000, 128 * 1024)
 			);
 			assert_eq!(
-				(requests[1].0.bit_rate, requests[1].0.max_bytes),
+				(requests[1].0.rates.average, requests[1].0.max_bytes),
 				(4_000_000, 2 * 1024 * 1024)
 			);
 			assert_eq!(calls.get(), 3);

@@ -709,10 +709,57 @@ mod tests {
 		));
 	}
 	#[test]
-	fn video_preferences_migrate_round_trip_and_reject_invalid_backend_codec() {
+	fn legacy_backend_migration_and_future_choices_preserve_other_preferences() {
 		use model::voice_settings::{
-			VideoBackend, VideoCodec, VideoFrameRate, VideoResolution, VideoSettings,
+			EncoderPreset, VideoBandwidth, VideoCodec, VideoFrameRate, VideoResolution,
+			VideoSettings,
 		};
+		for backend in ["Stable", "Experimental", "FutureBackend"] {
+			let value = serde_json::json!({"backend":backend,"codec":"H265","camera_resolution":"P2160","camera_frame_rate":"Fps60"});
+			let settings: VideoSettings = serde_json::from_value(value).unwrap();
+			assert_eq!(settings.codec, VideoCodec::H265);
+			assert_eq!(settings.camera_resolution, VideoResolution::P2160);
+			assert_eq!(settings.camera_frame_rate, VideoFrameRate::Fps60);
+			assert_eq!(settings.bandwidth, VideoBandwidth::Medium);
+			assert_eq!(settings.quality, EncoderPreset::Automatic);
+			assert!(
+				serde_json::to_value(settings)
+					.unwrap()
+					.get("backend")
+					.is_none()
+			);
+		}
+		let future: VideoSettings = serde_json::from_str(
+			r#"{"codec":"Av1","bandwidth":"Future","quality":"Future","camera_frame_rate":"Fps30"}"#,
+		)
+		.unwrap();
+		assert_eq!(future.bandwidth, VideoBandwidth::Medium);
+		assert_eq!(future.quality, EncoderPreset::Automatic);
+		assert_eq!(future.codec, VideoCodec::Av1);
+		assert_eq!(future.camera_frame_rate, VideoFrameRate::Fps30);
+	}
+
+	#[test]
+	fn bandwidth_and_vendor_quality_choices_round_trip_without_resetting_preferences() {
+		use model::voice_settings::{EncoderPreset, VideoBandwidth};
+		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
+		for bandwidth in VideoBandwidth::ALL {
+			for quality in EncoderPreset::ALL {
+				let mut value = AppPreferences {
+					input_percent: 75,
+					..Default::default()
+				};
+				value.video_settings.bandwidth = bandwidth;
+				value.video_settings.quality = quality;
+				store.save_app_preferences(&value).unwrap();
+				assert_eq!(store.app_preferences().unwrap(), value);
+			}
+		}
+	}
+
+	#[test]
+	fn video_preferences_migrate_and_round_trip_all_ffmpeg_codecs() {
+		use model::voice_settings::{VideoCodec, VideoFrameRate, VideoResolution, VideoSettings};
 		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
 		assert_eq!(legacy.video_settings, VideoSettings::default());
 		let existing: AppPreferences =
@@ -750,10 +797,10 @@ mod tests {
 				for camera_frame_rate in VideoFrameRate::ALL {
 					let value = AppPreferences {
 						video_settings: VideoSettings {
-							backend: VideoBackend::Experimental,
 							codec,
 							camera_resolution,
 							camera_frame_rate,
+							..Default::default()
 						},
 						..Default::default()
 					};
@@ -762,9 +809,7 @@ mod tests {
 				}
 			}
 		}
-		let mut invalid = store.app_preferences().unwrap();
-		invalid.video_settings.backend = VideoBackend::Stable;
-		assert!(store.save_app_preferences(&invalid).is_err());
+
 		assert_eq!(
 			store.app_preferences().unwrap().video_settings.codec,
 			VideoCodec::Av1
@@ -773,16 +818,16 @@ mod tests {
 
 	#[test]
 	fn future_video_preferences_preserve_known_choices_and_unrelated_settings() {
-		use model::voice_settings::{VideoBackend, VideoCodec, VideoFrameRate, VideoResolution};
+		use model::voice_settings::{VideoCodec, VideoFrameRate, VideoResolution};
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
 		let original = AppPreferences {
 			language: Some("en-US".into()),
 			input_percent: 75,
 			video_settings: model::voice_settings::VideoSettings {
-				backend: VideoBackend::Experimental,
 				codec: VideoCodec::H265,
 				camera_resolution: VideoResolution::P2160,
 				camera_frame_rate: VideoFrameRate::Fps60,
+				..Default::default()
 			},
 			..Default::default()
 		};
@@ -800,10 +845,7 @@ mod tests {
 			).unwrap();
 			let mut expected = original.clone();
 			match field {
-				"backend" => {
-					expected.video_settings.backend = VideoBackend::Stable;
-					expected.video_settings.codec = VideoCodec::H264;
-				}
+				"backend" => {}
 				"codec" => expected.video_settings.codec = VideoCodec::H264,
 				"camera_resolution" => {
 					expected.video_settings.camera_resolution = VideoResolution::P480

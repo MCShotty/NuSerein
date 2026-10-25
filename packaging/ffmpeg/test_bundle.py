@@ -358,8 +358,10 @@ class BundleTest(unittest.TestCase):
             (root / "libavutil/libavutil.v").write_text("LIBAVUTIL_MAJOR { local: *; };\n")
             # The complete recipe patches every platform's source even when
             # only the QSV allocation change is being exercised here.
+            (root / "libavcodec/qsvenc.h").write_text("    int look_ahead_depth;\n")
             (root / "libavcodec/qsvenc.c").write_text(
                 '#include "qsvenc.h"\n'
+                "    q->param.mfx.RateControlMethod = rc_mode;\n"
                 "ret = av_new_packet(&pkt.pkt, q->packet_size);\n"
                 "    ret = MFXVideoENCODE_QueryIOSurf(q->session, &q->param, &q->req);\n"
                 "    q->packet_size = q->param.mfx.BufferSizeInKB * q->param.mfx.BRCParamMultiplier * 1000;\n"
@@ -396,6 +398,8 @@ class BundleTest(unittest.TestCase):
             self.assertIn("+ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);", source_patch)
             self.assertEqual((root / "libavcodec/serein_qsv_feature_validation.h").read_text(),
                              builder.QSV_FEATURE_VALIDATION)
+            self.assertIn("q->serein_requested_rate_control = rc_mode", source_patch)
+            self.assertEqual(source_patch.count("+        q->preset != q->param.mfx.TargetUsage"), 3)
             self.assertEqual((root / "libavcodec/serein_amf_split_encoding.h").read_text(),
                              builder.AMF_SPLIT_ENCODING)
             self.assertIn("p->p.bpc > 10", (root / "libavcodec/libdav1d.c").read_text())

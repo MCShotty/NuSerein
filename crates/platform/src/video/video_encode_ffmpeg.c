@@ -41,6 +41,7 @@ typedef struct SereinAvc {
     int av1_reduced_still;
     int has_output;
     int features;
+    int preset;
     int split_requested;
     int amf_split;
     int surface_mode;
@@ -102,6 +103,7 @@ static void record_amf_split(SereinAvc *encoder, int backend)
 static int configure_backend(SereinAvc *encoder, int backend)
 {
     AVCodecContext *codec = encoder->codec;
+    const char *preset = serein_video_preset_name(backend, encoder->preset);
     const int h264 = encoder->kind == 0;
     const int av1 = encoder->kind == 2;
     /* A one-picture DPB cannot retain both references for reordered output.
@@ -118,8 +120,8 @@ static int configure_backend(SereinAvc *encoder, int backend)
         /* AV1 NVENC has no private profile option; the context requests Main. */
         return (av1 || set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main")) &&
                (h264 || set_option(codec, "split_encode_mode", encoder->split_requested ? "2" : "disabled")) &&
-               set_option(codec, "preset", "p5") && set_option(codec, "tune", "hq") &&
-               set_option(codec, "rc", "cbr") &&
+               set_option(codec, "preset", preset ? preset : "p5") && set_option(codec, "tune", "hq") &&
+               set_option(codec, "rc", "vbr") &&
                set_option(codec, "rc-lookahead", encoder->features & 2 ? "16" : "0") &&
                set_option(codec, "forced-idr", "1") &&
                set_option(codec, "surfaces", encoder->features & 2 ? "24" : encoder->features & 1 ? "12" : "4");
@@ -128,8 +130,8 @@ static int configure_backend(SereinAvc *encoder, int backend)
         const int hevc = encoder->kind == 1;
         if (!set_option(codec, "profile", h264 && encoder->baseline ? "constrained_baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main") ||
             !set_option(codec, "usage", hevc ? "high_quality" : "transcoding") ||
-            !set_option(codec, "quality", hevc ? "quality" : "balanced") ||
-            !set_option(codec, "rc", "cbr") ||
+            !set_option(codec, "quality", preset ? preset : hevc ? "quality" : "balanced") ||
+            !set_option(codec, "rc", "vbr_peak") ||
             !set_option(codec, "preanalysis", encoder->features & 2 ? "1" : "0") ||
             !set_option(codec, "preencode", "0") ||
             !set_option(codec, "latency", av1 ? "none" : "0"))
@@ -153,7 +155,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
     }
     if (backend == 4) {
         if (!set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main") ||
-            !set_option(codec, "preset", "medium") ||
+            !set_option(codec, "preset", preset ? preset : "medium") ||
             !set_option(codec, "look_ahead_depth", encoder->features & 2 ? "16" : "0") ||
             !set_option(codec, "extbrc", encoder->features & 2 ? "1" : "0") ||
             !set_option(codec, "forced_idr", "1") ||
@@ -179,7 +181,7 @@ static int configure_backend(SereinAvc *encoder, int backend)
                           set_option(codec, "cavlc", encoder->baseline ? "1" : "0"));
     }
     return !av1 && set_option(codec, "profile", h264 && encoder->baseline ? "baseline" : (!h264 && !av1 && (encoder->features & 12)) ? "main10" : "main") &&
-           set_option(codec, "realtime", "0") && set_option(codec, "allow_sw", "0") &&
+           set_option(codec, "realtime", "0") && set_option(codec, "constant_bit_rate", "0") && set_option(codec, "allow_sw", "0") &&
            set_option(codec, "max_ref_frames", encoder->features & 1 ? "0" : "1");
 }
 
@@ -239,10 +241,10 @@ int serein_avc_amf_split(void *opaque)
     return encoder ? encoder->amf_split : 0;
 }
 
-void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
+void *serein_avc_open(int width, int height, int fps, int bitrate, int minimum, int maximum, int preset, int baseline,
                      int backend, int kind, size_t max_bytes)
 {
-    return serein_avc_open_on_adapter(width, height, fps, bitrate, baseline,
+    return serein_avc_open_on_adapter(width, height, fps, bitrate, minimum, maximum, preset, baseline,
                                       backend, kind, max_bytes, NULL, 0);
 }
 
@@ -315,7 +317,7 @@ static int bind_surface(AVCodecContext *codec, AVBufferRef *context,
 #endif
 }
 
-static void *open_with_split(int width, int height, int fps, int bitrate,
+static void *open_with_split(int width, int height, int fps, int bitrate, int minimum, int maximum, int preset,
                                 int baseline, int backend, int kind,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features, int allow_split, AVBufferRef *surface)
@@ -334,7 +336,8 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     if (width <= 0 || height <= 0 || width > 7680 || height > 7680 ||
         (width > 4320 && height > 4320) ||
         (width & 1) || (height & 1) || fps <= 0 || fps > 60 ||
-        bitrate <= 0 || bitrate > 100000000 ||
+        minimum <= 0 || minimum > bitrate || bitrate > maximum || maximum > 50000000 ||
+        preset < 0 || preset > 18 || (backend != 0 && preset && !serein_video_preset_name(backend, preset)) ||
         (baseline != 0 && baseline != 1) || backend < 0 || backend > 4 || kind < 0 || kind > 2 ||
         features < 0 || features > 11 || (features & 12) == 12 || ((features & 12) && kind == 0) || (baseline && (features & 3)) || (kind == 0 && (features & 1)) ||
         max_bytes == 0 || max_bytes > SEREIN_MAX_PACKET_BYTES)
@@ -365,6 +368,7 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     encoder->baseline = baseline;
     encoder->kind = kind;
     encoder->features = features;
+    encoder->preset = preset;
     encoder->surface_mode = surface != NULL;
     encoder->split_requested = allow_split && wants_split(width, height, backend, kind);
     encoder->codec = avcodec_alloc_context3(implementation);
@@ -396,10 +400,10 @@ static void *open_with_split(int width, int height, int fps, int bitrate,
     codec->framerate = (AVRational){fps, 1};
     codec->sample_aspect_ratio = (AVRational){1, 1};
     codec->bit_rate = bitrate;
-    codec->rc_min_rate = bitrate;
-    codec->rc_max_rate = bitrate;
-    codec->rc_buffer_size = bitrate;
-    if (backend == 4 && (size_t)bitrate > max_bytes * 8)
+    codec->rc_min_rate = minimum;
+    codec->rc_max_rate = maximum;
+    codec->rc_buffer_size = maximum;
+    if (backend == 4 && (size_t)maximum > max_bytes * 8)
         codec->rc_buffer_size = (int)(max_bytes * 8);
     codec->rc_initial_buffer_occupancy = codec->rc_buffer_size / 2;
     codec->gop_size = baseline ? 1 : fps * 2;
@@ -440,18 +444,18 @@ failed:
     return NULL;
 }
 
-void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
+void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate, int minimum, int maximum, int preset,
                                 int baseline, int backend, int kind,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features)
 {
-    void *encoder = open_with_split(width, height, fps, bitrate, baseline,
+    void *encoder = open_with_split(width, height, fps, bitrate, minimum, maximum, preset, baseline,
                                     backend, kind, max_bytes, adapter, features, 1, NULL);
     /* Some older GPUs/drivers reject split mode or two-column tiling. Release
      * the complete failed context before one conservative retry on the same
      * physical adapter, codec and quality settings. No second session survives. */
     if (!encoder && wants_split(width, height, backend, kind)) {
-        encoder = open_with_split(width, height, fps, bitrate, baseline,
+        encoder = open_with_split(width, height, fps, bitrate, minimum, maximum, preset, baseline,
                                   backend, kind, max_bytes, adapter, features, 0, NULL);
         if (encoder && backend == 3)
             ((SereinAvc *)encoder)->amf_split = 1;
@@ -461,17 +465,17 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
 
 /* Surface mode shares the exact codec options and same-GPU split retry with
  * host pictures. Only the input storage/device binding differs. */
-void *serein_avc_open_on_surface(int width, int height, int fps, int bitrate,
+void *serein_avc_open_on_surface(int width, int height, int fps, int bitrate, int minimum, int maximum, int preset,
                                 int baseline, int backend, int kind,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features, void *frames_context)
 {
     if (!frames_context)
         return NULL;
-    SereinAvc *encoder = open_with_split(width, height, fps, bitrate, baseline, backend, kind,
+    SereinAvc *encoder = open_with_split(width, height, fps, bitrate, minimum, maximum, preset, baseline, backend, kind,
                                         max_bytes, adapter, features, 1, frames_context);
     if (!encoder && wants_split(width, height, backend, kind)) {
-        encoder = open_with_split(width, height, fps, bitrate, baseline, backend, kind,
+        encoder = open_with_split(width, height, fps, bitrate, minimum, maximum, preset, baseline, backend, kind,
                                   max_bytes, adapter, features, 0, frames_context);
         if (encoder) encoder->amf_split = 1;
     }

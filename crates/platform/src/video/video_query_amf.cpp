@@ -96,7 +96,8 @@ bool unavailable(AMF_RESULT result) {
 }
 
 int query_caps(amf::AMFFactory *factory, amf::AMFContext *context, int codec) {
-    const bool ten_bit = codec >= 3; codec %= 3;
+    const bool presets = codec >= 6;
+    const bool ten_bit = codec >= 3 && codec < 6; codec %= 3;
     if (ten_bit && codec == 0) return 0;
     static const wchar_t *const components[] = {
         AMFVideoEncoderVCE_AVC, AMFVideoEncoder_HEVC, AMFVideoEncoder_AV1
@@ -120,6 +121,32 @@ int query_caps(amf::AMFFactory *factory, amf::AMFContext *context, int codec) {
     case amf::AMF_ACCEL_HARDWARE:
         break;
     default:
+        return -1;
+    }
+
+    if (presets) {
+        static const wchar_t *const properties[] = {AMF_VIDEO_ENCODER_QUALITY_PRESET,
+            AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET};
+        static const amf_int64 values[3][4] = {
+            {AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED, AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED,
+             AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY, AMF_VIDEO_ENCODER_QUALITY_PRESET_HIGH_QUALITY},
+            {AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED, AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED,
+             AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY, AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_HIGH_QUALITY},
+            {AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_BALANCED,
+             AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_QUALITY, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_HIGH_QUALITY}};
+        const amf::AMFPropertyInfo *info = nullptr;
+        if (component->GetPropertyInfo(properties[codec], &info) != AMF_OK || !info ||
+            info->type != amf::AMF_VARIANT_INT64 || !info->AllowedWrite() || !info->pEnumDescription)
+            return -1;
+        int supported = 0;
+        for (unsigned int i = 0; i < 32; ++i) {
+            const auto &entry = info->pEnumDescription[i];
+            if (!entry.name) return supported;
+            for (unsigned int preset = 0; preset < 4; ++preset)
+                if (entry.value == values[codec][preset] &&
+                    component->SetProperty(properties[codec], amf::AMFVariant(values[codec][preset])) == AMF_OK)
+                    supported |= 1 << (preset + 8);
+        }
         return -1;
     }
 
@@ -218,7 +245,7 @@ int query_devices(amf::AMFFactory *factory, int codec, const SereinVideoAdapter 
             continue;
         }
         const int result = query_caps(factory, context.value, codec);
-        if (result == 1 || target)
+        if (result > 0 || target)
             return result;
         uncertain |= result < 0;
     }
@@ -276,7 +303,7 @@ int query_devices(amf::AMFFactory *factory, int codec, const SereinVideoAdapter 
 } // namespace
 
 static int query_amf(int codec, const SereinVideoAdapter *target) {
-    if (codec < 0 || codec > 5)
+    if (codec < 0 || codec > 8)
         return -1;
 #if defined(_WIN32)
     Library runtime(AMF_DLL_NAME);

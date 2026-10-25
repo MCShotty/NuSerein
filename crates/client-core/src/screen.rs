@@ -158,25 +158,11 @@ impl Settings {
 	}
 
 	pub fn bit_rate(self) -> u32 {
-		let pixels = (u64::from(self.width) * u64::from(self.height)).min(7680 * 4320);
-		let points = [
-			(854u64 * 480, 2_000_000u64),
-			(1280 * 720, 4_000_000),
-			(1920 * 1080, 8_000_000),
-			(2560 * 1440, 12_000_000),
-			(3840 * 2160, 20_000_000),
-			(7680 * 4320, 40_000_000),
-		];
-		let mut base = points[0].1;
-		for [(low, low_rate), (high, high_rate)] in points.windows(2).map(|p| [p[0], p[1]]) {
-			if pixels >= high {
-				base = high_rate;
-			} else if pixels > low {
-				base = low_rate + (pixels - low) * (high_rate - low_rate) / (high - low);
-				break;
-			}
-		}
-		(base * if self.fps == 60 { 2 } else { 1 }).min(50_000_000) as u32
+		self.bit_rates().average
+	}
+
+	pub fn bit_rates(self) -> model::voice_settings::VideoBitrate {
+		model::voice_settings::VideoBitrate::for_dimensions(self.width, self.height)
 	}
 }
 
@@ -277,7 +263,7 @@ mod tests {
 		}
 	}
 	#[test]
-	fn bitrate_preserves_preset_rates_and_scales_native_pixels_monotonically() {
+	fn medium_bitrate_preserves_preset_rates_at_every_fps_and_source_ratio() {
 		let mut settings = Settings {
 			source: SourceId::Display(1),
 			width: 854,
@@ -287,22 +273,23 @@ mod tests {
 			audio: false,
 		};
 		for (preset, rate) in VideoResolution::ALL.into_iter().zip([
-			2_000_000, 4_000_000, 8_000_000, 12_000_000, 20_000_000, 40_000_000,
+			600_000, 2_000_000, 6_000_000, 10_000_000, 14_000_000, 24_000_000,
 		]) {
 			(settings.width, settings.height) = preset.dimensions();
 			assert_eq!(settings.bit_rate(), rate);
 			settings.fps = 60;
-			assert_eq!(settings.bit_rate(), (rate * 2).min(50_000_000));
+			assert_eq!(settings.bit_rate(), rate);
 			settings.fps = 30;
 		}
 		(settings.width, settings.height) = (6144, 2560);
-		assert!((20_000_000..40_000_000).contains(&settings.bit_rate()));
+		assert!((14_000_000..24_000_000).contains(&settings.bit_rate()));
+		let native_rate = settings.bit_rate();
 		settings.fps = 60;
-		assert_eq!(settings.bit_rate(), 50_000_000);
+		assert_eq!(settings.bit_rate(), native_rate);
 		(settings.width, settings.height) = (2592, 1080);
-		assert!((16_000_000..24_000_000).contains(&settings.bit_rate()));
+		assert_eq!(settings.bit_rate(), 6_000_000);
 		(settings.width, settings.height) = (1080, 2592);
-		assert!((16_000_000..24_000_000).contains(&settings.bit_rate()));
+		assert_eq!(settings.bit_rate(), 6_000_000);
 	}
 
 	#[test]
@@ -319,7 +306,7 @@ mod tests {
 					audio: false,
 				};
 				assert!(settings.valid());
-				assert!((2_000_000..=50_000_000).contains(&settings.bit_rate()));
+				assert!((600_000..=24_000_000).contains(&settings.bit_rate()));
 			}
 		}
 		let settings = Settings {
@@ -330,7 +317,7 @@ mod tests {
 			cursor: true,
 			audio: false,
 		};
-		assert_eq!(settings.bit_rate(), 50_000_000);
+		assert_eq!(settings.bit_rate(), 24_000_000);
 		for invalid in [
 			Settings {
 				width: 7682,

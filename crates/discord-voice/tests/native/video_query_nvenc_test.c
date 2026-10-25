@@ -56,6 +56,7 @@ CUresult CUDAAPI cuCtxDestroy_v2(CUcontext context) {
 /* Offline NVENC ABI fixture. It advertises codecs without an actual driver;
  * every encoder initialization, frame/buffer operation is forbidden. */
 #include <ffnvcodec/nvEncodeAPI.h>
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -83,6 +84,20 @@ static NVENCSTATUS NVENCAPI guids(void *encoder, GUID *values, uint32_t size, ui
     (void)size;
     values[0] = (mode("multi") && (uintptr_t)encoder == 2) || mode("error-then-supported") ? NV_ENC_CODEC_AV1_GUID : NV_ENC_CODEC_H264_GUID;
     *count = mode("short-guids") ? 0 : 1;
+    return NV_ENC_SUCCESS;
+}
+static NVENCSTATUS NVENCAPI preset_count(void *encoder, GUID codec, uint32_t *count) {
+    (void)encoder; (void)codec;
+    if (mode("preset-count-error")) return NV_ENC_ERR_GENERIC;
+    *count = mode("preset-excess") ? 65 : mode("preset-none") ? 0 : 3;
+    return NV_ENC_SUCCESS;
+}
+static NVENCSTATUS NVENCAPI preset_guids(void *encoder, GUID codec, GUID *values, uint32_t size, uint32_t *count) {
+    (void)encoder; (void)codec; assert(size == 3);
+    if (mode("preset-error")) return NV_ENC_ERR_GENERIC;
+    values[0] = NV_ENC_PRESET_P1_GUID; values[1] = NV_ENC_PRESET_P5_GUID;
+    values[2] = NV_ENC_CODEC_H264_GUID; /* Unknown names are never exposed. */
+    *count = mode("preset-short") ? 2 : 3;
     return NV_ENC_SUCCESS;
 }
 static NVENCSTATUS NVENCAPI caps(void *encoder, GUID codec, NV_ENC_CAPS_PARAM *params, int *value) {
@@ -133,6 +148,8 @@ NVENCSTATUS NVENCAPI NvEncodeAPICreateInstance(NV_ENCODE_API_FUNCTION_LIST *func
     functions->nvEncOpenEncodeSessionEx = open_session;
     functions->nvEncGetEncodeGUIDCount = guid_count;
     functions->nvEncGetEncodeGUIDs = guids;
+    functions->nvEncGetEncodePresetCount = mode("preset-missing") ? NULL : preset_count;
+    functions->nvEncGetEncodePresetGUIDs = preset_guids;
     functions->nvEncGetEncodeCaps = mode("missing-caps") ? NULL : caps;
     functions->nvEncDestroyEncoder = close_encoder;
     functions->nvEncInitializeEncoder = initialize_encoder;
@@ -146,6 +163,7 @@ NVENCSTATUS NVENCAPI NvEncodeAPICreateInstance(NV_ENCODE_API_FUNCTION_LIST *func
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include "video_encode_ffmpeg.h"
 #ifdef NDEBUG
@@ -197,6 +215,21 @@ int main(void) {
     fixture_cuda_reset(); fixture_nv_reset();
     assert(serein_query_nvenc_on_adapter(2, &target) == 1);
     assert(fixture_cuda_created() == 1 && fixture_cuda_destroyed() == 1);
+    const struct { const char *mode; int expected; } presets[] = {
+        {"multi", (1 << 1) | (1 << 5)}, {"preset-none", 0},
+        {"preset-count-error", -1}, {"preset-excess", -1}, {"preset-error", -1},
+        {"preset-short", -1}, {"preset-missing", -1}
+    };
+    for (unsigned int i = 0; i < sizeof(presets)/sizeof(presets[0]); ++i) {
+        assert(setenv("SEREIN_QUERY_FIXTURE", presets[i].mode, 1) == 0);
+        fixture_cuda_reset(); fixture_nv_reset();
+        target.bus = !strcmp(presets[i].mode, "multi") ? 2 : 1;
+        assert(serein_query_nvenc_on_adapter(!strcmp(presets[i].mode, "multi") ? 8 : 6, &target) == presets[i].expected);
+        assert(fixture_cuda_created() == fixture_cuda_destroyed());
+        assert(fixture_nv_closed() == fixture_nv_opened() && fixture_nv_forbidden() == 0);
+    }
+    assert(setenv("SEREIN_QUERY_FIXTURE", "multi", 1) == 0);
+    target.bus = 2;
     int b_frames = 0, lookahead = 0;
     assert(serein_nvenc_features(2, &target, &b_frames, &lookahead) == 1);
     assert(b_frames == 3 && lookahead == 1);

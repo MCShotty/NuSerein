@@ -1,13 +1,13 @@
 # Shared FFmpeg media libraries
 
-The Experimental camera/screen-share engine links to a small FFmpeg 7.1.5
+The camera/screen-share engine links to a small FFmpeg 7.1.5
 LGPL-2.1-or-later build of libavcodec, libavutil, libavformat, libswscale and
 libswresample. The native bridge in `crates/platform` also serves incoming
-streams and bounded video-attachment playback. Stable uses the original platform
-H264 encoders: Media Foundation on Windows, VideoToolbox on macOS and GStreamer
-VA-API/NVENC on Linux, with source-built Rust OpenH264 fallback.
+streams and bounded video-attachment playback. FFmpeg is the only outgoing encoder
+engine; the former Media Foundation, direct VideoToolbox and GStreamer encoder
+implementations have been removed. Native capture remains platform-specific.
 
-Experimental compiles this exact encoder set; hardware capabilities and runtime
+The recipe compiles this exact encoder set; hardware capabilities and runtime
 availability determine which can open.
 
 Hardware selection follows the running renderer's physical GPU, including the
@@ -16,10 +16,10 @@ binds the encoder and capability query to that device. Another GPU of the same
 vendor/model cannot supply its results. An unidentified/unavailable target uses
 H264 software fallback; HEVC/AV1 reports unavailable rather than changing codec.
 
-Experimental settings initially query each vendor's driver capability API for
+Advanced Video Encoding settings query each vendor's driver capability API for
 the compiled FFmpeg encoder paths, without initializing encoders or submitting
 pictures. Recheck repeats those queries. The separate, optional **Test encoder**
-action validates synthetic camera/screen output for the selected codec, without
+action validates synthetic camera/screen output for the selected codec and quality preset, without
 software or another-vendor fallback; its results never replace the driver report.
 Both use disposable Serein helpers, not an FFmpeg CLI, with a ten-second deadline
 per backend/codec. The parent kills/reaps cancelled helpers; reopening restarts
@@ -35,7 +35,7 @@ see [voice documentation](../../docs/voice.md).
 | macOS | OpenH264, VideoToolbox | VideoToolbox | Unavailable |
 | Windows ARM64 | OpenH264 | Unavailable | Unavailable |
 
-OpenH264 2.6.0 supplies Experimental's software H264 encoder. There are no
+OpenH264 2.6.0 supplies the software H264 encoder. There are no
 software HEVC/AV1 encoders: these codecs require compatible hardware. Software
 fallback applies only to H264 selection/negotiation. An explicit HEVC/AV1 selection
 cannot send H264 bytes
@@ -184,16 +184,15 @@ runner. FFmpeg loads NVIDIA/AMD driver libraries only when attempting those
 encoders, and the oneVPL dispatcher loads a system-provided compatible Intel
 GPU runtime (`libmfx-gen.so.1.2` or
 `libmfxhw64.so.1` on Linux). Linux QSV uses libva/libva-drm/libdrm to create the
-Intel driver device; VA-API encoders remain disabled in Experimental. Stable's
-Linux VA-API/NVENC path uses system GStreamer plugins independently. Windows AMF/QSV use
+Intel driver device; VA-API encoders remain disabled. Windows AMF/QSV use
 D3D11 devices bound by the renderer's LUID. Linux AMF derives a Vulkan device
 from that physical GPU's explicit DRM render node and gives its native handles
 to AMF; encoding uses no AMD VA-API driver interface or Vulkan video encoder. The
 bundled patch checks DRM character-device numbers, requires exact Vulkan DRM
 device matching, and rejects unavailable identity rather than selecting another
-GPU by vendor/model. macOS Stable and Experimental require the renderer GPU's
+GPU by vendor/model. macOS requires the renderer GPU's
 Metal registry ID in VideoToolbox's encoder specification. QSV's frame-free
-startup Query must retain requested lookahead and CBR; corrected B-frame counts
+startup Query must retain requested lookahead, target usage and CBR/VBR mode; corrected B-frame counts
 are propagated before input surfaces are initialized. Driver or sandbox access
 failures select OpenH264 for H264, or report unavailable for HEVC/AV1.
 No broader Flatpak permissions are added. Hardware availability and
