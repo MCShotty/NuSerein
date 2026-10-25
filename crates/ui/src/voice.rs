@@ -2771,6 +2771,22 @@ impl MessagingUi {
 				}
 			}
 		});
+		if self.video_settings.codec != VideoCodec::H264
+			&& (self.video_capabilities_loading
+				|| self.video_capabilities_refresh
+				|| !self
+					.video_capabilities
+					.is_some_and(|caps| caps.available(VideoCodec::H264)))
+			&& ui
+				.button(crate::i18n::translate("voice-video-restore-default"))
+				.on_hover_text(crate::i18n::translate(
+					"voice-video-restore-default-description",
+				))
+				.clicked()
+		{
+			self.video_settings.codec = VideoCodec::H264;
+			self.video_settings.quality = EncoderPreset::Automatic;
+		}
 		ui.add_space(8.0);
 		ui.label(crate::i18n::translate("voice-video-bandwidth"));
 		ui.horizontal_wrapped(|ui| {
@@ -5867,6 +5883,66 @@ mod tests {
 		assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
 		video_controls_click(&ctx, &mut messaging, 500.0, "AV1");
 		assert_eq!(messaging.video_settings.codec, VideoCodec::H265);
+	}
+
+	#[test]
+	fn unsupported_saved_codec_can_restore_h264_without_resetting_other_settings() {
+		use model::voice_settings::{
+			EncoderPreset, ProbeResult, VideoBandwidth, VideoCodec, VideoFrameRate,
+			VideoResolution, VideoSettings,
+		};
+		for codec in [VideoCodec::H265, VideoCodec::Av1] {
+			for (result, loading) in [
+				(None, false),
+				(None, true),
+				(Some(ProbeResult::Unavailable), false),
+				(Some(ProbeResult::Failed), false),
+				(Some(ProbeResult::TimedOut), false),
+				(Some(ProbeResult::Available), true),
+			] {
+				for keyboard in [false, true] {
+					let ctx = egui::Context::default();
+					let saved = VideoSettings {
+						codec,
+						quality: EncoderPreset::AmfQuality,
+						bandwidth: VideoBandwidth::High,
+						camera_resolution: VideoResolution::P1080,
+						camera_frame_rate: VideoFrameRate::Fps60,
+					};
+					let mut messaging = MessagingUi {
+						video_settings: saved,
+						video_capabilities_loading: loading,
+						video_capabilities: result.map(|result| {
+							let mut caps = no_video_hardware();
+							caps.support = [[result; 4]; 3];
+							caps
+						}),
+						..Default::default()
+					};
+					let label = "Restore H.264 default";
+					let labels = video_controls_frame(&ctx, &mut messaging, 320.0, vec![]);
+					assert!(labels.iter().any(|(text, _)| text == label));
+					assert_eq!(messaging.video_settings, saved, "Recovery must be explicit");
+					if keyboard {
+						video_controls_focus(&ctx, &mut messaging, label);
+						video_controls_key(&ctx, &mut messaging, egui::Key::Enter);
+					} else {
+						video_controls_click(&ctx, &mut messaging, 320.0, label);
+					}
+					assert_eq!(
+						messaging.video_settings,
+						VideoSettings {
+							codec: VideoCodec::H264,
+							quality: EncoderPreset::Automatic,
+							..saved
+						}
+					);
+					let labels = video_controls_frame(&ctx, &mut messaging, 320.0, vec![]);
+					assert!(!labels.iter().any(|(text, _)| text == label));
+					assert!(!messaging.camera_test_requested && !messaging.voice_refresh_devices);
+				}
+			}
+		}
 	}
 
 	#[test]

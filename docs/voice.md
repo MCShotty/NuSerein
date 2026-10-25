@@ -831,6 +831,9 @@ reduce average/peak to the floor. Announcements carry the selected peak ceiling.
 Only positively reported hardware codecs can be newly selected; unknown or failed
 queries do not enable choices. Saved selections remain visible with a warning.
 H.264 defaults to FFmpeg OpenH264 software fallback when hardware is unavailable.
+If a saved H.265/AV1 selection cannot switch to H.264 through the hardware choices,
+**Restore H.264 default** explicitly restores H.264/Automatic, including while a query
+is pending or has failed. It preserves bitrate, camera resolution and frame rate.
 H.265/AV1 have no software encoder and fail visibly without changing codec.
 Windows ARM64 is H.264 software-only. macOS supports H.264/H.265 VideoToolbox,
 without an AV1 encoder. Incoming FFmpeg decoding and native capture stay independent.
@@ -844,6 +847,9 @@ build's options. Automatic preserves existing vendor defaults. Incomplete preset
 queries expose no new named choices; a complete report for an available codec
 removes unsupported saved presets. VideoToolbox has no named quality presets in this
 interface.
+Encoder startup uses Automatic for a saved preset owned by a different backend,
+including H.264 software fallback, without changing codec or bitrate. Explicit
+encoder tests reject foreign-vendor presets instead of testing a substituted default.
 
 **Test encoder** explicitly tests the selected codec and quality preset using bounded
 640×480/15 fps camera and 1280×720/30 fps screen fixtures (at most 48 pictures each).

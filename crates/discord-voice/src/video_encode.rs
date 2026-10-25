@@ -106,6 +106,19 @@ fn probe_backend(backend: HardwareBackend, _codec: VideoCodec) -> Option<Backend
 	}
 }
 
+fn backend_preset(backend: Backend, preset: EncoderPreset) -> EncoderPreset {
+	// H.264 maps every platform backend. Preset IDs belong to one vendor;
+	// settings saved for another GPU must not disable this encoder.
+	let owner = preset
+		.backend()
+		.and_then(|owner| probe_backend(owner, VideoCodec::H264));
+	if owner == Some(backend) {
+		preset
+	} else {
+		EncoderPreset::Automatic
+	}
+}
+
 /// Keep failed GPUs out of this stream's remaining attempts, including after
 /// a backend opens successfully but rejects its first actual picture.
 fn try_backends<T>(
@@ -344,6 +357,13 @@ impl Encoder {
 		config: Config,
 		backend: HardwareBackend,
 	) -> Result<Self, &'static str> {
+		if config
+			.preset
+			.backend()
+			.is_some_and(|owner| owner != backend)
+		{
+			return Err("Selected quality preset belongs to another encoder");
+		}
 		let backend = probe_backend(backend, config.codec)
 			.ok_or("FFmpeg hardware backend is unavailable on this platform")?;
 		Self::open(config, backend)
@@ -454,7 +474,7 @@ impl Encoder {
 	}
 
 	fn open_after_features_surface(
-		config: Config,
+		mut config: Config,
 		backend: Backend,
 		after: Option<i32>,
 		surface: Option<Rc<SurfaceContext>>,
@@ -466,6 +486,7 @@ impl Encoder {
 		if backend == Backend::Software && config.codec != VideoCodec::H264 {
 			return Err("FFmpeg H.265/AV1 software encoding is not bundled");
 		}
+		config.preset = backend_preset(backend, config.preset);
 		// SAFETY: All scalar bounds are checked above; the returned allocation is uniquely
 		// owned here and is never sent across workers. A failed open returns null.
 		let adapter = config.adapter.map(crate::video_gpu::Adapter::from);
@@ -963,6 +984,48 @@ mod tests {
 			frame.keyframe
 				&& crate::video::has_parameter_sets_for_codec(&frame.data, VideoCodec::H264)
 		);
+	}
+
+	#[test]
+	fn saved_presets_follow_the_active_backend_and_explicit_probes_stay_exact() {
+		for backend in BACKENDS {
+			for preset in EncoderPreset::ALL {
+				let expected = match (*backend as i32, preset as i32) {
+					(1, 1..=7) | (3, 8..=11) | (4, 12..=18) => preset,
+					_ => EncoderPreset::Automatic,
+				};
+				assert_eq!(backend_preset(*backend, preset), expected);
+			}
+		}
+		for backend in HardwareBackend::ALL {
+			for preset in EncoderPreset::ALL {
+				if preset.backend().is_some_and(|owner| owner != backend) {
+					let error = Encoder::hardware_only(Config { preset, ..CAMERA }, backend)
+						.err()
+						.expect("An explicit probe cannot substitute Automatic");
+					assert_eq!(error, "Selected quality preset belongs to another encoder");
+				}
+			}
+		}
+		// Use the production fallback/open/encode/reconfigure path without GPU
+		// discovery. A saved hardware preset becomes the software default.
+		for preset in EncoderPreset::ALL {
+			let config = Config {
+				preset,
+				adapter: Some(model::VideoAdapter::default()),
+				..CAMERA
+			};
+			let mut encoder = Encoder::new(config).unwrap();
+			assert!(!encoder.hardware());
+			assert_eq!(encoder.config.preset, EncoderPreset::Automatic);
+			let picture = vec![128; config.picture_bytes().unwrap()];
+			let first = encoder.encode_at(&picture, false, 3000).unwrap();
+			assert!(first.keyframe && !first.data.is_empty());
+			encoder.reconfigure(config).unwrap();
+			let next = encoder.encode_at(&picture, false, 6000).unwrap();
+			assert!(next.keyframe && next.epoch > first.epoch);
+			assert_eq!(encoder.config.preset, EncoderPreset::Automatic);
+		}
 	}
 
 	#[test]

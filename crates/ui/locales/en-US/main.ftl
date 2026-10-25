@@ -5580,6 +5580,8 @@ voice-video-bandwidth-medium = Medium (Recommended)
 voice-video-bandwidth-high = High
 voice-video-bandwidth-description = Low saves the most bandwidth. Medium uses the same budget at every frame rate. High increases the budget for higher frame rates. Rates also depend on resolution.
 voice-video-quality-preset = Encoder quality preset
+voice-video-restore-default = Restore H.264 default
+voice-video-restore-default-description = Use H.264 with Automatic quality. Software encoding is available when hardware support cannot be confirmed. Bitrate, resolution and frame rate stay unchanged.
 voice-video-presets-pending = Recheck hardware support to load the presets available for this codec.
 voice-video-presets-none = This encoder reports no named quality presets. Automatic keeps its default.
 
