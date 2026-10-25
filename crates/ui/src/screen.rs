@@ -683,7 +683,7 @@ mod tests {
 				.resolve((7680, 4320))
 				.unwrap()
 				.bit_rate(),
-			50_000_000
+			24_000_000
 		);
 		picker.audio = true;
 		assert!(picker.settings().unwrap().audio);

@@ -443,16 +443,14 @@ mod tests {
 
 	#[test]
 	fn video_settings_are_observed_and_restored() {
-		use model::voice_settings::{
-			VideoBackend, VideoCodec, VideoFrameRate, VideoResolution, VideoSettings,
-		};
+		use model::voice_settings::{VideoCodec, VideoFrameRate, VideoResolution, VideoSettings};
 		let mut settings = Settings::default();
 		let mut ui = ui::MessagingUi::default();
 		ui.video_settings = VideoSettings {
-			backend: VideoBackend::Experimental,
 			codec: VideoCodec::H265,
 			camera_resolution: VideoResolution::P4320,
 			camera_frame_rate: VideoFrameRate::Fps60,
+			..Default::default()
 		};
 		settings.observe(&ui);
 		assert_eq!(settings.current.video_settings, ui.video_settings);

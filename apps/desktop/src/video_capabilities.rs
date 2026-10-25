@@ -1,10 +1,11 @@
 //! Process-local driver discovery and explicitly requested encoder tests.
 use model::voice_settings::{
-	DriverCapabilities, HardwareBackend, HardwareSupport, ProbeResult, VideoBackend,
-	VideoCapabilities, VideoCodec,
+	DriverCapabilities, EncoderPreset, EncoderPresets, HardwareBackend, HardwareSupport,
+	ProbeResult, VideoCapabilities, VideoCodec,
 };
 use std::{
 	ffi::OsString,
+	io::Read,
 	path::Path,
 	process::{Child, Command, Stdio},
 	sync::{
@@ -29,7 +30,7 @@ const UNKNOWN: HardwareSupport = HardwareSupport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Operation {
 	Discover,
-	Test(VideoCodec),
+	Test(VideoCodec, EncoderPreset),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +44,7 @@ type HelperRequest = (
 	HardwareBackend,
 	VideoCodec,
 	Option<model::VideoAdapter>,
+	EncoderPreset,
 );
 
 fn request(mut args: impl Iterator<Item = OsString>) -> Option<Result<HelperRequest, ()>> {
@@ -61,35 +63,60 @@ fn request(mut args: impl Iterator<Item = OsString>) -> Option<Result<HelperRequ
 			.into_iter()
 			.find(|codec| Some(codec.key()) == arg.to_str())
 	});
-	let adapter = match args.next() {
-		None => None,
-		Some(flag) if flag == ADAPTER_ARGUMENT => {
-			let Some(adapter) = args
+	let mut adapter = None;
+	let mut preset = None;
+	for _ in 0..=2 {
+		let Some(flag) = args.next() else {
+			return Some(match (backend, codec) {
+				(Some(backend), Some(codec)) => {
+					Ok((helper, backend, codec, adapter, preset.unwrap_or_default()))
+				}
+				_ => Err(()),
+			});
+		};
+		if flag == ADAPTER_ARGUMENT && adapter.is_none() {
+			adapter = args
 				.next()
-				.and_then(|key| model::VideoAdapter::from_helper_key(key.to_str()?))
-			else {
+				.and_then(|key| model::VideoAdapter::from_helper_key(key.to_str()?));
+			if adapter.is_none() {
 				return Some(Err(()));
-			};
-			Some(adapter)
+			}
+		} else if flag == "--preset" && preset.is_none() && helper == Helper::Test {
+			preset = args
+				.next()
+				.and_then(|key| key.to_str()?.parse::<usize>().ok())
+				.and_then(|index| EncoderPreset::ALL.get(index).copied());
+			if preset.is_none() {
+				return Some(Err(()));
+			}
+		} else {
+			return Some(Err(()));
 		}
-		_ => return Some(Err(())),
-	};
-	Some(match (backend, codec, args.next()) {
-		(Some(backend), Some(codec), None) => Ok((helper, backend, codec, adapter)),
-		_ => Err(()),
-	})
+	}
+	Some(Err(()))
 }
 
 /// Exit before GUI, credentials, network clients or capture discovery initialize.
 pub fn probe_command() -> Option<i32> {
 	request(std::env::args_os().skip(1)).map(|request| match request {
-		Ok((helper, backend, codec, adapter))
+		Ok((helper, backend, codec, adapter, preset))
 			if discord_voice::video_capabilities::backends().contains(&backend) =>
 		{
 			match helper {
 				Helper::Query => {
 					let ordinary = discord_voice::video_capabilities::query_on_adapter(
 						backend, codec, adapter,
+					);
+					let presets = adapter
+						.filter(|_| ordinary == ProbeResult::Available)
+						.and_then(|adapter| {
+							discord_voice::video_capabilities::query_presets(
+								backend, codec, adapter,
+							)
+						});
+					println!(
+						"{}",
+						serde_json::json!({"presets":presets.map(EncoderPresets::bits)})
 					);
 					if ordinary == ProbeResult::Unavailable {
 						0
@@ -109,9 +136,10 @@ pub fn probe_command() -> Option<i32> {
 					}
 				}
 				Helper::Test => {
-					let support = discord_voice::video_capabilities::probe_on_adapter(
-						backend, codec, adapter,
+					let support = discord_voice::video_capabilities::probe_on_adapter_with_preset(
+						backend, codec, adapter, preset,
 					);
+					println!("{{\"presets\":null}}");
 					i32::from(support.camera == ProbeResult::Available)
 						| (i32::from(support.screen == ProbeResult::Available) << 1)
 				}
@@ -178,13 +206,82 @@ impl Drop for ProbeChild {
 	}
 }
 
-fn wait_for_helper(command: &mut Command, stop: &AtomicBool, timeout: Duration) -> Exit {
+fn decode_presets(bytes: &[u8]) -> Option<EncoderPresets> {
+	#[derive(serde::Deserialize)]
+	struct Report {
+		presets: Option<u32>,
+	}
+	if bytes.len() > 128 {
+		return None;
+	}
+	serde_json::from_slice::<Report>(bytes)
+		.ok()?
+		.presets
+		.map(EncoderPresets::from_bits)
+}
+
+#[allow(unsafe_code)] // Bounded reads from the owned native helper pipe.
+fn helper_report(stdout: &mut std::process::ChildStdout) -> Option<EncoderPresets> {
+	// A driver may leave an inherited pipe handle open after the owned helper
+	// exits. Never let reading its tiny report bypass cancellation/deadlines.
+	#[cfg(unix)]
+	{
+		use std::os::fd::AsRawFd;
+		let fd = stdout.as_raw_fd();
+		// SAFETY: stdout owns this live descriptor; only this thread reads it.
+		let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+		if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+			return None;
+		}
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::io::AsRawHandle;
+		#[link(name = "kernel32")]
+		unsafe extern "system" {
+			fn PeekNamedPipe(
+				handle: *mut std::ffi::c_void,
+				buffer: *mut std::ffi::c_void,
+				size: u32,
+				read: *mut u32,
+				available: *mut u32,
+				remaining: *mut u32,
+			) -> i32;
+		}
+		let mut available = 0;
+		// SAFETY: a live owned pipe, no destination buffer, one valid output.
+		if unsafe {
+			PeekNamedPipe(
+				stdout.as_raw_handle(),
+				std::ptr::null_mut(),
+				0,
+				std::ptr::null_mut(),
+				&mut available,
+				std::ptr::null_mut(),
+			)
+		} == 0 || available == 0
+			|| available > 128
+		{
+			return None;
+		}
+	}
+	let mut bytes = [0u8; 129];
+	let length = stdout.read(&mut bytes).ok()?;
+	decode_presets(&bytes[..length])
+}
+
+fn wait_for_helper(
+	command: &mut Command,
+	stop: &AtomicBool,
+	timeout: Duration,
+	presets: &mut Option<EncoderPresets>,
+) -> Exit {
 	if stop.load(Ordering::Acquire) {
 		return Exit::Failed;
 	}
 	command
 		.stdin(Stdio::null())
-		.stdout(Stdio::null())
+		.stdout(Stdio::piped())
 		.stderr(Stdio::null());
 	let Ok(child) = command.spawn() else {
 		return Exit::Failed;
@@ -196,7 +293,10 @@ fn wait_for_helper(command: &mut Command, stop: &AtomicBool, timeout: Duration) 
 			return Exit::Failed;
 		}
 		match child.0.try_wait() {
-			Ok(Some(status)) => return Exit::Code(status.code()),
+			Ok(Some(status)) => {
+				*presets = child.0.stdout.as_mut().and_then(helper_report);
+				return Exit::Code(status.code());
+			}
 			Err(_) => return Exit::Failed,
 			Ok(None) => {}
 		}
@@ -211,6 +311,7 @@ fn initial_report() -> DriverCapabilities {
 	let mut report = DriverCapabilities {
 		support: [[ProbeResult::Unavailable; 4]; 3],
 		ten_bit: [[ProbeResult::Unavailable; 4]; 3],
+		quality_presets: Default::default(),
 	};
 	for &backend in discord_voice::video_capabilities::backends() {
 		for codec in VideoCodec::ALL {
@@ -264,7 +365,13 @@ fn finish_test(report: &mut VideoCapabilities, codec: VideoCodec) {
 }
 
 enum Update {
-	Driver(HardwareBackend, VideoCodec, ProbeResult, ProbeResult),
+	Driver(
+		HardwareBackend,
+		VideoCodec,
+		ProbeResult,
+		ProbeResult,
+		Option<EncoderPresets>,
+	),
 	Test(HardwareBackend, VideoCodec, HardwareSupport),
 	Finished,
 }
@@ -279,7 +386,7 @@ fn scan(
 ) {
 	for &backend in discord_voice::video_capabilities::backends() {
 		for codec in VideoCodec::ALL {
-			if let Operation::Test(selected) = operation
+			if let Operation::Test(selected, _) = operation
 				&& codec != selected
 			{
 				continue;
@@ -289,22 +396,30 @@ fn scan(
 			}
 			let argument = match operation {
 				Operation::Discover => QUERY_ARGUMENT,
-				Operation::Test(_) => TEST_ARGUMENT,
+				Operation::Test(..) => TEST_ARGUMENT,
 			};
 			let mut command = Command::new(executable);
 			command.args([argument, backend.key(), codec.key()]);
+			if let Operation::Test(_, preset) = operation {
+				command.args(["--preset", &(preset as i32).to_string()]);
+			}
 			if let Some(adapter) = adapter {
 				command.args([ADAPTER_ARGUMENT, &adapter.helper_key()]);
 			}
-			let exit = wait_for_helper(&mut command, stop, HELPER_TIMEOUT);
+			let mut presets = None;
+			let exit = wait_for_helper(&mut command, stop, HELPER_TIMEOUT, &mut presets);
 			if stop.load(Ordering::Acquire) {
 				return;
 			}
 			let update = match operation {
-				Operation::Discover => {
-					Update::Driver(backend, codec, decode_query(exit), decode_ten_bit(exit))
-				}
-				Operation::Test(_) => Update::Test(backend, codec, decode_test(exit)),
+				Operation::Discover => Update::Driver(
+					backend,
+					codec,
+					decode_query(exit),
+					decode_ten_bit(exit),
+					presets.map(|presets| presets.for_backend(backend)),
+				),
+				Operation::Test(..) => Update::Test(backend, codec, decode_test(exit)),
 			};
 			if send.try_send(update).is_err() {
 				return;
@@ -354,7 +469,7 @@ impl Detector {
 				ui.video_capabilities = None;
 				ui.video_capabilities_loading = false;
 			}
-			Some(Operation::Test(codec)) => {
+			Some(Operation::Test(codec, _)) => {
 				if let Some(report) = &mut ui.video_encoder_tests {
 					finish_test(report, codec);
 				}
@@ -393,9 +508,7 @@ impl Detector {
 			eframe::egui::Context,
 		) -> Option<JoinHandle<()>>,
 	) {
-		let visible = !demo
-			&& ui.voice_settings_open()
-			&& ui.video_settings.backend == VideoBackend::Experimental;
+		let visible = !demo && ui.voice_settings_open() && ui.video_encoding_advanced_visible;
 		if !visible {
 			self.cancel();
 		}
@@ -417,16 +530,22 @@ impl Detector {
 			// The fixed matrix fits twelve updates and a terminal message.
 			for _ in 0..13 {
 				match receive.try_recv() {
-					Ok(Update::Driver(backend, codec, support, ten_bit)) => {
+					Ok(Update::Driver(backend, codec, support, ten_bit, presets)) => {
 						if self.operation == Some(Operation::Discover)
 							&& let Some(report) = &mut ui.video_capabilities
 						{
 							report.set(backend, codec, support);
 							report.ten_bit[codec.index()][backend.index()] = ten_bit;
+							report.quality_presets[codec.index()][backend.index()] =
+								if support == ProbeResult::Available {
+									presets
+								} else {
+									None
+								};
 						}
 					}
 					Ok(Update::Test(backend, codec, support)) => {
-						if self.operation == Some(Operation::Test(codec))
+						if matches!(self.operation, Some(Operation::Test(selected, _)) if selected == codec)
 							&& let Some(report) = &mut ui.video_encoder_tests
 						{
 							report.set(backend, codec, support);
@@ -449,7 +568,7 @@ impl Detector {
 						finish_pending(report);
 					}
 				}
-				Some(Operation::Test(codec)) => {
+				Some(Operation::Test(codec, _)) => {
 					ui.video_encoder_tests_loading = false;
 					if let Some(report) = &mut ui.video_encoder_tests {
 						finish_test(report, codec);
@@ -489,7 +608,11 @@ impl Detector {
 			reset_test(report, codec);
 			ui.video_encoder_tests_codec = Some(codec);
 			ui.video_encoder_tests_loading = true;
-			Operation::Test(codec)
+			let preset = ui
+				.video_encoder_tests_preset
+				.unwrap_or(ui.video_settings.quality);
+			ui.video_encoder_test_presets[codec.index()] = Some(preset);
+			Operation::Test(codec, preset)
 		} else {
 			return;
 		};
@@ -506,7 +629,7 @@ impl Detector {
 					finish_pending(ui.video_capabilities.as_mut().unwrap());
 					ui.video_capabilities_loading = false;
 				}
-				Operation::Test(codec) => {
+				Operation::Test(codec, _) => {
 					finish_test(ui.video_encoder_tests.as_mut().unwrap(), codec);
 					ui.video_encoder_tests_loading = false;
 				}
@@ -532,7 +655,7 @@ mod tests {
 	fn settings() -> ui::MessagingUi {
 		let mut ui = ui::MessagingUi::default();
 		ui.preview_settings("voice");
-		ui.video_settings.backend = VideoBackend::Experimental;
+		ui.video_encoding_advanced_visible = true;
 		ui
 	}
 
@@ -552,6 +675,7 @@ mod tests {
 		let fixture = DriverCapabilities {
 			support: [[ProbeResult::Available; 4]; 3],
 			ten_bit: [[ProbeResult::Pending; 4]; 3],
+			quality_presets: Default::default(),
 		};
 		ui.video_capabilities = Some(fixture);
 		detector.poll(true, &mut ui, &ctx);
@@ -571,6 +695,7 @@ mod tests {
 			VideoCodec::Av1,
 			ProbeResult::Available,
 			ProbeResult::Unavailable,
+			None,
 		))
 		.unwrap();
 		let stop = Arc::new(AtomicBool::new(false));
@@ -666,6 +791,7 @@ mod tests {
 		let driver = DriverCapabilities {
 			support: [[ProbeResult::Available; 4]; 3],
 			ten_bit: [[ProbeResult::Pending; 4]; 3],
+			quality_presets: Default::default(),
 		};
 		ui.video_capabilities = Some(driver);
 		ui.video_encoder_tests = Some(initial_tests());
@@ -675,13 +801,14 @@ mod tests {
 			receive: None,
 			thread: None,
 			stop: Some(Arc::new(AtomicBool::new(false))),
-			operation: Some(Operation::Test(VideoCodec::H265)),
+			operation: Some(Operation::Test(VideoCodec::H265, EncoderPreset::Automatic)),
 		};
-		ui.video_settings.backend = VideoBackend::Stable;
+
+		ui.preview_settings("appearance");
 		detector.poll_with(false, &mut ui, &ctx, |_, _, _, _| {
 			panic!("closed settings cannot launch")
 		});
-		ui.video_settings.backend = VideoBackend::Experimental;
+
 		detector.poll_with(false, &mut ui, &ctx, |_, _, _, _| {
 			panic!("optional test cannot restart automatically")
 		});
@@ -716,7 +843,10 @@ mod tests {
 		});
 		assert_eq!(
 			starts,
-			[Operation::Discover, Operation::Test(VideoCodec::Av1)]
+			[
+				Operation::Discover,
+				Operation::Test(VideoCodec::Av1, EncoderPreset::Automatic)
+			]
 		);
 		assert!(ui.video_encoder_tests_request.is_none());
 	}
@@ -729,6 +859,7 @@ mod tests {
 		let driver = DriverCapabilities {
 			support: [[ProbeResult::Available; 4]; 3],
 			ten_bit: [[ProbeResult::Pending; 4]; 3],
+			quality_presets: Default::default(),
 		};
 		ui.video_capabilities = Some(driver);
 		let tested = HardwareSupport {
@@ -740,7 +871,10 @@ mod tests {
 		ui.video_encoder_tests = Some(report);
 		ui.video_encoder_tests_request = Some(VideoCodec::Av1);
 		detector.poll_with(false, &mut ui, &ctx, |operation, _, _, _| {
-			assert_eq!(operation, Operation::Test(VideoCodec::Av1));
+			assert_eq!(
+				operation,
+				Operation::Test(VideoCodec::Av1, EncoderPreset::Automatic)
+			);
 			None
 		});
 		assert_eq!(ui.video_capabilities, Some(driver));
@@ -766,7 +900,8 @@ mod tests {
 				Helper::Query,
 				HardwareBackend::Amf,
 				VideoCodec::Av1,
-				None
+				None,
+				EncoderPreset::Automatic
 			)))
 		);
 		assert_eq!(
@@ -775,7 +910,8 @@ mod tests {
 				Helper::Test,
 				HardwareBackend::Qsv,
 				VideoCodec::H264,
-				None
+				None,
+				EncoderPreset::Automatic
 			)))
 		);
 		for argument in [QUERY_ARGUMENT, TEST_ARGUMENT] {
@@ -805,7 +941,8 @@ mod tests {
 				Helper::Test,
 				HardwareBackend::Qsv,
 				VideoCodec::H265,
-				Some(adapter)
+				Some(adapter),
+				EncoderPreset::Automatic
 			)))
 		);
 		for args in [
@@ -821,6 +958,38 @@ mod tests {
 			],
 		] {
 			assert_eq!(request(args.into_iter().map(OsString::from)), Some(Err(())));
+		}
+	}
+
+	#[test]
+	fn explicit_test_helper_accepts_one_bounded_preset_only() {
+		let parse = |args: &[&str]| request(args.iter().map(OsString::from));
+		assert_eq!(
+			parse(&[TEST_ARGUMENT, "qsv", "av1", "--preset", "18"]),
+			Some(Ok((
+				Helper::Test,
+				HardwareBackend::Qsv,
+				VideoCodec::Av1,
+				None,
+				EncoderPreset::QsvVeryFast
+			)))
+		);
+		for args in [
+			vec![TEST_ARGUMENT, "qsv", "av1", "--preset", "19"],
+			vec![TEST_ARGUMENT, "qsv", "av1", "--preset", "-1"],
+			vec![TEST_ARGUMENT, "qsv", "av1", "--preset"],
+			vec![
+				TEST_ARGUMENT,
+				"qsv",
+				"av1",
+				"--preset",
+				"1",
+				"--preset",
+				"2",
+			],
+			vec![QUERY_ARGUMENT, "qsv", "av1", "--preset", "1"],
+		] {
+			assert_eq!(parse(&args), Some(Err(())));
 		}
 	}
 
@@ -849,6 +1018,63 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn helper_preset_reports_are_bounded_and_do_not_guess_on_errors() {
+		assert_eq!(decode_presets(br#"{"presets": 258}"#).unwrap().bits(), 258);
+		for bytes in [
+			br#"{"presets":null}"#.as_slice(),
+			b"",
+			b"{}",
+			b"not json",
+			br#"{"presets":-1}"#,
+			br#"{"presets":4294967296}"#,
+			br#"{"presets":2} trailing"#,
+			&[b' '; 129],
+		] {
+			assert_eq!(decode_presets(bytes), None);
+		}
+	}
+
+	#[test]
+	fn explicit_test_preserves_the_requested_preset_and_collapsing_retires_discovery() {
+		let mut ui = settings();
+		ui.video_capabilities = Some(initial_report());
+		ui.video_encoder_tests_request = Some(VideoCodec::Av1);
+		ui.video_encoder_tests_preset = Some(EncoderPreset::AmfQuality);
+		ui.video_settings.quality = EncoderPreset::Automatic;
+		let ctx = eframe::egui::Context::default();
+		let mut detector = Detector::default();
+		detector.poll_with(false, &mut ui, &ctx, |operation, _, _, _| {
+			assert_eq!(
+				operation,
+				Operation::Test(VideoCodec::Av1, EncoderPreset::AmfQuality)
+			);
+			None
+		});
+		ui.video_encoding_advanced_visible = false;
+		ui.video_capabilities_refresh = true;
+		detector.poll_with(false, &mut ui, &ctx, |_, _, _, _| panic!("collapsed"));
+		assert!(!ui.video_capabilities_refresh);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn helper_report_read_does_not_wait_for_inherited_pipe_handles() {
+		let mut command = Command::new("/bin/sh");
+		command.args(["-c", "(sleep 0.5) & exit 0"]);
+		let now = Instant::now();
+		assert_eq!(
+			wait_for_helper(
+				&mut command,
+				&AtomicBool::new(false),
+				Duration::from_secs(2),
+				&mut None
+			),
+			Exit::Code(Some(0))
+		);
+		assert!(now.elapsed() < Duration::from_millis(400));
+	}
+
 	#[cfg(unix)]
 	#[test]
 	fn helper_deadline_and_cancellation_kill_and_reap_processes() {
@@ -857,7 +1083,7 @@ mod tests {
 		let mut command = Command::new("/bin/sh");
 		command.args(["-c", "exec sleep 60"]);
 		assert_eq!(
-			wait_for_helper(&mut command, &stop, Duration::from_millis(40)),
+			wait_for_helper(&mut command, &stop, Duration::from_millis(40), &mut None),
 			Exit::TimedOut
 		);
 		assert!(started.elapsed() < Duration::from_secs(2));
@@ -868,7 +1094,7 @@ mod tests {
 			worker_stop.store(true, Ordering::Release);
 		});
 		assert_eq!(
-			wait_for_helper(&mut command, &stop, Duration::from_secs(3)),
+			wait_for_helper(&mut command, &stop, Duration::from_secs(3), &mut None),
 			Exit::Failed
 		);
 		worker.join().unwrap();

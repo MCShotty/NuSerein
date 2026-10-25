@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compare bounded offline reducer workloads; never launch the desktop or contact Discord."""
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -74,6 +75,12 @@ def sample(binary, args, cwd, env):
     return float(match[1]) * {'ns': .000001, 'µs': .001, 'ms': 1, 's': 1000}[match[2]]
 
 
+def binary_provenance(binary):
+    with binary.open('rb') as stream:
+        return dict(bytes=binary.stat().st_size,
+                    sha256=hashlib.file_digest(stream, 'sha256').hexdigest())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fork-base', required=True)
@@ -125,6 +132,8 @@ def main():
                 build_env = dict(env, CARGO_TARGET_DIR=str(target))
                 command(['cargo', '+1.98.1', 'build', '--release', '--locked', '-p', 'replay-bench'], source, build_env)
                 binaries[label] = target / 'release' / ('replay-bench.exe' if os.name == 'nt' else 'replay-bench')
+            result['binary_provenance'] = {label: binary_provenance(binary)
+                                           for label, binary in binaries.items()}
             result['sampling_affinity'] = pin_sampling()
             for name, switches in [('reducer', []), ('wide_channels', ['--wide-channels'])]:
                 values = {label: [] for label in binaries}

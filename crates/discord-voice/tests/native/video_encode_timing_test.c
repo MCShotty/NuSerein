@@ -108,6 +108,65 @@ static void check_presets(void)
     }
 }
 
+static void check_bandwidth_and_selected_presets(void)
+{
+    const char *names[][3] = {{"h264_nvenc", "hevc_nvenc", "av1_nvenc"},
+        {"h264_amf", "hevc_amf", "av1_amf"}, {"h264_qsv", "hevc_qsv", "av1_qsv"}};
+    const int backends[] = {1, 3, 4};
+    static const SereinVideoAdapter adapter = {0};
+    bound_adapter = &adapter;
+    mock_open = 1;
+    for (int vendor = 0; vendor < 3; ++vendor) {
+        const int backend = backends[vendor];
+        const char *option = backend == 3 ? "quality" : "preset";
+        for (int kind = 0; kind < 3; ++kind) {
+            const AVCodec *implementation = avcodec_find_encoder_by_name(names[vendor][kind]);
+            if (!implementation) continue;
+            for (int preset = 1; preset <= 18; ++preset) {
+                const char *name = serein_video_preset_name(backend, preset);
+                AVCodecContext *context = avcodec_alloc_context3(implementation);
+                assert(context);
+                const AVOption *choice = name ? av_opt_find(context->priv_data, name, option, 0, 0) : NULL;
+                if (choice) {
+                    SereinAvc selected = {.codec = context, .kind = kind, .preset = preset};
+                    assert(configure_backend(&selected, backend));
+                    int64_t actual = 0;
+                    assert(av_opt_get_int(context->priv_data, option, 0, &actual) == 0);
+                    assert(actual == choice->default_val.i64);
+                }
+                avcodec_free_context(&context);
+            }
+            // Production opening preserves independent min/average/peak at all
+            // three codec paths. Driver loading is replaced by fixture_open.
+            for (int profile = 0; profile < 3; ++profile) {
+                const int average[] = {3000000, 6000000, 16000000};
+                const int maximum[] = {4000000, 8000000, 16000000};
+                opens = frees = bindings = reject_all = 0;
+                void *handle = serein_avc_open_on_adapter(1920, 1080, 60,
+                    average[profile], 200000, maximum[profile], 0, 0,
+                    backend, kind, 2 * 1024 * 1024, &adapter, 0);
+                assert(handle && opens == 1);
+                const AVCodecContext *codec = ((SereinAvc *)handle)->codec;
+                assert(codec->bit_rate == average[profile]);
+                assert(codec->rc_min_rate == 200000 && codec->rc_max_rate == maximum[profile]);
+                assert(codec->rc_buffer_size == maximum[profile]);
+                serein_avc_close(handle);
+                assert(opens == frees);
+            }
+            opens = 0;
+            assert(!serein_avc_open_on_adapter(1920, 1080, 60, 6000000, 7000000,
+                8000000, 0, 0, backend, kind, 4096, &adapter, 0));
+            assert(!serein_avc_open_on_adapter(1920, 1080, 60, 6000000, 200000,
+                50000001, 0, 0, backend, kind, 4096, &adapter, 0));
+            const int wrong_vendor = backend == 1 ? 8 : 1;
+            assert(!serein_avc_open_on_adapter(1920, 1080, 60, 6000000, 200000,
+                8000000, wrong_vendor, 0, backend, kind, 4096, &adapter, 0));
+            assert(opens == 0); // rejected before opening native encoder
+        }
+    }
+    mock_open = 0;
+}
+
 static void check_amf_acceptance(void)
 {
     assert(serein_avc_amf_split(NULL) == 0);
@@ -229,7 +288,7 @@ static void check_splitting(void)
         if (!avcodec_find_encoder_by_name(name))
             continue;
         opens = frees = bindings = reject_all = 0;
-        void *encoder = serein_avc_open_on_adapter(2560, 1440, 30, 8000000, 0,
+        void *encoder = serein_avc_open_on_adapter(2560, 1440, 30, 8000000, 8000000, 8000000, 0, 0,
                                                   backend, 1, 4096, &adapter, 2);
         assert(encoder && opens == 2 && frees == 1 && bindings == 2);
         assert(((SereinAvc *)encoder)->features == 2 && !((SereinAvc *)encoder)->split_requested);
@@ -237,11 +296,11 @@ static void check_splitting(void)
         assert(frees == 2);
         reject_all = 1;
         opens = frees = bindings = 0;
-        assert(!serein_avc_open_on_adapter(2560, 1440, 30, 8000000, 0,
+        assert(!serein_avc_open_on_adapter(2560, 1440, 30, 8000000, 8000000, 8000000, 0, 0,
                                            backend, 1, 4096, &adapter, 2));
         assert(opens == 2 && frees == 2 && bindings == 2);
         opens = frees = bindings = 0;
-        assert(!serein_avc_open_on_adapter(1920, 1080, 30, 8000000, 0,
+        assert(!serein_avc_open_on_adapter(1920, 1080, 30, 8000000, 8000000, 8000000, 0, 0,
                                            backend, 1, 4096, &adapter, 2));
         assert(opens == 1 && frees == 1 && bindings == 1);
     }
@@ -272,7 +331,7 @@ static void check_ten_bit_input(void)
     }
     assert(offset == sizeof(pixels));
     av_frame_free(&frame);
-    assert(!serein_avc_open_on_adapter(16, 8, 30, 100000, 0, 0, 0, 4096, NULL, 4));
+    assert(!serein_avc_open_on_adapter(16, 8, 30, 100000, 100000, 100000, 0, 0, 0, 0, 4096, NULL, 4));
 }
 
 /* A receive-only poll must not upload another picture, advance its PTS or
@@ -281,7 +340,7 @@ static void check_receive_only(void)
 {
     uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
     submitted = emitted = never_output = 0;
-    void *encoder = serein_avc_open(64, 64, 30, 100000, 0, 0, 0, sizeof(output));
+    void *encoder = serein_avc_open(64, 64, 30, 100000, 100000, 100000, 0, 0, 0, 0, sizeof(output));
     assert(encoder);
     size_t bytes;
     int keyframe;
@@ -340,6 +399,7 @@ static void check_surface_identity(void)
 int main(void)
 {
     check_presets();
+    check_bandwidth_and_selected_presets();
     check_amf_acceptance();
     check_splitting();
     check_ten_bit_input();
@@ -350,11 +410,11 @@ int main(void)
     assert(host && !serein_avc_surface_context(host));
     serein_avc_surface_context_free(NULL);
     av_frame_free(&host);
-    assert(!serein_avc_open_on_surface(64, 64, 30, 100000, 0, 0, 0, 4096, NULL, 0, NULL));
+    assert(!serein_avc_open_on_surface(64, 64, 30, 100000, 100000, 100000, 0, 0, 0, 0, 4096, NULL, 0, NULL));
     uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
     SereinVideoAdapter unknown = {0};
     /* A supplied unidentified renderer must still permit software fallback. */
-    void *encoder = serein_avc_open_on_adapter(64, 64, 30, 100000, 0, 0, 0, sizeof(output), &unknown, 0);
+    void *encoder = serein_avc_open_on_adapter(64, 64, 30, 100000, 100000, 100000, 0, 0, 0, 0, sizeof(output), &unknown, 0);
     assert(encoder);
     for (int index = 0; index < 20; index++) {
         size_t bytes = 99;
@@ -371,7 +431,7 @@ int main(void)
     serein_avc_close(encoder);
     submitted = emitted = 0;
     never_output = 1;
-    encoder = serein_avc_open(64, 64, 30, 100000, 0, 0, 0, sizeof(output));
+    encoder = serein_avc_open(64, 64, 30, 100000, 100000, 100000, 0, 0, 0, 0, sizeof(output));
     assert(encoder);
     for (int index = 0; index <= 48; index++) {
         size_t bytes = 99;
@@ -383,7 +443,7 @@ int main(void)
     }
     assert(submitted == 48);
     serein_avc_close(encoder);
-    assert(!serein_avc_open_on_adapter(64, 64, 30, 100000, 0, 1, 0, sizeof(output), NULL, 1));
+    assert(!serein_avc_open_on_adapter(64, 64, 30, 100000, 100000, 100000, 0, 0, 1, 0, sizeof(output), NULL, 1));
     puts("Presets, AMF split acceptance ABI, NVENC/QSV 1440p and AMF 4K split policy, preserved AMF PA/quality, same-GPU retry/cleanup, surface-context identity, receive-only delayed PTS and 48-picture bound passed");
     return 0;
 }

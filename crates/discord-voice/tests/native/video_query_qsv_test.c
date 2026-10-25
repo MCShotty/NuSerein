@@ -12,21 +12,24 @@
 #endif
 int main(void)
 {
-    assert(serein_qsv_quality_matches(0, 1, 0, 0, MFX_CODINGOPTION_OFF, 0, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(0, 0, 0, 0, 0, 0, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(0, 3, 0, 0, 0, 0, MFX_RATECONTROL_CBR));
-    assert(serein_qsv_quality_matches(2, 3, 0, 0, 0, 0, MFX_RATECONTROL_CBR));
-    assert(serein_qsv_quality_matches(2, 2, 0, 0, 0, 0, MFX_RATECONTROL_CBR));
-    assert(serein_qsv_quality_matches(2, 1, 0, 0, 0, 0, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(2, 0, 0, 0, 0, 0, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(2, 4, 0, 0, 0, 0, MFX_RATECONTROL_CBR));
-    assert(serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR));
-    assert(serein_qsv_quality_matches(0, 1, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_OFF, 16, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 0, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 15, MFX_RATECONTROL_CBR));
-    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_VBR));
-    assert(!serein_qsv_quality_matches(2, 3, 16, 0, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR));
+    assert(serein_qsv_quality_matches(0, 1, 0, 0, MFX_CODINGOPTION_OFF, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(0, 0, 0, 0, 0, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(0, 3, 0, 0, 0, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(serein_qsv_quality_matches(2, 3, 0, 0, 0, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(serein_qsv_quality_matches(2, 2, 0, 0, 0, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(serein_qsv_quality_matches(2, 1, 0, 0, 0, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(2, 0, 0, 0, 0, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(2, 4, 0, 0, 0, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(serein_qsv_quality_matches(0, 1, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_OFF, 16, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 0, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 15, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(2, 3, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_VBR, MFX_RATECONTROL_CBR));
+    assert(!serein_qsv_quality_matches(2, 3, 16, 0, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR, MFX_RATECONTROL_CBR));
+    assert(serein_qsv_quality_matches(0, 1, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_VBR, MFX_RATECONTROL_VBR));
+    assert(!serein_qsv_quality_matches(0, 1, 16, 1, MFX_CODINGOPTION_ON, 16, MFX_RATECONTROL_CBR, MFX_RATECONTROL_VBR));
+    assert(!serein_qsv_quality_matches(0, 1, 0, 0, 0, 0, MFX_RATECONTROL_CQP, MFX_RATECONTROL_VBR));
     assert(serein_qsv_tiles_match(0, 0));
     assert(serein_qsv_tiles_match(1, 1));
     assert(!serein_qsv_tiles_match(1, 2));
@@ -35,7 +38,7 @@ int main(void)
     assert(!serein_qsv_tiles_match(2, 0));
     assert(!serein_qsv_tiles_match(2, 3));
     assert(!serein_qsv_tiles_match(2, 4));
-    puts("QSV quality: reordering/lookahead/CBR checks and bounded negotiated tile columns passed");
+    puts("QSV quality: reordering/lookahead/CBR/VBR checks and bounded negotiated tile columns passed");
 }
 
 #elif !defined(SEREIN_QSV_QUALITY_FIXTURE)
@@ -53,7 +56,7 @@ int main(void)
 #endif
 
 static const char *mode;
-static int releases, unloads, enumerations, filters, forbidden;
+static int releases, unloads, enumerations, filters, forbidden, sessions, queries, closes, preset_mode;
 static mfxImplDescription description;
 static struct encoder encoder;
 static struct encprofile profile;
@@ -131,9 +134,21 @@ mfxStatus MFX_CDECL MFXDispReleaseImplDescription(mfxLoader loader, mfxHDL handl
     return !strcmp(mode, "release-error") ? MFX_ERR_UNKNOWN : MFX_ERR_NONE;
 }
 mfxStatus MFX_CDECL MFXCreateSession(mfxLoader loader, mfxU32 index, mfxSession *session) {
-    (void)loader; (void)index; (void)session;
-    forbidden++;
-    return MFX_ERR_UNSUPPORTED;
+    assert(loader); (void)index;
+    if (!preset_mode) { forbidden++; return MFX_ERR_UNSUPPORTED; }
+    *session = (mfxSession)(uintptr_t)1;
+    sessions++;
+    return MFX_ERR_NONE;
+}
+mfxStatus MFX_CDECL MFXClose(mfxSession session) { assert(session); closes++; return MFX_ERR_NONE; }
+mfxStatus MFX_CDECL MFXVideoENCODE_Query(mfxSession session, mfxVideoParam *input, mfxVideoParam *output) {
+    assert(session && preset_mode && input && output);
+    assert(input->mfx.RateControlMethod == MFX_RATECONTROL_VBR);
+    queries++;
+    *output = *input;
+    if (input->mfx.TargetUsage == 2) return MFX_ERR_UNSUPPORTED;
+    if (input->mfx.TargetUsage == 3) { output->mfx.TargetUsage = 4; return MFX_WRN_INCOMPATIBLE_VIDEO_PARAM; }
+    return MFX_ERR_NONE;
 }
 mfxStatus MFX_CDECL MFXVideoENCODE_Init(mfxSession session, mfxVideoParam *params) {
     (void)session; (void)params;
@@ -198,6 +213,11 @@ int main(void) {
     target.identity = SEREIN_GPU_UNIDENTIFIED;
     assert(serein_query_qsv_on_adapter(2, &target) == -1);
     assert(forbidden == 0);
+    mode = "scoped"; target.identity = SEREIN_GPU_PCI; target.bus = 2; preset_mode = 1;
+    sessions = queries = closes = 0;
+    const int supported_presets = serein_query_qsv_on_adapter(8, &target);
+    assert(supported_presets == ((1 << 12) | (1 << 15) | (1 << 16) | (1 << 17) | (1 << 18)));
+    assert(sessions == 1 && queries == 7 && closes == 1 && forbidden == 0);
     printf("QSV query: %zu offline dispatcher-boundary cases passed, descriptions/loaders released, no encoding calls\n", sizeof(cases)/sizeof(cases[0]));
 }
 

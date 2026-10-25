@@ -4,7 +4,7 @@
 
 #[cfg(test)]
 use model::voice_settings::VideoResolution;
-use model::voice_settings::{HardwareBackend, VideoCodec};
+use model::voice_settings::{EncoderPreset, HardwareBackend, VideoBitrate, VideoCodec};
 use std::{collections::VecDeque, ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
 
 pub(crate) const MAX_PENDING_PICTURES: usize = 48;
@@ -14,6 +14,9 @@ pub(crate) struct EncodedPacket {
 	pub keyframe: bool,
 	pub timestamp: u32,
 	pub epoch: u64,
+	/// This call accepted an input for eventual output. False for output-only
+	/// polling or a dropped picture; output may belong to an earlier input.
+	pub input_accepted: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -21,7 +24,8 @@ pub(crate) struct Config {
 	pub width: u32,
 	pub height: u32,
 	pub fps: u32,
-	pub bit_rate: u32,
+	pub rates: VideoBitrate,
+	pub preset: EncoderPreset,
 	pub max_bytes: usize,
 	pub profile: Profile,
 	pub codec: VideoCodec,
@@ -50,7 +54,7 @@ impl Config {
 			|| !self.width.is_multiple_of(2)
 			|| !self.height.is_multiple_of(2)
 			|| !(1..=60).contains(&self.fps)
-			|| !(1_000..=50_000_000).contains(&self.bit_rate)
+			|| !self.rates.is_valid()
 			|| self.max_bytes == 0
 			|| self.max_bytes > 2 * 1024 * 1024
 		{
@@ -99,6 +103,19 @@ fn probe_backend(backend: HardwareBackend, _codec: VideoCodec) -> Option<Backend
 		#[cfg(target_os = "macos")]
 		HardwareBackend::VideoToolbox if _codec != VideoCodec::Av1 => Some(Backend::VideoToolbox),
 		_ => None,
+	}
+}
+
+fn backend_preset(backend: Backend, preset: EncoderPreset) -> EncoderPreset {
+	// H.264 maps every platform backend. Preset IDs belong to one vendor;
+	// settings saved for another GPU must not disable this encoder.
+	let owner = preset
+		.backend()
+		.and_then(|owner| probe_backend(owner, VideoCodec::H264));
+	if owner == Some(backend) {
+		preset
+	} else {
+		EncoderPreset::Automatic
 	}
 }
 
@@ -199,6 +216,9 @@ unsafe extern "C" {
 		height: i32,
 		fps: i32,
 		bitrate: i32,
+		minimum: i32,
+		maximum: i32,
+		preset: i32,
 		baseline: i32,
 		backend: i32,
 		codec: i32,
@@ -214,6 +234,9 @@ unsafe extern "C" {
 		height: i32,
 		fps: i32,
 		bitrate: i32,
+		minimum: i32,
+		maximum: i32,
+		preset: i32,
 		baseline: i32,
 		backend: i32,
 		codec: i32,
@@ -334,6 +357,13 @@ impl Encoder {
 		config: Config,
 		backend: HardwareBackend,
 	) -> Result<Self, &'static str> {
+		if config
+			.preset
+			.backend()
+			.is_some_and(|owner| owner != backend)
+		{
+			return Err("Selected quality preset belongs to another encoder");
+		}
 		let backend = probe_backend(backend, config.codec)
 			.ok_or("FFmpeg hardware backend is unavailable on this platform")?;
 		Self::open(config, backend)
@@ -444,7 +474,7 @@ impl Encoder {
 	}
 
 	fn open_after_features_surface(
-		config: Config,
+		mut config: Config,
 		backend: Backend,
 		after: Option<i32>,
 		surface: Option<Rc<SurfaceContext>>,
@@ -456,6 +486,7 @@ impl Encoder {
 		if backend == Backend::Software && config.codec != VideoCodec::H264 {
 			return Err("FFmpeg H.265/AV1 software encoding is not bundled");
 		}
+		config.preset = backend_preset(backend, config.preset);
 		// SAFETY: All scalar bounds are checked above; the returned allocation is uniquely
 		// owned here and is never sent across workers. A failed open returns null.
 		let adapter = config.adapter.map(crate::video_gpu::Adapter::from);
@@ -484,7 +515,10 @@ impl Encoder {
 						config.width as i32,
 						config.height as i32,
 						config.fps as i32,
-						config.bit_rate as i32,
+						config.rates.average as i32,
+						config.rates.minimum as i32,
+						config.rates.maximum as i32,
+						config.preset as i32,
 						i32::from(config.profile == Profile::Baseline),
 						backend as i32,
 						codec,
@@ -498,7 +532,10 @@ impl Encoder {
 						config.width as i32,
 						config.height as i32,
 						config.fps as i32,
-						config.bit_rate as i32,
+						config.rates.average as i32,
+						config.rates.minimum as i32,
+						config.rates.maximum as i32,
+						config.preset as i32,
 						i32::from(config.profile == Profile::Baseline),
 						backend as i32,
 						codec,
@@ -677,7 +714,13 @@ impl Encoder {
 		}
 		self.timeline.push_back((self.next_input, timestamp));
 		self.next_input += 1;
-		self.finish_packet(result, length, keyframe, presentation_index, timestamp)
+		self.finish_packet(
+			result,
+			length,
+			keyframe,
+			presentation_index,
+			Some(timestamp),
+		)
 	}
 
 	/// Poll asynchronous output without submitting, uploading or timestamping
@@ -706,7 +749,7 @@ impl Encoder {
 		if result < 0 {
 			return Err("FFmpeg output polling failed");
 		}
-		let packet = self.finish_packet(result, length, keyframe, presentation_index, 0)?;
+		let packet = self.finish_packet(result, length, keyframe, presentation_index, None)?;
 		Ok((!packet.data.is_empty()).then_some(packet))
 	}
 
@@ -763,7 +806,13 @@ impl Encoder {
 		}
 		self.timeline.push_back((self.next_input, timestamp));
 		self.next_input += 1;
-		self.finish_packet(result, length, keyframe, presentation_index, timestamp)
+		self.finish_packet(
+			result,
+			length,
+			keyframe,
+			presentation_index,
+			Some(timestamp),
+		)
 	}
 
 	fn finish_packet(
@@ -772,14 +821,15 @@ impl Encoder {
 		length: usize,
 		keyframe: i32,
 		presentation_index: i64,
-		timestamp: u32,
+		input_timestamp: Option<u32>,
 	) -> Result<EncodedPacket, &'static str> {
 		if result == 0 {
 			return Ok(EncodedPacket {
 				data: Vec::new(),
 				keyframe: false,
-				timestamp,
+				timestamp: input_timestamp.unwrap_or(0),
 				epoch: self.epoch,
+				input_accepted: input_timestamp.is_some(),
 			});
 		}
 		if result != 1 || length == 0 || length > self.config.max_bytes {
@@ -802,6 +852,7 @@ impl Encoder {
 			keyframe,
 			timestamp,
 			epoch: self.epoch,
+			input_accepted: input_timestamp.is_some(),
 		})
 	}
 }
@@ -813,13 +864,38 @@ mod tests {
 		width: 640,
 		height: 480,
 		fps: 15,
-		bit_rate: 600_000,
+		rates: VideoBitrate::fixed(600_000),
+		preset: EncoderPreset::Automatic,
 		max_bytes: 128 * 1024,
 		profile: Profile::Baseline,
 		codec: VideoCodec::H264,
 		adapter: None,
 		hdr: None,
 	};
+	#[test]
+	fn delayed_ffmpeg_output_reports_input_acceptance_separately_from_polling() {
+		let mut encoder = Encoder::software(CAMERA).unwrap();
+		let picture = vec![128; CAMERA.picture_bytes().unwrap()];
+		let first = encoder.encode_at(&picture, true, 3000).unwrap();
+		assert!(first.input_accepted && !first.data.is_empty());
+		assert!(encoder.timeline.is_empty());
+		let timestamp = u32::MAX - 42;
+		// Model a deferred native result using the actual output validator and a
+		// real encoded picture. Polling must preserve the original timestamp and
+		// never claim that its dummy zero timestamp was a new input.
+		encoder.timeline.push_back((1, timestamp));
+		let delayed = encoder.finish_packet(0, 0, 0, -1, Some(timestamp)).unwrap();
+		assert!(delayed.input_accepted && delayed.data.is_empty() && encoder.pending());
+		let pending = encoder.finish_packet(0, 0, 0, -1, None).unwrap();
+		assert!(!pending.input_accepted && pending.data.is_empty() && encoder.pending());
+		let received = encoder
+			.finish_packet(1, first.data.len(), 1, 1, None)
+			.unwrap();
+		assert!(!received.input_accepted && !encoder.pending());
+		assert_eq!(received.timestamp, timestamp);
+		assert_eq!(received.data, first.data);
+	}
+
 	#[test]
 	fn rendering_adapter_excludes_other_vendors_and_unknown_hardware() {
 		for backend in BACKENDS {
@@ -908,6 +984,48 @@ mod tests {
 			frame.keyframe
 				&& crate::video::has_parameter_sets_for_codec(&frame.data, VideoCodec::H264)
 		);
+	}
+
+	#[test]
+	fn saved_presets_follow_the_active_backend_and_explicit_probes_stay_exact() {
+		for backend in BACKENDS {
+			for preset in EncoderPreset::ALL {
+				let expected = match (*backend as i32, preset as i32) {
+					(1, 1..=7) | (3, 8..=11) | (4, 12..=18) => preset,
+					_ => EncoderPreset::Automatic,
+				};
+				assert_eq!(backend_preset(*backend, preset), expected);
+			}
+		}
+		for backend in HardwareBackend::ALL {
+			for preset in EncoderPreset::ALL {
+				if preset.backend().is_some_and(|owner| owner != backend) {
+					let error = Encoder::hardware_only(Config { preset, ..CAMERA }, backend)
+						.err()
+						.expect("An explicit probe cannot substitute Automatic");
+					assert_eq!(error, "Selected quality preset belongs to another encoder");
+				}
+			}
+		}
+		// Use the production fallback/open/encode/reconfigure path without GPU
+		// discovery. A saved hardware preset becomes the software default.
+		for preset in EncoderPreset::ALL {
+			let config = Config {
+				preset,
+				adapter: Some(model::VideoAdapter::default()),
+				..CAMERA
+			};
+			let mut encoder = Encoder::new(config).unwrap();
+			assert!(!encoder.hardware());
+			assert_eq!(encoder.config.preset, EncoderPreset::Automatic);
+			let picture = vec![128; config.picture_bytes().unwrap()];
+			let first = encoder.encode_at(&picture, false, 3000).unwrap();
+			assert!(first.keyframe && !first.data.is_empty());
+			encoder.reconfigure(config).unwrap();
+			let next = encoder.encode_at(&picture, false, 6000).unwrap();
+			assert!(next.keyframe && next.epoch > first.epoch);
+			assert_eq!(encoder.config.preset, EncoderPreset::Automatic);
+		}
 	}
 
 	#[test]
@@ -1044,7 +1162,8 @@ mod tests {
 		assert!(encoder.encode(&picture, true).unwrap().1);
 		encoder
 			.reconfigure(Config {
-				bit_rate: 450_000,
+				rates: VideoBitrate::fixed(450_000),
+				preset: EncoderPreset::Automatic,
 				..CAMERA
 			})
 			.unwrap();
@@ -1156,7 +1275,8 @@ mod tests {
 				..CAMERA
 			},
 			Config {
-				bit_rate: 50_000_001,
+				rates: VideoBitrate::fixed(50_000_001),
+				preset: EncoderPreset::Automatic,
 				..CAMERA
 			},
 		] {
@@ -1170,7 +1290,8 @@ mod tests {
 		let config = Config {
 			width: 2560,
 			height: 1440,
-			bit_rate: 12_000_000,
+			rates: VideoBitrate::fixed(12_000_000),
+			preset: EncoderPreset::Automatic,
 			max_bytes: 2 * 1024 * 1024,
 			profile: Profile::Main,
 			..CAMERA

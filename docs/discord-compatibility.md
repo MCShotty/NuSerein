@@ -1178,7 +1178,7 @@ and Linux (V4L2), alongside macOS (AVFoundation). Both new adapters feed the exi
 H264 negotiation, opcode 12 video announcement, DAVE encryption and bounded RTP
 sender. These normal-user video extensions remain unofficial and live-unverified.
 The button requires a connected call, channel video permission and the negotiated
-outgoing codec (H.264 for Stable);
+outgoing codec;
 capture requires an explicit click. No camera opens in the synthetic demo.
 September 13: Windows settings and call controls now enumerate/select cameras,
 including DirectShow-only virtual sources. A read-only native enumeration test
@@ -1317,9 +1317,9 @@ The standard build adds macOS 14+ ScreenCaptureKit and Windows Graphics Capture 
 
 Linux extension (September 15, 2026): the existing H.264/DAVE sender now accepts
 portal-approved PipeWire screen/window capture. It uses the system picker and an ephemeral
-portal session. Experimental camera/screen encoding uses native FFmpeg with
-NVENC/AMD AMF/Intel Quick Sync and H.264 OpenH264 fallback. Stable uses
-the original platform encoders. Experimental excludes Media Foundation and VA-API
+portal session. Camera/screen encoding uses native FFmpeg with
+NVENC/AMD AMF/Intel Quick Sync and H.264 OpenH264 fallback. The former
+platform encoders are removed. FFmpeg excludes Media Foundation and VA-API
 encoders. Quick Sync on Linux uses the iHD
 VA driver interface for its device. These hardware paths and actual runtime
 availability remain unverified locally. The pipeline has one source
@@ -1335,7 +1335,7 @@ failure flag. Portal responses are admitted at ≤64 KiB; signal queues hold one
 and the connection queue holds two, with zbus's separate 128-MiB wire-message ceiling.
 Cancellation is checked during portal waits every 50 ms and media waits within 100 ms;
 native driver startup/shutdown can still block, retaining the existing retirement barrier.
-One PipeWire remote remains under the approved session across FFmpeg backend or
+One PipeWire remote remains under the approved session across FFmpeg encoder or
 bitrate changes. Raw BGRA CPU conversion/cropping/scaling precedes encoding;
 source buffers and each current conversion stage can additionally retain a
 132,710,400-byte source picture. The worker retains one latest validated raw
@@ -1345,8 +1345,8 @@ Native X11 now offers an explicitly selected whole-desktop source through GStrea
 `ximagesrc`, reusing the bounded encoder/preview pipeline without a portal. It requires
 GStreamer Good and never activates after portal cancellation or failure. Individual
 X11 window selection and native/live validation remain outstanding. H.265/AV1
-sending requires Experimental, compatible hardware and explicit codec negotiation;
-Stable supports H.264.
+sending requires compatible hardware and explicit codec negotiation;
+H.264 retains software fallback.
 The offline debug example does not establish native Linux capture, hardware acceleration,
 measured performance, packaging or live Discord interoperability.
 

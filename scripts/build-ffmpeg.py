@@ -82,14 +82,18 @@ QSV_FEATURE_VALIDATION = """/* Serein's negotiated quality contract; no frame su
 #define SEREIN_QSV_FEATURE_VALIDATION_H
 static int serein_qsv_quality_matches(int requested_b, unsigned int reference_distance,
     int requested_depth, int requested_extbrc, unsigned int driver_extbrc,
-    unsigned int driver_depth, unsigned int driver_rate_control)
+    unsigned int driver_depth, unsigned int driver_rate_control, unsigned int requested_rate_control)
 {
+    if ((requested_rate_control == MFX_RATECONTROL_CBR || requested_rate_control == MFX_RATECONTROL_VBR) &&
+        driver_rate_control != requested_rate_control)
+        return 0;
     if (requested_b == 0 && reference_distance != 1)
         return 0;
     if (requested_b > 0 && (!reference_distance || reference_distance > (unsigned int)requested_b + 1))
         return 0;
     if (requested_depth > 0 && (requested_extbrc <= 0 || driver_extbrc != MFX_CODINGOPTION_ON ||
-        driver_depth != (unsigned int)requested_depth || driver_rate_control != MFX_RATECONTROL_CBR))
+        driver_depth != (unsigned int)requested_depth ||
+        (driver_rate_control != MFX_RATECONTROL_CBR && driver_rate_control != MFX_RATECONTROL_VBR)))
         return 0;
     return 1;
 }
@@ -357,7 +361,9 @@ def hardware_options(system, backends):
 def patch_ffmpeg(tree):
     patches = []
     originals = {}
-    replacements = [("libavcodec/libavcodec.v", "LIBAVCODEC_MAJOR", "SEREIN_LIBAVCODEC_MAJOR"),
+    replacements = [("libavcodec/qsvenc.h", "    int look_ahead_depth;\n", "    int look_ahead_depth;\n    int serein_requested_rate_control;\n"),
+                    ("libavcodec/qsvenc.c", "    q->param.mfx.RateControlMethod = rc_mode;\n", "    q->param.mfx.RateControlMethod = rc_mode;\n    q->serein_requested_rate_control = rc_mode;\n"),
+                    ("libavcodec/libavcodec.v", "LIBAVCODEC_MAJOR", "SEREIN_LIBAVCODEC_MAJOR"),
                     ("libavutil/libavutil.v", "LIBAVUTIL_MAJOR", "SEREIN_LIBAVUTIL_MAJOR"),
                     ("libavformat/libavformat.v", "LIBAVFORMAT_MAJOR", "SEREIN_LIBAVFORMAT_MAJOR"),
                     ("libswscale/libswscale.v", "LIBSWSCALE_MAJOR", "SEREIN_LIBSWSCALE_MAJOR"),
@@ -530,7 +536,8 @@ def patch_ffmpeg(tree):
          "     * Startup can retry conservative settings on this same physical adapter. */\n"
          "    if (!serein_qsv_quality_matches(avctx->max_b_frames, q->param.mfx.GopRefDist,\n"
          "        q->look_ahead_depth, q->extbrc, q->extco2.ExtBRC,\n"
-         "        q->extco2.LookAheadDepth, q->param.mfx.RateControlMethod))\n"
+         "        q->extco2.LookAheadDepth, q->param.mfx.RateControlMethod, q->serein_requested_rate_control) ||\n"
+         "        q->preset != q->param.mfx.TargetUsage)\n"
          "        return AVERROR(ENOSYS);\n"
          "    if (q->param.mfx.GopRefDist > 0)\n"
          "        avctx->max_b_frames = q->param.mfx.GopRefDist - 1;\n\n"
@@ -538,7 +545,8 @@ def patch_ffmpeg(tree):
         ("libavcodec/qsvenc.c", "    q->packet_size = q->param.mfx.BufferSizeInKB * q->param.mfx.BRCParamMultiplier * 1000;\n    dump_video_av1_param(avctx, q, ext_buffers);\n",
          "    if (!serein_qsv_quality_matches(avctx->max_b_frames, q->param.mfx.GopRefDist,\n"
          "        q->look_ahead_depth, q->extbrc, co2.ExtBRC,\n"
-         "        co2.LookAheadDepth, q->param.mfx.RateControlMethod))\n"
+         "        co2.LookAheadDepth, q->param.mfx.RateControlMethod, q->serein_requested_rate_control) ||\n"
+         "        q->preset != q->param.mfx.TargetUsage)\n"
          "        return AVERROR(ENOSYS);\n"
          "    if (q->param.mfx.GopRefDist > 0)\n"
          "        avctx->max_b_frames = q->param.mfx.GopRefDist - 1;\n"
@@ -546,7 +554,8 @@ def patch_ffmpeg(tree):
         ("libavcodec/qsvenc.c", "    if (!extradata.SPSBufSize || (need_pps && !extradata.PPSBufSize)\n",
          "    if (!serein_qsv_quality_matches(avctx->max_b_frames, q->param.mfx.GopRefDist,\n"
          "        q->look_ahead_depth, q->extbrc, co2.ExtBRC,\n"
-         "        co2.LookAheadDepth, q->param.mfx.RateControlMethod))\n"
+         "        co2.LookAheadDepth, q->param.mfx.RateControlMethod, q->serein_requested_rate_control) ||\n"
+         "        q->preset != q->param.mfx.TargetUsage)\n"
          "        return AVERROR(ENOSYS);\n"
          "    if (q->param.mfx.GopRefDist > 0)\n"
          "        avctx->max_b_frames = q->param.mfx.GopRefDist - 1;\n\n"

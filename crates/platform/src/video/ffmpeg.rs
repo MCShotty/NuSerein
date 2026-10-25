@@ -287,6 +287,17 @@ pub fn query_ten_bit(backend: i32, codec: i32, adapter: VideoAdapter) -> i32 {
 	unsafe { serein_video_query_on_adapter(backend, codec + 3, &adapter) }
 }
 
+/// Named driver presets intersected with this build's FFmpeg options. No
+/// encoding/capture starts; None retains an inconclusive result.
+pub fn query_presets(backend: i32, codec: i32, adapter: VideoAdapter) -> Option<u32> {
+	if !(0..=2).contains(&codec) {
+		return None;
+	}
+	let adapter = Adapter::from(adapter);
+	// SAFETY: +6 requests a bounded preset bit mask for the same fixed-width GPU.
+	u32::try_from(unsafe { serein_video_query_on_adapter(backend, codec + 6, &adapter) }).ok()
+}
+
 #[cfg(target_os = "linux")]
 pub fn cuda_device(adapter: VideoAdapter) -> Option<u32> {
 	// SAFETY: The adapter remains alive for the bounded CUDA enumeration.

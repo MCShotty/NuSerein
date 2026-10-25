@@ -183,6 +183,7 @@ enum Decode {
 
 /// True when the cleartext Annex-B access unit carries both an SPS and a PPS, so a freshly
 /// created decoder can start from it.
+#[cfg(test)]
 pub(crate) fn has_parameter_sets(frame: &[u8]) -> bool {
 	let (mut sps, mut pps) = (false, false);
 	let mut at = 0;
@@ -206,6 +207,7 @@ pub(crate) fn has_parameter_sets(frame: &[u8]) -> bool {
 }
 
 /// True when the cleartext Annex-B access unit carries an IDR slice.
+#[cfg(test)]
 pub(crate) fn is_keyframe(frame: &[u8]) -> bool {
 	let mut at = 0;
 	while at + 4 <= frame.len() {

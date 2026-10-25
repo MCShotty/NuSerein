@@ -1,6 +1,34 @@
 /* Each variant remains a separately compiled offline fixture. */
 
-#if defined(SEREIN_AMF_SCOPED_FIXTURE)
+#if defined(SEREIN_AMF_PROPERTY_FIXTURE)
+/* Return a real C++ SDK property record: its virtual destructor means the C
+ * record has a different layout. The C ABI mock only forwards this pointer. */
+#include <AMF/core/PropertyStorageEx.h>
+#include <AMF/components/VideoEncoderVCE.h>
+#include <AMF/components/VideoEncoderHEVC.h>
+#include <AMF/components/VideoEncoderAV1.h>
+extern "C" const void *fixture_amf_property(int codec, int variant) {
+    static amf::AMFPropertyInfo info;
+    static amf::AMFEnumDescriptionEntry entries[32];
+    const int values[3][4] = {
+        {AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED, AMF_VIDEO_ENCODER_QUALITY_PRESET_BALANCED,
+         AMF_VIDEO_ENCODER_QUALITY_PRESET_QUALITY, AMF_VIDEO_ENCODER_QUALITY_PRESET_HIGH_QUALITY},
+        {AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED, AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_BALANCED,
+         AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_QUALITY, AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_HIGH_QUALITY},
+        {AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_BALANCED,
+         AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_QUALITY, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_HIGH_QUALITY}};
+    info.type = variant == 1 ? amf::AMF_VARIANT_BOOL : amf::AMF_VARIANT_INT64;
+    info.accessType = variant == 2 ? amf::AMF_PROPERTY_ACCESS_READ : amf::AMF_PROPERTY_ACCESS_FULL;
+    for (unsigned int i = 0; i < 32; ++i) {
+        entries[i].value = values[codec][i % 4];
+        entries[i].name = i < 4 || variant == 3 ? L"preset" : nullptr;
+    }
+    if (variant == 4) entries[0].name = nullptr;
+    info.pEnumDescription = variant == 5 ? nullptr : entries;
+    return &info;
+}
+
+#elif defined(SEREIN_AMF_SCOPED_FIXTURE)
 /* Exact AMD device handles cross the real scoped query ABI. No real loader,
  * driver, encoder initialization or frame submission occurs. */
 #include "video_encode_ffmpeg.h"
@@ -71,12 +99,23 @@ int main() {
     assert(serein_query_amf_on_adapter(4, &target) == -1);
     assert(serein_query_amf_on_adapter(3, &target) == 0);
     assert(unsetenv("SEREIN_HDR_FIXTURE") == 0);
+    const struct { const char *mode; int expected; } presets[] = {
+        {"scoped", 0xf00}, {"preset-error", -1}, {"preset-null", -1},
+        {"preset-bad-type", -1}, {"preset-read-only", -1}, {"preset-unbounded", -1},
+        {"preset-none", 0}, {"preset-no-enum", -1}, {"preset-rejected", 0}
+    };
+    for (const auto &test : presets) {
+        assert(setenv("AMF_MOCK_MODE", test.mode, 1) == 0);
+        for (int codec = 6; codec < 9; ++codec)
+            assert(serein_query_amf_on_adapter(codec, &target) == test.expected);
+    }
+    assert(setenv("AMF_MOCK_MODE", "scoped", 1) == 0);
     target.bus = 3;
     assert(serein_query_amf_on_adapter(2, &target) == -1);
     target.identity = SEREIN_GPU_UNIDENTIFIED;
     assert(serein_query_amf_on_adapter(2, &target) == -1);
     assert(devices == released);
-    assert(devices == 9);
+    assert(devices == 36);
 }
 
 #elif !defined(SEREIN_AMF_SCOPED_FIXTURE)

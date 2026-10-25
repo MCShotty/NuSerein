@@ -46,10 +46,7 @@ pub(crate) fn main() {
 			audio: false,
 		};
 		assert!(settings.valid());
-		assert_eq!(
-			settings.bit_rate(),
-			if fps == 60 { 4_000_000 } else { 2_000_000 }
-		);
+		assert_eq!(settings.bit_rate(), 600_000);
 	}
 	let (send, receive) = std::sync::mpsc::sync_channel(8);
 	let mut audio = stream_playout::Playout::default();

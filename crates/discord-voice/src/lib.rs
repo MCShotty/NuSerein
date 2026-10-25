@@ -16,7 +16,6 @@ mod stream_sync;
 mod timer;
 mod transport;
 mod video;
-mod video_backend;
 pub mod video_capabilities;
 mod video_encode;
 pub(crate) use platform::video::ffmpeg as video_gpu;

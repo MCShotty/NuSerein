@@ -171,7 +171,7 @@ impl Rate {
 			.limit
 			.filter(|(_, at)| now.duration_since(*at) < Duration::from_secs(5))
 			.map_or(self.maximum, |(limit, _)| limit.min(self.maximum))
-			.max(250_000.min(self.maximum));
+			.max(model::voice_settings::VideoBitrate::MINIMUM.min(self.maximum));
 		let mut target = self.target.min(ceiling);
 		// Fraction lost is /256. Reduce at >=5%, recover only below 2% for two seconds.
 		if loss.is_some_and(|loss| loss >= 13) {
@@ -186,7 +186,10 @@ impl Rate {
 				.saturating_add((target / 20).max(25_000))
 				.min(ceiling);
 		}
-		target = target.clamp(250_000.min(self.maximum), self.maximum);
+		target = target.clamp(
+			model::voice_settings::VideoBitrate::MINIMUM.min(self.maximum),
+			self.maximum,
+		);
 		if target == self.target {
 			return None;
 		}
@@ -236,14 +239,14 @@ mod rate_tests {
 	#[test]
 	fn repeated_loss_respects_the_encoder_floor_and_current_selection() {
 		let now = Instant::now();
-		for maximum in [250_000, 1_000_000, 50_000_000] {
+		for maximum in [200_000, 1_000_000, 50_000_000] {
 			let mut rate = Rate::new(maximum, now);
 			for seconds in 1..120 {
 				rate.observe(Some(u8::MAX), Some(1));
 				rate.tick(now + Duration::from_secs(seconds));
-				assert!((250_000..=maximum).contains(&rate.target));
+				assert!((200_000..=maximum).contains(&rate.target));
 			}
-			assert_eq!(rate.target, 250_000);
+			assert_eq!(rate.target, 200_000);
 		}
 	}
 }
@@ -440,6 +443,7 @@ pub(crate) fn packetize(
 	Ok(packets)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_source(frame: &[u8]) -> Result<(), &'static str> {
 	validate_source_for_codec(frame, VideoCodec::H264)
 }

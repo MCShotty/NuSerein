@@ -91,12 +91,28 @@ static AMF_RESULT create_component(AMFFactory *self, AMFContext *ctx, const wcha
     if(is("null-component")) { *out = NULL; return AMF_OK; }
     *out = &component; ++component_refs; return AMF_OK;
 }
+extern const void *fixture_amf_property(int codec, int variant);
+static AMF_RESULT component_property_info(AMFComponent *self, const wchar_t *name, const AMFPropertyInfo **info) {
+    (void)self;
+    const wchar_t *names[] = {AMF_VIDEO_ENCODER_QUALITY_PRESET,
+        AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET, AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET};
+    assert(!wcscmp(name, names[codec_received]));
+    if (is("preset-error")) return AMF_FAIL;
+    int variant = is("preset-bad-type") ? 1 : is("preset-read-only") ? 2 :
+        is("preset-unbounded") ? 3 : is("preset-none") ? 4 : is("preset-no-enum") ? 5 : 0;
+    *info = is("preset-null") ? NULL : fixture_amf_property(codec_received, variant);
+    return AMF_OK;
+}
+static AMF_RESULT component_set_property(AMFComponent *self, const wchar_t *name, AMFVariantStruct value) {
+    (void)self; (void)name; assert(value.type == AMF_VARIANT_INT64);
+    return is("preset-rejected") ? AMF_NOT_SUPPORTED : AMF_OK;
+}
 static const AMFContext1Vtbl context_vtable = {
     .Acquire=context_acquire, .Release=context_release, .QueryInterface=context_query,
     .Terminate=context_terminate, .InitVulkan=context_vulkan
 };
 static const AMFComponentVtbl component_vtable = {
-    .Release=component_release, .Init=component_init, .SubmitInput=component_submit, .GetCaps=component_caps
+    .Release=component_release, .SetProperty=component_set_property, .GetPropertyInfo=component_property_info, .Init=component_init, .SubmitInput=component_submit, .GetCaps=component_caps
 };
 static AMF_RESULT caps_property(AMFCaps *self, const wchar_t *name, AMFVariantStruct *value) {
     (void)self; assert(!wcscmp(name, AMF_VIDEO_ENCODER_HEVC_CAP_MAX_PROFILE));

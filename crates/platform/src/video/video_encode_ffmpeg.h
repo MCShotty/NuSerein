@@ -13,6 +13,19 @@
 extern "C" {
 #endif
 
+/* Must match model::voice_settings::EncoderPreset. Zero retains the existing
+ * vendor default. Named presets are only exposed after a driver query. */
+static inline const char *serein_video_preset_name(int backend, int preset)
+{
+    static const char *const nvenc[] = {"p1", "p2", "p3", "p4", "p5", "p6", "p7"};
+    static const char *const amf[] = {"speed", "balanced", "quality", "high_quality"};
+    static const char *const qsv[] = {"veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast"};
+    if (backend == 1 && preset >= 1 && preset <= 7) return nvenc[preset - 1];
+    if (backend == 3 && preset >= 8 && preset <= 11) return amf[preset - 8];
+    if (backend == 4 && preset >= 12 && preset <= 18) return qsv[preset - 12];
+    return NULL;
+}
+
 /* Physical renderer identity, never a vendor-only or performance preference.
  * All fields use fixed-width integers so Rust and native helper ABIs agree. */
 typedef struct SereinVideoAdapter {
@@ -77,14 +90,14 @@ extern "C" {
 /* The returned encoder must be used and closed on its owning media worker.
  * Backend: 0 = OpenH264, 1 = NVENC, 2 = VideoToolbox (hardware required),
  * 3 = AMD AMF, 4 = Intel QSV (hardware-only D3D11/VA driver session).
- * baseline selects independent Stable/test pictures (GOP 1); Experimental
+ * baseline selects independent test pictures (GOP 1); FFmpeg
  * camera and screen pictures use Main profile and a two-second GOP. Codec: 0 H.264, 1 HEVC,
  * 2 AV1. Software is provided only for H.264. NULL means unavailable. */
-void *serein_avc_open(int width, int height, int fps, int bitrate, int baseline,
+void *serein_avc_open(int width, int height, int fps, int bitrate, int minimum, int maximum, int preset, int baseline,
                      int backend, int codec, size_t max_bytes);
 /* Features: bit 0 requests up to two B frames (HEVC/AV1 only); bit 1 requests
  * sixteen-frame lookahead. Unsupported combinations fail without switching GPU. */
-void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
+void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate, int minimum, int maximum, int preset,
                                 int baseline, int backend, int codec,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features);
@@ -93,7 +106,7 @@ void *serein_avc_open_on_adapter(int width, int height, int fps, int bitrate,
  * Unsupported or physically mismatched devices fail without switching GPUs. */
 void *serein_avc_surface_context(const void *frame);
 void serein_avc_surface_context_free(void *context);
-void *serein_avc_open_on_surface(int width, int height, int fps, int bitrate,
+void *serein_avc_open_on_surface(int width, int height, int fps, int bitrate, int minimum, int maximum, int preset,
                                 int baseline, int backend, int codec,
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features, void *frames_context);

@@ -5,6 +5,7 @@ use super::{
 	portal_linux::Portal,
 	preview_frame,
 };
+use crate::screen::{CaptureDelivery, check_output_deadline};
 use ::gstreamer as gst;
 /// A capture source that has nothing new to send still emits a keepalive picture once a
 /// second, so a frozen share is not a gap between pictures but a run of seconds carrying
@@ -182,6 +183,8 @@ pub(super) fn run(
 			// One bounded raw snapshot lets an idle desktop satisfy a new viewer's IDR
 			// without waiting for another compositor damage event.
 			let mut latest_frame = None;
+			let mut delivery = CaptureDelivery::default();
+			let mut output_deadline = None;
 			let mut capture_reset = false;
 			let mut last_encoded: Option<Instant> = None;
 			let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
@@ -226,6 +229,8 @@ pub(super) fn run(
 						encoder.reset_for_security(reset)?;
 					}
 					latest_frame = None;
+					delivery.retire();
+					output_deadline = None;
 					waiting_keyframe = true;
 					first_frame = None;
 					last_encoded = None;
@@ -248,6 +253,7 @@ pub(super) fn run(
 						&ready,
 						&keyframe,
 						&bitrate,
+						video_settings.bandwidth,
 					)?;
 					if current_output != Some(current) {
 						if let Some(encoder) = &encoding {
@@ -258,6 +264,8 @@ pub(super) fn run(
 						}
 						encoding = None;
 						latest_frame = None;
+						delivery.retire();
+						output_deadline = None;
 						current_output = Some(current);
 						waiting_keyframe = true;
 						first_frame = None;
@@ -271,8 +279,10 @@ pub(super) fn run(
 					return Err("Screen capture did not report source dimensions");
 				}
 				let target = bitrate.load(Ordering::Acquire).clamp(
-					250_000,
-					current_output.map_or(250_000, |output| output.settings.bit_rate()),
+					model::voice_settings::VideoBitrate::MINIMUM,
+					current_output.map_or(model::voice_settings::VideoBitrate::MINIMUM, |output| {
+						output.rates.maximum
+					}),
 				);
 				// A rate change updates only the encoder, preserving the approved
 				// source, preview and audio. Do not restart while waiting for its first IDR.
@@ -326,6 +336,8 @@ pub(super) fn run(
 					// The raw gate stops updating during a security pause. Discard its old
 					// snapshot so the resumed share starts from newly captured contents.
 					latest_frame = None;
+					delivery.retire();
+					output_deadline = None;
 					slow = None;
 					waiting_keyframe = true;
 					first_frame = None;
@@ -345,6 +357,7 @@ pub(super) fn run(
 					// and this iteration still reaches the await below. Skipping the await
 					// here would spin the worker and starve the portal on this runtime.
 					let room = send.capacity() > 0;
+					let mut picture_progress = false;
 					withheld = u64::from(!room);
 					let now = Instant::now();
 					let paced = now + Duration::from_millis(2) >= next_frame;
@@ -368,6 +381,7 @@ pub(super) fn run(
 						}
 						if raw.is_some() {
 							pulled = true;
+							delivery.fresh()?;
 							metrics.finish(crate::diagnostics::Stage::Receive, pull);
 						}
 						let requested_keyframe =
@@ -376,13 +390,13 @@ pub(super) fn run(
 						// source no longer emits its own PipeWire keepalive buffers.
 						let keepalive = last_encoded
 							.is_some_and(|last| last.elapsed() >= Duration::from_secs(1));
-						if super::retain_screen_frame(
+						let needs_input = super::retain_screen_frame(
 							&mut latest_frame,
 							raw,
 							ready.load(Ordering::Acquire),
-							requested_keyframe
-								|| keepalive || encoding.as_ref().is_some_and(ScreenEncoder::pending),
-						)? {
+							requested_keyframe || keepalive || delivery.needs_picture(),
+						)?;
+						if needs_input || encoding.as_ref().is_some_and(ScreenEncoder::pending) {
 							if encoding.is_none() {
 								encoding = Some(ScreenEncoder::new_on_adapter(
 									current_output
@@ -397,62 +411,91 @@ pub(super) fn run(
 							}
 							let encoder = encoding.as_mut().expect("screen encoder initialized");
 							let start = metrics.start();
-							let force_keyframe = keyframe.swap(false, Ordering::AcqRel);
+							let force_keyframe =
+								latest_frame.is_some() && keyframe.swap(false, Ordering::AcqRel);
 							if audio_epoch.load(Ordering::Acquire) != reset_generation {
 								continue;
 							}
-							let packet = encoder.encode_at(
-								latest_frame.as_ref().expect("latest screen frame"),
-								force_keyframe,
-								(origin.elapsed().as_micros() * 90 / 1000) as u32,
-							)?;
-							// Advance from the schedule, with jitter tolerance and no catch-up burst.
-							next_frame = (next_frame + interval).max(now + interval / 2);
-							last_encoded = Some(now);
-							// A static source cannot notify again to advance lookahead. Pump
-							// its retained snapshot on the selected cadence while pictures wait.
-							wait_for_frame = encoder.pending();
-							metrics.finish(crate::diagnostics::Stage::Encode, start);
-							if !packet.data.is_empty() && (!waiting_keyframe || packet.keyframe) {
-								let frame = EncodedFrame {
-									geometry_generation: current_output
-										.ok_or("Screen dimensions are unresolved")?
-										.generation,
-									codec: video_settings.codec,
-									data: packet.data,
-									keyframe: packet.keyframe,
-									timestamp: packet.timestamp,
-									epoch: packet.epoch,
-									reset_generation: encoder.reset_generation(),
-								};
-								if ready.load(Ordering::Acquire)
-									&& audio_epoch.load(Ordering::Acquire)
-										== encoder.reset_generation()
-									&& !stop.load(Ordering::Acquire)
-									&& send.try_send(frame).is_ok()
+							let drained = if !pulled && !force_keyframe && encoder.pending() {
+								encoder.drain()?
+							} else {
+								None
+							};
+							let encoded = if let Some(packet) = drained {
+								Some((packet, 0))
+							} else if needs_input || force_keyframe {
+								let timestamp = (origin.elapsed().as_micros() * 90 / 1000) as u32;
+								Some((
+									encoder.encode_at(
+										latest_frame.as_ref().expect("latest screen frame"),
+										force_keyframe,
+										timestamp,
+									)?,
+									timestamp,
+								))
+							} else {
+								None
+							};
+							if let Some((packet, submitted_at)) = encoded {
+								picture_progress = !packet.data.is_empty();
+								delivery.record_packet(submitted_at, &packet)?;
+								// Advance from the schedule, with jitter tolerance and no catch-up burst.
+								next_frame = (next_frame + interval).max(now + interval / 2);
+								last_encoded = Some(now);
+								// Drain ready reordered output on cadence, without uploading an
+								// unchanged capture merely because older pictures remain buffered.
+								wait_for_frame = delivery.needs_picture() || encoder.pending();
+								metrics.finish(crate::diagnostics::Stage::Encode, start);
+								if !packet.data.is_empty() && (!waiting_keyframe || packet.keyframe)
 								{
-									waiting_keyframe = false;
-									*started = Instant::now();
-									let active = if audio_stopped {
-										"Screen sharing · system audio stopped"
-									} else {
-										encoder.label()
+									let frame = EncodedFrame {
+										geometry_generation: current_output
+											.ok_or("Screen dimensions are unresolved")?
+											.generation,
+										codec: video_settings.codec,
+										data: packet.data,
+										keyframe: packet.keyframe,
+										timestamp: packet.timestamp,
+										epoch: packet.epoch,
+										reset_generation: encoder.reset_generation(),
 									};
-									if let Ok(mut label) = status.lock()
-										&& *label != active
+									if ready.load(Ordering::Acquire)
+										&& audio_epoch.load(Ordering::Acquire)
+											== encoder.reset_generation() && !stop
+										.load(Ordering::Acquire) && send.try_send(frame).is_ok()
 									{
-										*label = active;
-										wake();
+										waiting_keyframe = false;
+										*started = Instant::now();
+										let active = if audio_stopped {
+											"Screen sharing · system audio stopped"
+										} else {
+											encoder.label()
+										};
+										if let Ok(mut label) = status.lock()
+											&& *label != active
+										{
+											*label = active;
+											wake();
+										}
+									} else {
+										encoder.restart()?;
+										delivery.retire();
+										waiting_keyframe = true;
+										keyframe.store(true, Ordering::Release);
 									}
-								} else {
-									encoder.restart()?;
-									waiting_keyframe = true;
-									keyframe.store(true, Ordering::Release);
 								}
 							}
 						}
 					}
-					// Only startup has a frame deadline: an unchanged desktop can stop producing frames.
+					// Empty output after startup still needs a bound, including a poll
+					// with no packet. Successful output and backpressure retire it.
+					check_output_deadline(
+						&mut output_deadline,
+						room && (waiting_keyframe || delivery.needs_picture()),
+						picture_progress,
+						Instant::now(),
+					)?;
+					// Keep the startup keyframe deadline separate from active-share progress.
 					if waiting_keyframe && started.elapsed() > Duration::from_secs(15) {
 						return Err("Screen video encoder did not produce a keyframe");
 					}

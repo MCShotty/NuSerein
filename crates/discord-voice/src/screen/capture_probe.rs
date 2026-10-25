@@ -220,7 +220,6 @@ impl Request {
 		}
 		if !self.settings.valid()
 			|| self.settings.audio
-			|| !self.video.is_valid()
 			|| !matches!(
 				self.settings.source,
 				super::SourceId::Display(_) | super::SourceId::Window(_)
@@ -406,7 +405,7 @@ pub fn run(request: Request, mut emit: impl FnMut(serde_json::Value)) -> Result<
 			"serein_capture_probe":"complete", "stage":request.stage.label(), "process_id":std::process::id(),
 			"warmup_seconds":request.warmup_seconds,"sample_seconds":sample_seconds,
 			"source_dimensions":source_dimensions,"output_dimensions":output_dimensions,
-			"configured_fps":request.settings.fps,"requested_backend":format!("{:?}",request.video.backend),
+			"configured_fps":request.settings.fps,"requested_backend":"FFmpeg",
 			"requested_codec":format!("{:?}",request.video.codec),"adapter":request.adapter.map(|adapter|adapter.helper_key()),
 			"capture":if request.stage == Stage::Encode {serde_json::Value::Null} else {stats.snapshot().since(initial).json()},
 			"converted_pictures":if request.stage == Stage::Readback {Some(converted - initial_converted)} else {None},

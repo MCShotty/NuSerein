@@ -400,9 +400,6 @@ async fn run_inner(
 	let video_capable = camera.is_some() || remote_video.is_some();
 	// Preference edits apply to the next call, never the active encrypted session.
 	let video_settings = controls.borrow().video;
-	if camera.is_some() && !video_settings.is_valid() {
-		return Err("Stable video supports H264 only");
-	}
 	let outgoing_codec = video_settings.codec;
 	let (decoder, lost) = match remote_video
 		.map(|sink| spawn_decoder_on_adapter(sink, controls.borrow().video_adapter))
@@ -600,7 +597,7 @@ async fn run_inner(
 				let waiting=!stage && dave.waiting && encryption.is_some() && !discovering && !resuming;
 				let configuration = (controls.borrow().camera != 0 && video.available()).then(|| {
 					let (width, height) = video_settings.camera_resolution.camera_dimensions();
-					VideoConfiguration { codec: outgoing_codec, width, height, fps: video_settings.camera_frame_rate.fps(), target_bitrate: crate::camera::bit_rate(video_settings.camera_resolution, video_settings.camera_frame_rate) }
+					VideoConfiguration { codec: outgoing_codec, width, height, fps: video_settings.camera_frame_rate.fps(), target_bitrate: video_settings.bandwidth.rates(width, height, video_settings.camera_frame_rate.fps()).average }
 				});
 				if let Some(mut snapshot) = connection.snapshot(now.into_std(), udp_failures.1, udp_failures.2, metrics.connection_counters(), configuration, enabled) { snapshot.participants = connection.participants(&mixer, &receivers, decoder.as_ref(), now.into_std()); let _ = emit(Status::Diagnostics(Arc::new(snapshot))); }
 				if (!enabled && ready_announced) || (!waiting && waiting_announced) {ready_announced=false;waiting_announced=false;emit(Status::Securing).map_err(|_|"Call interface closed")?;}
@@ -1251,12 +1248,12 @@ fn screen_announcement(
 	let settings = output.settings;
 	json!({"op":12,"d":{"audio_ssrc":audio_ssrc,"video_ssrc":video_ssrc,"rtx_ssrc":rtx_ssrc,
 		"streams":[{"type":"video","rid":"100","ssrc":video_ssrc,"active":true,"quality":100,
-		"rtx_ssrc":rtx_ssrc,"max_bitrate":settings.bit_rate(),"max_framerate":settings.fps,
+		"rtx_ssrc":rtx_ssrc,"max_bitrate":output.rates.maximum,"max_framerate":settings.fps,
 		"max_resolution":{"type":"fixed","width":settings.width,"height":settings.height}}]}})
 }
 
 /// Send one unofficial Discord Go Live stream on its own voice gateway.
-/// Outgoing H265/AV1 require compatible Experimental hardware. Incoming video
+/// Outgoing H265/AV1 require compatible FFmpeg hardware. Incoming video
 /// supports H264/H265/AV1. Synthetic fixtures cover DAVE/RTP framing; current-head
 /// native Discord interoperability still needs owner-controlled verification.
 ///
@@ -1336,9 +1333,6 @@ async fn run_stream_inner(
 	let video_settings = video
 		.as_ref()
 		.map_or_else(VideoSettings::default, |video| video.video_settings);
-	if !video_settings.is_valid() {
-		return Err("Stable video supports H264 only");
-	}
 	let outgoing_codec = video_settings.codec;
 	let mut connection = Connection::new(
 		&url,
@@ -1466,7 +1460,9 @@ async fn run_stream_inner(
 		video
 			.as_ref()
 			.and_then(|video| video.output())
-			.map_or(250_000, |output| output.settings.bit_rate()),
+			.map_or(model::voice_settings::VideoBitrate::MINIMUM, |output| {
+				output.rates.maximum
+			}),
 		Instant::now(),
 	);
 	let mut heartbeat_ms = None;
@@ -1589,7 +1585,7 @@ async fn run_stream_inner(
 				}
 				if secured_at.is_some_and(|at| now>=at+PEER_GRACE) && !discovering && dave.should_wait_for_peer() {dave.enter_sole_member_waiting()?;}
 				let waiting=dave.waiting && !dave.transitioning() && encryption.is_some() && !discovering;
-				let configuration = video.as_ref().and_then(|video| video.output()).map(|output| VideoConfiguration { codec: outgoing_codec, width: output.settings.width, height: output.settings.height, fps: output.settings.fps, target_bitrate: rate.target });
+				let configuration = video.as_ref().and_then(|video| video.output()).map(|output| VideoConfiguration { codec: outgoing_codec, width: output.settings.width, height: output.settings.height, fps: output.settings.fps, target_bitrate: output.rates.limited_to(rate.target).average });
 				if let Some(mut snapshot) = connection.snapshot(now.into_std(), udp_failures.1, udp_failures.2, metrics.connection_counters(), configuration, dave.ready && dave.session.is_ready() && !dave.transitioning() && encryption.is_some() && !discovering && announced) { snapshot.participants = connection.participants(&mixer, &receivers, decoder.as_ref(), now.into_std()); let _ = emit(Status::Diagnostics(Arc::new(snapshot))); }
 				if waiting {deadline=None;}
 				if waiting!=waiting_announced {
@@ -1616,7 +1612,7 @@ async fn run_stream_inner(
 						if let Some(event)=soundshare_announcement(&mut share_audio,audio_ssrc) {json_send(&mut ws,event).await?;}
 						let output=resolved.ok_or("Screen dimensions are unresolved")?;
 						json_send(&mut ws,screen_announcement(output,audio_ssrc,video_ssrc,rtx_ssrc)).await?;
-						if announced_output!=Some(output) {rate=crate::video::Rate::new(output.settings.bit_rate(),now);video.bitrate.store(output.settings.bit_rate(),Ordering::Release);}
+						if announced_output!=Some(output) {rate=crate::video::Rate::new(output.rates.maximum,now);video.bitrate.store(output.rates.maximum,Ordering::Release);}
 						if !video.enable_output(output) {continue;}
 						announced_output=Some(output);awaiting_keyframe=true;
 					} else {
@@ -2132,6 +2128,40 @@ mod tests {
 		}).await.unwrap();
 	}
 
+	#[test]
+	fn screen_announcements_publish_selected_peak_and_resolved_geometry() {
+		use model::voice_settings::VideoBandwidth;
+		let settings = crate::screen::Settings {
+			source: crate::screen::SourceId::Display(1),
+			width: 2560,
+			height: 1440,
+			fps: 60,
+			cursor: true,
+			audio: false,
+		};
+		for bandwidth in VideoBandwidth::ALL {
+			let output = crate::screen::publish_output(
+				&std::sync::Mutex::new(None),
+				settings,
+				(3840, 2160),
+				&AtomicBool::new(true),
+				&AtomicBool::new(false),
+				&std::sync::atomic::AtomicU32::new(0),
+				bandwidth,
+			)
+			.unwrap();
+			let announcement = screen_announcement(output, 1, 2, 3);
+			let stream = &announcement["d"]["streams"][0];
+			assert_eq!(
+				stream["max_bitrate"],
+				bandwidth.rates(2560, 1440, 60).maximum
+			);
+			assert_eq!(stream["max_resolution"]["width"], 2560);
+			assert_eq!(stream["max_resolution"]["height"], 1440);
+			assert_eq!(stream["max_framerate"], 60);
+		}
+	}
+
 	#[tokio::test]
 	async fn udp_send_errors_drop_datagrams_without_waiting_and_recover() {
 		let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -2483,6 +2513,7 @@ mod tests {
 			video_settings: VideoSettings::default(),
 			output: Arc::new(std::sync::Mutex::new(Some(crate::screen::Output {
 				source_dimensions: (1280, 720),
+				rates: model::voice_settings::VideoBitrate::for_dimensions(1280, 720),
 				settings: crate::screen::Settings {
 					source: crate::screen::SourceId::Display(1),
 					width: 1280,

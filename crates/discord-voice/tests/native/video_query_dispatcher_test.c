@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/opt.h>
 #ifdef NDEBUG
 #error Driver fixtures require assertions
 #endif
@@ -32,6 +33,7 @@ int main(void)
 #include <stdio.h>
 #include <string.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/opt.h>
 #include "video_encode_ffmpeg.h"
 #ifdef NDEBUG
 #error Driver fixtures require assertions
@@ -40,6 +42,22 @@ int main(void)
 int serein_video_query(int backend, int codec);
 static int installed = 1, calls = 0, last_codec = -1;
 static const AVCodec encoder = {0};
+static AVCodecContext context;
+static int allocated, freed;
+AVCodecContext *avcodec_alloc_context3(const AVCodec *codec) {
+    assert(codec == &encoder); memset(&context, 0, sizeof(context));
+    context.priv_data = &context; allocated++; return &context;
+}
+void avcodec_free_context(AVCodecContext **codec) {
+    assert(*codec == &context); *codec = NULL; freed++;
+}
+const AVOption *av_opt_find(void *object, const char *name, const char *unit, int flags, int search) {
+    (void)flags; (void)search; assert(object == &context);
+    static const AVOption range = {.type = AV_OPT_TYPE_INT, .min = 0, .max = 100};
+    static const AVOption value = {.type = AV_OPT_TYPE_CONST, .default_val.i64 = 5};
+    if (!unit && (!strcmp(name, "preset") || !strcmp(name, "quality"))) return &range;
+    return !strcmp(name, "p5") ? &value : NULL;
+}
 
 const AVCodec *avcodec_find_encoder_by_name(const char *name)
 {
@@ -47,7 +65,7 @@ const AVCodec *avcodec_find_encoder_by_name(const char *name)
     return installed ? &encoder : NULL;
 }
 
-static int query(int codec) { calls++; last_codec = codec; return 1; }
+static int query(int codec) { calls++; last_codec = codec; return codec >= 6 ? ((1 << 5) | (1 << 10) | (1 << 18)) : 1; }
 int serein_query_nvenc(int codec) { return query(codec); }
 int serein_query_amf(int codec) { return query(codec); }
 int serein_query_qsv(int codec) { return query(codec); }
@@ -83,6 +101,9 @@ int main(void)
     assert(serein_video_query_on_adapter(4, 2, &adapter) == 0 && calls == 0);
     assert(serein_video_query_on_adapter(3, 2, &adapter) == 0 && calls == 0);
     assert(serein_video_query_on_adapter(1, 2, NULL) == -1 && calls == 0);
+    assert(serein_video_query_on_adapter(1, 6, &adapter) == (1 << 5));
+    assert(allocated == 1 && freed == 1);
+    calls = 0;
     adapter.identity = SEREIN_GPU_UNIDENTIFIED;
     assert(serein_video_query_on_adapter(1, 2, &adapter) == -1 && calls == 0);
     puts("Driver dispatch: absent encoders and invalid requests never query hardware");

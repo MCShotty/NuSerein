@@ -30,10 +30,6 @@ mod portal_linux;
 #[cfg(target_os = "linux")]
 #[path = "../src/video.rs"]
 mod video;
-// The shared screen module reaches the platform encoders' keyframe check through this path.
-#[cfg(target_os = "linux")]
-#[path = "../src/video_backend.rs"]
-mod video_backend;
 #[cfg(target_os = "linux")]
 #[path = "../src/video_encode.rs"]
 mod video_encode;
@@ -82,7 +78,7 @@ fn main() {
 		let stop = Arc::new(AtomicBool::new(false));
 		let ready = Arc::new(AtomicBool::new(false));
 		let keyframe = Arc::new(AtomicBool::new(true));
-		let source = gst::parse::bin_from_description("videotestsrc is-live=true ! video/x-raw,width=1280,height=720,framerate=30/1", true).unwrap().upcast::<gst::Element>();
+		let source = gst::parse::bin_from_description("videotestsrc is-live=true ! capsfilter caps=\"video/x-raw,width=1280,height=720,framerate=30/1\"", true).unwrap().upcast::<gst::Element>();
 		// Niri 26.04 leaves SPA header PTS at zero. GstBaseSrc adds a constant
 		// startup offset but does not replace that valid (stuck) presentation time.
 		if std::env::args().any(|arg| arg == "--niri-timestamps") {
@@ -129,7 +125,7 @@ fn main() {
 				let packet = encoder.encode_at(&raw, true, 0).unwrap();
 				if packet.data.is_empty() { continue; }
 				assert!(packet.keyframe);
-				video::validate_source(&packet.data).unwrap();
+				video::validate_source_for_codec(&packet.data, model::voice_settings::VideoCodec::H264).unwrap();
 				encoded += 1;
 			}
 			pipeline.changed().await;
@@ -148,7 +144,7 @@ fn main() {
 			assert!(Instant::now() < deadline, "cancelled audio worker must retire without opening a device");
 			tokio::time::sleep(Duration::from_millis(10)).await;
 		}
-		println!("Linux screen pipeline: synthetic preview, secure-readiness gates, application audio exclusion/bounded stereo mixing, Stable H.264 encoding and portal pre-cancellation passed. Native screen capture and Discord delivery remain unverified.");
+		println!("Linux screen pipeline: synthetic preview, secure-readiness gates, application audio exclusion/bounded stereo mixing, FFmpeg H.264 encoding and portal pre-cancellation passed. Native screen capture and Discord delivery remain unverified.");
 	});
 }
 #[cfg(not(target_os = "linux"))]

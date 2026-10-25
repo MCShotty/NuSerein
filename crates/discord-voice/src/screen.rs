@@ -31,7 +31,6 @@ use std::sync::{
 	mpsc,
 };
 
-#[cfg(not(target_os = "linux"))]
 use std::time::{Duration, Instant};
 
 pub const MAX_RAW_BYTES: usize = 7680 * 4320 * 8;
@@ -185,6 +184,7 @@ pub struct EncodedFrame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Output {
 	pub settings: Settings,
+	pub rates: model::voice_settings::VideoBitrate,
 	pub source_dimensions: (u32, u32),
 	pub generation: u64,
 }
@@ -198,6 +198,7 @@ pub(super) fn publish_output(
 	ready: &AtomicBool,
 	keyframe: &AtomicBool,
 	bitrate: &AtomicU32,
+	bandwidth: model::voice_settings::VideoBandwidth,
 ) -> Result<Output, &'static str> {
 	if !settings.valid()
 		|| !valid_dimensions(source_dimensions.0, source_dimensions.1)
@@ -210,6 +211,7 @@ pub(super) fn publish_output(
 	if let Some(current) = *output
 		&& current.settings == settings
 		&& current.source_dimensions == source_dimensions
+		&& current.rates == bandwidth.rates(settings.width, settings.height, settings.fps)
 	{
 		return Ok(current);
 	}
@@ -222,9 +224,11 @@ pub(super) fn publish_output(
 	};
 	ready.store(false, Ordering::Release);
 	keyframe.store(true, Ordering::Release);
-	bitrate.store(settings.bit_rate(), Ordering::Release);
+	let rates = bandwidth.rates(settings.width, settings.height, settings.fps);
+	bitrate.store(rates.maximum, Ordering::Release);
 	let current = Output {
 		settings,
+		rates,
 		source_dimensions,
 		generation,
 	};
@@ -343,7 +347,7 @@ impl Worker {
 		wake: impl Fn() + Send + 'static,
 	) -> Result<(Self, Video), &'static str> {
 		let settings = settings.into();
-		if !settings.valid() || !video_settings.is_valid() || !supported() {
+		if !settings.valid() || !supported() {
 			return Err("Screen sharing is unavailable for these settings or this platform");
 		}
 		let stop = Arc::new(AtomicBool::new(false));
@@ -351,7 +355,7 @@ impl Worker {
 		let audio_epoch = Arc::new(AtomicU64::new(0));
 		let worker_audio_epoch = audio_epoch.clone();
 		let keyframe = Arc::new(AtomicBool::new(true));
-		let bitrate = Arc::new(AtomicU32::new(250_000));
+		let bitrate = Arc::new(AtomicU32::new(model::voice_settings::VideoBitrate::MINIMUM));
 		let output = Arc::new(Mutex::new(None));
 		let worker_output = output.clone();
 		let worker_bitrate = bitrate.clone();
@@ -474,7 +478,7 @@ impl Worker {
 		!self.stop.load(Ordering::Acquire)
 			&& self.ready.load(Ordering::Acquire)
 			&& output.settings.valid()
-			&& self.bitrate.load(Ordering::Acquire) < output.settings.bit_rate()
+			&& self.bitrate.load(Ordering::Acquire) < output.rates.maximum
 	}
 
 	pub fn result(&self) -> Option<Result<(), &'static str>> {
@@ -505,36 +509,42 @@ impl Drop for Worker {
 
 /// Delayed encoders may need a few copies to release the last fresh picture.
 /// Pending output alone must not keep a static screen encoding forever.
-#[cfg(any(test, not(target_os = "linux")))]
 #[derive(Default)]
-struct CaptureDelivery {
+pub(super) struct CaptureDelivery {
 	latest: u64,
 	delivered: u64,
 	epoch: Option<u64>,
 	inputs: std::collections::VecDeque<(u32, u64)>,
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
 impl CaptureDelivery {
-	fn fresh(&mut self) -> Result<(), &'static str> {
+	pub(super) fn fresh(&mut self) -> Result<(), &'static str> {
 		self.latest = self
 			.latest
 			.checked_add(1)
 			.ok_or("Screen capture sequence exhausted")?;
 		Ok(())
 	}
-	fn needs_picture(&self) -> bool {
+	pub(super) fn needs_picture(&self) -> bool {
 		self.latest != self.delivered
 	}
-	fn retire(&mut self) {
+	pub(super) fn retire(&mut self) {
 		self.inputs.clear();
 		self.epoch = None;
 		self.delivered = 0;
 	}
-	fn submitted(&mut self, timestamp: u32, epoch: u64) -> Result<(), &'static str> {
+	fn submitted(
+		&mut self,
+		timestamp: u32,
+		epoch: u64,
+		accepted: bool,
+	) -> Result<(), &'static str> {
 		if self.epoch != Some(epoch) {
 			self.retire();
 			self.epoch = Some(epoch);
+		}
+		if !accepted {
+			return Ok(());
 		}
 		if self.inputs.len() >= crate::video_encode::MAX_PENDING_PICTURES {
 			return Err("Screen encoder exceeded its pending picture limit");
@@ -553,6 +563,31 @@ impl CaptureDelivery {
 			self.delivered = self.delivered.max(source);
 		}
 	}
+	pub(super) fn record_packet(
+		&mut self,
+		timestamp: u32,
+		packet: &crate::video_encode::EncodedPacket,
+	) -> Result<(), &'static str> {
+		self.submitted(timestamp, packet.epoch, packet.input_accepted)?;
+		if !packet.data.is_empty() {
+			self.received(packet.timestamp, packet.epoch);
+		}
+		Ok(())
+	}
+}
+
+pub(super) fn check_output_deadline(
+	deadline: &mut Option<Instant>,
+	needs_picture: bool,
+	progressed: bool,
+	now: Instant,
+) -> Result<(), &'static str> {
+	if !needs_picture || progressed {
+		*deadline = None;
+	} else if now >= *deadline.get_or_insert(now + Duration::from_secs(15)) {
+		return Err("Screen video encoder did not produce a picture");
+	}
+	Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -592,7 +627,7 @@ fn encode_loop(
 		audio_epoch.clone(),
 		raw_pending.clone(),
 		adapter,
-		video_settings.backend == model::voice_settings::VideoBackend::Experimental,
+		true,
 	)?;
 	// The worker's stop also reaches a pending macOS picker, so call teardown closes it now.
 	#[cfg(not(target_os = "windows"))]
@@ -607,6 +642,7 @@ fn encode_loop(
 	)?;
 	let mut encoding: Option<ScreenEncoder> = None;
 	let mut first_frame_deadline = Some(Instant::now() + Duration::from_secs(15));
+	let mut first_output_deadline = None;
 	let mut next_frame = Instant::now();
 	let mut next_preview = Instant::now();
 	let mut preview_supported = true;
@@ -621,7 +657,7 @@ fn encode_loop(
 		eprintln!(
 			"[Serein voice ScreenCapture] adapter_helper={} backend={:?} codec={:?} fps={}",
 			adapter.map_or_else(|| "unidentified".to_owned(), |adapter| adapter.helper_key()),
-			video_settings.backend,
+			"FFmpeg",
 			video_settings.codec,
 			settings.fps
 		);
@@ -680,6 +716,7 @@ fn encode_loop(
 			}
 			latest_frame = None;
 			delivery.retire();
+			first_output_deadline = None;
 			keyframe.store(true, Ordering::Release);
 			// This input can span the transition. Restart the selected capture so an
 			// idle desktop supplies a new snapshot instead of waiting for damage.
@@ -711,6 +748,7 @@ fn encode_loop(
 				&ready,
 				&keyframe,
 				&bitrate,
+				video_settings.bandwidth,
 			)?;
 			if current_output != Some(current) {
 				if let Some(encoder) = &encoding {
@@ -722,6 +760,7 @@ fn encode_loop(
 				encoding = None;
 				latest_frame = None;
 				delivery.retire();
+				first_output_deadline = None;
 				current_output = Some(current);
 				preview_supported = true;
 				next_frame = now;
@@ -776,6 +815,7 @@ fn encode_loop(
 			}
 			encoding = None;
 			delivery.retire();
+			first_output_deadline = None;
 			keyframe.store(true, Ordering::Release);
 			continue;
 		}
@@ -791,13 +831,18 @@ fn encode_loop(
 		// Drop before encoding while the transport is behind, so the encoder never references
 		// a picture the receiver did not get.
 		if send.capacity() == 0 {
+			first_output_deadline = None;
 			continue;
 		}
 		let current = current_output.ok_or("Screen dimensions are unresolved")?;
 		let resolved = current.settings;
-		let target = bitrate
-			.load(Ordering::Acquire)
-			.clamp(250_000, resolved.bit_rate());
+		let target = bitrate.load(Ordering::Acquire).clamp(
+			model::voice_settings::VideoBitrate::MINIMUM,
+			current_output
+				.ok_or("Screen dimensions are unresolved")?
+				.rates
+				.maximum,
+		);
 		if encoding.is_none() {
 			encoding = Some(ScreenEncoder::new_for_capture(
 				latest_frame.as_ref().expect("resolved screen frame"),
@@ -827,8 +872,8 @@ fn encode_loop(
 		} else {
 			None
 		};
-		let packet = if let Some(packet) = drained {
-			packet
+		let (packet, submitted_at) = if let Some(packet) = drained {
+			(packet, 0)
 		} else if delivery.needs_picture() || force_keyframe {
 			let timestamp = (origin.elapsed().as_micros() * 90 / 1000) as u32;
 			let started = metrics.start();
@@ -838,15 +883,22 @@ fn encode_loop(
 				timestamp,
 			)?;
 			metrics.finish(crate::diagnostics::Stage::Encode, started);
-			delivery.submitted(timestamp, encoder.epoch())?;
-			packet
+			(packet, timestamp)
 		} else {
 			continue;
 		};
+		delivery.record_packet(submitted_at, &packet)?;
+		// Dropped inputs consume no picture credits. Bound missing output
+		// separately so a native encoder cannot leave the viewer waiting forever.
+		check_output_deadline(
+			&mut first_output_deadline,
+			encoder.awaiting_keyframe || delivery.needs_picture(),
+			!packet.data.is_empty(),
+			Instant::now(),
+		)?;
 		if packet.data.is_empty() {
 			continue;
 		}
-		delivery.received(packet.timestamp, packet.epoch);
 		if !ready.load(Ordering::Acquire)
 			|| stop.load(Ordering::Acquire)
 			|| audio_epoch.load(Ordering::Acquire) != reset_generation
@@ -896,7 +948,7 @@ pub(super) fn retain_screen_frame(
 /// Selected encoder shared by every platform; native capture remains independent.
 pub(super) struct ScreenEncoder {
 	diagnostics: crate::diagnostics::EncoderRegistration,
-	encoder: Option<crate::video_backend::Encoder>,
+	encoder: Option<crate::video_encode::Encoder>,
 	video_settings: VideoSettings,
 	i420: Vec<u8>,
 	converter: convert::Converter,
@@ -921,12 +973,12 @@ impl ScreenEncoder {
 		epoch_base: u64,
 		reset_generation: u64,
 	) -> Result<Self, &'static str> {
-		if !settings.valid() || !video_settings.is_valid() || reset_generation == u64::MAX {
+		if !settings.valid() || reset_generation == u64::MAX {
 			return Err("Invalid screen encoder settings");
 		}
-		let mut config = Self::config(settings, bitrate, video_settings.codec);
+		let mut config = Self::config(settings, bitrate, video_settings);
 		config.adapter = adapter;
-		let encoder = crate::video_backend::Encoder::new(config, video_settings.backend)?;
+		let encoder = crate::video_encode::Encoder::new(config)?;
 		Ok(Self::with_encoder(
 			settings,
 			bitrate,
@@ -946,7 +998,7 @@ impl ScreenEncoder {
 		adapter: Option<model::VideoAdapter>,
 		epoch_base: u64,
 		reset_generation: u64,
-		encoder: crate::video_backend::Encoder,
+		encoder: crate::video_encode::Encoder,
 	) -> Self {
 		Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(
@@ -982,18 +1034,16 @@ impl ScreenEncoder {
 		epoch_base: u64,
 		reset_generation: u64,
 	) -> Result<Self, &'static str> {
-		if !settings.valid() || !video_settings.is_valid() || reset_generation == u64::MAX {
+		if !settings.valid() || reset_generation == u64::MAX {
 			return Err("Invalid screen encoder settings");
 		}
 		frame.validate()?;
 		#[cfg(target_os = "windows")]
-		if video_settings.backend == model::voice_settings::VideoBackend::Experimental {
+		{
 			let CapturedFrame::Gpu(frame) = frame;
-			let mut config = Self::config(settings, bitrate, video_settings.codec);
+			let mut config = Self::config(settings, bitrate, video_settings);
 			config.adapter = adapter;
-			if let Ok(encoder) =
-				crate::video_backend::Encoder::new_on_surface(config, video_settings.backend, frame)
-			{
+			if let Ok(encoder) = crate::video_encode::Encoder::new_on_surface(config, frame) {
 				let mut screen = Self::with_encoder(
 					settings,
 					bitrate,
@@ -1055,17 +1105,10 @@ impl ScreenEncoder {
 						.ok_or("Screen encoder epoch exhausted")?;
 					self.encoder = None;
 					self.diagnostics.set(None);
-					let mut config =
-						Self::config(self.settings, self.bitrate, self.video_settings.codec);
+					let mut config = Self::config(self.settings, self.bitrate, self.video_settings);
 					config.adapter = self.adapter;
-					let encoder = crate::video_backend::Encoder::new_on_surface(
-						config,
-						self.video_settings.backend,
-						frame,
-					)
-					.or_else(|_| {
-						crate::video_backend::Encoder::new(config, self.video_settings.backend)
-					})?;
+					let encoder = crate::video_encode::Encoder::new_on_surface(config, frame)
+						.or_else(|_| crate::video_encode::Encoder::new(config))?;
 					self.surface_input = encoder.uses_surface();
 					if !self.surface_input {
 						frame.prefer_cpu();
@@ -1097,15 +1140,23 @@ impl ScreenEncoder {
 		}
 	}
 
-	fn config(settings: Settings, bitrate: u32, codec: VideoCodec) -> crate::video_encode::Config {
+	fn config(
+		settings: Settings,
+		bitrate: u32,
+		video: VideoSettings,
+	) -> crate::video_encode::Config {
 		crate::video_encode::Config {
 			width: settings.width,
 			height: settings.height,
 			fps: settings.fps,
-			bit_rate: bitrate.clamp(250_000, settings.bit_rate()),
+			rates: video
+				.bandwidth
+				.rates(settings.width, settings.height, settings.fps)
+				.limited_to(bitrate),
+			preset: video.quality,
 			max_bytes: MAX_ENCODED_BYTES,
 			profile: crate::video_encode::Profile::Main,
-			codec,
+			codec: video.codec,
 			adapter: None,
 			hdr: None,
 		}
@@ -1119,14 +1170,20 @@ impl ScreenEncoder {
 	}
 
 	pub(super) fn set_bitrate(&mut self, bitrate: u32) -> Result<bool, &'static str> {
-		let bitrate = bitrate.clamp(250_000, self.settings.bit_rate());
+		let bitrate = bitrate.clamp(
+			model::voice_settings::VideoBitrate::MINIMUM,
+			self.video_settings
+				.bandwidth
+				.rates(self.settings.width, self.settings.height, self.settings.fps)
+				.maximum,
+		);
 		// Rate changes restart at an IDR. Bound restart frequency with the sender's
 		// existing 15% reduction / 25% recovery thresholds.
 		if self.awaiting_keyframe || !software_rate_change(self.bitrate, bitrate) {
 			return Ok(false);
 		}
 		self.diagnostics.set(None);
-		let mut config = Self::config(self.settings, bitrate, self.video_settings.codec);
+		let mut config = Self::config(self.settings, bitrate, self.video_settings);
 		config.adapter = self.adapter;
 		let encoder = self.encoder.as_mut().ok_or("Screen encoder stopped")?;
 		encoder.reconfigure(config)?;
@@ -1153,8 +1210,9 @@ impl ScreenEncoder {
 			.is_some_and(|encoder| encoder.pending())
 	}
 
-	#[cfg(not(target_os = "linux"))]
-	fn drain(&mut self) -> Result<Option<crate::video_encode::EncodedPacket>, &'static str> {
+	pub(super) fn drain(
+		&mut self,
+	) -> Result<Option<crate::video_encode::EncodedPacket>, &'static str> {
 		let result = self
 			.encoder
 			.as_mut()
@@ -1437,13 +1495,196 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn output_deadline_bounds_dropped_pictures_and_allows_idle_completed_shares() {
+		let start = Instant::now();
+		let mut deadline = None;
+		let mut delivery = CaptureDelivery::default();
+		delivery.fresh().unwrap();
+		let dropped = crate::video_encode::EncodedPacket {
+			data: Vec::new(),
+			keyframe: false,
+			timestamp: 0,
+			epoch: 0,
+			input_accepted: false,
+		};
+		for second in 0..15 {
+			delivery.record_packet(second * 90_000, &dropped).unwrap();
+			assert!(delivery.inputs.is_empty() && delivery.needs_picture());
+			check_output_deadline(
+				&mut deadline,
+				true,
+				false,
+				start + Duration::from_secs(u64::from(second)),
+			)
+			.unwrap();
+			assert_eq!(deadline, Some(start + Duration::from_secs(15)));
+		}
+		assert!(
+			check_output_deadline(&mut deadline, true, false, start + Duration::from_secs(15))
+				.is_err()
+		);
+		// Successful output or a security pause retires the previous deadline.
+		check_output_deadline(&mut deadline, false, false, start + Duration::from_secs(15))
+			.unwrap();
+		let resumed = start + Duration::from_secs(3600);
+		check_output_deadline(&mut deadline, false, false, resumed).unwrap();
+		assert!(deadline.is_none());
+		check_output_deadline(&mut deadline, true, false, resumed).unwrap();
+		assert_eq!(deadline, Some(resumed + Duration::from_secs(15)));
+		check_output_deadline(&mut deadline, true, true, resumed + Duration::from_secs(1)).unwrap();
+		assert!(deadline.is_none());
+		// Continuous capture can still need a newer picture when an older one is
+		// returned. Actual progress must reset the deadline even in that case.
+		for second in 1..=60 {
+			let now = resumed + Duration::from_secs(second);
+			check_output_deadline(&mut deadline, true, false, now).unwrap();
+			check_output_deadline(&mut deadline, true, true, now + Duration::from_millis(1))
+				.unwrap();
+			assert!(deadline.is_none());
+		}
+		// Once startup succeeded, empty polls/dropped pictures must still time out.
+		let stalled = resumed + Duration::from_secs(61);
+		for second in 0..15 {
+			check_output_deadline(
+				&mut deadline,
+				true,
+				false,
+				stalled + Duration::from_secs(second),
+			)
+			.unwrap();
+			assert_eq!(deadline, Some(stalled + Duration::from_secs(15)));
+		}
+		assert!(
+			check_output_deadline(
+				&mut deadline,
+				true,
+				false,
+				stalled + Duration::from_secs(15)
+			)
+			.is_err()
+		);
+		check_output_deadline(
+			&mut deadline,
+			false,
+			false,
+			stalled + Duration::from_secs(3600),
+		)
+		.unwrap();
+		assert!(deadline.is_none());
+	}
+
+	#[test]
+	fn buffered_static_captures_stop_uploading_after_delivery_and_keep_the_keepalive() {
+		use openh264::formats::YUVSource;
+		use std::collections::VecDeque;
+		let settings = Settings {
+			source: SourceId::Display(1),
+			width: 320,
+			height: 240,
+			fps: 60,
+			cursor: false,
+			audio: false,
+		};
+		let mut encoder = crate::video_encode::Encoder::software(ScreenEncoder::config(
+			settings,
+			settings.bit_rate(),
+			VideoSettings::default(),
+		))
+		.unwrap();
+		let mut pictures = Vec::new();
+		for value in [128, 64] {
+			pictures.push(
+				encoder
+					.encode_at(&vec![value; 320 * 240 * 3 / 2], true, 0)
+					.unwrap()
+					.data,
+			);
+		}
+		let mut latest = None;
+		let mut delivery = CaptureDelivery::default();
+		let mut pending = VecDeque::new();
+		let mut uploads = 0;
+		let mut last = Vec::new();
+		// Two captures and two keepalives over 240 scheduling opportunities. Model
+		// sixteen-picture lookahead with real encoded pictures and capture accounting.
+		for tick in 0..240 {
+			let raw = (tick == 0 || tick == 120).then(|| RawFrame {
+				format: RawFormat::Bgra8,
+				width: 320,
+				height: 240,
+				stride: 320 * 4,
+				data: vec![if tick == 0 { 128 } else { 64 }; 320 * 240 * 4],
+			});
+			if raw.is_some() {
+				delivery.fresh().unwrap();
+			}
+			let keepalive = tick == 60 || tick == 180;
+			if !retain_screen_frame(
+				&mut latest,
+				raw,
+				true,
+				keepalive || delivery.needs_picture(),
+			)
+			.unwrap()
+			{
+				continue;
+			}
+			let picture = usize::from(latest.as_ref().unwrap().data[0] == 64);
+			pending.push_back((tick * 1500, picture));
+			uploads += 1;
+			let mut packet = crate::video_encode::EncodedPacket {
+				data: Vec::new(),
+				keyframe: false,
+				timestamp: 0,
+				epoch: 0,
+				input_accepted: true,
+			};
+			if pending.len() > 16 {
+				let (timestamp, picture) = pending.pop_front().unwrap();
+				packet.timestamp = timestamp;
+				packet.data = pictures[picture].clone();
+				packet.keyframe = true;
+				last = packet.data.clone();
+			}
+			delivery.record_packet(tick * 1500, &packet).unwrap();
+		}
+		assert_eq!(
+			uploads, 36,
+			"buffered output must not keep uploading an unchanged capture"
+		);
+		assert!(!delivery.needs_picture());
+		assert_eq!(pending.len(), 16);
+		// Reordered, receive-only tail output still drains after the latest
+		// capture was delivered, without turning polling into more uploads.
+		while let Some((timestamp, picture)) = pending.pop_back() {
+			assert!(
+				!retain_screen_frame(&mut latest, None, true, delivery.needs_picture()).unwrap()
+			);
+			let packet = crate::video_encode::EncodedPacket {
+				data: pictures[picture].clone(),
+				keyframe: true,
+				timestamp,
+				epoch: 0,
+				input_accepted: false,
+			};
+			delivery.record_packet(0, &packet).unwrap();
+			last = packet.data;
+		}
+		assert!(delivery.inputs.is_empty() && !delivery.needs_picture());
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		let decoded = decoder.decode(&last).unwrap().unwrap();
+		assert_eq!(decoded.dimensions(), (320, 240));
+		assert!((60..=68).contains(&decoded.y()[0]));
+	}
+
+	#[test]
 	fn delayed_capture_output_finishes_the_latest_picture_without_an_idle_encode_loop() {
 		let mut delivery = CaptureDelivery::default();
 		assert!(!delivery.needs_picture());
 		delivery.fresh().unwrap();
 		// A 16-picture lookahead releases the original input after bounded priming.
 		for timestamp in 0..17 {
-			delivery.submitted(timestamp, 3).unwrap();
+			delivery.submitted(timestamp, 3, true).unwrap();
 		}
 		assert!(delivery.needs_picture());
 		delivery.received(0, 3);
@@ -1455,7 +1696,7 @@ mod tests {
 		}
 		assert!(delivery.inputs.is_empty());
 		delivery.fresh().unwrap();
-		delivery.submitted(20, 3).unwrap();
+		delivery.submitted(20, 3, true).unwrap();
 		assert!(delivery.needs_picture());
 		delivery.received(20, 3);
 		assert!(!delivery.needs_picture());
@@ -1465,22 +1706,62 @@ mod tests {
 	fn capture_delivery_rejects_old_epochs_and_bounds_priming() {
 		let mut delivery = CaptureDelivery::default();
 		delivery.fresh().unwrap();
-		delivery.submitted(5, 0).unwrap();
+		delivery.submitted(5, 0, true).unwrap();
 		delivery.retire();
-		delivery.submitted(6, 1).unwrap();
+		delivery.submitted(6, 1, true).unwrap();
 		delivery.received(5, 0);
 		assert!(delivery.needs_picture());
 		delivery.received(6, 1);
 		assert!(!delivery.needs_picture());
 		delivery.fresh().unwrap();
 		for timestamp in 0..crate::video_encode::MAX_PENDING_PICTURES as u32 {
-			delivery.submitted(timestamp, 1).unwrap();
+			delivery.submitted(timestamp, 1, true).unwrap();
 		}
-		assert!(delivery.submitted(1000, 1).is_err());
+		assert!(delivery.submitted(1000, 1, true).is_err());
 		assert_eq!(
 			delivery.inputs.len(),
 			crate::video_encode::MAX_PENDING_PICTURES
 		);
+		// A poll without new input must remain legal when every real credit is used.
+		delivery.submitted(1000, 1, false).unwrap();
+		assert_eq!(
+			delivery.inputs.len(),
+			crate::video_encode::MAX_PENDING_PICTURES
+		);
+	}
+
+	#[test]
+	fn dropped_and_polled_pictures_do_not_create_capture_inputs() {
+		let mut delivery = CaptureDelivery::default();
+		let mut packet = crate::video_encode::EncodedPacket {
+			data: Vec::new(),
+			keyframe: false,
+			timestamp: u32::MAX - 50,
+			epoch: 4,
+			input_accepted: false,
+		};
+		for timestamp in 0..96 {
+			delivery.fresh().unwrap();
+			delivery.record_packet(timestamp, &packet).unwrap();
+			assert!(delivery.inputs.is_empty() && delivery.needs_picture());
+		}
+		packet.input_accepted = true;
+		delivery.record_packet(packet.timestamp, &packet).unwrap();
+		assert_eq!(delivery.inputs.len(), 1);
+		// Receive-only output identifies its original input, including wrapping RTP
+		// values; the dummy polling timestamp must never enter the ledger.
+		packet.input_accepted = false;
+		packet.data.push(1);
+		delivery.record_packet(0, &packet).unwrap();
+		assert!(delivery.inputs.is_empty() && !delivery.needs_picture());
+
+		delivery.fresh().unwrap();
+		delivery.submitted(1000, 4, true).unwrap();
+		packet.data.clear();
+		packet.epoch = 5;
+		delivery.record_packet(0, &packet).unwrap();
+		delivery.received(1000, 4);
+		assert!(delivery.inputs.is_empty() && delivery.needs_picture());
 	}
 
 	#[test]
@@ -1537,7 +1818,9 @@ mod tests {
 				settings,
 				settings.bit_rate(),
 				VideoSettings::default(),
-				None,
+				// Keep this one-picture geometry fixture independent of native
+				// hardware buffering; explicit encoder tests cover that separately.
+				Some(model::VideoAdapter::default()),
 				0,
 				0,
 			)
@@ -1582,12 +1865,13 @@ mod tests {
 			&ready,
 			&keyframe,
 			&bitrate,
+			Default::default(),
 		)
 		.unwrap();
 		assert_eq!(first.generation, 0);
 		assert!(!ready.load(Ordering::Acquire));
 		assert!(keyframe.load(Ordering::Acquire));
-		assert_eq!(bitrate.load(Ordering::Acquire), 50_000_000);
+		assert_eq!(bitrate.load(Ordering::Acquire), first.rates.maximum);
 		let (_, frames) = tokio::sync::mpsc::channel(1);
 		let video = Video {
 			video_settings: VideoSettings::default(),
@@ -1607,7 +1891,8 @@ mod tests {
 				(settings.width, settings.height),
 				&ready,
 				&keyframe,
-				&bitrate
+				&bitrate,
+				Default::default(),
 			)
 			.unwrap(),
 			first
@@ -1624,6 +1909,7 @@ mod tests {
 			&ready,
 			&keyframe,
 			&bitrate,
+			Default::default(),
 		)
 		.unwrap();
 		assert_eq!(resized.generation, 1);
@@ -1640,7 +1926,8 @@ mod tests {
 				(6144, 2560),
 				&ready,
 				&keyframe,
-				&bitrate
+				&bitrate,
+				Default::default(),
 			)
 			.is_err()
 		);
@@ -1652,6 +1939,7 @@ mod tests {
 			&ready,
 			&keyframe,
 			&bitrate,
+			Default::default(),
 		)
 		.unwrap();
 		assert_eq!(same_output.settings, resized.settings);
@@ -1671,10 +1959,85 @@ mod tests {
 				(settings.width, settings.height),
 				&ready,
 				&keyframe,
-				&bitrate
+				&bitrate,
+				Default::default(),
 			)
 			.is_err()
 		);
+	}
+
+	#[test]
+	fn high_bandwidth_restart_keeps_a_ceiling_above_medium_and_emits_a_fresh_idr() {
+		let settings = Settings {
+			source: SourceId::Display(1),
+			width: 320,
+			height: 240,
+			fps: 60,
+			cursor: false,
+			audio: false,
+		};
+		let video = VideoSettings {
+			bandwidth: model::voice_settings::VideoBandwidth::High,
+			..Default::default()
+		};
+		let maximum = video.bandwidth.rates(320, 240, 60).maximum;
+		let mut encoder = ScreenEncoder::new_on_adapter(
+			settings,
+			maximum,
+			video,
+			Some(model::VideoAdapter::default()),
+			0,
+			0,
+		)
+		.unwrap();
+		let frame = RawFrame {
+			format: RawFormat::Bgra8,
+			width: 320,
+			height: 240,
+			stride: 320 * 4,
+			data: vec![128; 320 * 240 * 4],
+		};
+		let first = encoder.encode_at(&frame, false, 0).unwrap();
+		assert!(first.keyframe);
+		assert!(encoder.set_bitrate(3_000_000).unwrap());
+		assert_eq!(encoder.bitrate, 3_000_000);
+		assert!(encoder.bitrate > settings.bit_rates().maximum);
+		let next = encoder.encode_at(&frame, false, 1500).unwrap();
+		assert!(next.keyframe && next.epoch > first.epoch);
+		assert!(crate::video_receive::has_parameter_sets(&next.data));
+	}
+
+	#[test]
+	fn selected_bandwidth_and_quality_reach_encoder_without_medium_clamping() {
+		use model::voice_settings::{EncoderPreset, VideoBandwidth};
+		let settings = Settings {
+			source: SourceId::Display(1),
+			width: 2560,
+			height: 1440,
+			fps: 60,
+			cursor: true,
+			audio: false,
+		};
+		for bandwidth in VideoBandwidth::ALL {
+			let selected = VideoSettings {
+				bandwidth,
+				quality: EncoderPreset::AmfQuality,
+				..Default::default()
+			};
+			let rates = bandwidth.rates(settings.width, settings.height, settings.fps);
+			let initial = ScreenEncoder::config(settings, rates.maximum, selected);
+			assert_eq!(initial.rates, rates);
+			assert_eq!(initial.preset, selected.quality);
+			let reduced = ScreenEncoder::config(settings, 400_000, selected);
+			assert_eq!(
+				(
+					reduced.rates.minimum,
+					reduced.rates.average,
+					reduced.rates.maximum
+				),
+				(200_000, 400_000, 400_000)
+			);
+		}
 	}
 
 	#[test]
@@ -1688,10 +2051,10 @@ mod tests {
 			audio: false,
 		};
 		let video_settings = VideoSettings::default();
-		let software = crate::video_backend::Encoder::software(ScreenEncoder::config(
+		let software = crate::video_encode::Encoder::software(ScreenEncoder::config(
 			settings,
 			settings.bit_rate(),
-			video_settings.codec,
+			video_settings,
 		))
 		.unwrap();
 		let mut encoder = ScreenEncoder {
@@ -1796,7 +2159,7 @@ mod tests {
 			stop: Arc::new(AtomicBool::new(false)),
 			ready: Arc::new(AtomicBool::new(false)),
 			output: Arc::new(Mutex::new(None)),
-			bitrate: Arc::new(AtomicU32::new(250_000)),
+			bitrate: Arc::new(AtomicU32::new(model::voice_settings::VideoBitrate::MINIMUM)),
 			preview: Arc::new(Mutex::new(Some(preview))),
 			done: None,
 			#[cfg(target_os = "linux")]
@@ -1853,10 +2216,10 @@ mod tests {
 			audio: false,
 		};
 		let video_settings = VideoSettings::default();
-		let encoder = crate::video_backend::Encoder::software(ScreenEncoder::config(
+		let encoder = crate::video_encode::Encoder::software(ScreenEncoder::config(
 			settings,
 			settings.bit_rate(),
-			video_settings.codec,
+			video_settings,
 		))
 		.unwrap();
 		let mut encoder = ScreenEncoder {

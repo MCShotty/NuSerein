@@ -698,7 +698,7 @@ prove live Discord behavior. Editing the server's status is not exposed here.
 
 In a connected call, select **Share your screen**, choose a display/window, **Source**, 480p, 720p, 1080p, 1440p, 4K (2160p) or 8K (4320p), 15/30/60 fps, cursor visibility and optional **Share system audio**, then select **Share screen**. The screen button changes to **Stop sharing** while starting/sharing; it also remains available in the compact call controls. Call microphone controls remain independent. Quality selection does not require Nitro, but Discord acceptance and sustained frame rate are not guaranteed. Source uses physical pixels, including Retina/DPI scaling. Presets preserve the actual source aspect ratio: the preset targets height in landscape, width in portrait, and both axes for square sources. Oversized presets are disabled. Switching to a smaller source replaces an oversized selection with the highest fitting preset, or Source when none fits. The existing default preset and 15/30/60 fps controls remain unchanged. The 4K/8K presets need an encoder that accepts those dimensions and target up to 50 Mbps at 60 fps.
 
-For a 16:9 source, 480p retains 854×480 pixels and a target bitrate of 2 Mbps at 15/30 fps or 4 Mbps at 60 fps. Other standard 16:9 preset rates remain unchanged. Rates for other pixel counts interpolate between these existing targets and remain capped at 50 Mbps. For example, 6144×2560 resolves to 2592×1080 at 1080p; 5120×1440 resolves to 3840×1080. Custom ratios use the same calculation. Odd dimensions align to even encoder sizes with uniform image fitting and at most minimal alignment padding, never stretching. Camera resolution settings are independent.
+For a 16:9 source, 480p retains 854×480 pixels. The selected bandwidth profile determines average and peak rates. Medium is independent of FPS and follows the short edge for custom ratios; High retains the earlier pixel-count/FPS interpolation, capped at 50 Mbps. For example, 6144×2560 resolves to 2592×1080 at 1080p; 5120×1440 resolves to 3840×1080. Custom ratios use the same calculation. Odd dimensions align to even encoder sizes with uniform image fitting and at most minimal alignment padding, never stretching. Camera resolution settings are independent.
 
 Capture uses macOS 14+ ScreenCaptureKit or Windows Graphics Capture. On macOS,
 Share Screen offers the native `SCContentSharingPicker` to choose one display or
@@ -722,8 +722,8 @@ request aborting capture startup. Native Windows verification of this correction
 
 Linux uses the desktop ScreenCast portal and PipeWire. Share Screen opens the system
 screen/window picker after the quality dialog; source discovery never opens that picker.
-The default is 720p30. GStreamer captures bounded raw BGRA pictures. Stable uses
-GStreamer VA/NV encoding with OpenH264 fallback; Experimental uses FFmpeg as
+The default is 720p30. GStreamer captures bounded raw BGRA/P010 pictures.
+Encoding uses FFmpeg as
 described below. The call stage identifies the active encoder and software fallback.
 On Niri, portal frames receive pipeline running-time timestamps before frame-rate
 filtering. This handles Niri 26.04's constant presentation timestamps, which otherwise
@@ -749,8 +749,8 @@ also offer an explicit “Entire X11 desktop · all monitors · no portal” sou
 GStreamer's `ximagesrc` (Good plugins). This shares the whole desktop, not an individual
 window; cancelling or failing the portal never selects it automatically. The existing
 7680×4320 source caps and bounded encoding/preview queues apply. Native X11 capture
-remains unverified. H.265/AV1 sending requires the Experimental backend, compatible hardware and
-explicit codec negotiation; Stable supports H.264.
+remains unverified. H.265/AV1 sending requires compatible hardware and
+explicit codec negotiation. H.264 retains software fallback.
 
 System audio defaults off on Linux and Windows. It shares other applications' playback,
 even when sharing one window, and excludes Serein's own audio, including call playback
@@ -801,73 +801,74 @@ The native demo (`cargo run --locked -p serein -- --demo --demo-voice`) exposes 
 
 ### Video backend and codec settings
 
-Voice & Video → Video encoding, at the bottom of the page, saves a device-local
-backend, codec, camera resolution and frame rate. Camera offers 480p, 720p, 1080p, 1440p,
-4K (2160p) and 8K (4320p), with 15, 30 or 60 fps. Its default remains 640×480/15 fps; other presets use
-their 16:9 dimensions through 7680×4320. A higher camera preset requires a
-native camera mode with at least those dimensions, and fails visibly when
-unavailable. It never enlarges a smaller camera mode to claim 4K/8K. Capture requests
-the closest supported native frame rate and caps output at the selected rate; a
-60 fps preference does not guarantee that a particular camera mode supplies 60 fps. Stable is the
-new-install and migration default, using the original Media Foundation (Windows),
-VideoToolbox (macOS), or GStreamer VA/NV encoders (Linux), with direct OpenH264
-software fallback. Stable supports H.264. Experimental selects the shared FFmpeg
-backend and offers H.264, H.265 and AV1. Camera settings are snapshotted when a call
-starts; a local camera preview uses the current settings and stops when they change.
-Screen sharing snapshots the settings at the explicit Share gesture. Changes do not
-alter an already negotiated stream. Incoming H.264, HEVC and AV1 use the shared
-FFmpeg decoder, admitting visible pictures through 7680×4320 (including portrait
-and 6144×2560) after coded geometry, profile and reference validation. The decoder
-prefers the renderer GPU and falls back to the bundled software decoders.
+FFmpeg is the only camera/screen encoder engine. Voice & Video → Video encoding →
+**Advanced Video Encoding** saves codec, bandwidth profile and quality preset locally.
+Camera resolution and FPS remain independent: 480p through 8K and 15/30/60 fps,
+with the unchanged 640×480/15 fps default. Native modes must supply the requested
+size; smaller modes are never enlarged. Delivery is capped at the chosen FPS.
+Legacy backend preferences migrate without resetting known codec/resolution/FPS.
+Calls and shares snapshot settings at startup; changes do not renegotiate an active
+stream. A camera preview stops when its settings change.
 
-Experimental queries hardware codec capabilities when Voice & Video is opened.
-The H.264, H.265 and AV1 rows show driver-reported NVENC, AMD AMF, Intel Quick Sync
-or Apple VideoToolbox support for the FFmpeg encoders compiled into this build.
-Detection does not initialize an encoder or encode any pictures. NVENC queries
-codec GUIDs/caps through a lightweight capability session; AMF reads component
-caps without initializing it; oneVPL enumerates Intel hardware encoder
-descriptions; VideoToolbox lists hardware-accelerated encoders. A missing or
-incomplete capability API, including legacy Intel descriptions without codec
-metadata, stays Unknown. Recheck repeats only these driver queries.
+**Medium (Recommended)** uses these targets at every codec and frame rate:
 
-**Test encoder** is optional and tests only the selected codec, without software
-or another-vendor fallback. It separately checks camera 640×480/15 fps and screen
-sharing 1280×720/30 fps, with Main profile and at most 48 synthetic pictures per preset
-to cover look-ahead startup. Only the first input requests a keyframe.
-Successful keyframes must pass the size/bitstream checks and contain codec
-parameters. Results are retained per codec and never replace the driver report
-or disable a codec. Failure can reflect a busy device, preset or runtime problem.
-The test does not independently decode the output or verify a live call. Higher
-resolutions/rates, concurrent GPU sessions and peer negotiation can still fail.
-These reports describe Experimental, not Stable.
+| Resolution | Adaptation floor | Average target | Peak ceiling |
+|---|---:|---:|---:|
+| 480p | 200 kbit/s | 600 kbit/s | 1 Mbit/s |
+| 720p | 200 kbit/s | 2 Mbit/s | 3 Mbit/s |
+| 1080p | 200 kbit/s | 6 Mbit/s | 8 Mbit/s |
+| 1440p | 200 kbit/s | 10 Mbit/s | 14 Mbit/s |
+| 4K | 200 kbit/s | 14 Mbit/s | 16 Mbit/s |
+| 8K | 200 kbit/s | 24 Mbit/s | 28 Mbit/s |
 
-Each backend/codec query or test runs in a disposable Serein helper process with
-a ten-second deadline, sequentially on a background thread. For a test, the
-deadline covers both camera and screen presets together. Closing the settings,
-switching to Stable, logging out or exiting cancels the operation and kills/reaps
-its helper. Cancelled automatic detection discards its partial report and starts
-again when the panel is reopened. Cancelled encoder tests wait for another click.
-Crashes, helper failures and timeouts are Unknown, not evidence that a codec is
-unsupported. Only a complete negative driver report disables new H.265/AV1
-selections; saved selections remain with a warning and H.264 stays selectable for
-software fallback. Results are process-local and never persisted. Offline demos
-use Unknown or explicitly synthetic fixtures without accessing drivers. Helpers
-never initialize capture, microphone, credentials or network sessions.
+Low halves Medium's average/peak, retaining the floor. High restores the previous
+screen pixel/FPS policy (1440p30 12 Mbit/s, 1440p60 24 Mbit/s), capped at 50 Mbit/s
+and never below Medium. Medium/Low interpolate custom sizes by the short edge,
+including portrait and ultrawide sources. These are encoder targets, not guaranteed
+wire rates or equal visual quality across codecs/FPS. Authenticated feedback can
+reduce average/peak to the floor. Announcements carry the selected peak ceiling.
 
-Experimental uses native FFmpeg 7.1.5 `libavcodec`/`libavutil` contexts on the media
-worker without a CLI process. Both Stable and Experimental target the physical GPU
-used by the running renderer. General → Graphics preference takes effect after restart;
-changing a saved preference does not move an active call to another GPU. Windows
-uses the renderer's adapter LUID, Linux its Vulkan PCI identity, and macOS its Metal
-registry ID. NVENC, AMF and Quick Sync are eligible only for that GPU. An unknown
-or unsupported physical identity excludes hardware rather than guessing a different
-adapter. H.264 then falls back to `libopenh264`.
-H.265 and AV1 require compatible hardware and fail visibly if no encoder succeeds;
-there is no automatic change of codec. macOS supports H.264/H.265 VideoToolbox
-hardware with H.264 software fallback; AV1 has no compatible backend in this recipe.
-Windows ARM64 supports H.264 software encoding. Experimental excludes Media
-Foundation and VA-API encoders; the Linux VA interface remains enabled for Quick
-Sync's device. Incoming decoding and native capture APIs are independent.
+Only positively reported hardware codecs can be newly selected; unknown or failed
+queries do not enable choices. Saved selections remain visible with a warning.
+H.264 defaults to FFmpeg OpenH264 software fallback when hardware is unavailable.
+If a saved H.265/AV1 selection cannot switch to H.264 through the hardware choices,
+**Restore H.264 default** explicitly restores H.264/Automatic, including while a query
+is pending or has failed. It preserves bitrate, camera resolution and frame rate.
+H.265/AV1 have no software encoder and fail visibly without changing codec.
+Windows ARM64 is H.264 software-only. macOS supports H.264/H.265 VideoToolbox,
+without an AV1 encoder. Incoming FFmpeg decoding and native capture stay independent.
+
+Opening Advanced Video Encoding queries the renderer's exact physical GPU.
+Discovery never initializes an encoder or submits pictures: NVENC enumerates codec
+and preset GUIDs, AMF reads writable quality enums and validates property values,
+oneVPL enumerates codec metadata and queries TargetUsage, and VideoToolbox lists
+hardware encoders. Named quality choices intersect driver results with this FFmpeg
+build's options. Automatic preserves existing vendor defaults. Incomplete preset
+queries expose no new named choices; a complete report for an available codec
+removes unsupported saved presets. VideoToolbox has no named quality presets in this
+interface.
+Encoder startup uses Automatic for a saved preset owned by a different backend,
+including H.264 software fallback, without changing codec or bitrate. Explicit
+encoder tests reject foreign-vendor presets instead of testing a substituted default.
+
+**Test encoder** explicitly tests the selected codec and quality preset using bounded
+640×480/15 fps camera and 1280×720/30 fps screen fixtures (at most 48 pictures each).
+It uses no software/other-vendor fallback. Reports label the tested codec/preset and
+never override discovery. They do not independently decode output or establish native
+capture, higher-resolution performance or live Discord interoperability.
+
+Each query/test runs sequentially in a disposable helper with a ten-second deadline.
+Closing/collapsing settings, logout and exit cancel and reap it. Reopening restarts
+cancelled discovery; tests always require another click. Reports are bounded,
+process-local and unpersisted. Missing APIs, crashes and timeouts remain Unknown.
+Offline demos never access drivers, capture, credentials or network sessions.
+
+The media worker uses native FFmpeg contexts without a CLI, bound to the running
+renderer GPU (Windows LUID, Linux Vulkan PCI identity, macOS Metal registry ID).
+GPU preferences take effect after restart. Unknown identities exclude hardware
+instead of selecting another GPU. The old platform encoder stack is removed.
+Media Foundation and VA-API encoders are disabled; Quick Sync retains its Linux
+VA device interface. Packages retain complete libraries, licenses and rebuild sources.
 
 AMF needs the installed AMD runtime: D3D11 on Windows, Vulkan through AMF on Linux.
 Quick Sync uses the static oneVPL dispatcher and an installed Intel GPU runtime,
@@ -881,15 +882,15 @@ Bitrate restarts retain the active backend and do not retry earlier failed featu
 H.264 software fallback stays software. Native SDK calls and teardown may block;
 the bounded queue is not a driver-call deadline. Hardware remains unverified here.
 
-Neither backend requests an explicit low-latency video mode. Experimental uses
+FFmpeg requests no explicit low-latency video mode. Automatic uses
 NVENC P5 with high-quality tuning, AMF balanced transcoding for H.264/AV1 and
 high-quality usage with the highest `quality` preset for H.265, without a latency
 requirement, and Quick Sync's medium preset with its default four-task
-parallelism. VideoToolbox's real-time hint is disabled in both backends; Stable
-does not request Media Foundation low-latency or GStreamer zero-latency operation.
-Experimental requests sixteen-picture look-ahead when supported: NVENC uses
+parallelism. Explicit supported quality presets replace only those preset options.
+VideoToolbox's real-time hint remains disabled. FFmpeg requests sixteen-picture
+look-ahead when supported: NVENC uses
 `rc-lookahead=16` with 24 surfaces; AMF uses preanalysis with a 16-picture buffer;
-QSV uses external bitrate control with `look_ahead_depth=16`, retaining CBR and
+QSV uses external bitrate control with `look_ahead_depth=16`, retaining requested CBR/VBR and
 the existing bitrate/buffer/frame limits. NVENC driver caps are queried on the exact
 adapter. The pinned QSV wrapper rejects driver-corrected unsupported look-ahead
 and exposes its effective reference distance. Unsupported feature combinations
@@ -926,7 +927,7 @@ forward forced picture types. Repeated requests coalesce while the first new key
 is pending, so look-ahead can fill. The pinned
 FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning for H.264 software
 fallback, including screens; active desktop text quality and throughput need native
-validation. Stable retains OpenH264's original screen-content tuning.
+validation. H.264 software encoding uses the existing FFmpeg/OpenH264 path.
 
 Official builds use the pinned minimal LGPL recipe in
 [`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py), with GPL/nonfree components,
@@ -957,8 +958,7 @@ loss, rekeying and congestion retain the bounded keyframe recovery path.
 
 Camera output preserves its default 128 KiB encoded-picture budget, rising to
 256 KiB at 720p, 512 KiB at 1080p, 1 MiB at 1440p and 2 MiB at 4K/8K. Screen
-output remains bounded at 2 MiB per encoded picture. Camera pictures
-use independent pictures in Stable. Experimental camera and screen encoders use a
+output remains bounded at 2 MiB per encoded picture. Camera and screen encoders use a
 two-second GOP with periodic or requested keyframes and supported reordering for
 H.265/AV1. H.264 keyframes repeat SPS/PPS; H.265 repeats VPS/SPS/PPS;
 AV1 repeats a sequence header. Rate changes retain the existing 15% reduction /
@@ -1009,12 +1009,9 @@ the same resolution. Linux probes each candidate with its effective
 V4L2 interval before ranking it and reapplies the selected interval after the final
 format change. Drivers without interval metadata rank last at the same resolution.
 Capture is converted to the selected output dimensions, capped at the selected
-15/30/60 encoded frames/second, and encoded on a worker. At 15 fps, camera bitrate
-targets are 600 kbit/s at 480p, 2/4/8 Mbit/s at 720p/1080p/1440p, 16 Mbit/s at 4K
-and 40 Mbit/s at 8K. Targets scale with the selected frame rate, capped at 50 Mbit/s;
-these are targets, not measured bandwidth guarantees. The worker uses the backend/codec snapshot described above. H.264 requests
-Baseline; Stable emits independently decodable pictures. Experimental H.265/AV1
-use their Main profile with a two-second GOP and supported frame reordering;
+15/30/60 encoded frames/second, and encoded on a worker. Camera and screen share
+use the same selected bandwidth profile. H.264 uses Main profile and a two-second
+GOP; H.265/AV1 use Main profile with supported frame reordering;
 periodic and requested keyframes recover from dropped frames. See
 [backend presets](#video-backend-and-codec-settings).
 Invalid output advances through compatible backends; only H.264 has
@@ -1029,8 +1026,7 @@ One RGB preview, one encoded frame (2 MiB), and up to 2048 RTP
 packets from one bounded frame are retained. A one-picture async camera channel wakes
 the transport independently of the 20 ms audio tick, allowing delivery above 50 fps.
 Packet pacing uses elapsed time at
-2.5× the selected bitrate target, with a bounded catch-up window. Stable frames are
-independently decodable to tolerate drops; Experimental uses the GOP and keyframe
+2.5× the selected peak ceiling, with a bounded catch-up window. FFmpeg uses the GOP and keyframe
 recovery described above. Codec-specific DAVE frame encryption precedes RTP fragmentation and the existing authenticated
 UDP transport. No camera recording or cache is created; the codec is included on supported platforms.
 

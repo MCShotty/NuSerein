@@ -492,9 +492,6 @@ impl Voice {
 		ring: bool,
 		video_settings: model::voice_settings::VideoSettings,
 	) -> Result<(), &'static str> {
-		if !video_settings.is_valid() {
-			return Err("Stable video encoding supports H.264 only");
-		}
 		self.camera_test = None;
 		let preview_retired = self.stop_mic_preview();
 		self.reap();
@@ -2690,29 +2687,15 @@ mod tests {
 
 	#[test]
 	fn call_request_snapshots_video_preferences_without_opening_media() {
-		use model::voice_settings::{VideoBackend, VideoCodec, VideoSettings};
+		use model::voice_settings::{VideoCodec, VideoSettings};
 		let mut state = test_support::demo_state();
 		state.demo = false;
 		state.start_call(Id(22), true).unwrap();
 		let selected = VideoSettings {
-			backend: VideoBackend::Experimental,
 			codec: VideoCodec::Av1,
 			..VideoSettings::default()
 		};
 		let mut manager = Voice::default();
-		assert!(
-			manager
-				.begin_with_video(
-					&state,
-					true,
-					VideoSettings {
-						backend: VideoBackend::Stable,
-						..selected
-					}
-				)
-				.is_err()
-		);
-		assert!(manager.pending.is_none());
 		manager.begin_with_video(&state, true, selected).unwrap();
 		assert_eq!(manager.pending.as_ref().unwrap().video_settings, selected);
 		assert!(manager.live.is_none() && manager.camera.is_none());
