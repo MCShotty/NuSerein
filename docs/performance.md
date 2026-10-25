@@ -3762,3 +3762,86 @@ The security job reports unchanged baseline versions of `crypto-bigint`, `ctutil
 encoder dependency edge, without changing dependency versions. License checks pass.
 Owner-controlled GPU codec/preset validation, live Discord acceptance, media quality,
 physical Windows/macOS screens, HDR and game-FPS comparisons remain unavailable.
+
+## Encoding recovery and UI review (2026-10-25)
+
+Runtime `188635b7`, baseline `858fddbe`. Review found two still-valid issues:
+
+- Hardware-filtered controls could strand a saved H.265/AV1 selection. An explicit
+  **Restore H.264 default** action now restores H.264/Automatic without changing
+  bandwidth, camera resolution or FPS. Hardware choices remain filtered.
+- A saved preset owned by another GPU vendor could prevent current hardware startup,
+  forcing H.264 to software or failing H.265/AV1. Both native opening paths now use
+  Automatic for foreign presets; explicit encoder tests reject substitution.
+
+The Linux drain-only deadline finding was outdated: the current check already runs
+outside the optional-packet branch, including empty polls and backpressure/reset paths.
+No Linux-loop change was needed.
+
+The original recovery regression failed before the fix. Twenty-four mouse/keyboard
+cases now pass, alongside preset ownership matrices and real bounded software
+open/encode/reconfigure/fresh-keyframe checks. All 2,227 workspace unit/bin/integration
+executions passed locally (35 ignored), with strict all-target Clippy, formatting,
+the minimal application build, policy and handoff/workspace checks. The local full
+wrapper exhausted build storage linking compile-only examples; all four runtime
+[Windows x64/ARM64, macOS and Linux CI gates](https://github.com/MCShotty/Serein/actions/runs/40184715159)
+subsequently passed `cargo xtask check`. Native packages were still running when
+this evidence was written. Licenses, fuzz, SDK and all three replay jobs passed;
+the dependency audit retains the previously recorded unchanged-version findings.
+
+Fresh synthetic native checks covered encoding recovery, sharing controls,
+mention/member/role presentation, time settings and embed-card layout. Dark/light,
+580-pixel settings and a 150% X11 sharing layout were inspected. Native mouse input
+confirmed H.264 recovery preserves High; keyboard activation was tested through the
+production UI event path. The matched [before](pr-evidence/ffmpeg-video-controls/recovery-before.png)
+and [after](pr-evidence/ffmpeg-video-controls/recovery-after.png) captures show the
+same saved-codec/High-profile state at 1120×900, scale 1. The capability indicator is
+an explicit pending fixture, not an actual driver result or a completed hardware test.
+
+### Matched release process and package measurements
+
+Same Linux 6.18.55/glibc 2.41 Xeon Platinum 8573C, 16 GiB limit, OpenGL llvmpipe
+LLVM 19.1.7/Mesa 25.0.7; normal release `demo` previews. Same saved H.265 and twelve
+native wheel events; visible-paint/liveness gate, three-second warmup, five seconds
+of 100-ms samples, two-second settling. One warmup and five alternating fresh
+processes, one CPU, no concurrent compiler or soak. The pending indicator animates:
+this measures that fixture, not ordinary idle use or media throughput.
+
+| Metric | `858fddbe` | `188635b7` | Delta |
+| --- | ---: | ---: | ---: |
+| CPU, percent of one core | 91.791% | 93.117% | +1.326 percentage points |
+| Peak/settled RSS | 165,253,120 B | 165,183,488 B | -69,632 B |
+| Helper peak RSS | 0 B | 0 B | 0 B |
+| Executable | 97,640,072 B | 97,641,992 B | +1,920 B |
+| Installed payload | 226,405,341 B | 226,407,261 B | +1,920 B |
+| Normalized ZIP | 155,328,087 B | 155,328,640 B | +553 B |
+
+Normal `cargo xtask package --format dir` used an empty output and matching release
+settings; no staging repair. ZIP uses sorted entries, fixed timestamps and Deflate 6.
+Only the installed executable differs; libraries, source bundles, notices and file
+membership are identical. Staged and installed codec/synthetic speech launches pass
+with development FFmpeg paths removed, and both retain only `$ORIGIN` runpaths.
+One initial speech self-test reported a processing failure. A paired baseline/current
+check and the complete validation rerun passed; no speech code or assets changed,
+and no cause is claimed. Executable SHA-256: `c4eec94197585c281cd6c0478b900df848070ebfeb54a3c19985e8c4b39868b6`.
+
+The verified unchanged core replay and 120-second soak passed: 3,972 passes,
+127,104 channel visits, 76,262,400 inserts and 16 logout cycles in 120.021 seconds.
+Current native CI compares nightly `v1.0.0-nightly.20261025.64` / `38e46b8f`, fork
+`149644aa` and runtime `188635b7`, with one warmup/five rotating samples. Release
+opt-level 3, thin LTO, one codegen unit and abort-on-panic; Linux/Windows pin one CPU,
+macOS uses its scheduler. Separate runners are not cross-platform speed comparisons.
+
+| OS / workload | Nightly (ms) | Fork (ms) | Runtime (ms) | Runtime vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux reducer | 78.062 | 84.811 | 84.309 | -0.59% |
+| Linux wide channels | 163.349 | 9.129 | 9.110 | -0.20% |
+| Windows reducer | 77.654 | 80.183 | 80.597 | +0.52% |
+| Windows wide channels | 94.542 | 8.586 | 8.817 | +2.68% |
+| macOS reducer | 63.469 | 62.168 | 62.983 | +1.31% |
+| macOS wide channels | 82.979 | 5.813 | 5.811 | -0.03% |
+
+Linux fork/runtime replay binaries are byte-identical. These timings make no
+optimization claim. Actual GPU quality/presets, capture/game FPS, provider playback,
+HDR/physical displays, native assistive technology and live Discord acceptance remain
+unverified. Screenshots and offline packets do not establish those outcomes.
