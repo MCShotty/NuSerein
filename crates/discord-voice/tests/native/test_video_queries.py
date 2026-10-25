@@ -377,6 +377,55 @@ int main(void) {
 
 
 
+def run_amf_control(prefix, archive):
+    """Compile the real patched AMF source with synthetic driver calls/clock."""
+    if sys.platform != "linux":
+        print("AMF polling fixture requires the Linux C linker; native builds remain required")
+        return
+    repository = Path(__file__).resolve().parents[4]
+    spec = importlib.util.spec_from_file_location("ffmpeg_recipe", repository / "scripts/build-ffmpeg.py")
+    recipe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recipe)
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == recipe.SOURCES["ffmpeg"]["sha256"]
+    with tempfile.TemporaryDirectory(prefix="serein-amf-control-") as directory:
+        root = Path(directory)
+        with tarfile.open(archive) as source:
+            for member in source:
+                path = Path(member.name)
+                if not member.isfile() or path.parts[0] != "ffmpeg-7.1.5":
+                    continue
+                relative = Path(*path.parts[1:])
+                if relative.suffix != ".h" and not str(relative).startswith("libavcodec/amfenc"):
+                    continue
+                assert ".." not in relative.parts and member.size < 4 * 1024 * 1024
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.extractfile(member).read())
+        for relative, old, new in recipe.amf_control_patches():
+            path = root / relative
+            current = path.read_text()
+            assert current.count(old) == 1, relative
+            path.write_text(current.replace(old, new))
+        (root / "libavcodec/serein_amf_control.h").write_text(recipe.AMF_CONTROL)
+        # Driver-specific paths are disabled. This fixture directly supplies
+        # delayed native surfaces to the actual receive/retirement functions.
+        (root / "config.h").write_text(
+            "#define CONFIG_D3D11VA 0\n#define CONFIG_DXVA2 0\n#define CONFIG_VULKAN 0\n"
+            "#define HAVE_DLFCN_H 1\n#define HAVE_UNISTD_H 1\n#define HAVE_THREADS 0\n")
+        (root / "config_components.h").write_text("")
+        executable = root / "amf-control-test"
+        subprocess.run([
+            *shlex.split(os.environ.get("CC", "cc")), "-std=c11", "-Wall", "-Wextra",
+            "-Werror=implicit-function-declaration", "-Werror=incompatible-pointer-types",
+            "-Wno-unused-function", "-Wno-unused-parameter", "-ffunction-sections", "-fdata-sections",
+            "-I" + str(prefix / "include"), "-I" + str(root), "-I" + str(root / "libavcodec"),
+            str(Path(__file__).with_name("video_amf_control_test.c")),
+            "-Wl,--gc-sections", "-L" + str(prefix / "lib"), "-Wl,-rpath," + str(prefix / "lib"),
+            "-lavcodec-serein", "-lavutil-serein", "-ldl", "-lm", "-o", str(executable),
+        ], check=True)
+        subprocess.run([str(executable)], check=True, timeout=10)
+
+
 def run_patch(archive):
     repository = Path(__file__).resolve().parents[4]
     spec = importlib.util.spec_from_file_location("ffmpeg_recipe", repository / "scripts/build-ffmpeg.py")
@@ -391,7 +440,7 @@ def run_patch(archive):
         paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavformat/libavformat.v", "libavutil/hwcontext_videotoolbox.h", "libavutil/hwcontext_videotoolbox.c", "libavcodec/videotoolbox.c",
                  "libswscale/libswscale.v", "libswresample/libswresample.v", "libavcodec/qsvenc.c", "libavcodec/qsvenc.h",
                  "libavcodec/amfenc.c", "libavcodec/amfenc.h", "libavcodec/amfenc_hevc.c",
-                 "libavcodec/amfenc_av1.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c", "libavcodec/libdav1d.c"]
+                 "libavcodec/amfenc_av1.c", "libavcodec/amfenc_h264.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c", "libavcodec/libdav1d.c"]
         with tarfile.open(archive) as source:
             for path in paths:
                 content = source.extractfile("ffmpeg-7.1.5/" + path).read()
@@ -402,7 +451,7 @@ def run_patch(archive):
         subprocess.run(["patch", "--batch", "--fuzz=0", "-p1"], input=patch, text=True,
                        cwd=reproduced, stdout=subprocess.DEVNULL, check=True)
         original_paths = paths.copy()
-        generated_paths = ["libavcodec/serein_qsv_feature_validation.h", "libavcodec/serein_amf_split_encoding.h"]
+        generated_paths = ["libavcodec/serein_qsv_feature_validation.h", "libavcodec/serein_amf_split_encoding.h", "libavcodec/serein_amf_control.h"]
         paths.extend(generated_paths)
         for path in paths:
             assert (modified / path).read_bytes() == (reproduced / path).read_bytes(), path
@@ -425,17 +474,21 @@ def run_patch(archive):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Offline native media regressions; no GPU/capture access.")
-    parser.add_argument("--suite", choices=["queries", "encoding", "patch", "all"], default="queries")
+    parser.add_argument("--suite", choices=["queries", "encoding", "amf-control", "patch", "all"], default="queries")
     parser.add_argument("--prefix", type=Path)
     parser.add_argument("--archive", type=Path)
     args = parser.parse_args()
-    if args.suite in ["queries", "encoding", "all"] and args.prefix is None:
+    if args.suite in ["queries", "encoding", "amf-control", "all"] and args.prefix is None:
         parser.error("--prefix is required for query/encoding fixtures")
-    if args.suite in ["patch", "all"] and args.archive is None:
+    if args.suite in ["patch", "amf-control", "all"] and args.archive is None:
         parser.error("--archive is required for patch fixtures")
     if args.suite in ["queries", "all"]:
         run_queries(args.prefix.resolve())
     if args.suite in ["encoding", "all"]:
         run_encoding(args.prefix.resolve())
+        archive = args.archive or args.prefix / "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz"
+        run_amf_control(args.prefix.resolve(), archive.resolve())
+    if args.suite == "amf-control":
+        run_amf_control(args.prefix.resolve(), args.archive.resolve())
     if args.suite in ["patch", "all"]:
         run_patch(args.archive.resolve())

@@ -130,13 +130,22 @@ The FFmpeg build uses the `-serein` library suffix and `SEREIN_LIBAVCODEC_61` /
 FFmpeg used by GStreamer's incoming-video plugins. The other three FFmpeg libraries
 use their corresponding private symbol versions. The version-script changes,
 QSV allocation/dependency fixes, dav1d allocation limits, checked QSV quality negotiation, explicit
-VideoToolbox GPU registry selection and AMF external Vulkan-device support are retained as
+VideoToolbox GPU registry selection, AMF external Vulkan-device support and bounded AMF
+cancellation/retained-frame cleanup are retained as
 `serein-ffmpeg.patch` with the original source archive. QSV requests packet allocation through the app's capped buffer
 callback, so an excessive driver-advised packet size fails before allocation.
 The pinned HEVC-QSV encoder also selects its internal HEVC SEI helpers, which
 upstream 7.1.5 omits from that encoder's configure dependencies; the shared decoders are
 enabled. Linux shared-library linking uses `-z defs`, rejecting unresolved
 symbols before installation.
+
+The private AMF wrapper checks a versioned, locally supplied cancellation callback
+between driver polls and ends a pending encode after 15 seconds without output.
+Cancelled and timed-out calls remain distinct from ordinary codec failures. Pending
+hardware-frame references are bounded to 48 and released after encoder termination,
+including when shutdown discards their output. These controls do not change quality,
+lookahead, codec selection or bitrate. Calls already executing inside the GPU driver
+remain subject to that driver's return; the callback does not terminate native threads.
 
 Linux also isolates bundled OpenH264 from host GStreamer plugins. Its runtime
 SONAME is `libopenh264-serein.so.8`; its seven public entry points use the

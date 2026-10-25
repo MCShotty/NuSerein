@@ -13,6 +13,140 @@ use super::{
 	wait_for_voice_interruption, watch,
 };
 
+type StreamScope = (model::Id, u64, u64);
+
+/// One share owns at most one remote deletion. Queue pressure must not drop it,
+/// and repeated Stop clicks must not publish another delete while its ACK waits.
+#[derive(Default)]
+struct StreamStops {
+	active: Option<StreamScope>,
+	interruption: u64,
+	requested: bool,
+	pending: bool,
+}
+
+impl StreamStops {
+	fn started(&mut self, scope: StreamScope, interruption: u64) {
+		*self = Self {
+			active: Some(scope),
+			interruption,
+			..Self::default()
+		};
+	}
+
+	fn reconcile(
+		&mut self,
+		owner: Option<(model::Id, u64)>,
+		online: bool,
+		interruption: u64,
+		taken_over: Option<(model::Id, u64)>,
+	) {
+		if let Some((channel, request, _)) = self.active {
+			if owner != Some((channel, request)) || taken_over == Some((channel, request)) {
+				*self = Self::default();
+				return;
+			}
+			// RESUME preserves the same service call/stream but drains queued
+			// controls. Retain its exact deletion once for the resumed socket.
+			if self.requested && (!online || self.interruption != interruption) {
+				self.pending = true;
+			}
+			self.interruption = interruption;
+		}
+	}
+
+	fn acknowledge(&mut self, scope: Option<StreamScope>) {
+		if scope.is_some() && self.active == scope {
+			*self = Self::default();
+		}
+	}
+
+	fn request(
+		&mut self,
+		sender: &mpsc::Sender<client_core::voice::Command>,
+		scope: StreamScope,
+		online: bool,
+	) -> Result<bool, &'static str> {
+		if self.active != Some(scope) {
+			return Ok(false);
+		}
+		if self.requested {
+			return Ok(true);
+		}
+		self.requested = true;
+		if !online {
+			self.pending = true;
+			return Ok(true);
+		}
+		let control = Self::command(scope);
+		match sender.try_send(control) {
+			Ok(()) => {}
+			Err(mpsc::error::TrySendError::Full(_)) => self.pending = true,
+			Err(mpsc::error::TrySendError::Closed(_)) => {
+				return Err("Screen-share stop could not be sent; voice signaling is disconnected");
+			}
+		}
+		Ok(true)
+	}
+
+	fn take_pending(&mut self) -> Option<client_core::voice::Command> {
+		if !std::mem::take(&mut self.pending) {
+			return None;
+		}
+		self.active.map(Self::command)
+	}
+
+	fn command((channel, request, stream_request): StreamScope) -> client_core::voice::Command {
+		client_core::voice::Command::StopStream {
+			channel,
+			request,
+			stream_request,
+		}
+	}
+}
+
+/// A queued Leave supersedes a share deletion: the Gateway's ordered Leave
+/// clears its stream before a new Join can establish another owner.
+fn queue_leave(
+	sender: &mpsc::Sender<client_core::voice::Command>,
+	pending: &mut Option<client_core::voice::Command>,
+	control: client_core::voice::Command,
+	owner: Option<(model::Id, u64)>,
+) -> Result<(), Failure> {
+	debug_assert!(matches!(control, client_core::voice::Command::Leave { .. }));
+	if !matches!(control, client_core::voice::Command::Leave { channel, request } if owner == Some((channel, request)))
+	{
+		return Ok(());
+	}
+	match sender.try_send(control) {
+		Ok(()) => Ok(()),
+		Err(mpsc::error::TrySendError::Full(control)) => {
+			if pending.is_none() {
+				*pending = Some(control);
+			}
+			Ok(())
+		}
+		Err(mpsc::error::TrySendError::Closed(_)) => Err(Failure::Network),
+	}
+}
+
+fn release_ready(pending: Option<client_core::voice::Command>, online: bool) -> bool {
+	pending.is_some()
+		&& (online || !matches!(pending, Some(client_core::voice::Command::Leave { .. })))
+}
+
+fn dispatch_release(
+	permit: mpsc::Permit<'_, client_core::voice::Command>,
+	pending: &mut Option<client_core::voice::Command>,
+	online: bool,
+) {
+	// A disconnect may race the queue reservation. Remote Leave must survive
+	// until RESUME; local AbandonSession retains its existing dispatch semantics.
+	if release_ready(*pending, online) {
+		permit.send(pending.take().expect("pending voice release"));
+	}
+}
+
 impl Connection {
 	pub fn start(
 		runtime: &Handle,
@@ -110,6 +244,7 @@ impl Connection {
                 let gateway_recipient_call=recipient_call.clone();
                 let gateway_channels=dm_channels.clone();
                 let (voice_online,mut voice_availability)=watch::channel(false);
+                let (stream_ended,mut stream_ended_receive)=watch::channel(None);
                 let (voice_lifecycle,mut lifecycle_changed)=watch::channel(VoiceLifecycle::default());
                 let (takeover_send,mut takeover_receive)=watch::channel(None);
                 let gateway_takeover=takeover_send.clone();
@@ -155,6 +290,7 @@ impl Connection {
 
                         if event.ready_navigation().is_some() || matches!(&event,Event::Resumed) {let _=voice_online.send(true);}
                         if matches!(&event,Event::Disconnected|Event::Resync) {let _=voice_online.send(false);}
+                        if let Event::Voice(client_core::voice::Event::Stream{channel,request,stream_request,event:client_core::screen::Event::Deleted{..}})=&event {let _=stream_ended.send_replace(Some((*channel,*request,*stream_request)));}
                         voice_lifecycle.send_if_modified(|lifecycle|lifecycle.observe(&event));
                         if let Event::Voice(client_core::voice::Event::TakenOver{channel,request})=&event {let _=gateway_takeover.send_replace(Some((*channel,*request)));}
                         gateway_emit(event)
@@ -206,10 +342,13 @@ impl Connection {
                 let mut voice_request:Option<(model::Id,u64,bool)>=None;
 				let (soundboard_owner,soundboard_owner_changed)=watch::channel(None);
                 let mut current_lifecycle=VoiceLifecycle::default();
-                // One local release may wait for queue space; later joins cannot overtake it.
-                let mut pending_abandonment=None;
+                // One release may wait for queue space; later joins cannot overtake it.
+                let mut pending_release=None;
+                let mut stream_stops=StreamStops::default();
                 loop {
 					let owner=voice_request.map(|(channel,request,_)|(channel,request));
+					stream_stops.acknowledge(*stream_ended_receive.borrow_and_update());
+					stream_stops.reconcile(owner,*voice_availability.borrow(),lifecycle_changed.borrow().interruption,*takeover_receive.borrow());
 					soundboard_owner.send_if_modified(|current| {if *current==owner {false} else {*current=owner;true}});
                     tokio::select! {
 						changed=admin_scope.changed()=> {
@@ -225,12 +364,28 @@ impl Connection {
                             let calls=recipient_call.lock().map_err(|_|Failure::Protocol)?;
                             if recipient_ringing.as_ref().is_some_and(|(control,_)| !recipient_write_allowed(*control,&calls,&channels)) {drop(recipient_ringing.take());}
                         }
-                        permit=voice_send.reserve(), if pending_abandonment.is_some()=> {
+                        permit=voice_send.reserve(), if release_ready(pending_release,*voice_availability.borrow())=> {
                             if let Ok(permit)=permit {
-                                permit.send(pending_abandonment.take().expect("pending abandonment"));
+                                dispatch_release(permit,&mut pending_release,*voice_availability.borrow());
                             } else {
                                 // The Gateway task owns connection termination when its queue closes.
-                                pending_abandonment=None;
+                                pending_release=None;
+                            }
+                        }
+                        changed=stream_ended_receive.changed()=> {
+                            if changed.is_err() {break;}
+                            stream_stops.acknowledge(*stream_ended_receive.borrow_and_update());
+                        }
+                        permit=voice_send.reserve(), if stream_stops.pending && pending_release.is_none() && *voice_availability.borrow()=> {
+                            // Watch changes can become ready in the same select as capacity.
+                            // Recheck them before sending a deletion for the retired call.
+                            stream_stops.acknowledge(*stream_ended_receive.borrow_and_update());
+                            let online=*voice_availability.borrow();
+                            stream_stops.reconcile(voice_request.map(|(channel,request,_)|(channel,request)),online,lifecycle_changed.borrow().interruption,*takeover_receive.borrow());
+                            if let Ok(permit)=permit {
+                                if online && let Some(control)=stream_stops.take_pending() {permit.send(control);}
+                            } else {
+                                stream_stops=StreamStops::default();
                             }
                         }
                         changed=takeover_receive.changed()=> {
@@ -544,11 +699,35 @@ impl Connection {
 									|client_core::voice::Command::StopStream{channel,request,stream_request}=>(channel,request,stream_request),
 									_=>unreachable!(),
 								};
-								let message=if !*voice_availability.borrow() {
+								let owner=voice_request.map(|(channel,request,_)|(channel,request));
+								let online=*voice_availability.borrow();
+								let interruption=lifecycle_changed.borrow().interruption;
+								stream_stops.acknowledge(*stream_ended_receive.borrow_and_update());
+								stream_stops.reconcile(owner,online,interruption,*takeover_receive.borrow());
+								let message=if matches!(control,client_core::voice::Command::StopStream{..}) {
+									match stream_stops.request(&voice_send,(channel,request,stream_request),online) {
+										Ok(true)=>None,
+										Ok(false)=>{
+											// No Start for this identity entered the Gateway queue,
+											// or its call was already replaced/released.
+											emit(Event::Voice(E::Stream{channel,request,stream_request,event:screen::Event::Deleted{reason:None}}))?;
+											continue;
+										}
+										Err(message)=>Some(message),
+									}
+								} else if !online {
 									Some("Voice signaling is disconnected; screen-share action was not sent")
-								} else if voice_send.try_send(control).is_err() {
-									Some("Screen-share action was not sent; the voice queue is full")
-								} else {None};
+								} else if owner!=Some((channel,request)) {
+									Some("The call changed; screen sharing was not started")
+								} else if pending_release.is_some() || stream_stops.pending {
+									Some("The previous screen share is stopping; retry after it finishes")
+								} else {
+									match voice_send.try_send(control) {
+										Ok(())=>{stream_stops.started((channel,request,stream_request),interruption);None},
+										Err(mpsc::error::TrySendError::Full(_))=>Some("Screen-share action was not sent; the voice queue is full"),
+										Err(mpsc::error::TrySendError::Closed(_))=>Some("Voice signaling is disconnected; screen-share action was not sent"),
+									}
+								};
 								if let Some(message)=message {
 									emit(Event::Voice(E::Stream{channel,request,stream_request,event:screen::Event::Failed(message)}))?;
 								}
@@ -623,14 +802,14 @@ impl Connection {
                                         drop(ringing.take());drop(recipient_ringing.take());
                                         recipient_call.lock().map_err(|_|Failure::Protocol)?.active=None;
                                     }
-                                    queue_abandonment(&voice_send,&mut pending_abandonment,control,owner);
+                                    queue_abandonment(&voice_send,&mut pending_release,control,owner);
                                     continue;
                                 }
                                 if matches!(control,V::ConfirmSession{..}) {
                                     if let Some(error)=queue_confirmation(&voice_send,control,voice_request,*voice_availability.borrow()) {report_confirmation_failure(&confirmation_report,generation,error,voice_request,&wake);}
                                     continue;
                                 }
-                                if abandonment_blocks_join(pending_abandonment,control) {
+                                if abandonment_blocks_join(pending_release,control) {
                                     emit(Event::Voice(E::Failed{channel,request,message:"Previous call is releasing locally; retry joining after it finishes"}))?;continue;
                                 }
                                 if !*voice_availability.borrow() {
@@ -641,6 +820,7 @@ impl Connection {
                                 }
                                 if matches!(control,V::Join{..}) {drop(ringing.take());drop(recipient_ringing.take());}
                                 if let V::Leave{channel,request}=control && voice_request.is_some_and(|(id,r,_)|id==channel && r==request) {drop(ringing.take());drop(recipient_ringing.take());recipient_call.lock().map_err(|_|Failure::Protocol)?.active=None;}
+                                let previous_owner=voice_request.map(|(channel,request,_)|(channel,request));
                                 let ring=match ring_action(control,user.id,&mut voice_request,dm_channels.lock().map_err(|_|Failure::Protocol)?.contains_key(&channel)) {
                                     Ok(action)=>action,
                                     Err(())=>{emit(Event::Voice(E::Failed{channel,request,message:"Call action expired; no ringing request was sent"}))?;continue;}
@@ -653,6 +833,8 @@ impl Connection {
                                     }
                                     let private=dm_channels.lock().map_err(|_|Failure::Protocol)?.contains_key(&channel);
                                     recipient_call.lock().map_err(|_|Failure::Protocol)?.join(channel,request,private);
+                                } else if matches!(control,V::Leave{..}) {
+                                    queue_leave(&voice_send,&mut pending_release,control,previous_owner)?;
                                 } else {
                                     voice_send.try_send(control).map_err(|_|Failure::Capacity)?;
                                 }
@@ -809,5 +991,319 @@ impl Connection {
 			send_recovery_pending: std::cell::Cell::new(false),
 			task,
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use client_core::voice::Command as V;
+	use model::Id;
+
+	fn fill(sender: &mpsc::Sender<V>) {
+		for _ in 0..8 {
+			sender
+				.try_send(V::SetMute {
+					channel: Id(10),
+					request: 2,
+					mute: false,
+					deaf: false,
+				})
+				.unwrap();
+		}
+	}
+
+	#[tokio::test]
+	async fn full_voice_queue_retains_one_stop_until_capacity_returns() {
+		let (sender, mut receive) = mpsc::channel(8);
+		fill(&sender);
+		let scope = (Id(10), 2, 3);
+		let mut stops = StreamStops::default();
+		stops.started(scope, 7);
+		assert!(stops.request(&sender, scope, true).unwrap());
+		assert!(stops.pending);
+		assert!(stops.request(&sender, scope, true).unwrap());
+		assert_eq!(receive.len(), 8);
+
+		let _ = receive.recv().await.unwrap();
+		let permit = sender.reserve().await.unwrap();
+		stops.reconcile(Some((Id(10), 2)), true, 7, None);
+		permit.send(stops.take_pending().unwrap());
+		assert!(!stops.pending);
+		// A delayed server acknowledgement does not make another Stop necessary.
+		assert!(stops.request(&sender, scope, true).unwrap());
+		assert!(stops.take_pending().is_none());
+		let mut deletions = 0;
+		while let Ok(command) = receive.try_recv() {
+			if let V::StopStream {
+				channel,
+				request,
+				stream_request,
+			} = command
+			{
+				assert_eq!((channel, request, stream_request), scope);
+				deletions += 1;
+			}
+		}
+		assert_eq!(deletions, 1);
+	}
+
+	#[tokio::test]
+	async fn pending_stop_cannot_delete_a_rejoined_or_replacement_share() {
+		let (sender, mut receive) = mpsc::channel(8);
+		fill(&sender);
+		let old = (Id(10), 2, 3);
+		let replacement = (Id(10), 4, 5);
+		let mut stops = StreamStops::default();
+		stops.started(old, 7);
+		assert!(stops.request(&sender, old, true).unwrap());
+
+		// Match the production dispatch fence when capacity and a new owner
+		// become observable in the same select turn.
+		let _ = receive.recv().await.unwrap();
+		let permit = sender.reserve().await.unwrap();
+		stops.reconcile(Some((Id(10), 4)), true, 7, None);
+		assert!(stops.take_pending().is_none());
+		drop(permit);
+		stops.started(replacement, 7);
+		assert!(!stops.request(&sender, old, true).unwrap());
+		assert!(stops.request(&sender, replacement, true).unwrap());
+		assert!(receive.try_recv().is_ok());
+		let controls: Vec<_> = std::iter::from_fn(|| receive.try_recv().ok()).collect();
+		assert_eq!(controls.len(), 7);
+		assert!(matches!(
+			controls.last(),
+			Some(V::StopStream {
+				channel: Id(10),
+				request: 4,
+				stream_request: 5
+			})
+		));
+		assert_eq!(
+			controls
+				.iter()
+				.filter(|command| matches!(command, V::StopStream { .. }))
+				.count(),
+			1
+		);
+	}
+
+	#[tokio::test]
+	async fn pending_stop_expires_on_call_replacement_and_takeover() {
+		for (owner, taken_over) in [
+			(None, None),
+			(Some((Id(10), 4)), None),
+			(Some((Id(10), 2)), Some((Id(10), 2))),
+		] {
+			let (sender, _receive) = mpsc::channel(8);
+			fill(&sender);
+			let mut stops = StreamStops::default();
+			stops.started((Id(10), 2, 3), 7);
+			assert!(stops.request(&sender, (Id(10), 2, 3), true).unwrap());
+			stops.reconcile(owner, true, 7, taken_over);
+			assert!(stops.active.is_none());
+			assert!(stops.take_pending().is_none());
+		}
+	}
+
+	#[tokio::test]
+	async fn requested_stop_survives_resume_once_and_matching_ack_finishes_it() {
+		let (sender, mut receive) = mpsc::channel(8);
+		let scope = (Id(10), 2, 3);
+		let owner = Some((Id(10), 2));
+		let mut stops = StreamStops::default();
+		stops.started(scope, 7);
+		assert!(stops.request(&sender, scope, true).unwrap());
+		// The Gateway can consume a delete immediately before the socket dies.
+		assert!(matches!(receive.recv().await, Some(V::StopStream { .. })));
+		stops.reconcile(owner, false, 8, None);
+		assert!(stops.pending);
+		assert_eq!(stops.active, Some(scope));
+		assert!(stops.request(&sender, scope, false).unwrap());
+		assert!(receive.try_recv().is_err());
+		stops.reconcile(owner, true, 8, None);
+		sender
+			.reserve()
+			.await
+			.unwrap()
+			.send(stops.take_pending().unwrap());
+		assert!(matches!(
+			receive.recv().await,
+			Some(V::StopStream {
+				channel: Id(10),
+				request: 2,
+				stream_request: 3
+			})
+		));
+		stops.reconcile(owner, true, 8, None);
+		assert!(stops.take_pending().is_none());
+		stops.acknowledge(Some((Id(10), 2, 1)));
+		assert_eq!(stops.active, Some(scope));
+		stops.acknowledge(Some(scope));
+		assert!(stops.active.is_none());
+		stops.reconcile(owner, false, 9, None);
+		assert!(stops.take_pending().is_none());
+	}
+
+	#[tokio::test]
+	async fn leave_under_queue_pressure_releases_stream_before_a_new_join() {
+		let (sender, mut receive) = mpsc::channel(8);
+		fill(&sender);
+		let old = (Id(10), 2, 3);
+		let mut stops = StreamStops::default();
+		stops.started(old, 7);
+		assert!(stops.request(&sender, old, true).unwrap());
+		let leave = V::Leave {
+			channel: Id(10),
+			request: 2,
+		};
+		let mut pending = None;
+		queue_leave(&sender, &mut pending, leave, Some((Id(10), 2))).unwrap();
+		// Leave supersedes the still-unsent Stop and is kept in the ordered
+		// release lane; its Gateway handler clears the old stream ownership.
+		stops.reconcile(None, true, 7, None);
+		assert!(stops.take_pending().is_none());
+		let join = V::Join {
+			channel: Id(10),
+			request: 4,
+			ring: false,
+			mute: false,
+			deaf: false,
+		};
+		assert!(abandonment_blocks_join(pending, join));
+		let _ = receive.recv().await.unwrap();
+		sender
+			.reserve()
+			.await
+			.unwrap()
+			.send(pending.take().unwrap());
+		assert!(!abandonment_blocks_join(pending, join));
+		let controls: Vec<_> = std::iter::from_fn(|| receive.try_recv().ok()).collect();
+		assert!(matches!(
+			controls.last(),
+			Some(V::Leave {
+				channel: Id(10),
+				request: 2
+			})
+		));
+		assert!(
+			!controls
+				.iter()
+				.any(|command| matches!(command, V::StopStream { .. }))
+		);
+		queue_leave(&sender, &mut pending, leave, Some((Id(10), 4))).unwrap();
+		assert!(receive.try_recv().is_err());
+		assert!(pending.is_none());
+	}
+
+	#[tokio::test]
+	async fn retained_leave_waits_for_resume_and_rechecks_a_reserved_slot() {
+		let (sender, mut receive) = mpsc::channel(8);
+		fill(&sender);
+		let mut pending = None;
+		queue_leave(
+			&sender,
+			&mut pending,
+			V::Leave {
+				channel: Id(10),
+				request: 2,
+			},
+			Some((Id(10), 2)),
+		)
+		.unwrap();
+		assert!(release_ready(pending, true));
+		assert!(!release_ready(pending, false));
+		// Model the Gateway draining controls during its reconnect setup.
+		while receive.try_recv().is_ok() {}
+		// Capacity was reserved while online, then the offline watch arrived.
+		dispatch_release(sender.reserve().await.unwrap(), &mut pending, false);
+		assert!(matches!(
+			pending,
+			Some(V::Leave {
+				channel: Id(10),
+				request: 2
+			})
+		));
+		assert!(receive.try_recv().is_err());
+		dispatch_release(sender.reserve().await.unwrap(), &mut pending, true);
+		assert!(pending.is_none());
+		assert!(matches!(
+			receive.try_recv(),
+			Ok(V::Leave {
+				channel: Id(10),
+				request: 2
+			})
+		));
+		assert!(receive.try_recv().is_err());
+		pending = Some(V::AbandonSession {
+			channel: Id(10),
+			request: 2,
+		});
+		assert!(release_ready(pending, false));
+		dispatch_release(sender.reserve().await.unwrap(), &mut pending, false);
+		assert!(matches!(
+			receive.try_recv(),
+			Ok(V::AbandonSession {
+				channel: Id(10),
+				request: 2
+			})
+		));
+		assert!(pending.is_none());
+	}
+
+	#[tokio::test]
+	async fn sent_stop_and_pending_leave_keep_fifo_order_and_closed_queue_is_explicit() {
+		let (sender, mut receive) = mpsc::channel(8);
+		fill(&sender);
+		let scope = (Id(10), 2, 3);
+		let mut stops = StreamStops::default();
+		stops.started(scope, 7);
+		assert!(stops.request(&sender, scope, true).unwrap());
+		let _ = receive.recv().await.unwrap();
+		sender
+			.reserve()
+			.await
+			.unwrap()
+			.send(stops.take_pending().unwrap());
+		let mut pending = None;
+		queue_leave(
+			&sender,
+			&mut pending,
+			V::Leave {
+				channel: Id(10),
+				request: 2,
+			},
+			Some((Id(10), 2)),
+		)
+		.unwrap();
+		let controls: Vec<_> = std::iter::from_fn(|| receive.try_recv().ok()).collect();
+		assert!(matches!(
+			controls.last(),
+			Some(V::StopStream {
+				channel: Id(10),
+				request: 2,
+				stream_request: 3
+			})
+		));
+		sender
+			.reserve()
+			.await
+			.unwrap()
+			.send(pending.take().unwrap());
+		assert!(matches!(
+			receive.recv().await,
+			Some(V::Leave {
+				channel: Id(10),
+				request: 2
+			})
+		));
+		drop(receive);
+		stops.started((Id(10), 2, 4), 7);
+		assert!(
+			stops
+				.request(&sender, (Id(10), 2, 4), true)
+				.unwrap_err()
+				.contains("disconnected")
+		);
 	}
 }

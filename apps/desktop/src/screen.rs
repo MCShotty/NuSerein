@@ -72,6 +72,11 @@ struct Closing {
 	started: Instant,
 	timed_out: bool,
 }
+struct Retiring {
+	done: mpsc::Receiver<Result<(), &'static str>>,
+	progress: Arc<discord_voice::screen::Progress>,
+	started: Instant,
+}
 struct SourceScan {
 	generation: u64,
 	context: Option<(u64, Id, u64)>,
@@ -83,26 +88,82 @@ pub(super) struct Screen {
 	pending: Option<Pending>,
 	live: Option<Live>,
 	closing: Option<Closing>,
-	retiring: Option<mpsc::Receiver<Result<(), &'static str>>>,
+	retiring: Option<Retiring>,
 	source_scan: Option<SourceScan>,
 	command: Option<Command>,
+	cleanup: Option<Context>,
 	sequence: u64,
 	status: &'static str,
+	failure: Option<&'static str>,
 }
 impl Screen {
 	pub fn stop(&mut self) {
+		self.cleanup = self.context().or(self.cleanup);
 		self.pending = None;
 		self.command = None;
 		self.closing = None;
 		// Keep one in-flight OS enumeration tracked until it completes.
 		self.retire_live();
-		self.status = "Screen sharing stopped";
+		self.status = self.failure.unwrap_or(if self.retiring.is_some() {
+			"Stopping screen capture…"
+		} else {
+			"Screen sharing stopped"
+		});
 	}
 
 	fn retire_live(&mut self) {
 		if let Some(live) = self.live.take() {
+			assert!(
+				self.retiring.is_none(),
+				"previous screen capture is still retiring"
+			);
 			live.task.abort();
-			self.retiring = Some(live.worker.shutdown());
+			let progress = live.worker.progress();
+			self.retiring = Some(Retiring {
+				done: live.worker.shutdown(),
+				progress,
+				started: Instant::now(),
+			});
+		}
+	}
+
+	fn fail(&mut self, message: &'static str) {
+		let message = *self.failure.get_or_insert(message);
+		self.request_stop(message);
+	}
+
+	fn poll_retiring(&mut self, ctx: &egui::Context) {
+		let Some(retiring) = &self.retiring else {
+			return;
+		};
+		match retiring.done.try_recv() {
+			Ok(result) => {
+				if let Err(error) = result
+					&& error != "Video encoding cancelled"
+				{
+					self.failure.get_or_insert(error);
+				}
+				self.retiring = None;
+				if self.closing.is_none() {
+					self.status = self.failure.unwrap_or("Screen sharing stopped");
+				}
+			}
+			Err(mpsc::TryRecvError::Disconnected) => {
+				self.retiring = None;
+				self.failure
+					.get_or_insert("Screen capture worker stopped unexpectedly");
+			}
+			Err(mpsc::TryRecvError::Empty) => {
+				// Never release this ownership slot on a timer: doing so could
+				// accumulate abandoned GPU owners on each retry or call rejoin.
+				ctx.request_repaint_after(
+					if retiring.started.elapsed() >= Duration::from_secs(5) {
+						Duration::from_secs(1)
+					} else {
+						Duration::from_millis(100)
+					},
+				);
+			}
 		}
 	}
 
@@ -174,7 +235,7 @@ impl Screen {
 				if self.live.is_some() {
 					let _ = token.take();
 					let _ = endpoint.take();
-					self.request_stop("Discord changed the active screen-share server");
+					self.fail("Discord changed the active screen-share server");
 					return;
 				}
 				let Some(pending) = &mut self.pending else {
@@ -187,7 +248,7 @@ impl Screen {
 					return;
 				};
 				let Some(token) = token.take() else {
-					self.request_stop("Discord omitted the screen-share token");
+					self.fail("Discord omitted the screen-share token");
 					return;
 				};
 				pending.server = Some((token, endpoint));
@@ -197,9 +258,9 @@ impl Screen {
 				self.retire_live();
 				self.closing = None;
 				// A server-side end names its cause, so it is never mistaken for a local stop.
-				self.status = reason.unwrap_or("Screen sharing stopped");
+				self.status = self.failure.or(*reason).unwrap_or("Screen sharing stopped");
 			}
-			screen::Event::Failed(message) => self.request_stop(message),
+			screen::Event::Failed(message) => self.fail(message),
 		}
 	}
 
@@ -216,17 +277,22 @@ impl Screen {
 			ui.voice_diagnostics
 				.remove(model::voice_diagnostics::ConnectionKind::ScreenSend);
 		}
-		if self
-			.retiring
-			.as_ref()
-			.is_some_and(|done| !matches!(done.try_recv(), Err(mpsc::TryRecvError::Empty)))
-		{
-			self.retiring = None;
+		self.poll_retiring(ctx);
+		if let Some(context) = self.cleanup.take()
+			&& !state.demo
+			&& state.generation == context.generation
+			&& state.voice.active.as_ref().is_some_and(|active| {
+				active.channel == context.channel && active.request == context.request
+			}) {
+			// A resumed gateway can still own this exact stream after its local
+			// media task ended. Never retag cleanup to a replacement call/account.
+			self.close(context, "Stopping previous screen-share connection…");
 		}
 		if state.demo {
 			if self.context().is_some() || self.live.is_some() {
 				self.stop();
 			}
+			self.cleanup = None;
 			ui.screen.refresh_requested = false;
 			ui.screen.request = None;
 			ui.screen.busy = false;
@@ -309,7 +375,15 @@ impl Screen {
 		if let Some(current) = self.context()
 			&& call_context != Some((current.generation, current.channel, current.request))
 		{
-			self.stop();
+			if state.generation == current.generation
+				&& state.voice.active.as_ref().is_some_and(|active| {
+					active.channel == current.channel && active.request == current.request
+				}) {
+				self.request_stop("Stopping screen share while the call reconnects…");
+			} else {
+				self.stop();
+				self.cleanup = None;
+			}
 		}
 		if let Some(context) = self
 			.pending
@@ -318,7 +392,7 @@ impl Screen {
 			.or_else(|| self.live.as_ref().map(|live| live.context))
 			&& !state.can_stream(context.channel)
 		{
-			self.request_stop("Screen-share permission was removed; stopping sharing");
+			self.fail("Screen-share permission was removed; stopping sharing");
 		}
 
 		if let Some(request) = ui.screen.request.take() {
@@ -345,6 +419,7 @@ impl Screen {
 					if self.context().is_some() || self.retiring.is_some() {
 						self.status = "Previous screen share is still closing";
 					} else if let Some(call) = valid {
+						self.failure = None;
 						self.sequence = self.sequence.wrapping_add(1).max(1);
 						let context = Context {
 							generation: call.generation,
@@ -384,9 +459,7 @@ impl Screen {
 			.as_ref()
 			.is_some_and(|pending| pending.started.elapsed() >= SIGNAL_TIMEOUT)
 		{
-			self.request_stop(
-				"Discord did not provide screen-share connection details within 30 seconds",
-			);
+			self.fail("Discord did not provide screen-share connection details within 30 seconds");
 		}
 		if let Some(pending) = &self.pending {
 			ctx.request_repaint_after(SIGNAL_TIMEOUT.saturating_sub(pending.started.elapsed()));
@@ -402,6 +475,9 @@ impl Screen {
 
 		let mut failure = None;
 		if let Some(live) = &mut self.live {
+			// Supervision must still run when no preview, audio or native output
+			// can wake the UI. The timer exists only for this live share.
+			ctx.request_repaint_after(Duration::from_millis(250));
 			if let Some(snapshot) = live.diagnostics.borrow_and_update().as_ref() {
 				ui.voice_diagnostics.update(
 					(
@@ -431,7 +507,7 @@ impl Screen {
 			}
 		}
 		if let Some(error) = failure {
-			self.request_stop(error);
+			self.fail(error);
 		}
 		if let Some(live) = &self.live {
 			let preview_visible = ui.screen.preview_requested(ctx);
@@ -474,11 +550,24 @@ impl Screen {
 			|| self.live.is_some()
 			|| self.closing.is_some()
 			|| self.retiring.is_some();
-		ui.screen.status = self.status;
+		ui.screen.status = self.failure.unwrap_or(self.status);
 		ui.screen.capture_status = self
-			.live
+			.retiring
 			.as_ref()
-			.and_then(|live| live.worker.capture_status());
+			.map(|retiring| {
+				if retiring.started.elapsed() >= Duration::from_secs(5) {
+					"Screen capture is not responding; restart Serein before sharing again"
+				} else if retiring.progress.native_failure().is_some() {
+					"Stopping an unresponsive screen capture…"
+				} else {
+					"Stopping screen capture…"
+				}
+			})
+			.or_else(|| {
+				self.live
+					.as_ref()
+					.and_then(|live| live.worker.capture_status())
+			});
 		ui.screen.adapting = self
 			.live
 			.as_ref()
@@ -489,6 +578,7 @@ impl Screen {
 		let pending = self.pending.take().expect("complete screen negotiation");
 		let context = pending.context;
 		if let Err(error) = self.start(runtime, pending, ctx) {
+			self.failure.get_or_insert(error);
 			self.close(context, error);
 		}
 	}
@@ -573,6 +663,138 @@ impl Screen {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn share_state() -> (State, ui::MessagingUi, Context) {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let mut role = state.permissions.guilds[&Id(10)].roles.as_ref().unwrap()[0].clone();
+		role.bits |= model::permissions::STREAM;
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: Event::Permissions(client_core::permissions::Event::Role {
+				guild: Id(10),
+				role,
+			}),
+		});
+		state.start_call(Id(25), false).unwrap();
+		let active = state.voice.active.as_mut().unwrap();
+		active.phase = voice::Phase::Connected;
+		let context = Context {
+			generation: state.generation,
+			channel: active.channel,
+			request: active.request,
+			stream_request: 7,
+		};
+		let mut ui = ui::MessagingUi::default();
+		ui.screen.context = Some((context.generation, context.channel, context.request));
+		(state, ui, context)
+	}
+
+	fn share_settings() -> screen::Settings {
+		screen::Settings {
+			source: screen::SourceId::Display(1),
+			width: 1280,
+			height: 720,
+			fps: 30,
+			cursor: true,
+			audio: false,
+		}
+	}
+
+	#[test]
+	fn stopped_owner_is_retained_across_rejoin_until_completion_and_old_events_are_ignored() {
+		let runtime = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.unwrap();
+		let ctx = egui::Context::default();
+		let (mut state, mut ui, context) = share_state();
+		let (complete, done) = mpsc::sync_channel(1);
+		let mut share = Screen {
+			pending: Some(pending(context, share_settings())),
+			retiring: Some(Retiring {
+				done,
+				progress: Arc::default(),
+				started: Instant::now() - Duration::from_secs(6),
+			}),
+			..Screen::default()
+		};
+		share.fail("Original encoder timeout");
+		assert!(matches!(
+			share.command.take(),
+			Some(Command::Voice(voice::Command::StopStream { .. }))
+		));
+		let deleted = || {
+			Event::Voice(voice::Event::Stream {
+				channel: context.channel,
+				request: context.request,
+				stream_request: context.stream_request,
+				event: screen::Event::Deleted { reason: None },
+			})
+		};
+		share.observe(&state, &mut deleted());
+		assert!(share.closing.is_none() && share.retiring.is_some());
+		share.stop();
+		state.voice.active.as_mut().unwrap().request += 1;
+		let request = state.voice.active.as_ref().unwrap().request;
+		ui.screen.context = Some((context.generation, context.channel, request));
+		let call = || Call {
+			video_adapter: None,
+			generation: context.generation,
+			channel: context.channel,
+			request,
+			user: Id(1),
+			peer: None,
+			session: "synthetic-session",
+			identity: Identity::generate(),
+		};
+		ui.screen.request = Some(ui::screen::Request::Start(share_settings().into()));
+		assert!(
+			share
+				.poll(&runtime, &state, &mut ui, &ctx, Some(call()))
+				.is_none()
+		);
+		assert!(share.pending.is_none() && share.retiring.is_some() && ui.screen.busy);
+		assert_eq!(ui.screen.status, "Original encoder timeout");
+		assert!(ui.screen.capture_status.unwrap().contains("restart Serein"));
+		complete.send(Ok(())).unwrap();
+		ui.screen.request = Some(ui::screen::Request::Start(share_settings().into()));
+		assert!(
+			matches!(share.poll(&runtime, &state, &mut ui, &ctx, Some(call())),
+			Some(Command::Voice(voice::Command::StartStream { request: active, .. })) if active == request)
+		);
+		assert!(share.retiring.is_none() && share.failure.is_none());
+		let new_context = share.context();
+		share.observe(&state, &mut deleted());
+		assert!(share.context() == new_context && share.pending.is_some());
+	}
+
+	#[test]
+	fn same_call_resume_requests_cleanup_once_but_new_account_does_not() {
+		let runtime = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.unwrap();
+		let ctx = egui::Context::default();
+		let (mut state, mut ui, context) = share_state();
+		let mut share = Screen {
+			pending: Some(pending(context, share_settings())),
+			..Screen::default()
+		};
+		share.stop();
+		assert!(matches!(
+			share.poll(&runtime, &state, &mut ui, &ctx, None),
+			Some(Command::Voice(voice::Command::StopStream {
+				stream_request: 7,
+				..
+			}))
+		));
+		assert!(share.poll(&runtime, &state, &mut ui, &ctx, None).is_none());
+		share.stop();
+		state.generation += 1;
+		assert!(share.poll(&runtime, &state, &mut ui, &ctx, None).is_none());
+		assert!(share.cleanup.is_none() && share.closing.is_none());
+	}
 
 	#[test]
 	fn waiting_dm_and_guild_calls_can_request_sharing_without_opening_capture() {

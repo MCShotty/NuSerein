@@ -193,6 +193,13 @@ struct Handler {
 	frames: SyncSender<super::super::CapturedFrame>,
 	format: crate::screen::RawFormat,
 	stop: Arc<AtomicBool>,
+	cancel: Arc<AtomicBool>,
+}
+
+impl Handler {
+	fn stopped(&self) -> bool {
+		self.stop.load(Ordering::Acquire) || self.cancel.load(Ordering::Acquire)
+	}
 }
 
 /// System audio as interleaved 48 kHz stereo `f32`, bounded per buffer and never stored.
@@ -200,6 +207,7 @@ struct Handler {
 struct AudioHandler {
 	audio: tokio::sync::mpsc::Sender<crate::screen::AudioChunk>,
 	stop: Arc<AtomicBool>,
+	cancel: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	audio_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -209,6 +217,7 @@ impl SCStreamOutputTrait for AudioHandler {
 		let epoch = self.audio_epoch.load(Ordering::Acquire);
 		if kind != SCStreamOutputType::Audio
 			|| self.stop.load(Ordering::Acquire)
+			|| self.cancel.load(Ordering::Acquire)
 			|| !self.ready.load(Ordering::Acquire)
 			|| self.audio.capacity() == 0
 		{
@@ -265,7 +274,10 @@ impl SCStreamOutputTrait for AudioHandler {
 			return;
 		}
 		// A full queue drops audio rather than blocking the capture callback.
-		if self.ready.load(Ordering::Acquire) && !self.stop.load(Ordering::Acquire) {
+		if self.ready.load(Ordering::Acquire)
+			&& !self.stop.load(Ordering::Acquire)
+			&& !self.cancel.load(Ordering::Acquire)
+		{
 			let _ = self.audio.try_send(crate::screen::AudioChunk {
 				samples: interleaved,
 				epoch,
@@ -277,7 +289,7 @@ impl SCStreamOutputTrait for AudioHandler {
 impl SCStreamOutputTrait for Handler {
 	fn did_output_sample_buffer(&self, sample: CMSampleBuffer, kind: SCStreamOutputType) {
 		if kind != SCStreamOutputType::Screen
-			|| self.stop.load(Ordering::Acquire)
+			|| self.stopped()
 			|| sample
 				.frame_status()
 				.is_some_and(|status| !status.has_content())
@@ -499,6 +511,7 @@ impl Capture {
 		Ok(())
 	}
 
+	#[allow(clippy::too_many_arguments)] // Capture outputs, cancellation and independent progress.
 	pub(crate) fn start(
 		settings: RequestSettings,
 		frames: SyncSender<super::super::CapturedFrame>,
@@ -507,6 +520,7 @@ impl Capture {
 		ready: Arc<AtomicBool>,
 		audio_epoch: Arc<std::sync::atomic::AtomicU64>,
 		teardown: Arc<AtomicBool>,
+		progress: &crate::screen::Progress,
 	) -> Result<Self, &'static str> {
 		initialize();
 		if !settings.valid() {
@@ -514,6 +528,8 @@ impl Capture {
 		}
 		// Own the picker before selection so every later error/cancellation deactivates it.
 		let system_picker = PickerSession(settings.source == SourceId::SystemPicker);
+		let choosing = (settings.source == SourceId::SystemPicker)
+			.then(|| progress.operation(crate::screen::NativeOperation::ChoosingSource));
 		let filter = match settings.source {
 			SourceId::SystemPicker => choose_with_system_picker(&stop, &teardown)?,
 			SourceId::Display(id) => {
@@ -557,6 +573,10 @@ impl Capture {
 			#[allow(unreachable_patterns)] // Portal may be absent from platform-scoped models.
 			_ => return Err("The desktop screen picker is available only on Linux"),
 		};
+		drop(choosing);
+		// Choosing is owner-paced and keeps the existing two-minute allowance.
+		// Native initialization gets a fresh deadline after permission/selection.
+		let _opening = progress.operation(crate::screen::NativeOperation::OpeningCapture);
 		let (native_width, native_height) = physical_dimensions(&filter)?;
 		let luminance = filter
 			.included_displays()
@@ -615,16 +635,18 @@ impl Capture {
 			},
 			frames,
 			stop: stop.clone(),
+			cancel: teardown.clone(),
 		};
 		let audio_handler = audio.map(|audio| AudioHandler {
 			audio,
 			stop,
+			cancel: teardown,
 			ready,
 			audio_epoch,
 		});
 		let stream = match Self::start_stream(&filter, &config, &handler, audio_handler.as_ref()) {
 			Ok(stream) => stream,
-			Err(_) if hdr && !handler.stop.load(Ordering::Acquire) => {
+			Err(_) if hdr && !handler.stopped() => {
 				// Keep the picker-approved filter and audio configuration on the SDR retry.
 				config
 					.set_capture_dynamic_range(
@@ -654,7 +676,7 @@ impl Capture {
 		handler: &Handler,
 		audio_handler: Option<&AudioHandler>,
 	) -> Result<SCStream, &'static str> {
-		if handler.stop.load(Ordering::Acquire) {
+		if handler.stopped() {
 			return Err("Screen sharing cancelled");
 		}
 		let state = Arc::new(std::sync::atomic::AtomicU8::new(0));
@@ -679,7 +701,7 @@ impl Capture {
 		{
 			return Err("System audio callback could not be registered");
 		}
-		if handler.stop.load(Ordering::Acquire) {
+		if handler.stopped() {
 			return Err("Screen sharing cancelled");
 		}
 		stream

@@ -73,6 +73,11 @@ impl Calls {
 		self.departing = None;
 		self.departing_session = None;
 		self.departure_deadline = None;
+		// A delete may have entered the old socket without an acknowledgement.
+		// The session retries its exact scoped Stop once after RESUME.
+		if let Some(stream) = &mut self.stream {
+			stream.departing = false;
+		}
 		self.users.clear();
 	}
 	/// A fresh READY: Discord dropped every voice state bound to the previous session.
@@ -497,6 +502,27 @@ impl Calls {
 		};
 		Some(status)
 	}
+	/// A rejected Start never allocated a stream. Its matching local Stop must
+	/// complete without waiting for a service deletion that cannot arrive.
+	pub(super) fn absent_stream_stop(&self, command: Command) -> Option<Event> {
+		let Command::StopStream {
+			channel,
+			request,
+			stream_request,
+		} = command
+		else {
+			return None;
+		};
+		(self.stream.is_none() && self.active == Some((channel, request))).then_some(Event::Voice(
+			voice::Event::Stream {
+				channel,
+				request,
+				stream_request,
+				event: screen::Event::Deleted { reason: None },
+			},
+		))
+	}
+
 	pub(super) fn stream_packet(
 		&mut self,
 		command: Command,
@@ -2569,6 +2595,139 @@ mod tests {
 				}))
 			));
 		}
+	}
+
+	#[test]
+	fn resumed_stream_stop_retries_only_the_same_attempt() {
+		let mut calls = Calls::default();
+		calls.allowed.insert(Id(20), Some(Id(10)));
+		calls
+			.packet(Command::Join {
+				channel: Id(20),
+				request: 7,
+				ring: false,
+				mute: false,
+				deaf: false,
+			})
+			.unwrap();
+		calls
+			.stream_packet(
+				Command::StartStream {
+					channel: Id(20),
+					request: 7,
+					stream_request: 8,
+				},
+				Some(Id(1)),
+			)
+			.unwrap();
+		let stop = Command::StopStream {
+			channel: Id(20),
+			request: 7,
+			stream_request: 8,
+		};
+		assert!(calls.stream_packet(stop, Some(Id(1))).unwrap().is_some());
+		assert!(calls.stream_packet(stop, Some(Id(1))).unwrap().is_none());
+		calls.disconnected();
+		assert!(
+			calls
+				.stream_packet(
+					Command::StopStream {
+						channel: Id(20),
+						request: 6,
+						stream_request: 8
+					},
+					Some(Id(1))
+				)
+				.unwrap()
+				.is_none()
+		);
+		assert!(
+			calls
+				.stream_packet(
+					Command::StopStream {
+						channel: Id(20),
+						request: 7,
+						stream_request: 6
+					},
+					Some(Id(1))
+				)
+				.unwrap()
+				.is_none()
+		);
+		let Frame::Text(retry) = calls.stream_packet(stop, Some(Id(1))).unwrap().unwrap() else {
+			panic!("expected stream delete");
+		};
+		let retry: serde_json::Value = serde_json::from_str(&retry).unwrap();
+		assert_eq!(retry["op"], 19);
+		assert_eq!(retry["d"]["stream_key"], "guild:10:20:1");
+		assert!(calls.stream_packet(stop, Some(Id(1))).unwrap().is_none());
+		calls.session_reset();
+		assert!(calls.stream_packet(stop, Some(Id(1))).unwrap().is_none());
+		assert!(calls.absent_stream_stop(stop).is_none());
+	}
+
+	#[test]
+	fn rejected_stream_start_has_a_scoped_local_stop_acknowledgement() {
+		let mut calls = Calls::default();
+		calls.allowed.insert(Id(20), Some(Id(10)));
+		calls
+			.packet(Command::Join {
+				channel: Id(20),
+				request: 7,
+				ring: false,
+				mute: false,
+				deaf: false,
+			})
+			.unwrap();
+		assert!(
+			calls
+				.stream_packet(
+					Command::StartStream {
+						channel: Id(20),
+						request: 7,
+						stream_request: 8
+					},
+					None
+				)
+				.is_err()
+		);
+		let stop = Command::StopStream {
+			channel: Id(20),
+			request: 7,
+			stream_request: 8,
+		};
+		assert!(calls.stream_packet(stop, Some(Id(1))).unwrap().is_none());
+		assert!(matches!(
+			calls.absent_stream_stop(stop),
+			Some(Event::Voice(voice::Event::Stream {
+				channel: Id(20),
+				request: 7,
+				stream_request: 8,
+				event: screen::Event::Deleted { reason: None }
+			}))
+		));
+		assert!(
+			calls
+				.absent_stream_stop(Command::StopStream {
+					channel: Id(20),
+					request: 6,
+					stream_request: 8
+				})
+				.is_none()
+		);
+		calls
+			.stream_packet(
+				Command::StartStream {
+					channel: Id(20),
+					request: 7,
+					stream_request: 9,
+				},
+				Some(Id(1)),
+			)
+			.unwrap();
+		assert!(calls.stream_packet(stop, Some(Id(1))).unwrap().is_none());
+		assert!(calls.absent_stream_stop(stop).is_none());
+		assert!(!calls.stream.as_ref().unwrap().departing);
 	}
 
 	#[test]

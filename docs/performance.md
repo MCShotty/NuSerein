@@ -3845,3 +3845,46 @@ Linux fork/runtime replay binaries are byte-identical. These timings make no
 optimization claim. Actual GPU quality/presets, capture/game FPS, provider playback,
 HDR/physical displays, native assistive technology and live Discord acceptance remain
 unverified. Screenshots and offline packets do not establish those outcomes.
+
+### Stream cancellation and progress follow-up — October 25, 2026
+
+Baseline: fork `main` at `70ef19d2`, including its verified Windows x64 installer.
+Codec, bitrate profile, quality preset, lookahead, GPU routing and capture sizing
+are unchanged. Native AMF tests compile the patched encoder source and simulate
+full queues, missing output, cancellation, rejected input and retained surfaces.
+They verify the 15-second blocked-call limit, 48-reference ceiling, cleanup after
+termination and recovery after an idle lookahead tail. Their injected clock is
+not a measurement of driver latency or game performance.
+
+The shipping SDR encoder now feeds the synthetic RTP/DAVE sender/viewer tests;
+the receiver must decode multiple pictures. Separate tests keep signaling and
+audio healthy while withholding encoded video, check bounded startup failure,
+and reject readiness after locally dropped keyframe fragments. Progress reports
+contain fixed-size counters only and stop after eight samples per share.
+
+Pinned Rust 1.98.1, the committed lockfile and a dedicated target directory were
+used for local checks. All-target strict Clippy, workspace assertion-bearing
+tests, the minimal application build, policy and license checks pass. The local
+`cargo xtask check` wrapper exhausted tmpfs while linking compile-only UI examples;
+the exact wrapper remains required in native CI. Historical measurements above
+retain their original revisions and are not results for this follow-up.
+
+Release reducer replay and the 120-second soak pass (3,767 passes, 120,544 visits,
+72,326,400 inserts, 15 logout cycles; 120.018 seconds). The frozen baseline and
+current reducer executables are byte-identical, SHA-256
+`111b2a0e8d1682577f260612a10ed234ea7e28c48b9ba45f0b7a7dc1924f04b8`.
+One warmup each and five alternating measurements on Linux x86_64, pinned to one
+CPU with matching release settings, gave medians of 83.377/81.112 ms for 100,000
+events. This difference is timing noise in identical binaries, not an optimization.
+
+| Windows x64 baseline package metric | `70ef19d2` bytes |
+| --- | ---: |
+| Executable | 99,178,496 |
+| Installed payload | 225,921,352 |
+| NSIS installer | 136,650,669 |
+
+These are the normal CI artifact's uncompressed executable/payload and compressed
+installer sizes. Current package deltas and artifact provenance belong in the PR's
+Performance section after its native builds complete. Capture/game FPS, hardware
+encoder throughput, CPU/RSS and actual viewer playback still require the
+owner-controlled Windows session; no improvement is claimed from synthetic tests.

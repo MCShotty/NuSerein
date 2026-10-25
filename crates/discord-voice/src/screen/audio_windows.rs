@@ -17,6 +17,7 @@ impl Audio {
 	pub(super) fn start(
 		send: Sender<AudioChunk>,
 		stop: Arc<AtomicBool>,
+		cancel: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,
 		audio_epoch: Arc<AtomicU64>,
 	) -> Result<Self, &'static str> {
@@ -24,6 +25,7 @@ impl Audio {
 		let input = Samples {
 			send,
 			stop: stop.clone(),
+			cancel,
 			ready,
 			epoch: audio_epoch,
 			failed: failed.clone(),
@@ -32,7 +34,7 @@ impl Audio {
 		let thread = std::thread::Builder::new()
 			.name("screen-audio".into())
 			.spawn(move || {
-				if native::run(&input, started).is_err() {
+				if native::run(&input, started).is_err() && !input.cancel.load(Ordering::Acquire) {
 					input.failed.store(true, Ordering::Release);
 					input.stop.store(true, Ordering::Release);
 				}
@@ -134,7 +136,7 @@ mod native {
 		unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
 		let result = (|| {
 			let mut started = Some(started);
-			while !input.stop.load(Ordering::Acquire) && !input.send.is_closed() {
+			while !input.stopped() && !input.send.is_closed() {
 				capture(input, &mut started)?;
 			}
 			Ok(())
@@ -144,7 +146,7 @@ mod native {
 	}
 
 	fn capture(input: &Samples, started: &mut Option<SyncSender<()>>) -> Result<()> {
-		if input.stop.load(Ordering::Acquire) {
+		if input.stopped() {
 			return Err(E_FAIL.into());
 		}
 		let params = Arc::new(activation_params(std::process::id()));
@@ -182,7 +184,7 @@ mod native {
 		};
 		let deadline = Instant::now() + Duration::from_secs(3);
 		loop {
-			if input.stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+			if input.stopped() || Instant::now() >= deadline {
 				return Err(E_FAIL.into());
 			}
 			if done.recv_timeout(Duration::from_millis(50)).is_ok() {
@@ -195,7 +197,7 @@ mod native {
 		unsafe { operation.GetActivateResult(&mut status, &mut activated)? };
 		drop(operation);
 		status.ok()?;
-		if input.stop.load(Ordering::Acquire) || input.send.is_closed() {
+		if input.stopped() || input.send.is_closed() {
 			return Err(E_FAIL.into());
 		}
 		let event = unsafe { CreateEventW(None, false, false, None)? };
@@ -229,7 +231,7 @@ mod native {
 		}
 		let capture: IAudioCaptureClient = unsafe { client.GetService()? };
 		unsafe { client.SetEventHandle(HANDLE(event.as_raw_handle()))? };
-		if input.stop.load(Ordering::Acquire) || input.send.is_closed() {
+		if input.stopped() || input.send.is_closed() {
 			return Err(E_FAIL.into());
 		}
 		let epoch = input.epoch.load(Ordering::Acquire);
@@ -255,7 +257,7 @@ mod native {
 		epoch: u64,
 		metrics: &mut Metrics,
 	) -> Result<()> {
-		while !input.stop.load(Ordering::Acquire) && !input.send.is_closed() {
+		while !input.stopped() && !input.send.is_closed() {
 			if input.epoch.load(Ordering::Acquire) != epoch {
 				// Stop/Reset/Start can leave process loopback permanently empty on Windows.
 				// Recreate it instead; the old client's immutable epoch prevents buffered
@@ -275,9 +277,7 @@ mod native {
 			let mut dropped = 0;
 			// Bound work per wakeup as well as the bytes in each packet.
 			for _ in 0..32 {
-				if input.stop.load(Ordering::Acquire)
-					|| unsafe { capture.GetNextPacketSize()? } == 0
-				{
+				if input.stopped() || unsafe { capture.GetNextPacketSize()? } == 0 {
 					break;
 				}
 				let start = metrics.start();
@@ -338,12 +338,16 @@ mod native {
 struct Samples {
 	send: Sender<AudioChunk>,
 	stop: Arc<AtomicBool>,
+	cancel: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	epoch: Arc<AtomicU64>,
 	failed: Arc<AtomicBool>,
 }
 
 impl Samples {
+	fn stopped(&self) -> bool {
+		self.stop.load(Ordering::Acquire) || self.cancel.load(Ordering::Acquire)
+	}
 	#[cfg(test)]
 	fn push(&self, data: &[f32]) {
 		let epoch = self.epoch.load(Ordering::Acquire);
@@ -351,7 +355,7 @@ impl Samples {
 	}
 
 	fn push_at(&self, data: &[f32], epoch: u64) -> bool {
-		if self.stop.load(Ordering::Acquire)
+		if self.stopped()
 			|| !self.ready.load(Ordering::Acquire)
 			|| epoch != self.epoch.load(Ordering::Acquire)
 		{
@@ -377,7 +381,7 @@ impl Samples {
 					}
 				})
 				.collect();
-			if !self.stop.load(Ordering::Acquire)
+			if !self.stopped()
 				&& self.ready.load(Ordering::Acquire)
 				&& epoch == self.epoch.load(Ordering::Acquire)
 			{
@@ -399,6 +403,7 @@ mod tests {
 		let samples = Samples {
 			send,
 			stop: Arc::new(AtomicBool::new(false)),
+			cancel: Arc::new(AtomicBool::new(false)),
 			ready: Arc::new(AtomicBool::new(false)),
 			epoch: Arc::new(AtomicU64::new(7)),
 			failed: Arc::new(AtomicBool::new(false)),
@@ -423,6 +428,15 @@ mod tests {
 		samples.push(&[0.25, -0.25]);
 		assert!(receive.try_recv().is_err());
 		samples.stop.store(false, Ordering::Release);
+		// User cancellation reaches loopback immediately, independently of
+		// an encoder worker which has not finished unwinding native resources.
+		samples.cancel.store(true, Ordering::Release);
+		assert!(samples.stopped());
+		samples.push(&[0.25, -0.25]);
+		assert!(receive.try_recv().is_err());
+		assert!(!samples.stop.load(Ordering::Acquire));
+		assert!(!samples.failed.load(Ordering::Acquire));
+		samples.cancel.store(false, Ordering::Release);
 		samples.push(&vec![0.0; MAX_AUDIO_SAMPLES + 2]);
 		assert!(samples.failed.load(Ordering::Acquire));
 		assert!(samples.stop.load(Ordering::Acquire));

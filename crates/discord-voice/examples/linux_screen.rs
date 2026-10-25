@@ -113,7 +113,7 @@ fn main() {
 		let deadline = Instant::now() + Duration::from_secs(5);
 		let mut encoded = 0;
 		let mut last_pts = None;
-		let mut encoder = ScreenEncoder::new_on_adapter(settings, settings.bit_rate(), model::voice_settings::VideoSettings::default(), None, 0, 0).unwrap();
+		let mut encoder = ScreenEncoder::new_controlled(settings, settings.bit_rate(), model::voice_settings::VideoSettings::default(), None, 0, 0, stop.clone()).unwrap();
 		while Instant::now() < deadline && encoded < 5 {
 			assert!(!pipeline.failed());
 			if let Some(sample) = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO) {

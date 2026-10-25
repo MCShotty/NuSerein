@@ -134,6 +134,11 @@ async fn json_send(ws: &mut Socket, value: Value) -> Result<(), &'static str> {
 /// one packet; only a path that keeps failing for `UDP_OUTAGE` ends the call.
 /// Never wait for socket capacity here: that would stall audio, signaling and feedback.
 const UDP_OUTAGE: Duration = Duration::from_secs(10);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Datagram {
+	Sent,
+	Dropped,
+}
 #[derive(Default)]
 struct UdpFailures(Option<Instant>, PacketTotals, u64);
 impl UdpFailures {
@@ -142,18 +147,21 @@ impl UdpFailures {
 		socket: &UdpSocket,
 		data: &[u8],
 		outage: &'static str,
-	) -> Result<(), &'static str> {
-		if socket.try_send(data).is_ok() {
+	) -> Result<Datagram, &'static str> {
+		if socket
+			.try_send(data)
+			.is_ok_and(|length| length == data.len())
+		{
 			self.1.add(data.len());
 			self.0 = None;
-			return Ok(());
+			return Ok(Datagram::Sent);
 		}
 		self.2 = self.2.saturating_add(1);
 		let now = Instant::now();
 		if now.duration_since(*self.0.get_or_insert(now)) >= UDP_OUTAGE {
 			return Err(outage);
 		}
-		Ok(())
+		Ok(Datagram::Dropped)
 	}
 }
 /// Receive errors that describe one lost or rejected datagram rather than a dead socket.
@@ -177,7 +185,9 @@ fn udp_keepalive(
 	*sequence = sequence.wrapping_add(1);
 	let mut packet = [0x13, 0x37, 0xca, 0xfe, 0, 0, 0, 0];
 	packet[4..].copy_from_slice(&sequence.to_le_bytes());
-	failures.send(socket, &packet, "Voice UDP keepalive failed")
+	failures
+		.send(socket, &packet, "Voice UDP keepalive failed")
+		.map(|_| ())
 }
 fn number(data: &Value, key: &str) -> Result<u64, &'static str> {
 	data[key].as_u64().ok_or("Malformed voice signaling field")
@@ -1252,6 +1262,117 @@ fn screen_announcement(
 		"max_resolution":{"type":"fixed","width":settings.width,"height":settings.height}}]}})
 }
 
+/// Observe video independently of the native worker and of audio/keepalive traffic.
+/// A static source with no accepted input is idle, not a stalled encoder.
+const STREAM_VIDEO_TIMEOUT: Duration = Duration::from_secs(15);
+#[derive(Default)]
+struct StreamSendWatch {
+	keyframe_since: Option<Instant>,
+	packets_since: Option<Instant>,
+}
+impl StreamSendWatch {
+	fn announced(&mut self, now: Instant) {
+		// Geometry/security can be replaced and re-enabled within one transport
+		// tick. Give that new configuration its own clock even without a disabled
+		// observation; ordinary keyframe retries must retain their original deadline.
+		*self = Self {
+			keyframe_since: Some(now),
+			packets_since: None,
+		};
+	}
+
+	fn check(
+		&mut self,
+		enabled: bool,
+		awaiting_keyframe: bool,
+		progress: Option<crate::screen::ProgressSnapshot>,
+		packets_pending: bool,
+		now: Instant,
+	) -> Result<(), &'static str> {
+		if !enabled {
+			*self = Self::default();
+			return Ok(());
+		}
+		if awaiting_keyframe {
+			if now.duration_since(*self.keyframe_since.get_or_insert(now)) >= STREAM_VIDEO_TIMEOUT {
+				return Err("Screen video did not produce and send a keyframe within 15 seconds");
+			}
+		} else {
+			self.keyframe_since = None;
+		}
+		if packets_pending {
+			if now.duration_since(*self.packets_since.get_or_insert(now)) >= STREAM_VIDEO_TIMEOUT {
+				return Err("Screen video transmission stopped making progress for 15 seconds");
+			}
+		} else {
+			self.packets_since = None;
+		}
+		if let Some(progress) = progress {
+			let blocked = progress.operation.map(|(_, started)| started);
+			let pending = progress.pending_since.map(|started| {
+				progress
+					.last_output
+					.map_or(started, |output| output.max(started))
+			});
+			if blocked.into_iter().chain(pending).any(|started| {
+				now.saturating_duration_since(Instant::from_std(started)) >= STREAM_VIDEO_TIMEOUT
+			}) {
+				return Err("Screen video encoding stopped making progress for 15 seconds");
+			}
+		}
+		Ok(())
+	}
+
+	fn complete_picture(
+		&mut self,
+		had_picture: bool,
+		packets_pending: bool,
+		sent: Datagram,
+	) -> bool {
+		let complete = had_picture && !packets_pending && sent == Datagram::Sent;
+		if complete {
+			self.packets_since = None;
+		}
+		complete
+	}
+}
+
+/// Once any fragment is lost locally, later predicted frames cannot repair that
+/// access unit. Retire it and its repair history before requesting a fresh epoch.
+fn send_stream_batch(
+	outgoing: &mut crate::video::Pacer,
+	history: &mut crate::video::History,
+	now: Instant,
+	bitrate: u32,
+	remember: bool,
+	mut send: impl FnMut(&crate::video::Packet) -> Result<Datagram, &'static str>,
+) -> Result<Datagram, &'static str> {
+	let mut result = Datagram::Sent;
+	for packet in outgoing.next_batch(now, bitrate) {
+		if send(&packet)? == Datagram::Dropped {
+			result = Datagram::Dropped;
+			break;
+		}
+		if remember {
+			history.remember(packet, now);
+		}
+	}
+	if result == Datagram::Dropped {
+		outgoing.clear();
+		history.clear();
+	}
+	Ok(result)
+}
+
+fn request_stream_recovery(video: &mut Option<crate::screen::Video>) {
+	if let Some(video) = video {
+		for _ in 0..video.frames.len() {
+			let _ = video.frames.try_recv();
+		}
+		video.keyframe.store(true, Ordering::Release);
+	}
+}
+
 /// Send one unofficial Discord Go Live stream on its own voice gateway.
 /// Outgoing H265/AV1 require compatible FFmpeg hardware. Incoming video
 /// supports H264/H265/AV1. Synthetic fixtures cover DAVE/RTP framing; current-head
@@ -1478,9 +1599,14 @@ async fn run_stream_inner(
 	let mut awaiting_keyframe = true;
 	let mut outgoing = crate::video::Pacer::new();
 	let mut outgoing_keyframe = false;
+	let mut outgoing_generation = None;
 	let mut outgoing_epoch: Option<u64> = None;
 	let mut minimum_encoder_epoch: Option<u64> = None;
 	let mut encoder_was_secure = false;
+	let mut send_watch = StreamSendWatch::default();
+	let report_progress =
+		std::env::var_os("SEREIN_VOICE_DIAGNOSTICS").is_some_and(|value| value == "1");
+	let mut progress_reports = (0u8, Instant::now() + Duration::from_secs(5));
 	let mut signal_window = Instant::now();
 	let mut signal_count = 0u16;
 	let mut packet = [0u8; MAX_PACKET + 1];
@@ -1525,19 +1651,16 @@ async fn run_stream_inner(
 			outgoing.clear();
 			history.clear();
 			outgoing_keyframe = false;
+			outgoing_generation = None;
 		}
 		if outgoing.stale(Instant::now()) {
 			minimum_encoder_epoch = outgoing_epoch.map(|epoch| epoch.saturating_add(1));
 			outgoing.clear();
 			history.clear();
 			outgoing_keyframe = false;
+			outgoing_generation = None;
 			awaiting_keyframe = true;
-			if let Some(video) = &mut video {
-				for _ in 0..video.frames.len() {
-					let _ = video.frames.try_recv();
-				}
-				video.keyframe.store(true, Ordering::Release);
-			}
+			request_stream_recovery(&mut video);
 		}
 		tokio::select! {
 			_=tokio::time::sleep_until(outgoing.deadline), if !outgoing.is_empty() || history.has_pending()=>{
@@ -1550,14 +1673,22 @@ async fn run_stream_inner(
 					// The original DAVE ciphertext is reused; the transport nonce is always fresh.
 					udp_failures.send(socket,&crypto.seal(&packet.header,&packet.payload)?,"Stream retransmission failed")?;
 				}
-				for packet in outgoing.next_batch(now,rate.target) {
-					udp_failures.send(socket,&crypto.seal(&packet.header,&packet.payload)?,"Stream UDP send failed")?;
-					if rtx_ssrc!=0 {history.remember(packet,now);}
-				}
+				let had_picture=!outgoing.is_empty();
+				let sent=send_stream_batch(&mut outgoing,&mut history,now,rate.target,rtx_ssrc!=0,|packet| {
+					udp_failures.send(socket,&crypto.seal(&packet.header,&packet.payload)?,"Stream UDP send failed")
+				})?;
 				metrics.finish(crate::diagnostics::Stage::VideoSend,start);
-				if outgoing.is_empty() && outgoing_keyframe {
-					if awaiting_keyframe {emit(Status::Ready{privacy_code:dave.session.voice_privacy_code().unwrap_or_default().into()}).map_err(|_|"Stream interface closed")?;}
-					awaiting_keyframe=false;
+				if sent==Datagram::Dropped {
+					minimum_encoder_epoch=outgoing_epoch.map(|epoch|epoch.saturating_add(1));
+					outgoing_keyframe=false;outgoing_generation=None;awaiting_keyframe=true;
+					request_stream_recovery(&mut video);
+				} else if send_watch.complete_picture(had_picture,!outgoing.is_empty(),sent) {
+					if let (Some(video),Some(generation))=(&video,outgoing_generation.take()) {video.progress.transmitted(generation);}
+					if outgoing_keyframe {
+						if awaiting_keyframe {emit(Status::Ready{privacy_code:dave.session.voice_privacy_code().unwrap_or_default().into()}).map_err(|_|"Stream interface closed")?;}
+						awaiting_keyframe=false;
+						outgoing_keyframe=false;
+					}
 				}
 			},
 			_=tick.tick()=>{
@@ -1595,7 +1726,7 @@ async fn run_stream_inner(
 				let secure=dave.ready&&dave.session.is_ready()&&!dave.transitioning()&&encryption.is_some()&&!discovering;
 				let resolved=video.as_ref().and_then(|video|video.output());
 				if announced && video.is_some() && resolved!=announced_output {
-					announced=false; awaiting_keyframe=true; outgoing.clear(); history.clear(); outgoing_keyframe=false;
+					announced=false; awaiting_keyframe=true; outgoing.clear(); history.clear(); outgoing_keyframe=false;outgoing_generation=None;
 					invalidate_stream(&mut video, &mut share_audio);
 				}
 				// Capture owns bounded picker/first-frame deadlines; signaling and heartbeat
@@ -1614,6 +1745,7 @@ async fn run_stream_inner(
 						json_send(&mut ws,screen_announcement(output,audio_ssrc,video_ssrc,rtx_ssrc)).await?;
 						if announced_output!=Some(output) {rate=crate::video::Rate::new(output.rates.maximum,now);video.bitrate.store(output.rates.maximum,Ordering::Release);}
 						if !video.enable_output(output) {continue;}
+						send_watch.announced(Instant::now());
 						announced_output=Some(output);awaiting_keyframe=true;
 					} else {
 						json_send(&mut ws,json!({"op":12,"d":{"audio_ssrc":audio_ssrc,"video_ssrc":0,"rtx_ssrc":0,"streams":[]}})).await?;
@@ -1626,6 +1758,16 @@ async fn run_stream_inner(
 					announced=true; deadline=None;
 				}
 				if !secure && announced {announced=false;awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);emit(Status::Securing).map_err(|_|"Stream interface closed")?;}
+				let encoder_enabled=secure && announced && video.as_ref().is_some_and(|video|video.ready.load(Ordering::Acquire));
+				let progress=video.as_ref().map(|video|video.progress.snapshot());
+				if report_progress && progress_reports.0<8 && now>=progress_reports.1 && let Some(progress)=progress {
+					let operation=progress.operation.map(|(operation,_)|operation);
+					let operation_ms=progress.operation.map_or(0,|(_,started)|now.saturating_duration_since(Instant::from_std(started)).as_millis());
+					eprintln!("[Serein voice ScreenProgress] captured={} accepted={} encoded={} sent={} operation={operation:?} operation_ms={operation_ms}",progress.captured,progress.accepted,progress.produced,progress.sent);
+					progress_reports.0+=1;progress_reports.1=now+Duration::from_secs(5);
+				}
+				let progress=progress.filter(|progress|video.as_ref().is_some_and(|video|progress.generation==video.audio_epoch.load(Ordering::Acquire)));
+				send_watch.check(encoder_enabled,awaiting_keyframe,progress,!outgoing.is_empty(),Instant::now())?;
 				metrics.stream_state([
 					encryption.is_some() && !discovering, dave.ready, dave.session.is_ready(),
 					dave.transitioning(), waiting, announced,
@@ -1703,6 +1845,7 @@ async fn run_stream_inner(
 				let packets=crate::video::packetize_for_codec(&encrypted,outgoing_codec,&mut sequence,frame.timestamp,video_ssrc,frame.keyframe)?;
 				outgoing.queue(packets,Instant::now());
 				outgoing_keyframe=frame.keyframe;
+				outgoing_generation=Some(frame.reset_generation);
 				metrics.finish(crate::diagnostics::Stage::VideoSend,start);
 			},
 			result=async {match &udp {Some(socket)=>socket.recv(&mut packet).await,_=>std::future::pending().await}}=>{
@@ -2174,11 +2317,17 @@ mod tests {
 		let mut failures = UdpFailures::default();
 		// An oversized datagram gives a real socket error without needing a live outage.
 		let invalid = vec![0; 65_536];
-		assert!(failures.send(&sender, &invalid, "outage").is_ok());
+		assert_eq!(
+			failures.send(&sender, &invalid, "outage"),
+			Ok(Datagram::Dropped)
+		);
 		assert!(failures.0.is_some());
 		failures.0 = Some(Instant::now() - UDP_OUTAGE);
 		assert_eq!(failures.send(&sender, &invalid, "outage"), Err("outage"));
-		assert!(failures.send(&sender, b"recovered", "outage").is_ok());
+		assert_eq!(
+			failures.send(&sender, b"recovered", "outage"),
+			Ok(Datagram::Sent)
+		);
 		assert!(failures.0.is_none());
 		let mut packet = [0; 16];
 		let length = timeout(Duration::from_secs(1), receiver.recv(&mut packet))
@@ -2186,6 +2335,202 @@ mod tests {
 			.unwrap()
 			.unwrap();
 		assert_eq!(&packet[..length], b"recovered");
+	}
+
+	#[test]
+	fn a_locally_dropped_fragment_retires_the_incomplete_picture_and_repairs() {
+		for dropped in 0..3 {
+			let now = Instant::now();
+			let mut outgoing = crate::video::Pacer::new();
+			let mut history = crate::video::History::default();
+			let packets = (0..3u16)
+				.map(|sequence| {
+					let mut header = [0; 12];
+					header[2..4].copy_from_slice(&sequence.to_be_bytes());
+					crate::video::Packet {
+						header,
+						payload: vec![0; 100],
+					}
+				})
+				.collect();
+			outgoing.queue(packets, now);
+			let progress = crate::screen::Progress::default();
+			let mut watch = StreamSendWatch::default();
+			let had_picture = !outgoing.is_empty();
+			let mut calls = 0;
+			let result =
+				send_stream_batch(&mut outgoing, &mut history, now, 4_000_000, true, |_| {
+					let result = if calls == dropped {
+						Datagram::Dropped
+					} else {
+						Datagram::Sent
+					};
+					calls += 1;
+					Ok(result)
+				})
+				.unwrap();
+			assert_eq!(result, Datagram::Dropped);
+			if watch.complete_picture(had_picture, !outgoing.is_empty(), result) {
+				progress.transmitted(0);
+			}
+			assert_eq!(progress.snapshot().sent, 0);
+			assert_eq!(calls, dropped + 1);
+			assert!(outgoing.is_empty());
+			assert!(
+				history.request(&[0, 1, 2], now),
+				"all retired fragments must require a fresh keyframe"
+			);
+			assert!(!history.has_pending());
+		}
+	}
+
+	#[test]
+	fn sender_watch_bounds_first_keyframe_and_outstanding_work_but_allows_quiet_sources() {
+		let now = Instant::now();
+		let mut watch = StreamSendWatch::default();
+		assert!(watch.check(true, true, None, false, now).is_ok());
+		assert!(
+			watch
+				.check(true, true, None, false, now + STREAM_VIDEO_TIMEOUT)
+				.is_err()
+		);
+		// An unfinished picker or security transition has its own clock.
+		assert!(
+			watch
+				.check(false, true, None, false, now + STREAM_VIDEO_TIMEOUT)
+				.is_ok()
+		);
+		let later = now + STREAM_VIDEO_TIMEOUT * 2;
+		assert!(watch.check(true, true, None, false, later).is_ok());
+		assert!(
+			watch
+				.check(true, false, None, false, later + STREAM_VIDEO_TIMEOUT * 10)
+				.is_ok()
+		);
+		let pending = crate::screen::ProgressSnapshot {
+			accepted: 2,
+			produced: 1,
+			pending_since: Some(now.into_std()),
+			last_output: Some((later - Duration::from_secs(1)).into_std()),
+			..Default::default()
+		};
+		// Continued output advances the watchdog even while lookahead remains queued.
+		assert!(
+			watch
+				.check(true, false, Some(pending), false, later)
+				.is_ok()
+		);
+		assert!(
+			watch
+				.check(
+					true,
+					false,
+					Some(pending),
+					false,
+					later + STREAM_VIDEO_TIMEOUT
+				)
+				.is_err()
+		);
+		let blocked = crate::screen::ProgressSnapshot {
+			operation: Some((crate::screen::NativeOperation::Encoding, now.into_std())),
+			..Default::default()
+		};
+		assert!(
+			watch
+				.check(
+					true,
+					false,
+					Some(blocked),
+					false,
+					now + STREAM_VIDEO_TIMEOUT
+				)
+				.is_err()
+		);
+		// A displayed static picture may leave priming duplicates in lookahead.
+		// Counts alone must not turn that quiet source into a stalled stream.
+		assert!(
+			watch
+				.check(
+					true,
+					false,
+					Some(crate::screen::ProgressSnapshot {
+						accepted: 5,
+						produced: 1,
+						last_output: Some(now.into_std()),
+						..Default::default()
+					}),
+					false,
+					later + STREAM_VIDEO_TIMEOUT * 100
+				)
+				.is_ok()
+		);
+		let mut wire = StreamSendWatch::default();
+		assert!(wire.check(true, false, None, true, now).is_ok());
+		assert!(
+			wire.check(true, false, None, true, now + STREAM_VIDEO_TIMEOUT)
+				.is_err()
+		);
+		assert!(wire.complete_picture(true, false, Datagram::Sent));
+		assert!(
+			wire.check(true, false, None, true, now + STREAM_VIDEO_TIMEOUT)
+				.is_ok()
+		);
+	}
+
+	#[test]
+	fn sender_watch_restarts_at_announcements_but_not_at_keyframe_retries() {
+		let now = Instant::now();
+		let mut watch = StreamSendWatch::default();
+		watch.announced(now);
+		assert!(
+			watch
+				.check(true, true, None, false, now + Duration::from_secs(14))
+				.is_ok()
+		);
+		// Both a resize and a completed security transition may be re-announced
+		// before the timer sees enabled=false. Each new configuration gets 15s.
+		for offset in [14, 30] {
+			let changed = now + Duration::from_secs(offset);
+			watch.announced(changed);
+			for retry in [0, 5, 14] {
+				assert!(!watch.complete_picture(true, false, Datagram::Dropped));
+				assert!(
+					watch
+						.check(
+							true,
+							true,
+							None,
+							false,
+							changed + Duration::from_secs(retry)
+						)
+						.is_ok()
+				);
+			}
+			assert!(
+				watch
+					.check(true, true, None, false, changed + STREAM_VIDEO_TIMEOUT)
+					.is_err()
+			);
+		}
+	}
+
+	#[test]
+	fn transmission_progress_counts_only_complete_current_pictures() {
+		let progress = crate::screen::Progress::default();
+		progress.reset(7);
+		let mut watch = StreamSendWatch::default();
+		for (had_picture, pending, sent, generation, expected) in [
+			(false, false, Datagram::Sent, 7, 0), // RTX-only wake.
+			(true, true, Datagram::Sent, 7, 0),   // Part of a paced picture.
+			(true, false, Datagram::Dropped, 7, 0),
+			(true, false, Datagram::Sent, 6, 0), // Retired security generation.
+			(true, false, Datagram::Sent, 7, 1),
+		] {
+			if watch.complete_picture(had_picture, pending, sent) {
+				progress.transmitted(generation);
+			}
+			assert_eq!(progress.snapshot().sent, expected);
+		}
 	}
 
 	#[test]
@@ -2510,6 +2855,7 @@ mod tests {
 		enqueue(vec![0.75; STREAM_AUDIO_FRAME]);
 		let (frames_send, frames) = tokio::sync::mpsc::channel(3);
 		let mut video = Some(crate::screen::Video {
+			progress: Arc::default(),
 			video_settings: VideoSettings::default(),
 			output: Arc::new(std::sync::Mutex::new(Some(crate::screen::Output {
 				source_dimensions: (1280, 720),
