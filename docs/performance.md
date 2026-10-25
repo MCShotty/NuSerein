@@ -3635,3 +3635,130 @@ Release package comparisons and current-head native CI are recorded in the PR.
 The core replay graph is unchanged, so the earlier verified release replay and
 120-second soak remain applicable. Capture/game FPS, media throughput, CPU/RSS
 and physical Windows/macOS behavior remain unmeasured for these corrections.
+
+## FFmpeg-only encoding controls (2026-10-25)
+
+Runtime implementation: `eb60febb`. Comparison baseline: reviewed pre-controls head
+`0104f8aa`. FFmpeg replaces the former platform encoder stack. Advanced Video Encoding
+provides confirmed hardware codecs/presets and Low / Medium (Recommended) / High rate
+profiles; the [settings reference](voice.md#video-backend-and-codec-settings) records
+the budgets and migration behavior. Capture, incoming decoding and transport bounds
+retain their existing ownership.
+
+Pinned Rust 1.98.1, locked dependencies. Workspace formatting, strict all-target Clippy,
+workspace tests, minimal application/policy checks, login/embed/workspace checks,
+license checks, bounded fuzzing and the rebuilt Linux pipeline diagnostic passed.
+The added production High-rate regression preserves a ceiling above Medium through
+reconfiguration and emits a fresh IDR. Query fixtures validate named presets without
+encoder Init/pictures; they do not establish hardware interoperability. The normal
+native recipe was rebuilt into a fresh prefix, with unchanged source versions and
+complete notices, archives, recipe and reproducible patch. FFmpeg packaging fixtures
+passed 21 cases with one Windows-only skip; Flatpak preparation passed four cases.
+
+The macOS geometry fixture exposed a prior synchronous-picture assumption after the
+backend change. It now explicitly excludes hardware; dimensions, software decoding
+and fresh-keyframe assertions remain. Native encoder buffering retains the separate
+bounded tests and optional user-requested encoder test.
+
+### Native settings and process comparison
+
+The committed [before](pr-evidence/ffmpeg-video-controls/before.png) /
+[after](pr-evidence/ffmpeg-video-controls/after.png) pair uses synthetic Voice & Video
+settings at 1120×900, scale 1, dark appearance. The frozen before preview is
+`fd181b4e`; its UI inputs were verified unchanged through `0104f8aa`. The old
+FFmpeg option is selected before; the new controls default to Medium/Automatic.
+Native light and narrow layouts were also inspected. Keyboard/scaling regressions
+cover 220/320/600-point controls and 1×/1.5× scale; physical high-DPI displays remain
+unverified. No camera, microphone or live capture was opened.
+
+Same Linux 6.18.55/glibc 2.41 Xeon Platinum 8573C host, 16 GiB memory limit,
+Xvfb/OpenGL llvmpipe LLVM 19.1.7/Mesa 25.0.7, normal release `demo` previews.
+One inherited logical CPU, one warmup and five alternating fresh-process samples;
+a visible-paint/liveness gate, twelve downward wheel events and three-second warmup
+preceded five seconds of 100-ms process sampling and two seconds of settling.
+Compilation was stopped. Medians of the per-run measurements:
+
+| Metric | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| CPU, percent of one core | 92.995% | 93.560% | +0.565 percentage points |
+| Peak RSS | 159,227,904 B | 165,191,680 B | +5,963,776 B (+3.75%) |
+| Settled RSS | 159,227,904 B | 165,191,680 B | +5,963,776 B (+3.75%) |
+| Helper-process peak RSS | 0 B | 0 B | 0 B |
+
+The fixture continuously animates its pending capability indicator on a CPU
+renderer; this is not ordinary idle use or driver-query throughput. It does not
+measure hardware encoding, presented-frame/input latency or capture/game FPS.
+Before preview SHA-256: `fb4cdc4ab4b24ca70abbd1a27f6acaf021621cbc72e42465c949f067a7b4c743`;
+after: `a72de274d65da9961434182bab150562cc243702d1783e02c3561fe52ea4a41d`.
+
+### Release package
+
+Matching normal Linux x86-64 release settings and `cargo xtask package --format dir`
+from an empty task-owned output directory. One package per revision; compressed sizes
+use sorted entries, fixed timestamps and ZIP/Deflate 6.
+
+| Metric | `0104f8aa` | `eb60febb` | Delta |
+| --- | ---: | ---: | ---: |
+| Executable | 98,436,872 B | 97,640,072 B | −796,800 B (−0.81%) |
+| Installed payload | 227,195,891 B | 226,405,341 B | −790,550 B (−0.35%) |
+| Normalized compressed payload | 155,652,406 B | 155,328,087 B | −324,319 B (−0.21%) |
+
+Installed membership is identical. The twelve changed paths are the executable,
+five rebuilt FFmpeg libraries, README, voice provenance, and retained recipe,
+build/configure metadata and patch. Source archives and license texts remain intact.
+Both staged and installed codec/synthetic LavaSR probes passed with old/new development
+FFmpeg paths removed. Both executables retain only `$ORIGIN` runpaths.
+Executable SHA-256: `68fa47c6fc71a441fa0985e1063d95a80ae27dd98e9da44001b9fa179d24151c`.
+Compressed payload SHA-256: `2bf97acc047d4984ccd3aad33734e32ef4990f60d2972921a695b36c0a7eb233`.
+
+### Core and lifecycle
+
+The freshly rebuilt core-only replay is byte-identical to the verified baseline
+(`111b2a0e8d1682577f260612a10ed234ea7e28c48b9ba45f0b7a7dc1924f04b8`);
+the media settings are not linked into this workload. On the same Linux Xeon host,
+one inherited logical CPU, one warmup and five alternating release samples gave
+81.164 → 81.717 ms reducer medians (+0.68%) and 8.681 → 8.649 ms wide-channel medians
+(−0.37%). These differences are timing variation, not an optimization claim.
+The 120-second soak completed 3,477 passes, 111,264 channel visits, 66,758,400 inserts
+and 14 logout cycles in 120.001 seconds. Retained estimates remained within the
+existing budgets. This measures reducer lifecycle pressure, not process/GPU RSS,
+media delivery, input latency or live Discord behavior.
+
+### Current nightly comparison on native CI
+
+[Initial runtime CI](https://github.com/MCShotty/Serein/actions/runs/40146721629)
+compares published nightly `v1.0.0-nightly.20261024.63`, pinned to
+`38e46b8f5ec694002ef515fbc2d8dc69297e4f5f`, fork main `149644aa`, and `eb60febb`.
+Each OS uses one warmup and five rotating samples on its own runner; release opt-level
+3, thin LTO, one codegen unit, line tables, stripped symbols and abort-on-panic.
+Linux/Windows pin one CPU; macOS uses its scheduler. Cross-OS rows are separate
+comparisons. The nightly gap includes earlier fork work.
+
+| OS / workload | Nightly median (ms) | Fork median (ms) | Runtime median (ms) | Runtime vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux reducer | 56.873 | 58.537 | 58.785 | +0.42% |
+| Linux wide channels | 112.063 | 6.576 | 6.616 | +0.61% |
+| macOS reducer | 60.280 | 59.672 | 59.480 | −0.32% |
+| macOS wide channels | 90.995 | 6.347 | 6.309 | −0.60% |
+| Windows reducer | 78.056 | 80.490 | 80.603 | +0.14% |
+| Windows wide channels | 93.684 | 8.709 | 9.002 | +3.37% |
+
+The initial Windows wide-channel median exceeds the 3% target; its after samples
+include a 14.128 ms outlier. The follow-up comparison records binary hashes to assess recurrence;
+its final-head result is reported in the PR. Overlapping ranges alone are not treated as a pass. These are
+core measurements; hardware encoding, capture/game FPS, media throughput and visual
+quality remain unmeasured locally.
+
+### Native verification limits
+
+At runtime `eb60febb`, Linux application checks and all eight Linux package jobs
+passed, as did Windows x64/ARM64 workspace, capture fixtures, replay and soak.
+Windows packaging was still running. The macOS geometry assertion failed on its
+hardware-buffering assumption; the follow-up fixture fixes only that assumption.
+Its native rerun and final-head package status are linked in the PR.
+
+The security job reports unchanged baseline versions of `crypto-bigint`, `ctutils`,
+`tokio` and yanked `clipboard-win`; this patch removes one unused direct macOS
+encoder dependency edge, without changing dependency versions. License checks pass.
+Owner-controlled GPU codec/preset validation, live Discord acceptance, media quality,
+physical Windows/macOS screens, HDR and game-FPS comparisons remain unavailable.

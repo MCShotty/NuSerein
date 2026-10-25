@@ -841,8 +841,9 @@ and preset GUIDs, AMF reads writable quality enums and validates property values
 oneVPL enumerates codec metadata and queries TargetUsage, and VideoToolbox lists
 hardware encoders. Named quality choices intersect driver results with this FFmpeg
 build's options. Automatic preserves existing vendor defaults. Incomplete preset
-queries expose no new named choices; a complete report removes unsupported saved
-presets. VideoToolbox has no named quality presets in this interface.
+queries expose no new named choices; a complete report for an available codec
+removes unsupported saved presets. VideoToolbox has no named quality presets in this
+interface.
 
 **Test encoder** explicitly tests the selected codec and quality preset using bounded
 640×480/15 fps camera and 1280×720/30 fps screen fixtures (at most 48 pictures each).

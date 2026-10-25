@@ -1818,7 +1818,9 @@ mod tests {
 				settings,
 				settings.bit_rate(),
 				VideoSettings::default(),
-				None,
+				// Keep this one-picture geometry fixture independent of native
+				// hardware buffering; explicit encoder tests cover that separately.
+				Some(model::VideoAdapter::default()),
 				0,
 				0,
 			)
