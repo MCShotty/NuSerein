@@ -96,6 +96,11 @@ Missing files, empty files and broken library aliases reject reuse; a failed/inc
 requires fresh `--prefix` and `--work-dir` paths. `--offline` consumes previously
 downloaded archives in `--cache-dir` without network access.
 
+The FFmpeg release archive is downloaded from the MacPorts distfiles mirror
+because the upstream download host is unavailable from some build runners.
+Its pinned SHA-256 still matches the original upstream archive; source version,
+contents and license terms are unchanged.
+
 On Linux/macOS, `CC` and `CXX` select the compiler for all native dependencies;
 when unset, the recipe uses `cc` and `c++`. FFmpeg receives these choices through
 its explicit configure options, since it otherwise defaults to `gcc`/`g++` and
