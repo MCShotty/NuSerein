@@ -3454,3 +3454,41 @@ References: [Discord reporting guidance](https://discord.com/safety/360044103651
 and [unofficial reports reference](https://docs.discord.food/topics/reports). Offline loopback,
 decoder and state fixtures exercise confirmation, cancellation, stale responses and failures.
 They submit no live reports and do not establish current service acceptance.
+
+## Gateway recovery and shared application audio — October 26, 2026
+
+Gateway recovery now retains bounded, fixed-label connection causes for the existing
+Copy Issue Diagnostics action. The session-only report distinguishes service-requested
+reconnects, close codes, heartbeat/probe expiry, socket failures and local admission limits.
+It contains elapsed timings and counters, never credentials, payloads or account identifiers.
+The report does not identify the cause of an owner-reported dropout until that event has
+actually been observed.
+
+Outgoing Gateway requests share bounded admission and a serialized writer, including the
+[documented connection-wide rate limit](https://docs.discord.com/developers/events/gateway#rate-limiting).
+Heartbeats and critical controls retain capacity while replaceable subscriptions, presence
+and member queries coalesce. Per-operation RATE_LIMITED handling and normal-account member
+query cooldowns follow [unofficial protocol documentation](https://docs.discord.food/gateway/using-gateway#rate-limiting);
+these are not normal-account acceptance evidence. Server reconnects receive an immediate
+RESUME attempt before repeated failures back off. Subscription retries retain their
+increasing delay, and acknowledgement deadlines begin after actual transmission.
+Buffered acknowledgements receive a bounded drain opportunity at expiry; continuous
+dispatch traffic cannot extend it indefinitely. Recovery does not increase the heartbeat
+timeout. TCP_NODELAY avoids delaying small heartbeat/control writes behind buffered data.
+
+Shared audio follows the approved video source. Windows window capture uses WASAPI
+include-process-tree capture for a validated window owner; monitor capture excludes
+Serein from system audio. The existing API requires Windows build 20348 or newer
+([Microsoft sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)).
+On macOS, ScreenCaptureKit's approved single-window filter includes that application's
+audio, including its other windows ([Apple WWDC22 session 10155](https://developer.apple.com/videos/play/wwdc2022/10155/)).
+This is application isolation, rather than individual browser-tab audio selection.
+
+Linux preserves the portal's source type. Explicit monitor and X11-desktop sharing retain
+the existing PulseAudio/PipeWire-Pulse mixer with Serein excluded. Window or unknown portal
+sources continue video-only because the current portal contract does not identify the
+window's owning application. Native audio initialization/isolation failure also continues
+video-only with a visible explanation, without changing microphone processing or encoder
+quality. Retired audio and queued samples remain fenced by the existing share/security
+generation. Native cross-application isolation and live Gateway recovery remain subject
+to owner-controlled acceptance.
