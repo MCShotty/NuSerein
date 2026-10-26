@@ -253,6 +253,7 @@ fn rows<'a>(
 			&& !roster.lifted(c.id)
 			&& (c.guild.is_none()
 				|| state.channel_personally_selected(c.id)
+				|| state.channel_in_custom_list(c.id).is_none()
 				|| mentions.contains_key(&c.id)
 				|| Some(c.id) == state.selected
 				|| state
@@ -821,7 +822,8 @@ impl MessagingUi {
 							let draggable = slot == Slot::Tree
 								&& !nested && !state.channel_action_pending()
 								&& state.can_manage_channel(channel.id);
-							let active = state.selected == Some(channel.id);
+							let active = state.browse_channels.is_none()
+								&& state.selected == Some(channel.id);
 							if matches!(channel.kind, 2 | 13) {
 								let response = ui
 									.push_id(slot, |ui| {
@@ -1109,10 +1111,18 @@ impl MessagingUi {
 									egui::Sense::hover(),
 								);
 								glyph = Some(rect);
+								// Personal hiding does not revoke access. Temporary reveals keep
+								// a distinct glyph; the normal icon remains for selected channels.
+								let outside_list = visible
+									&& state.channel_in_custom_list(channel.id) == Some(false);
 								channel_marks::paint_glyph(
 									inner.painter(),
 									access,
-									icon,
+									if outside_list {
+										crate::icons::Icon::EyeSlash
+									} else {
+										icon
+									},
 									rect,
 									name_color.gamma_multiply(
 										if (active || hovered) && !access.dim() {
@@ -1304,10 +1314,15 @@ impl MessagingUi {
 							}
 							let response = response.on_hover_text_with(|| {
 								format!(
-									"{} · {}{}{}",
+									"{} · {}{}{}{}",
 									channel.name,
 									crate::i18n::translate_if_key(kind_label(channel.kind)),
 									channel_marks::label(access),
+									if state.channel_in_custom_list(channel.id) == Some(false) {
+										" · Outside your saved channel list; temporarily visible"
+									} else {
+										""
+									},
 									if unread && !forum && state.channel_unread(channel).is_none() {
 										" · Session activity; read sync unavailable"
 									} else if count > 0 {
@@ -2632,7 +2647,7 @@ mod tests {
 			channel(28, 0, 0, Some(Id(27))),
 		];
 		hierarchy.iter_mut().find(|c| c.id == Id(26)).unwrap().guild = Some(Id(101));
-		let hierarchy_state = State {
+		let mut hierarchy_state = State {
 			channels: hierarchy.clone(),
 			last_viewed_threads: vec![9, 8, 11, 13, 20, 21, 22, 23, 24, 25, 27]
 				.into_iter()
@@ -2640,6 +2655,17 @@ mod tests {
 				.collect(),
 			..State::default()
 		};
+		hierarchy_state
+			.apply_notification_preferences(client_core::notifications::Event::Settings {
+				entries: vec![client_core::notifications::Setting {
+					guild: Some(Id(100)),
+					flags: Some(0),
+					overrides_known: true,
+					..Default::default()
+				}],
+				replace: false,
+			})
+			.unwrap();
 		// Show All still admits bounded orphan rows; parent metadata must not silently
 		// hide a previously reachable recent thread. Access filtering remains in rows().
 		for id in [20, 21, 22, 23, 24, 25, 27] {
@@ -2752,30 +2778,23 @@ mod tests {
 				collapsed: Some((false, true)),
 			}]
 		);
-		let client_core::Command::ChannelAction {
-			guild,
-			channel: saved_channel,
-			request,
-			action: client_core::channel_actions::Action::Personal(change),
-		} = state.request_channel_action(target, action).unwrap()
-		else {
-			panic!("the same account collapse save must be dispatched");
-		};
+		assert!(state.request_channel_action(target, action).is_none());
 		assert_eq!(
 			state.account_category_collapsed(Id(4)),
-			Some(false),
-			"a pending save must not fabricate service confirmation"
+			Some(true),
+			"optimistic collapse applies immediately"
 		);
+		state.flush_channel_preferences();
+		let client_core::Command::ChannelPreferences(request) = state
+			.poll_channel_preferences(std::time::Instant::now())
+			.unwrap()
+		else {
+			panic!()
+		};
+		let result = state.demo_channel_preferences(&request);
 		state.apply(client_core::Envelope {
 			generation: state.generation,
-			event: client_core::Event::ChannelAction(
-				client_core::channel_actions::Event::Finished {
-					guild,
-					channel: saved_channel,
-					request,
-					result: Ok(client_core::channel_actions::Outcome::Personal(change)),
-				},
-			),
+			event: client_core::Event::ChannelPreferences(result),
 		});
 		assert_eq!(state.account_category_collapsed(Id(4)), Some(true));
 		assert_eq!(state.selected, Some(Id(8)));
@@ -3135,25 +3154,19 @@ mod tests {
 			.clone();
 		state.selected = None;
 		let action = state.personal_visibility_change(target.id, false).unwrap();
-		let client_core::Command::ChannelAction {
-			guild,
-			channel,
-			request,
-			action: client_core::channel_actions::Action::Personal(change),
-		} = state.request_channel_action(target.id, action).unwrap()
+		let guild = target.guild.unwrap();
+		assert!(state.request_channel_action(target.id, action).is_none());
+		state.flush_channel_preferences();
+		let client_core::Command::ChannelPreferences(request) = state
+			.poll_channel_preferences(std::time::Instant::now())
+			.unwrap()
 		else {
 			panic!()
 		};
+		let result = state.demo_channel_preferences(&request);
 		state.apply(client_core::Envelope {
 			generation: state.generation,
-			event: client_core::Event::ChannelAction(
-				client_core::channel_actions::Event::Finished {
-					guild,
-					channel,
-					request,
-					result: Ok(client_core::channel_actions::Outcome::Personal(change)),
-				},
-			),
+			event: client_core::Event::ChannelPreferences(result),
 		});
 		let shown = |state: &State| {
 			rows(
@@ -3186,6 +3199,36 @@ mod tests {
 		assert!(
 			!state.channel_personally_selected(target.id),
 			"temporary exposure must not change the saved preference"
+		);
+	}
+	#[test]
+	fn unknown_channel_membership_is_marked_unsynced_without_erasing_accessible_rows() {
+		let mut state = test_support::chat_demo_state();
+		state.demo = false;
+		state.notification_preferences = Default::default();
+		let guild = Id(10);
+		assert!(!state.channel_preferences_known(guild));
+		assert!(!state.personally_shows_all_channels(guild));
+		assert!(!state.personal_channel_controls_available(guild));
+		assert_eq!(state.channel_in_custom_list(Id(20)), None);
+		let accessible = rows(
+			&state,
+			Scope::Guild(guild),
+			&Roster::default(),
+			&BTreeSet::new(),
+			false,
+			false,
+		);
+		assert!(
+			accessible
+				.iter()
+				.any(|row| matches!(row,Row::Channel(channel,..) if channel.id==Id(20)))
+		);
+		assert!(
+			accessible
+				.iter()
+				.all(|row| !matches!(row,Row::Channel(channel,..) if !state.can_view(channel.id))),
+			"unsynced is never permission access"
 		);
 	}
 }

@@ -2056,46 +2056,10 @@ fn notification_preferences(
 	entries: Vec<discord_protocol::notifications::Setting>,
 	replace: bool,
 ) -> client_core::notifications::Event {
-	client_core::notifications::Event::Settings {
+	client_core::notifications::Event::Updates {
 		entries: entries
 			.into_iter()
-			.map(discord_protocol::notifications::Setting::with_defaults)
-			.map(|s| client_core::notifications::Setting {
-				flags: s.flags,
-				channel_flags: s.channel_overrides.as_ref().map_or_else(Vec::new, |c| {
-					c.0.iter()
-						.map(|row| (row.channel_id, row.flags, row.collapsed))
-						.collect()
-				}),
-				overrides_known: true,
-				guild: s.guild_id,
-				muted: s.muted,
-				mute_until: s.mute_config.as_ref().and_then(|config| config.until()),
-				level: s.message_notifications,
-				suppress_everyone: s.suppress_everyone,
-				suppress_roles: s.suppress_roles,
-				hide_muted_channels: s.hide_muted_channels,
-				channel_mute_until: s.channel_overrides.as_ref().map_or_else(Vec::new, |c| {
-					c.0.iter()
-						.filter_map(|c| {
-							(c.muted == Some(true))
-								.then(|| {
-									c.mute_config
-										.as_ref()
-										.and_then(|m| m.until())
-										.map(|until| (c.channel_id, until))
-								})
-								.flatten()
-						})
-						.collect()
-				}),
-				channels: s
-					.channel_overrides
-					.map_or_else(Vec::new, |c| c.0)
-					.into_iter()
-					.map(|c| (c.channel_id, c.muted, c.message_notifications))
-					.collect(),
-			})
+			.map(|setting| setting.into_update(true))
 			.collect(),
 		replace,
 	}
@@ -2106,8 +2070,9 @@ mod tests {
 	use super::*;
 	#[test]
 	fn notification_settings_forward_explicit_mention_suppression() {
-		let setting = decode::<discord_protocol::notifications::Setting>(br#"{"guild_id":"1","muted":false,"message_notifications":1,"channel_overrides":[{"channel_id":"3","muted":true,"mute_config":{"end_time":"2020-01-01T00:00:00Z"}}],"suppress_everyone":false,"suppress_roles":true}"#).unwrap();
-		let Event::NotificationPreferences(client_core::notifications::Event::Settings {
+		use model::Patch;
+		let setting=decode::<discord_protocol::notifications::Setting>(br#"{"guild_id":"1","muted":false,"message_notifications":1,"channel_overrides":[{"channel_id":"3","muted":true,"mute_config":{"end_time":"2020-01-01T00:00:00Z"}}],"suppress_everyone":false,"suppress_roles":true}"#).unwrap();
+		let Event::NotificationPreferences(client_core::notifications::Event::Updates {
 			entries,
 			replace,
 		}) = notification_settings(vec![setting], false)
@@ -2116,49 +2081,100 @@ mod tests {
 		};
 		assert!(!replace);
 		assert_eq!(entries.len(), 1);
+		assert!(entries[0].full);
 		assert_eq!(
-			(entries[0].suppress_everyone, entries[0].suppress_roles),
-			(Some(false), Some(true))
+			(
+				entries[0].fields.suppress_everyone.clone(),
+				entries[0].fields.suppress_roles.clone()
+			),
+			(Patch::Value(false), Patch::Value(true))
 		);
 		assert_eq!(entries[0].guild, Some(model::Id(1)));
-		assert_eq!(
-			entries[0].channel_mute_until,
-			vec![(model::Id(3), 1577836800)]
-		);
+		let row = &entries[0].channels.as_ref().unwrap()[0];
+		assert_eq!(row.channel, model::Id(3));
+		assert_eq!(row.fields.mute_until, Patch::Value(1577836800));
 	}
 	#[test]
 	fn guild_mute_without_channel_overrides_and_full_defaults_are_retained() {
+		use model::Patch;
 		let setting = decode::<discord_protocol::notifications::Setting>(
 			br#"{"guild_id":"1","muted":true,"mute_config":{"end_time":"2020-01-01T00:00:00Z"}}"#,
 		)
 		.unwrap();
-		let client_core::notifications::Event::Settings { entries, .. } =
+		let client_core::notifications::Event::Updates { entries, .. } =
 			notification_preferences(vec![setting], false)
 		else {
 			panic!()
 		};
-		assert_eq!(entries[0].muted, Some(true));
-		assert_eq!(entries[0].mute_until, Some(1577836800));
-		assert_eq!(entries[0].level, Some(3));
-		assert_eq!(entries[0].suppress_roles, Some(false));
-		assert!(entries[0].channels.is_empty());
+		assert_eq!(entries[0].fields.muted, Patch::Value(true));
+		assert_eq!(entries[0].fields.mute_until, Patch::Value(1577836800));
+		assert_eq!(entries[0].fields.level, Patch::Value(3));
+		assert_eq!(entries[0].fields.suppress_roles, Patch::Value(false));
+		assert!(entries[0].channels.as_ref().unwrap().is_empty());
+	}
+	#[test]
+	fn full_channel_overrides_default_omissions_but_keep_null_unknown() {
+		use model::Patch;
+		let setting=decode::<discord_protocol::notifications::Setting>(br#"{"guild_id":"1","message_notifications":1,"channel_overrides":[{"channel_id":"3","message_notifications":0},{"channel_id":"4","muted":null,"message_notifications":0}]}"#).unwrap();
+		let client_core::notifications::Event::Updates { entries, .. } =
+			notification_preferences(vec![setting], false)
+		else {
+			panic!()
+		};
+		let rows = entries[0].channels.as_ref().unwrap();
+		assert_eq!(rows.len(), 2);
+		assert_eq!(rows[0].fields.muted, Patch::Value(false));
+		assert_eq!(rows[1].fields.muted, Patch::Null);
+		assert_eq!(rows[0].fields.level, Patch::Value(0));
+		assert_eq!(rows[1].fields.level, Patch::Value(0));
 	}
 
 	#[test]
-	fn full_channel_overrides_default_omissions_but_keep_null_unknown() {
-		let setting = decode::<discord_protocol::notifications::Setting>(br#"{"guild_id":"1","message_notifications":1,"channel_overrides":[{"channel_id":"3","message_notifications":0},{"channel_id":"4","muted":null,"message_notifications":0}]}"#).unwrap();
-		let client_core::notifications::Event::Settings { entries, .. } =
-			notification_preferences(vec![setting], false)
+	fn decoded_preferences_reach_core_and_a_sparse_account_command() {
+		use model::{Id, Patch};
+		let mut state = client_core::State {
+			demo: true,
+			guilds: vec![model::Guild {
+				id: Id(2),
+				name: "Synthetic".into(),
+				icon: None,
+				emojis: None,
+				stickers: None,
+				default_message_notifications: Some(0),
+			}],
+			..Default::default()
+		};
+		let record=decode::<discord_protocol::notifications::Setting>(br#"{"guild_id":"2","flags":36028797018980352,"hide_muted_channels":true,"channel_overrides":[]}"#).unwrap();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: notification_settings(vec![record], false),
+		});
+		assert!(state.channel_preferences_known(Id(2)));
+		assert!(!state.personally_shows_all_channels(Id(2)));
+		assert_eq!(state.hides_muted_channels(Id(2)), Some(true));
+		state.update_server_notifications(
+			Id(2),
+			client_core::server_actions::NotificationOptions {
+				level: Some(1),
+				..Default::default()
+			},
+		);
+		state.flush_channel_preferences();
+		let Some(client_core::Command::ChannelPreferences(request)) =
+			state.poll_channel_preferences(std::time::Instant::now())
 		else {
 			panic!()
 		};
-		assert_eq!(
-			entries[0].channels,
-			vec![
-				(model::Id(3), Some(false), Some(0)),
-				(model::Id(4), None, Some(0))
-			]
-		);
+		assert_eq!(request.patch.fields.level, Patch::Value(1));
+		assert_eq!(request.patch.fields.flags, Patch::Absent);
+		assert_eq!(request.patch.fields.hide_muted, Patch::Absent);
+		let result = state.demo_channel_preferences(&request);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: Event::ChannelPreferences(result),
+		});
+		assert_eq!(state.server_notification_settings(Id(2)).level, Some(1));
+		assert_eq!(state.hides_muted_channels(Id(2)), Some(true));
 	}
 
 	use serde_json::{Value, json};

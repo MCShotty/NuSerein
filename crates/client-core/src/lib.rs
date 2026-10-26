@@ -46,6 +46,7 @@ pub mod notifications;
 pub mod owned_cosmetics;
 mod personal_channels;
 pub mod polls;
+pub mod preferences_sync;
 pub mod preload;
 pub mod presence;
 pub mod profile;
@@ -197,6 +198,8 @@ pub struct State {
 	pub read_state: read_state::ReadState,
 	pub startup_warnings: model::account::Warnings,
 	pub notification_preferences: notifications::Preferences,
+	pub preference_queue: preferences_sync::Queue,
+	pub browse_channels: Option<Id>,
 	pub reactions: reactions::Reactions,
 	pub reaction_preferences: reactions::Preferences,
 	pub profile: Option<profile::ProfileView>,
@@ -441,6 +444,8 @@ impl Default for State {
 			read_state: read_state::ReadState::default(),
 			startup_warnings: Default::default(),
 			notification_preferences: notifications::Preferences::default(),
+			preference_queue: preferences_sync::Queue::default(),
+			browse_channels: None,
 			reactions: reactions::Reactions::default(),
 			reaction_preferences: Default::default(),
 			profile: None,

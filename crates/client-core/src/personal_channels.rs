@@ -21,17 +21,17 @@ impl State {
 			.map(|(flags, _)| flags)
 	}
 	pub fn personally_shows_all_channels(&self, guild: Id) -> bool {
-		self.account_guild_flags(guild).is_none_or(|flags| {
+		self.account_guild_flags(guild).is_some_and(|flags| {
 			flags & p::OPT_IN_CHANNELS_ON == 0 || flags & p::OPT_IN_CHANNELS_OFF != 0
 		})
 	}
-	pub fn channel_personally_selected(&self, channel: Id) -> bool {
-		let Some(source) = self.channel(channel) else {
-			return false;
-		};
+	/// Saved membership is independent of Show All and temporary sidebar reveals.
+	pub fn channel_in_custom_list(&self, channel: Id) -> Option<bool> {
+		let source = self.channel(channel)?;
 		let Some(guild) = source.guild else {
-			return true;
+			return Some(true);
 		};
+		let flags = self.account_guild_flags(guild)?;
 		if matches!(source.kind, 10..=12)
 			&& let Some(parent) =
 				source
@@ -40,16 +40,40 @@ impl State {
 					.filter(|parent| {
 						parent.guild == Some(guild)
 							&& matches!(parent.kind, 0 | 5 | 15 | 16)
+							&& parent.id != source.id
 							&& parent.parent_id != Some(source.id)
 					}) {
-			return self.channel_personally_selected(parent.id);
+			return self.channel_in_custom_list(parent.id);
 		}
-		// Incomplete or malformed parent metadata already falls back to an orphan row
-		// in the sidebar. Keep Show All effective there; access is checked separately.
-		self.personally_shows_all_channels(guild)
-			|| self
-				.personal_channel_flags(channel)
-				.is_some_and(|flags| flags & p::OPT_IN_ENABLED != 0)
+		if flags & p::GUILD_MASK == 0 {
+			return Some(true);
+		}
+		let own = self.personal_channel_flags(channel)? & p::OPT_IN_ENABLED != 0;
+		if own || source.kind == 4 {
+			return Some(own);
+		}
+		if !matches!(source.kind, 10..=12)
+			&& let Some(parent) =
+				source
+					.parent_id
+					.and_then(|id| self.channel(id))
+					.filter(|parent| {
+						parent.guild == Some(guild) && parent.kind == 4 && parent.id != source.id
+					}) {
+			return self
+				.personal_channel_flags(parent.id)
+				.map(|flags| flags & p::OPT_IN_ENABLED != 0);
+		}
+		Some(false)
+	}
+	pub fn channel_personally_selected(&self, channel: Id) -> bool {
+		let Some(source) = self.channel(channel) else {
+			return false;
+		};
+		source
+			.guild
+			.is_none_or(|guild| self.personally_shows_all_channels(guild))
+			|| self.channel_in_custom_list(channel) == Some(true)
 	}
 	pub fn channel_account_favorite(&self, channel: Id) -> bool {
 		self.personal_channel_flags(channel)
@@ -57,14 +81,12 @@ impl State {
 	}
 	pub fn account_category_collapsed(&self, category: Id) -> Option<bool> {
 		let guild = self.channel(category)?.guild?;
-		self.account_channel_preference(guild, category)
-			.map(|(_, collapsed)| collapsed)
+		self.preference_bool(guild, Some(category), "collapsed")
 	}
 	pub fn personal_channel_controls_available(&self, guild: Id) -> bool {
 		self.guild(guild).is_some()
-			&& self.account_guild_flags(guild).is_some()
+			&& self.channel_preferences_known(guild)
 			&& (self.demo || self.gateway_connected)
-			&& (!self.channel_action_pending() || self.channel_description_pending())
 	}
 	pub fn personal_change_allowed(&self, guild: Id, change: &p::Change, after: bool) -> bool {
 		change.valid()
@@ -92,41 +114,61 @@ impl State {
 		let guild = source.guild?;
 		if !self.personal_channel_controls_available(guild)
 			|| !self.can_personally_manage_channel(target)
+			|| matches!(source.kind, 10..=12)
 		{
 			return None;
 		}
 		let category = source.kind == 4;
-		let targeted = |channel: &model::Channel| {
-			channel.id == target || (category && channel.parent_id == Some(target))
-		};
-		let mut change = p::Change::default();
 		let all = self.personally_shows_all_channels(guild);
 		let initialize = !shown && all && self.account_guild_flags(guild)? & p::GUILD_MASK == 0;
-		if !shown && all {
-			let before = self.account_guild_flags(guild)?;
-			change.guild_flags = Some((before, (before & !p::GUILD_MASK) | p::OPT_IN_CHANNELS_ON));
-		}
+		let parent = (!category)
+			.then(|| {
+				source
+					.parent_id
+					.and_then(|id| self.channel(id))
+					.filter(|parent| parent.kind == 4 && parent.guild == Some(guild))
+			})
+			.flatten();
+		let break_category = !shown
+			&& parent.is_some_and(|parent| {
+				self.personal_channel_flags(parent.id)
+					.is_some_and(|flags| flags & p::OPT_IN_ENABLED != 0)
+			});
+		let mut wanted = std::collections::BTreeMap::<Id, bool>::new();
 		for channel in self.channels.iter().filter(|channel| {
 			channel.guild == Some(guild)
 				&& !matches!(channel.kind, 4 | 10..=12)
 				&& self.can_view(channel.id)
 		}) {
-			let selected = if targeted(channel) {
-				shown
-			} else if initialize {
-				true
-			} else {
-				continue;
-			};
-			let (before, _) = self.account_channel_preference(guild, channel.id)?;
-			let after = if selected {
+			if initialize {
+				wanted.insert(channel.id, true);
+			}
+			if category && channel.parent_id == Some(target) && !shown {
+				wanted.insert(channel.id, false);
+			}
+			if break_category && channel.parent_id == source.parent_id {
+				wanted.insert(channel.id, self.channel_in_custom_list(channel.id)?);
+			}
+		}
+		if break_category {
+			wanted.insert(parent?.id, false);
+		}
+		wanted.insert(target, shown);
+		let mut change = p::Change::default();
+		if !shown && all {
+			let before = self.account_guild_flags(guild)?;
+			change.guild_flags = Some((before, (before & !p::GUILD_MASK) | p::OPT_IN_CHANNELS_ON));
+		}
+		for (channel, shown) in wanted {
+			let before = self.personal_channel_flags(channel)?;
+			let after = if shown {
 				before | p::OPT_IN_ENABLED
 			} else {
 				before & !p::OPT_IN_ENABLED
 			};
 			if before != after {
 				change.channels.push(p::RowChange {
-					channel: channel.id,
+					channel,
 					flags: Some((before, after)),
 					collapsed: None,
 				});
@@ -273,14 +315,14 @@ impl State {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 	use super::*;
 	use crate::{
 		Envelope, Event,
 		channel_actions::{self, Outcome},
 		notifications::{self, Setting},
 	};
-	fn state() -> State {
+	pub(crate) fn state() -> State {
 		let mut state = State {
 			demo: true,
 			gateway_connected: true,
@@ -369,6 +411,9 @@ mod tests {
 				entries: vec![Setting {
 					guild: Some(Id(2)),
 					flags: Some(1 << 55),
+					hide_muted_channels: Some(false),
+					suppress_everyone: Some(false),
+					suppress_roles: Some(false),
 					overrides_known: true,
 					muted: Some(false),
 					level: Some(0),
@@ -382,34 +427,26 @@ mod tests {
 		state
 	}
 	fn finish(state: &mut State, action: Action) {
-		let command = state
-			.request_personal_channel_action(Id(2), action)
-			.expect("ordinary member can change personal preferences");
-		let Command::ChannelAction {
-			guild,
-			channel,
-			request,
-			action: Action::Personal(change),
-		} = command
+		assert!(
+			state
+				.request_personal_channel_action(Id(2), action)
+				.is_none()
+		);
+		state.flush_channel_preferences();
+		let Command::ChannelPreferences(request) = state
+			.poll_channel_preferences(std::time::Instant::now())
+			.expect("personal preference queued")
 		else {
-			panic!("personal command")
+			panic!("personal preference command")
 		};
-		assert!(state.personal_channel_dispatch_allowed(
-			guild,
-			channel,
-			request,
-			&Action::Personal(change.clone())
-		));
+		assert!(state.channel_preference_request_allowed(&request));
+		let result = state.demo_channel_preferences(&request);
 		state.apply(Envelope {
 			generation: state.generation,
-			event: Event::ChannelAction(channel_actions::Event::Finished {
-				guild,
-				channel,
-				request,
-				result: Ok(Outcome::Personal(change)),
-			}),
+			event: Event::ChannelPreferences(result),
 		});
 	}
+
 	#[test]
 	fn first_hide_preserves_other_channels_unknown_flags_and_notifications() {
 		let mut state = state();
@@ -488,49 +525,40 @@ mod tests {
 	fn changed_settings_and_lost_permissions_retire_queued_writes() {
 		let mut state = state();
 		let action = state.personal_visibility_change(Id(3), false).unwrap();
-		let command = state.request_channel_action(Id(3), action).unwrap();
-		let Command::ChannelAction {
-			guild,
-			channel,
-			request,
-			action,
-		} = command
+		state.request_channel_action(Id(3), action);
+		state.flush_channel_preferences();
+		let Command::ChannelPreferences(request) = state
+			.poll_channel_preferences(std::time::Instant::now())
+			.unwrap()
 		else {
 			panic!()
 		};
-		state.apply(Envelope {
-			generation: state.generation,
-			event: Event::NotificationPreferences(notifications::Event::Settings {
-				entries: vec![Setting {
-					guild: Some(guild),
-					flags: Some(p::OPT_IN_CHANNELS_OFF | (1 << 56)),
-					..Setting::default()
-				}],
-				replace: false,
-			}),
-		});
-		assert!(!state.personal_channel_dispatch_allowed(guild, channel, request, &action));
-		let Action::Personal(change) = action else {
-			panic!()
-		};
-		state.apply(Envelope {
-			generation: state.generation,
-			event: Event::ChannelAction(channel_actions::Event::Finished {
-				guild,
-				channel,
-				request,
-				result: Ok(Outcome::Personal(change)),
-			}),
-		});
+		state
+			.apply_guild_preference_update(model::guild_preferences::Update {
+				guild: Some(Id(2)),
+				fields: model::guild_preferences::Fields {
+					flags: model::Patch::Value(p::OPT_IN_CHANNELS_OFF | (1 << 56)),
+					..Default::default()
+				},
+				..Default::default()
+			})
+			.unwrap();
+		let result = state.demo_channel_preferences(&request);
+		state.finish_channel_preferences(result).unwrap();
 		assert_eq!(
-			state.account_guild_flags(guild),
+			state.account_guild_flags(Id(2)),
 			Some(p::OPT_IN_CHANNELS_OFF | (1 << 56))
+		);
+		assert_eq!(
+			state.channel_preference_status(Id(2), None),
+			Some(crate::preferences_sync::Status::Conflict)
 		);
 		state.permissions.channels.remove(&Id(3));
 		state.permissions.clear_cache();
 		assert!(state.personal_visibility_change(Id(3), false).is_none());
 		assert!(state.personal_import_favorites(Id(2), &[Id(3)]).is_none());
 	}
+
 	#[test]
 	fn explicit_changes_supersede_one_optional_topic_read() {
 		let mut state = state();

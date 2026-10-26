@@ -167,6 +167,11 @@ impl State {
 		self.cancel_invite_navigation(channel);
 		// Keep the current conversation intact, but allow a restored channel to load again.
 		if self.selected == Some(channel) && self.freshness != Freshness::Unavailable {
+			if self.browse_channels.take().is_some() {
+				self.flush_channel_preferences();
+				self.record(Place::Channel(channel));
+				self.revision += 1;
+			}
 			return None;
 		}
 		match self.apply_channel(channel) {
@@ -197,12 +202,21 @@ impl State {
 		target: Id,
 	) -> Result<(), &'static str> {
 		self.cancel_invite_navigation(channel);
+		let browsing = self.browse_channels.is_some();
 		match self.apply_channel_with_target(channel, Some(target)) {
 			Apply::Opened(_) => {
 				self.record(Place::Channel(channel));
 				Ok(())
 			}
-			Apply::AlreadyHere => Ok(()),
+			Apply::AlreadyHere => {
+				if browsing {
+					self.browse_channels = None;
+					self.flush_channel_preferences();
+					self.record(Place::Channel(channel));
+					self.revision += 1;
+				}
+				Ok(())
+			}
 			Apply::Rejected(status) => Err(status),
 		}
 	}
@@ -224,6 +238,9 @@ impl State {
 		}
 		if !self.can_view(channel) {
 			return Apply::Rejected("Channel permissions are unavailable or access was revoked");
+		}
+		if self.browse_channels.take().is_some() {
+			self.flush_channel_preferences();
 		}
 		self.history_navigation.clear_back();
 		if let Some(previous) = self.selected {
@@ -341,6 +358,8 @@ impl State {
 	}
 	/// Open Friends / Home. Does not clear the timeline or emit a command.
 	pub fn open_home(&mut self) {
+		self.browse_channels = None;
+		self.flush_channel_preferences();
 		self.history_navigation.clear_back();
 		self.park_reply();
 		self.reset_thread_starter();
@@ -354,6 +373,8 @@ impl State {
 	}
 	/// Land on Home because the open channel is gone.
 	pub fn arrived_home(&mut self) {
+		self.browse_channels = None;
+		self.flush_channel_preferences();
 		self.history_navigation.clear_back();
 		self.reset_thread_starter();
 		self.application_commands.clear();
@@ -369,7 +390,7 @@ impl State {
 		self.record(Place::Home);
 	}
 	pub fn navigate_back(&mut self) -> Option<NavStep> {
-		if self.can_return_from_reply() {
+		if self.browse_channels.is_none() && self.can_return_from_reply() {
 			return Some(NavStep {
 				command: self.return_from_reply(),
 			});
@@ -394,6 +415,8 @@ impl State {
 			};
 			let apply = match place {
 				Place::Home => {
+					self.browse_channels = None;
+					self.flush_channel_preferences();
 					self.history_navigation.clear_back();
 					self.park_reply();
 					self.application_commands.clear();
@@ -403,7 +426,23 @@ impl State {
 					self.restore_scroll = false;
 					Apply::Opened(None)
 				}
-				Place::Channel(channel) => self.apply_channel(channel),
+				Place::Channel(channel) => {
+					let result = self.apply_channel(channel);
+					if matches!(result, Apply::Opened(_) | Apply::AlreadyHere) {
+						self.browse_channels = None;
+						self.flush_channel_preferences();
+					}
+					result
+				}
+				Place::BrowseChannels(guild) => {
+					if self.guild(guild).is_some() {
+						self.browse_channels = Some(guild);
+						self.revision += 1;
+						Apply::Opened(None)
+					} else {
+						Apply::Rejected("This server is no longer available")
+					}
+				}
 			};
 			match apply {
 				Apply::Opened(command) => {
@@ -425,11 +464,104 @@ impl State {
 			}
 		}
 	}
+
+	/// A personal channel-list page shares the existing bounded navigation trail.
+	/// The selected conversation and its reading anchor remain resident and unread.
+	pub fn open_channel_browser(&mut self, guild: Id) -> bool {
+		if self.guild(guild).is_none() {
+			return false;
+		}
+		if self.browse_channels == Some(guild) {
+			return true;
+		}
+		if self.trail.is_empty() {
+			self.record(self.selected.map_or(Place::Home, Place::Channel));
+		}
+		self.browse_channels = Some(guild);
+		self.record(Place::BrowseChannels(guild));
+		self.revision += 1;
+		true
+	}
 	pub(super) fn commit_nav(&mut self, back: bool) {
 		if back {
 			self.trail.commit_back();
 		} else {
 			self.trail.commit_forward();
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::ReadingCursor;
+
+	#[test]
+	fn browser_back_forward_preserves_conversation_and_reading_anchor() {
+		let mut state = crate::personal_channels::tests::state();
+		state.select(Id(3));
+		state.freshness = Freshness::Fresh;
+		state.remember_reading(
+			Id(3),
+			ReadingCursor {
+				message: Some(Id(100)),
+				inset: 27.5,
+			},
+		);
+		let request = state.request;
+		let pending = state.history_pending;
+		assert!(state.open_channel_browser(Id(2)));
+		assert_eq!(state.selected, Some(Id(3)));
+		assert_eq!(state.request, request);
+		assert_eq!(state.history_pending, pending);
+		assert!(state.navigate_back().unwrap().command.is_none());
+		assert_eq!(state.browse_channels, None);
+		assert_eq!(state.reading(Id(3)).unwrap().message, Some(Id(100)));
+		assert_eq!(state.reading(Id(3)).unwrap().inset, 27.5);
+		assert!(state.navigate_forward().unwrap().command.is_none());
+		assert_eq!(state.browse_channels, Some(Id(2)));
+		assert_eq!(
+			state.request, request,
+			"browser navigation issues no history request or acknowledgement"
+		);
+		assert!(state.select(Id(3)).is_none());
+		assert_eq!(state.browse_channels, None);
+		assert!(state.navigate_back().unwrap().command.is_none());
+		assert_eq!(state.browse_channels, Some(Id(2)));
+	}
+
+	#[test]
+	fn browser_rejects_removed_servers_and_channel_loss_returns_home() {
+		let mut state = crate::personal_channels::tests::state();
+		assert!(!state.open_channel_browser(Id(999)));
+		state.select(Id(3));
+		state.freshness = Freshness::Fresh;
+		assert!(state.open_channel_browser(Id(2)));
+		assert!(state.navigate_back().unwrap().command.is_none());
+		state.guilds.clear();
+		assert!(state.navigate_forward().is_none());
+		assert_eq!(state.browse_channels, None);
+		state.guilds = crate::personal_channels::tests::state().guilds;
+		assert!(state.open_channel_browser(Id(2)));
+		state.arrived_home();
+		assert_eq!(state.browse_channels, None);
+		assert_eq!(state.selected, None);
+	}
+	#[test]
+	fn leaving_browser_flushes_authorized_saves_without_touching_history() {
+		let mut state = crate::personal_channels::tests::state();
+		state.select(Id(3));
+		state.freshness = Freshness::Fresh;
+		let history_request = state.request;
+		state.open_channel_browser(Id(2));
+		let change = state.personal_visibility_change(Id(4), false).unwrap();
+		state.request_personal_channel_action(Id(2), change);
+		assert_eq!(state.channel_in_custom_list(Id(4)), Some(false));
+		assert!(state.navigate_back().unwrap().command.is_none());
+		assert_eq!(state.browse_channels, None);
+		assert_eq!(state.request, history_request);
+		assert!(
+			matches!(state.poll_channel_preferences(std::time::Instant::now()),Some(Command::ChannelPreferences(request)) if request.guild==Id(2))
+		);
 	}
 }

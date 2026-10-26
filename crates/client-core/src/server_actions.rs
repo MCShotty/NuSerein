@@ -122,8 +122,6 @@ impl State {
 		guild.0 != 0
 			&& self.guild(guild).is_some()
 			&& (self.demo || (self.auth == AuthState::Authenticated && self.gateway_connected))
-			&& !self.server_action_pending()
-			&& !self.server_invite_pending()
 	}
 	pub fn update_server_notifications(
 		&mut self,
@@ -133,7 +131,8 @@ impl State {
 		if !options.valid() || !self.can_update_server_notifications(guild) {
 			return None;
 		}
-		self.request_server_action(Action::Notifications { guild, options })
+		self.queue_server_preference_action(guild, options);
+		None
 	}
 	pub fn set_server_mute(
 		&mut self,
@@ -585,6 +584,7 @@ impl State {
 		Ok(())
 	}
 	pub(crate) fn remove_server(&mut self, guild: Id) {
+		self.forget_guild_preferences(guild);
 		let removed = self
 			.channels
 			.iter()
@@ -706,52 +706,89 @@ mod tests {
 			event,
 		});
 	}
+	fn known_preferences(state: &mut State) {
+		state
+			.apply_notification_preferences(crate::notifications::Event::Settings {
+				entries: vec![crate::notifications::Setting {
+					guild: Some(Id(2)),
+					flags: Some(0),
+					muted: Some(false),
+					level: Some(3),
+					suppress_roles: Some(false),
+					suppress_everyone: Some(false),
+					hide_muted_channels: Some(false),
+					..Default::default()
+				}],
+				replace: true,
+			})
+			.unwrap();
+	}
+	fn take_preference(state: &mut State) -> Box<crate::preferences_sync::Request> {
+		state.flush_channel_preferences();
+		let Command::ChannelPreferences(request) = state
+			.poll_channel_preferences(std::time::Instant::now())
+			.expect("preference queued")
+		else {
+			panic!()
+		};
+		request
+	}
+	fn finish_preference(
+		state: &mut State,
+		request: &crate::preferences_sync::Request,
+		result: Result<(), Failure>,
+	) {
+		let mut event = state.demo_channel_preferences(request);
+		if let Err(error) = result {
+			event.result = Err(error);
+		}
+		state.finish_channel_preferences(event).unwrap();
+	}
 	#[test]
 	fn timed_server_mutes_preserve_other_settings_and_do_not_replay_after_logout() {
 		use crate::channel_actions::Mute;
 		let mut state = state();
+		known_preferences(&mut state);
 		state.permissions.guilds.clear();
 		assert!(state.set_server_mute(Id(2), Mute::For(1)).is_none());
-		let command = state.set_server_mute(Id(2), Mute::For(900)).unwrap();
-		let Command::ServerAction {
-			action: Action::Notifications { options, .. },
-			..
-		} = &command
-		else {
-			panic!()
-		};
-		assert_eq!(options.muted, Some(true));
 		assert!(
-			options
-				.mute_until
-				.is_some_and(|until| until > State::permission_time())
+			state
+				.poll_channel_preferences(std::time::Instant::now())
+				.is_none()
 		);
-		assert_eq!(options.level, None);
-		let until = options.mute_until;
-		finish(&mut state, command, Ok(None));
+		state.set_server_mute(Id(2), Mute::For(900));
+		let until = state.server_notification_settings(Id(2)).mute_until;
+		assert!(until.is_some_and(|until| until > State::permission_time()));
+		let request = take_preference(&mut state);
+		assert_eq!(request.patch.fields.level, model::Patch::Absent);
+		finish_preference(&mut state, &request, Ok(()));
+		state.update_server_notifications(
+			Id(2),
+			NotificationOptions {
+				suppress_roles: Some(true),
+				..Default::default()
+			},
+		);
+		let request = take_preference(&mut state);
+		finish_preference(&mut state, &request, Ok(()));
 		assert_eq!(state.server_notification_settings(Id(2)).mute_until, until);
-		let suppress = state
-			.update_server_notifications(
-				Id(2),
-				NotificationOptions {
-					suppress_roles: Some(true),
-					..Default::default()
-				},
-			)
-			.unwrap();
-		finish(&mut state, suppress, Ok(None));
-		assert_eq!(state.server_notification_settings(Id(2)).mute_until, until);
-		let unmute = state.set_server_mute(Id(2), Mute::Unmute).unwrap();
-		finish(&mut state, unmute, Ok(None));
-		assert_eq!(state.server_notification_settings(Id(2)).muted, Some(false));
-		assert_eq!(state.server_notification_settings(Id(2)).mute_until, None);
+		state.set_server_mute(Id(2), Mute::Unmute);
+		let request = take_preference(&mut state);
+		finish_preference(&mut state, &request, Ok(()));
 		assert_eq!(
-			state.server_notification_settings(Id(2)).suppress_roles,
-			Some(true)
+			state.server_notification_settings(Id(2)),
+			NotificationOptions {
+				muted: Some(false),
+				mute_until: None,
+				level: Some(3),
+				suppress_roles: Some(true),
+				suppress_everyone: Some(false)
+			}
 		);
-		let command = state.set_server_mute(Id(2), Mute::For(900)).unwrap();
+		state.set_server_mute(Id(2), Mute::For(900));
+		let request = take_preference(&mut state);
 		state.logout();
-		finish(&mut state, command, Ok(None));
+		finish_preference(&mut state, &request, Ok(()));
 		assert_eq!(
 			state.server_notification_settings(Id(2)),
 			NotificationOptions::default()
@@ -759,99 +796,101 @@ mod tests {
 	}
 	#[test]
 	fn notification_writes_need_membership_not_admin_and_confirm_after_unrelated_events() {
+		use crate::preferences_sync::Status;
+		use model::{
+			Patch,
+			guild_preferences::{Fields, Update},
+		};
 		let mut state = state();
-		state.permissions.guilds.clear(); // An ordinary member need not manage the guild.
+		known_preferences(&mut state);
+		state.permissions.guilds.clear();
 		let edit = NotificationOptions {
 			level: Some(1),
 			..Default::default()
 		};
-		assert!(state.update_server_notifications(Id(99), edit).is_none());
+		for (guild, options) in [
+			(Id(99), edit),
+			(Id(2), NotificationOptions::default()),
+			(
+				Id(2),
+				NotificationOptions {
+					level: Some(4),
+					..edit
+				},
+			),
+		] {
+			state.update_server_notifications(guild, options);
+		}
 		assert!(
 			state
-				.update_server_notifications(Id(2), NotificationOptions::default())
+				.poll_channel_preferences(std::time::Instant::now())
 				.is_none()
 		);
-		assert!(
-			state
-				.update_server_notifications(
-					Id(2),
-					NotificationOptions {
-						level: Some(4),
-						..edit
-					}
-				)
-				.is_none()
-		);
-		let first = state.update_server_notifications(Id(2), edit).unwrap();
-		assert!(state.update_server_notifications(Id(2), edit).is_none());
-		finish(&mut state, first, Err(Failure::Forbidden));
-		assert_eq!(state.server_notification_settings(Id(2)).level, None);
-		let first = state.update_server_notifications(Id(2), edit).unwrap();
-		finish(&mut state, first, Ok(None));
-		assert_eq!(state.server_notification_settings(Id(2)).level, Some(1));
-		let old = state.update_server_notifications(Id(2), edit).unwrap();
+		state.update_server_notifications(Id(2), edit);
+		let request = take_preference(&mut state);
+		finish_preference(&mut state, &request, Err(Failure::Forbidden));
+		assert_eq!(state.server_notification_settings(Id(2)).level, Some(3));
+		assert!(matches!(
+			state.channel_preference_status(Id(2), None),
+			Some(Status::Failed(_))
+		));
+		assert!(state.retry_channel_preference(Id(2), None));
+		let request = take_preference(&mut state);
 		state
-			.apply_notification_preferences(crate::notifications::Event::Settings {
-				entries: vec![crate::notifications::Setting {
-					guild: Some(Id(2)),
-					level: Some(2),
-					suppress_roles: Some(true),
+			.apply_guild_preference_update(Update {
+				guild: Some(Id(2)),
+				fields: Fields {
+					suppress_roles: Patch::Value(true),
 					..Default::default()
-				}],
-				replace: false,
+				},
+				..Default::default()
 			})
 			.unwrap();
-		finish(&mut state, old, Ok(None));
+		finish_preference(&mut state, &request, Ok(()));
 		assert_eq!(state.server_notification_settings(Id(2)).level, Some(1));
 		assert_eq!(
 			state.server_notification_settings(Id(2)).suppress_roles,
 			Some(true)
 		);
+		state.update_server_notifications(
+			Id(2),
+			NotificationOptions {
+				level: Some(0),
+				..Default::default()
+			},
+		);
+		let request = take_preference(&mut state);
 		state
-			.apply_notification_preferences(crate::notifications::Event::Settings {
-				entries: vec![crate::notifications::Setting {
-					guild: Some(Id(2)),
-					level: Some(2),
-					..Default::default()
-				}],
-				replace: false,
-			})
-			.unwrap();
-		assert_eq!(state.server_notification_settings(Id(2)).level, Some(2));
-		let old = state.update_server_notifications(Id(2), edit).unwrap();
-		state.cancel_server_action();
-		let newer = state
-			.update_server_notifications(
-				Id(2),
-				NotificationOptions {
-					level: Some(0),
+			.apply_guild_preference_update(Update {
+				guild: Some(Id(2)),
+				fields: Fields {
+					level: Patch::Value(2),
 					..Default::default()
 				},
-			)
+				..Default::default()
+			})
 			.unwrap();
-		finish(&mut state, old, Ok(None));
-		assert!(state.server_action_pending());
-		finish(&mut state, newer, Ok(None));
-		assert_eq!(state.server_notification_settings(Id(2)).level, Some(0));
+		finish_preference(&mut state, &request, Ok(()));
+		assert_eq!(state.server_notification_settings(Id(2)).level, Some(2));
+		assert_eq!(
+			state.channel_preference_status(Id(2), None),
+			Some(Status::Conflict)
+		);
+		assert!(
+			state
+				.poll_channel_preferences(
+					std::time::Instant::now() + std::time::Duration::from_secs(1)
+				)
+				.is_none()
+		);
 		state.gateway_connected = false;
 		assert!(!state.can_update_server_notifications(Id(2)));
 		assert!(state.update_server_notifications(Id(2), edit).is_none());
 		state.gateway_connected = true;
-		let Command::ServerAction { action, request } =
-			state.update_server_notifications(Id(2), edit).unwrap()
-		else {
-			panic!()
-		};
-		let generation = state.generation;
+		state.update_server_notifications(Id(2), edit);
+		let request = take_preference(&mut state);
 		state.logout();
-		state.apply(Envelope {
-			generation,
-			event: CoreEvent::ServerAction(Event::Written {
-				action,
-				request,
-				result: Ok(None),
-			}),
-		});
+		finish_preference(&mut state, &request, Ok(()));
 		assert_eq!(state.server_notification_settings(Id(2)).level, None);
 	}
 

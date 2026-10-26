@@ -154,7 +154,7 @@ impl Setting {
 			self.muted
 		}
 	}
-	fn bytes(&self) -> usize {
+	pub(super) fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ self.channels.capacity() * size_of::<(Id, Option<bool>, Option<u8>)>()
 			+ self.channel_mute_until.capacity() * size_of::<(Id, i64)>()
@@ -167,6 +167,10 @@ impl Setting {
 	}
 }
 pub enum Event {
+	Updates {
+		entries: Vec<model::guild_preferences::Update>,
+		replace: bool,
+	},
 	Settings {
 		entries: Vec<Setting>,
 		replace: bool,
@@ -177,6 +181,13 @@ pub enum Event {
 impl Event {
 	pub fn bytes(&self) -> usize {
 		match self {
+			Self::Updates { entries, .. } => {
+				entries.capacity() * size_of::<model::guild_preferences::Update>()
+					+ entries
+						.iter()
+						.map(model::guild_preferences::Update::bytes)
+						.sum::<usize>()
+			}
 			Self::Settings { entries, .. } => {
 				entries.capacity() * size_of::<Setting>()
 					+ entries
@@ -195,11 +206,15 @@ impl Event {
 }
 #[derive(Default)]
 pub struct Preferences {
-	complete: bool,
-	settings: BTreeMap<Option<Id>, Setting>,
+	pub(super) complete: bool,
+	pub(super) settings: BTreeMap<Option<Id>, Setting>,
 	dnd: Option<bool>,
 }
 impl Preferences {
+	pub(super) fn suspend(&mut self) {
+		self.dnd = None;
+		self.complete = false;
+	}
 	// Only the empty synthesized fallback is cloned; resident override vectors stay in place.
 	fn initial_guild_setting(&self, guild: Id) -> Setting {
 		if self.settings.contains_key(&Some(guild)) {
@@ -208,7 +223,7 @@ impl Preferences {
 			self.setting(Some(guild)).cloned().unwrap_or_default()
 		}
 	}
-	fn setting(&self, guild: Option<Id>) -> Option<&Setting> {
+	pub(super) fn setting(&self, guild: Option<Id>) -> Option<&Setting> {
 		static DEFAULT_GUILD: Setting = Setting {
 			flags: Some(0),
 			channel_flags: Vec::new(),
@@ -230,20 +245,14 @@ impl Preferences {
 }
 impl State {
 	pub(crate) fn account_guild_flags(&self, guild: Id) -> Option<u64> {
-		self.notification_preferences
-			.setting(Some(guild))
-			.and_then(|setting| setting.flags)
-			.or(self.demo.then_some(0))
+		self.preference_flags(guild, None)
 	}
 	pub(crate) fn account_channel_preference(&self, guild: Id, channel: Id) -> Option<(u64, bool)> {
-		let Some(setting) = self.notification_preferences.setting(Some(guild)) else {
-			return self.demo.then_some((0, false));
-		};
-		match setting.channel_flags.iter().find(|(id, ..)| *id == channel) {
-			Some((_, flags, collapsed)) => Some(((*flags)?, (*collapsed)?)),
-			None if setting.overrides_known => Some((0, false)),
-			None => None,
-		}
+		Some((
+			self.preference_flags(guild, Some(channel))?,
+			self.preference_bool(guild, Some(channel), "collapsed")
+				.unwrap_or(false),
+		))
 	}
 	pub(crate) fn confirm_personal_channels(
 		&mut self,
@@ -288,17 +297,16 @@ impl State {
 		&self,
 		guild: Id,
 	) -> crate::server_actions::NotificationOptions {
-		let Some(setting) = self.notification_preferences.setting(Some(guild)) else {
-			return Default::default();
-		};
+		let until = self.preference_until(guild, None);
+		let muted = self
+			.preference_bool(guild, None, "muted")
+			.map(|muted| muted && until.is_none_or(|until| until > State::permission_time()));
 		crate::server_actions::NotificationOptions {
-			level: setting.level.filter(|level| *level <= 3),
-			muted: setting.muted(),
-			mute_until: (setting.muted() == Some(true))
-				.then_some(setting.mute_until)
-				.flatten(),
-			suppress_everyone: setting.suppress_everyone,
-			suppress_roles: setting.suppress_roles,
+			level: self.preference_level(guild, None),
+			muted,
+			mute_until: until.filter(|_| muted == Some(true)),
+			suppress_everyone: self.preference_bool(guild, None, "everyone"),
+			suppress_roles: self.preference_bool(guild, None, "roles"),
 		}
 	}
 	pub(crate) fn confirm_server_notifications(
@@ -342,7 +350,7 @@ impl State {
 		}
 		self.read_state.activity.clear_notifications();
 	}
-	fn check_notification_capacity(&mut self) -> Result<(), &'static str> {
+	pub(super) fn check_notification_capacity(&mut self) -> Result<(), &'static str> {
 		let settings = &self.notification_preferences.settings;
 		if settings.len() > MAX_NAV
 			|| settings
@@ -354,6 +362,7 @@ impl State {
 				.values()
 				.map(|setting| setting.bytes() + 64)
 				.sum::<usize>()
+				+ self.preference_queue.bytes()
 				> MAX_SETTINGS_BYTES
 		{
 			self.notification_preferences.settings.clear();
@@ -374,11 +383,7 @@ impl State {
 		let Some(guild) = channel.guild else {
 			return false;
 		};
-		if self
-			.notification_preferences
-			.setting(Some(guild))
-			.is_some_and(|setting| setting.muted() == Some(true))
-		{
+		if self.server_notification_settings(guild).muted == Some(true) {
 			return true;
 		}
 		self.guild_channel_effectively_muted(channel.id) == Some(true)
@@ -414,27 +419,16 @@ impl State {
 	}
 	pub fn guild_channel_muted(&self, channel: Id) -> Option<bool> {
 		let guild = self.channel(channel)?.guild?;
-		let setting = self.notification_preferences.setting(Some(guild));
-		let muted = setting.and_then(|s| {
-			s.channels
-				.iter()
-				.find(|(id, ..)| *id == channel)
-				.and_then(|(_, muted, _)| *muted)
-		});
-		if muted == Some(true) && setting.is_some_and(|s| s.mute_expired(channel)) {
-			return Some(false);
-		}
-		muted.or_else(|| (self.demo || setting.is_some()).then_some(false))
+		self.preference_bool(guild, Some(channel), "muted")
+			.map(|muted| {
+				muted
+					&& self
+						.preference_until(guild, Some(channel))
+						.is_none_or(|until| until > State::permission_time())
+			})
 	}
 	pub fn channel_notification_level(&self, channel: Id) -> Option<u8> {
-		let guild = self.channel(channel)?.guild?;
-		let setting = self.notification_preferences.setting(Some(guild))?;
-		setting
-			.channels
-			.iter()
-			.find(|(id, ..)| *id == channel)
-			.and_then(|(_, _, level)| *level)
-			.or(Some(3))
+		self.preference_level(self.channel(channel)?.guild?, Some(channel))
 	}
 	pub(crate) fn confirm_channel_mute_timer(
 		&mut self,
@@ -508,9 +502,7 @@ impl State {
 	}
 
 	pub fn hides_muted_channels(&self, guild: Id) -> Option<bool> {
-		self.notification_preferences
-			.setting(Some(guild))
-			.and_then(|setting| setting.hide_muted_channels)
+		self.preference_bool(guild, None, "hide_muted")
 	}
 
 	pub(crate) fn confirm_guild_hides_muted(
@@ -552,6 +544,7 @@ impl State {
 					.into_iter()
 					.chain(s.channel_mute_until.iter().map(|(_, until)| *until))
 			})
+			.chain(self.pending_mute_deadline(now))
 			.filter(|until| *until > now)
 			.min()
 			.and_then(|until| {
@@ -802,6 +795,33 @@ impl State {
 		if channel.guild.is_some() && !setting.overrides_known {
 			return false;
 		}
+		if let Some(guild) = channel.guild {
+			let options = self.server_notification_settings(guild);
+			if options.muted != Some(false) {
+				return false;
+			}
+			let mut level = options.level;
+			if level == Some(3) {
+				level = self
+					.guild(guild)
+					.and_then(|guild| guild.default_message_notifications);
+			}
+			let Some(path) = self.notification_path(channel.id) else {
+				return false;
+			};
+			for id in path.into_iter().rev().flatten() {
+				if self.guild_channel_muted(id) != Some(false) {
+					return false;
+				}
+				let Some(override_level) = self.channel_notification_level(id) else {
+					return false;
+				};
+				if override_level != 3 {
+					level = Some(override_level);
+				}
+			}
+			return level == Some(0) || (mention && level == Some(1));
+		}
 		if setting.muted() == Some(true)
 			|| (channel.guild.is_some() && setting.muted() != Some(false))
 		{
@@ -849,6 +869,9 @@ impl State {
 		level == Some(0) || (mention && level == Some(1))
 	}
 	pub fn apply_notification_preferences(&mut self, event: Event) -> Result<(), &'static str> {
+		if let Event::Updates { entries, replace } = event {
+			return self.apply_preference_updates(entries, replace, true);
+		}
 		self.observe_dm_settings(&event);
 		self.read_state.activity.clear_notifications();
 		if event.bytes() > MAX_SETTINGS_BYTES {
@@ -856,13 +879,19 @@ impl State {
 			return Err("Notification settings exceed safe byte capacity");
 		}
 		match event {
+			Event::Updates { entries, replace } => {
+				return self.apply_preference_updates(entries, replace, true);
+			}
 			Event::Presence(dnd) => {
 				self.notification_preferences.dnd = dnd;
 				if dnd.is_some() {
 					self.startup_warnings.sessions = false;
 				}
 			}
-			Event::Invalidate => self.notification_preferences = Preferences::default(),
+			Event::Invalidate => {
+				self.notification_preferences = Preferences::default();
+				self.preference_queue = Default::default();
+			}
 			Event::Settings { entries, replace } => {
 				let keys: BTreeSet<_> = entries.iter().map(|s| s.guild).collect();
 				let old: Vec<_> = self
@@ -970,9 +999,7 @@ impl State {
 		let Some(guild) = channel.guild else {
 			return false;
 		};
-		let Some(setting) = self.notification_preferences.setting(Some(guild)) else {
-			return false;
-		};
+		let setting = self.server_notification_settings(guild);
 		(everyone && setting.suppress_everyone == Some(false))
 			|| (setting.suppress_roles == Some(false)
 				&& self

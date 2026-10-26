@@ -4,6 +4,7 @@ use model::Id;
 pub(super) enum Place {
 	Home,
 	Channel(Id),
+	BrowseChannels(Id),
 }
 
 #[doc(hidden)]

@@ -920,6 +920,13 @@ impl State {
 		{
 			self.channel_actions.retired_description = Some((guild, channel, request));
 		}
+		if matches!(
+			action,
+			Action::Personal(_) | Action::HideMuted(_) | Action::Mute(_) | Action::Notifications(_)
+		) {
+			self.queue_channel_preference_action(channel, &action);
+			return None;
+		}
 		if matches!(action, Action::Description)
 			&& self.channel_actions.retired_description.is_some()
 		{

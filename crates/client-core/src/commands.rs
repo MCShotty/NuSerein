@@ -8,6 +8,7 @@ use super::{
 };
 
 pub enum Command {
+	ChannelPreferences(Box<crate::preferences_sync::Request>),
 	Mfa(Box<mfa::Request>),
 	Autocomplete(interactions::Request),
 	CancelAutocomplete,
@@ -581,6 +582,17 @@ impl State {
 				request,
 				result: Err(auth::Failure::ProtocolAt(
 					"Invite was not queued; try again",
+				)),
+			});
+			return;
+		}
+		if let Command::ChannelPreferences(request) = command {
+			let _ = self.finish_channel_preferences(crate::preferences_sync::Finished {
+				generation: request.generation,
+				guild: request.guild,
+				request: request.request,
+				result: Err(auth::Failure::ProtocolAt(
+					"Preference save was not queued; retry",
 				)),
 			});
 			return;

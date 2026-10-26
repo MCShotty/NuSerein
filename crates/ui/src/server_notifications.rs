@@ -1,4 +1,4 @@
-//! One session-only draft; saving changes only the controls the user touched.
+//! Account notification controls save only touched fields through the shared debounce lane.
 use crate::{design, dialog, i18n::translate, icons};
 use client_core::{
 	Command, State,
@@ -10,7 +10,6 @@ use model::Id;
 #[derive(Default)]
 pub(super) struct Editor {
 	edits: NotificationOptions,
-	submitted: bool,
 	mute_duration: Option<Mute>,
 	channel: Option<Id>,
 	query: String,
@@ -53,15 +52,11 @@ impl Editor {
 		commands: &mut Vec<Command>,
 	) -> bool {
 		let current = state.server_notification_settings(guild);
-		let pending = state.server_action_pending();
-		if self.submitted && !pending {
-			// Show the reconciled account state after completion, including a newer
-			// Gateway update. Errors remain visible; another write needs a new choice.
-			self.submitted = false;
-			self.edits = NotificationOptions::default();
-		}
-		let available = state.can_update_server_notifications(guild);
-		let mut save = false;
+		let known = current.level.is_some()
+			&& current.muted.is_some()
+			&& current.suppress_everyone.is_some()
+			&& current.suppress_roles.is_some();
+		let available = state.can_update_server_notifications(guild) && known;
 		let mut close = false;
 		let response = dialog::Dialog::new(
 			"server-notification-settings",
@@ -76,7 +71,7 @@ impl Editor {
 				egui::ScrollArea::vertical()
 					.max_height(max_height)
 					.show(ui, |ui| {
-						ui.add_enabled_ui(available && !pending, |ui| {
+						ui.add_enabled_ui(available, |ui| {
 							let level = self.edits.level.or(current.level);
 							let default = match state
 								.guild(guild)
@@ -128,7 +123,7 @@ impl Editor {
 							}
 						});
 						if self.edits.muted.or(current.muted) == Some(true) {
-							ui.add_enabled_ui(available && !pending, |ui| {
+							ui.add_enabled_ui(available, |ui| {
 								ui.label(translate("qol-mute-duration"));
 								let label = self.mute_duration.map(mute_label).unwrap_or(
 									if current.mute_until.is_some() && self.edits.muted.is_none() {
@@ -161,14 +156,17 @@ impl Editor {
 							});
 						}
 						self.override_controls(ui, state, guild, commands);
-						if current.level.is_none() || current.muted.is_none() {
+						if !known {
 							dialog::notice(
 								ui,
 								dialog::Level::Warning,
 								"server-notifications-unknown",
 							);
+							if ui.button("Refresh account preferences").clicked() {
+								commands.extend(state.refresh_channel_preferences(guild));
+							}
 						}
-						if !available && !pending {
+						if !state.can_update_server_notifications(guild) {
 							dialog::notice(
 								ui,
 								dialog::Level::Warning,
@@ -178,27 +176,15 @@ impl Editor {
 						if let Some(status) = state.server_action_status(guild) {
 							dialog::hint(ui, status);
 						}
+						crate::browse_channels::preference_feedback(
+							ui, state, guild, None, commands,
+						);
 						if state.demo {
 							dialog::hint(ui, "server-menu-show-offline-preview-no-server-changes");
 						}
 					});
 			});
 			d.footer(|ui| {
-				ui.add_enabled_ui(
-					available && !pending && self.edits != NotificationOptions::default(),
-					|ui| {
-						save = dialog::action(
-							ui,
-							if pending {
-								"server-notifications-saving"
-							} else {
-								"server-notifications-save"
-							},
-							dialog::Action::Primary,
-						)
-						.clicked();
-					},
-				);
 				close =
 					dialog::action(ui, "server-menu-show-close", dialog::Action::Neutral).clicked();
 			});
@@ -210,9 +196,10 @@ impl Editor {
 		} else {
 			self.edits
 		};
-		if save && let Some(command) = state.update_server_notifications(guild, options) {
-			commands.push(command);
-			self.submitted = true;
+		if available && self.edits != NotificationOptions::default() {
+			commands.extend(state.update_server_notifications(guild, options));
+			self.edits = NotificationOptions::default();
+			self.mute_duration = None;
 		}
 		close || response.close
 	}
@@ -268,10 +255,10 @@ impl Editor {
 				}
 			});
 		let Some(channel) = self.channel else { return };
-		let available = !state.channel_action_pending()
-			&& !state.server_action_pending()
-			&& (state.demo || state.gateway_connected)
-			&& state.can_view(channel);
+		let available = (state.demo || state.gateway_connected)
+			&& state.can_view(channel)
+			&& state.channel_notification_level(channel).is_some()
+			&& state.guild_channel_muted(channel).is_some();
 		let mut action = None;
 		ui.add_enabled_ui(available, |ui| {
 			let level = state.channel_notification_level(channel).unwrap_or(3);
@@ -299,6 +286,7 @@ impl Editor {
 		{
 			commands.push(command);
 		}
+		crate::browse_channels::preference_feedback(ui, state, guild, Some(channel), commands);
 		if let Some(status) = state.channel_action_status(channel) {
 			ui.small(crate::i18n::translate_if_key(status));
 		}

@@ -1254,7 +1254,7 @@ impl DiscordApi {
 	}
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 	use super::*;
 	use client_core::auth::SessionSecret;
 	use client_core::channel_actions::CreateKind;
@@ -1266,7 +1266,7 @@ mod tests {
 	fn source() -> Value {
 		json!({"id":"3","guild_id":"2","name":"private","type":0,"parent_id":"4","topic":"Keep topic","nsfw":true,"rate_limit_per_user":30,"flags":0,"permission_overwrites":[{"id":"2","type":0,"allow":"0","deny":"1024"},{"id":"8","type":1,"allow":"1024","deny":"0"}]})
 	}
-	pub(super) async fn reply(
+	pub(crate) async fn reply(
 		listener: &TcpListener,
 		path: &str,
 		status: u16,

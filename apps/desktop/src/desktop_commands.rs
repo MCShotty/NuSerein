@@ -75,6 +75,12 @@ impl Desktop {
 			self.state.command_rejected(command);
 			return;
 		}
+		if let Command::ChannelPreferences(request) = &command
+			&& !self.state.channel_preference_request_allowed(request)
+		{
+			self.state.command_rejected(command);
+			return;
+		}
 		if let Command::ChannelAction {
 			guild,
 			channel,
@@ -456,6 +462,9 @@ impl Desktop {
 					request,
 					change,
 				),
+				Command::ChannelPreferences(request) => {
+					Event::ChannelPreferences(self.state.demo_channel_preferences(&request))
+				}
 				Command::ChannelAction {
 					guild,
 					channel,

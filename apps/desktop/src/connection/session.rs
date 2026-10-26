@@ -159,6 +159,7 @@ impl Connection {
 	) -> Self {
 		let (commands, mut receive) = mpsc::channel(COMMAND_SLOTS);
 		let (admin_scopes, mut admin_scope) = watch::channel(ReadScopes::default());
+		let (preference_scope, mut preference_updates) = watch::channel(None);
 		let (uploads, mut upload_receive) = mpsc::channel::<crate::uploads::UploadRequest>(1);
 		let (send, events) = reliable_events(ctx.clone());
 		let (typing_send, typing) = mpsc::channel(8);
@@ -303,7 +304,7 @@ impl Connection {
                 let mut writes=AbortTask(tokio::spawn(async move {
                     while let Some(command)=write_receive.recv().await {
                         let event=write_api.execute_write(command,|nonce|{let _=write_emit(Event::SendThrottled{nonce:nonce.to_owned()});write_wake.request_repaint();}).await;
-                        let failure=match &event {Event::MemberGuide(client_core::member_guide::Event{result:Err(f),..})=>Some(*f),Event::Interaction(client_core::interactions::Event::Submitted{result:Err(f),..})=>Some(*f),Event::MessagingPermissions{result:Err(f),..}=>Some(*f),Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})=>Some(*f),Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})=>Some(*f),Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})=>Some(*f),Event::Onboarding(client_core::onboarding::Event::Loaded{result:Err(f),..}|client_core::onboarding::Event::Submitted{result:Err(f),..})=>Some(*f),Event::Failure(f)=>Some(*f),Event::ProfileEdited{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::OwnedCosmetics(client_core::owned_cosmetics::Event{result:Err(f),..})|Event::ServerProfile(client_core::server_profile::Event{result:Err(f),..})|Event::AccountOverview{result:Err(f),..}|Event::AccountConnections{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::Edited{result:Err(f),..}|Event::Pinned{result:Err(f),..}=>Some(*f),Event::GuildFolders(Err(f))=>Some(*f),Event::JoinInvite{result:Err(f),..}|Event::GuildCreated{result:Err(f),..}=>Some(*f),Event::SendResult{result:Err(f),..}=>Some(*f),Event::UserAction(client_core::user_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::UserAction(client_core::user_actions::Event::DmOpened{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::InviteSent{result:Err(f),..})=>Some(*f),Event::GroupAction(client_core::group_actions::Event::Written{result:Err(f),..}|client_core::group_actions::Event::MembersLoaded{result:Err(f),..}|client_core::group_actions::Event::Created{result:Err(f),..})=>Some(*f),Event::Reactions(client_core::reactions::Event::Written{result:Err(f),..})=>Some(*f),Event::ReadState(client_core::read_state::Event::Result{result:Err(f),..})=>Some(*f),_=>None};
+                        let failure=match &event {Event::MemberGuide(client_core::member_guide::Event{result:Err(f),..})=>Some(*f),Event::Interaction(client_core::interactions::Event::Submitted{result:Err(f),..})=>Some(*f),Event::MessagingPermissions{result:Err(f),..}=>Some(*f),Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})=>Some(*f),Event::ChannelPreferences(client_core::preferences_sync::Finished{result:Err(f),..})=>Some(*f),Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})=>Some(*f),Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})=>Some(*f),Event::Onboarding(client_core::onboarding::Event::Loaded{result:Err(f),..}|client_core::onboarding::Event::Submitted{result:Err(f),..})=>Some(*f),Event::Failure(f)=>Some(*f),Event::ProfileEdited{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::OwnedCosmetics(client_core::owned_cosmetics::Event{result:Err(f),..})|Event::ServerProfile(client_core::server_profile::Event{result:Err(f),..})|Event::AccountOverview{result:Err(f),..}|Event::AccountConnections{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::Edited{result:Err(f),..}|Event::Pinned{result:Err(f),..}=>Some(*f),Event::GuildFolders(Err(f))=>Some(*f),Event::JoinInvite{result:Err(f),..}|Event::GuildCreated{result:Err(f),..}=>Some(*f),Event::SendResult{result:Err(f),..}=>Some(*f),Event::UserAction(client_core::user_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::UserAction(client_core::user_actions::Event::DmOpened{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::InviteSent{result:Err(f),..})=>Some(*f),Event::GroupAction(client_core::group_actions::Event::Written{result:Err(f),..}|client_core::group_actions::Event::MembersLoaded{result:Err(f),..}|client_core::group_actions::Event::Created{result:Err(f),..})=>Some(*f),Event::Reactions(client_core::reactions::Event::Written{result:Err(f),..})=>Some(*f),Event::ReadState(client_core::read_state::Event::Result{result:Err(f),..})=>Some(*f),_=>None};
                         let error=write_emit(event).err().or(failure.filter(|f|f.ends_session()));
                         if let Some(error)=error {write_api.stop();let _=write_finished.send(Some(error));write_wake.request_repaint();break;}
                     }
@@ -311,6 +312,7 @@ impl Connection {
                 // Administrative writes may wait for owner verification without holding up
                 // the ordinary message-send queue. One protected operation and one check.
                 let mut administrative:Option<AbortTask>=None;
+                let mut pending_preferences:Option<Box<client_core::preferences_sync::Request>>=None;
 				let mut admin_reads = AdminReads::default();
                 let mut mfa_job:Option<AbortTask>=None;
                 let mut history:Option<AbortTask>=None;
@@ -350,7 +352,35 @@ impl Connection {
 					stream_stops.acknowledge(*stream_ended_receive.borrow_and_update());
 					stream_stops.reconcile(owner,*voice_availability.borrow(),lifecycle_changed.borrow().interruption,*takeover_receive.borrow());
 					soundboard_owner.send_if_modified(|current| {if *current==owner {false} else {*current=owner;true}});
+                    if pending_preferences.is_some() && !admin_mutation_busy(&administrative,&community_job) {
+                        let request=pending_preferences.take().expect("one queued preference write");
+                        let request=match super::lanes::admit_preference(request,*preference_updates.borrow()){
+                            Ok(request)=>request,Err(event)=>{emit(Event::ChannelPreferences(*event))?;continue;}
+                        };
+                        let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();let preference_scope=preference_updates.clone();
+                        administrative=Some(AbortTask(tokio::spawn(async move {
+                            // A spawned task can be scheduled after the next UI/Gateway update.
+                            // Recheck the unsent request at the actual worker entry, before HTTP.
+                            let scope=*preference_scope.borrow();
+                            let request=match super::lanes::admit_preference(request,scope){
+                                Ok(request)=>request,Err(event)=>{if let Err(error)=emit(Event::ChannelPreferences(*event)){api.stop();let _=finished.send(Some(error));}wake.request_repaint();return;}
+                            };
+                            let event=api.execute(Command::ChannelPreferences(request)).await;
+                            let failure=match &event {Event::ChannelPreferences(client_core::preferences_sync::Finished{result:Err(f),..}) if f.ends_session()=>Some(*f),_=>None};
+                            if let Some(error)=emit(event).err().or(failure) {api.stop();let _=finished.send(Some(error));}
+                            wake.request_repaint();
+                        })));
+                    }
                     tokio::select! {
+                        changed=preference_updates.changed()=>{
+                            if changed.is_err(){break;}
+                            let scope=*preference_updates.borrow_and_update();
+                            if pending_preferences.as_ref().is_some_and(|request|scope!=Some((request.generation,request.guild,request.request))){
+                                let request=pending_preferences.take().expect("retired queued preference");
+                                if let Err(event)=super::lanes::admit_preference(request,scope){emit(Event::ChannelPreferences(*event))?;}
+                            }
+                        }
+                        _=super::lanes::admin_mutation_finished(&mut administrative,&mut community_job), if pending_preferences.is_some()=>{}
 						changed=admin_scope.changed()=> {
 							if changed.is_err() {break;}
 							admin_reads.retire(*admin_scope.borrow_and_update());
@@ -394,7 +424,7 @@ impl Connection {
                         }
                         changed=voice_availability.changed()=> {
 								if changed.is_err() {break;}
-								if !*voice_availability.borrow_and_update() {drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());inbox.cancel_read();if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
+								if !*voice_availability.borrow_and_update() {drop(pending_preferences.take());drop(ringing.take());drop(recipient_ringing.take());drop(profile.take());drop(stream_preview.take());drop(search.take());inbox.cancel_read();if let Some(cancel)=&upload_cancel {let _=cancel.send(true);}}
                         }
                         changed=lifecycle_changed.changed()=> {
                             if changed.is_err() {break;}
@@ -475,6 +505,12 @@ impl Connection {
 								}));
 								continue;
 							}
+                            if let Command::ChannelPreferences(request)=command {
+                                if request.generation!=generation || pending_preferences.is_some() {
+                                    emit(Event::ChannelPreferences(client_core::preferences_sync::Finished{generation:request.generation,guild:request.guild,request:request.request,result:Err(Failure::ProtocolAt("Preference save expired before admission; retry"))}))?;
+                                } else { pending_preferences=Some(request); }
+                                continue;
+                            }
                             if let Command::Mfa(request)=command {
                                 if !mfa_job_available(&mfa_job,&request,api.mfa_resume_ready(request.id)) {
                                     emit(Event::Mfa(client_core::mfa::Event::Updated{id:request.id,result:Err(Failure::ProtocolAt("A security check is already in progress"))}))?;
@@ -967,6 +1003,7 @@ impl Connection {
 		Self {
 			commands,
 			admin_scopes,
+			preference_scope,
 			uploads,
 			events,
 			typing,

@@ -483,27 +483,55 @@ fuzz_target!(|data: &[u8]| {
 				);
 			}
 			26 => {
-				if let Some(action) = state.personal_visibility_change(channel, op[6] & 1 != 0)
-					&& let Some(client_core::Command::ChannelAction {
-						guild,
-						channel,
-						request,
-						action: client_core::channel_actions::Action::Personal(change),
-					}) = state.request_personal_channel_action(Id(10), action)
+				if let Some(action) = state.personal_visibility_change(channel, op[6] & 1 != 0) {
+					state.request_personal_channel_action(Id(10), action);
+				}
+				let refresh = if op[5] & 1 != 0 {
+					state.refresh_channel_preferences(Id(10))
+				} else {
+					None
+				};
+				state.flush_channel_preferences();
+				if let Some(client_core::Command::ChannelPreferences(request)) =
+					refresh.or_else(|| state.poll_channel_preferences(std::time::Instant::now()))
 				{
+					let mut event = state.demo_channel_preferences(&request);
+					match op[4] % 4 {
+						1 => event.result = Err(Failure::Ambiguous),
+						2 => event.result = Err(Failure::Forbidden),
+						3 => {
+							let _ = state.retry_channel_preference(Id(10), Some(channel));
+						}
+						_ => {}
+					}
 					state.apply(Envelope {
 						generation: state.generation.wrapping_sub(u64::from(op[7] & 1)),
-						event: Event::ChannelAction(
-							client_core::channel_actions::Event::Finished {
-								guild,
-								channel,
-								request,
-								result: Ok(client_core::channel_actions::Outcome::Personal(change)),
-							},
-						),
+						event: Event::ChannelPreferences(event),
 					});
 				}
+				let update = model::guild_preferences::Update {
+					guild: Some(Id(10)),
+					version: (op[5] & 2 != 0).then_some(u64::from(op[6])),
+					fields: model::guild_preferences::Fields {
+						hide_muted: if op[4] & 1 == 0 {
+							Patch::Null
+						} else {
+							Patch::Value(op[4] & 2 != 0)
+						},
+						..Default::default()
+					},
+					channels_unknown: op[4] & 8 != 0,
+					..Default::default()
+				};
+				apply(
+					&mut state,
+					Event::NotificationPreferences(client_core::notifications::Event::Updates {
+						entries: vec![update],
+						replace: false,
+					}),
+				);
 			}
+
 			_ => {
 				let prior = fingerprint(&state);
 				state.apply(Envelope {
