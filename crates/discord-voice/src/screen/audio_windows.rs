@@ -52,9 +52,10 @@ impl Audio {
 				{
 					input.failed.store(true, Ordering::Release);
 					input.stop.store(true, Ordering::Release);
-					if let Ok(mut state) = status.lock() {
-						*state = AudioStatus::Unavailable(target.unavailable());
-					}
+					crate::screen::set_audio_status(
+						&status,
+						AudioStatus::Unavailable(target.unavailable()),
+					);
 				}
 			})
 			.map_err(|_| "System audio worker could not start")?;
@@ -351,9 +352,7 @@ mod native {
 			let _ = unsafe { client.Stop() };
 			return Err(E_FAIL.into());
 		}
-		if let Ok(mut state) = status.lock() {
-			*state = target.status();
-		}
+		crate::screen::set_audio_status(status, target.status());
 		metrics.finish(Stage::CaptureRestart, start);
 		metrics.checkpoint();
 		if let Some(started) = started.take() {

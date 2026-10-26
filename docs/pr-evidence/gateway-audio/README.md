@@ -1,8 +1,11 @@
 # Gateway recovery and application audio
 
-Runtime revision: `f5349e7489708d5e59a7b222065ab9fd5824b022`.
+Local Linux runtime/evidence revision: `f5349e7489708d5e59a7b222065ab9fd5824b022`.
 Frozen installer baseline: `e73bb7b0af3b2c902c96f66f50ea7e0cb3007dc9`.
 The change is stacked on #27 and retains #26. Neither existing PR is merged here.
+The native integration follow-up reuses the shared Windows audio-status setter
+and gives voice-crate macOS tests the system Swift runtime rpath. Those fixes
+retain the same runtime behavior and leave the Linux UI/replay inputs unchanged.
 
 ## Native UI evidence
 

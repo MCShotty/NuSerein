@@ -510,9 +510,10 @@ impl Capture {
 			match result {
 				Ok(audio) => capture.audio = Some(audio),
 				Err(reason) if !cancel.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) => {
-					if let Ok(mut state) = audio_status.lock() {
-						*state = AudioStatus::Unavailable(reason);
-					}
+					crate::screen::set_audio_status(
+						&audio_status,
+						AudioStatus::Unavailable(reason),
+					);
 				}
 				Err(_) => {}
 			}
