@@ -146,7 +146,10 @@ The built release replay ran directly: one warmup and five measured runs of 100,
 | Hover first visits opened without waiting / requests | 12/12 / 12 | 12/12 / 12 | 0 |
 | 28-row hover sweep requests | 12 | 12 | 0 |
 
-The replay run ranges overlap (before 69.0651..76.5154 ms, after 66.9713..71.3841 ms); no speedup is claimed. Navigation retains 2 dormant windows / 150 rows / 328,148 estimated bytes on both revisions; the hover pass retains 8 windows / 983,809 estimated bytes. Core selection median/p95 is 300/300 ns on both, near timer resolution. These are bounded allocation estimates, not RSS.
+The replay run ranges overlap (before 69.0651..76.5154 ms, after 66.9713..71.3841 ms); no speedup is
+claimed. Navigation retains 2 dormant windows / 150 rows / 328,148 estimated bytes on both
+revisions; the hover pass retains 8 windows / 983,809 estimated bytes. Core selection median/p95 is
+300/300 ns on both, near timer resolution. These are bounded allocation estimates, not RSS.
 
 NSIS is unavailable, so no installer was produced. The existing OpenH264 linker debug-info
 warning appears in both builds. Native interaction capture and CPU/RSS sampling were unavailable
@@ -617,11 +620,21 @@ Fresh standard Windows x64 voice-enabled packages compare main `1b3e4a7b` with `
 | Installed directory | 90,199,948 B | 90,280,332 B | +80,384 B (+0.0891%) |
 | Distribution ZIP | 50,001,798 B | 50,025,305 B | +23,507 B (+0.0470%) |
 
-Method: `cargo xtask package`, Rust 1.98.1, standard release flags without demo; Windows 11 build 26200, Ryzen 7 7800X3D, 32 GiB RAM. Runtime workspace artifacts were invalidated before each feature build. Installed bytes sum every file in `dist`; ZIP uses whole-directory .NET Optimal compression. NSIS was unavailable, so no installer executable was built.
+Method: `cargo xtask package`, Rust 1.98.1, standard release flags without demo; Windows 11 build
+26200, Ryzen 7 7800X3D, 32 GiB RAM. Runtime workspace artifacts were invalidated before each feature
+build. Installed bytes sum every file in `dist`; ZIP uses whole-directory .NET Optimal compression.
+NSIS was unavailable, so no installer executable was built.
 
-Alternating synthetic reducer replay (100,000 events): baseline median 76.5049 ms, range 74.0754-79.5180 ms; this change median 79.6071 ms, range 66.3717-83.4725 ms; median delta +3.1022 ms (+4.05%). One warmup each, then five baseline/controls/inbox rounds. All measured runs retained 500 records and 331,992-332,477 estimated timeline bytes (limit 4 MiB). The binaries were retained separately and workspace reducer artifacts rebuilt between variants. Concurrent compilation remained uncontrolled noise; overlapping ranges establish neither a performance improvement nor a regression.
+Alternating synthetic reducer replay (100,000 events): baseline median 76.5049 ms, range
+74.0754-79.5180 ms; this change median 79.6071 ms, range 66.3717-83.4725 ms; median delta +3.1022 ms
+(+4.05%). One warmup each, then five baseline/controls/inbox rounds. All measured runs retained 500
+records and 331,992-332,477 estimated timeline bytes (limit 4 MiB). The binaries were retained
+separately and workspace reducer artifacts rebuilt between variants. Concurrent compilation remained
+uncontrolled noise; overlapping ranges establish neither a performance improvement nor a regression.
 
-Current native CPU, memory, frame/startup latency and affected-device behavior remain unmeasured because the native automation bridge is unavailable. Package size and synthetic reducer timing do not establish live Discord performance.
+Current native CPU, memory, frame/startup latency and affected-device behavior remain unmeasured
+because the native automation bridge is unavailable. Package size and synthetic reducer timing do
+not establish live Discord performance.
 
 ## Window geometry minimum — October 7, 2026
 
@@ -667,9 +680,14 @@ Fresh standard Windows x64 voice-enabled packages compare main `1b3e4a7b` with `
 | Installed directory | 90,199,948 B | 90,200,460 B | +512 B (+0.0006%) |
 | Distribution ZIP | 50,001,798 B | 50,002,093 B | +295 B (+0.0006%) |
 
-Method: `cargo xtask package`, Rust 1.98.1, standard release flags without demo; Windows 11 build 26200, Ryzen 7 7800X3D, 32 GiB RAM. Runtime workspace artifacts were invalidated before each feature build. Installed bytes sum every file in `dist`; ZIP uses whole-directory .NET Optimal compression. NSIS was unavailable, so no installer executable was built.
+Method: `cargo xtask package`, Rust 1.98.1, standard release flags without demo; Windows 11 build
+26200, Ryzen 7 7800X3D, 32 GiB RAM. Runtime workspace artifacts were invalidated before each feature
+build. Installed bytes sum every file in `dist`; ZIP uses whole-directory .NET Optimal compression.
+NSIS was unavailable, so no installer executable was built.
 
-Current native CPU, memory, frame/startup latency and affected-device behavior remain unmeasured because the native automation bridge is unavailable. Package size and synthetic reducer timing do not establish live Discord performance.
+Current native CPU, memory, frame/startup latency and affected-device behavior remain unmeasured
+because the native automation bridge is unavailable. Package size and synthetic reducer timing do
+not establish live Discord performance.
 
 ### Window minimum after monitor changes — review follow-up (2026-10-08)
 
@@ -1049,7 +1067,11 @@ Environment: Microsoft Windows Server 2025 Datacenter build 26100; AMD EPYC 7763
 
 Replay ranges: nightly 104.890–107.109 ms; PR 116.095–119.153 ms. Ranges do not overlap in this sample; the cause of the measured difference is not isolated.
 
-[Native comparison job](https://github.com/MCShotty/Serein/actions/runs/38408007242/job/115332603702) preserves the exact JSON results. Packaged executable SHA-256: nightly `feb9c6a7c4e2267d868dad376e30beb0f6628d4545775927c74d28cf1196f097`; PR `c99607af30ba96b2f2eb26fa28d66fe9818ff0d3bdca0a6aa47ba2eeefc7e3f8`.
+[Native comparison
+job](https://github.com/MCShotty/Serein/actions/runs/38408007242/job/115332603702) preserves the
+exact JSON results. Packaged executable SHA-256: nightly
+`feb9c6a7c4e2267d868dad376e30beb0f6628d4545775927c74d28cf1196f097`; PR
+`c99607af30ba96b2f2eb26fa28d66fe9818ff0d3bdca0a6aa47ba2eeefc7e3f8`.
 
 Measured replay samples in pair order (ms): nightly `104.890, 105.887, 106.635, 105.681, 107.109`; PR `118.033, 117.411, 119.153, 116.095, 117.777`.
 
@@ -1068,11 +1090,17 @@ Environment: macOS 26.6.2 build 25G83; Apple M1 (Virtual); 7.0 GiB RAM, 3 logica
 
 Replay ranges: nightly 62.051–66.883 ms; PR 66.162–83.932 ms. Ranges overlap; scheduling noise prevents attributing the median difference to a feature.
 
-[Native comparison job](https://github.com/MCShotty/Serein/actions/runs/38406359420/job/115327118696) preserves the exact JSON results. Packaged executable SHA-256: nightly `667a0fb5493ebdd349aa62cc74675658fcb29828dda639ce2d4df84e55268fb5`; PR `715c06bb6aff0df6307caf97fd565809dd4a7a73563f484753c5c501b4e858bd`.
+[Native comparison
+job](https://github.com/MCShotty/Serein/actions/runs/38406359420/job/115327118696) preserves the
+exact JSON results. Packaged executable SHA-256: nightly
+`667a0fb5493ebdd349aa62cc74675658fcb29828dda639ce2d4df84e55268fb5`; PR
+`715c06bb6aff0df6307caf97fd565809dd4a7a73563f484753c5c501b4e858bd`.
 
 Measured replay samples in pair order (ms): nightly `63.067, 64.794, 62.051, 66.883, 63.177`; PR `66.162, 67.295, 83.932, 82.592, 70.793`.
 
-The [measurement helper](https://github.com/MCShotty/Serein/blob/6bad96ebcf66faf8c010a25b15368d98c6d181a9/scripts/measure-native-nightly.py) records the source revisions, build profile, environment, hashes and every replay sample.
+The [measurement
+helper](https://github.com/MCShotty/Serein/blob/6bad96ebcf66faf8c010a25b15368d98c6d181a9/scripts/measure-native-nightly.py)
+records the source revisions, build profile, environment, hashes and every replay sample.
 
 Both sides run normal `cargo xtask package` after rebuilding xtask and start
 with empty package output. Windows compiled/staged executable hashes match;
@@ -1221,9 +1249,15 @@ a fresh full cache, and native window capture tools are unavailable.
 
 ## Runtime resource cleanup — October 8, 2026
 
-Historical evidence from the original combined PR, separated by scope. The recorded revision labels, hashes and measurements are unchanged; these results do not validate the new branch heads.
+Historical evidence from the original combined PR, separated by scope. The recorded revision labels,
+hashes and measurements are unchanged; these results do not validate the new branch heads.
 
-Against `98158b4`, queued updater results retained staged directories or inert helpers after app closure. Results now retain cleanup ownership until accepted. The remaining staged-directory count changes from 1 to 0; the helper exits within the fixture’s three-second bound. Registered-game normalization also preserves its 256-byte ceiling. See [the resource evidence](pr-evidence/updater-resource-hunt/README.md). Full executable/package size, CPU/RSS and native integration remain unmeasured.
+Against `98158b4`, queued updater results retained staged directories or inert helpers after app
+closure. Results now retain cleanup ownership until accepted. The remaining staged-directory count
+changes from 1 to 0; the helper exits within the fixture’s three-second bound. Registered-game
+normalization also preserves its 256-byte ceiling. See [the resource
+evidence](pr-evidence/updater-resource-hunt/README.md). Full executable/package size, CPU/RSS and
+native integration remain unmeasured.
 ## Repository-wide lifecycle and state bug hunt — October 5, 2026
 
 Compare the verified local starting commit `b6c32b6ddfa3bef63f01bc9b101de5aa20203017`
@@ -1274,7 +1308,8 @@ unverified.
 
 ## Responsive native controls — October 5, 2026
 
-Historical evidence from the original combined PR, separated by scope. The recorded revision labels, hashes and measurements are unchanged; these results do not validate the new branch heads.
+Historical evidence from the original combined PR, separated by scope. The recorded revision labels,
+hashes and measurements are unchanged; these results do not validate the new branch heads.
 
 [Raw samples and source hashes](pr-evidence/responsive-ui/measurements.json) and
 [reproduction scripts](pr-evidence/responsive-ui/README.md) record a fresh native
@@ -2104,18 +2139,32 @@ and owner-controlled Discord acceptance remain unmeasured or unverified here.
 
 ## Combined desktop parity — October 17, 2026
 
-The combined validation branch is `integration/desktop-parity-20261017`. Its feature work remains in fork PRs [#7](https://github.com/MCShotty/Serein/pull/7)–[#15](https://github.com/MCShotty/Serein/pull/15); neither main nor parent #567/#620 is modified by this work. The final feature merges preserve the verified runtime source and only add current native evidence.
+The combined validation branch is `integration/desktop-parity-20261017`. Its feature work remains in
+fork PRs
+[#7](https://github.com/MCShotty/Serein/pull/7)–[#15](https://github.com/MCShotty/Serein/pull/15);
+neither main nor parent #567/#620 is modified by this work. The final feature merges preserve the
+verified runtime source and only add current native evidence.
 
 ### Release reducer comparison
 
-Compared combined code `eee7fd755bd6ed3d94a7d983040bb1564843a9a8` with current published nightly `v1.0.0-nightly.20261014.58` (`3a4bf8df2136945d51bd16a1acd9c4033d88feb5`) and fork `f9e39f792b2fe0af02f2c1e791e1516147084824`. Rust 1.98.1, locked graph, Linux 6.18.55/glibc 2.41, five logical CPUs and about 17 GiB RAM. Each revision has a separate build directory: opt-level 3, thin LTO, one codegen unit, line tables, stripped symbols and panic abort. One warmup and five rotated measured samples per workload. The sampler uses CPU 0; other native build threads were restricted to CPUs 1–4. Those builds still share the memory system.
+Compared combined code `eee7fd755bd6ed3d94a7d983040bb1564843a9a8` with current published nightly
+`v1.0.0-nightly.20261014.58` (`3a4bf8df2136945d51bd16a1acd9c4033d88feb5`) and fork
+`f9e39f792b2fe0af02f2c1e791e1516147084824`. Rust 1.98.1, locked graph, Linux 6.18.55/glibc 2.41,
+five logical CPUs and about 17 GiB RAM. Each revision has a separate build directory: opt-level 3,
+thin LTO, one codegen unit, line tables, stripped symbols and panic abort. One warmup and five
+rotated measured samples per workload. The sampler uses CPU 0; other native build threads were
+restricted to CPUs 1–4. Those builds still share the memory system.
 
 | Workload / elapsed median (range), ms | Nightly | Previous fork | Combined | Delta vs nightly / fork |
 | --- | ---: | ---: | ---: | ---: |
 | 100,000-event reducer | 71.035 (70.452–75.244) | 74.009 (72.001–77.601) | 78.581 (77.600–79.799) | +10.6% / +6.2% |
 | 10,000-event wide-channel reducer | 117.102 (100.668–127.305) | 124.630 (119.000–157.747) | 128.122 (107.561–155.779) | +9.4% / +2.8% |
 
-The reducer is slower than both baselines; the cause is unisolated. Wide-channel ranges overlap. These are combined feature measurements, not attribution to an individual PR, process RSS, UI latency, frame delivery or media throughput. The earlier run under unconstrained concurrent builds had substantially wider ranges and is excluded from the headline comparison. No speed improvement is claimed.
+The reducer is slower than both baselines; the cause is unisolated. Wide-channel ranges overlap.
+These are combined feature measurements, not attribution to an individual PR, process RSS, UI
+latency, frame delivery or media throughput. The earlier run under unconstrained concurrent builds
+had substantially wider ranges and is excluded from the headline comparison. No speed improvement is
+claimed.
 
 Raw elapsed samples in milliseconds:
 
@@ -2128,17 +2177,38 @@ wide_channels/previous_fork: 125.465557, 119.000406, 124.630067, 120.726529, 157
 wide_channels/after: 128.121680, 107.561215, 119.048428, 129.088519, 155.779327
 ```
 
-Reproduce with `python3 scripts/compare-replay.py --fork-base f9e39f792b2fe0af02f2c1e791e1516147084824 --output target/parity-replay.json`. Windows/macOS/Linux scoped CI runs the same comparison against the nightly selected at each run. Historical per-OS results above retain their original source revisions and regressions.
+Reproduce with `python3 scripts/compare-replay.py --fork-base
+f9e39f792b2fe0af02f2c1e791e1516147084824 --output target/parity-replay.json`. Windows/macOS/Linux
+scoped CI runs the same comparison against the nightly selected at each run. Historical per-OS
+results above retain their original source revisions and regressions.
 
 ### Verification and native UI
 
-`cargo xtask check` at `0e7c26e3` passes 1,919 tests with zero failures and 32 tests/examples ignored, formatting, strict workspace Clippy, the minimal application check and policy checks. Later changes to the verified runtime are demo-only. Demo all-target Clippy and the native preview build pass. Login-handoff, cached-xtask workspace, both license graphs, six license-policy fixtures, packaging fixtures, release replay and the 120-second soak pass. The soak completed 61,568 visits, 36,940,800 live inserts and eight logout cycles in 120.015 seconds within the core budgets. ASan fuzz smoke completed 128,905 decoder and 4,340 state-transition runs without a finding. None of these runs used Discord credentials, a live call, microphone, speaker or capture device.
+`cargo xtask check` at `0e7c26e3` passes 1,919 tests with zero failures and 32 tests/examples
+ignored, formatting, strict workspace Clippy, the minimal application check and policy checks. Later
+changes to the verified runtime are demo-only. Demo all-target Clippy and the native preview build
+pass. Login-handoff, cached-xtask workspace, both license graphs, six license-policy fixtures,
+packaging fixtures, release replay and the 120-second soak pass. The soak completed 61,568 visits,
+36,940,800 live inserts and eight logout cycles in 120.015 seconds within the core budgets. ASan
+fuzz smoke completed 128,905 decoder and 4,340 state-transition runs without a finding. None of
+these runs used Discord credentials, a live call, microphone, speaker or capture device.
 
-Current unedited native screenshot pairs are in `docs/pr-evidence/`: application commands, desktop Inbox/messaging, desktop media, profile settings, community onboarding and community events. The baseline is the verified commands revision `1d47c3d`, not the nightly; after captures use combined code `80350d0f`, with the Stage/messaging follow-up at `92d5c311`. The new community fixtures and the pending synthetic block proposal are described beside their images. Native light/compact layouts, scrolling, explicit disclosure and keyboard settings interaction were inspected. Screenshots do not establish media throughput, frame latency, physical accessibility or official-client interoperability.
+Current unedited native screenshot pairs are in `docs/pr-evidence/`: application commands, desktop
+Inbox/messaging, desktop media, profile settings, community onboarding and community events. The
+baseline is the verified commands revision `1d47c3d`, not the nightly; after captures use combined
+code `80350d0f`, with the Stage/messaging follow-up at `92d5c311`. The new community fixtures and
+the pending synthetic block proposal are described beside their images. Native light/compact
+layouts, scrolling, explicit disclosure and keyboard settings interaction were inspected.
+Screenshots do not establish media throughput, frame latency, physical accessibility or
+official-client interoperability.
 
 ### Current scoped CI comparisons
 
-The following completed jobs compare the exact pushed feature heads with the same nightly `3a4bf8d` and previous fork `f9e39f7`. They use the committed comparison script and matching release settings, one warmup and five rotated samples per workload. These are separate workers and scopes; do not compare absolute times between rows. Remaining current-head jobs are pending. Ranges overlap in most rows; no causal performance improvement is claimed.
+The following completed jobs compare the exact pushed feature heads with the same nightly `3a4bf8d`
+and previous fork `f9e39f7`. They use the committed comparison script and matching release settings,
+one warmup and five rotated samples per workload. These are separate workers and scopes; do not
+compare absolute times between rows. Remaining current-head jobs are pending. Ranges overlap in most
+rows; no causal performance improvement is claimed.
 
 | PR / revision / worker | Workload | Nightly / fork median, ms | Feature median (range), ms | Delta vs nightly / fork |
 | --- | --- | ---: | ---: | ---: |
@@ -2153,13 +2223,28 @@ The following completed jobs compare the exact pushed feature heads with the sam
 | [#12](https://github.com/MCShotty/Serein/actions/runs/39077838059/job/117528631664) / `df0bc231` / Linux x64 | reducer | 80.851 / 78.743 | 80.172 (79.051–81.817) | -0.8% / +1.8% |
 | [#12](https://github.com/MCShotty/Serein/actions/runs/39077838059/job/117528631664) / `df0bc231` / Linux x64 | wide_channels | 163.075 / 163.410 | 163.266 (146.565–167.507) | +0.1% / -0.1% |
 
-Raw samples, compiler/settings, OS and affinity are retained in each linked job’s `parity-replay` artifact. This is core reducer evidence; package size, UI/media performance and interoperability are separate measurements.
+Raw samples, compiler/settings, OS and affinity are retained in each linked job’s `parity-replay`
+artifact. This is core reducer evidence; package size, UI/media performance and interoperability are
+separate measurements.
 
 ### Standard package comparison
 
-The normal `cargo xtask package --format dir` completed from an empty output directory with the standard fat-LTO release profile, committed lockfile, voice enabled and one build job. Runtime code matches the verified combined tree; subsequent merges add evidence only. The package was not repaired or manually staged. All six private runtime libraries, corresponding-source archives and licenses passed validation. Packaged source archives match the recipe hashes. Dynamic RPATHs contain no development prefix, and the installed binary's bounded driver-query launch succeeds with both FFmpeg development directories removed from the runtime search path. This launch exits before credentials, UI, clients or capture initialize.
+The normal `cargo xtask package --format dir` completed from an empty output directory with the
+standard fat-LTO release profile, committed lockfile, voice enabled and one build job. Runtime code
+matches the verified combined tree; subsequent merges add evidence only. The package was not
+repaired or manually staged. All six private runtime libraries, corresponding-source archives and
+licenses passed validation. Packaged source archives match the recipe hashes. Dynamic RPATHs contain
+no development prefix, and the installed binary's bounded driver-query launch succeeds with both
+FFmpeg development directories removed from the runtime search path. This launch exits before
+credentials, UI, clients or capture initialize.
 
-The comparison uses the official published nightly Ubuntu 26.04 x86_64 Debian payload (SHA-256 `ac36677a300133379f4fc4060a724bde4f4afc0261d757e1957b7f511f118d04`) versus the local Debian 13 x86_64 installation tree. Both are standard packages with voice. Normalized ZIPs use sorted regular files, fixed timestamps/modes and Python DEFLATE level 9. These whole-fork inventories include the existing FFmpeg/video work and corresponding source; they do not isolate parity changes or establish an application runtime comparison across the two build environments. The previous fork package was not rebuilt for this comparison.
+The comparison uses the official published nightly Ubuntu 26.04 x86_64 Debian payload (SHA-256
+`ac36677a300133379f4fc4060a724bde4f4afc0261d757e1957b7f511f118d04`) versus the local Debian 13
+x86_64 installation tree. Both are standard packages with voice. Normalized ZIPs use sorted regular
+files, fixed timestamps/modes and Python DEFLATE level 9. These whole-fork inventories include the
+existing FFmpeg/video work and corresponding source; they do not isolate parity changes or establish
+an application runtime comparison across the two build environments. The previous fork package was
+not rebuilt for this comparison.
 
 | Metric / bytes | Published nightly | Combined clean package | Delta |
 | --- | ---: | ---: | ---: |
@@ -2167,19 +2252,45 @@ The comparison uses the official published nightly Ubuntu 26.04 x86_64 Debian pa
 | Installed payload | 92,280,770 | 140,176,288 | +47,895,518 / +51.9% |
 | Normalized distribution ZIP | 53,552,488 | 89,776,426 | +36,223,938 / +67.6% |
 
-Clean executable SHA-256: `eabce23a31d8ae290b95c9fea4c5fc60b9843bc36fd286d35b7380ddbc92cecf`. Clean normalized ZIP SHA-256: `db1693d48960579e45565fa04d802a95b5368aefc988fb23a89ef44d0c87c74f`. Native UI CPU/RSS, interaction/frame latency and media throughput are unmeasured. Windows/macOS package-size deltas remain unmeasured; their native checks and release reducer comparisons run in CI.
+Clean executable SHA-256: `eabce23a31d8ae290b95c9fea4c5fc60b9843bc36fd286d35b7380ddbc92cecf`. Clean
+normalized ZIP SHA-256: `db1693d48960579e45565fa04d802a95b5368aefc988fb23a89ef44d0c87c74f`. Native
+UI CPU/RSS, interaction/frame latency and media throughput are unmeasured. Windows/macOS
+package-size deltas remain unmeasured; their native checks and release reducer comparisons run in
+CI.
 
-Two further normal package invocations used the same dependency cache and an empty output directory each time. The first cached run rebuilt the desktop crate after the final evidence merges touched its source timestamps; Cargo reported 15m 38s for that release build. The unchanged warm repeat reused the executable and reported 1.27s for the release build. These are Cargo build durations, not complete packaging or launch timings.
+Two further normal package invocations used the same dependency cache and an empty output directory
+each time. The first cached run rebuilt the desktop crate after the final evidence merges touched
+its source timestamps; Cargo reported 15m 38s for that release build. The unchanged warm repeat
+reused the executable and reported 1.27s for the release build. These are Cargo build durations, not
+complete packaging or launch timings.
 
-Both repeats passed the same library, RPATH, source-hash, license and development-path-free launch checks (exit 0). Clean, cached and warm outputs have identical executable and normalized ZIP hashes, installed byte counts and 280-file inventories. All runs used the ordinary packaging command, without a staging repair or modified cache fingerprints.
+Both repeats passed the same library, RPATH, source-hash, license and development-path-free launch
+checks (exit 0). Clean, cached and warm outputs have identical executable and normalized ZIP hashes,
+installed byte counts and 280-file inventories. All runs used the ordinary packaging command,
+without a staging repair or modified cache fingerprints.
 
-At final local verification, scoped current-head native checks remain incomplete. Commands PR #10's Windows x64 job timed out in the unchanged local-Gateway voice join/leave fixture, outside its added autocomplete dispatch path; the earlier native checks passed. GitHub rejected a rerun while the workflow was still running. Inherited `zip` advisories, Nix builds and openSUSE dependency setup failures are separate from the passing local gate. The combined branch receives fresh Windows x64/ARM64, macOS and Linux application/package checks on push; pending jobs are not reported as passes.
+At final local verification, scoped current-head native checks remain incomplete. Commands PR #10's
+Windows x64 job timed out in the unchanged local-Gateway voice join/leave fixture, outside its added
+autocomplete dispatch path; the earlier native checks passed. GitHub rejected a rerun while the
+workflow was still running. Inherited `zip` advisories, Nix builds and openSUSE dependency setup
+failures are separate from the passing local gate. The combined branch receives fresh Windows
+x64/ARM64, macOS and Linux application/package checks on push; pending jobs are not reported as
+passes.
 
 ### Remaining gates
 
-Parent main advanced independently to `611ff7f` during verification (dedicated Windows installer CI jobs removed). The fork baseline remains `f9e39f7`; no upstream synchronization is implied. Parent #567 remains at `1473d408` with 149 paths, and #620 remains draft at `4806c9bb`.
+Parent main advanced independently to `611ff7f` during verification (dedicated Windows installer CI
+jobs removed). The fork baseline remains `f9e39f7`; no upstream synchronization is implied. Parent
+#567 remains at `1473d408` with 149 paths, and #620 remains draft at `4806c9bb`.
 
-Current-head native/package CI on Windows x64/ARM64, macOS and Linux remains distinct from local Linux evidence. Physical devices, HDR/monitor transitions, audio synchronization, native assistive technology, RTL behavior and normal-account/official-client workflows remain owner-controlled. The supplied reference is Discord Stable 641004 (`c9ac31f`), Host 1.0.9262 x64 (`94186`); that client was not run here. SDK wiki preview pages were generated and checked from pushed media source `631699ad`, but parent wiki write access is unavailable and existing unrelated preview content must be preserved; no publication is claimed. The current parity inventory records supported, partial and handoff-only workflows; games and Activities remain excluded.
+Current-head native/package CI on Windows x64/ARM64, macOS and Linux remains distinct from local
+Linux evidence. Physical devices, HDR/monitor transitions, audio synchronization, native assistive
+technology, RTL behavior and normal-account/official-client workflows remain owner-controlled. The
+supplied reference is Discord Stable 641004 (`c9ac31f`), Host 1.0.9262 x64 (`94186`); that client
+was not run here. SDK wiki preview pages were generated and checked from pushed media source
+`631699ad`, but parent wiki write access is unavailable and existing unrelated preview content must
+be preserved; no publication is claimed. The current parity inventory records supported, partial and
+handoff-only workflows; games and Activities remain excluded.
 
 ## Fork main integration — October 18, 2026
 
@@ -3343,11 +3454,25 @@ speedup is claimed.
 
 Final native preview and normal package source: `2ee9314232945685c4dc81dc6cac1fc84c4f179a`. The unchanged core replay above stays pinned to `5dcaa970`.
 
-Native comparisons use `scripts/profile-native-ui.py` on Linux X11/Xvfb, llvmpipe (LLVM 19.1.7/Mesa 25.0.7, GL), 1120 × 760 and scale 1. Each fresh process gets three seconds of warmup, five seconds of sampling at 100 ms intervals and two seconds of settling. There is one warmup run and five measured repetitions, with build order rotated; sampler and children inherit logical CPU 0. No builds ran during these samples.
+Native comparisons use `scripts/profile-native-ui.py` on Linux X11/Xvfb, llvmpipe (LLVM 19.1.7/Mesa
+25.0.7, GL), 1120 × 760 and scale 1. Each fresh process gets three seconds of warmup, five seconds
+of sampling at 100 ms intervals and two seconds of settling. There is one warmup run and five
+measured repetitions, with build order rotated; sampler and children inherit logical CPU 0. No
+builds ran during these samples.
 
-The common Members fixture has eight members; the new build adds identity/filter metadata. Search alternates `Avery` and an empty query once per second through native text input. Active comparisons opt into the bounded preview callback collector, which requests periodic repaint; their CPU figures describe that instrumented workload, not ordinary idle CPU. Callback p50/p95 values are medians of five per-run percentiles for `MessagingUi::show`, excluding rendering/presentation and end-to-end input or service latency. Peak RSS means the maximum sampled after warmup, not a lifetime high-water mark; settled RSS is the median of the two-second settling window.
+The common Members fixture has eight members; the new build adds identity/filter metadata. Search
+alternates `Avery` and an empty query once per second through native text input. Active comparisons
+opt into the bounded preview callback collector, which requests periodic repaint; their CPU figures
+describe that instrumented workload, not ordinary idle CPU. Callback p50/p95 values are medians of
+five per-run percentiles for `MessagingUi::show`, excluding rendering/presentation and end-to-end
+input or service latency. Peak RSS means the maximum sampled after warmup, not a lifetime high-water
+mark; settled RSS is the median of the two-second settling window.
 
-Only the common idle view was sampled against the pinned nightly; its preview lacks the callback instrumentation used for active comparisons. Mod View and Browse Channels have no equivalent starting-build fixture and are characterized separately. No helper-process RSS was observed in these sampling windows. Live cache occupancy, outstanding transport tasks, large-server search latency and physical input remain unmeasured.
+Only the common idle view was sampled against the pinned nightly; its preview lacks the callback
+instrumentation used for active comparisons. Mod View and Browse Channels have no equivalent
+starting-build fixture and are characterized separately. No helper-process RSS was observed in these
+sampling windows. Live cache occupancy, outstanding transport tasks, large-server search latency and
+physical input remain unmeasured.
 
 | Native demo / median | Starting PR | Pinned nightly | New | New minus starting |
 | --- | ---: | ---: | ---: | ---: |
@@ -3360,14 +3485,23 @@ Only the common idle view was sampled against the pinned nightly; its preview la
 | Role editor callback p95, ms | 2.86 | — | 3.47 | +0.61 ms |
 | Instrumented role editor CPU, % of one core | 72.97 | — | 75.99 | +3.02 points |
 
-Members idle CPU increased by 0.23 percentage points, within the two-point target. Active callback tails increased: these costs are retained in the table and are not an overall speedup. One role-editor batch failed its callback-coverage gate: a live baseline process produced only two callbacks, ending at 3.621 seconds of the internal 3–8-second window. Its cause was not isolated. The entire batch was repeated once, with five valid samples for both builds; the rejected attempt is retained in the compact evidence. No per-sample substitution was used.
+Members idle CPU increased by 0.23 percentage points, within the two-point target. Active callback
+tails increased: these costs are retained in the table and are not an overall speedup. One
+role-editor batch failed its callback-coverage gate: a live baseline process produced only two
+callbacks, ending at 3.621 seconds of the internal 3–8-second window. Its cause was not isolated.
+The entire batch was repeated once, with five valid samples for both builds; the rejected attempt is
+retained in the compact evidence. No per-sample substitution was used.
 
 | New-only panel / median | CPU, % of one core | Sampled peak RSS, MiB | Settled RSS, MiB |
 | --- | ---: | ---: | ---: |
 | Mod View | 13.74 | 150.46 | 150.46 |
 | Browse Channels | 15.17 | 150.87 | 150.87 |
 
-Both package runs used the normal `cargo xtask package --format dir` command, empty output directories and the standard fat-LTO production profile. Contents, modes and normalized deflate-6 archives matched. Both launch probes removed development FFmpeg paths, resolved private media libraries inside the installed tree, and passed encoder-query and synthetic LavaSRv2 worker checks. No microphone or account was used and no manual staging repair was applied.
+Both package runs used the normal `cargo xtask package --format dir` command, empty output
+directories and the standard fat-LTO production profile. Contents, modes and normalized deflate-6
+archives matched. Both launch probes removed development FFmpeg paths, resolved private media
+libraries inside the installed tree, and passed encoder-query and synthetic LavaSRv2 worker checks.
+No microphone or account was used and no manual staging repair was applied.
 
 | Linux package size | Starting runtime | Final runtime | Delta |
 | --- | ---: | ---: | ---: |
@@ -3375,9 +3509,16 @@ Both package runs used the normal `cargo xtask package --format dir` command, em
 | Installed payload | 225,945,587 B | 227,165,939 B | +1,220,352 B (+0.540%) |
 | Normalized ZIP | 155,151,237 B | 155,647,310 B | +496,073 B (+0.320%) |
 
-An intermediate `8a020e14` release attempt was killed at the 16-GiB container limit while RAM-backed test caches remained resident. No package or size measurement is claimed from that attempt. The final full gate passed, verified task-owned generated check caches were retired, and the normal final clean/cached package commands then completed. Frozen baselines, sources and license material were preserved.
+An intermediate `8a020e14` release attempt was killed at the 16-GiB container limit while RAM-backed
+test caches remained resident. No package or size measurement is claimed from that attempt. The
+final full gate passed, verified task-owned generated check caches were retired, and the normal
+final clean/cached package commands then completed. Frozen baselines, sources and license material
+were preserved.
 
-Windows/macOS GUI CPU/RSS and comparative package sizes, physical input/accessibility and live Discord acceptance remain unavailable locally. Platform CI results are reported separately on the PR; builds and synthetic fixtures do not establish live service interoperability. The primary reducer slowdown above remains unresolved by the inconsistent shared-host measurements.
+Windows/macOS GUI CPU/RSS and comparative package sizes, physical input/accessibility and live
+Discord acceptance remain unavailable locally. Platform CI results are reported separately on the
+PR; builds and synthetic fixtures do not establish live service interoperability. The primary
+reducer slowdown above remains unresolved by the inconsistent shared-host measurements.
 
 ## Windows capture overhead — October 23, 2026
 
@@ -3888,3 +4029,75 @@ installer sizes. Current package deltas and artifact provenance belong in the PR
 Performance section after its native builds complete. Capture/game FPS, hardware
 encoder throughput, CPU/RSS and actual viewer playback still require the
 owner-controlled Windows session; no improvement is claimed from synthetic tests.
+
+## Channel preferences and browser — October 26, 2026
+
+Runtime revision `52836c95` starts from installer `d11d2aee`. The pinned current
+published nightly is `v1.0.0-nightly.20261025.64` (`38e46b8f`), verified on October 26.
+Separate worktrees/targets, Rust 1.98.1 and committed lockfiles were used.
+No dependency versions, media quality or encoder settings changed.
+
+The initial implementation `f8d99c95` introduced unnecessary complete preference
+snapshot reads during ordinary message processing. CI measured reducer changes
+of +4.5% Linux / +7.0% Windows / +25.5% macOS versus `d11d2aee`; the macOS samples
+varied substantially. An independent local pair measured +7.3%. The follow-up
+uses narrow policy reads and skips guild-mention policy work when no such mention
+exists, preserving pending preferences, suppression and mute-expiry behavior.
+
+Local core comparisons use matching opt3/thin-LTO/codegen1/stripped release builds,
+one warmup and five alternating/reversed samples per binary, pinned to one logical
+CPU on Linux x86_64 / Xeon Platinum 8573C. The first corrected run measured
+95.926 / 96.814 ms (+0.9%) for 100,000 events and 9.521 / 9.472 ms (−0.5%) for the
+wide-channel workload. A repeat measured 123.970 / 103.625 ms (−16.4%) and
+14.311 / 13.105 ms (−8.4%); this host variability does not establish a speedup.
+Final source-labeled native CI comparisons for Windows, macOS and Linux are linked
+in the PR, including the immutable nightly and sample ranges.
+
+| Linux browser metric | `d11d2aee` | `52836c95` | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, one core | 0.00 % | 0.00 % | +0.00 pp |
+| Idle sampled peak/settled RSS | 152.50 MiB | 148.13 MiB | -4.38 MiB (-2.9%) |
+| Instrumented callback p50 | 1.456 ms | 0.528 ms | -0.928 ms (-63.8%) |
+| Instrumented callback p95 | 2.772 ms | 0.927 ms | -1.845 ms (-66.6%) |
+| Instrumented process CPU, one core | 57.84 % | 27.42 % | -30.43 pp |
+| Instrumented sampled peak/settled RSS | 152.92 MiB | 147.76 MiB | -5.16 MiB (-3.4%) |
+| Release preview executable | 65,757,968 B | 65,903,888 B | +145,920 B (+0.22%) |
+
+Idle medians are at the sampling floor, rather than proof of zero CPU. No helper/provider
+processes were observed. This workload compares the old modal over the conversation
+with the dedicated page; it is not a whole-app or hardware-rendering speedup claim.
+
+Native browser sampling uses the release preview, explicit synthetic demo,
+1280 × 900, scale 1, Mesa llvmpipe and isolated Xvfb, with no service adapters.
+After a three-second startup warmup, idle sampling is 15 seconds at 0.5-second
+intervals. Optional callback instrumentation measures `MessagingUi::show` only,
+with three seconds warmup and five seconds sampling at 10 Hz. Each comparison has
+one warmup pair and five alternating/reversed measured pairs. Reported CPU is a
+percentage of one core; memory is process RSS. Callback times are neither
+presented-frame nor input latency. Helper processes are counted separately.
+
+| Canonical `d11d2aee` package metric | Windows x64 | macOS ARM64 | Linux x64 |
+| --- | ---: | ---: | ---: |
+| Application executable, bytes | 99,234,816 | 78,176,144 | 97,601,944 |
+| Installed payload, bytes | 225,998,044 | 201,435,975 | 226,392,420 |
+| Compressed distribution, bytes | 136,666,723 | 136,143,729 | 141,514,680 |
+
+Baseline artifacts are from run [40208513242](https://github.com/MCShotty/Serein/actions/runs/40208513242).
+Windows payload excludes the generated uninstaller; compression is NSIS. macOS
+counts the complete app bundle and its CI ZIP. Linux counts the installed payload
+and Debian package. Formats are compared within each platform, never across them.
+
+Normal CI packages use the canonical release profile; local directory packaging
+uses thin LTO and is labelled separately. PR #27 records canonical executable, installed payload
+and compressed distribution comparisons as native checks complete, with exact
+artifact/source IDs; local and CI profiles are not mixed in a delta.
+
+Release replay and the 120-second lifecycle soak passed on `52836c95` (2,684 passes, 85,888 visits,
+51,532,800 inserts, 11 logout cycles; 120.031 seconds). The row/byte bounds held throughout. These
+counters describe a bounded stress check rather than comparable application throughput. The PR
+tracks normal clean/cached directory packaging and current-head native package outcomes with their
+actual release settings.
+
+The live two-client synchronization check, physical Windows/macOS input,
+assistive technologies and real-account responsiveness remain unverified.
+No media/voice performance improvement is claimed from these synthetic workloads.
