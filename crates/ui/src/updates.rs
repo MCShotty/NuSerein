@@ -196,11 +196,17 @@ impl MessagingUi {
 					.selectable(false),
 			);
 		});
+		let accessible_action = self
+			.connection_reason
+			.map_or_else(|| action.clone(), |reason| format!("{action}. {reason}"));
 		response.widget_info(|| {
-			egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &action)
+			egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &accessible_action)
 		});
 		if response.clicked() {
 			self.reconnect_requested = true;
+		}
+		if let Some(reason) = self.connection_reason {
+			response.on_hover_text(reason);
 		}
 	}
 
@@ -265,7 +271,7 @@ impl MessagingUi {
 			)
 		};
 
-		format!(
+		let mut report = format!(
 			"- **Serein Version:** {} ({channel})\n- **Operating System:** {os} ({arch}){session_type}{package_type}{graphics}\n- **Display Scale:** {scale:.2}\n- **Theme:** {theme_mode} ({theme_variant})\n- **Update Channel:** {update_channel}\n- **Auto Update:** {}",
 			self.build.version,
 			if self.updates.auto_update {
@@ -273,7 +279,12 @@ impl MessagingUi {
 			} else {
 				"Disabled"
 			}
-		)
+		);
+		if !self.connection_diagnostics.is_empty() {
+			report.push_str("\n\nConnection history (this session):\n");
+			report.push_str(&self.connection_diagnostics);
+		}
+		report
 	}
 
 	/// Copies formatted diagnostics to clipboard and sets a temporary feedback countdown.

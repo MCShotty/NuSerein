@@ -58,6 +58,8 @@ pub struct Connection {
 	pub activity_sharing_request: mpsc::Sender<bool>,
 	typing_channel: Arc<AtomicU64>,
 	reconnect: Arc<tokio::sync::Notify>,
+	diagnostics: Arc<Mutex<discord_gateway::ConnectionDiagnostics>>,
+	foreground: std::cell::Cell<ForegroundRecovery>,
 	send_recovery_pending: std::cell::Cell<bool>,
 	task: JoinHandle<()>,
 }
@@ -116,6 +118,20 @@ impl Drop for AbortTask {
 }
 
 impl Connection {
+	/// A suspended UI must not replace a healthy Gateway merely because focus changed.
+	pub fn observe_foreground(&self, focused: bool, now: Instant) {
+		let mut foreground = self.foreground.get();
+		if foreground.observe(focused, now) {
+			self.reconnect();
+		}
+		self.foreground.set(foreground);
+	}
+	pub fn copy_diagnostics_to(&self, messaging: &mut ui::MessagingUi) {
+		if let Ok(diagnostics) = self.diagnostics.lock() {
+			messaging.connection_diagnostics = diagnostics.summary();
+			messaging.connection_reason = diagnostics.last_reason();
+		}
+	}
 	/// Coalesce explicit recovery requests without restarting REST writes or authentication.
 	pub fn reconnect(&self) {
 		self.reconnect.notify_one();
@@ -156,6 +172,37 @@ impl Connection {
 	}
 }
 
+#[derive(Clone, Copy)]
+struct ForegroundRecovery {
+	last_frame: Instant,
+	last_wall_frame: std::time::SystemTime,
+	interrupted: bool,
+}
+impl ForegroundRecovery {
+	fn new(now: Instant) -> Self {
+		Self {
+			last_frame: now,
+			last_wall_frame: std::time::SystemTime::now(),
+			interrupted: false,
+		}
+	}
+	fn observe(&mut self, focused: bool, now: Instant) -> bool {
+		self.observe_at(focused, now, std::time::SystemTime::now())
+	}
+	fn observe_at(&mut self, focused: bool, now: Instant, wall_now: std::time::SystemTime) -> bool {
+		// Some monotonic clocks pause during system sleep. Wall time is used only to
+		// request an advisory probe; actual transport deadlines remain monotonic.
+		self.interrupted |= now.saturating_duration_since(self.last_frame)
+			>= Duration::from_secs(30)
+			|| wall_now
+				.duration_since(self.last_wall_frame)
+				.is_ok_and(|gap| gap >= Duration::from_secs(30));
+		self.last_frame = now;
+		self.last_wall_frame = wall_now;
+		focused && std::mem::take(&mut self.interrupted)
+	}
+}
+
 fn stream_preview_session_failure(event: &Event) -> Option<Failure> {
 	match event {
 		// An oversized optional still must not disconnect the account.
@@ -184,6 +231,46 @@ fn scope_history_failure(event: Event, channel: model::Id, request: u64) -> Even
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn sleep_is_detected_when_the_monotonic_clock_pauses_without_using_wall_time_for_deadlines() {
+		let mono = Instant::now();
+		let wall = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+		let mut recovery = ForegroundRecovery {
+			last_frame: mono,
+			last_wall_frame: wall,
+			interrupted: false,
+		};
+		assert!(recovery.observe_at(
+			true,
+			mono + Duration::from_millis(1),
+			wall + Duration::from_secs(3600)
+		));
+		assert!(!recovery.observe_at(
+			true,
+			mono + Duration::from_millis(2),
+			wall + Duration::from_secs(3600)
+		));
+		// Clock corrections may cause one advisory probe; moving backwards never loops.
+		assert!(!recovery.observe_at(true, mono + Duration::from_millis(3), wall));
+		assert!(!recovery.observe_at(true, mono + Duration::from_millis(4), wall));
+	}
+	#[test]
+	fn foreground_recovery_probes_one_long_gap_and_keeps_ordinary_focus_changes_quiet() {
+		let now = Instant::now();
+		let mut recovery = ForegroundRecovery::new(now);
+		assert!(!recovery.observe(true, now + Duration::from_secs(1)));
+		assert!(!recovery.observe(false, now + Duration::from_secs(2)));
+		assert!(!recovery.observe(true, now + Duration::from_secs(3)));
+		assert!(recovery.observe(true, now + Duration::from_secs(33)));
+		assert!(!recovery.observe(true, now + Duration::from_secs(34)));
+		assert!(!recovery.observe(false, now + Duration::from_secs(100)));
+		assert!(!recovery.observe(false, now + Duration::from_secs(101)));
+		assert!(recovery.observe(true, now + Duration::from_secs(102)));
+		assert!(!recovery.observe(true, now + Duration::from_secs(103)));
+		// A new account gets a fresh observation window, never the previous account's gap.
+		let mut next_account = ForegroundRecovery::new(now + Duration::from_secs(200));
+		assert!(!next_account.observe(true, now + Duration::from_secs(201)));
+	}
 	#[tokio::test]
 	async fn administrative_and_community_mutations_cannot_overlap() {
 		let (release, held) = tokio::sync::oneshot::channel::<()>();

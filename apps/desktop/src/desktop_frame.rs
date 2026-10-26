@@ -33,6 +33,11 @@ impl Desktop {
 		self.messaging.sync_reading_zoom(ctx);
 		self.poll(ctx);
 		if let Some(connection) = &self.connection {
+			let focused =
+				ctx.input(|input| input.focused && input.viewport().minimized != Some(true));
+			connection.observe_foreground(focused, std::time::Instant::now());
+		}
+		if let Some(connection) = &self.connection {
 			connection.sync_admin_reads(&self.state);
 		}
 		let preference_now = std::time::Instant::now();

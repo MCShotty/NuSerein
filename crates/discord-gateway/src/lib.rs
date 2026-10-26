@@ -2,6 +2,9 @@
 mod activity;
 mod channel_events;
 mod compression;
+mod connection_diagnostics;
+mod outgoing;
+pub use connection_diagnostics::{ConnectionDiagnostics, ConnectionReason};
 mod interactions;
 #[cfg(test)]
 mod login_tests;
@@ -19,11 +22,11 @@ use client_core::{
 };
 pub use discord_protocol::activity_sessions::Observation as ActivityObservation;
 use discord_protocol::*;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use model::{Freshness, Id, Member, MemberList};
 use std::{
 	collections::BTreeMap,
-	sync::Arc,
+	sync::{Arc, Mutex},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -176,8 +179,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 #[derive(Default)]
 struct Heartbeat {
 	awaiting_since: Option<Instant>,
+	last_ack: Option<Instant>,
 }
 impl Heartbeat {
+	#[cfg(test)]
 	fn tick(&mut self, now: Instant, interval: Duration) -> Result<(), Failure> {
 		if self
 			.awaiting_since
@@ -188,10 +193,18 @@ impl Heartbeat {
 		self.sent(now);
 		Ok(())
 	}
+	fn expired(&self, now: Instant, interval: Duration) -> bool {
+		self.awaiting_since
+			.is_some_and(|sent| now.saturating_duration_since(sent) >= interval)
+	}
 	fn sent(&mut self, now: Instant) {
+		if self.last_ack.is_some_and(|ack| ack >= now) {
+			return;
+		}
 		self.awaiting_since.get_or_insert(now);
 	}
 	fn ack(&mut self) {
+		self.last_ack = Some(Instant::now());
 		self.awaiting_since = None;
 	}
 }
@@ -1100,6 +1113,44 @@ pub async fn run_with_activity_recovery(
 	)
 	.await
 }
+/// As recovery, with one account-owned bounded diagnostic history.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub async fn run_with_activity_recovery_diagnostics(
+	secret: Arc<SessionSecret>,
+	initial_url: String,
+	subscriptions: watch::Receiver<Option<MemberSubscription>>,
+	controls: mpsc::Receiver<client_core::voice::Command>,
+	reconnect: Arc<Notify>,
+	activity: (
+		watch::Receiver<Option<discord_protocol::rpc::Activity>>,
+		watch::Receiver<model::OwnPresence>,
+		watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
+		watch::Receiver<Option<discord_protocol::spotify::Activity>>,
+	),
+	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
+	emit: impl Fn(Event) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+	run_observed(
+		secret,
+		initial_url,
+		subscriptions,
+		controls,
+		Some(ActivityInput {
+			receiver: activity.0,
+			own_presence: activity.1,
+			member_queries: activity.2,
+			spotify: activity.3,
+			observe: &observe,
+		}),
+		Some(&reconnect),
+		diagnostics,
+		emit,
+		#[cfg(test)]
+		None,
+	)
+	.await
+}
 struct ActivityInput<'a> {
 	spotify: watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	member_queries: watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
@@ -1133,13 +1184,98 @@ async fn run_inner(
 async fn run_recoverable(
 	secret: Arc<SessionSecret>,
 	initial_url: String,
-	mut subscriptions: watch::Receiver<Option<MemberSubscription>>,
-	mut voice_controls: mpsc::Receiver<client_core::voice::Command>,
+	subscriptions: watch::Receiver<Option<MemberSubscription>>,
+	voice_controls: mpsc::Receiver<client_core::voice::Command>,
 	activity: Option<ActivityInput<'_>>,
 	reconnect: Option<&Notify>,
 	emit: impl Fn(Event) -> Result<(), Failure>,
 	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
 ) -> Result<(), Failure> {
+	run_observed(
+		secret,
+		initial_url,
+		subscriptions,
+		voice_controls,
+		activity,
+		reconnect,
+		Arc::new(Mutex::new(ConnectionDiagnostics::default())),
+		emit,
+		#[cfg(test)]
+		test_endpoints,
+	)
+	.await
+}
+#[allow(clippy::too_many_arguments)]
+async fn run_observed(
+	secret: Arc<SessionSecret>,
+	initial_url: String,
+	subscriptions: watch::Receiver<Option<MemberSubscription>>,
+	voice_controls: mpsc::Receiver<client_core::voice::Command>,
+	activity: Option<ActivityInput<'_>>,
+	reconnect: Option<&Notify>,
+	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	emit: impl Fn(Event) -> Result<(), Failure>,
+	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
+) -> Result<(), Failure> {
+	let result = run_observed_inner(
+		secret,
+		initial_url,
+		subscriptions,
+		voice_controls,
+		activity,
+		reconnect,
+		diagnostics.clone(),
+		emit,
+		#[cfg(test)]
+		test_endpoints,
+	)
+	.await;
+	if let Err(failure) = result
+		&& let Ok(mut history) = diagnostics.lock()
+	{
+		// An explicit close has already retained its numeric code. Other terminal
+		// errors can originate from any bounded decoder or downstream emitter.
+		if !history.ended_with_close() {
+			let reason = match failure {
+				Failure::Capacity | Failure::CapacityAt(_) => ConnectionReason::LocalCapacity,
+				Failure::Expired | Failure::InvalidCredential | Failure::Challenged => {
+					ConnectionReason::SessionEnded
+				}
+				Failure::Network => history
+					.latest_reason()
+					.filter(|reason| {
+						!matches!(
+							reason,
+							ConnectionReason::Connecting
+								| ConnectionReason::Connected
+								| ConnectionReason::Resumed
+						)
+					})
+					.unwrap_or(ConnectionReason::SocketRead),
+				_ => ConnectionReason::Protocol,
+			};
+			history.record(reason, None, 0, (0, 0));
+		}
+	}
+	result
+}
+#[allow(clippy::too_many_arguments)]
+async fn run_observed_inner(
+	secret: Arc<SessionSecret>,
+	initial_url: String,
+	mut subscriptions: watch::Receiver<Option<MemberSubscription>>,
+	mut voice_controls: mpsc::Receiver<client_core::voice::Command>,
+	activity: Option<ActivityInput<'_>>,
+	reconnect: Option<&Notify>,
+	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	emit: impl Fn(Event) -> Result<(), Failure>,
+	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
+) -> Result<(), Failure> {
+	let record = |reason, code, attempt, queue| {
+		if let Ok(mut history) = diagnostics.lock() {
+			history.record(reason, code, attempt, queue);
+		}
+	};
 	let initial_url = validated_url(&initial_url)?;
 	let activity_enabled = activity.is_some();
 	let mut activity_open = activity_enabled;
@@ -1184,12 +1320,19 @@ async fn run_recoverable(
 	let mut known_guilds = std::collections::BTreeSet::new();
 	let mut voice_open = true;
 	let mut skip_backoff = false;
+	let mut cooldown_until: Option<Instant> = None;
+	let mut immediate_reconnect_used = false;
+	let mut queries = member_search::Search::default();
 	// Initial login is bounded, but an established session must survive long outages.
 	while was_ready || attempt < 6 {
 		if attempt > 0 {
 			calls.disconnected();
 			while voice_controls.try_recv().is_ok() {}
 			emit(Event::Disconnected)?;
+			if let Some(until) = cooldown_until.take() {
+				tokio::time::sleep_until(until).await;
+				skip_backoff = true;
+			}
 			if !std::mem::take(&mut skip_backoff) {
 				let _ = recoverable_wait(
 					sleep(Duration::from_millis(
@@ -1200,6 +1343,11 @@ async fn run_recoverable(
 				.await;
 			}
 		}
+		// The imminent fresh dial already satisfies a queued recovery request.
+		// In particular, Disconnected can synchronously queue one while an
+		// immediate server-directed reconnect deliberately skips the backoff.
+		let _ = recovery_signal(reconnect).now_or_never();
+		record(ConnectionReason::Connecting, None, attempt, (0, 0));
 		let url = state.url.as_deref().unwrap_or(&initial_url);
 		// Compiled out of shipped builds. Tests replace only dialing, never URL validation.
 		#[cfg(test)]
@@ -1209,6 +1357,8 @@ async fn run_recoverable(
 				if url == initial_url { initial } else { resume }
 			},
 		);
+		// Application admission already coalesces optional messages; TCP_NODELAY
+		// keeps small heartbeat and Stop packets out of Nagle/delayed-ACK waits.
 		let config = WebSocketConfig::default()
 			.max_message_size(Some(MAX_GATEWAY_WIRE))
 			.max_frame_size(Some(MAX_GATEWAY_WIRE))
@@ -1217,7 +1367,7 @@ async fn run_recoverable(
 		let Some(connection) = recoverable_wait(
 			timeout(
 				Duration::from_secs(15),
-				connect_async_with_config(url, Some(config), false),
+				connect_async_with_config(url, Some(config), true),
 			),
 			if was_ready { reconnect } else { None },
 		)
@@ -1227,6 +1377,16 @@ async fn run_recoverable(
 			continue;
 		};
 		let Ok(Ok((mut socket, _))) = connection else {
+			record(
+				if connection.is_err() {
+					ConnectionReason::DialTimeout
+				} else {
+					ConnectionReason::DialFailed
+				},
+				None,
+				attempt,
+				(0, 0),
+			);
 			state.failed();
 			attempt = next_attempt(attempt, None);
 			continue;
@@ -1258,9 +1418,35 @@ async fn run_recoverable(
 			return Err(failure);
 		}
 		if let Ok(Ok(Frame::Close(Some(close)))) = &hello {
-			state.close(close.code.into())?;
+			let code = u16::from(close.code);
+			record(
+				if code == 4008 {
+					ConnectionReason::RateLimited
+				} else {
+					ConnectionReason::ServerClose
+				},
+				Some(code),
+				attempt,
+				(0, 0),
+			);
+			if code == 4008 {
+				cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+			}
+			state.close(code)?;
 		}
 		let Ok(Ok(Frame::Text(text))) = hello else {
+			if !matches!(hello, Ok(Ok(Frame::Close(_)))) {
+				record(
+					match hello {
+						Err(_) => ConnectionReason::HelloTimeout,
+						Ok(Err(Failure::Network)) => ConnectionReason::SocketRead,
+						_ => ConnectionReason::Protocol,
+					},
+					None,
+					attempt,
+					(0, 0),
+				);
+			}
 			state.failed();
 			attempt = next_attempt(attempt, None);
 			continue;
@@ -1286,14 +1472,22 @@ async fn run_recoverable(
 		};
 		let encoded = Zeroizing::new(handshake.to_string());
 		drop(handshake);
-		if !matches!(
-			timeout(
-				Duration::from_secs(5),
-				socket.send(Frame::Text(encoded.as_str().to_owned().into())),
-			)
-			.await,
-			Ok(Ok(()))
-		) {
+		let handshake_write = timeout(
+			Duration::from_secs(5),
+			socket.send(Frame::Text(encoded.as_str().to_owned().into())),
+		)
+		.await;
+		if !matches!(handshake_write, Ok(Ok(()))) {
+			record(
+				if handshake_write.is_err() {
+					ConnectionReason::HandshakeTimeout
+				} else {
+					ConnectionReason::SocketWrite
+				},
+				None,
+				attempt,
+				(0, 0),
+			);
 			state.failed();
 			attempt = next_attempt(attempt, None);
 			continue;
@@ -1304,6 +1498,14 @@ async fn run_recoverable(
 			Instant::now() + Duration::from_millis(jitter_ms(hello.heartbeat_interval)),
 			interval,
 		);
+		let (sink, mut incoming) = socket.split();
+		let mut writer = outgoing::Outgoing::start(sink, interval);
+		let mut written_heartbeat = None;
+		let mut written_subscription = None;
+		let mut probe_requested: Option<u64> = None;
+		let mut overdue_started: Option<Instant> = None;
+		let mut pending_frame = None;
+		let mut priority_reads = 0usize;
 		timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut ready_at: Option<Instant> = None;
 		let ready_deadline = Instant::now() + Duration::from_secs(30);
@@ -1314,14 +1516,76 @@ async fn run_recoverable(
 		let mut members_deadline: Option<Instant> = None;
 		let mut subscriptions_open = true;
 		let mut queries_open = true;
-		let mut queries = member_search::Search::default();
+		queries.reconnect(state.session.is_some());
+		let mut member_ticket = 0;
 		outgoing_activity.reconnect();
 		loop {
+			if writer.is_finished() {
+				record(
+					ConnectionReason::SocketWrite,
+					None,
+					attempt,
+					writer.occupancy(),
+				);
+				break;
+			}
+			// A paused task can wake with both its timeout and a buffered ACK ready.
+			// Drain local buffered traffic for at most100ms, yielding every32 frames.
+			// This allowance starts once and never extends the network deadlines.
+			let now = Instant::now();
+			let expiring =
+				heartbeat.expired(now, interval) || probe_deadline.is_some_and(|at| now >= at);
+			if !expiring {
+				priority_reads = 0;
+				overdue_started = None;
+			}
+			if expiring {
+				let first_overdue = overdue_started.is_none();
+				let started = *overdue_started.get_or_insert(now);
+				if first_overdue {
+					// Yield to the I/O driver before inspecting cached readiness.
+					// The finite32 polls also bound this path under a paused test clock.
+					for _ in 0..32 {
+						pending_frame = incoming.next().now_or_never();
+						if pending_frame.is_some() {
+							break;
+						}
+						tokio::task::yield_now().await;
+					}
+				}
+				if now.saturating_duration_since(started) < Duration::from_millis(100)
+					&& pending_frame.is_none()
+				{
+					if priority_reads >= 32 {
+						tokio::task::yield_now().await;
+						priority_reads = 0;
+					}
+					pending_frame = incoming.next().now_or_never();
+					if pending_frame.is_some() {
+						priority_reads += 1;
+					}
+				}
+				if pending_frame.is_none() {
+					let probe = probe_deadline.is_some_and(|at| now >= at);
+					record(
+						if probe {
+							ConnectionReason::ProbeTimeout
+						} else {
+							ConnectionReason::HeartbeatTimeout
+						},
+						None,
+						attempt,
+						writer.occupancy(),
+					);
+					skip_backoff = probe;
+					break;
+				}
+			}
 			if activity_enabled && last_observation != Some(outgoing_activity.observation) {
 				observe(outgoing_activity.observation)?;
 				last_observation = Some(outgoing_activity.observation);
 			}
-			if ready_at.is_some() && !sent_members {
+			if ready_at.is_some() && !sent_members && writer.optional_capacity(2) {
 				let subscription = subscriptions.borrow_and_update().clone();
 				if let Some(subscription) = subscription {
 					if subscription.list_id.len() > 32 {
@@ -1346,19 +1610,21 @@ async fn run_recoverable(
 					if !guild_open {
 						let typing = subscription_packet(subscription.guild, true, None, false);
 						if !matches!(
-							timeout(Duration::from_secs(5), socket.send(typing)).await,
+							timeout(Duration::from_secs(5), writer.send(typing)).await,
 							Ok(Ok(()))
 						) {
 							break;
 						}
 					}
 					if !matches!(
-						timeout(Duration::from_secs(5), socket.send(ranges)).await,
+						timeout(Duration::from_secs(5), writer.send(ranges)).await,
 						Ok(Ok(()))
 					) {
 						break;
 					}
-					member_diagnostics.record("subscription sent: member ranges");
+					member_ticket = writer.subscription_ticket();
+					members_deadline = None;
+					member_diagnostics.record("subscription queued: member ranges");
 					if let Some(active) = &mut active_members {
 						// Channels with the same list identity share the existing SYNC.
 						// A new viewport still has to move the stored span, or the next
@@ -1377,7 +1643,7 @@ async fn run_recoverable(
 							Freshness::Loading
 						};
 						if active.awaiting_sync {
-							members_deadline = Some(Instant::now() + Duration::from_secs(15));
+							members_deadline = None;
 						}
 						emit(Event::Members(active.snapshot(freshness)))?;
 					} else {
@@ -1389,8 +1655,8 @@ async fn run_recoverable(
 							}) {
 							active.wire_list = retired_lists.remove(index).2;
 						}
+						members_deadline = None;
 						active_members = Some(active);
-						members_deadline = Some(Instant::now() + Duration::from_secs(15));
 					}
 				}
 				if active_members.is_none() {
@@ -1409,6 +1675,25 @@ async fn run_recoverable(
 				None
 			};
 			tokio::select! {
+				changed=writer.progress.changed() => {
+					if changed.is_err() {record(ConnectionReason::SocketWrite,None,attempt,writer.occupancy());break;}
+					let progress=*writer.progress.borrow_and_update();
+					if progress.failed {break;}
+					if progress.heartbeat!=written_heartbeat {
+						written_heartbeat=progress.heartbeat;
+						if let Some((ticket,sent))=progress.heartbeat {
+							heartbeat.sent(sent);
+							if probe_requested.is_some_and(|requested|ticket>=requested) {
+								if heartbeat.awaiting_since.is_some() {probe_deadline=Some(sent+PROBE_TIMEOUT);} else {probe_requested=None;}
+							}
+						}
+					}
+					if progress.subscription!=written_subscription {
+						written_subscription=progress.subscription;
+						if let (Some((ticket,sent)),Some(active))=(progress.subscription,active_members.as_ref()) && ticket==member_ticket && active.awaiting_sync {members_deadline=Some(sent+active.retry_delay());}
+					}
+					for (guild,nonce,sent) in progress.query.into_iter().flatten() {queries.sent(guild,nonce,sent);}
+				}
 				() = recovery_signal(reconnect), if was_ready => {
 					// READY/RESUMED can reach the transport before the UI drains its events.
 					// Consume a late recovery request without dropping that healthy socket.
@@ -1418,16 +1703,15 @@ async fn run_recoverable(
 					}
 					// A network change can leave a ready socket silently dead until the next two
 					// heartbeats. Confirm it now with a heartbeat; a healthy socket acknowledges it.
-					if probe_deadline.is_none() {
+					if probe_deadline.is_none() && probe_requested.is_none() {
 						let packet = serde_json::json!({"op":1,"d":state.sequence}).to_string();
-						if !matches!(timeout(Duration::from_secs(5), socket.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { skip_backoff = true; break; }
-						heartbeat.sent(Instant::now());
-						probe_deadline = Some(Instant::now() + PROBE_TIMEOUT);
+						if !matches!(timeout(Duration::from_secs(5), writer.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { skip_backoff = true; break; }
+						probe_requested=Some(writer.heartbeat_ticket());
 					}
 				}
-				_ = tokio::time::sleep_until(probe_deadline.unwrap_or(ready_deadline)), if probe_deadline.is_some() => {
-					skip_backoff = true;
-					break;
+				_ = tokio::time::sleep_until(probe_deadline.unwrap_or(ready_deadline)), if probe_deadline.is_some() && pending_frame.is_none() => {
+					// Re-enter the bounded buffered-frame check before retiring this socket.
+					continue;
 				}
 				changed = own_presence.changed(), if presence_open => {
 					presence_open = changed.is_ok();
@@ -1441,18 +1725,18 @@ async fn run_recoverable(
 					activity_open = changed.is_ok();
 					outgoing_activity.update(&activity.borrow_and_update())?;
 				}
-				_ = tokio::time::sleep_until(activity_deadline.unwrap_or(ready_deadline)), if activity_deadline.is_some() => {
+				_ = tokio::time::sleep_until(activity_deadline.unwrap_or(ready_deadline)), if activity_deadline.is_some() && writer.optional_capacity(1) => {
 					// Read the latest value even if a watch notification races the timer.
 					outgoing_activity.update_spotify(&spotify.borrow_and_update())?;
 					outgoing_activity.update(&activity.borrow_and_update())?;
 					outgoing_activity.update_presence(&own_presence.borrow_and_update())?;
 					if let Some(packet) = outgoing_activity.packet(Instant::now())
-						&& !matches!(timeout(Duration::from_secs(5), socket.send(packet)).await, Ok(Ok(()))) { break; }
+						&& !matches!(timeout(Duration::from_secs(5), writer.send(packet)).await, Ok(Ok(()))) { break; }
 				}
 				_=tokio::time::sleep_until(direct_presence.deadline.unwrap_or(ready_deadline)), if direct_presence.deadline.is_some() && ready_at.is_some() => {
 					if let Some(event)=direct_presence.take() { emit(event)?; }
 				}
-				command=voice_controls.recv(), if voice_open && ready_at.is_some() => {
+				command=voice_controls.recv(), if voice_open && ready_at.is_some() && writer.control_capacity() => {
 					let Some(command)=command else {voice_open=false;continue;};
 					if let client_core::voice::Command::ConfirmSession {channel,request,revision}=command {
 						if let Some(event)=calls.confirm_session(channel,request,revision) {emit(event)?;}
@@ -1478,19 +1762,19 @@ async fn run_recoverable(
 						emit(Event::Voice(client_core::voice::Event::Departed { channel, request }))?;
 					}
 					if let Some(channel)=connect && let Some(packet)=calls.packet(client_core::voice::Command::Sync { channel })?
-						&& !matches!(timeout(Duration::from_secs(5),socket.send(packet)).await,Ok(Ok(()))) {break;}
-					if let Some(packet)=packet && !matches!(timeout(Duration::from_secs(5),socket.send(packet)).await,Ok(Ok(()))) {
+						&& !matches!(timeout(Duration::from_secs(5),writer.send(packet)).await,Ok(Ok(()))) {break;}
+					if let Some(packet)=packet && !matches!(timeout(Duration::from_secs(5),writer.send(packet)).await,Ok(Ok(()))) {
 						if matches!(command,client_core::voice::Command::SetMute{..}|client_core::voice::Command::SetCamera{..}) {
 							calls.state_send_failed();
 						}
 						break;
 					}
 					if let Some(channel)=connect && let Some(packet)=calls.channel_info_packet(channel)
-						&& !matches!(timeout(Duration::from_secs(5),socket.send(packet)).await,Ok(Ok(()))) {break;}
+						&& !matches!(timeout(Duration::from_secs(5),writer.send(packet)).await,Ok(Ok(()))) {break;}
 				}
 
-				_=tokio::time::sleep_until(calls.state_deadline.unwrap_or(ready_deadline)), if calls.state_deadline.is_some() && ready_at.is_some() => {
-					if let Some(packet)=calls.flush_state() && !matches!(timeout(Duration::from_secs(5),socket.send(packet)).await,Ok(Ok(()))) {
+				_=tokio::time::sleep_until(calls.state_deadline.unwrap_or(ready_deadline)), if calls.state_deadline.is_some() && ready_at.is_some() && writer.control_capacity() => {
+					if let Some(packet)=calls.flush_state() && !matches!(timeout(Duration::from_secs(5),writer.send(packet)).await,Ok(Ok(()))) {
 						calls.state_send_failed();
 						break;
 					}
@@ -1500,17 +1784,19 @@ async fn run_recoverable(
 				}
 				changed = member_queries.changed(), if queries_open && ready_at.is_some() => {
 					queries_open = changed.is_ok();
-					queries.update(&member_queries.borrow_and_update());
+					let changed_queries=queries.update(&member_queries.borrow_and_update());
+					writer.clear_queries(changed_queries);
+					queries.report_cooldowns(&emit)?;
 				}
-				_ = tokio::time::sleep_until(queries.deadline().unwrap_or(ready_deadline)), if queries.deadline().is_some() && ready_at.is_some() => {
-					if let Some(packet) = queries.tick(&emit)?
-						&& !matches!(timeout(Duration::from_secs(5), socket.send(packet)).await, Ok(Ok(()))) { break; }
+				_ = tokio::time::sleep_until(queries.deadline().unwrap_or(ready_deadline)), if queries.deadline().is_some() && ready_at.is_some() && writer.optional_capacity(1) => {
+					if let Some(query) = queries.tick(&emit)?
+						&& !matches!(timeout(Duration::from_secs(5), writer.send_query(query)).await, Ok(Ok(()))) { break; }
 				}
-				changed=subscriptions.changed(), if subscriptions_open && ready_at.is_some() => {
+				changed=subscriptions.changed(), if subscriptions_open && ready_at.is_some() && writer.optional_capacity(2) => {
 					subscriptions_open=changed.is_ok();
 					let next = subscriptions.borrow().clone();
 					let mut range_only = false;
-					let same_list = subscriptions_open && (members_deadline.is_some() || active_members.as_ref().is_some_and(|active| active.synced)) && active_members.as_ref().is_some_and(|active| {
+					let same_list = subscriptions_open && (active_members.as_ref().is_some_and(|active|active.awaiting_sync || active.synced)) && active_members.as_ref().is_some_and(|active| {
 						next.as_ref().is_some_and(|next| {
 							!next.thread && !active.subscription.thread && next.guild == active.subscription.guild && next.list_id == active.subscription.list_id
 						})
@@ -1520,9 +1806,8 @@ async fn run_recoverable(
 					{
 						let same_identity = next.channel == active.subscription.channel
 							&& next.request == active.subscription.request;
-						if same_identity && next.ranges == active.subscription.ranges {
-							continue;
-						}
+						if same_identity && next.ranges == active.subscription.ranges {continue;}
+						writer.clear_subscriptions();
 						if same_identity && next.ranges != active.subscription.ranges {
 							active.retarget_ranges(next.ranges.clone());
 							active.subscription.channel = next.channel;
@@ -1530,20 +1815,21 @@ async fn run_recoverable(
 							active.subscription.list_id = next.list_id.clone();
 							active.clear_presence();
 							if active.awaiting_sync {
-								members_deadline = Some(Instant::now() + Duration::from_secs(15));
+								members_deadline = None;
 							}
 							range_only = true;
 							sent_members = false;
 						}
 					}
 					if !same_list {
+						writer.clear_subscriptions();
 						if let Some(old)=active_members.take() {
 							if !old.subscription.thread {
 								retired_lists.retain(|(guild, id, _)| *guild != old.subscription.guild || *id != old.subscription.list_id);
 								if retired_lists.len() == RETIRED_LISTS { retired_lists.remove(0); }
 								retired_lists.push((old.subscription.guild, old.subscription.list_id.clone(), old.wire_list.clone()));
 							}
-							if !matches!(timeout(Duration::from_secs(5),socket.send(subscription_packet(old.subscription.guild,false,None,old.subscription.thread))).await,Ok(Ok(()))) {break;}
+							if !matches!(timeout(Duration::from_secs(5),writer.send(subscription_packet(old.subscription.guild,false,None,old.subscription.thread))).await,Ok(Ok(()))) {break;}
 						}
 						members_deadline=None;
 					}
@@ -1552,17 +1838,17 @@ async fn run_recoverable(
 						sent_members = !subscriptions_open;
 					}
 				}
-				_=tokio::time::sleep_until(members_deadline.unwrap_or(ready_deadline)), if members_deadline.is_some() => {
+				_=tokio::time::sleep_until(members_deadline.unwrap_or(ready_deadline)), if members_deadline.is_some() && writer.optional_capacity(3) => {
 					member_diagnostics.record("timeout: resetting stalled member subscription");
 					if let Some(active) = &active_members
-						&& !matches!(timeout(Duration::from_secs(5), socket.send(subscription_packet(active.subscription.guild, true, None, active.subscription.thread))).await, Ok(Ok(()))) { break; }
-					let delay = active_members.as_mut().map_or(Duration::from_secs(15), |active| {
+						&& !matches!(timeout(Duration::from_secs(5), writer.send(subscription_packet(active.subscription.guild, true, None, active.subscription.thread))).await, Ok(Ok(()))) { break; }
+					if let Some(active)=active_members.as_mut() {
 						active.awaiting_sync = true;
 						active.retries = active.retries.saturating_add(1);
-						active.retry_delay()
-					});
+						}
+
 					sent_members = false;
-					members_deadline=Some(Instant::now()+delay);
+					members_deadline=None;
 				}
 				_=tokio::time::sleep_until(presence_deadline.unwrap_or(ready_deadline)), if presence_deadline.is_some() => {
 					if let Some(active)=&mut active_members {
@@ -1570,19 +1856,20 @@ async fn run_recoverable(
 						else if let Some(event)=active.take_presence() {emit(event)?;}
 					}
 				}
-				_ = tokio::time::sleep_until(ready_deadline), if ready_at.is_none() => break,
-				_ = timer.tick() => {
-					if heartbeat.tick(Instant::now(), interval).is_err() { break; }
+				_ = tokio::time::sleep_until(ready_deadline), if ready_at.is_none() => { record(ConnectionReason::ReadyTimeout,None,attempt,writer.occupancy()); break; },
+				_ = timer.tick(), if pending_frame.is_none() => {
+					if heartbeat.expired(Instant::now(), interval) {continue;}
 					let packet = serde_json::json!({"op":1,"d":state.sequence}).to_string();
-					if !matches!(timeout(Duration::from_secs(5), socket.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { break; }
+					if !matches!(timeout(Duration::from_secs(5), writer.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { break; }
 				}
-				frame = socket.next() => {
+				frame = async {match pending_frame.take() {Some(frame)=>frame,None=>incoming.next().await}} => {
 					let frame = match frame {
 						Some(Ok(frame)) => match compression.frame(frame)? {
 							Some(frame) => Some(Ok(frame)),
 							None => continue,
 						},
 						Some(Err(error)) => {
+							record(ConnectionReason::SocketRead,None,attempt,writer.occupancy());
 							let failure = socket_failure(error);
 							if failure.ends_session() { return Err(failure); }
 							break;
@@ -1600,18 +1887,26 @@ async fn run_recoverable(
 							{ continue; }
 							if let Some(sequence) = packet.s { state.sequence = Some(sequence); }
 							match packet.op {
-								11 => { heartbeat.ack(); probe_deadline = None; }
+								11 => { heartbeat.ack(); if probe_deadline.is_some() {probe_deadline=None;probe_requested=None;} priority_reads=0;overdue_started=None; }
 								1 => {
 									let packet = serde_json::json!({"op":1,"d":state.sequence}).to_string();
-									if !matches!(timeout(Duration::from_secs(5), socket.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { break; }
-									heartbeat.sent(Instant::now());
+									if !matches!(timeout(Duration::from_secs(5), writer.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { break; }
 								}
-								7 => break,
+								7 => {
+									record(ConnectionReason::ServerReconnect, None, attempt, writer.occupancy());
+									if ready_at.is_some_and(|ready| ready.elapsed() >= Duration::from_secs(60)) {
+										immediate_reconnect_used = false;
+									}
+									skip_backoff = !immediate_reconnect_used;
+									immediate_reconnect_used = true;
+									break;
+								},
 								9 => {
+									record(ConnectionReason::InvalidSession,None,attempt,writer.occupancy());
 									let resumable: bool = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?;
 									if !resumable { state = ResumeState::default(); }
 									emit(Event::Disconnected)?;
-									sleep(Duration::from_millis(1000 + jitter_ms(4000))).await;
+									sleep(Duration::from_millis(1000 + jitter_ms(4000))).await; skip_backoff=true;
 									break;
 								}
 								0 => match packet.t.as_deref().unwrap_or("") {
@@ -1685,6 +1980,7 @@ async fn run_recoverable(
 										// A new session does not replay settings changed while disconnected.
 										if was_ready { emit(Event::AccountSettings { status: true, folders: true })?; }
 										was_ready = true;
+										immediate_reconnect_used=false;
 										emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: true, gates }))?;
 
 										let nicknames = ready.relationships.as_ref().map(|s| s.nicknames());
@@ -1704,7 +2000,20 @@ async fn run_recoverable(
 										}
 										if !participants.is_empty() { emit(Event::Voice(client_core::voice::Event::Snapshot { partial: false, guild: None, participants }))?; }
 										state.failures = 0;
+										record(ConnectionReason::Connected,None,attempt,writer.occupancy());
 										ready_at = Some(Instant::now());
+									}
+									"RATE_LIMITED" => {
+										#[derive(serde::Deserialize)]
+										struct Meta { guild_id: Option<Id>, nonce: Option<String> }
+										#[derive(serde::Deserialize)]
+										struct Limited { opcode: u8, retry_after: f64, meta: Meta }
+										if packet.d.get().len()<=4096 && let Ok(limited)=decode::<Limited>(packet.d.get().as_bytes()) && limited.retry_after.is_finite() && (0.0..=86400.0).contains(&limited.retry_after) {
+											let delay=Duration::from_secs_f64(limited.retry_after);
+											writer.cooldown(limited.opcode,limited.meta.guild_id,delay);
+											if limited.opcode==8 {queries.limited(limited.meta.guild_id,limited.meta.nonce.as_deref(),delay,&emit)?;}
+											record(ConnectionReason::RateLimited,None,attempt,writer.occupancy());
+										}
 									}
 									"GUILD_MEMBERS_CHUNK" => {
 										if let Some(event) = queries.chunk(packet.d.get().as_bytes()) { emit(event)?; }
@@ -1736,7 +2045,9 @@ async fn run_recoverable(
 										if !participants.is_empty() { emit(Event::Voice(client_core::voice::Event::Snapshot { partial: true, guild: None, participants }))?; }
 										calls.users.clear();
 									}
-									"RESUMED" => { emit(Event::Interaction(client_core::interactions::Event::Session(state.session.clone().ok_or(Failure::Protocol)?)))?; emit(Event::Resumed)?; state.failures = 0; ready_at = Some(Instant::now()); },
+									"RESUMED" => {
+										record(ConnectionReason::Resumed,None,attempt,writer.occupancy()); emit(Event::Interaction(client_core::interactions::Event::Session(state.session.clone().ok_or(Failure::Protocol)?)))?; emit(Event::Resumed)?; state.failures = 0;
+										ready_at = Some(Instant::now()); },
 									"GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE" | "GUILD_SCHEDULED_EVENT_EXCEPTION_DELETE" | "GUILD_SCHEDULED_EVENT_EXCEPTION_UPDATE" | "GUILD_SCHEDULED_EVENT_CREATE" | "GUILD_SCHEDULED_EVENT_UPDATE" | "GUILD_SCHEDULED_EVENT_DELETE" | "GUILD_SCHEDULED_EVENT_USER_ADD" | "GUILD_SCHEDULED_EVENT_USER_REMOVE" | "STAGE_INSTANCE_CREATE" | "STAGE_INSTANCE_UPDATE" | "STAGE_INSTANCE_DELETE" => {
 										#[derive(serde::Deserialize)] struct Notice { guild_id: Id, #[serde(default)] channel_id: Option<Id> }
 										if let Ok(notice)=decode::<Notice>(packet.d.get().as_bytes()) { emit(Event::CommunityChanged {guild:notice.guild_id, channel:notice.channel_id, stage_ended:packet.t.as_deref()==Some("STAGE_INSTANCE_DELETE")})?; }
@@ -2028,20 +2339,36 @@ async fn run_recoverable(
 						}
 						Some(Ok(Frame::Close(close))) => {
 							let code = close.map_or(1006, |f| u16::from(f.code));
+							record(if code==4008 {ConnectionReason::RateLimited}else{ConnectionReason::ServerClose},Some(code),attempt,writer.occupancy());
+							if code==4008 {cooldown_until=Some(Instant::now()+Duration::from_secs(60));}
 							state.close(code)?;
 							break;
 						}
-						Some(Ok(Frame::Ping(data))) => { if !matches!(timeout(Duration::from_secs(5), socket.send(Frame::Pong(data))).await, Ok(Ok(()))) { break; } }
+						Some(Ok(Frame::Ping(_))) => { /* Tungstenite queues and flushes its automatic Pong on the next read. */ }
 						Some(Ok(Frame::Pong(_))) => {},
 						Some(Ok(Frame::Binary(_))) => return Err(Failure::Protocol),
-						_ => break,
+						_ => {record(ConnectionReason::SocketRead,None,attempt,writer.occupancy());break;},
 					}
 				}
 			}
 		}
+		let progress = *writer.progress.borrow();
+		if progress.failed {
+			record(
+				if progress.capacity {
+					ConnectionReason::LocalCapacity
+				} else {
+					ConnectionReason::SocketWrite
+				},
+				None,
+				attempt,
+				writer.occupancy(),
+			);
+		}
 		if ready_at.is_none() && !skip_backoff {
 			state.failed();
 		}
+
 		attempt = next_attempt(attempt, ready_at.map(|ready| ready.elapsed()));
 	}
 	Err(Failure::Network)
@@ -3872,11 +4199,15 @@ mod member_tests {
 	                            (5,json!({"guild_id":"1","user":{"id":"3"},"status":"idle","activities":[{"type":4,"state":"Synthetic live update"}]})),
 	                            (6,json!({"guild_id":"1","user":{"id":"3"}})),
 	                        ] {socket.send(Frame::Text(json!({"op":0,"t":"PRESENCE_UPDATE","s":sequence,"d":data}).to_string().into())).await.unwrap();}
-	                    } else if !switched {
-	                        assert_eq!(subscription["typing"],true);assert_eq!(subscription["channels"],json!({"4":[[0,99]]}));switched=true;
-	                        // A shared list need not send another full SYNC on a channel switch.
 	                    } else if !scrolled {
-	                        assert_eq!(subscription["typing"],true);assert_eq!(subscription["channels"],json!({"4":[[100,199]]}));scrolled=true;
+                            assert_eq!(subscription["typing"],true);
+                            if subscription["channels"]==json!({"4":[[0,99]]}) && !switched {
+                                // The latest viewport may replace this intermediate queued
+                                // switch. Either way the final100..199 request and matching
+                                // service SYNC remain mandatory below.
+                                switched=true;continue;
+                            }
+                            assert_eq!(subscription["channels"],json!({"4":[[100,199]]}));switched=true;scrolled=true;
 	                        socket.send(Frame::Text(json!({"op":0,"t":"GUILD_MEMBER_LIST_UPDATE","s":7,"d":{"guild_id":"1","id":"everyone","member_count":150,"ops":[{"op":"SYNC","range":[100,199],"items":[{"member":{"user":{"id":"9","username":"Later"}}}]}]}}).to_string().into())).await.unwrap();
 	                    } else {panic!("unexpected member subscription after the scrolled range");}
 	                }
