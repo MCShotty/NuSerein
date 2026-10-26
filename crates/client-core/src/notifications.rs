@@ -298,9 +298,7 @@ impl State {
 		guild: Id,
 	) -> crate::server_actions::NotificationOptions {
 		let until = self.preference_until(guild, None);
-		let muted = self
-			.preference_bool(guild, None, "muted")
-			.map(|muted| muted && until.is_none_or(|until| until > State::permission_time()));
+		let muted = self.guild_notifications_muted(guild);
 		crate::server_actions::NotificationOptions {
 			level: self.preference_level(guild, None),
 			muted,
@@ -308,6 +306,14 @@ impl State {
 			suppress_everyone: self.preference_bool(guild, None, "everyone"),
 			suppress_roles: self.preference_bool(guild, None, "roles"),
 		}
+	}
+	fn guild_notifications_muted(&self, guild: Id) -> Option<bool> {
+		self.preference_bool(guild, None, "muted").map(|muted| {
+			muted
+				&& self
+					.preference_until(guild, None)
+					.is_none_or(|until| until > State::permission_time())
+		})
 	}
 	pub(crate) fn confirm_server_notifications(
 		&mut self,
@@ -383,7 +389,7 @@ impl State {
 		let Some(guild) = channel.guild else {
 			return false;
 		};
-		if self.server_notification_settings(guild).muted == Some(true) {
+		if self.guild_notifications_muted(guild) == Some(true) {
 			return true;
 		}
 		self.guild_channel_effectively_muted(channel.id) == Some(true)
@@ -796,11 +802,10 @@ impl State {
 			return false;
 		}
 		if let Some(guild) = channel.guild {
-			let options = self.server_notification_settings(guild);
-			if options.muted != Some(false) {
+			if self.guild_notifications_muted(guild) != Some(false) {
 				return false;
 			}
-			let mut level = options.level;
+			let mut level = self.preference_level(guild, None);
 			if level == Some(3) {
 				level = self
 					.guild(guild)
@@ -996,12 +1001,14 @@ impl State {
 		if direct || channel.guild.is_none() {
 			return true;
 		}
+		if !everyone && roles.is_empty() {
+			return false;
+		}
 		let Some(guild) = channel.guild else {
 			return false;
 		};
-		let setting = self.server_notification_settings(guild);
-		(everyone && setting.suppress_everyone == Some(false))
-			|| (setting.suppress_roles == Some(false)
+		(everyone && self.preference_bool(guild, None, "everyone") == Some(false))
+			|| (self.preference_bool(guild, None, "roles") == Some(false)
 				&& self
 					.permissions
 					.guilds
