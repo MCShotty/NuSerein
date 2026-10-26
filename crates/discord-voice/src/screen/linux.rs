@@ -1,6 +1,7 @@
 //! Linux ownership: one portal session and one bounded media pipeline, no recorder.
 use super::{
-	AudioChunk, EncodedFrame, Output, RequestSettings, ScreenEncoder, SourceId, audio_linux,
+	AudioChunk, AudioStatus, EncodedFrame, Output, RequestSettings, ScreenEncoder, SourceId,
+	audio_linux,
 	gstreamer::{self as capture, Capture},
 	portal_linux::Portal,
 	preview_frame,
@@ -19,6 +20,12 @@ pub(super) fn x11_session() -> bool {
 	std::env::var_os("XDG_SESSION_TYPE").is_some_and(|value| value == "x11")
 		&& std::env::var_os("WAYLAND_DISPLAY").is_none()
 		&& std::env::var_os("DISPLAY").is_some_and(|value| !value.is_empty())
+}
+
+/// ScreenCast grants video only. Only a proven monitor or explicit X11 desktop
+/// may enable the system mixer; an unknown selection never widens audio scope.
+fn system_audio_source(direct: bool, source_type: Option<u32>) -> bool {
+	direct || source_type == Some(1)
 }
 
 fn niri_desktop(desktop: &str) -> bool {
@@ -90,6 +97,7 @@ pub(super) fn run(
 	send: tokio::sync::mpsc::Sender<EncodedFrame>,
 	audio_send: Option<tokio::sync::mpsc::Sender<AudioChunk>>,
 	audio_epoch: Arc<AtomicU64>,
+	audio_status: Arc<Mutex<AudioStatus>>,
 	preview: Arc<Mutex<Option<image::RgbaImage>>>,
 	status: Arc<Mutex<&'static str>>,
 	preview_visible: Arc<AtomicBool>,
@@ -121,16 +129,37 @@ pub(super) fn run(
 			if stop.load(Ordering::Acquire) || send.is_closed() {
 				return Ok(());
 			}
-			audio = audio_send
-				.map(|send| {
-					audio_linux::Worker::start(
-						send,
+			if let Some(audio_send) = audio_send {
+				if system_audio_source(
+					direct,
+					portal.as_ref().and_then(|portal| portal.source_type),
+				) {
+					match audio_linux::Worker::start(
+						audio_send,
 						stop.clone(),
 						ready.clone(),
 						audio_epoch.clone(),
-					)
-				})
-				.transpose()?;
+						audio_status.clone(),
+					) {
+						Ok(worker) => audio = Some(worker),
+						Err(_) => super::set_audio_status(
+							&audio_status,
+							AudioStatus::Unavailable(
+								"Screen sharing without audio · system audio is unavailable",
+							),
+						),
+					}
+				} else {
+					// The portal does not disclose an authenticated window owner. Never use
+					// compositor PIDs or titles to guess which application's audio is approved.
+					super::set_audio_status(
+						&audio_status,
+						AudioStatus::Unavailable(
+							"Screen sharing without audio · application isolation is unavailable on this Linux source",
+						),
+					);
+				}
+			}
 			if stop.load(Ordering::Acquire) || send.is_closed() {
 				return Ok(());
 			}
@@ -217,6 +246,12 @@ pub(super) fn run(
 				{
 					audio = None;
 					audio_stopped = true;
+					super::set_audio_status(
+						&audio_status,
+						AudioStatus::Unavailable(
+							"Screen sharing without audio · system audio stopped",
+						),
+					);
 				}
 				if pipeline.failed() {
 					return Err(
@@ -574,6 +609,14 @@ pub(super) fn run(
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn application_or_unknown_portal_sources_never_enable_the_system_mixer() {
+		assert!(super::system_audio_source(true, None));
+		assert!(super::system_audio_source(false, Some(1)));
+		for kind in [None, Some(0), Some(2), Some(3), Some(u32::MAX)] {
+			assert!(!super::system_audio_source(false, kind));
+		}
+	}
 	#[test]
 	fn niri_detection_preserves_other_desktops() {
 		for desktop in ["niri", "Niri", "GNOME:niri"] {

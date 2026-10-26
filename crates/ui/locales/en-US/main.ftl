@@ -5586,3 +5586,9 @@ voice-video-presets-pending = Recheck hardware support to load the presets avail
 voice-video-presets-none = This encoder reports no named quality presets. Automatic keeps its default.
 
 voice-video-test-preset = Tested quality preset: { $preset }
+
+screen-audio-application = Share application audio
+screen-audio-application-description = Only audio from the selected application and its helper processes is shared. Other applications stay private.
+screen-audio-system-description = Share system sound, excluding Serein to prevent call echo.
+screen-audio-selected-source = Share audio
+screen-audio-selected-source-description = A shared window includes only its application's audio. A monitor includes system audio. If isolation is unavailable, video continues without audio.

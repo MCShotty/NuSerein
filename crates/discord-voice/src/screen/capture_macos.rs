@@ -5,7 +5,7 @@ use super::{
 	MAX_FRAME_HEIGHT, MAX_FRAME_WIDTH, MAX_RAW_BYTES, MAX_SOURCE_HEIGHT, MAX_SOURCE_WIDTH,
 	MAX_SOURCES, bounded_name,
 };
-use crate::screen::{RawFrame, RequestSettings, Source, SourceId};
+use crate::screen::{AudioStatus, RawFrame, RequestSettings, Source, SourceId, set_audio_status};
 use screencapturekit::{
 	cm::{CMSampleBufferExt, CMSampleBufferSCExt},
 	content_sharing_picker::{
@@ -17,7 +17,7 @@ use screencapturekit::{
 	stream::delegate_trait::SCStreamDelegateTrait,
 };
 use std::sync::{
-	Arc,
+	Arc, Mutex,
 	atomic::{AtomicBool, Ordering},
 	mpsc::{self, SyncSender},
 };
@@ -210,16 +210,40 @@ struct AudioHandler {
 	cancel: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	audio_epoch: Arc<std::sync::atomic::AtomicU64>,
+	/// Immutable for this SCStream registration; buffered native samples keep their origin.
+	epoch: u64,
+}
+
+impl AudioHandler {
+	fn registered(&self) -> Self {
+		Self {
+			epoch: self.audio_epoch.load(Ordering::Acquire),
+			..self.clone()
+		}
+	}
+	fn accepts_audio(&self) -> bool {
+		!self.stop.load(Ordering::Acquire)
+			&& !self.cancel.load(Ordering::Acquire)
+			&& self.ready.load(Ordering::Acquire)
+			&& self.epoch == self.audio_epoch.load(Ordering::Acquire)
+	}
+	fn enqueue(&self, samples: Vec<f32>) {
+		if self.accepts_audio()
+			&& !samples.is_empty()
+			&& samples.len() <= crate::screen::MAX_AUDIO_SAMPLES
+			&& samples.len().is_multiple_of(2)
+		{
+			let _ = self.audio.try_send(crate::screen::AudioChunk {
+				samples,
+				epoch: self.epoch,
+			});
+		}
+	}
 }
 
 impl SCStreamOutputTrait for AudioHandler {
 	fn did_output_sample_buffer(&self, sample: CMSampleBuffer, kind: SCStreamOutputType) {
-		let epoch = self.audio_epoch.load(Ordering::Acquire);
-		if kind != SCStreamOutputType::Audio
-			|| self.stop.load(Ordering::Acquire)
-			|| self.cancel.load(Ordering::Acquire)
-			|| !self.ready.load(Ordering::Acquire)
-			|| self.audio.capacity() == 0
+		if kind != SCStreamOutputType::Audio || !self.accepts_audio() || self.audio.capacity() == 0
 		{
 			return;
 		}
@@ -273,16 +297,9 @@ impl SCStreamOutputTrait for AudioHandler {
 		if interleaved.is_empty() || !interleaved.len().is_multiple_of(2) {
 			return;
 		}
-		// A full queue drops audio rather than blocking the capture callback.
-		if self.ready.load(Ordering::Acquire)
-			&& !self.stop.load(Ordering::Acquire)
-			&& !self.cancel.load(Ordering::Acquire)
-		{
-			let _ = self.audio.try_send(crate::screen::AudioChunk {
-				samples: interleaved,
-				epoch,
-			});
-		}
+		// Recheck the immutable registration epoch after conversion too. A full queue
+		// drops audio rather than blocking the capture callback.
+		self.enqueue(interleaved);
 	}
 }
 
@@ -418,15 +435,68 @@ fn content_pixels(
 
 struct Delegate {
 	stop: Arc<AtomicBool>,
+	audio_failed: Arc<AtomicBool>,
 	// Starting, active, failed. A rejected HDR start must not cancel the SDR retry.
 	state: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl SCStreamDelegateTrait for Delegate {
-	fn did_stop_with_error(&self, _error: screencapturekit::error::SCError) {
-		if self.state.swap(2, Ordering::AcqRel) == 1 {
+	fn did_stop_with_error(&self, error: screencapturekit::error::SCError) {
+		let audio_failure = audio_error(&error);
+		if audio_failure {
+			self.audio_failed.store(true, Ordering::Release);
+		}
+		if self.state.swap(2, Ordering::AcqRel) == 1 && !audio_failure {
 			self.stop.store(true, Ordering::Release);
 		}
+	}
+}
+
+const AUDIO_UNAVAILABLE: &str = "Screen sharing without audio · audio capture is unavailable";
+fn audio_error(error: &screencapturekit::error::SCError) -> bool {
+	use screencapturekit::error::SCStreamErrorCode;
+	matches!(
+		error.stream_error_code(),
+		Some(
+			SCStreamErrorCode::FailedToStartAudioCapture
+				| SCStreamErrorCode::FailedToStopAudioCapture
+		)
+	)
+}
+
+fn audio_scope(filter: &SCContentFilter) -> AudioStatus {
+	use screencapturekit::stream::content_filter::SCShareableContentStyle;
+	match filter.style() {
+		SCShareableContentStyle::Display => AudioStatus::System,
+		SCShareableContentStyle::Window => {
+			let windows = filter.included_windows();
+			if windows.len() == 1
+				&& windows[0].owning_application().is_some_and(|app| {
+					app.process_id() > 0 && app.process_id() as u32 != std::process::id()
+				}) {
+				AudioStatus::Application
+			} else {
+				AudioStatus::Unavailable(
+					"Screen sharing without audio · the selected application's audio cannot be isolated",
+				)
+			}
+		}
+		SCShareableContentStyle::Application => {
+			let applications = filter.included_applications();
+			if applications.len() == 1
+				&& applications[0].process_id() > 0
+				&& applications[0].process_id() as u32 != std::process::id()
+			{
+				AudioStatus::Application
+			} else {
+				AudioStatus::Unavailable(
+					"Screen sharing without audio · the selected application's audio cannot be isolated",
+				)
+			}
+		}
+		_ => AudioStatus::Unavailable(
+			"Screen sharing without audio · the selected audio source is unknown",
+		),
 	}
 }
 
@@ -468,11 +538,24 @@ pub(crate) struct Capture {
 	config: SCStreamConfiguration,
 	handler: Handler,
 	audio_handler: Option<AudioHandler>,
+	audio_status: Arc<Mutex<AudioStatus>>,
+	audio_failed: Arc<AtomicBool>,
 	_system_picker: PickerSession,
 }
 
 impl Capture {
 	pub(crate) fn refresh_dimensions(&mut self) -> Result<(), &'static str> {
+		if self.audio_failed.swap(false, Ordering::AcqRel) && self.audio_handler.is_some() {
+			let _ = self.stream.stop_capture();
+			self.disable_audio();
+			self.stream = Self::start_stream(
+				&self.filter,
+				&self.config,
+				&self.handler,
+				None,
+				&self.audio_failed,
+			)?;
+		}
 		if std::time::Instant::now() < self.next_geometry {
 			return Ok(());
 		}
@@ -507,7 +590,22 @@ impl Capture {
 			&self.config,
 			&self.handler,
 			self.audio_handler.as_ref(),
-		)?;
+			&self.audio_failed,
+		)
+		.or_else(|error| {
+			if error != AUDIO_UNAVAILABLE || self.audio_handler.is_none() || self.handler.stopped()
+			{
+				return Err(error);
+			}
+			self.disable_audio();
+			Self::start_stream(
+				&self.filter,
+				&self.config,
+				&self.handler,
+				None,
+				&self.audio_failed,
+			)
+		})?;
 		Ok(())
 	}
 
@@ -519,6 +617,7 @@ impl Capture {
 		stop: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,
 		audio_epoch: Arc<std::sync::atomic::AtomicU64>,
+		audio_status: Arc<Mutex<AudioStatus>>,
 		teardown: Arc<AtomicBool>,
 		progress: &crate::screen::Progress,
 	) -> Result<Self, &'static str> {
@@ -574,6 +673,17 @@ impl Capture {
 			_ => return Err("The desktop screen picker is available only on Linux"),
 		};
 		drop(choosing);
+		let scope = if audio.is_some() {
+			audio_scope(&filter)
+		} else {
+			AudioStatus::Disabled
+		};
+		let audio = if scope.active() {
+			audio
+		} else {
+			set_audio_status(&audio_status, scope);
+			None
+		};
 		// Choosing is owner-paced and keeps the existing two-minute allowance.
 		// Native initialization gets a fresh deadline after permission/selection.
 		let _opening = progress.operation(crate::screen::NativeOperation::OpeningCapture);
@@ -608,7 +718,8 @@ impl Capture {
 			.with_scales_to_fit(true)
 			.with_shows_cursor(settings.cursor)
 			.with_fps(settings.fps)
-			.with_queue_depth(3);
+			.with_queue_depth(3)
+			.with_captures_audio(false);
 		if audio.is_some() {
 			// Serein's own playback is excluded so the call is not echoed into the stream.
 			config = config
@@ -637,14 +748,38 @@ impl Capture {
 			stop: stop.clone(),
 			cancel: teardown.clone(),
 		};
-		let audio_handler = audio.map(|audio| AudioHandler {
+		let mut audio_handler = audio.map(|audio| AudioHandler {
 			audio,
 			stop,
 			cancel: teardown,
 			ready,
+			epoch: audio_epoch.load(Ordering::Acquire),
 			audio_epoch,
 		});
-		let stream = match Self::start_stream(&filter, &config, &handler, audio_handler.as_ref()) {
+		let audio_failed = Arc::new(AtomicBool::new(false));
+		let first = Self::start_stream(
+			&filter,
+			&config,
+			&handler,
+			audio_handler.as_ref(),
+			&audio_failed,
+		);
+		// Audio-only initialization errors retry the same approved video configuration.
+		let first = if first
+			.as_ref()
+			.is_err_and(|error| *error == AUDIO_UNAVAILABLE)
+			&& audio_handler.is_some()
+			&& !handler.stopped()
+		{
+			audio_handler = None;
+			config.set_captures_audio(false);
+			audio_failed.store(false, Ordering::Release);
+			set_audio_status(&audio_status, AudioStatus::Unavailable(AUDIO_UNAVAILABLE));
+			Self::start_stream(&filter, &config, &handler, None, &audio_failed)
+		} else {
+			first
+		};
+		let stream = match first {
 			Ok(stream) => stream,
 			Err(_) if hdr && !handler.stopped() => {
 				// Keep the picker-approved filter and audio configuration on the SDR retry.
@@ -655,10 +790,31 @@ impl Capture {
 					.set_pixel_format(PixelFormat::BGRA)
 					.set_color_space_name("kCGColorSpaceSRGB");
 				handler.format = crate::screen::RawFormat::Bgra8;
-				Self::start_stream(&filter, &config, &handler, audio_handler.as_ref())?
+				match Self::start_stream(
+					&filter,
+					&config,
+					&handler,
+					audio_handler.as_ref(),
+					&audio_failed,
+				) {
+					Err(AUDIO_UNAVAILABLE) if audio_handler.is_some() && !handler.stopped() => {
+						audio_handler = None;
+						config.set_captures_audio(false);
+						audio_failed.store(false, Ordering::Release);
+						set_audio_status(
+							&audio_status,
+							AudioStatus::Unavailable(AUDIO_UNAVAILABLE),
+						);
+						Self::start_stream(&filter, &config, &handler, None, &audio_failed)?
+					}
+					result => result?,
+				}
 			}
 			Err(error) => return Err(error),
 		};
+		if audio_handler.is_some() {
+			set_audio_status(&audio_status, scope);
+		}
 		Ok(Self {
 			next_geometry: std::time::Instant::now(),
 			stream,
@@ -666,8 +822,20 @@ impl Capture {
 			config,
 			handler,
 			audio_handler,
+			audio_status,
+			audio_failed,
 			_system_picker: system_picker,
 		})
+	}
+
+	fn disable_audio(&mut self) {
+		self.audio_handler = None;
+		self.config.set_captures_audio(false);
+		self.audio_failed.store(false, Ordering::Release);
+		set_audio_status(
+			&self.audio_status,
+			AudioStatus::Unavailable(AUDIO_UNAVAILABLE),
+		);
 	}
 
 	fn start_stream(
@@ -675,6 +843,7 @@ impl Capture {
 		config: &SCStreamConfiguration,
 		handler: &Handler,
 		audio_handler: Option<&AudioHandler>,
+		audio_failed: &Arc<AtomicBool>,
 	) -> Result<SCStream, &'static str> {
 		if handler.stopped() {
 			return Err("Screen sharing cancelled");
@@ -685,6 +854,7 @@ impl Capture {
 			config,
 			Delegate {
 				stop: handler.stop.clone(),
+				audio_failed: audio_failed.clone(),
 				state: state.clone(),
 			},
 		);
@@ -696,23 +866,31 @@ impl Capture {
 		}
 		if let Some(audio_handler) = audio_handler
 			&& stream
-				.add_output_handler(audio_handler.clone(), SCStreamOutputType::Audio)
+				.add_output_handler(audio_handler.registered(), SCStreamOutputType::Audio)
 				.is_none()
 		{
-			return Err("System audio callback could not be registered");
+			return Err(AUDIO_UNAVAILABLE);
 		}
 		if handler.stopped() {
 			return Err("Screen sharing cancelled");
 		}
-		stream
-			.start_capture()
-			.map_err(|_| "Screen capture could not be started")?;
+		stream.start_capture().map_err(|error| {
+			if audio_error(&error) {
+				AUDIO_UNAVAILABLE
+			} else {
+				"Screen capture could not be started"
+			}
+		})?;
 		if state
 			.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
 			.is_err()
 		{
 			let _ = stream.stop_capture();
-			return Err("Screen capture could not be started");
+			return Err(if audio_failed.load(Ordering::Acquire) {
+				AUDIO_UNAVAILABLE
+			} else {
+				"Screen capture could not be started"
+			});
 		}
 		Ok(stream)
 	}
@@ -726,6 +904,69 @@ impl Drop for Capture {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn old_audio_registration_cannot_relabel_samples_when_security_resumes() {
+		use super::*;
+		let (send, mut receive) = tokio::sync::mpsc::channel(2);
+		let epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
+		let ready = Arc::new(AtomicBool::new(true));
+		let handler = AudioHandler {
+			audio: send,
+			stop: Arc::new(AtomicBool::new(false)),
+			cancel: Arc::new(AtomicBool::new(false)),
+			ready: ready.clone(),
+			audio_epoch: epoch.clone(),
+			epoch: 0,
+		};
+		let old = handler.registered();
+		old.enqueue(vec![0.25; 2]);
+		assert_eq!(receive.try_recv().unwrap().epoch, 0);
+		// Match transport ordering: READY can be re-enabled before capture's worker
+		// has recreated its SCStream, while old native buffers are still arriving.
+		ready.store(false, Ordering::Release);
+		epoch.store(1, Ordering::Release);
+		ready.store(true, Ordering::Release);
+		old.enqueue(vec![0.75; 2]);
+		assert!(receive.try_recv().is_err());
+		let refreshed = handler.registered();
+		refreshed.enqueue(vec![0.5; 2]);
+		let accepted = receive.try_recv().unwrap();
+		assert_eq!(accepted.epoch, 1);
+		assert_eq!(accepted.samples, vec![0.5; 2]);
+		// A second transition during conversion is checked again by enqueue.
+		epoch.store(2, Ordering::Release);
+		refreshed.enqueue(vec![0.5; 2]);
+		assert!(receive.try_recv().is_err());
+	}
+	#[test]
+	fn audio_failure_is_recoverable_without_stopping_video() {
+		use super::*;
+		use screencapturekit::error::{SCError, SCStreamErrorCode};
+		for state in [0, 1] {
+			let stop = Arc::new(AtomicBool::new(false));
+			let failed = Arc::new(AtomicBool::new(false));
+			let delegate = Delegate {
+				stop: stop.clone(),
+				audio_failed: failed.clone(),
+				state: Arc::new(std::sync::atomic::AtomicU8::new(state)),
+			};
+			delegate.did_stop_with_error(SCError::from_stream_error_code(
+				SCStreamErrorCode::FailedToStartAudioCapture,
+			));
+			assert!(failed.load(Ordering::Acquire));
+			assert!(!stop.load(Ordering::Acquire));
+		}
+		let stop = Arc::new(AtomicBool::new(false));
+		let delegate = Delegate {
+			stop: stop.clone(),
+			audio_failed: Arc::new(AtomicBool::new(false)),
+			state: Arc::new(std::sync::atomic::AtomicU8::new(1)),
+		};
+		delegate.did_stop_with_error(SCError::from_stream_error_code(
+			SCStreamErrorCode::FailedToStart,
+		));
+		assert!(stop.load(Ordering::Acquire));
+	}
 	use super::{await_picker, content_pixels};
 	use screencapturekit::cg::CGRect;
 	use std::sync::{atomic::AtomicBool, mpsc};

@@ -66,6 +66,7 @@ impl Capture {
 		_stop: Arc<AtomicBool>,
 		_ready: Arc<AtomicBool>,
 		_audio_epoch: Arc<std::sync::atomic::AtomicU64>,
+		_audio_status: Arc<std::sync::Mutex<crate::screen::AudioStatus>>,
 		_teardown: Arc<AtomicBool>,
 		_progress: &crate::screen::Progress,
 	) -> Result<Self, &'static str> {

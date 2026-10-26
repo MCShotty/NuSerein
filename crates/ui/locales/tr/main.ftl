@@ -5124,3 +5124,9 @@ menu-close = Kapat
 menu-back = Geri
 menu-open-discord = Discord’da Aç
 menu-application = Uygulama
+
+screen-audio-application = Uygulama sesini paylaş
+screen-audio-application-description = Yalnızca seçilen uygulamanın ve yardımcı işlemlerinin sesi paylaşılır. Diğer uygulamalar gizli kalır.
+screen-audio-system-description = Arama yankısını önlemek için Serein hariç sistem sesini paylaşın.
+screen-audio-selected-source = Sesi paylaş
+screen-audio-selected-source-description = Pencereler yalnızca uygulamalarının sesini, monitörler sistem sesini paylaşır. Yalıtım kullanılamıyorsa video sessiz olarak devam eder.

@@ -1,10 +1,27 @@
 //! Screen selection is a local intent; the desktop owns capture and stream credentials.
 use client_core::{
 	State,
-	screen::{RequestSettings, Resolution, Source, SourceId},
+	screen::{AudioScope, RequestSettings, Resolution, Source, SourceId},
 	voice::Phase,
 };
 use model::{Id, voice_settings::VideoResolution};
+
+fn audio_control(source: Option<SourceId>) -> (&'static str, &'static str) {
+	match source.map(SourceId::audio_scope) {
+		Some(AudioScope::Application) => (
+			"screen-audio-application",
+			"screen-audio-application-description",
+		),
+		Some(AudioScope::System) => (
+			"screen-body-share-system-audio",
+			"screen-audio-system-description",
+		),
+		Some(AudioScope::Pending) | None => (
+			"screen-audio-selected-source",
+			"screen-audio-selected-source-description",
+		),
+	}
+}
 
 pub enum Request {
 	Start(RequestSettings),
@@ -347,16 +364,8 @@ impl ScreenUi {
 		);
 		if self.supported {
 			ui.add_space(6.0);
-			crate::design::switch(
-				ui,
-				"screen-body-share-system-audio",
-				Some(if cfg!(target_os = "macos") {
-					"screen-body-send-what-your-mac-plays-along-with-the-screen-serein"
-				} else {
-					"screen-body-share-sound-from-other-apps-even-when-sharing-one-window"
-				}),
-				&mut self.audio,
-			);
+			let (label, description) = audio_control(self.selected);
+			crate::design::switch(ui, label, Some(description), &mut self.audio);
 		}
 		ui.add_space(4.0);
 		ui.add(
@@ -549,6 +558,23 @@ fn segment(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn audio_controls_describe_the_selected_source_without_widening_picker_scope() {
+		assert_eq!(
+			audio_control(Some(SourceId::Window(7))).0,
+			"screen-audio-application"
+		);
+		for source in [SourceId::Display(1), SourceId::X11Desktop] {
+			assert_eq!(
+				audio_control(Some(source)).0,
+				"screen-body-share-system-audio"
+			);
+		}
+		for source in [Some(SourceId::Portal), Some(SourceId::SystemPicker), None] {
+			assert_eq!(audio_control(source).0, "screen-audio-selected-source");
+		}
+	}
+
 	fn source(id: u64, size: Option<(u32, u32)>) -> Source {
 		Source {
 			id: SourceId::Display(id),

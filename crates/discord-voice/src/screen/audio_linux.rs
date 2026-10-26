@@ -1,7 +1,7 @@
 //! Isolated application playback through PulseAudio (including PipeWire-Pulse).
 //! The ScreenCast portal remote grants video only; this uses the existing Pulse socket.
 #![allow(unsafe_code)] // Narrow, worker-owned PulseAudio C boundary; no callbacks outlive their owners.
-use super::{AudioChunk, MAX_AUDIO_SAMPLES};
+use super::{AudioChunk, AudioStatus, MAX_AUDIO_SAMPLES};
 use libpulse_sys as pulse;
 use std::{
 	cell::Cell,
@@ -9,7 +9,7 @@ use std::{
 	ffi::{CStr, CString, c_void},
 	ptr::{null, null_mut},
 	sync::{
-		Arc,
+		Arc, Mutex,
 		atomic::{AtomicBool, AtomicU64, Ordering},
 	},
 	time::{Duration, Instant},
@@ -43,16 +43,34 @@ impl Worker {
 		stop: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,
 		epoch: Arc<AtomicU64>,
+		status: Arc<Mutex<AudioStatus>>,
 	) -> Result<Self, &'static str> {
+		let cancel = stop;
+		let stop = Arc::new(AtomicBool::new(false));
 		let worker_stop = stop.clone();
 		let thread = std::thread::Builder::new()
 			.name("screen-audio".into())
 			.spawn(move || {
 				// No device/server access for a cancelled share. All native work stays off video/UI.
-				if worker_stop.load(Ordering::Acquire) || send.is_closed() {
+				if worker_stop.load(Ordering::Acquire)
+					|| cancel.load(Ordering::Acquire)
+					|| send.is_closed()
+				{
 					return Ok(());
 				}
-				run(send, &worker_stop, &ready, &epoch)
+				let result = run(send, &worker_stop, &cancel, &ready, &epoch, &status);
+				if result.is_err()
+					&& !worker_stop.load(Ordering::Acquire)
+					&& !cancel.load(Ordering::Acquire)
+				{
+					super::set_audio_status(
+						&status,
+						AudioStatus::Unavailable(
+							"Screen sharing without audio · system audio is unavailable",
+						),
+					);
+				}
+				result
 			})
 			.map_err(|_| UNAVAILABLE)?;
 		Ok(Self {
@@ -71,7 +89,7 @@ impl Worker {
 impl Drop for Worker {
 	fn drop(&mut self) {
 		if let Some(thread) = self.thread.take() {
-			// `result` already joined a finished worker; retiring it must not stop video.
+			// This flag belongs only to audio; retiring it must not stop video.
 			self.stop.store(true, Ordering::Release);
 			let _ = thread.join();
 		}
@@ -633,8 +651,10 @@ impl Pending {
 fn run(
 	send: tokio::sync::mpsc::Sender<AudioChunk>,
 	stop: &AtomicBool,
+	cancel: &AtomicBool,
 	ready: &AtomicBool,
 	epoch: &AtomicU64,
+	status: &Mutex<AudioStatus>,
 ) -> Result<(), &'static str> {
 	let own = OwnApplication::current()?;
 	let mut metrics = crate::diagnostics::Metrics::new(crate::diagnostics::Scope::ScreenAudio);
@@ -648,7 +668,8 @@ fn run(
 	let started = Instant::now();
 	let mut next_listing = started;
 	let mut last_tick = started;
-	while !stop.load(Ordering::Acquire) && !send.is_closed() {
+	let mut initialized = false;
+	while !stop.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire) && !send.is_closed() {
 		// Advance a fixed cadence instead of accumulating scheduler delay. A late tick
 		// catches up one frame per dispatch; >=100 ms stalls discard queued samples.
 		let timeout_ms = if captures.iter().any(|capture| capture.verified) {
@@ -670,6 +691,10 @@ fn run(
 			Some(false) => return Err(UNAVAILABLE),
 			None if started.elapsed() > TIMEOUT => return Err(UNAVAILABLE),
 			None => continue,
+		}
+		if !initialized {
+			super::set_audio_status(status, AudioStatus::System);
+			initialized = true;
 		}
 		// An encryption transition, or a share that is no longer secure, must drop every
 		// captured sample: queued audio belongs to the generation that produced it.
@@ -789,6 +814,7 @@ fn run(
 		if ready.load(Ordering::Acquire)
 			&& epoch.load(Ordering::Acquire) == active_epoch
 			&& !stop.load(Ordering::Acquire)
+			&& !cancel.load(Ordering::Acquire)
 			&& let Ok(permit) = send.try_reserve()
 		{
 			permit.send(AudioChunk {
@@ -954,6 +980,26 @@ pub(super) fn check_isolation() {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn retiring_audio_does_not_cancel_the_capture_owner() {
+		let capture_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+		let audio_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+		let capture = capture_stop.clone();
+		let retired = audio_stop.clone();
+		let worker = super::Worker {
+			stop: audio_stop.clone(),
+			thread: Some(std::thread::spawn(move || {
+				while !retired.load(std::sync::atomic::Ordering::Acquire) {
+					assert!(!capture.load(std::sync::atomic::Ordering::Acquire));
+					std::thread::yield_now();
+				}
+				Ok(())
+			})),
+		};
+		drop(worker);
+		assert!(audio_stop.load(std::sync::atomic::Ordering::Acquire));
+		assert!(!capture_stop.load(std::sync::atomic::Ordering::Acquire));
+	}
 	#[test]
 	fn application_isolation_and_bounded_stereo_mix() {
 		super::check_isolation();

@@ -5141,3 +5141,9 @@ menu-close = Закрыть
 menu-back = Назад
 menu-open-discord = Открыть в Discord
 menu-application = Приложение
+
+screen-audio-application = Передавать звук приложения
+screen-audio-application-description = Передаётся только звук выбранного приложения и его вспомогательных процессов. Звук других приложений не передаётся.
+screen-audio-system-description = Передавать системный звук, кроме Serein, чтобы избежать эха звонка.
+screen-audio-selected-source = Передавать звук
+screen-audio-selected-source-description = Для окна передаётся только звук приложения, для монитора — системный звук. Если изоляция недоступна, видео передаётся без звука.
