@@ -590,11 +590,7 @@ impl Desktop {
 				events.push(failure);
 			}
 			terminal = *connection.terminal.borrow();
-			if terminal.is_some()
-				|| events.iter().any(|event| {
-					matches!(event.event, Event::Disconnected | Event::Resumed)
-						|| event.event.ready_navigation().is_some()
-				}) {
+			if terminal.is_some() {
 				connection.copy_diagnostics_to(&mut self.messaging);
 			}
 		}

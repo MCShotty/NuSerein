@@ -188,7 +188,9 @@ impl Connection {
 		let typing_gate = Mutex::new(TypingGate::default());
 		let reconnect = Arc::new(tokio::sync::Notify::new());
 		let gateway_reconnect = reconnect.clone();
-		let diagnostics = Arc::new(Mutex::new(discord_gateway::ConnectionDiagnostics::default()));
+		let diagnostics = discord_gateway::ConnectionDiagnostics::default();
+		let diagnostic_revision = diagnostics.revision();
+		let diagnostics = Arc::new(Mutex::new(diagnostics));
 		let gateway_diagnostics = diagnostics.clone();
 		let status_changed = Arc::new(tokio::sync::Notify::new());
 		let status_refresh = status_changed.clone();
@@ -1028,6 +1030,8 @@ impl Connection {
 			typing_channel,
 			reconnect,
 			diagnostics,
+			diagnostic_revision,
+			diagnostic_copied: std::cell::Cell::new(0),
 			foreground: std::cell::Cell::new(super::ForegroundRecovery::new(Instant::now())),
 			send_recovery_pending: std::cell::Cell::new(false),
 			task,

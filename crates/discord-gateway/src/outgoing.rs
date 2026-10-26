@@ -305,9 +305,12 @@ impl Outgoing {
 					if packet.meta.opcode == Some(37) {
 						p.subscription = Some((packet.serial, sent));
 					}
-					if let (Some(guild), Some(nonce)) = (packet.meta.guild, packet.meta.nonce) {
-						p.query.rotate_right(1);
-						p.query[0] = Some((guild, nonce, sent));
+					if let (Some(Key::Query(purpose)), Some(guild), Some(nonce)) =
+						(packet.meta.key, packet.meta.guild, packet.meta.nonce)
+					{
+						// Watch updates may coalesce before the reader observes them.
+						// One purpose must not erase the other purpose's send receipt.
+						p.query[purpose.slot()] = Some((guild, nonce, sent));
 					}
 				});
 			}
@@ -758,6 +761,50 @@ mod tests {
 			.collect();
 		assert_eq!(nonces, ["2", "3"]);
 		assert!(!writer.progress.borrow().failed);
+	}
+	#[tokio::test]
+	async fn unobserved_author_receipt_survives_multiple_composer_completions() {
+		use crate::member_search::{Purpose, Query};
+		let (sink, ready, _, frames) = fixture();
+		ready.store(true, Ordering::Release);
+		let writer = Outgoing::start(sink, Duration::from_secs(45));
+		for (completed, purpose, guild, nonce) in [
+			(1, Purpose::Authors, 2, 10),
+			(2, Purpose::Composer, 3, 11),
+			(3, Purpose::Composer, 4, 12),
+		] {
+			writer
+				.send_query(Query {
+					purpose,
+					frame: frame(serde_json::json!({"op":8,"d":{
+						"guild_id":guild.to_string(),"nonce":nonce.to_string(),"user_ids":["123456789"]
+					}})),
+				})
+				.await
+				.unwrap();
+			// Deliberately do not read/acknowledge the progress watch until all
+			// three actual sends complete. Different guilds have independent limits.
+			timeout(Duration::from_secs(1), async {
+				while frames.lock().unwrap().len() < completed {
+					tokio::task::yield_now().await;
+				}
+			})
+			.await
+			.unwrap();
+		}
+		let progress = *writer.progress.borrow();
+		assert_eq!(
+			progress.query[Purpose::Authors.slot()].map(|(guild, nonce, _)| (guild, nonce)),
+			Some((Id(2), 10))
+		);
+		assert_eq!(
+			progress.query[Purpose::Composer.slot()].map(|(guild, nonce, _)| (guild, nonce)),
+			Some((Id(4), 12))
+		);
+		let state = writer.state.lock().unwrap();
+		for guild in [2, 3, 4] {
+			assert!(state.cooldowns[&(8, Some(Id(guild)))] > Instant::now());
+		}
 	}
 	#[tokio::test]
 	async fn each_requested_heartbeat_has_its_own_send_ticket() {

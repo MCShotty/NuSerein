@@ -59,6 +59,8 @@ pub struct Connection {
 	typing_channel: Arc<AtomicU64>,
 	reconnect: Arc<tokio::sync::Notify>,
 	diagnostics: Arc<Mutex<discord_gateway::ConnectionDiagnostics>>,
+	diagnostic_revision: Arc<AtomicU64>,
+	diagnostic_copied: std::cell::Cell<u64>,
 	foreground: std::cell::Cell<ForegroundRecovery>,
 	send_recovery_pending: std::cell::Cell<bool>,
 	task: JoinHandle<()>,
@@ -127,9 +129,14 @@ impl Connection {
 		self.foreground.set(foreground);
 	}
 	pub fn copy_diagnostics_to(&self, messaging: &mut ui::MessagingUi) {
+		let revision = self.diagnostic_revision.load(Ordering::Acquire);
+		if revision == self.diagnostic_copied.get() {
+			return;
+		}
 		if let Ok(diagnostics) = self.diagnostics.lock() {
 			messaging.connection_diagnostics = diagnostics.summary();
 			messaging.connection_reason = diagnostics.last_reason();
+			self.diagnostic_copied.set(revision);
 		}
 	}
 	/// Coalesce explicit recovery requests without restarting REST writes or authentication.

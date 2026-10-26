@@ -1,5 +1,9 @@
 //! Fixed, session-only connection causes. Never retains remote text or account identities.
 use std::collections::VecDeque;
+use std::sync::{
+	Arc,
+	atomic::{AtomicU64, Ordering},
+};
 use tokio::time::Instant;
 
 const ENTRIES: usize = 32;
@@ -69,6 +73,7 @@ pub struct ConnectionDiagnostics {
 	started: Instant,
 	observations: VecDeque<Observation>,
 	last: Option<ConnectionReason>,
+	revision: Arc<AtomicU64>,
 }
 impl Default for ConnectionDiagnostics {
 	fn default() -> Self {
@@ -76,10 +81,15 @@ impl Default for ConnectionDiagnostics {
 			started: Instant::now(),
 			observations: VecDeque::with_capacity(ENTRIES),
 			last: None,
+			revision: Arc::new(AtomicU64::new(0)),
 		}
 	}
 }
 impl ConnectionDiagnostics {
+	/// Lets the host refresh its bounded UI copy without locking on unchanged frames.
+	pub fn revision(&self) -> Arc<AtomicU64> {
+		self.revision.clone()
+	}
 	pub(crate) fn latest_reason(&self) -> Option<ConnectionReason> {
 		self.observations
 			.back()
@@ -134,11 +144,27 @@ impl ConnectionDiagnostics {
 			packets: queue.0.min(usize::from(u8::MAX)) as u8,
 			bytes: queue.1.min(u32::MAX as usize) as u32,
 		});
+		self.revision.fetch_add(1, Ordering::Release);
 	}
 }
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn observations_notify_the_host_even_without_a_connection_state_event() {
+		let mut diagnostic = ConnectionDiagnostics::default();
+		let revision = diagnostic.revision();
+		assert_eq!(revision.load(Ordering::Acquire), 0);
+		diagnostic.record(ConnectionReason::RateLimited, None, 0, (2, 512));
+		assert_eq!(revision.load(Ordering::Acquire), 1);
+		assert!(
+			diagnostic
+				.summary()
+				.contains(ConnectionReason::RateLimited.label())
+		);
+		let _ = diagnostic.summary();
+		assert_eq!(revision.load(Ordering::Acquire), 1);
+	}
 	#[test]
 	fn causes_remain_bounded_and_success_does_not_hide_the_last_failure() {
 		let mut diagnostic = ConnectionDiagnostics::default();
