@@ -715,6 +715,22 @@ The native picker has not been opened during synthetic verification. Source dime
 
 Source discovery alone does not start streaming. Closing or minimizing a selected source may pause frames or end capture, according to the native API. Raw screen capture retains the 8K allocation envelope in either orientation: a maximum long edge of 7680, short edge of 4320, and 33,177,600 pixels (132,710,400 tightly packed BGRA bytes; high-bit-depth capture retains its existing separate byte budget). Changes to screen-server metadata, lost video permission, leaving the call and logout stop sharing. The sender never starts itself after reconnection.
 
+Video startup and progress are supervised independently of the native encoder.
+After secure output is enabled, a complete keyframe must enter the local UDP socket
+within 15 seconds. Locally dropped fragments retire the incomplete picture and
+request a fresh keyframe. Audio and heartbeats do not satisfy this video deadline;
+an idle source with no required picture does not count as a stall. Local transmission
+does not establish that another Discord client decoded the video.
+
+Stop cancels Windows capture, readback and system audio directly. A server stop
+request survives queue pressure and a same-call Gateway Resume; a different call
+or account cannot inherit it. Local resource retirement and server acknowledgement
+are tracked separately, preserving the original failure. AMF's native polling loop
+checks cancellation and has a 15-second blocked-call limit. A GPU-driver call already
+executing may still fail to return; its owner remains tracked rather than allowing
+repeated shares to accumulate abandoned capture/encoder resources. The interface
+identifies the stalled operation while release is pending.
+
 Windows capture requests border removal when the native `IsBorderRequired` API is
 supported (Windows 11), and keeps the system's default border on Windows 10 builds
 without it or if the capability check fails. This avoids an unsupported border

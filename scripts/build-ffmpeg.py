@@ -148,6 +148,181 @@ static int serein_amf_request_split(AMFComponent *encoder,
 #endif
 """
 
+AMF_CONTROL = """/* Private Serein AMF control and ownership; retained with the LGPL source patch. */
+#ifndef SEREIN_AMF_CONTROL_H
+#define SEREIN_AMF_CONTROL_H
+#include <stdint.h>
+#include <string.h>
+#include "libavutil/time.h"
+
+/* av_opt_set_bin copies this record. The caller retains opaque until close
+ * returns; the callback only reads cancellation and must never unwind. */
+typedef struct SereinAmfInterruptV1 {
+    uint32_t version, size;
+    int (*cancelled)(void *opaque);
+    void *opaque;
+} SereinAmfInterruptV1;
+
+static int serein_amf_interrupt(AmfContext *ctx, int waiting)
+{
+    SereinAmfInterruptV1 control;
+    int64_t now;
+    if (ctx->serein_interrupt_size) {
+        if (!ctx->serein_interrupt || (size_t)ctx->serein_interrupt_size != sizeof(control))
+            return AVERROR(EINVAL);
+        memcpy(&control, ctx->serein_interrupt, sizeof(control));
+        if (control.version != 1 || control.size != sizeof(control) ||
+            !control.cancelled || !control.opaque)
+            return AVERROR(EINVAL);
+        if (control.cancelled(control.opaque))
+            return AVERROR_EXIT;
+    }
+    if (!waiting)
+        return 0;
+    if (!ctx->delayed_surface && !ctx->delayed_drain && !ctx->eof &&
+        (!ctx->timestamp_list || !av_fifo_can_read(ctx->timestamp_list))) {
+        ctx->serein_progress_deadline = 0;
+        return 0;
+    }
+    now = av_gettime_relative();
+    if (!ctx->serein_progress_deadline)
+        ctx->serein_progress_deadline = now + 15000000;
+    return now >= ctx->serein_progress_deadline ? AVERROR(ETIMEDOUT) : 0;
+}
+
+/* An AMFBuffer containing a raw AVFrame pointer has no AVFrame destructor.
+ * Keep every clone owned here until output consumes it or Terminate returns.
+ * Forty-eight entries match the caller's existing in-flight picture limit. */
+static int serein_amf_retain(AmfContext *ctx, AVFrame *frame)
+{
+    for (unsigned i = 0; i < 48; ++i) {
+        if (!ctx->serein_retained[i]) {
+            ctx->serein_retained[i] = frame;
+            return 0;
+        }
+    }
+    return AVERROR(ENOSPC);
+}
+
+static int serein_amf_release(AmfContext *ctx, AVFrame *frame)
+{
+    if (!frame)
+        return AVERROR(EINVAL);
+    for (unsigned i = 0; i < 48; ++i) {
+        if (ctx->serein_retained[i] == frame) {
+            av_frame_free(&ctx->serein_retained[i]);
+            return 0;
+        }
+    }
+    return AVERROR(EINVAL);
+}
+
+static void serein_amf_release_all(AmfContext *ctx)
+{
+    for (unsigned i = 0; i < 48; ++i)
+        av_frame_free(&ctx->serein_retained[i]);
+    ctx->hwsurfaces_in_queue = 0;
+    ctx->serein_progress_deadline = 0;
+}
+#endif
+"""
+
+
+def amf_control_patches():
+    """Patch the actual AMF loop, preserving input acceptance and encoder quality."""
+    replacements = [
+        ("libavcodec/amfenc.h", "    int                 usage;\n",
+         "    uint8_t            *serein_interrupt;\n"
+         "    int                 serein_interrupt_size;\n"
+         "    int64_t             serein_progress_deadline;\n"
+         "    AVFrame            *serein_retained[48];\n"
+         "    int                 usage;\n"),
+        ("libavcodec/amfenc.c", '#include "amfenc.h"\n',
+         '#include "amfenc.h"\n#include "serein_amf_control.h"\n'),
+        ("libavcodec/amfenc.c", "    if (ctx->context) {\n        ctx->context->pVtbl->Terminate(ctx->context);",
+         "    /* The driver no longer owns queued surfaces. Release clones even\n"
+         "     * when cancellation discarded their output or a submit failed. */\n"
+         "    serein_amf_release_all(ctx);\n\n"
+         "    if (ctx->context) {\n        ctx->context->pVtbl->Terminate(ctx->context);"),
+        ("libavcodec/amfenc.c", "static AMFBuffer *amf_create_buffer_with_frame_ref(const AVFrame *frame, AMFContext *context)",
+         "static AMFBuffer *amf_create_buffer_with_frame_ref(const AVFrame *frame, AmfContext *ctx)"),
+        ("libavcodec/amfenc.c", "    res = context->pVtbl->AllocBuffer(context, AMF_MEMORY_HOST, sizeof(frame_ref), &frame_ref_storage_buffer);",
+         "    AMFContext *context = ctx->context;\n"
+         "    res = context->pVtbl->AllocBuffer(context, AMF_MEMORY_HOST, sizeof(frame_ref), &frame_ref_storage_buffer);"),
+        ("libavcodec/amfenc.c", "        if (frame_ref) {\n            memcpy(frame_ref_storage_buffer->pVtbl->GetNative(frame_ref_storage_buffer), &frame_ref, sizeof(frame_ref));",
+         "        if (frame_ref && serein_amf_retain(ctx, frame_ref) == 0) {\n"
+         "            memcpy(frame_ref_storage_buffer->pVtbl->GetNative(frame_ref_storage_buffer), &frame_ref, sizeof(frame_ref));"),
+        ("libavcodec/amfenc.c", "        } else {\n            frame_ref_storage_buffer->pVtbl->Release(frame_ref_storage_buffer);\n            frame_ref_storage_buffer = NULL;",
+         "        } else {\n            av_frame_free(&frame_ref);\n"
+         "            frame_ref_storage_buffer->pVtbl->Release(frame_ref_storage_buffer);\n            frame_ref_storage_buffer = NULL;"),
+        ("libavcodec/amfenc.c", "static void amf_release_buffer_with_frame_ref(AMFBuffer *frame_ref_storage_buffer)\n{\n    AVFrame *frame_ref;\n    memcpy(&frame_ref, frame_ref_storage_buffer->pVtbl->GetNative(frame_ref_storage_buffer), sizeof(frame_ref));\n    av_frame_free(&frame_ref);\n    frame_ref_storage_buffer->pVtbl->Release(frame_ref_storage_buffer);\n}",
+         "static int amf_release_buffer_with_frame_ref(AmfContext *ctx, AMFBuffer *frame_ref_storage_buffer)\n"
+         "{\n    AVFrame *frame_ref = NULL;\n    int ret = AVERROR(EINVAL);\n"
+         "    if (frame_ref_storage_buffer->pVtbl->GetSize(frame_ref_storage_buffer) == sizeof(frame_ref) &&\n"
+         "        frame_ref_storage_buffer->pVtbl->GetNative(frame_ref_storage_buffer)) {\n"
+         "        memcpy(&frame_ref, frame_ref_storage_buffer->pVtbl->GetNative(frame_ref_storage_buffer), sizeof(frame_ref));\n"
+         "        ret = serein_amf_release(ctx, frame_ref);\n    }\n"
+         "    frame_ref_storage_buffer->pVtbl->Release(frame_ref_storage_buffer);\n    return ret;\n}"),
+        ("libavcodec/amfenc.c", "    if (!ctx->encoder)\n        return AVERROR(EINVAL);\n",
+         "    if (!ctx->encoder)\n        return AVERROR(EINVAL);\n"
+         "    if ((ret = serein_amf_interrupt(ctx, 0)) < 0)\n        return ret;\n"
+         "    /* Bound this native call, not time spent idle outside FFmpeg.\n"
+         "     * The caller separately bounds an outstanding fresh picture. */\n"
+         "    ctx->serein_progress_deadline = 0;\n"),
+        ("libavcodec/amfenc.c", "int ff_amf_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)\n",
+         "static int serein_amf_attach_frame(AmfContext *ctx, AMFSurface *surface, const AVFrame *frame)\n"
+         "{\n"
+         "    AMFBuffer *reference = amf_create_buffer_with_frame_ref(frame, ctx);\n"
+         "    if (!reference)\n        return AVERROR(ENOMEM);\n"
+         '    if (amf_set_property_buffer(surface, L"av_frame_ref", reference) != AMF_OK) {\n'
+         "        amf_release_buffer_with_frame_ref(ctx, reference);\n"
+         "        return AVERROR_UNKNOWN;\n    }\n"
+         "    ctx->hwsurfaces_in_queue++;\n"
+         "    reference->pVtbl->Release(reference);\n"
+         "    return 0;\n}\n\n"
+         "int ff_amf_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)\n"),
+        ("libavcodec/amfenc.c", '''            AMFBuffer *frame_ref_storage_buffer;
+
+            // input HW surfaces can be vertically aligned by 16; tell AMF the real size
+            surface->pVtbl->SetCrop(surface, 0, 0, frame->width, frame->height);
+
+            frame_ref_storage_buffer = amf_create_buffer_with_frame_ref(frame, ctx->context);
+            AMF_RETURN_IF_FALSE(ctx, frame_ref_storage_buffer != NULL, AVERROR(ENOMEM), "create_buffer_with_frame_ref() returned NULL\\n");
+
+            res = amf_set_property_buffer(surface, L"av_frame_ref", frame_ref_storage_buffer);
+            AMF_RETURN_IF_FALSE(ctx, res == AMF_OK, AVERROR_UNKNOWN, "SetProperty failed for \\"av_frame_ref\\" with error %d\\n", res);
+            ctx->hwsurfaces_in_queue++;
+            frame_ref_storage_buffer->pVtbl->Release(frame_ref_storage_buffer);''',
+         '''            // input HW surfaces can be vertically aligned by 16; tell AMF the real size
+            surface->pVtbl->SetCrop(surface, 0, 0, frame->width, frame->height);
+            ret = serein_amf_attach_frame(ctx, surface, frame);
+            if (ret < 0) {
+                surface->pVtbl->Release(surface);
+                return ret;
+            }'''),
+        ("libavcodec/amfenc.c", "        block_and_wait = 0;\n        // poll data\n",
+         "        block_and_wait = 0;\n"
+         "        if ((ret = serein_amf_interrupt(ctx, 1)) < 0)\n            return ret;\n"
+         "        // poll data\n"),
+        ("libavcodec/amfenc.c", "                    amf_release_buffer_with_frame_ref(frame_ref_storage_buffer);\n                    ctx->hwsurfaces_in_queue--;",
+         "                    int released = amf_release_buffer_with_frame_ref(ctx, frame_ref_storage_buffer);\n"
+         "                    if (released < 0) { data->pVtbl->Release(data); return released; }\n"
+         "                    ctx->hwsurfaces_in_queue--;"),
+        ("libavcodec/amfenc.c", '                AMF_RETURN_IF_FALSE(ctx, ret >= 0, ret, "amf_copy_buffer() failed with error %d\\n", ret);',
+         '                AMF_RETURN_IF_FALSE(ctx, ret >= 0, ret, "amf_copy_buffer() failed with error %d\\n", ret);\n'
+         '                /* Only a real encoded packet resets the no-progress budget. */\n'
+         '                ctx->serein_progress_deadline = 0;'),
+        ("libavcodec/amfenc.c", "                block_and_wait = 1;\n                av_usleep(1000);",
+         "                block_and_wait = 1;\n"
+         "                if ((ret = serein_amf_interrupt(ctx, 1)) < 0)\n                    return ret;\n"
+         "                av_usleep(1000);"),
+    ]
+    for codec in ("h264", "hevc", "av1"):
+        replacements.append((f"libavcodec/amfenc_{codec}.c", "static const AVOption options[] = {\n",
+            "static const AVOption options[] = {\n"
+            '    { "serein_interrupt", "Private versioned cancellation callback", OFFSET(serein_interrupt), AV_OPT_TYPE_BINARY, {.str = NULL}, 0, 0, VE },\n'))
+    return replacements
+
 
 def run(*args, cwd=None, env=None):
     subprocess.run([str(arg) for arg in args], cwd=cwd, env=env, check=True)
@@ -567,6 +742,7 @@ def patch_ffmpeg(tree):
          "        return AVERROR(ENOSYS);\n"
          "    dump_video_av1_param(avctx, q, ext_buffers);\n"),
     ]
+    replacements += amf_control_patches()
     for relative, old, new in replacements:
         path = tree / relative
         before = path.read_text()
@@ -584,6 +760,7 @@ def patch_ffmpeg(tree):
     for relative, contents in [
         ("libavcodec/serein_qsv_feature_validation.h", QSV_FEATURE_VALIDATION),
         ("libavcodec/serein_amf_split_encoding.h", AMF_SPLIT_ENCODING),
+        ("libavcodec/serein_amf_control.h", AMF_CONTROL),
     ]:
         if (tree / relative).exists():
             raise ValueError(f"FFmpeg generated header already exists: {relative}")

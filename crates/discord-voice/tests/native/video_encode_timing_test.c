@@ -16,8 +16,10 @@ int fixture_receive(AVCodecContext *codec, AVPacket *packet);
 #include <assert.h>
 
 static int submitted, emitted, never_output;
+static int send_status, receive_status, send_calls, receive_calls;
 static const int64_t decode_order[] = {0, 3, 1, 2};
 static int mock_open, opens, frees, bindings, reject_all;
+static int *cancel_on_bind, *cancel_on_open;
 static const SereinVideoAdapter *bound_adapter;
 
 int fixture_open(AVCodecContext *codec, const AVCodec *implementation, AVDictionary **options)
@@ -25,6 +27,7 @@ int fixture_open(AVCodecContext *codec, const AVCodec *implementation, AVDiction
     if (!mock_open)
         return avcodec_open2(codec, implementation, options);
     opens++;
+    if (cancel_on_open) *cancel_on_open = 1;
     int64_t split = 0, columns = 0;
     av_opt_get_int(codec->priv_data, "split_encode_mode", 0, &split);
     av_opt_get_int(codec->priv_data, "tile_cols", 0, &columns);
@@ -41,6 +44,8 @@ void fixture_free(AVCodecContext **codec)
 int fixture_send(AVCodecContext *codec, const AVFrame *frame)
 {
     (void)codec;
+    send_calls++;
+    if (send_status) return send_status;
     assert(frame->pts == submitted);
     submitted++;
     return 0;
@@ -49,6 +54,8 @@ int fixture_send(AVCodecContext *codec, const AVFrame *frame)
 int fixture_receive(AVCodecContext *codec, AVPacket *packet)
 {
     (void)codec;
+    receive_calls++;
+    if (receive_status) return receive_status;
     if (never_output || submitted <= 16 || emitted >= 4)
         return AVERROR(EAGAIN);
     const uint8_t idr[] = {0,0,1,0x67,0x80,0,0,1,0x68,0x80,0,0,1,0x65,0x88};
@@ -69,6 +76,7 @@ int serein_video_bind_adapter(AVCodecContext *codec, int backend, const SereinVi
     (void)codec; (void)backend;
     assert(mock_open && adapter == bound_adapter);
     bindings++;
+    if (cancel_on_bind) *cancel_on_bind = 1;
     return 1;
 }
 int serein_nvenc_features(int codec, const SereinVideoAdapter *adapter, int *b, int *lookahead)
@@ -396,6 +404,105 @@ static void check_surface_identity(void)
     avcodec_free_context(&codec);
 }
 
+static int fixture_cancelled(void *opaque) { return *(const int *)opaque; }
+
+static void check_cancellation_and_timeout(void)
+{
+    uint8_t input[64 * 64 * 3 / 2] = {0}, output[4096];
+    const int errors[] = {AVERROR_EXIT, AVERROR(ETIMEDOUT)};
+    for (unsigned error = 0; error < 2; ++error)
+    for (int receiving = 0; receiving <= 1; ++receiving) {
+        submitted = emitted = never_output = send_calls = receive_calls = 0;
+        send_status = receive_status = 0;
+        void *encoder = serein_avc_open(64, 64, 30, 100000, 100000, 100000,
+            0, 0, 0, 0, sizeof(output));
+        assert(encoder);
+        if (receiving) receive_status = errors[error];
+        else send_status = errors[error];
+        size_t bytes = 99;
+        int keyframe = 99;
+        int64_t pts = 99;
+        const int expected = error == 0 ? -2 : -3;
+        assert(serein_avc_encode_timed(encoder, input, sizeof(input), 0,
+            output, sizeof(output), &bytes, &keyframe, &pts) == expected);
+        assert(!bytes && !keyframe && pts == -1);
+        const int sent = send_calls, received = receive_calls;
+        send_status = receive_status = 0;
+        assert(serein_avc_receive_timed(encoder, output, sizeof(output),
+            &bytes, &keyframe, &pts) == expected);
+        assert(serein_avc_encode_timed(encoder, input, sizeof(input), 0,
+            output, sizeof(output), &bytes, &keyframe, &pts) == expected);
+        assert(send_calls == sent && receive_calls == received);
+        assert(!bytes && !keyframe && pts == -1);
+        serein_avc_close(encoder);
+    }
+
+    static const SereinVideoAdapter adapter = {0};
+    int cancelled = 0;
+    SereinVideoInterruptV1 control = {1, sizeof(control), fixture_cancelled, &cancelled};
+    bound_adapter = &adapter;
+    mock_open = 1;
+    opens = bindings = frees = reject_all = 0;
+    for (int invalid = 0; invalid < 5; ++invalid) {
+        SereinVideoInterruptV1 bad = control;
+        if (invalid == 0) bad.version++;
+        if (invalid == 1) bad.size--;
+        if (invalid == 2) bad.cancelled = NULL;
+        if (invalid == 3) bad.opaque = NULL;
+        cancelled = invalid == 4;
+        assert(!serein_avc_open_on_adapter_controlled(64, 64, 30, 100000,
+            100000, 100000, 0, 0, 3, 0, sizeof(output), &adapter, 0, &bad));
+        assert(!opens && !bindings && !frees);
+    }
+    cancelled = 0;
+    /* Cancellation during device binding or encoder opening must not start
+     * another native stage or retry a split-capable session without split. */
+    for (int backend = 1; backend <= 3; backend += 2) {
+        if (!avcodec_find_encoder_by_name(backend == 1 ? "hevc_nvenc" : "hevc_amf"))
+            continue;
+        for (int during_open = 0; during_open <= 1; ++during_open) {
+            cancelled = opens = bindings = frees = 0;
+            cancel_on_bind = during_open ? NULL : &cancelled;
+            cancel_on_open = during_open ? &cancelled : NULL;
+            assert(!serein_avc_open_on_adapter_controlled(3840, 2160, 60,
+                14000000, 200000, 16000000, 0, 0, backend, 1,
+                sizeof(output), &adapter, 0, &control));
+            assert(cancelled && bindings == 1 && opens == during_open && frees == 1);
+            cancel_on_bind = cancel_on_open = NULL;
+        }
+        cancelled = opens = bindings = frees = 0;
+    }
+    /* The option stores its own binary record before opening the driver. */
+    if (avcodec_find_encoder_by_name("h264_amf")) {
+        SereinAvc *encoder = serein_avc_open_on_adapter_controlled(64, 64, 30,
+            100000, 100000, 100000, 0, 0, 3, 0, sizeof(output), &adapter, 0, &control);
+        assert(encoder && opens == 1 && bindings == 1);
+        const AVOption *option = av_opt_find(encoder->codec->priv_data, "serein_interrupt", NULL, 0, 0);
+        assert(option && option->type == AV_OPT_TYPE_BINARY);
+        uint8_t *bytes;
+        int length;
+        memcpy(&bytes, (uint8_t *)encoder->codec->priv_data + option->offset, sizeof(bytes));
+        memcpy(&length, (uint8_t *)encoder->codec->priv_data + option->offset + sizeof(bytes), sizeof(length));
+        assert(bytes && bytes != (uint8_t *)&control && length == (int)sizeof(control));
+        assert(!memcmp(bytes, &control, sizeof(control)));
+        memset(&control, 0, sizeof(control));
+        assert(encoder->interrupt.cancelled == fixture_cancelled && encoder->interrupt.opaque == &cancelled);
+        cancelled = 1;
+        size_t output_bytes = 99;
+        int keyframe = 99;
+        int64_t pts = 99;
+        int previous_calls = send_calls;
+        assert(serein_avc_encode_timed(encoder, input, sizeof(input), 0,
+            output, sizeof(output), &output_bytes, &keyframe, &pts) == -2);
+        assert(!output_bytes && !keyframe && pts == -1 && send_calls == previous_calls);
+        serein_avc_close(encoder);
+        assert(opens == frees);
+    }
+    mock_open = 0;
+    submitted = emitted = never_output = send_status = receive_status = 0;
+    puts("Native bridge: cancellation/timeout are terminal, output stays empty, bad records fail before binding and copied callbacks remain live");
+}
+
 int main(void)
 {
     check_presets();
@@ -405,6 +512,7 @@ int main(void)
     check_ten_bit_input();
     check_receive_only();
     check_surface_identity();
+    check_cancellation_and_timeout();
     /* A host picture must never be mistaken for a GPU frames context. */
     AVFrame *host = av_frame_alloc();
     assert(host && !serein_avc_surface_context(host));

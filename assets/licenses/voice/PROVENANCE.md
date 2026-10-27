@@ -41,6 +41,9 @@ applied by the retained build recipe. They prevent collision with host FFmpeg
 libraries used by GStreamer's incoming decoding plugins.
 The recorded source patch also bounds dav1d's separate picture pool before
 allocation and binds VideoToolbox decoding to the selected Metal registry ID.
+It also includes Serein's private AMF cancellation control and bounded ownership
+of retained hardware pictures, so cancelled or stalled encoding releases frames
+after the encoder terminates. This patch changes no dependency version or license.
 The existing `openh264-sys2-upstream-LICENSE` preserves the Cisco codec notice;
 the separately compiled shared library also carries its upstream LICENSE in
 `ffmpeg-source/OpenH264-LICENSE`.

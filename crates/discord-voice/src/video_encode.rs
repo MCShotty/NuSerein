@@ -5,9 +5,50 @@
 #[cfg(test)]
 use model::voice_settings::VideoResolution;
 use model::voice_settings::{EncoderPreset, HardwareBackend, VideoBitrate, VideoCodec};
-use std::{collections::VecDeque, ffi::c_void, marker::PhantomData, ptr::NonNull, rc::Rc};
+use std::{
+	collections::VecDeque,
+	ffi::c_void,
+	marker::PhantomData,
+	ptr::NonNull,
+	rc::Rc,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+};
 
 pub(crate) const MAX_PENDING_PICTURES: usize = 48;
+pub(crate) const ENCODE_CANCELLED: &str = "Video encoding cancelled";
+pub(crate) const ENCODE_TIMED_OUT: &str = "Video encoder did not produce a picture";
+
+pub(crate) fn terminal_error(error: &str) -> bool {
+	matches!(error, ENCODE_CANCELLED | ENCODE_TIMED_OUT)
+}
+
+fn native_result(result: i32, failure: &'static str) -> Result<(), &'static str> {
+	match result {
+		-2 => Err(ENCODE_CANCELLED),
+		-3 => Err(ENCODE_TIMED_OUT),
+		value if value < 0 => Err(failure),
+		_ => Ok(()),
+	}
+}
+
+#[repr(C)]
+struct Interrupt {
+	version: u32,
+	size: u32,
+	cancelled: unsafe extern "C" fn(*mut c_void) -> i32,
+	opaque: *mut c_void,
+}
+struct Control(Arc<AtomicBool>);
+
+unsafe extern "C" fn cancelled(opaque: *mut c_void) -> i32 {
+	// SAFETY: Native owns an immutable copy of Interrupt; Native retains this
+	// stable Box until libavcodec and all its worker callbacks have stopped.
+	let control = unsafe { &*opaque.cast::<Control>() };
+	i32::from(control.0.load(Ordering::Acquire))
+}
 
 pub(crate) struct EncodedPacket {
 	pub data: Vec<u8>,
@@ -143,6 +184,7 @@ fn try_backends<T>(
 		}
 		match open(*backend) {
 			Ok(encoder) => return Ok(encoder),
+			Err(failure) if terminal_error(failure) => return Err(failure),
 			Err(failure) => error = failure,
 		}
 	}
@@ -211,7 +253,7 @@ fn take_timestamp(timeline: &mut VecDeque<(i64, u32)>, index: i64) -> Result<u32
 }
 
 unsafe extern "C" {
-	fn serein_avc_open_on_adapter(
+	fn serein_avc_open_on_adapter_controlled(
 		width: i32,
 		height: i32,
 		fps: i32,
@@ -225,11 +267,12 @@ unsafe extern "C" {
 		max_bytes: usize,
 		adapter: *const crate::video_gpu::Adapter,
 		features: i32,
+		interrupt: *const Interrupt,
 	) -> *mut c_void;
 	#[cfg(target_os = "windows")]
 	fn serein_avc_surface_context(frame: *const c_void) -> *mut c_void;
 	fn serein_avc_surface_context_free(context: *mut c_void);
-	fn serein_avc_open_on_surface(
+	fn serein_avc_open_on_surface_controlled(
 		width: i32,
 		height: i32,
 		fps: i32,
@@ -244,6 +287,7 @@ unsafe extern "C" {
 		adapter: *const crate::video_gpu::Adapter,
 		features: i32,
 		frames: *mut c_void,
+		interrupt: *const Interrupt,
 	) -> *mut c_void;
 	#[cfg(target_os = "windows")]
 	fn serein_avc_accepts_surface(context: *mut c_void, frame: *const c_void) -> i32;
@@ -284,11 +328,15 @@ unsafe extern "C" {
 }
 
 /// Owns one FFmpeg context, frame and packet on the capture worker's thread.
-struct Native(NonNull<c_void>, PhantomData<Rc<()>>);
+struct Native {
+	pointer: NonNull<c_void>,
+	_thread: PhantomData<Rc<()>>,
+	_control: Box<Control>,
+}
 impl Drop for Native {
 	fn drop(&mut self) {
 		// SAFETY: This is the sole owner; the C shim frees all three allocations once.
-		unsafe { serein_avc_close(self.0.as_ptr()) };
+		unsafe { serein_avc_close(self.pointer.as_ptr()) };
 	}
 }
 
@@ -314,18 +362,29 @@ pub(crate) struct Encoder {
 	amf_split: crate::diagnostics::AmfSplit,
 	produced_output: bool,
 	surface: Option<Rc<SurfaceContext>>,
+	control: Arc<AtomicBool>,
 }
 
 impl Encoder {
 	pub(crate) fn new(config: Config) -> Result<Self, &'static str> {
+		Self::new_with_control(config, Arc::new(AtomicBool::new(false)))
+	}
+
+	pub(crate) fn new_with_control(
+		config: Config,
+		control: Arc<AtomicBool>,
+	) -> Result<Self, &'static str> {
 		config.picture_bytes()?;
-		try_backends(config.codec, None, |backend| Self::open(config, backend))
+		try_backends(config.codec, None, |backend| {
+			Self::open_controlled(config, backend, control.clone())
+		})
 	}
 
 	#[cfg(target_os = "windows")]
-	pub(crate) fn new_on_surface(
+	pub(crate) fn new_on_surface_with_control(
 		config: Config,
 		frame: &platform::video::capture::Frame,
+		control: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
 		config.picture_bytes()?;
 		if config.hdr.is_some() {
@@ -337,7 +396,7 @@ impl Encoder {
 		let surface = Rc::new(SurfaceContext(
 			NonNull::new(pointer).ok_or("GPU capture frame is incompatible with FFmpeg")?,
 		));
-		Self::open_after_features_surface(config, Backend::Amf, None, Some(surface))
+		Self::open_after_features_surface(config, Backend::Amf, None, Some(surface), control)
 	}
 
 	#[cfg(target_os = "windows")]
@@ -349,7 +408,9 @@ impl Encoder {
 	pub(crate) fn accepts_surface(&self, frame: &platform::video::capture::Frame) -> bool {
 		self.native.as_ref().is_some_and(|native| {
 			// SAFETY: Both handles remain live; native reads immutable context identity only.
-			unsafe { serein_avc_accepts_surface(native.0.as_ptr(), frame.as_encoder_frame()) == 1 }
+			unsafe {
+				serein_avc_accepts_surface(native.pointer.as_ptr(), frame.as_encoder_frame()) == 1
+			}
 		})
 	}
 
@@ -390,6 +451,7 @@ impl Encoder {
 	/// Restart at the active backend when bitrate changes. Earlier failed GPUs
 	/// stay excluded; a software fallback stays software until the stream stops.
 	pub(crate) fn reconfigure(&mut self, config: Config) -> Result<(), &'static str> {
+		self.check_cancelled()?;
 		config.picture_bytes()?;
 		if config.codec != self.config.codec {
 			return Err("Restart video to change its codec");
@@ -403,6 +465,7 @@ impl Encoder {
 			.ok_or("FFmpeg encoder epoch exhausted")?;
 		let active = self.backend;
 		let features = self.features;
+		let control = self.control.clone();
 		self.native = None;
 		self.backend = Backend::Software;
 		self.config = config;
@@ -413,23 +476,41 @@ impl Encoder {
 				.position(|value| *value == features)
 				.and_then(|index| index.checked_sub(1))
 				.map(|index| attempts[index]);
-			Self::open_after_features_surface(config, active, previous, Some(surface)).or_else(
-				|_| {
-					// Interop may disappear during a driver/session transition. Retire
-					// the old prediction state and keep the ordinary host retry policy.
-					Self::open_at_features(config, active, features).or_else(|_| {
+			Self::open_after_features_surface(
+				config,
+				active,
+				previous,
+				Some(surface),
+				control.clone(),
+			)
+			.or_else(|failure| {
+				if terminal_error(failure) {
+					return Err(failure);
+				}
+				// Interop may disappear during a driver/session transition. Retire
+				// the old prediction state and keep the ordinary host retry policy.
+				Self::open_at_features(config, active, features, control.clone()).or_else(
+					|failure| {
+						if terminal_error(failure) {
+							return Err(failure);
+						}
 						try_backends(config.codec, Some(active), |backend| {
-							Self::open(config, backend)
+							Self::open_controlled(config, backend, control.clone())
 						})
+					},
+				)
+			})?
+		} else {
+			Self::open_at_features(config, active, features, control.clone()).or_else(
+				|failure| {
+					if terminal_error(failure) {
+						return Err(failure);
+					}
+					try_backends(config.codec, Some(active), |backend| {
+						Self::open_controlled(config, backend, control.clone())
 					})
 				},
 			)?
-		} else {
-			Self::open_at_features(config, active, features).or_else(|_| {
-				try_backends(config.codec, Some(active), |backend| {
-					Self::open(config, backend)
-				})
-			})?
 		};
 		self.epoch = epoch;
 		Ok(())
@@ -448,13 +529,30 @@ impl Encoder {
 	}
 
 	fn open(config: Config, backend: Backend) -> Result<Self, &'static str> {
-		Self::open_after_features(config, backend, None)
+		Self::open_controlled(config, backend, Arc::new(AtomicBool::new(false)))
+	}
+
+	fn check_cancelled(&self) -> Result<(), &'static str> {
+		if self.control.load(Ordering::Acquire) {
+			Err(ENCODE_CANCELLED)
+		} else {
+			Ok(())
+		}
+	}
+
+	fn open_controlled(
+		config: Config,
+		backend: Backend,
+		control: Arc<AtomicBool>,
+	) -> Result<Self, &'static str> {
+		Self::open_after_features(config, backend, None, control)
 	}
 
 	fn open_at_features(
 		config: Config,
 		backend: Backend,
 		features: i32,
+		control: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
 		let attempts = feature_attempts(backend, config.profile, config.codec);
 		let previous = attempts
@@ -462,15 +560,16 @@ impl Encoder {
 			.position(|value| *value == features)
 			.and_then(|index| index.checked_sub(1))
 			.map(|index| attempts[index]);
-		Self::open_after_features(config, backend, previous)
+		Self::open_after_features(config, backend, previous, control)
 	}
 
 	fn open_after_features(
 		config: Config,
 		backend: Backend,
 		after: Option<i32>,
+		control: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
-		Self::open_after_features_surface(config, backend, after, None)
+		Self::open_after_features_surface(config, backend, after, None, control)
 	}
 
 	fn open_after_features_surface(
@@ -478,7 +577,11 @@ impl Encoder {
 		backend: Backend,
 		after: Option<i32>,
 		surface: Option<Rc<SurfaceContext>>,
+		control: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
+		if control.load(Ordering::Acquire) {
+			return Err(ENCODE_CANCELLED);
+		}
 		config.picture_bytes()?;
 		if !matches_adapter(backend, config.adapter) {
 			return Err("This encoder does not belong to the selected rendering GPU");
@@ -490,6 +593,13 @@ impl Encoder {
 		// SAFETY: All scalar bounds are checked above; the returned allocation is uniquely
 		// owned here and is never sent across workers. A failed open returns null.
 		let adapter = config.adapter.map(crate::video_gpu::Adapter::from);
+		let mut callback = Box::new(Control(control.clone()));
+		let interrupt = Interrupt {
+			version: 1,
+			size: std::mem::size_of::<Interrupt>() as u32,
+			cancelled,
+			opaque: (&mut *callback as *mut Control).cast(),
+		};
 		let mut pointer = std::ptr::null_mut();
 		let mut selected_features = 0;
 		let attempts = feature_attempts(backend, config.profile, config.codec);
@@ -504,6 +614,9 @@ impl Encoder {
 			attempts.len()
 		};
 		for features in &attempts[start..end] {
+			if control.load(Ordering::Acquire) {
+				return Err(ENCODE_CANCELLED);
+			}
 			let codec = match config.codec {
 				VideoCodec::H264 => 0,
 				VideoCodec::H265 => 1,
@@ -511,7 +624,7 @@ impl Encoder {
 			};
 			pointer = unsafe {
 				if let Some(surface) = &surface {
-					serein_avc_open_on_surface(
+					serein_avc_open_on_surface_controlled(
 						config.width as i32,
 						config.height as i32,
 						config.fps as i32,
@@ -526,9 +639,10 @@ impl Encoder {
 						adapter.as_ref().map_or(std::ptr::null(), |value| value),
 						*features | config.hdr.map_or(0, hdr_flags),
 						surface.0.as_ptr(),
+						&interrupt,
 					)
 				} else {
-					serein_avc_open_on_adapter(
+					serein_avc_open_on_adapter_controlled(
 						config.width as i32,
 						config.height as i32,
 						config.fps as i32,
@@ -542,6 +656,7 @@ impl Encoder {
 						config.max_bytes,
 						adapter.as_ref().map_or(std::ptr::null(), |value| value),
 						*features | config.hdr.map_or(0, hdr_flags),
+						&interrupt,
 					)
 				}
 			};
@@ -549,6 +664,16 @@ impl Encoder {
 				selected_features = *features;
 				break;
 			}
+		}
+		if control.load(Ordering::Acquire) {
+			if let Some(pointer) = NonNull::new(pointer) {
+				drop(Native {
+					pointer,
+					_thread: PhantomData,
+					_control: callback,
+				});
+			}
+			return Err(ENCODE_CANCELLED);
 		}
 		let pointer = NonNull::new(pointer).ok_or(match config.codec {
 			VideoCodec::H264 => "FFmpeg H.264 encoder is unavailable",
@@ -559,7 +684,11 @@ impl Encoder {
 		// getter reads fixed metadata, not GPU state, and makes no driver calls.
 		let amf_split = unsafe { serein_avc_amf_split(pointer.as_ptr()) };
 		Ok(Self {
-			native: Some(Native(pointer, PhantomData)),
+			native: Some(Native {
+				pointer,
+				_thread: PhantomData,
+				_control: callback,
+			}),
 			config,
 			backend,
 			output: vec![0; config.max_bytes],
@@ -570,6 +699,7 @@ impl Encoder {
 			amf_split: crate::diagnostics::AmfSplit::from_native(amf_split),
 			produced_output: false,
 			surface,
+			control,
 		})
 	}
 
@@ -618,6 +748,7 @@ impl Encoder {
 		force: bool,
 		timestamp: u32,
 	) -> Result<EncodedPacket, &'static str> {
+		self.check_cancelled()?;
 		if picture.len() != self.config.picture_bytes()? {
 			return Err("Invalid FFmpeg video encoder picture");
 		}
@@ -629,7 +760,7 @@ impl Encoder {
 			let backend = self.backend;
 			let features = self.features;
 			self.native = None;
-			*self = Self::open_at_features(self.config, backend, features)?;
+			*self = Self::open_at_features(self.config, backend, features, self.control.clone())?;
 			self.epoch = epoch;
 		}
 		// FFmpeg 7.1 AMF does not forward forced picture types. Restart only
@@ -646,6 +777,7 @@ impl Encoder {
 		loop {
 			match self.submit(picture, force, timestamp) {
 				Ok(frame) => return Ok(frame),
+				Err(error) if terminal_error(error) => return Err(error),
 				Err(_) if self.hardware() => {
 					let failed = self.backend;
 					let features = self.features;
@@ -655,14 +787,20 @@ impl Encoder {
 						.ok_or("FFmpeg encoder epoch exhausted")?;
 					self.native = None;
 					self.timeline.clear();
-					let replacement =
-						Self::open_after_features(self.config, failed, Some(features)).or_else(
-							|_| {
-								try_backends(self.config.codec, Some(failed), |backend| {
-									Self::open(self.config, backend)
-								})
-							},
-						)?;
+					let replacement = Self::open_after_features(
+						self.config,
+						failed,
+						Some(features),
+						self.control.clone(),
+					)
+					.or_else(|failure| {
+						if terminal_error(failure) {
+							return Err(failure);
+						}
+						try_backends(self.config.codec, Some(failed), |backend| {
+							Self::open_controlled(self.config, backend, self.control.clone())
+						})
+					})?;
 					*self = replacement;
 					self.epoch = epoch;
 					force = true;
@@ -682,6 +820,7 @@ impl Encoder {
 		force: bool,
 		timestamp: u32,
 	) -> Result<EncodedPacket, &'static str> {
+		self.check_cancelled()?;
 		if self.surface.is_none() {
 			return Err("FFmpeg encoder is using host input");
 		}
@@ -699,7 +838,7 @@ impl Encoder {
 		// FFmpeg retains its own references when output is asynchronous.
 		let result = unsafe {
 			serein_avc_encode_surface_timed(
-				native.0.as_ptr(),
+				native.pointer.as_ptr(),
 				frame.as_encoder_frame(),
 				i32::from(force),
 				self.output.as_mut_ptr(),
@@ -709,9 +848,7 @@ impl Encoder {
 				&mut presentation_index,
 			)
 		};
-		if result < 0 {
-			return Err("FFmpeg GPU surface encoding failed");
-		}
+		native_result(result, "FFmpeg GPU surface encoding failed")?;
 		self.timeline.push_back((self.next_input, timestamp));
 		self.next_input += 1;
 		self.finish_packet(
@@ -727,6 +864,7 @@ impl Encoder {
 	/// a duplicate picture. EAGAIN leaves the bounded timeline intact.
 	#[cfg_attr(target_os = "linux", allow(dead_code))] // Windows/macOS capture polling; exercised offline in tests.
 	pub(crate) fn drain_at(&mut self) -> Result<Option<EncodedPacket>, &'static str> {
+		self.check_cancelled()?;
 		if self.timeline.is_empty() {
 			return Ok(None);
 		}
@@ -738,7 +876,7 @@ impl Encoder {
 		// this synchronous receive-only call on the owning encoder worker.
 		let result = unsafe {
 			serein_avc_receive_timed(
-				native.0.as_ptr(),
+				native.pointer.as_ptr(),
 				self.output.as_mut_ptr(),
 				self.output.len(),
 				&mut length,
@@ -746,9 +884,7 @@ impl Encoder {
 				&mut presentation_index,
 			)
 		};
-		if result < 0 {
-			return Err("FFmpeg output polling failed");
-		}
+		native_result(result, "FFmpeg output polling failed")?;
 		let packet = self.finish_packet(result, length, keyframe, presentation_index, None)?;
 		Ok((!packet.data.is_empty()).then_some(packet))
 	}
@@ -779,6 +915,7 @@ impl Encoder {
 		force: bool,
 		timestamp: u32,
 	) -> Result<EncodedPacket, &'static str> {
+		self.check_cancelled()?;
 		let native = self.native.as_ref().ok_or("FFmpeg video encoder stopped")?;
 		if self.timeline.len() >= MAX_PENDING_PICTURES || self.next_input == i64::MAX {
 			return Err("FFmpeg exceeded its pending picture limit");
@@ -790,7 +927,7 @@ impl Encoder {
 		// out-parameters live through the synchronous call. No pointer is retained.
 		let result = unsafe {
 			serein_avc_encode_timed(
-				native.0.as_ptr(),
+				native.pointer.as_ptr(),
 				picture.as_ptr(),
 				picture.len(),
 				i32::from(force),
@@ -801,9 +938,10 @@ impl Encoder {
 				&mut presentation_index,
 			)
 		};
-		if result < 0 {
-			return Err("FFmpeg video encoding failed or exceeded its frame limit");
-		}
+		native_result(
+			result,
+			"FFmpeg video encoding failed or exceeded its frame limit",
+		)?;
 		self.timeline.push_back((self.next_input, timestamp));
 		self.next_input += 1;
 		self.finish_packet(
@@ -872,6 +1010,65 @@ mod tests {
 		adapter: None,
 		hdr: None,
 	};
+
+	#[test]
+	fn cancellation_survives_restart_and_prevents_native_reopen_or_input() {
+		let control = Arc::new(AtomicBool::new(false));
+		let config = Config {
+			adapter: Some(model::VideoAdapter::default()),
+			..CAMERA
+		};
+		let mut encoder = Encoder::new_with_control(config, control.clone()).unwrap();
+		let picture = vec![128; config.picture_bytes().unwrap()];
+		assert!(
+			!encoder
+				.encode_at(&picture, true, 3000)
+				.unwrap()
+				.data
+				.is_empty()
+		);
+		encoder.restart().unwrap();
+		assert!(
+			!encoder
+				.encode_at(&picture, true, 6000)
+				.unwrap()
+				.data
+				.is_empty()
+		);
+		control.store(true, Ordering::Release);
+		let submitted = encoder.next_input;
+		assert_eq!(
+			encoder.encode_at(&picture, true, 9000).err(),
+			Some(ENCODE_CANCELLED)
+		);
+		assert_eq!(encoder.drain_at().err(), Some(ENCODE_CANCELLED));
+		assert_eq!(encoder.restart(), Err(ENCODE_CANCELLED));
+		assert_eq!(encoder.reconfigure(config), Err(ENCODE_CANCELLED));
+		assert_eq!(encoder.next_input, submitted);
+		drop(encoder);
+		assert_eq!(
+			Arc::strong_count(&control),
+			1,
+			"Native callback owner must retire"
+		);
+		assert_eq!(
+			Encoder::new_with_control(config, control).err(),
+			Some(ENCODE_CANCELLED)
+		);
+	}
+
+	#[test]
+	fn native_cancellation_and_timeout_never_start_fallback_encoders() {
+		for (result, expected) in [(-2, ENCODE_CANCELLED), (-3, ENCODE_TIMED_OUT)] {
+			let mut attempts = 0;
+			let output = try_backends::<()>(VideoCodec::H264, None, |_| {
+				attempts += 1;
+				native_result(result, "ordinary failure")
+			});
+			assert_eq!(output, Err(expected));
+			assert_eq!(attempts, 1);
+		}
+	}
 	#[test]
 	fn delayed_ffmpeg_output_reports_input_acceptance_separately_from_polling() {
 		let mut encoder = Encoder::software(CAMERA).unwrap();
@@ -1139,14 +1336,14 @@ mod tests {
 	#[test]
 	fn malformed_picture_keeps_existing_native_context_and_backend() {
 		let mut encoder = Encoder::software(CAMERA).unwrap();
-		let pointer = encoder.native.as_ref().unwrap().0;
+		let pointer = encoder.native.as_ref().unwrap().pointer;
 		// Simulate each selected GPU using a real software allocation. Rejected
 		// input must never reach native encoding or trigger device selection.
 		for backend in BACKENDS {
 			encoder.backend = *backend;
 			assert!(encoder.encode(&[0; 3], true).is_err());
 			assert!(encoder.backend == *backend);
-			assert!(encoder.native.as_ref().unwrap().0 == pointer);
+			assert!(encoder.native.as_ref().unwrap().pointer == pointer);
 			assert!(!encoder.produced_output && encoder.timeline.is_empty());
 		}
 		encoder.backend = Backend::Software;

@@ -1472,6 +1472,7 @@ async fn run_recoverable(
 							continue;
 						}
 					};
+					if let Some(event)=calls.absent_stream_stop(command) {emit(event)?;}
 					if let client_core::voice::Command::Leave { channel, request } | client_core::voice::Command::AbandonSession { channel, request } = command
 						&& packet.is_none() && !calls.has_call() {
 						emit(Event::Voice(client_core::voice::Event::Departed { channel, request }))?;

@@ -58,6 +58,7 @@ impl Capture {
 		Err("Screen sharing is supported only on macOS and Windows")
 	}
 
+	#[allow(clippy::too_many_arguments)] // Matches the supported native capture contract.
 	pub(crate) fn start(
 		_settings: RequestSettings,
 		_frames: SyncSender<CapturedFrame>,
@@ -66,6 +67,7 @@ impl Capture {
 		_ready: Arc<AtomicBool>,
 		_audio_epoch: Arc<std::sync::atomic::AtomicU64>,
 		_teardown: Arc<AtomicBool>,
+		_progress: &crate::screen::Progress,
 	) -> Result<Self, &'static str> {
 		Err("Screen sharing is supported only on macOS and Windows")
 	}

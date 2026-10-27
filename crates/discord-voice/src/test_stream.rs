@@ -152,6 +152,16 @@ async fn local_stream_sender_and_viewer_deliver_audio_and_video() {
 }
 
 #[tokio::test]
+async fn silent_encoder_times_out_while_stream_signaling_and_audio_remain_healthy() {
+	timeout(
+		Duration::from_secs(25),
+		exchange(false, TestPicture::SilentEncoder),
+	)
+	.await
+	.expect("An announced stream without an encoded keyframe must fail promptly");
+}
+
+#[tokio::test]
 async fn established_streams_bound_missing_rekey_execution_and_welcome() {
 	timeout(Duration::from_secs(45), exchange(true, TestPicture::Sdr))
 		.await
@@ -172,6 +182,7 @@ async fn reject_h264_selection(codec: VideoCodec) {
 	let url = format!("ws://{}", listener.local_addr().unwrap());
 	let (_frames_tx, frames) = tokio::sync::mpsc::channel(1);
 	let video = Video {
+		progress: Arc::default(),
 		video_settings: VideoSettings {
 			codec,
 			..Default::default()
@@ -249,6 +260,7 @@ async fn reject_h264_selection(codec: VideoCodec) {
 #[derive(Clone, Copy)]
 enum TestPicture {
 	Sdr,
+	SilentEncoder,
 	PendingUltrawide,
 	CancelledPicker,
 	Resized,
@@ -309,7 +321,9 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 		})
 	}));
 	let geometry_generation = Arc::new(AtomicU64::new(0));
+	let progress = Arc::new(crate::screen::Progress::default());
 	let video = Video {
+		progress: progress.clone(),
 		video_settings: VideoSettings {
 			codec,
 			..Default::default()
@@ -323,6 +337,8 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 		audio_epoch: epoch.clone(),
 	};
 	let sender_url = url.clone();
+	let sharing = Arc::new(AtomicBool::new(false));
+	let sender_sharing = sharing.clone();
 	let mut sender = tokio::spawn(async move {
 		run_stream_inner(
 			credentials(1),
@@ -331,7 +347,12 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 			None,
 			None,
 			None,
-			|_| Ok(()),
+			move |status| {
+				if matches!(status, Status::Ready { .. }) {
+					sender_sharing.store(true, Ordering::Release);
+				}
+				Ok(())
+			},
 			sender_url,
 			true,
 		)
@@ -342,7 +363,10 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 		connect(&listener, &delivery, 1, codec, pending).await;
 	let (playback_tx, playback_rx) = std::sync::mpsc::sync_channel(8);
 	let (picture_tx, picture_rx) = std::sync::mpsc::sync_channel(1);
+	let decoded = Arc::new(AtomicU64::new(0));
+	let decoded_frames = decoded.clone();
 	let sink: VideoSink = Arc::new(move |frame| {
+		decoded_frames.fetch_add(1, Ordering::Relaxed);
 		let (width, height, bytes, format, transfer) = match frame.picture {
 			crate::RemotePicture::Ffmpeg { picture, data } => (
 				picture.width,
@@ -489,6 +513,47 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 	assert!(
 		matches!(message(&mut view_ws).await, Message::Pong(data) if data.as_ref() == b"mapped")
 	);
+	if matches!(picture_case, TestPicture::SilentEncoder) {
+		let mut tick = tokio::time::interval(Duration::from_millis(20));
+		let mut packet = [0; MAX_PACKET + 1];
+		let mut heartbeats = 0;
+		let mut audio_packets = 0;
+		let transport = Encryption::new(&[7; 32]);
+		loop {
+			tokio::select! {
+				result = &mut sender => {
+					assert_eq!(result.unwrap(), Err("Screen video did not produce and send a keyframe within 15 seconds"));
+					break;
+				},
+				_ = tick.tick() => {
+					let _ = audio_tx.try_send(AudioChunk { samples: vec![0.1; STREAM_AUDIO_FRAME], epoch: epoch.load(Ordering::Acquire) });
+				},
+				result = send_udp.recv_from(&mut packet) => {
+					let (length, _) = result.unwrap();
+					if length != 8 {
+						assert_eq!(transport.open(&packet[..length]).unwrap().payload_type, 120);
+						audio_packets += 1;
+					}
+				},
+				frame = send_ws.next() => {
+					if let Some(Ok(Message::Text(text))) = frame {
+						let value: Value = serde_json::from_str(&text).unwrap();
+						if value["op"] == 3 {
+							heartbeats += 1;
+							event(&mut send_ws, json!({"op":6,"d":{"t":value["d"]["t"]}})).await;
+						}
+					}
+				},
+				_ = message(&mut view_ws) => {},
+			}
+		}
+		assert!(heartbeats >= 2 && audio_packets > 0);
+		assert!(!sharing.load(Ordering::Acquire));
+		assert!(!ready.load(Ordering::Acquire));
+		viewer.abort();
+		assert!(viewer.await.unwrap_err().is_cancelled());
+		return;
+	}
 	if resized {
 		(width, height) = (640, 480);
 		let settings = Settings {
@@ -578,12 +643,32 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 	})
 	.await
 	.expect("Idle viewer stopped maintaining UDP");
-	let mut encoder = openh264::encoder::Encoder::with_api_config(
-		openh264::OpenH264API::from_source(),
-		openh264::encoder::EncoderConfig::new(),
-	)
-	.unwrap();
-	let source = openh264::formats::YUVBuffer::new(width as usize, height as usize);
+	// Normal SDR uses the shipping conversion/FFmpeg encoder before the complete
+	// RTP/DAVE/receiver path. Large/HDR bitstream fixtures retain their distinct cases.
+	progress.reset(epoch.load(Ordering::Acquire));
+	let mut encoder = if ultrawide || hdr {
+		None
+	} else {
+		let output = output.lock().unwrap().unwrap();
+		Some(
+			crate::screen::ScreenEncoder::new_on_adapter(
+				output.settings,
+				output.rates.maximum,
+				VideoSettings::default(),
+				Some(model::VideoAdapter::default()),
+				epoch.load(Ordering::Acquire),
+				epoch.load(Ordering::Acquire),
+			)
+			.unwrap(),
+		)
+	};
+	let mut source = encoder.as_ref().map(|_| crate::screen::RawFrame {
+		format: crate::screen::RawFormat::Bgra8,
+		width,
+		height,
+		stride: width as usize * 4,
+		data: vec![128; width as usize * height as usize * 4],
+	});
 	let mut encoded = Vec::new();
 	if ultrawide || hdr {
 		use std::io::Read;
@@ -595,10 +680,10 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 			.take(crate::video_receive::MAX_FRAME_BYTES as u64)
 			.read_to_end(&mut encoded)
 			.unwrap();
-	} else {
-		encoder.encode(&source).unwrap().write_vec(&mut encoded);
 	}
-	assert!(crate::video::is_keyframe_for_codec(&encoded, codec));
+	if !encoded.is_empty() {
+		assert!(crate::video::is_keyframe_for_codec(&encoded, codec));
+	}
 	let mut tick = tokio::time::interval(if ultrawide {
 		Duration::from_nanos(1_000_000_000 / 60)
 	} else {
@@ -619,11 +704,23 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 				assert!(ready.load(Ordering::Acquire));
 				let samples = (0..STREAM_AUDIO_FRAME).map(|i| ((i/2) as f32 * if i%2 == 0 {0.06} else {0.1}).sin() * 0.3).collect();
 				let _ = audio_tx.try_send(AudioChunk { samples, epoch: epoch.load(Ordering::Acquire) });
-				let _ = frames_tx.try_send(EncodedFrame { data: encoded.clone(), timestamp, keyframe: true, codec, epoch: epoch.load(Ordering::Acquire), reset_generation: epoch.load(Ordering::Acquire), geometry_generation: geometry_generation.load(Ordering::Acquire) });
+				if frames_tx.capacity() > 0 {
+					let frame = if let Some(encoder) = &mut encoder {
+						let source = source.as_mut().unwrap();
+						source.data[0] = timestamp as u8;
+						let packet = encoder.encode_at(source, keyframe.swap(false, Ordering::AcqRel), timestamp).unwrap();
+						progress.packet(epoch.load(Ordering::Acquire), &packet);
+						progress.pending(epoch.load(Ordering::Acquire), packet.data.is_empty());
+						EncodedFrame { data: packet.data, timestamp: packet.timestamp, keyframe: packet.keyframe, codec, epoch: packet.epoch, reset_generation: epoch.load(Ordering::Acquire), geometry_generation: geometry_generation.load(Ordering::Acquire) }
+					} else {
+						EncodedFrame { data: encoded.clone(), timestamp, keyframe: true, codec, epoch: epoch.load(Ordering::Acquire), reset_generation: epoch.load(Ordering::Acquire), geometry_generation: geometry_generation.load(Ordering::Acquire) }
+					};
+					if !frame.data.is_empty() { frames_tx.try_send(frame).unwrap(); }
+				}
 				timestamp += if ultrawide { 1500 } else { 1800 };
 				while let Ok(frame) = playback_rx.try_recv() { heard |= frame.iter().any(|sample| sample.abs() > 0.01); }
 				if let Ok(frame) = picture_rx.try_recv() { picture = Some(frame); }
-				if heard && picture.is_some() && audio_packets >= 3 { break; }
+				if heard && picture.is_some() && audio_packets >= 3 && (encoder.is_none() || decoded.load(Ordering::Relaxed) >= 2) { break; }
 			}
 			result = send_udp.recv_from(&mut packet) => {
 				let (length, address) = result.unwrap();
@@ -656,6 +753,7 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 		}
 	}
 	assert!(audio_packets > 0 && video_packets > 0);
+	assert!(sharing.load(Ordering::Acquire));
 	assert_eq!(
 		picture.unwrap(),
 		if ultrawide {
@@ -663,7 +761,16 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 		} else if let TestPicture::Hdr(_, _, transfer) = picture_case {
 			(1, 32, 16, 32 * 16 * 3, 1, transfer)
 		} else {
-			(1, width, height, width as usize * height as usize * 4, 0, 2)
+			// The production FFmpeg encoder explicitly signals IEC 61966-2-1
+			// (sRGB, value 13); the pinned ultrawide fixture remains unspecified (2).
+			(
+				1,
+				width,
+				height,
+				width as usize * height as usize * 4,
+				0,
+				13,
+			)
 		}
 	);
 	if rekey_timeout {

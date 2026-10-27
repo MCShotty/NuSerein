@@ -111,6 +111,24 @@ void *serein_avc_open_on_surface(int width, int height, int fps, int bitrate, in
                                 size_t max_bytes, const SereinVideoAdapter *adapter,
                                 int features, void *frames_context);
 void serein_avc_close(void *encoder);
+/* Private, process-local interrupt ABI. The callback and opaque owner must
+ * outlive encoder close; it may run on a native encoder thread. Never pass
+ * account data or assume the layout of a Rust atomic in C. */
+typedef struct SereinVideoInterruptV1 {
+    uint32_t version, size;
+    int (*cancelled)(void *opaque);
+    void *opaque;
+} SereinVideoInterruptV1;
+void *serein_avc_open_on_adapter_controlled(int width, int height, int fps, int bitrate,
+    int minimum, int maximum, int preset, int baseline, int backend, int codec,
+    size_t max_bytes, const SereinVideoAdapter *adapter, int features,
+    const SereinVideoInterruptV1 *interrupt);
+void *serein_avc_open_on_surface_controlled(int width, int height, int fps, int bitrate,
+    int minimum, int maximum, int preset, int baseline, int backend, int codec,
+    size_t max_bytes, const SereinVideoAdapter *adapter, int features, void *frames_context,
+    const SereinVideoInterruptV1 *interrupt);
+/* Timed encode/receive return -2 for cancellation, -3 for no-output timeout.
+ * Both are terminal for this share, never instructions to try another encoder. */
 /* AMF split request on this live session: 0 = off, 1 = declined, 2 = accepted.
  * Accepted means SetProperty succeeded and the encoder opened successfully.
  * A successful retry without split remains declined. This is diagnostic metadata. */

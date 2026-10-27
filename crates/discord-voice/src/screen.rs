@@ -246,7 +246,197 @@ pub struct AudioChunk {
 	pub epoch: u64,
 }
 
+/// Native work is observed independently of the thread performing it. A driver
+/// call which stops returning cannot also be responsible for its own watchdog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeOperation {
+	ChoosingSource,
+	OpeningCapture,
+	RefreshingCapture,
+	OpeningEncoder,
+	Encoding,
+	Draining,
+	Retiring,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ProgressSnapshot {
+	pub generation: u64,
+	pub accepted: u64,
+	pub produced: u64,
+	pub sent: u64,
+	pub captured: u64,
+	pub last_capture: Option<Instant>,
+	pub last_output: Option<Instant>,
+	pub pending_since: Option<Instant>,
+	pub operation: Option<(NativeOperation, Instant)>,
+}
+
+#[derive(Default)]
+struct ProgressState {
+	snapshot: ProgressSnapshot,
+	encoder_epoch: Option<u64>,
+	failure: Option<&'static str>,
+}
+
+/// One bounded, memory-only record per share; old sessions never update a new
+/// session's supervisor. No titles, pixels or credentials enter this record.
+#[derive(Default)]
+pub struct Progress(Mutex<ProgressState>);
+
+impl Progress {
+	pub fn snapshot(&self) -> ProgressSnapshot {
+		self.0
+			.lock()
+			.map_or_else(|_| ProgressSnapshot::default(), |state| state.snapshot)
+	}
+
+	pub fn native_failure(&self) -> Option<&'static str> {
+		self.native_failure_at(Instant::now())
+	}
+
+	fn native_failure_at(&self, now: Instant) -> Option<&'static str> {
+		if let Some(failure) = self.0.lock().ok().and_then(|state| state.failure) {
+			return Some(failure);
+		}
+		let (operation, started) = self.snapshot().operation?;
+		let limit = match operation {
+			NativeOperation::ChoosingSource => Duration::from_secs(120),
+			NativeOperation::OpeningCapture => Duration::from_secs(30),
+			NativeOperation::Retiring => Duration::from_secs(5),
+			_ => Duration::from_secs(15),
+		};
+		(now.saturating_duration_since(started) >= limit).then_some(match operation {
+			NativeOperation::ChoosingSource => "Screen selection timed out; choose a source again",
+			NativeOperation::OpeningCapture => "Screen capture did not finish starting",
+			NativeOperation::RefreshingCapture => "Screen capture did not finish refreshing",
+			NativeOperation::OpeningEncoder => "Screen video encoder did not finish starting",
+			NativeOperation::Encoding | NativeOperation::Draining => {
+				"Screen video encoder stopped responding"
+			}
+			NativeOperation::Retiring => "Screen capture is still releasing native resources",
+		})
+	}
+
+	pub(super) fn operation(&self, operation: NativeOperation) -> Operation<'_> {
+		let started = Instant::now();
+		if let Ok(mut state) = self.0.lock() {
+			state.snapshot.operation = Some((operation, started));
+		}
+		Operation {
+			progress: self,
+			operation,
+			started,
+		}
+	}
+
+	pub(crate) fn reset(&self, generation: u64) {
+		if let Ok(mut state) = self.0.lock() {
+			let operation = state.snapshot.operation;
+			*state = ProgressState::default();
+			state.snapshot.generation = generation;
+			state.snapshot.operation = operation;
+		}
+	}
+
+	pub(super) fn captured(&self) {
+		if let Ok(mut state) = self.0.lock() {
+			state.snapshot.captured = state.snapshot.captured.saturating_add(1);
+			state.snapshot.last_capture = Some(Instant::now());
+		}
+	}
+
+	pub(crate) fn packet(&self, generation: u64, packet: &crate::video_encode::EncodedPacket) {
+		if let Ok(mut state) = self.0.lock() {
+			if state.snapshot.generation != generation {
+				return;
+			}
+			if state.encoder_epoch != Some(packet.epoch) {
+				state.encoder_epoch = Some(packet.epoch);
+				state.snapshot.accepted = 0;
+				state.snapshot.produced = 0;
+				state.snapshot.pending_since = None;
+			}
+			let snapshot = &mut state.snapshot;
+			snapshot.accepted = snapshot
+				.accepted
+				.saturating_add(u64::from(packet.input_accepted));
+			if !packet.data.is_empty() {
+				snapshot.produced = snapshot.produced.saturating_add(1);
+				snapshot.last_output = Some(Instant::now());
+			}
+		}
+	}
+
+	pub(crate) fn pending(&self, generation: u64, needed: bool) {
+		if let Ok(mut state) = self.0.lock()
+			&& state.snapshot.generation == generation
+		{
+			if needed {
+				state
+					.snapshot
+					.pending_since
+					.get_or_insert_with(Instant::now);
+			} else {
+				state.snapshot.pending_since = None;
+			}
+		}
+	}
+
+	pub(crate) fn transmitted(&self, generation: u64) {
+		if let Ok(mut state) = self.0.lock()
+			&& state.snapshot.generation == generation
+		{
+			state.snapshot.sent = state.snapshot.sent.saturating_add(1);
+		}
+	}
+
+	pub(super) fn result<T>(&self, result: Result<T, &'static str>) -> Result<T, &'static str> {
+		if let Err(error) = result.as_ref()
+			&& *error != crate::video_encode::ENCODE_CANCELLED
+			&& let Ok(mut state) = self.0.lock()
+		{
+			state.failure.get_or_insert(error);
+		}
+		result
+	}
+
+	pub(super) fn retire<T>(&self, owner: &mut Option<T>) {
+		if owner.is_some() {
+			let _retiring = self.operation(NativeOperation::Retiring);
+			*owner = None;
+		}
+	}
+}
+
+pub(super) struct Operation<'a> {
+	progress: &'a Progress,
+	operation: NativeOperation,
+	started: Instant,
+}
+
+impl Drop for Operation<'_> {
+	fn drop(&mut self) {
+		if let Ok(mut state) = self.progress.0.lock()
+			&& state.snapshot.operation == Some((self.operation, self.started))
+		{
+			state.snapshot.operation = None;
+		}
+	}
+}
+
+pub(super) struct RetireOnExit<'a>(pub(super) &'a Progress);
+
+impl Drop for RetireOnExit<'_> {
+	fn drop(&mut self) {
+		if let Ok(mut state) = self.0.0.lock() {
+			state.snapshot.operation = Some((NativeOperation::Retiring, Instant::now()));
+		}
+	}
+}
+
 pub struct Video {
+	pub progress: Arc<Progress>,
 	pub video_settings: VideoSettings,
 	pub output: Arc<Mutex<Option<Output>>>,
 	pub frames: tokio::sync::mpsc::Receiver<EncodedFrame>,
@@ -321,6 +511,7 @@ pub fn sources() -> Result<Vec<Source>, &'static str> {
 
 pub struct Worker {
 	stop: Arc<AtomicBool>,
+	progress: Arc<Progress>,
 	ready: Arc<AtomicBool>,
 	output: Arc<Mutex<Option<Output>>>,
 	bitrate: Arc<AtomicU32>,
@@ -351,6 +542,8 @@ impl Worker {
 			return Err("Screen sharing is unavailable for these settings or this platform");
 		}
 		let stop = Arc::new(AtomicBool::new(false));
+		let progress = Arc::new(Progress::default());
+		let worker_progress = progress.clone();
 		let ready = Arc::new(AtomicBool::new(false));
 		let audio_epoch = Arc::new(AtomicU64::new(0));
 		let worker_audio_epoch = audio_epoch.clone();
@@ -400,6 +593,7 @@ impl Worker {
 					worker_preview,
 					worker_status,
 					worker_preview_visible,
+					worker_progress.clone(),
 					&wake,
 				);
 				#[cfg(not(target_os = "linux"))]
@@ -417,9 +611,13 @@ impl Worker {
 					worker_audio_epoch,
 					worker_preview,
 					worker_preview_visible,
+					worker_progress.clone(),
 					&wake,
 				);
 				finished_ready.store(false, Ordering::Release);
+				if let Ok(mut state) = worker_progress.0.lock() {
+					state.snapshot.operation = None;
+				}
 				// The desktop only shows the latest status, which a later stop overwrites.
 				// Name the cause once so a share that ends by itself is never a mystery.
 				if std::env::var_os("SEREIN_VOICE_DIAGNOSTICS").is_some_and(|value| value == "1") {
@@ -435,6 +633,7 @@ impl Worker {
 		Ok((
 			Self {
 				stop,
+				progress: progress.clone(),
 				ready: ready.clone(),
 				output: output.clone(),
 				bitrate: bitrate.clone(),
@@ -445,6 +644,7 @@ impl Worker {
 				preview_visible,
 			},
 			Video {
+				progress,
 				video_settings,
 				output,
 				frames,
@@ -482,7 +682,15 @@ impl Worker {
 	}
 
 	pub fn result(&self) -> Option<Result<(), &'static str>> {
-		self.done.as_ref()?.try_recv().ok()
+		self.done
+			.as_ref()?
+			.try_recv()
+			.ok()
+			.or_else(|| self.progress.native_failure().map(Err))
+	}
+
+	pub fn progress(&self) -> Arc<Progress> {
+		self.progress.clone()
 	}
 
 	/// One local RGBA image, bounded to 640 by 360 pixels and replaced at most ten times a second.
@@ -606,6 +814,7 @@ fn encode_loop(
 	audio_epoch: Arc<AtomicU64>,
 	preview: Arc<Mutex<Option<image::RgbaImage>>>,
 	preview_visible: Arc<AtomicBool>,
+	progress: Arc<Progress>,
 	wake: &impl Fn(),
 ) -> Result<(), &'static str> {
 	if stop.load(Ordering::Acquire) || send.is_closed() {
@@ -617,12 +826,14 @@ fn encode_loop(
 	let capture_stop = Arc::new(AtomicBool::new(false));
 	#[cfg(target_os = "windows")]
 	let raw_pending = Arc::new(AtomicBool::new(false));
+	let opening_capture = progress.operation(NativeOperation::OpeningCapture);
 	#[cfg(target_os = "windows")]
 	let mut _native = capture::Capture::start(
 		settings,
 		raw_send,
 		audio,
 		capture_stop.clone(),
+		stop.clone(),
 		ready.clone(),
 		audio_epoch.clone(),
 		raw_pending.clone(),
@@ -639,7 +850,9 @@ fn encode_loop(
 		ready.clone(),
 		audio_epoch.clone(),
 		stop.clone(),
+		&progress,
 	)?;
+	drop(opening_capture);
 	let mut encoding: Option<ScreenEncoder> = None;
 	let mut first_frame_deadline = Some(Instant::now() + Duration::from_secs(15));
 	let mut first_output_deadline = None;
@@ -664,6 +877,9 @@ fn encode_loop(
 	}
 	#[cfg(target_os = "windows")]
 	let mut capture_reports = (0u8, Instant::now() + Duration::from_secs(5));
+	// Declared after the owned media resources: mark retirement before their
+	// destructors run, including when a native error exits through `?`.
+	let _retirement = RetireOnExit(&progress);
 
 	while !stop.load(Ordering::Acquire) && !send.is_closed() {
 		#[cfg(target_os = "windows")]
@@ -674,7 +890,10 @@ fn encode_loop(
 			return Err("The selected screen or window stopped sharing");
 		}
 		#[cfg(target_os = "macos")]
-		_native.refresh_dimensions()?;
+		{
+			let _refresh = progress.operation(NativeOperation::RefreshingCapture);
+			progress.result(_native.refresh_dimensions())?;
+		}
 		let interval = Duration::from_secs_f64(1.0 / f64::from(settings.fps));
 		let wait = if delivery.needs_picture() || keyframe.load(Ordering::Acquire) {
 			interval.min(Duration::from_millis(100))
@@ -708,18 +927,21 @@ fn encode_loop(
 		}
 		if reset != reset_generation {
 			reset_generation = reset;
-			if let Some(encoder) = encoding.take() {
+			progress.reset(reset);
+			if let Some(encoder) = &encoding {
 				next_epoch = encoder
 					.epoch()
 					.checked_add(1)
 					.ok_or("Screen encoder epoch exhausted")?;
 			}
+			progress.retire(&mut encoding);
 			latest_frame = None;
 			delivery.retire();
 			first_output_deadline = None;
 			keyframe.store(true, Ordering::Release);
 			// This input can span the transition. Restart the selected capture so an
 			// idle desktop supplies a new snapshot instead of waiting for damage.
+			let _refresh = progress.operation(NativeOperation::RefreshingCapture);
 			_native.request_frame(&raw)?;
 			first_frame_deadline = Some(Instant::now() + Duration::from_secs(15));
 			next_frame = Instant::now();
@@ -736,6 +958,7 @@ fn encode_loop(
 			capture_reports.1 = now + Duration::from_secs(5);
 		}
 		if let Some(frame) = &frame {
+			progress.captured();
 			frame.validate()?;
 			let source_dimensions = frame.source_dimensions();
 			let resolved = settings
@@ -757,7 +980,7 @@ fn encode_loop(
 						.checked_add(1)
 						.ok_or("Screen encoder epoch exhausted")?;
 				}
-				encoding = None;
+				progress.retire(&mut encoding);
 				latest_frame = None;
 				delivery.retire();
 				first_output_deadline = None;
@@ -813,7 +1036,7 @@ fn encode_loop(
 					.checked_add(1)
 					.ok_or("Screen encoder epoch exhausted")?;
 			}
-			encoding = None;
+			progress.retire(&mut encoding);
 			delivery.retire();
 			first_output_deadline = None;
 			keyframe.store(true, Ordering::Release);
@@ -844,7 +1067,8 @@ fn encode_loop(
 				.maximum,
 		);
 		if encoding.is_none() {
-			encoding = Some(ScreenEncoder::new_for_capture(
+			let _opening = progress.operation(NativeOperation::OpeningEncoder);
+			encoding = Some(progress.result(ScreenEncoder::new_for_capture(
 				latest_frame.as_ref().expect("resolved screen frame"),
 				resolved,
 				target,
@@ -852,15 +1076,19 @@ fn encode_loop(
 				adapter,
 				next_epoch,
 				reset_generation,
-			)?);
+				stop.clone(),
+			))?);
 		}
-		if encoding
-			.as_mut()
-			.expect("secure screen encoder")
-			.set_bitrate(target)?
-		{
+		let reconfigure = progress.operation(NativeOperation::OpeningEncoder);
+		if progress.result(
+			encoding
+				.as_mut()
+				.expect("secure screen encoder")
+				.set_bitrate(target),
+		)? {
 			keyframe.store(true, Ordering::Release);
 		}
+		drop(reconfigure);
 		// Retain one source snapshot for keyframe requests on an unchanged desktop.
 		let force_keyframe = keyframe.swap(false, Ordering::AcqRel);
 		if audio_epoch.load(Ordering::Acquire) != reset_generation {
@@ -868,7 +1096,8 @@ fn encode_loop(
 		}
 		let encoder = encoding.as_mut().expect("secure screen encoder");
 		let drained = if !fresh && !force_keyframe {
-			encoder.drain()?
+			let _drain = progress.operation(NativeOperation::Draining);
+			progress.result(encoder.drain())?
 		} else {
 			None
 		};
@@ -877,22 +1106,28 @@ fn encode_loop(
 		} else if delivery.needs_picture() || force_keyframe {
 			let timestamp = (origin.elapsed().as_micros() * 90 / 1000) as u32;
 			let started = metrics.start();
-			let packet = encoder.encode_capture_at(
+			let _encode = progress.operation(NativeOperation::Encoding);
+			let packet = progress.result(encoder.encode_capture_at(
 				latest_frame.as_ref().expect("latest screen frame"),
 				force_keyframe,
 				timestamp,
-			)?;
+			))?;
 			metrics.finish(crate::diagnostics::Stage::Encode, started);
 			(packet, timestamp)
 		} else {
 			continue;
 		};
 		delivery.record_packet(submitted_at, &packet)?;
+		progress.packet(reset_generation, &packet);
+		progress.pending(
+			reset_generation,
+			delivery.needs_picture() || encoder.awaiting_keyframe(),
+		);
 		// Dropped inputs consume no picture credits. Bound missing output
 		// separately so a native encoder cannot leave the viewer waiting forever.
 		check_output_deadline(
 			&mut first_output_deadline,
-			encoder.awaiting_keyframe || delivery.needs_picture(),
+			encoder.awaiting_keyframe() || delivery.needs_picture(),
 			!packet.data.is_empty(),
 			Instant::now(),
 		)?;
@@ -918,10 +1153,8 @@ fn encode_loop(
 				.reset_generation,
 		};
 		if send.try_send(frame).is_err() {
-			encoding
-				.as_mut()
-				.expect("secure screen encoder")
-				.restart()?;
+			let _restart = progress.operation(NativeOperation::OpeningEncoder);
+			progress.result(encoding.as_mut().expect("secure screen encoder").restart())?;
 			keyframe.store(true, Ordering::Release);
 			delivery.retire();
 		}
@@ -947,6 +1180,7 @@ pub(super) fn retain_screen_frame(
 
 /// Selected encoder shared by every platform; native capture remains independent.
 pub(super) struct ScreenEncoder {
+	stop: Arc<AtomicBool>,
 	diagnostics: crate::diagnostics::EncoderRegistration,
 	encoder: Option<crate::video_encode::Encoder>,
 	video_settings: VideoSettings,
@@ -965,6 +1199,11 @@ pub(super) struct ScreenEncoder {
 }
 
 impl ScreenEncoder {
+	pub(super) fn awaiting_keyframe(&self) -> bool {
+		self.awaiting_keyframe
+	}
+
+	#[cfg(test)]
 	pub(super) fn new_on_adapter(
 		settings: Settings,
 		bitrate: u32,
@@ -973,12 +1212,32 @@ impl ScreenEncoder {
 		epoch_base: u64,
 		reset_generation: u64,
 	) -> Result<Self, &'static str> {
+		Self::new_controlled(
+			settings,
+			bitrate,
+			video_settings,
+			adapter,
+			epoch_base,
+			reset_generation,
+			Arc::new(AtomicBool::new(false)),
+		)
+	}
+
+	pub(super) fn new_controlled(
+		settings: Settings,
+		bitrate: u32,
+		video_settings: VideoSettings,
+		adapter: Option<model::VideoAdapter>,
+		epoch_base: u64,
+		reset_generation: u64,
+		stop: Arc<AtomicBool>,
+	) -> Result<Self, &'static str> {
 		if !settings.valid() || reset_generation == u64::MAX {
 			return Err("Invalid screen encoder settings");
 		}
 		let mut config = Self::config(settings, bitrate, video_settings);
 		config.adapter = adapter;
-		let encoder = crate::video_encode::Encoder::new(config)?;
+		let encoder = crate::video_encode::Encoder::new_with_control(config, stop.clone())?;
 		Ok(Self::with_encoder(
 			settings,
 			bitrate,
@@ -987,6 +1246,7 @@ impl ScreenEncoder {
 			epoch_base,
 			reset_generation,
 			encoder,
+			stop,
 		))
 	}
 
@@ -999,8 +1259,10 @@ impl ScreenEncoder {
 		epoch_base: u64,
 		reset_generation: u64,
 		encoder: crate::video_encode::Encoder,
+		stop: Arc<AtomicBool>,
 	) -> Self {
 		Self {
+			stop,
 			diagnostics: crate::diagnostics::EncoderRegistration::new(
 				true,
 				encoder.hardware(),
@@ -1033,6 +1295,7 @@ impl ScreenEncoder {
 		adapter: Option<model::VideoAdapter>,
 		epoch_base: u64,
 		reset_generation: u64,
+		stop: Arc<AtomicBool>,
 	) -> Result<Self, &'static str> {
 		if !settings.valid() || reset_generation == u64::MAX {
 			return Err("Invalid screen encoder settings");
@@ -1043,7 +1306,17 @@ impl ScreenEncoder {
 			let CapturedFrame::Gpu(frame) = frame;
 			let mut config = Self::config(settings, bitrate, video_settings);
 			config.adapter = adapter;
-			if let Ok(encoder) = crate::video_encode::Encoder::new_on_surface(config, frame) {
+			let encoder = crate::video_encode::Encoder::new_on_surface_with_control(
+				config,
+				frame,
+				stop.clone(),
+			);
+			if let Err(error) = encoder.as_ref()
+				&& crate::video_encode::terminal_error(error)
+			{
+				return Err(error);
+			}
+			if let Ok(encoder) = encoder {
 				let mut screen = Self::with_encoder(
 					settings,
 					bitrate,
@@ -1052,19 +1325,21 @@ impl ScreenEncoder {
 					epoch_base,
 					reset_generation,
 					encoder,
+					stop,
 				);
 				screen.surface_input = true;
 				return Ok(screen);
 			}
 			frame.prefer_cpu();
 		}
-		Self::new_on_adapter(
+		Self::new_controlled(
 			settings,
 			bitrate,
 			video_settings,
 			adapter,
 			epoch_base,
 			reset_generation,
+			stop,
 		)
 	}
 
@@ -1107,8 +1382,21 @@ impl ScreenEncoder {
 					self.diagnostics.set(None);
 					let mut config = Self::config(self.settings, self.bitrate, self.video_settings);
 					config.adapter = self.adapter;
-					let encoder = crate::video_encode::Encoder::new_on_surface(config, frame)
-						.or_else(|_| crate::video_encode::Encoder::new(config))?;
+					let encoder = crate::video_encode::Encoder::new_on_surface_with_control(
+						config,
+						frame,
+						self.stop.clone(),
+					)
+					.or_else(|error| {
+						if crate::video_encode::terminal_error(error) {
+							Err(error)
+						} else {
+							crate::video_encode::Encoder::new_with_control(
+								config,
+								self.stop.clone(),
+							)
+						}
+					})?;
 					self.surface_input = encoder.uses_surface();
 					if !self.surface_input {
 						frame.prefer_cpu();
@@ -1122,8 +1410,12 @@ impl ScreenEncoder {
 						self.restart()?;
 					}
 					let encoder = self.encoder.as_mut().ok_or("Screen encoder stopped")?;
-					if let Ok(result) = encoder.encode_surface_at(frame, false, timestamp) {
-						return self.finish_packet(result);
+					match encoder.encode_surface_at(frame, false, timestamp) {
+						Ok(result) => return self.finish_packet(result),
+						Err(error) if crate::video_encode::terminal_error(error) => {
+							return Err(error);
+						}
+						Err(_) => {}
 					}
 					// The host API retires the old surface session and advances its
 					// prediction epoch before accepting this downloaded picture.
@@ -1213,6 +1505,9 @@ impl ScreenEncoder {
 	pub(super) fn drain(
 		&mut self,
 	) -> Result<Option<crate::video_encode::EncodedPacket>, &'static str> {
+		if self.stop.load(Ordering::Acquire) {
+			return Err(crate::video_encode::ENCODE_CANCELLED);
+		}
 		let result = self
 			.encoder
 			.as_mut()
@@ -1266,6 +1561,9 @@ impl ScreenEncoder {
 		force: bool,
 		timestamp: u32,
 	) -> Result<crate::video_encode::EncodedPacket, &'static str> {
+		if self.stop.load(Ordering::Acquire) {
+			return Err(crate::video_encode::ENCODE_CANCELLED);
+		}
 		if force {
 			self.restart()?;
 		}
@@ -1765,10 +2063,147 @@ mod tests {
 	}
 
 	#[test]
+	fn progress_does_not_treat_a_static_lookahead_tail_as_missing_pictures() {
+		let progress = Progress::default();
+		let mut delivery = CaptureDelivery::default();
+		progress.reset(7);
+		delivery.fresh().unwrap();
+		let mut packet = crate::video_encode::EncodedPacket {
+			data: Vec::new(),
+			timestamp: 0,
+			keyframe: false,
+			epoch: 1,
+			input_accepted: true,
+		};
+		for timestamp in 0..16 {
+			delivery.record_packet(timestamp, &packet).unwrap();
+			progress.packet(7, &packet);
+		}
+		progress.pending(7, delivery.needs_picture());
+		assert!(progress.snapshot().pending_since.is_some());
+		packet.input_accepted = false;
+		packet.data.push(1);
+		delivery.record_packet(0, &packet).unwrap();
+		progress.packet(7, &packet);
+		progress.pending(7, delivery.needs_picture());
+		let snapshot = progress.snapshot();
+		assert_eq!((snapshot.accepted, snapshot.produced), (16, 1));
+		assert_eq!(delivery.inputs.len(), 15);
+		assert!(snapshot.pending_since.is_none());
+		assert!(snapshot.last_output.is_some());
+		progress.transmitted(7);
+		assert_eq!(progress.snapshot().sent, 1);
+		progress.reset(8);
+		progress.packet(7, &packet);
+		progress.pending(7, true);
+		progress.transmitted(7);
+		let snapshot = progress.snapshot();
+		assert_eq!(
+			(snapshot.generation, snapshot.accepted, snapshot.produced),
+			(8, 0, 0)
+		);
+		assert!(snapshot.pending_since.is_none() && snapshot.last_output.is_none());
+		assert_eq!(snapshot.sent, 0);
+		progress.transmitted(8);
+		assert_eq!(progress.snapshot().sent, 1);
+	}
+
+	#[test]
+	fn choosing_source_keeps_its_deadline_and_native_start_gets_a_fresh_one() {
+		let progress = Progress::default();
+		let outer = progress.operation(NativeOperation::OpeningCapture);
+		let choosing = progress.operation(NativeOperation::ChoosingSource);
+		let chosen_at = progress.snapshot().operation.unwrap().1;
+		assert_eq!(
+			progress.native_failure_at(chosen_at + Duration::from_secs(45)),
+			None
+		);
+		assert_eq!(
+			progress.native_failure_at(chosen_at + Duration::from_secs(119)),
+			None
+		);
+		assert_eq!(
+			progress.native_failure_at(chosen_at + Duration::from_secs(120)),
+			Some("Screen selection timed out; choose a source again")
+		);
+		drop(choosing);
+		let opening = progress.operation(NativeOperation::OpeningCapture);
+		let started_at = progress.snapshot().operation.unwrap().1;
+		drop(outer);
+		assert_eq!(
+			progress.snapshot().operation,
+			Some((NativeOperation::OpeningCapture, started_at))
+		);
+		assert_eq!(
+			progress.native_failure_at(started_at + Duration::from_secs(29)),
+			None
+		);
+		assert_eq!(
+			progress.native_failure_at(started_at + Duration::from_secs(30)),
+			Some("Screen capture did not finish starting")
+		);
+		drop(opening);
+		assert!(progress.snapshot().operation.is_none());
+	}
+
+	#[test]
+	fn native_watchdog_runs_without_encoder_progress_and_preserves_first_failure() {
+		let progress = Progress::default();
+		let operation = progress.operation(NativeOperation::Encoding);
+		progress.0.lock().unwrap().snapshot.operation = Some((
+			NativeOperation::Encoding,
+			Instant::now() - Duration::from_secs(16),
+		));
+		assert_eq!(
+			progress.native_failure(),
+			Some("Screen video encoder stopped responding")
+		);
+		drop(operation);
+		assert!(
+			progress
+				.result::<()>(Err("original encoder failure"))
+				.is_err()
+		);
+		assert!(
+			progress
+				.result::<()>(Err("later teardown failure"))
+				.is_err()
+		);
+		let _closing = progress.operation(NativeOperation::Retiring);
+		assert_eq!(progress.native_failure(), Some("original encoder failure"));
+	}
+
+	#[test]
+	fn worker_shutdown_cancels_before_native_completion() {
+		let stop = Arc::new(AtomicBool::new(false));
+		let ready = Arc::new(AtomicBool::new(true));
+		let (send, done) = mpsc::sync_channel(1);
+		let worker = Worker {
+			stop: stop.clone(),
+			ready: ready.clone(),
+			progress: Arc::new(Progress::default()),
+			output: Arc::new(Mutex::new(None)),
+			bitrate: Arc::new(AtomicU32::new(1_000_000)),
+			preview: Arc::new(Mutex::new(None)),
+			done: Some(done),
+			#[cfg(target_os = "linux")]
+			status: Arc::new(Mutex::new("synthetic")),
+			preview_visible: Arc::new(AtomicBool::new(false)),
+		};
+		let done = worker.shutdown();
+		assert!(stop.load(Ordering::Acquire));
+		assert!(!ready.load(Ordering::Acquire));
+		assert_eq!(done.try_recv(), Err(mpsc::TryRecvError::Empty));
+		send.send(Ok(())).unwrap();
+		assert_eq!(done.try_recv(), Ok(Ok(())));
+	}
+
+	#[test]
 	fn hiding_preview_discards_pending_images_without_changing_stream_readiness() {
 		let ready = Arc::new(AtomicBool::new(true));
 		let worker = Worker {
 			stop: Arc::new(AtomicBool::new(false)),
+			progress: Arc::new(Progress::default()),
 			ready: ready.clone(),
 			output: Arc::new(Mutex::new(None)),
 			bitrate: Arc::new(AtomicU32::new(1_000_000)),
@@ -1874,6 +2309,7 @@ mod tests {
 		assert_eq!(bitrate.load(Ordering::Acquire), first.rates.maximum);
 		let (_, frames) = tokio::sync::mpsc::channel(1);
 		let video = Video {
+			progress: Arc::new(Progress::default()),
 			video_settings: VideoSettings::default(),
 			output: output.clone(),
 			frames,
@@ -2064,6 +2500,7 @@ mod tests {
 				crate::diagnostics::AmfSplit::Off,
 			),
 			encoder: Some(software),
+			stop: Arc::new(AtomicBool::new(false)),
 			video_settings,
 			i420: Vec::new(),
 			converter: convert::Converter::default(),
@@ -2157,6 +2594,7 @@ mod tests {
 		assert_eq!(preview.as_raw(), &[3, 2, 1, 255, 6, 5, 4, 255]);
 		let worker = Worker {
 			stop: Arc::new(AtomicBool::new(false)),
+			progress: Arc::new(Progress::default()),
 			ready: Arc::new(AtomicBool::new(false)),
 			output: Arc::new(Mutex::new(None)),
 			bitrate: Arc::new(AtomicU32::new(model::voice_settings::VideoBitrate::MINIMUM)),
@@ -2231,6 +2669,7 @@ mod tests {
 			encoder: Some(encoder),
 			video_settings,
 			i420: Vec::new(),
+			stop: Arc::new(AtomicBool::new(false)),
 			converter: convert::Converter::default(),
 			#[cfg(target_os = "windows")]
 			capture_bytes: Vec::new(),

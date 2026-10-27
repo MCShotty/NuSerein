@@ -394,6 +394,14 @@ class BundleTest(unittest.TestCase):
             (root / "configure").write_text('hevc_qsv_encoder_select="hevcparse qsvenc"\n')
             (root / "libavcodec/libdav1d.c").write_text(
                 "    ret = av_image_get_buffer_size(format, w, h, DAV1D_PICTURE_ALIGNMENT);\n")
+            # The runtime AMF fixture exercises these replacements against the
+            # complete pinned source. Here only materialize missing anchors for
+            # this synthetic recipe/fail-closed fixture.
+            for relative, old, _ in builder.amf_control_patches():
+                path = root / relative
+                current = path.read_text() if path.exists() else ""
+                if old not in current:
+                    path.write_text(current + old + "\n")
             source_patch = builder.patch_ffmpeg(root)
             self.assertIn("+ret = ff_get_encode_buffer(avctx, &pkt.pkt, q->packet_size, 0);", source_patch)
             self.assertEqual((root / "libavcodec/serein_qsv_feature_validation.h").read_text(),
@@ -402,6 +410,8 @@ class BundleTest(unittest.TestCase):
             self.assertEqual(source_patch.count("+        q->preset != q->param.mfx.TargetUsage"), 3)
             self.assertEqual((root / "libavcodec/serein_amf_split_encoding.h").read_text(),
                              builder.AMF_SPLIT_ENCODING)
+            self.assertEqual((root / "libavcodec/serein_amf_control.h").read_text(),
+                             builder.AMF_CONTROL)
             self.assertIn("p->p.bpc > 10", (root / "libavcodec/libdav1d.c").read_text())
             self.assertIn("(int64_t)w * h > (int64_t)7680 * 4352", source_patch)
             with self.assertRaisesRegex(ValueError, "exactly one"):

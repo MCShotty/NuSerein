@@ -5,7 +5,9 @@ use super::{
 	portal_linux::Portal,
 	preview_frame,
 };
-use crate::screen::{CaptureDelivery, check_output_deadline};
+use crate::screen::{
+	CaptureDelivery, NativeOperation, Progress, RetireOnExit, check_output_deadline,
+};
 use ::gstreamer as gst;
 /// A capture source that has nothing new to send still emits a keepalive picture once a
 /// second, so a frozen share is not a gap between pictures but a run of seconds carrying
@@ -91,6 +93,7 @@ pub(super) fn run(
 	preview: Arc<Mutex<Option<image::RgbaImage>>>,
 	status: Arc<Mutex<&'static str>>,
 	preview_visible: Arc<AtomicBool>,
+	progress: Arc<Progress>,
 	wake: &impl Fn(),
 ) -> Result<(), &'static str> {
 	let direct = settings.source == SourceId::X11Desktop && x11_session();
@@ -198,6 +201,7 @@ pub(super) fn run(
 			let mut visible = true;
 			let mut first_preview = Some(Instant::now());
 			let geometry_started = Instant::now();
+			let _retirement = RetireOnExit(&progress);
 			loop {
 				if stop.load(Ordering::Acquire) || send.is_closed() {
 					return Ok(());
@@ -225,8 +229,10 @@ pub(super) fn run(
 				}
 				if reset != reset_generation {
 					reset_generation = reset;
+					progress.reset(reset);
 					if let Some(encoder) = &mut encoding {
-						encoder.reset_for_security(reset)?;
+						let _restart = progress.operation(NativeOperation::OpeningEncoder);
+						progress.result(encoder.reset_for_security(reset))?;
 					}
 					latest_frame = None;
 					delivery.retire();
@@ -262,7 +268,7 @@ pub(super) fn run(
 								.checked_add(1)
 								.ok_or("Screen encoder epoch exhausted")?;
 						}
-						encoding = None;
+						progress.retire(&mut encoding);
 						latest_frame = None;
 						delivery.retire();
 						output_deadline = None;
@@ -286,13 +292,15 @@ pub(super) fn run(
 				);
 				// A rate change updates only the encoder, preserving the approved
 				// source, preview and audio. Do not restart while waiting for its first IDR.
+				let reconfigure = progress.operation(NativeOperation::OpeningEncoder);
 				if !waiting_keyframe
 					&& let Some(encoder) = encoding.as_mut()
-					&& encoder.set_bitrate(target)?
+					&& progress.result(encoder.set_bitrate(target))?
 				{
 					waiting_keyframe = true;
 					keyframe.store(true, Ordering::Release);
 				}
+				drop(reconfigure);
 				// Counted per pass: whether a picture was taken, and whether one was left
 				// in the pipeline because the transport had not drained the last.
 				let mut pulled = false;
@@ -332,7 +340,7 @@ pub(super) fn run(
 							.checked_add(1)
 							.ok_or("Screen encoder epoch exhausted")?;
 					}
-					encoding = None;
+					progress.retire(&mut encoding);
 					// The raw gate stops updating during a security pause. Discard its old
 					// snapshot so the resumed share starts from newly captured contents.
 					latest_frame = None;
@@ -347,6 +355,7 @@ pub(super) fn run(
 					let _ = pipeline.frames.try_pull_sample(gst::ClockTime::ZERO);
 				} else {
 					if capture_reset && send.capacity() > 0 {
+						let _refresh = progress.operation(NativeOperation::RefreshingCapture);
 						pipeline.request_frame()?;
 						capture_reset = false;
 					}
@@ -380,6 +389,7 @@ pub(super) fn run(
 							raw = None;
 						}
 						if raw.is_some() {
+							progress.captured();
 							pulled = true;
 							delivery.fresh()?;
 							metrics.finish(crate::diagnostics::Stage::Receive, pull);
@@ -398,16 +408,20 @@ pub(super) fn run(
 						)?;
 						if needs_input || encoding.as_ref().is_some_and(ScreenEncoder::pending) {
 							if encoding.is_none() {
-								encoding = Some(ScreenEncoder::new_on_adapter(
-									current_output
-										.ok_or("Screen dimensions are unresolved")?
-										.settings,
-									target,
-									video_settings,
-									adapter,
-									next_epoch,
-									reset_generation,
-								)?);
+								let _opening = progress.operation(NativeOperation::OpeningEncoder);
+								encoding = Some(
+									progress.result(ScreenEncoder::new_controlled(
+										current_output
+											.ok_or("Screen dimensions are unresolved")?
+											.settings,
+										target,
+										video_settings,
+										adapter,
+										next_epoch,
+										reset_generation,
+										stop.clone(),
+									))?,
+								);
 							}
 							let encoder = encoding.as_mut().expect("screen encoder initialized");
 							let start = metrics.start();
@@ -417,20 +431,22 @@ pub(super) fn run(
 								continue;
 							}
 							let drained = if !pulled && !force_keyframe && encoder.pending() {
-								encoder.drain()?
+								let _drain = progress.operation(NativeOperation::Draining);
+								progress.result(encoder.drain())?
 							} else {
 								None
 							};
 							let encoded = if let Some(packet) = drained {
 								Some((packet, 0))
 							} else if needs_input || force_keyframe {
+								let _encode = progress.operation(NativeOperation::Encoding);
 								let timestamp = (origin.elapsed().as_micros() * 90 / 1000) as u32;
 								Some((
-									encoder.encode_at(
+									progress.result(encoder.encode_at(
 										latest_frame.as_ref().expect("latest screen frame"),
 										force_keyframe,
 										timestamp,
-									)?,
+									))?,
 									timestamp,
 								))
 							} else {
@@ -439,6 +455,11 @@ pub(super) fn run(
 							if let Some((packet, submitted_at)) = encoded {
 								picture_progress = !packet.data.is_empty();
 								delivery.record_packet(submitted_at, &packet)?;
+								progress.packet(reset_generation, &packet);
+								progress.pending(
+									reset_generation,
+									delivery.needs_picture() || encoder.awaiting_keyframe(),
+								);
 								// Advance from the schedule, with jitter tolerance and no catch-up burst.
 								next_frame = (next_frame + interval).max(now + interval / 2);
 								last_encoded = Some(now);
@@ -478,7 +499,9 @@ pub(super) fn run(
 											wake();
 										}
 									} else {
-										encoder.restart()?;
+										let _restart =
+											progress.operation(NativeOperation::OpeningEncoder);
+										progress.result(encoder.restart())?;
 										delivery.retire();
 										waiting_keyframe = true;
 										keyframe.store(true, Ordering::Release);

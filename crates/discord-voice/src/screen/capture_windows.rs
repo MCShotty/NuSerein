@@ -100,6 +100,7 @@ pub(crate) fn sources() -> Result<Vec<Source>, &'static str> {
 struct Flags {
 	frames: SyncSender<CapturedFrame>,
 	stop: Arc<AtomicBool>,
+	cancel: Arc<AtomicBool>,
 	pending: Arc<AtomicBool>,
 	next_frame: Instant,
 	interval: Duration,
@@ -155,7 +156,7 @@ impl GraphicsCaptureApiHandler for Handler {
 		control: InternalCaptureControl,
 	) -> Result<(), Self::Error> {
 		let flags = &mut self.0;
-		if flags.stop.load(Ordering::Acquire) {
+		if flags.stop.load(Ordering::Acquire) || flags.cancel.load(Ordering::Acquire) {
 			control.stop();
 			return Ok(());
 		}
@@ -318,10 +319,22 @@ impl GraphicsCaptureApiHandler for Handler {
 }
 
 fn poll_processing(flags: Flags, poll_stop: Arc<AtomicBool>, failed: Arc<AtomicBool>) {
-	while !poll_stop.load(Ordering::Acquire) && !flags.stop.load(Ordering::Acquire) {
-		let Ok(mut processing) = flags.processing.0.lock() else {
-			failed.store(true, Ordering::Release);
-			break;
+	while !poll_stop.load(Ordering::Acquire)
+		&& !flags.stop.load(Ordering::Acquire)
+		&& !flags.cancel.load(Ordering::Acquire)
+	{
+		let mut processing = match flags.processing.0.try_lock() {
+			Ok(processing) => processing,
+			Err(std::sync::TryLockError::WouldBlock) => {
+				// The capture callback can be opening/replacing a native pool.
+				// Keep cancellation observable instead of waiting behind that call.
+				std::thread::sleep(Duration::from_millis(1));
+				continue;
+			}
+			Err(std::sync::TryLockError::Poisoned(_)) => {
+				failed.store(true, Ordering::Release);
+				break;
+			}
 		};
 		let mut waiting_gpu = false;
 		if let Some(processor) = processing.processor.as_mut() {
@@ -388,6 +401,7 @@ pub(crate) struct Capture {
 	settings: CaptureSettings,
 	frames: SyncSender<CapturedFrame>,
 	stop: Arc<AtomicBool>,
+	cancel: Arc<AtomicBool>,
 	pending: Arc<AtomicBool>,
 	adapter: Option<model::VideoAdapter>,
 	gpu: bool,
@@ -404,6 +418,9 @@ impl Capture {
 		&mut self,
 		frames: &std::sync::mpsc::Receiver<CapturedFrame>,
 	) -> Result<(), &'static str> {
+		if self.cancel.load(Ordering::Acquire) {
+			return Ok(());
+		}
 		self.poll_stop.store(true, Ordering::Release);
 		self.processing.1.notify_all();
 		if let Some(poll) = self.poll.take() {
@@ -416,10 +433,14 @@ impl Capture {
 		}
 		while frames.try_recv().is_ok() {}
 		self.pending.store(false, Ordering::Release);
+		if self.cancel.load(Ordering::Acquire) {
+			return Ok(());
+		}
 		let mut capture = Self::start_video(
 			self.settings,
 			self.frames.clone(),
 			self.stop.clone(),
+			self.cancel.clone(),
 			self.pending.clone(),
 			self.adapter,
 			self.gpu,
@@ -437,6 +458,7 @@ impl Capture {
 		frames: SyncSender<CapturedFrame>,
 		audio: Option<tokio::sync::mpsc::Sender<AudioChunk>>,
 		stop: Arc<AtomicBool>,
+		cancel: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,
 		audio_epoch: Arc<AtomicU64>,
 		pending: Arc<AtomicBool>,
@@ -450,6 +472,7 @@ impl Capture {
 			settings,
 			frames,
 			stop.clone(),
+			cancel.clone(),
 			pending,
 			adapter,
 			gpu,
@@ -457,7 +480,7 @@ impl Capture {
 			Arc::new(ProbeStats::default()),
 		)?;
 		if let Some(send) = audio {
-			capture.audio = Some(audio::Audio::start(send, stop, ready, audio_epoch)?);
+			capture.audio = Some(audio::Audio::start(send, stop, cancel, ready, audio_epoch)?);
 		}
 		Ok(capture)
 	}
@@ -467,12 +490,16 @@ impl Capture {
 		settings: CaptureSettings,
 		frames: SyncSender<CapturedFrame>,
 		stop: Arc<AtomicBool>,
+		cancel: Arc<AtomicBool>,
 		pending: Arc<AtomicBool>,
 		adapter: Option<model::VideoAdapter>,
 		gpu: bool,
 		probe: Option<ProbeMode>,
 		stats: Arc<ProbeStats>,
 	) -> Result<Self, &'static str> {
+		if cancel.load(Ordering::Acquire) {
+			return Err(crate::video_encode::ENCODE_CANCELLED);
+		}
 		match settings.source {
 			SourceId::Display(id) => {
 				let monitor = Monitor::enumerate()
@@ -485,6 +512,7 @@ impl Capture {
 					monitor,
 					frames,
 					stop.clone(),
+					cancel.clone(),
 					pending,
 					adapter,
 					gpu,
@@ -503,6 +531,7 @@ impl Capture {
 					window,
 					frames,
 					stop.clone(),
+					cancel.clone(),
 					pending,
 					adapter,
 					gpu,
@@ -526,6 +555,7 @@ impl Capture {
 		Self::start_video(
 			settings,
 			frames,
+			stop.clone(),
 			stop,
 			Arc::new(AtomicBool::new(false)),
 			adapter,
@@ -581,6 +611,7 @@ fn start_item<T>(
 	item: T,
 	frames: SyncSender<CapturedFrame>,
 	stop: Arc<AtomicBool>,
+	cancel: Arc<AtomicBool>,
 	pending: Arc<AtomicBool>,
 	adapter: Option<model::VideoAdapter>,
 	gpu: bool,
@@ -604,6 +635,7 @@ where
 	let flags = Flags {
 		frames: frames.clone(),
 		stop: stop.clone(),
+		cancel: cancel.clone(),
 		pending: pending.clone(),
 		next_frame: Instant::now(),
 		interval: Duration::from_secs_f64(1.0 / f64::from(settings.fps)),
@@ -709,6 +741,7 @@ where
 		settings,
 		frames,
 		stop,
+		cancel,
 		pending,
 		adapter,
 		gpu,
@@ -732,5 +765,59 @@ impl Drop for Capture {
 		if let Some(control) = self.control.take() {
 			let _ = control.stop();
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn cancellation_exits_readback_without_waiting_for_a_busy_native_owner() {
+		let (frames, _receive) = std::sync::mpsc::sync_channel(1);
+		let stop = Arc::new(AtomicBool::new(false));
+		let cancel = Arc::new(AtomicBool::new(true));
+		let processing = Arc::new((Mutex::new(Processing::default()), Condvar::new()));
+		let guard = processing.0.lock().unwrap();
+		let flags = Flags {
+			frames,
+			stop: stop.clone(),
+			cancel,
+			pending: Arc::new(AtomicBool::new(false)),
+			next_frame: Instant::now(),
+			interval: Duration::from_millis(16),
+			luminance: None,
+			source: SourceId::Display(1),
+			next_color: Instant::now(),
+			settings: crate::screen::Settings {
+				source: SourceId::Display(1),
+				width: 1280,
+				height: 720,
+				fps: 60,
+				cursor: true,
+				audio: false,
+			}
+			.into(),
+			adapter: None,
+			gpu: true,
+			probe: None,
+			stats: Arc::default(),
+			processing: processing.clone(),
+		};
+		let failed = Arc::new(AtomicBool::new(false));
+		let failed_worker = failed.clone();
+		let (done, receive) = std::sync::mpsc::sync_channel(1);
+		let worker = std::thread::spawn(move || {
+			poll_processing(flags, Arc::new(AtomicBool::new(false)), failed_worker);
+			done.send(()).unwrap();
+		});
+		receive.recv_timeout(Duration::from_secs(1)).unwrap();
+		drop(guard);
+		worker.join().unwrap();
+		assert!(!failed.load(Ordering::Acquire));
+		assert!(
+			!stop.load(Ordering::Acquire),
+			"user cancellation is not source closure"
+		);
 	}
 }
