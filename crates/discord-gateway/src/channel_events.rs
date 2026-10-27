@@ -149,7 +149,7 @@ pub(super) fn create(
 
 pub(super) fn permission_metadata(bytes: &[u8], user: Id) -> Result<Option<Event>, Failure> {
 	Ok(discord_protocol::permissions::channel(bytes, user)
-		.map_err(|_| Failure::Protocol)?
+		.map_err(|_| Failure::ProtocolAt(crate::PERMISSION_REFRESH))?
 		.map(|update| {
 			Event::Permissions(client_core::permissions::Event::Channel {
 				channel: update.id,

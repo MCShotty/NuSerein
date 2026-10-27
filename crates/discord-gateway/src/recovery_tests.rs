@@ -14,6 +14,7 @@ struct Gateway {
 	reconnect: Notify,
 	finished: Notify,
 	manual: AtomicBool,
+	subscription: Option<MemberSubscription>,
 }
 
 impl Gateway {
@@ -24,6 +25,7 @@ impl Gateway {
 			reconnect: Notify::new(),
 			finished: Notify::new(),
 			manual: AtomicBool::new(false),
+			subscription: None,
 		}
 	}
 
@@ -38,7 +40,7 @@ impl Gateway {
 							.unwrap(),
 					),
 					"wss://gateway.discord.gg/".into(),
-					watch::channel(None).1,
+					watch::channel(self.subscription.clone()).1,
 					mpsc::channel(1).1,
 					None,
 					Some(&self.reconnect),
@@ -121,6 +123,119 @@ async fn close(socket: &mut WebSocketStream<TcpStream>, code: u16) {
 		})))
 		.await
 		.unwrap();
+}
+
+#[tokio::test]
+async fn partial_delivery_waits_for_capacity_then_identifies_and_resynchronizes() {
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+	let blocked = AtomicBool::new(false);
+	let partial = AtomicBool::new(false);
+	let delivered = AtomicBool::new(false);
+	let diagnostics = Arc::new(Mutex::new(ConnectionDiagnostics::default()));
+	let state = Mutex::new(client_core::State::default());
+	let client = run_observed(
+		Arc::new(SessionSecret::from_owner_input("synthetic-congestion-session".into()).unwrap()),
+		"wss://gateway.discord.gg/".into(),
+		watch::channel(None).1,
+		mpsc::channel(1).1,
+		None,
+		None,
+		None,
+		diagnostics.clone(),
+		|event| {
+			if blocked.load(Ordering::Acquire) {
+				return Err(Failure::Busy);
+			}
+			if matches!(
+				&event,
+				Event::Permissions(client_core::permissions::Event::Channel { .. })
+			) && !partial.swap(true, Ordering::AcqRel)
+			{
+				blocked.store(true, Ordering::Release);
+				return Err(Failure::Busy);
+			}
+			if matches!(
+				&event,
+				Event::UserAction(client_core::user_actions::Event::NoteChanged { .. })
+			) {
+				delivered.store(true, Ordering::Release);
+			}
+			let mut state = state.lock().unwrap();
+			let generation = state.generation;
+			state.apply(client_core::Envelope { generation, event });
+			Ok(())
+		},
+		Some((&endpoint, &endpoint)),
+	);
+	let server = async {
+		let (stream, _) = listener.accept().await.unwrap();
+		stream.set_nodelay(true).unwrap();
+		let mut socket = accept_async(stream).await.unwrap();
+		send(
+			&mut socket,
+			json!({"op":10,"d":{"heartbeat_interval":120000}}),
+		)
+		.await;
+		assert_eq!(packet(&mut socket).await["op"], 2);
+		send(&mut socket, ready(1, "synthetic-before-congestion")).await;
+		send(&mut socket,json!({"op":0,"t":"CHANNEL_CREATE","s":2,"d":{"id":"3","guild_id":"2","type":0,"name":"Synthetic partial","permission_overwrites":[]}})).await;
+		for _ in 0..1000 {
+			if blocked.load(Ordering::Acquire) {
+				break;
+			}
+			tokio::task::yield_now().await;
+		}
+		assert!(partial.load(Ordering::Acquire));
+		assert!(state.lock().unwrap().channels.iter().any(|c| c.id == Id(3)));
+		assert!(
+			timeout(Duration::from_millis(300), listener.accept())
+				.await
+				.is_err(),
+			"full delivery queue must not cause a dial loop"
+		);
+		blocked.store(false, Ordering::Release);
+		let (stream, _) = listener.accept().await.unwrap();
+		stream.set_nodelay(true).unwrap();
+		let mut socket = accept_async(stream).await.unwrap();
+		send(
+			&mut socket,
+			json!({"op":10,"d":{"heartbeat_interval":120000}}),
+		)
+		.await;
+		assert_eq!(
+			packet(&mut socket).await["op"],
+			2,
+			"partially delivered dispatch requires fresh Identify"
+		);
+		send(&mut socket, ready(1, "synthetic-after-congestion")).await;
+		send(
+			&mut socket,
+			json!({"op":0,"t":"USER_NOTE_UPDATE","s":2,"d":{"id":"9","note":"Synthetic recovered"}}),
+		)
+		.await;
+		while !delivered.load(Ordering::Acquire) {
+			tokio::task::yield_now().await;
+		}
+		assert!(!state.lock().unwrap().channels.iter().any(|c| c.id == Id(3)));
+		close(&mut socket, 4004).await;
+		for _ in 0..100 {
+			tokio::task::yield_now().await;
+		}
+	};
+	let (result, ()) = timeout(Duration::from_secs(5), async {
+		tokio::join!(client, server)
+	})
+	.await
+	.unwrap();
+	assert_eq!(result, Err(Failure::Expired));
+	assert!(
+		diagnostics
+			.lock()
+			.unwrap()
+			.summary()
+			.contains(ConnectionReason::DeliveryCongestion.label())
+	);
 }
 
 #[tokio::test]
@@ -481,6 +596,7 @@ async fn gateway_rate_limit_reports_disconnect_immediately_and_manual_recovery_c
 		mpsc::channel(1).1,
 		None,
 		Some(&reconnect),
+		None,
 		diagnostics.clone(),
 		|event| {
 			if matches!(event, Event::Disconnected) {
@@ -567,6 +683,7 @@ async fn protocol_errors_from_dispatch_are_retained_by_the_diagnostic_boundary()
 		mpsc::channel(1).1,
 		None,
 		None,
+		None,
 		diagnostics.clone(),
 		|_| Ok(()),
 		Some((&endpoint, &endpoint)),
@@ -649,4 +766,82 @@ async fn split_reader_sends_one_automatic_pong_and_keeps_requested_heartbeats() 
 			gateway.stop(socket).await;
 		})
 		.await;
+}
+
+#[tokio::test]
+async fn older_dispatch_cannot_rewind_cursor_or_replace_a_newer_note() {
+	let gateway = Gateway::new().await;
+	gateway
+		.run(async {
+			let mut socket = gateway.socket(false, Some(2)).await;
+			send(&mut socket, ready(40, "synthetic-recovery-session")).await;
+			for (sequence, note) in [(42, "new"), (41, "old"), (42, "duplicate")] {
+				send(
+					&mut socket,
+					json!({"op":0,"t":"USER_NOTE_UPDATE","s":sequence,"d":{"id":"9","note":note}}),
+				)
+				.await;
+			}
+			send(&mut socket, json!({"op":1,"d":null})).await;
+			loop {
+				let value = packet(&mut socket).await;
+				if value["op"] == 1 {
+					assert_eq!(value["d"], 42);
+					send(&mut socket, json!({"op":11,"d":null})).await;
+					break;
+				}
+			}
+			gateway.stop(socket).await;
+		})
+		.await;
+}
+#[test]
+fn delayed_ack_keeps_a_later_probe_outstanding() {
+	let now = Instant::now();
+	let mut heartbeat = Heartbeat::default();
+	heartbeat
+		.pending
+		.extend([(1, now), (2, now + Duration::from_secs(1))]);
+	assert_eq!(heartbeat.ack(), Some(1));
+	assert_eq!(
+		heartbeat.probe_deadline(Some(2)),
+		Some(now + Duration::from_secs(1) + PROBE_TIMEOUT)
+	);
+	assert_eq!(heartbeat.ack(), Some(2));
+	assert!(heartbeat.pending.is_empty());
+}
+#[tokio::test]
+async fn resume_preserves_an_active_subscription_cooldown() {
+	let mut gateway = Gateway::new().await;
+	gateway.subscription = Some(MemberSubscription {
+		thread: false,
+		guild: Id(2),
+		channel: Id(3),
+		request: 1,
+		list_id: "everyone".into(),
+		ranges: vec![[0, 99]],
+	});
+	gateway.run(async {
+		let mut socket=gateway.socket(false,Some(2)).await;
+		let mut ready=ready(41,"synthetic-recovery-session");
+		ready["d"]["resume_gateway_url"]=json!("wss://gateway-resume.discord.gg/");
+		send(&mut socket,ready).await;
+		let mut subscriptions=0;
+		while subscriptions<2 {
+			let value=packet(&mut socket).await;
+			if value["op"]==37 {subscriptions+=1;}
+			if value["op"]==1 {send(&mut socket,json!({"op":11,"d":null})).await;}
+		}
+		send(&mut socket,json!({"op":0,"t":"RATE_LIMITED","s":42,"d":{"opcode":37,"retry_after":60,"meta":{"guild_id":"2"}}})).await;
+		send(&mut socket,json!({"op":7,"d":null})).await;
+		let mut socket=gateway.socket(true,Some(6)).await;
+		send(&mut socket,json!({"op":0,"t":"RESUMED","s":43,"d":{}})).await;
+		assert!(timeout(Duration::from_millis(100),async {
+			loop {let value=packet(&mut socket).await;
+				if value["op"]==37 {break;}
+				if value["op"]==1 {send(&mut socket,json!({"op":11,"d":null})).await;}
+			}
+		}).await.is_err(),"RESUME sent before the active cooldown ended");
+		gateway.stop(socket).await;
+	}).await;
 }

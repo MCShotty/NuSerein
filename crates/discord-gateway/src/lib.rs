@@ -4,6 +4,7 @@ mod channel_events;
 mod compression;
 mod connection_diagnostics;
 mod outgoing;
+const PERMISSION_REFRESH: &str = "Gateway permission metadata requires an authoritative refresh";
 pub use connection_diagnostics::{ConnectionDiagnostics, ConnectionReason};
 mod interactions;
 #[cfg(test)]
@@ -138,6 +139,17 @@ fn reaction_event(
 	})
 }
 
+fn catalog_scope(bytes: &[u8]) -> Option<Id> {
+	#[derive(serde::Deserialize)]
+	struct Scope {
+		guild_id: Id,
+	}
+	decode::<Scope>(bytes)
+		.ok()
+		.map(|s| s.guild_id)
+		.filter(|id| id.0 != 0)
+}
+
 #[derive(Default)]
 struct ResumeState {
 	session: Option<Zeroizing<String>>,
@@ -178,34 +190,39 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 #[derive(Default)]
 struct Heartbeat {
-	awaiting_since: Option<Instant>,
-	last_ack: Option<Instant>,
+	pending: std::collections::VecDeque<(u64, Instant)>,
 }
 impl Heartbeat {
 	#[cfg(test)]
 	fn tick(&mut self, now: Instant, interval: Duration) -> Result<(), Failure> {
-		if self
-			.awaiting_since
-			.is_some_and(|sent| now.duration_since(sent) >= interval)
-		{
+		if self.expired(now, interval) {
 			return Err(Failure::Network);
 		}
-		self.sent(now);
+		self.pending.push_back((0, now));
 		Ok(())
 	}
 	fn expired(&self, now: Instant, interval: Duration) -> bool {
-		self.awaiting_since
-			.is_some_and(|sent| now.saturating_duration_since(sent) >= interval)
+		self.pending
+			.front()
+			.is_some_and(|(_, sent)| now.saturating_duration_since(*sent) >= interval)
 	}
-	fn sent(&mut self, now: Instant) {
-		if self.last_ack.is_some_and(|ack| ack >= now) {
-			return;
+	fn collect(&mut self, writer: &outgoing::Outgoing) -> bool {
+		while let Some(receipt) = writer.take_heartbeat() {
+			if self.pending.len() == outgoing::PACKETS {
+				return false;
+			}
+			self.pending.push_back(receipt);
 		}
-		self.awaiting_since.get_or_insert(now);
+		true
 	}
-	fn ack(&mut self) {
-		self.last_ack = Some(Instant::now());
-		self.awaiting_since = None;
+	fn probe_deadline(&self, requested: Option<u64>) -> Option<Instant> {
+		self.pending
+			.iter()
+			.find(|(ticket, _)| Some(*ticket) == requested)
+			.map(|(_, sent)| *sent + PROBE_TIMEOUT)
+	}
+	fn ack(&mut self) -> Option<u64> {
+		self.pending.pop_front().map(|(ticket, _)| ticket)
 	}
 }
 fn next_attempt(attempt: u32, ready_for: Option<Duration>) -> u32 {
@@ -1144,6 +1161,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 			observe: &observe,
 		}),
 		Some(&reconnect),
+		None,
 		diagnostics,
 		emit,
 		#[cfg(test)]
@@ -1151,6 +1169,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 	)
 	.await
 }
+#[derive(Clone)]
 struct ActivityInput<'a> {
 	spotify: watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	member_queries: watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
@@ -1198,6 +1217,7 @@ async fn run_recoverable(
 		voice_controls,
 		activity,
 		reconnect,
+		None,
 		Arc::new(Mutex::new(ConnectionDiagnostics::default())),
 		emit,
 		#[cfg(test)]
@@ -1210,26 +1230,69 @@ async fn run_observed(
 	secret: Arc<SessionSecret>,
 	initial_url: String,
 	subscriptions: watch::Receiver<Option<MemberSubscription>>,
-	voice_controls: mpsc::Receiver<client_core::voice::Command>,
+	mut voice_controls: mpsc::Receiver<client_core::voice::Command>,
 	activity: Option<ActivityInput<'_>>,
 	reconnect: Option<&Notify>,
+	delivery: Option<watch::Receiver<bool>>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
 	emit: impl Fn(Event) -> Result<(), Failure>,
 	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
 ) -> Result<(), Failure> {
-	let result = run_observed_inner(
-		secret,
-		initial_url,
-		subscriptions,
-		voice_controls,
-		activity,
-		reconnect,
-		diagnostics.clone(),
-		emit,
-		#[cfg(test)]
-		test_endpoints,
-	)
-	.await;
+	let limits = Arc::new(Mutex::new(outgoing::Cooldowns::default()));
+	let mut recovering = false;
+	let mut recovery_attempt = 0;
+	let result = loop {
+		let started = Instant::now();
+		let result = run_observed_inner(
+			secret.clone(),
+			initial_url.clone(),
+			subscriptions.clone(),
+			&mut voice_controls,
+			activity.clone(),
+			reconnect,
+			delivery.clone(),
+			diagnostics.clone(),
+			limits.clone(),
+			recovering,
+			&emit,
+			#[cfg(test)]
+			test_endpoints,
+		)
+		.await;
+		let permission_refresh = result == Err(Failure::ProtocolAt(PERMISSION_REFRESH));
+		if result != Err(Failure::Busy) && !permission_refresh {
+			break result;
+		}
+		if let Ok(mut history) = diagnostics.lock() {
+			history.record(
+				if permission_refresh {
+					ConnectionReason::PermissionRefresh
+				} else {
+					ConnectionReason::DeliveryCongestion
+				},
+				None,
+				0,
+				(0, 0),
+			);
+		}
+		// Once any part of a dispatch was admitted, replaying it could duplicate
+		// mutations. Revoke stale permissions and obtain a fresh snapshot instead.
+		loop {
+			match emit(Event::Disconnected).and_then(|()| emit(Event::Resync)) {
+				Ok(()) => break,
+				Err(Failure::Busy) => sleep(Duration::from_millis(250)).await,
+				Err(failure) => return Err(failure),
+			}
+		}
+		if recovery_attempt > 0 {
+			sleep(Duration::from_millis(
+				(1000_u64 << recovery_attempt.min(5)) + jitter_ms(1000),
+			))
+			.await;
+		}
+		recovery_attempt = next_attempt(recovery_attempt, Some(started.elapsed()));
+		recovering = true;
+	};
 	if let Err(failure) = result
 		&& let Ok(mut history) = diagnostics.lock()
 	{
@@ -1264,10 +1327,13 @@ async fn run_observed_inner(
 	secret: Arc<SessionSecret>,
 	initial_url: String,
 	mut subscriptions: watch::Receiver<Option<MemberSubscription>>,
-	mut voice_controls: mpsc::Receiver<client_core::voice::Command>,
+	voice_controls: &mut mpsc::Receiver<client_core::voice::Command>,
 	activity: Option<ActivityInput<'_>>,
 	reconnect: Option<&Notify>,
+	mut delivery: Option<watch::Receiver<bool>>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	limits: Arc<Mutex<outgoing::Cooldowns>>,
+	recovering: bool,
 	emit: impl Fn(Event) -> Result<(), Failure>,
 	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
 ) -> Result<(), Failure> {
@@ -1276,6 +1342,10 @@ async fn run_observed_inner(
 			history.record(reason, code, attempt, queue);
 		}
 	};
+	if recovering {
+		while voice_controls.try_recv().is_ok() {}
+	}
+	let mut delivery_open = delivery.is_some();
 	let initial_url = validated_url(&initial_url)?;
 	let activity_enabled = activity.is_some();
 	let mut activity_open = activity_enabled;
@@ -1310,7 +1380,7 @@ async fn run_observed_inner(
 			== Some(std::ffi::OsStr::new("1")),
 	);
 	let mut state = ResumeState::default();
-	let mut was_ready = false;
+	let mut was_ready = recovering;
 	let mut owner_id = None;
 	let mut attempt = 0;
 	let mut calls = voice::Calls::default();
@@ -1320,16 +1390,30 @@ async fn run_observed_inner(
 	let mut known_guilds = std::collections::BTreeSet::new();
 	let mut voice_open = true;
 	let mut skip_backoff = false;
-	let mut cooldown_until: Option<Instant> = None;
 	let mut immediate_reconnect_used = false;
 	let mut queries = member_search::Search::default();
 	// Initial login is bounded, but an established session must survive long outages.
 	while was_ready || attempt < 6 {
+		if attempt == 0 {
+			let penalty = limits
+				.lock()
+				.map_err(|_| Failure::Network)?
+				.connection_until
+				.take();
+			if let Some(until) = penalty {
+				tokio::time::sleep_until(until).await;
+			}
+		}
 		if attempt > 0 {
 			calls.disconnected();
 			while voice_controls.try_recv().is_ok() {}
 			emit(Event::Disconnected)?;
-			if let Some(until) = cooldown_until.take() {
+			let penalty = limits
+				.lock()
+				.map_err(|_| Failure::Network)?
+				.connection_until
+				.take();
+			if let Some(until) = penalty {
 				tokio::time::sleep_until(until).await;
 				skip_backoff = true;
 			}
@@ -1430,7 +1514,10 @@ async fn run_observed_inner(
 				(0, 0),
 			);
 			if code == 4008 {
-				cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+				limits
+					.lock()
+					.map_err(|_| Failure::Network)?
+					.connection_until = Some(Instant::now() + Duration::from_secs(60));
 			}
 			state.close(code)?;
 		}
@@ -1499,8 +1586,7 @@ async fn run_observed_inner(
 			interval,
 		);
 		let (sink, mut incoming) = socket.split();
-		let mut writer = outgoing::Outgoing::start(sink, interval);
-		let mut written_heartbeat = None;
+		let mut writer = outgoing::Outgoing::with_limits(sink, interval, limits.clone());
 		let mut written_subscription = None;
 		let mut probe_requested: Option<u64> = None;
 		let mut overdue_started: Option<Instant> = None;
@@ -1509,7 +1595,7 @@ async fn run_observed_inner(
 		timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut ready_at: Option<Instant> = None;
 		let ready_deadline = Instant::now() + Duration::from_secs(30);
-		let mut probe_deadline: Option<Instant> = None;
+
 		let mut active_members: Option<ActiveMembers> = None;
 		let mut direct_presence = presence::Pending::default();
 		let mut sent_members = false;
@@ -1520,6 +1606,19 @@ async fn run_observed_inner(
 		let mut member_ticket = 0;
 		outgoing_activity.reconnect();
 		loop {
+			if delivery.as_ref().is_some_and(|d| *d.borrow()) {
+				return Err(Failure::Busy);
+			}
+			if !heartbeat.collect(&writer) {
+				record(
+					ConnectionReason::LocalCapacity,
+					None,
+					attempt,
+					writer.occupancy(),
+				);
+				break;
+			}
+			let probe_deadline = heartbeat.probe_deadline(probe_requested);
 			if writer.is_finished() {
 				record(
 					ConnectionReason::SocketWrite,
@@ -1675,19 +1774,13 @@ async fn run_observed_inner(
 				None
 			};
 			tokio::select! {
+				changed=async {match delivery.as_mut() {Some(d)=>d.changed().await,None=>std::future::pending().await}}, if delivery_open => {
+					if changed.is_err(){delivery_open=false;}else if delivery.as_ref().is_some_and(|d|*d.borrow()){return Err(Failure::Busy);}
+				}
 				changed=writer.progress.changed() => {
 					if changed.is_err() {record(ConnectionReason::SocketWrite,None,attempt,writer.occupancy());break;}
 					let progress=*writer.progress.borrow_and_update();
 					if progress.failed {break;}
-					if progress.heartbeat!=written_heartbeat {
-						written_heartbeat=progress.heartbeat;
-						if let Some((ticket,sent))=progress.heartbeat {
-							heartbeat.sent(sent);
-							if probe_requested.is_some_and(|requested|ticket>=requested) {
-								if heartbeat.awaiting_since.is_some() {probe_deadline=Some(sent+PROBE_TIMEOUT);} else {probe_requested=None;}
-							}
-						}
-					}
 					if progress.subscription!=written_subscription {
 						written_subscription=progress.subscription;
 						if let (Some((ticket,sent)),Some(active))=(progress.subscription,active_members.as_ref()) && ticket==member_ticket && active.awaiting_sync {members_deadline=Some(sent+active.retry_delay());}
@@ -1879,15 +1972,18 @@ async fn run_observed_inner(
 					match frame {
 						Some(Ok(Frame::Text(text))) => {
 							let packet: GatewayPacket = decode_gateway(text.as_bytes()).map_err(|_| diagnosed(&emit, Failure::Protocol, diagnose_packet(text.as_bytes())))?;
-							// Reaction and poll vote counts are additive: do not apply a repeated dispatch or
-							// move the resume cursor backwards when one is replayed.
-							if packet.op == 0
-								&& matches!(packet.t.as_deref(), Some("MESSAGE_POLL_VOTE_ADD" | "MESSAGE_POLL_VOTE_REMOVE" | "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" | "MESSAGE_REACTION_REMOVE_ALL" | "MESSAGE_REACTION_REMOVE_EMOJI"))
-								&& packet.s.zip(state.sequence).is_some_and(|(next, last)| next <= last)
-							{ continue; }
-							if let Some(sequence) = packet.s { state.sequence = Some(sequence); }
+							// Every dispatch shares one monotonic replay cursor. READY starts a new session.
+							if packet.op == 0 && packet.t.as_deref()!=Some("READY")
+								&& packet.s.zip(state.sequence).is_some_and(|(next,last)|next<=last) {continue;}
+							let admitted_sequence=(packet.op==0).then_some(packet.s).flatten();
 							match packet.op {
-								11 => { heartbeat.ack(); if probe_deadline.is_some() {probe_deadline=None;probe_requested=None;} priority_reads=0;overdue_started=None; }
+								11 => {
+									// Read all actual send receipts before interpreting this ACK, even if the
+									// writer's watch notifications coalesced or raced socket readiness.
+									if !heartbeat.collect(&writer) {record(ConnectionReason::LocalCapacity,None,attempt,writer.occupancy());break;}
+									if heartbeat.ack().zip(probe_requested).is_some_and(|(acked,probe)|acked>=probe) {probe_requested=None;}
+									priority_reads=0;overdue_started=None;
+								}
 								1 => {
 									let packet = serde_json::json!({"op":1,"d":state.sequence}).to_string();
 									if !matches!(timeout(Duration::from_secs(5), writer.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { break; }
@@ -2004,10 +2100,10 @@ async fn run_observed_inner(
 										ready_at = Some(Instant::now());
 									}
 									"RATE_LIMITED" => {
-										#[derive(serde::Deserialize)]
+										#[derive(serde::Deserialize,Default)]
 										struct Meta { guild_id: Option<Id>, nonce: Option<String> }
 										#[derive(serde::Deserialize)]
-										struct Limited { opcode: u8, retry_after: f64, meta: Meta }
+										struct Limited { opcode: u8, retry_after: f64, #[serde(default)] meta: Meta }
 										if packet.d.get().len()<=4096 && let Ok(limited)=decode::<Limited>(packet.d.get().as_bytes()) && limited.retry_after.is_finite() && (0.0..=86400.0).contains(&limited.retry_after) {
 											let delay=Duration::from_secs_f64(limited.retry_after);
 											writer.cooldown(limited.opcode,limited.meta.guild_id,delay);
@@ -2140,13 +2236,13 @@ async fn run_observed_inner(
 										emit(Event::UserAction(client_core::user_actions::Event::FriendProfile(profile)))?;
 									}
 									"USER_GUILD_SETTINGS_UPDATE" => {
-										let setting=decode::<discord_protocol::notifications::Setting>(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
-										emit(notification_settings(vec![setting],false))?;
+										if let Ok(setting)=decode::<discord_protocol::notifications::Setting>(packet.d.get().as_bytes()) {emit(notification_settings(vec![setting],false))?;}
+										else {emit(Event::NotificationPreferences(client_core::notifications::Event::Invalidate))?;gateway_diagnostics.record("notification metadata unavailable; refresh required");}
 									}
 									"SESSIONS_REPLACE" => {
 										if activity_enabled { outgoing_activity.observe(packet.d.get().as_bytes(), state.session.as_deref().map(String::as_str).unwrap_or_default()); }
-										let sessions=decode::<discord_protocol::notifications::Sessions>(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
-										emit(Event::NotificationPreferences(client_core::notifications::Event::Presence(sessions.dnd())))?;
+										let sessions=decode::<discord_protocol::notifications::Sessions>(packet.d.get().as_bytes()).ok();
+										emit(Event::NotificationPreferences(client_core::notifications::Event::Presence(sessions.and_then(|s|s.dnd()))))?;
 									}
 									// Status, appearance and server folders live here. Channel and guild
 									// mutes live on user guild settings, so this event must not clear them.
@@ -2232,12 +2328,13 @@ async fn run_observed_inner(
 										if let Some(event) = thread_events::decode_event(packet.t.as_deref().unwrap_or(""), packet.d.get().as_bytes(), owner_id)? { emit(event)?; }
 									}
 									"GUILD_STICKERS_UPDATE" => {
-										let update: discord_protocol::stickers::GuildStickersUpdate = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?;
-										emit(Event::GuildStickers { guild: update.guild_id, stickers: discord_protocol::stickers::guild_catalog(update.stickers.0, update.guild_id).map_err(|_| Failure::Protocol)? })?;
+										let update=decode::<discord_protocol::stickers::GuildStickersUpdate>(packet.d.get().as_bytes()).and_then(|u|discord_protocol::stickers::guild_catalog(u.stickers.0,u.guild_id).map(|stickers|(u.guild_id,stickers)));
+										if let Ok((guild,stickers))=update {emit(Event::GuildStickers{guild,stickers})?;}
+										else {if let Some(guild)=catalog_scope(packet.d.get().as_bytes()){emit(Event::GuildStickers{guild,stickers:Vec::new()})?;}gateway_diagnostics.record("sticker catalog unavailable; invalidated");}
 									}
 									"GUILD_EMOJIS_UPDATE" => {
-										let update: GuildEmojisUpdate = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?;
-										emit(Event::GuildEmojis { guild: update.guild_id, emojis: update.emojis.0 })?;
+										if let Ok(update)=decode::<GuildEmojisUpdate>(packet.d.get().as_bytes()) {emit(Event::GuildEmojis { guild:update.guild_id,emojis:update.emojis.0})?;}
+										else {if let Some(guild)=catalog_scope(packet.d.get().as_bytes()){emit(Event::GuildEmojis{guild,emojis:Vec::new()})?;}gateway_diagnostics.record("emoji catalog unavailable; invalidated");}
 									}
 									// Best-effort playback metadata: an unsupported effect never ends the session.
 									"VOICE_CHANNEL_EFFECT_SEND" => {
@@ -2252,7 +2349,7 @@ async fn run_observed_inner(
 									}
 									"GUILD_CREATE" => {
 										member_diagnostics.record("guild refresh received");
-										let permissions=owner_id.map(|owner|permissions::guild(packet.d.get().as_bytes(),owner)).transpose().map_err(|_|Failure::ProtocolAt("Gateway guild refresh: invalid permission metadata"))?;
+										let permissions=owner_id.map(|owner|permissions::guild(packet.d.get().as_bytes(),owner)).transpose().map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										let mut guild: GuildDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::ProtocolAt("Gateway guild refresh: unsupported guild payload"))?;
 										if guild.channels.len() + calls.allowed.len() > MAX_NAV { return Err(Failure::Capacity); }
 										if !known_guilds.contains(&guild.id) {
@@ -2288,7 +2385,7 @@ async fn run_observed_inner(
 									}
 									"GUILD_UPDATE" => {
 										if let Ok(Some((guild,incident)))=discord_protocol::server_access::incident_update(packet.d.get().as_bytes()){emit(Event::ServerIncident{guild,incident})?;}
-										let owner=permissions::owner(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										let owner=permissions::owner(packet.d.get().as_bytes()).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										emit(Event::GuildChanged(decode::<GuildPatchDto>(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?.into_model()))?;
 										if let Some((guild,owner))=owner {emit(Event::Permissions(client_core::permissions::Event::Owner {guild,owner}))?;}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::guild(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
@@ -2298,7 +2395,7 @@ async fn run_observed_inner(
 										emit(Event::BulkModeration {guild,report})?;
 									}
 									"GUILD_MEMBER_UPDATE" => {
-										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=permissions::member(packet.d.get().as_bytes(),owner).map_err(|_|Failure::Protocol)? {
+										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=permissions::member(packet.d.get().as_bytes(),owner).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))? {
 											emit(Event::Permissions(client_core::permissions::Event::Member {guild,roles,timeout_until}))?;
 										}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::member(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
@@ -2322,11 +2419,11 @@ async fn run_observed_inner(
 										}
 									}
 									"GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" => {
-										let (guild,role)=permissions::role(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										let (guild,role)=permissions::role(packet.d.get().as_bytes()).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										emit(Event::Permissions(client_core::permissions::Event::Role {guild,role}))?;
 									}
 									"GUILD_ROLE_DELETE" => {
-										let (guild,id)=permissions::role_removed(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										let (guild,id)=permissions::role_removed(packet.d.get().as_bytes()).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										emit(Event::Permissions(client_core::permissions::Event::RoleRemoved {guild,id}))?;
 									}
 									_ => gateway_diagnostics.record(ignored_dispatch_label(packet.t.as_deref())),
@@ -2336,11 +2433,12 @@ async fn run_observed_inner(
 									return Err(Failure::Protocol);
 								},
 							}
+							if let Some(sequence)=admitted_sequence {state.sequence=Some(sequence); }
 						}
 						Some(Ok(Frame::Close(close))) => {
 							let code = close.map_or(1006, |f| u16::from(f.code));
 							record(if code==4008 {ConnectionReason::RateLimited}else{ConnectionReason::ServerClose},Some(code),attempt,writer.occupancy());
-							if code==4008 {cooldown_until=Some(Instant::now()+Duration::from_secs(60));}
+							if code==4008 {limits.lock().map_err(|_|Failure::Network)?.connection_until=Some(Instant::now()+Duration::from_secs(60));}
 							state.close(code)?;
 							break;
 						}
@@ -2816,6 +2914,7 @@ mod tests {
 	            let (finished, done) = tokio::sync::oneshot::channel();
 	            let server = async {
 	                let mut previous = None;
+				let mut sequence=1;
 	                for connection in 0..2 {
 	                    let (stream, _) = listener.accept().await.unwrap();
 	                    let mut socket = accept_async(stream).await.unwrap();
@@ -2834,9 +2933,10 @@ mod tests {
 	                        assert_eq!(value["op"], 1);
 	                        send(&mut socket, json!({"op":11,"d":null})).await;
 	                    }
-	                    send(&mut socket, if connection == 0 {
+	                    if connection!=0 {sequence+=1;}
+						send(&mut socket, if connection == 0 {
 	                        ready(1, "synthetic-own-activity")
-	                    } else { json!({"op":0,"t":"RESUMED","s":2,"d":{}}) }).await;
+	                    } else { json!({"op":0,"t":"RESUMED","s":sequence,"d":{}}) }).await;
 	                    let expected = if connection == 0 { vec![Some("osu!"), Some("Minecraft")] } else { vec![Some("Minecraft"), None] };
 	                    for name in expected {
 	                        let value = loop {
@@ -2864,7 +2964,8 @@ mod tests {
 	                                    (false, false, ActivityObservation::ServerMissing),
 	                                ] {
 	                                    let game = json!({"type":0,"application_id":"42"});
-	                                    send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":2,"d":[{
+									sequence+=1;
+	                                    send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":sequence,"d":[{
 	                                        "session_id":"all","status":"online",
 	                                        "activities":if public {json!([game])} else {json!([])},
 	                                        "hidden_activities":if hidden {json!([game])} else {json!([])}
@@ -2878,7 +2979,8 @@ mod tests {
 	                            }
 	                            Some(_) if connection == 1 => activity.send(None).unwrap(),
 	                            Some(_) => {
-	                                send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":3,"d":[{
+								sequence+=1;
+	                                send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":sequence,"d":[{
 	                                    "session_id":"all","status":"online","activities":[{"type":0,"application_id":"42"}]
 	                                }]})).await;
 	                                observed.wait_for(|value| *value == ActivityObservation::ServerListed).await.unwrap();
@@ -2985,8 +3087,14 @@ mod tests {
                 ] {
                     send(&mut socket, json!({"op":0,"t":"TYPING_START","s":sequence,"d":data})).await;
                 }
-                send(&mut socket, json!({"op":0,"t":"MESSAGE_CREATE","s":9,"d":{"id":"4","channel_id":"2","author":{"id":"3","username":"Synthetic"},"content":"Message after invalid typing"}})).await;
-                acknowledge(&mut socket, 9).await;
+                for (sequence,name,data) in [
+                    (9,"SESSIONS_REPLACE",json!([{"status":42}])),
+                    (10,"USER_GUILD_SETTINGS_UPDATE",json!({"guild_id":"2","muted":42})),
+                    (11,"GUILD_STICKERS_UPDATE",json!({"guild_id":"2","stickers":"unsupported"})),
+                    (12,"GUILD_EMOJIS_UPDATE",json!({"guild_id":"2","emojis":"unsupported"})),
+                ] {send(&mut socket,json!({"op":0,"t":name,"s":sequence,"d":data})).await;}
+                send(&mut socket, json!({"op":0,"t":"MESSAGE_CREATE","s":13,"d":{"id":"4","channel_id":"2","author":{"id":"3","username":"Synthetic"},"content":"Message after invalid typing"}})).await;
+                acknowledge(&mut socket, 13).await;
                 // Exercise a heartbeat reply racing the terminal close.
                 send(&mut socket, json!({"op":1,"d":null})).await;
                 socket.send(Frame::Close(Some(CloseFrame {
@@ -3417,7 +3525,7 @@ mod tests {
 			let mut heartbeat = Heartbeat::default();
 			let now = Instant::now();
 			let interval = Duration::from_secs(10);
-			heartbeat.sent(now);
+			heartbeat.pending.push_back((1, now));
 			// An unsolicited heartbeat immediately before the timer is not a missed ACK.
 			assert!(
 				heartbeat

@@ -20,6 +20,10 @@ pub enum Failure {
 	Forbidden,
 	#[error("Rate limited; wait for the service cooldown before retrying")]
 	RateLimited,
+	#[error("This operation is busy; try again when queued work finishes")]
+	Busy,
+	#[error("This response exceeds the operation’s safe limit")]
+	ResponseLimit,
 	#[error("Connection failed; no automatic write retry")]
 	Network,
 	#[error("Outcome unknown; inspect the conversation before a deliberate retry")]
@@ -52,6 +56,8 @@ impl Failure {
 			Self::Forbidden => "Permission denied",
 			Self::RateLimited => "Rate limited · wait before retrying",
 			Self::Network => "Connection failed",
+			Self::Busy => "Operation busy · try again shortly",
+			Self::ResponseLimit => "Response exceeds this operation’s safe limit",
 			Self::Ambiguous => "Outcome unknown · check the official client before retrying",
 			Self::Protocol => "Unsupported service response",
 			Self::ProtocolAt(stage) | Self::CapacityAt(stage) => stage,

@@ -100,6 +100,13 @@ struct Packet {
 	bytes: usize,
 	serial: u64,
 }
+#[derive(Default)]
+pub(super) struct Cooldowns {
+	pub connection_until: Option<Instant>,
+	deadlines: BTreeMap<(u8, Option<Id>), Instant>,
+	blocked_until: Option<Instant>,
+}
+
 struct State {
 	queue: VecDeque<Packet>,
 	bytes: usize,
@@ -107,8 +114,7 @@ struct State {
 	serial: u64,
 	subscription_serial: u64,
 	heartbeat_serial: u64,
-	cooldowns: BTreeMap<(u8, Option<Id>), Instant>,
-	blocked_until: Option<Instant>,
+	heartbeats: VecDeque<(u64, Instant)>,
 }
 impl Default for State {
 	fn default() -> Self {
@@ -119,8 +125,7 @@ impl Default for State {
 			serial: 0,
 			subscription_serial: 0,
 			heartbeat_serial: 0,
-			cooldowns: BTreeMap::new(),
-			blocked_until: None,
+			heartbeats: VecDeque::with_capacity(PACKETS),
 		}
 	}
 }
@@ -140,9 +145,9 @@ impl Drop for FailureOnExit {
 }
 pub(super) struct Outgoing {
 	state: Arc<Mutex<State>>,
+	limits: Arc<Mutex<Cooldowns>>,
 	wake: Arc<Notify>,
 	pub progress: watch::Receiver<Progress>,
-	report: watch::Sender<Progress>,
 	task: JoinHandle<()>,
 }
 impl Drop for Outgoing {
@@ -188,7 +193,15 @@ impl Budget {
 	}
 }
 impl Outgoing {
-	pub fn start<S>(mut sink: S, interval: Duration) -> Self
+	#[cfg(test)]
+	pub fn start<S>(sink: S, interval: Duration) -> Self
+	where
+		S: Sink<Frame> + Unpin + Send + 'static,
+		S::Error: Send,
+	{
+		Self::with_limits(sink, interval, Arc::new(Mutex::new(Cooldowns::default())))
+	}
+	pub fn with_limits<S>(mut sink: S, interval: Duration, limits: Arc<Mutex<Cooldowns>>) -> Self
 	where
 		S: Sink<Frame> + Unpin + Send + 'static,
 		S::Error: Send,
@@ -199,6 +212,7 @@ impl Outgoing {
 		let worker_report = report.clone();
 		let worker_state = state.clone();
 		let worker_wake = wake.clone();
+		let worker_limits = limits.clone();
 		let task = tokio::spawn(async move {
 			let report = worker_report;
 			let _failure_on_exit = FailureOnExit(report.clone());
@@ -213,24 +227,27 @@ impl Outgoing {
 						report.send_modify(|p| p.failed = true);
 						return;
 					};
-					state.cooldowns.retain(|_, until| *until > now);
+					let Ok(mut limits) = worker_limits.lock() else {
+						return;
+					};
+					limits.deadlines.retain(|_, until| *until > now);
 					let mut next = None;
 					let mut deadline = None;
 					for (index, packet) in state.queue.iter().enumerate() {
 						let mut at = budget.earliest(now, packet.meta);
 						if !packet.meta.critical
-							&& let Some(until) = state.blocked_until
+							&& let Some(until) = limits.blocked_until
 						{
 							at = at.max(until);
 						}
 						if let Some(opcode) = packet.meta.opcode {
-							let until = state
-								.cooldowns
+							let until = limits
+								.deadlines
 								.get(&(opcode, packet.meta.guild))
 								.copied()
 								.into_iter()
-								.chain(state.cooldowns.get(&(opcode, None)).copied())
-								.chain(state.cooldowns.iter().filter_map(
+								.chain(limits.deadlines.get(&(opcode, None)).copied())
+								.chain(limits.deadlines.iter().filter_map(
 									|((limited, _), until)| {
 										(packet.meta.guild.is_none() && *limited == opcode)
 											.then_some(*until)
@@ -282,20 +299,32 @@ impl Outgoing {
 				if let Ok(mut state) = worker_state.lock() {
 					state.bytes = state.bytes.saturating_sub(packet.bytes);
 					state.in_flight = false;
-					if packet.meta.opcode == Some(8) {
-						let until = sent + Duration::from_secs(30);
-						if state.cooldowns.len() < COOL_DOWN_KEYS
-							|| state.cooldowns.contains_key(&(8, packet.meta.guild))
-						{
-							state
-								.cooldowns
-								.entry((8, packet.meta.guild))
-								.and_modify(|at| *at = (*at).max(until))
-								.or_insert(until);
-						} else {
-							state.blocked_until =
-								Some(state.blocked_until.map_or(until, |at| at.max(until)));
+					if packet.meta.heartbeat {
+						if state.heartbeats.len() == PACKETS {
+							report.send_modify(|p| {
+								p.failed = true;
+								p.capacity = true;
+							});
+							return;
 						}
+						state.heartbeats.push_back((packet.serial, sent));
+					}
+				}
+				if let Ok(mut limits) = worker_limits.lock()
+					&& packet.meta.opcode == Some(8)
+				{
+					let until = sent + Duration::from_secs(30);
+					if limits.deadlines.len() < COOL_DOWN_KEYS
+						|| limits.deadlines.contains_key(&(8, packet.meta.guild))
+					{
+						limits
+							.deadlines
+							.entry((8, packet.meta.guild))
+							.and_modify(|at| *at = (*at).max(until))
+							.or_insert(until);
+					} else {
+						limits.blocked_until =
+							Some(limits.blocked_until.map_or(until, |at| at.max(until)));
 					}
 				}
 				report.send_modify(|p| {
@@ -317,14 +346,17 @@ impl Outgoing {
 		});
 		Self {
 			state,
+			limits,
 			wake,
 			progress,
-			report,
 			task,
 		}
 	}
 	pub fn is_finished(&self) -> bool {
 		self.task.is_finished()
+	}
+	pub fn take_heartbeat(&self) -> Option<(u64, Instant)> {
+		self.state.lock().ok()?.heartbeats.pop_front()
 	}
 	pub fn heartbeat_ticket(&self) -> u64 {
 		self.state.lock().map(|s| s.heartbeat_serial).unwrap_or(0)
@@ -429,11 +461,11 @@ impl Outgoing {
 		if state.queue.len() + usize::from(state.in_flight) >= limit
 			|| bytes > BYTES.saturating_sub(state.bytes + reserve)
 		{
-			self.report.send_modify(|p| {
-				p.failed = true;
-				p.capacity = true;
+			return Err(if bytes > BYTES {
+				Failure::ResponseLimit
+			} else {
+				Failure::Busy
 			});
-			return Err(Failure::Network);
 		}
 
 		state.serial = state.serial.wrapping_add(1);
@@ -456,20 +488,20 @@ impl Outgoing {
 		Ok(())
 	}
 	pub fn cooldown(&self, opcode: u8, guild: Option<Id>, duration: Duration) {
-		if let Ok(mut state) = self.state.lock() {
+		if let Ok(mut limits) = self.limits.lock() {
 			let now = Instant::now();
 			let until = now + duration;
-			state.cooldowns.retain(|_, deadline| *deadline > now);
-			if state.cooldowns.len() < COOL_DOWN_KEYS
-				|| state.cooldowns.contains_key(&(opcode, guild))
+			limits.deadlines.retain(|_, deadline| *deadline > now);
+			if limits.deadlines.len() < COOL_DOWN_KEYS
+				|| limits.deadlines.contains_key(&(opcode, guild))
 			{
-				state
-					.cooldowns
+				limits
+					.deadlines
 					.entry((opcode, guild))
 					.and_modify(|at| *at = (*at).max(until))
 					.or_insert(until);
 			} else {
-				state.blocked_until = Some(state.blocked_until.map_or(until, |at| at.max(until)));
+				limits.blocked_until = Some(limits.blocked_until.map_or(until, |at| at.max(until)));
 			}
 		}
 		self.wake.notify_one();
@@ -674,7 +706,7 @@ mod tests {
 				.await
 				.is_err()
 		);
-		assert!(writer.progress.borrow().capacity);
+		assert!(!writer.progress.borrow().failed);
 		assert!(writer.occupancy().0 <= PACKETS && writer.occupancy().1 <= BYTES);
 	}
 	#[tokio::test]
@@ -801,9 +833,9 @@ mod tests {
 			progress.query[Purpose::Composer.slot()].map(|(guild, nonce, _)| (guild, nonce)),
 			Some((Id(4), 12))
 		);
-		let state = writer.state.lock().unwrap();
+		let limits = writer.limits.lock().unwrap();
 		for guild in [2, 3, 4] {
-			assert!(state.cooldowns[&(8, Some(Id(guild)))] > Instant::now());
+			assert!(limits.deadlines[&(8, Some(Id(guild)))] > Instant::now());
 		}
 	}
 	#[tokio::test]
@@ -845,6 +877,9 @@ mod tests {
 		.await
 		.unwrap();
 		assert_eq!(frames.lock().unwrap().len(), 2);
+		assert_eq!(writer.take_heartbeat().unwrap().0, first);
+		assert_eq!(writer.take_heartbeat().unwrap().0, second);
+		assert!(writer.take_heartbeat().is_none());
 	}
 	#[tokio::test]
 	async fn cooldown_overflow_defers_optional_work_without_holding_an_unrelated_stop() {
@@ -852,8 +887,8 @@ mod tests {
 		ready.store(true, Ordering::Release);
 		let mut writer = Outgoing::start(sink, Duration::from_secs(45));
 		{
-			let mut state = writer.state.lock().unwrap();
-			state.blocked_until = Some(Instant::now() + Duration::from_secs(60));
+			let mut limits = writer.limits.lock().unwrap();
+			limits.blocked_until = Some(Instant::now() + Duration::from_secs(60));
 		}
 		writer
 			.send(frame(

@@ -460,6 +460,8 @@ fn preference_error(error: Failure) -> String {
 		Failure::Forbidden => "privacy-error-forbidden",
 		Failure::RateLimited => "privacy-error-rate-limited",
 		Failure::Network => "privacy-error-network",
+		Failure::Busy => "privacy-error-busy",
+		Failure::ResponseLimit => "privacy-error-response-limit",
 		Failure::Ambiguous => "privacy-error-ambiguous",
 		Failure::Protocol => "privacy-error-protocol",
 		Failure::Capacity => "privacy-error-capacity",

@@ -28,6 +28,8 @@ pub enum ConnectionReason {
 	ProbeTimeout,
 	InvalidSession,
 	LocalCapacity,
+	DeliveryCongestion,
+	PermissionRefresh,
 	Protocol,
 	SessionEnded,
 }
@@ -50,6 +52,8 @@ impl ConnectionReason {
 			Self::HeartbeatTimeout => "Gateway heartbeat was not acknowledged",
 			Self::ProbeTimeout => "Gateway recovery probe was not acknowledged",
 			Self::InvalidSession => "Discord requested session recovery",
+			Self::PermissionRefresh => "Permission metadata requires fresh synchronization",
+			Self::DeliveryCongestion => "Account synchronization paused while queued updates drain",
 			Self::LocalCapacity => "Gateway queue reached its safe limit",
 			Self::Protocol => "Gateway response could not be handled safely",
 			Self::SessionEnded => "Discord account session ended",
