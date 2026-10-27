@@ -313,7 +313,7 @@ impl Screen {
 			if !state.demo && self.source_scan.is_none() && ui.screen.supported {
 				let (send, receive) = mpsc::sync_channel(1);
 				let wake = ctx.clone();
-				self.status = "Looking for screens and windows…";
+				self.status = "screen-source-status-loading";
 				match std::thread::Builder::new()
 					.name("screen-sources".into())
 					.spawn(move || {
@@ -327,10 +327,10 @@ impl Screen {
 							receive,
 						})
 					}
-					Err(_) => self.status = "Could not start screen source discovery",
+					Err(_) => self.status = "screen-source-status-start-failed",
 				}
 			} else if !ui.screen.supported {
-				self.status = "Screen sharing is unavailable on this platform";
+				self.status = "screen-source-status-unsupported";
 			}
 		}
 		if let Some(scan) = &self.source_scan {
@@ -349,11 +349,11 @@ impl Screen {
 				Ok(Ok(sources)) => {
 					ui.screen.replace_sources(sources);
 					self.status = if ui.screen.sources.is_empty() {
-						"No shareable screens or windows were found"
+						"screen-source-status-empty"
 					} else if cfg!(target_os = "linux") {
-						"Choose the system picker or, on X11, explicitly share the entire desktop"
+						"screen-source-status-choose-linux"
 					} else {
-						"Choose a screen or window"
+						"screen-source-status-choose"
 					};
 					self.source_scan = None;
 				}
@@ -362,7 +362,7 @@ impl Screen {
 					self.source_scan = None;
 				}
 				Err(mpsc::TryRecvError::Disconnected) => {
-					self.status = "Screen source discovery stopped";
+					self.status = "screen-source-status-stopped";
 					self.source_scan = None;
 				}
 				Err(mpsc::TryRecvError::Empty) => {}
@@ -698,6 +698,54 @@ mod tests {
 			fps: 30,
 			cursor: true,
 			audio: false,
+		}
+	}
+
+	#[test]
+	fn synthetic_source_scan_publishes_localizable_status_and_preserves_errors() {
+		let runtime = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.unwrap();
+		let ctx = egui::Context::default();
+		let (state, mut ui, _) = share_state();
+		ui.screen.open = true;
+		for (result, expected) in [
+			(Some(Ok(vec![])), "screen-source-status-empty"),
+			(
+				Some(Ok(vec![screen::Source {
+					id: screen::SourceId::Display(9),
+					name: "Synthetic display".into(),
+					dimensions: Some((1920, 1080)),
+				}])),
+				if cfg!(target_os = "linux") {
+					"screen-source-status-choose-linux"
+				} else {
+					"screen-source-status-choose"
+				},
+			),
+			(
+				Some(Err("Backend discovery error")),
+				"Backend discovery error",
+			),
+			(None, "screen-source-status-stopped"),
+		] {
+			let (send, receive) = mpsc::sync_channel(1);
+			if let Some(result) = result {
+				send.send(result).unwrap();
+			}
+			drop(send);
+			let mut screen = Screen {
+				source_scan: Some(SourceScan {
+					generation: state.generation,
+					context: ui.screen.context,
+					receive,
+				}),
+				..Default::default()
+			};
+			assert!(screen.poll(&runtime, &state, &mut ui, &ctx, None).is_none());
+			assert_eq!(ui.screen.status, expected);
+			assert!(screen.source_scan.is_none());
 		}
 	}
 

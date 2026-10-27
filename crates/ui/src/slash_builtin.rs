@@ -2,6 +2,81 @@
 use client_core::{Command, MAX_DRAFT_BYTES, State};
 use model::Id;
 
+/// Localize only known application-owned outcomes; preserve unknown status text.
+pub(super) fn status_text(status: &str) -> String {
+	let key = match status {
+		"You don't have permission to use this command in this channel."
+		| "You don't have permission to use this command here" => "action-command-permission",
+		"The slash command result exceeds the message length limit." => "action-command-too-long",
+		"Use up to 64 characters in a GIF or sticker search." => "action-command-search-limit",
+		"Choose a recipient: /msg @user [message]" => "action-msg-recipient",
+		"Add some text after the slash command." => "action-command-add-text",
+		"Several users match. Use a user mention or ID with /msg." => "action-msg-ambiguous",
+		"User not found. Use a known user's mention, ID, or exact username with /msg." => {
+			"action-msg-not-found"
+		}
+		"Finish editing or uploading before using a slash command." => "action-command-finish-edit",
+		"Slash command exceeds the session input budget. Your draft was kept."
+		| "Clear some draft space before using /msg. Your draft was kept." => "composer-send-budget",
+		"Send or remove the selected attachments before using /msg." => "action-msg-attachments",
+		"Wait for the previous direct message to open." => "action-msg-wait",
+		"Open a DM with this user first, or choose a friend with /msg." => "action-msg-open-first",
+		"This DM already has a draft. Your /msg text was kept in the original conversation." => {
+			"action-msg-existing-draft"
+		}
+		"Draft budget full. Clear an existing draft before using /msg." => "action-msg-draft-limit",
+		"Direct message opened. Review the message, then press Enter to send." => {
+			"action-msg-staged"
+		}
+		"Wait for the current command or file selection to finish" => "action-command-busy",
+		"Finish the current application interaction first" => "action-app-busy",
+		"Choose a command from the list before running it." => "action-command-choose",
+		"Wait for the current direct message action to finish" => "action-direct-busy",
+		"Calls are unavailable in this session" => "action-direct-call-unavailable",
+		"This direct message action is unavailable; your message was kept" => {
+			"action-direct-unavailable"
+		}
+		"Calls are unavailable in the offline preview. No microphone is accessed." => {
+			"action-call-preview"
+		}
+		"Voice is unavailable in this session." => "action-call-unavailable",
+		"Reconnect to Discord before calling." => "action-call-reconnect",
+		"Waiting for the previous call to disconnect." => "action-call-wait",
+		"You are already in this call." => "action-call-already",
+		"Joining this channel is unavailable with current permission information." => {
+			"action-call-permission"
+		}
+		"Application commands are unavailable in this conversation" => "action-app-unavailable",
+		"Refresh the application command list first" => "action-app-refresh",
+		"This command is no longer available" => {
+			"slash-commands-composer-command-unavailable-your-arguments-are-kept"
+		}
+		"Choose an accessible channel of the requested type" => "action-app-channel",
+		"Enter a channel identifier" => "action-app-channel-id",
+		"Choose a conversation first" => "action-app-conversation",
+		"Application interaction could not be started" => "action-app-start",
+		"Command value exceeds its byte limit" => "action-app-value-length",
+		"Command value does not match its choices or limits" => "action-app-value-limits",
+		"Choose a subcommand" => "action-app-subcommand",
+		"Complete every required command option" => "action-app-required",
+		"Command submission exceeds its limits" => "action-app-size",
+		"This command option is unsupported"
+		| "Invalid subcommand path"
+		| "Invalid command schema or too many values"
+		| "Unknown or repeated command option" => "action-app-invalid",
+		"Free some draft space before choosing a command." => "action-app-draft-space",
+		"Enter a whole number" => "action-app-whole-number",
+		"Choose true or false" => "action-app-boolean",
+		"Enter a number" => "action-app-number",
+		"This option is unsupported" => "action-app-unsupported",
+		"Choose from the list or enter an ID" => "action-app-choose-id",
+		"Value does not match this option's limits" => "action-app-option-limits",
+		"Choose one of the listed options" => "action-app-choose-option",
+		_ => return crate::i18n::translate_if_key(status),
+	};
+	crate::i18n::translate(key)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Builtin {
 	Gif,
@@ -15,6 +90,18 @@ pub(super) enum Builtin {
 }
 
 impl Builtin {
+	pub fn description(self) -> String {
+		crate::i18n::translate(match self {
+			Self::Gif => "slash-builtin-gif",
+			Self::Me => "slash-builtin-me",
+			Self::Msg => "slash-builtin-msg",
+			Self::Shrug => "slash-builtin-shrug",
+			Self::Spoiler => "slash-builtin-spoiler",
+			Self::Sticker => "slash-builtin-sticker",
+			Self::Tableflip => "slash-builtin-tableflip",
+			Self::Unflip => "slash-builtin-unflip",
+		})
+	}
 	pub fn available(self, state: &State, channel: Id) -> bool {
 		state.can_compose(channel)
 	}
@@ -23,7 +110,6 @@ impl Builtin {
 pub(super) struct Descriptor {
 	pub command: Builtin,
 	pub name: &'static str,
-	pub description: &'static str,
 	pub usage: &'static str,
 }
 
@@ -31,49 +117,41 @@ pub(super) const ALL: &[Descriptor] = &[
 	Descriptor {
 		command: Builtin::Gif,
 		name: "gif",
-		description: "Search animated GIFs.",
 		usage: "/gif [search]",
 	},
 	Descriptor {
 		command: Builtin::Me,
 		name: "me",
-		description: "Display text with emphasis.",
 		usage: "/me text",
 	},
 	Descriptor {
 		command: Builtin::Msg,
 		name: "msg",
-		description: "Message a user.",
 		usage: "/msg @user [message]",
 	},
 	Descriptor {
 		command: Builtin::Shrug,
 		name: "shrug",
-		description: "Append a shrug to your message.",
 		usage: "/shrug [text]",
 	},
 	Descriptor {
 		command: Builtin::Spoiler,
 		name: "spoiler",
-		description: "Wrap text in spoiler markers.",
 		usage: "/spoiler text",
 	},
 	Descriptor {
 		command: Builtin::Sticker,
 		name: "sticker",
-		description: "Search your stickers.",
 		usage: "/sticker [search]",
 	},
 	Descriptor {
 		command: Builtin::Tableflip,
 		name: "tableflip",
-		description: "Append a table flip to your message.",
 		usage: "/tableflip [text]",
 	},
 	Descriptor {
 		command: Builtin::Unflip,
 		name: "unflip",
-		description: "Put the table back.",
 		usage: "/unflip [text]",
 	},
 ];
@@ -219,6 +297,16 @@ fn recipient(state: &State, channel: Id, query: &str) -> Result<Id, &'static str
 }
 
 impl crate::MessagingUi {
+	pub(super) fn action_notice(
+		&mut self,
+		state: &mut State,
+		status: &'static str,
+		level: crate::design::Level,
+	) {
+		state.status = status;
+		self.toasts.push(level, status_text(status));
+	}
+
 	pub(super) fn handle_builtin_slash(
 		&mut self,
 		state: &mut State,
@@ -236,18 +324,26 @@ impl crate::MessagingUi {
 		let source = source.clone();
 		let invocation = parse(&source).expect("recognized builtin");
 		if !invocation.command.available(state, channel) {
-			state.status = "You don't have permission to use this command in this channel.";
+			self.action_notice(
+				state,
+				"You don't have permission to use this command in this channel.",
+				crate::design::Level::Warning,
+			);
 			return true;
 		}
 		let action = match invocation.action() {
 			Ok(action) => action,
 			Err(error) => {
-				state.status = error;
+				self.action_notice(state, error, crate::design::Level::Warning);
 				return true;
 			}
 		};
 		if state.selected != Some(channel) || self.editing.is_some() || self.upload_busy {
-			state.status = "Finish editing or uploading before using a slash command.";
+			self.action_notice(
+				state,
+				"Finish editing or uploading before using a slash command.",
+				crate::design::Level::Warning,
+			);
 			return true;
 		}
 		match action {
@@ -256,8 +352,11 @@ impl crate::MessagingUi {
 				if state.draft_bytes().saturating_sub(original_bytes) + content.capacity()
 					> MAX_DRAFT_BYTES
 				{
-					state.status =
-						"Slash command exceeds the session input budget. Your draft was kept.";
+					self.action_notice(
+						state,
+						"Slash command exceeds the session input budget. Your draft was kept.",
+						crate::design::Level::Warning,
+					);
 					return true;
 				}
 				let original = state.drafts.insert(channel, content).expect("source draft");
@@ -270,6 +369,7 @@ impl crate::MessagingUi {
 					commands.push(command);
 				} else {
 					state.drafts.insert(channel, original);
+					self.composer_send_failure(state);
 				}
 			}
 			Action::Gifs(query) => {
@@ -285,23 +385,35 @@ impl crate::MessagingUi {
 				text,
 			} => {
 				if self.attachment.is_some() || !self.attachment_files.is_empty() {
-					state.status = "Send or remove the selected attachments before using /msg.";
+					self.action_notice(
+						state,
+						"Send or remove the selected attachments before using /msg.",
+						crate::design::Level::Warning,
+					);
 					return true;
 				}
 				if self.slash_direct.is_some() {
-					state.status = "Wait for the previous direct message to open.";
+					self.action_notice(
+						state,
+						"Wait for the previous direct message to open.",
+						crate::design::Level::Warning,
+					);
 					return true;
 				}
 				let user = match recipient(state, channel, query) {
 					Ok(user) => user,
 					Err(error) => {
-						state.status = error;
+						self.action_notice(state, error, crate::design::Level::Warning);
 						return true;
 					}
 				};
 				let text = text.to_owned();
 				if state.draft_bytes() + source.capacity() + text.capacity() > MAX_DRAFT_BYTES {
-					state.status = "Clear some draft space before using /msg. Your draft was kept.";
+					self.action_notice(
+						state,
+						"Clear some draft space before using /msg. Your draft was kept.",
+						crate::design::Level::Warning,
+					);
 					return true;
 				}
 				let pending = PendingMessage {
@@ -313,7 +425,7 @@ impl crate::MessagingUi {
 				};
 				if let Some(target) = direct_channel(state, user) {
 					if let Err(error) = self.check_slash_direct(state, &pending, target) {
-						state.status = error;
+						self.action_notice(state, error, crate::design::Level::Warning);
 						return true;
 					}
 					if let Some(command) = state.select(target) {
@@ -323,10 +435,19 @@ impl crate::MessagingUi {
 						self.stage_slash_direct(state, pending, target);
 					}
 				} else if state.friend(user).is_none() {
-					state.status = "Open a DM with this user first, or choose a friend with /msg.";
+					self.action_notice(
+						state,
+						"Open a DM with this user first, or choose a friend with /msg.",
+						crate::design::Level::Warning,
+					);
 				} else if let Some(command) = state.open_friend_dm(user) {
 					self.slash_direct = Some(pending);
 					commands.push(command);
+				} else {
+					self.toasts.push(
+						crate::design::Level::Warning,
+						crate::i18n::translate("action-direct-unavailable"),
+					);
 				}
 			}
 		}
@@ -347,7 +468,7 @@ impl crate::MessagingUi {
 		{
 			match self.check_slash_direct(state, &pending, target) {
 				Ok(()) => self.stage_slash_direct(state, pending, target),
-				Err(error) => state.status = error,
+				Err(error) => self.action_notice(state, error, crate::design::Level::Warning),
 			}
 		} else if state.selected == Some(pending.origin) && state.user_action_pending() {
 			self.slash_direct = Some(pending);
@@ -397,13 +518,47 @@ impl crate::MessagingUi {
 			self.draft_changes.push(target);
 		}
 		self.focus_switched_composer = true;
-		state.status = "Direct message opened. Review the message, then press Enter to send.";
+		self.action_notice(
+			state,
+			"Direct message opened. Review the message, then press Enter to send.",
+			crate::design::Level::Info,
+		);
 	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn missing_recipient_notifies_once_and_preserves_the_original_draft() {
+		struct ResetLanguage;
+		impl Drop for ResetLanguage {
+			fn drop(&mut self) {
+				crate::i18n::set_current(crate::i18n::Language::English);
+			}
+		}
+		let _reset = ResetLanguage;
+		crate::i18n::set_current(crate::i18n::Language::Spanish);
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		state.drafts.insert(channel, "/msg".into());
+		let mut view = crate::MessagingUi::default();
+		let ctx = egui::Context::default();
+		let mut commands = Vec::new();
+		for _ in 0..2 {
+			assert!(view.handle_builtin_slash(&mut state, channel, &ctx, &mut commands));
+			crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		}
+		let labels = crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		let expected = crate::i18n::translate("action-msg-recipient");
+		assert_ne!(expected, "Choose a recipient: /msg @user [message]");
+		assert!(!expected.starts_with("Unknown localization key"));
+		assert_eq!(labels.iter().filter(|label| *label == &expected).count(), 1);
+		assert_eq!(state.drafts[&channel], "/msg");
+		assert_eq!(state.status, "Choose a recipient: /msg @user [message]");
+		assert!(commands.is_empty());
+	}
 
 	#[test]
 	fn builtins_preserve_text_resolve_actions_and_reject_invalid_input() {

@@ -2144,6 +2144,7 @@ pub fn switch(
 	description: Option<&str>,
 	enabled: &mut bool,
 ) -> egui::Response {
+	crate::settings::reveal_search_target(ui, label);
 	let label = crate::i18n::translate_if_key(label);
 	let description = description.map(crate::i18n::translate_if_key);
 	let p = palette(ui);
@@ -2727,6 +2728,7 @@ pub fn row<R>(
 	detail: Option<&str>,
 	control: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
+	crate::settings::reveal_search_target(ui, title);
 	let title = crate::i18n::translate_if_key(title);
 	let detail = detail.map(crate::i18n::translate_if_key);
 	let p = palette(ui);
@@ -2801,6 +2803,7 @@ pub fn radio_row(
 	label: &str,
 	detail: Option<&str>,
 ) -> egui::Response {
+	crate::settings::reveal_search_target(ui, label);
 	let label = crate::i18n::translate_if_key(label);
 	let detail = detail.map(crate::i18n::translate_if_key);
 	let p = palette(ui);
@@ -3091,6 +3094,7 @@ pub fn slider_row<T: egui::emath::Numeric>(
 	range: std::ops::RangeInclusive<T>,
 	suffix: &str,
 ) -> egui::Response {
+	crate::settings::reveal_search_target(ui, title);
 	let title = crate::i18n::translate_if_key(title);
 	let detail = detail.map(crate::i18n::translate_if_key);
 	let p = palette(ui);
@@ -3115,6 +3119,7 @@ pub fn card_divider(ui: &mut egui::Ui) {
 
 /// Card body with a group title above it, the way every settings page introduces a group.
 pub fn group<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+	crate::settings::reveal_search_target(ui, title);
 	let title = crate::i18n::translate_if_key(title);
 	let p = palette(ui);
 	ui.add_space(4.0);

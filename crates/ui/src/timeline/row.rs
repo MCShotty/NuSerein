@@ -875,9 +875,9 @@ impl TimelineView {
 								{
 									if unknown_system {
 										ui.label(
-											RichText::new(format!(
-												"Unsupported message type {} · Preview unavailable",
-												message.kind
+											RichText::new(crate::i18n::translate_args(
+												"conversation-unsupported-type",
+												&[("kind", &message.kind.to_string())],
 											))
 											.small()
 											.color(colors.muted),
@@ -886,25 +886,27 @@ impl TimelineView {
 									for (present, label) in [
 										(
 											message.extra_content.poll && message.poll.is_none(),
-											"Poll · Preview unavailable",
+											"conversation-poll-unavailable",
 										),
 										(
 											(message.extra_content.sticker_items
 												|| message.extra_content.stickers) && message
 												.sticker_items
 												.is_empty(),
-											"Sticker · Preview unavailable",
+											"conversation-sticker-unavailable",
 										),
 										(
 											(message.extra_content.components
 												|| message.extra_content.components_v2)
 												&& message.components.is_empty(),
-											"Components · Preview unavailable",
+											"conversation-components-unavailable",
 										),
 									] {
 										if present {
 											ui.label(
-												RichText::new(label).small().color(colors.muted),
+												RichText::new(crate::i18n::translate(label))
+													.small()
+													.color(colors.muted),
 											);
 										}
 									}

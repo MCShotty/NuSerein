@@ -156,6 +156,7 @@ pub struct TimelineView {
 	text_size: f32,
 	font_revision: (usize, usize, u32),
 	time_revision: u64,
+	language: Option<crate::i18n::Language>,
 	scale: f32,
 	pub(super) load_older: bool,
 	pub(super) latest: bool,
@@ -2612,17 +2613,20 @@ impl TimelineView {
 		let text_size = egui::TextStyle::Body.resolve(ui.style()).size;
 		let font_revision = crate::fonts::revision(ui.ctx());
 		let time_revision = crate::local_time::format_revision();
+		let language = crate::i18n::current();
 		let scale = ui.ctx().pixels_per_point();
 		let width_changed = (self.width - width).abs() > 1.0;
 		let content_dimensions_changed = self.text_size != text_size
 			|| self.font_revision != font_revision
 			|| self.time_revision != time_revision
+			|| self.language.is_some_and(|previous| previous != language)
 			|| self.scale != scale
 			|| self.hide_media_links != self.applied_hide_media_links
 			|| self.compact_messages != self.applied_compact_messages;
 		let dimensions_changed = width_changed || content_dimensions_changed;
 		self.applied_hide_media_links = self.hide_media_links;
 		self.applied_compact_messages = self.compact_messages;
+		self.language = Some(language);
 		// A thread's starter joins the rows only once the whole thread history is loaded.
 		let starter = state.thread_starter().filter(|_| history_complete(state));
 		let starter_id = starter.map(|m| m.id);
@@ -6546,11 +6550,9 @@ mod tests {
 					.count(),
 				1
 			);
-			assert!(
-				painted
-					.iter()
-					.any(|s| s.contains("Unsupported message type 222"))
-			);
+			let unsupported =
+				crate::i18n::translate_args("conversation-unsupported-type", &[("kind", "222")]);
+			assert!(painted.iter().any(|s| s == &unsupported));
 		}
 	}
 	#[test]
@@ -6963,6 +6965,81 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn unsupported_poll_fallback_is_localized_without_hiding_supported_text() {
+		struct ResetLanguage;
+		impl Drop for ResetLanguage {
+			fn drop(&mut self) {
+				crate::i18n::set_current(crate::i18n::Language::English);
+			}
+		}
+		let _reset = ResetLanguage;
+		crate::i18n::set_current(crate::i18n::Language::Spanish);
+		let mut state = test_support::demo_state();
+		let mut message = text_message(42);
+		message.channel = state.selected.unwrap();
+		message.content = "Supported synthetic text".into();
+		message.extra_content.poll = true;
+		state.timeline.clear();
+		state.timeline.insert(message, false, false).unwrap();
+		let ctx = egui::Context::default();
+		let mut view = TimelineView::default();
+		let mut avatars = crate::avatars::Avatars::default();
+		fn collect(shape: &egui::Shape, texts: &mut Vec<String>) {
+			match shape {
+				egui::Shape::Text(text) => texts.push(text.galley.job.text.clone()),
+				egui::Shape::Vec(shapes) => {
+					for shape in shapes {
+						collect(shape, texts);
+					}
+				}
+				_ => {}
+			}
+		}
+		let mut texts = Vec::new();
+		for _ in 0..4 {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(600.0, 500.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					view.show(
+						ui,
+						&mut state,
+						&mut None,
+						&mut None,
+						(
+							&mut avatars,
+							&mut crate::profiles::ProfileSession::default(),
+						),
+						None,
+					);
+				},
+			);
+			texts.clear();
+			for shape in &output.shapes {
+				collect(&shape.shape, &mut texts);
+			}
+			assert!(output.platform_output.commands.is_empty());
+			output.drop_without_applying_deltas();
+		}
+		assert!(
+			texts
+				.iter()
+				.any(|text| text == "Encuesta · Vista previa no disponible")
+		);
+		assert!(
+			texts
+				.iter()
+				.any(|text| text.contains("Supported synthetic text"))
+		);
+		assert!(view.browser_opening.is_none());
 	}
 
 	#[test]
@@ -9416,6 +9493,65 @@ mod tests {
 			(after.1 - before.1).abs() <= 1.0,
 			"Reading offset changed: {before:?} -> {after:?}"
 		);
+		assert!(!view.following);
+	}
+
+	#[test]
+	fn language_changes_remeasure_rows_without_moving_the_reading_anchor() {
+		struct ResetLanguage;
+		impl Drop for ResetLanguage {
+			fn drop(&mut self) {
+				crate::i18n::set_current(crate::i18n::Language::English);
+			}
+		}
+		let _reset = ResetLanguage;
+		let _utc = crate::local_time::pin_timezone("UTC");
+		crate::i18n::set_current(crate::i18n::Language::French);
+		crate::local_time::set_format(
+			model::TimeFormat::TwentyFourHour,
+			crate::i18n::Language::French,
+		);
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut state = overscan_state();
+		let mut view = TimelineView::default();
+		let mut avatars = crate::avatars::Avatars::default();
+		for _ in 0..10 {
+			overscan_frame(&ctx, &mut view, &mut state, &mut avatars, 900.0, vec![]);
+		}
+		view.following = false;
+		view.anchor = Some((Id(250), 5.0));
+		view.revision = u64::MAX;
+		for _ in 0..12 {
+			overscan_frame(&ctx, &mut view, &mut state, &mut avatars, 900.0, vec![]);
+		}
+		let first = state.timeline.get(Id(1)).unwrap();
+		let key = row_height_key(first, None, view.unread_boundary, &state, false);
+		view.heights.insert(Id(1), (key, 400.0));
+		view.revision = u64::MAX;
+		overscan_frame(&ctx, &mut view, &mut state, &mut avatars, 900.0, vec![]);
+		assert_eq!(
+			view.heights.get(&Id(1)).map(|(_, height)| *height),
+			Some(400.0)
+		);
+		let before = view.anchor.unwrap();
+		let previous_time_revision = view.time_revision;
+		crate::i18n::set_current(crate::i18n::Language::Spanish);
+		crate::local_time::set_format(
+			model::TimeFormat::TwentyFourHour,
+			crate::i18n::Language::Spanish,
+		);
+		assert_eq!(crate::local_time::format_revision(), previous_time_revision);
+		for _ in 0..12 {
+			overscan_frame(&ctx, &mut view, &mut state, &mut avatars, 900.0, vec![]);
+		}
+		assert_ne!(
+			view.heights.get(&Id(1)).map(|(_, height)| *height),
+			Some(400.0)
+		);
+		let after = view.anchor.unwrap();
+		assert_eq!(after.0, before.0);
+		assert!((after.1 - before.1).abs() <= 1.0, "{before:?} -> {after:?}");
 		assert!(!view.following);
 	}
 

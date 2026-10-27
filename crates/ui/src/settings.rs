@@ -3,6 +3,571 @@
 use crate::{MessagingUi, design, i18n::Language, icons};
 use client_core::State;
 use egui::RichText;
+use std::cell::RefCell;
+
+#[cfg(test)]
+mod search_tests {
+	use super::*;
+
+	#[test]
+	fn translated_control_labels_find_their_real_page_and_target() {
+		for (language, query, key, page) in [
+			(
+				Language::English,
+				"start minimized",
+				"general-start-minimized",
+				Page::General,
+			),
+			(
+				Language::French,
+				"fuseau horaire personnalisé",
+				"timezone-custom",
+				Page::LanguageTime,
+			),
+			(
+				Language::Spanish,
+				"zona horaria del sistema",
+				"timezone-system",
+				Page::LanguageTime,
+			),
+			(
+				Language::English,
+				"noise suppression",
+				"voice-voice-processing-controls-noise-suppression",
+				Page::Voice,
+			),
+			(
+				Language::Spanish,
+				"solicitudes de amistad",
+				"messaging-permissions-tab-friend-requests",
+				Page::MessagingPermissions,
+			),
+		] {
+			let query = query.to_lowercase();
+			let target = search_targets(&query, language)
+				.find(|target| target.label == key)
+				.unwrap();
+			assert_eq!(target.page, page);
+			let mut settings = Settings {
+				query,
+				..Default::default()
+			};
+			settings.refresh_search(language);
+			assert!(settings.search_matches_page(page));
+		}
+		assert_eq!(search_targets("  ", Language::English).count(), 0);
+		for target in SEARCH_TARGETS {
+			for key in [target.label, target.anchor] {
+				for language in Language::ALL {
+					assert!(
+						!language.text(key).starts_with("Unknown localization key:"),
+						"{language:?}: {key}"
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn typing_preserves_the_current_page_and_drafts_until_a_result_is_activated() {
+		fn text_shapes(shape: &egui::Shape, result: &mut Vec<(String, egui::Rect)>) {
+			match shape {
+				egui::Shape::Text(text) => {
+					result.push((text.galley.job.text.clone(), text.visual_bounding_rect()))
+				}
+				egui::Shape::Vec(shapes) => {
+					for shape in shapes {
+						text_shapes(shape, result);
+					}
+				}
+				_ => {}
+			}
+		}
+		crate::i18n::set_current(Language::English);
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		view.settings.page = Page::Profile;
+		view.settings.timezone_query = "unsaved region".into();
+		{
+			let mut frame = |events| {
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(520.0, 600.0),
+						)),
+						focused: true,
+						events,
+						..Default::default()
+					},
+					|ui| view.settings_search(ui),
+				);
+				let mut shapes = Vec::new();
+				for shape in &output.shapes {
+					text_shapes(&shape.shape, &mut shapes);
+				}
+				output.drop_without_applying_deltas();
+				(
+					shapes,
+					view.settings.page,
+					view.settings.timezone_query.clone(),
+				)
+			};
+			frame(vec![]);
+			let click = |point, pressed| {
+				vec![
+					egui::Event::PointerMoved(point),
+					egui::Event::PointerButton {
+						pos: point,
+						button: egui::PointerButton::Primary,
+						pressed,
+						modifiers: egui::Modifiers::NONE,
+					},
+				]
+			};
+			let search = egui::pos2(25.0, 18.0);
+			frame(click(search, true));
+			frame(click(search, false));
+			let (labels, page_before_activation, draft_before_activation) =
+				frame(vec![egui::Event::Text("custom timezone".into())]);
+			assert_eq!(
+				page_before_activation,
+				Page::Profile,
+				"typing must not navigate"
+			);
+			assert_eq!(draft_before_activation, "unsaved region");
+			let result = labels
+				.iter()
+				.find(|(text, _)| text.starts_with("Custom timezone · "))
+				.expect("matching translated control result")
+				.1
+				.center();
+			frame(click(result, true));
+			frame(click(result, false));
+		}
+		assert_eq!(view.settings.query, "custom timezone");
+		assert_eq!(view.settings.page, Page::LanguageTime);
+		assert_eq!(view.settings.search_jump.unwrap().anchor, "timezone-custom");
+		assert_eq!(view.settings.timezone_query, "unsaved region");
+	}
+
+	#[test]
+	fn search_jump_scrolls_to_a_real_control_once_without_activating_it() {
+		let ctx = egui::Context::default();
+		crate::i18n::set_current(Language::English);
+		let target = search_targets("start minimized", Language::English)
+			.next()
+			.unwrap();
+		let mut selected = false;
+		let offset = {
+			let mut frame = |jump, time| {
+				let mut offset = 0.0;
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(400.0, 180.0),
+						)),
+						time: Some(time),
+						..Default::default()
+					},
+					|ui| {
+						offset = egui::ScrollArea::vertical()
+							.id_salt("search-jump-test")
+							.max_height(100.0)
+							.show(ui, |ui| {
+								let _scope = SearchScrollScope::new(jump, Language::English);
+								ui.add_space(700.0);
+								design::switch(ui, target.anchor, None, &mut selected);
+								ui.add_space(300.0);
+							})
+							.state
+							.clamped_offset()
+							.y;
+					},
+				);
+				output.drop_without_applying_deltas();
+				offset
+			};
+			frame(None, 0.0);
+			frame(Some(target), 0.05);
+			let mut offset = 0.0;
+			for step in 2..30 {
+				offset = frame(None, f64::from(step) * 0.05);
+			}
+			offset
+		};
+		assert!(
+			offset > 500.0,
+			"expected control to be scrolled into view, got {offset}"
+		);
+		assert!(!selected, "search navigation must not activate settings");
+		SEARCH_SCROLL_TARGET.with(|slot| assert!(slot.borrow().is_none()));
+	}
+
+	#[test]
+	fn spanish_search_navigates_after_preferences_load_without_discarding_the_draft() {
+		use client_core::{Command, auth::AuthState};
+		use model::messaging_permissions::{Change, Snapshot};
+		crate::i18n::set_current(Language::Spanish);
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = AuthState::Authenticated;
+		state.gateway_connected = true;
+		state.messaging_permissions.draft = Some(Change::Everyone(false));
+		view.language = Language::Spanish;
+		view.settings.open = true;
+		view.settings.page = Page::Profile;
+		view.settings.query = "solicitudes de amistad".into();
+		let target = search_targets(&view.settings.query, view.language)
+			.find(|target| target.label == "messaging-permissions-tab-friend-requests")
+			.unwrap();
+		view.activate_search_target(target);
+		let mut commands = Vec::new();
+		let input = |time| egui::RawInput {
+			screen_rect: Some(egui::Rect::from_min_size(
+				egui::Pos2::ZERO,
+				egui::vec2(900.0, 500.0),
+			)),
+			focused: true,
+			time: Some(time),
+			..Default::default()
+		};
+		ctx.run_ui(input(0.0), |ui| {
+			view.show_settings(ui.ctx(), &mut state, &mut commands)
+		})
+		.drop_without_applying_deltas();
+		assert_eq!(view.settings.page, Page::MessagingPermissions);
+		assert!(
+			view.settings.messaging_permissions.jump
+				== Some(crate::messaging_permissions::Tab::FriendRequests)
+		);
+		assert_eq!(
+			state.messaging_permissions.draft,
+			Some(Change::Everyone(false))
+		);
+		let request = commands
+			.iter()
+			.find_map(|command| match command {
+				Command::MessagingPermissions {
+					request,
+					change: None,
+				} => Some(*request),
+				_ => None,
+			})
+			.expect("search navigates through the existing preferences read");
+		assert!(commands.iter().all(|command| !matches!(
+			command,
+			Command::MessagingPermissions {
+				change: Some(_),
+				..
+			}
+		)));
+		state.apply_messaging_permissions(request, Ok(Snapshot::default()));
+		let heading = Language::Spanish
+			.text("messaging-permissions-heading-friend-requests")
+			.to_uppercase();
+		let mut visible = false;
+		for step in 1..=30 {
+			let output = ctx.run_ui(input(f64::from(step) * 0.05), |ui| {
+				view.show_settings(ui.ctx(), &mut state, &mut commands)
+			});
+			for clipped in &output.shapes {
+				if let egui::Shape::Text(text) = &clipped.shape
+					&& text.galley.job.text == heading
+					&& clipped.clip_rect.intersects(text.visual_bounding_rect())
+				{
+					visible = true;
+				}
+			}
+			output.drop_without_applying_deltas();
+			if visible {
+				break;
+			}
+		}
+		assert!(
+			visible,
+			"the translated target should scroll into the actual settings viewport"
+		);
+		assert_eq!(
+			state.messaging_permissions.draft,
+			Some(Change::Everyone(false))
+		);
+		assert_eq!(
+			state
+				.messaging_permissions
+				.snapshot
+				.as_ref()
+				.unwrap()
+				.friend_source_flags,
+			Snapshot::default().friend_source_flags
+		);
+		assert!(commands.iter().all(|command| !matches!(
+			command,
+			Command::MessagingPermissions {
+				change: Some(_),
+				..
+			}
+		)));
+		crate::i18n::set_current(Language::English);
+	}
+
+	#[test]
+	fn manual_content_interaction_cancels_a_pending_search_jump() {
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		view.settings.search_jump =
+			Some(target(Page::Profile, "profile-edit-form-profile-picture"));
+		view.settings.messaging_permissions.jump =
+			Some(crate::messaging_permissions::Tab::FriendRequests);
+		let point = egui::pos2(50.0, 50.0);
+		ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(200.0, 180.0),
+				)),
+				events: vec![
+					egui::Event::PointerMoved(point),
+					egui::Event::PointerButton {
+						pos: point,
+						button: egui::PointerButton::Primary,
+						pressed: true,
+						modifiers: egui::Modifiers::NONE,
+					},
+				],
+				..Default::default()
+			},
+			|ui| view.cancel_search_jump_on_content_interaction(ui),
+		)
+		.drop_without_applying_deltas();
+		assert!(view.settings.search_jump.is_none());
+		assert!(view.settings.messaging_permissions.jump.is_none());
+	}
+
+	#[test]
+	fn indexed_settings_anchors_reach_their_production_controls() {
+		crate::i18n::set_current(Language::English);
+		for &target in SEARCH_TARGETS {
+			let ctx = egui::Context::default();
+			let mut view = MessagingUi::default();
+			let mut state = test_support::demo_state();
+			state.messaging_permissions.snapshot =
+				Some(model::messaging_permissions::Snapshot::default());
+			view.settings.open = true;
+			view.activate_search_target(target);
+			if target.page == Page::Profile {
+				state.own_profile.loading = true;
+			}
+			let mut commands = Vec::new();
+			let mut frame = |view: &mut MessagingUi, state: &mut State| {
+				ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(1000.0, 650.0),
+						)),
+						..Default::default()
+					},
+					|ui| view.show_settings(ui.ctx(), state, &mut commands),
+				)
+				.drop_without_applying_deltas();
+			};
+			frame(&mut view, &mut state);
+			if target.page == Page::Profile {
+				assert_eq!(
+					view.settings.search_jump,
+					Some(target),
+					"profile target must survive loading"
+				);
+				state.own_profile.loading = false;
+				state.own_profile.data = Some(crate::profiles::synthetic(
+					state.user.as_ref().unwrap(),
+					None,
+				));
+				frame(&mut view, &mut state);
+			}
+			if target.page == Page::MessagingPermissions {
+				assert!(
+					view.settings.messaging_permissions.jump.is_some(),
+					"missing tab jump for {target:?}"
+				);
+				frame(&mut view, &mut state);
+				assert!(
+					view.settings.messaging_permissions.jump.is_none(),
+					"tab heading not found for {target:?}"
+				);
+			} else {
+				// The first modal pass measures an invisible area; navigation must survive it.
+				if view.settings.search_jump.is_some() {
+					frame(&mut view, &mut state);
+				}
+				assert!(
+					view.settings.search_jump.is_none(),
+					"no production control found for {target:?}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn tiny_settings_modal_keeps_its_accessible_close_button_on_screen() {
+		crate::i18n::set_current(Language::English);
+		for size in [egui::vec2(200.0, 180.0), egui::vec2(250.0, 260.0)] {
+			let ctx = egui::Context::default();
+			ctx.enable_accesskit();
+			let mut view = MessagingUi::default();
+			let mut state = test_support::demo_state();
+			view.settings.open = true;
+			let input = |events| egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+				focused: true,
+				events,
+				..Default::default()
+			};
+			let label = Language::English.text("settings-close-control-close-settings-esc");
+			let mut bounds = None;
+			for _ in 0..8 {
+				let output = ctx.run_ui(input(vec![]), |ui| {
+					view.show_settings(ui.ctx(), &mut state, &mut Vec::new())
+				});
+				if let Some(update) = output.platform_output.accesskit_update.as_ref() {
+					bounds = bounds.or_else(|| {
+						update.nodes.iter().find_map(|(_, node)| {
+							(node.label() == Some(label.as_str()))
+								.then(|| node.bounds())
+								.flatten()
+						})
+					});
+				}
+				output.drop_without_applying_deltas();
+			}
+			let bounds = bounds.expect("close button retains an accessible label");
+			assert!(
+				bounds.x0 >= 0.0
+					&& bounds.y0 >= 0.0
+					&& bounds.x1 <= f64::from(size.x)
+					&& bounds.y1 <= f64::from(size.y),
+				"close bounds {bounds:?}, viewport {size:?}"
+			);
+			let point = egui::pos2(
+				((bounds.x0 + bounds.x1) * 0.5) as f32,
+				((bounds.y0 + bounds.y1) * 0.5) as f32,
+			);
+			for pressed in [true, false] {
+				ctx.run_ui(
+					input(vec![
+						egui::Event::PointerMoved(point),
+						egui::Event::PointerButton {
+							pos: point,
+							button: egui::PointerButton::Primary,
+							pressed,
+							modifiers: egui::Modifiers::NONE,
+						},
+					]),
+					|ui| view.show_settings(ui.ctx(), &mut state, &mut Vec::new()),
+				)
+				.drop_without_applying_deltas();
+			}
+			assert!(!view.settings.open, "close remains usable in {size:?}");
+		}
+	}
+
+	#[test]
+	fn tiny_settings_modal_supports_keyboard_close_and_scrolls_to_a_control() {
+		crate::i18n::set_current(Language::English);
+		let ctx = egui::Context::default();
+		ctx.enable_accesskit();
+		let mut view = MessagingUi::default();
+		let mut state = test_support::demo_state();
+		view.settings.open = true;
+		let input = |time, events| egui::RawInput {
+			screen_rect: Some(egui::Rect::from_min_size(
+				egui::Pos2::ZERO,
+				egui::vec2(200.0, 180.0),
+			)),
+			focused: true,
+			time: Some(time),
+			events,
+			..Default::default()
+		};
+		view.activate_search_target(target(
+			Page::Storage,
+			"settings-storage-page-plaintext-login",
+		));
+		let label = Language::English.text("settings-storage-page-plaintext-login");
+		let mut visible = false;
+		let mut geometry = None;
+		let mut close_id = None;
+		for step in 0..30 {
+			let output = ctx.run_ui(input(f64::from(step) * 0.05, vec![]), |ui| {
+				view.show_settings(ui.ctx(), &mut state, &mut Vec::new());
+			});
+			if let Some(update) = output.platform_output.accesskit_update.as_ref() {
+				let close = Language::English.text("settings-close-control-close-settings-esc");
+				if let Some((id, _)) = update
+					.nodes
+					.iter()
+					.find(|(_, node)| node.label() == Some(close.as_str()))
+				{
+					close_id = Some(*id);
+				}
+			}
+			for clipped in &output.shapes {
+				if let egui::Shape::Text(text) = &clipped.shape
+					&& text.galley.job.text == label
+				{
+					geometry = Some((text.visual_bounding_rect(), clipped.clip_rect));
+					visible |= clipped.clip_rect.intersects(text.visual_bounding_rect());
+				}
+			}
+			output.drop_without_applying_deltas();
+		}
+		assert!(
+			visible,
+			"search target should be scrollable within the tiny modal: {geometry:?}"
+		);
+		let close_id = close_id.expect("close is exposed to accessibility");
+		let key = |key, pressed| egui::Event::Key {
+			key,
+			physical_key: None,
+			pressed,
+			repeat: false,
+			modifiers: egui::Modifiers::NONE,
+		};
+		let mut focused = false;
+		for step in 30..94 {
+			ctx.run_ui(
+				input(
+					f64::from(step) * 0.05,
+					vec![key(egui::Key::Tab, true), key(egui::Key::Tab, false)],
+				),
+				|ui| {
+					view.show_settings(ui.ctx(), &mut state, &mut Vec::new());
+				},
+			)
+			.drop_without_applying_deltas();
+			if ctx.memory(|memory| memory.focused().map(|id| id.accesskit_id()) == Some(close_id)) {
+				focused = true;
+				break;
+			}
+		}
+		assert!(focused, "keyboard navigation reaches the close button");
+		ctx.run_ui(
+			input(
+				5.0,
+				vec![key(egui::Key::Enter, true), key(egui::Key::Enter, false)],
+			),
+			|ui| {
+				view.show_settings(ui.ctx(), &mut state, &mut Vec::new());
+			},
+		)
+		.drop_without_applying_deltas();
+		assert!(!view.settings.open, "keyboard activation closes settings");
+	}
+}
 
 #[cfg(test)]
 mod clock_tests {
@@ -41,6 +606,10 @@ pub(super) struct Settings {
 	pub open: bool,
 	page: Page,
 	query: String,
+	search_jump: Option<SearchTarget>,
+	search_cache: Option<(Language, String)>,
+	search_results: Vec<SearchResult>,
+	search_pages: u32,
 	language_time_format: Option<(model::TimeFormat, Language, model::TimeZonePreference)>,
 	timezone_query: String,
 	timezone_filter: Option<String>,
@@ -60,7 +629,7 @@ pub(super) struct Settings {
 	pub(super) games: crate::registered_games::Page,
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
 	Account,
 	Profile,
@@ -193,6 +762,9 @@ impl Page {
 		language.text(self.description_key())
 	}
 	fn matches(self, query: &str, language: Language) -> bool {
+		if query.trim().is_empty() {
+			return true;
+		}
 		let keywords = match self {
 			Self::Account => {
 				"my account username email phone mfa security subscription billing profile logout"
@@ -249,6 +821,281 @@ impl Page {
 		keywords.contains(query)
 			|| self.label(language).to_lowercase().contains(query)
 			|| self.description(language).to_lowercase().contains(query)
+	}
+}
+
+/// An existing setting and the rendered control or section to reveal. A section target is
+/// used when the control requires a different mode; searching never changes that mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SearchTarget {
+	page: Page,
+	label: &'static str,
+	anchor: &'static str,
+}
+
+struct SearchResult {
+	target: SearchTarget,
+	label: String,
+}
+
+impl SearchTarget {
+	fn matches(self, query: &str, language: Language) -> bool {
+		let label = language.text(self.label).to_lowercase();
+		query.split_whitespace().all(|word| label.contains(word))
+	}
+}
+
+const fn target(page: Page, label: &'static str) -> SearchTarget {
+	SearchTarget {
+		page,
+		label,
+		anchor: label,
+	}
+}
+
+const fn section_target(page: Page, label: &'static str, anchor: &'static str) -> SearchTarget {
+	SearchTarget {
+		page,
+		label,
+		anchor,
+	}
+}
+
+const SEARCH_TARGETS: &[SearchTarget] = &[
+	target(Page::Profile, "profile-edit-form-profile-picture"),
+	target(Page::MessagingPermissions, "messaging-permissions-tab-spam"),
+	target(
+		Page::MessagingPermissions,
+		"messaging-permissions-tab-direct-messages",
+	),
+	target(
+		Page::MessagingPermissions,
+		"messaging-permissions-tab-friend-requests",
+	),
+	target(
+		Page::MessagingPermissions,
+		"messaging-permissions-tab-connected-games",
+	),
+	target(Page::LanguageTime, "language-label"),
+	target(Page::LanguageTime, "time-format-group"),
+	target(Page::LanguageTime, "time-format-12-hour"),
+	target(Page::LanguageTime, "time-format-24-hour"),
+	target(Page::LanguageTime, "timezone-system"),
+	target(Page::LanguageTime, "timezone-custom"),
+	section_target(Page::LanguageTime, "timezone-region", "timezone-custom"),
+	section_target(Page::LanguageTime, "timezone-fixed", "timezone-custom"),
+	target(Page::General, "general-open-at-startup"),
+	target(Page::General, "general-start-minimized"),
+	#[cfg(target_os = "linux")]
+	target(Page::General, "general-hide-decorations"),
+	#[cfg(any(target_os = "windows", target_os = "macos"))]
+	target(Page::General, "general-hide-title-bar"),
+	#[cfg(target_os = "macos")]
+	target(Page::General, "general-keep-menu-bar"),
+	#[cfg(not(target_os = "macos"))]
+	target(Page::General, "general-keep-system-tray"),
+	target(Page::General, "general-render-with"),
+	target(
+		Page::Appearance,
+		"settings-appearance-settings-primary-color",
+	),
+	target(
+		Page::Appearance,
+		"settings-appearance-settings-transparency-blur",
+	),
+	target(Page::Appearance, "settings-cosmetics-decorations"),
+	target(Page::Appearance, "settings-cosmetics-nameplates"),
+	target(Page::Appearance, "settings-cosmetics-effects"),
+	target(Page::Appearance, "settings-cosmetics-frames"),
+	target(Page::Appearance, "settings-cosmetics-name-styles"),
+	target(Page::Appearance, "reading-zoom-row-zoom"),
+	target(Page::Appearance, "reading-layout-settings-sidebar-width"),
+	target(
+		Page::Appearance,
+		"reading-layout-settings-show-people-in-servers",
+	),
+	target(
+		Page::Appearance,
+		"reading-layout-settings-show-people-in-direct-messages",
+	),
+	target(Page::Chat, "settings-convert-emoticons"),
+	target(Page::Chat, "settings-preload-on-hover"),
+	target(Page::Chat, "settings-chat-settings-suggest-nitro-emojis"),
+	target(Page::Chat, "reading-chat-reading-settings-animate-gifs"),
+	target(
+		Page::Chat,
+		"reading-chat-reading-settings-hide-image-and-gif-links",
+	),
+	target(
+		Page::Chat,
+		"reading-chat-reading-settings-compact-message-spacing",
+	),
+	target(Page::Chat, "reading-double-click-reaction"),
+	target(
+		Page::Chat,
+		"reading-chat-reading-settings-confirm-before-opening-links",
+	),
+	target(Page::Chat, "reading-chat-reading-settings-smooth-scrolling"),
+	target(Page::Chat, "reading-chat-reading-settings-scrolling-speed"),
+	target(Page::Accessibility, "reading-zoom-row-zoom"),
+	target(
+		Page::Accessibility,
+		"reading-chat-reading-settings-compact-message-spacing",
+	),
+	target(Page::Accessibility, "accessibility-animate-artwork"),
+	target(
+		Page::Accessibility,
+		"reading-chat-reading-settings-smooth-scrolling",
+	),
+	target(
+		Page::Accessibility,
+		"reading-chat-reading-settings-scrolling-speed",
+	),
+	target(Page::Storage, "settings-storage-page-clear-cache"),
+	target(Page::Storage, "settings-storage-page-plaintext-login"),
+	target(Page::Storage, "settings-image-cache-media"),
+	target(Page::Storage, "settings-image-cache-artwork"),
+	target(Page::Storage, "settings-image-cache-retention"),
+	target(Page::Updates, "updates-update-settings-auto-update"),
+	target(Page::Updates, "updates-update-settings-release-channel"),
+	target(Page::Keybinds, "keybinds-show-voice-enable-global-keybinds"),
+	target(
+		Page::Activity,
+		"settings-activity-settings-share-game-activity",
+	),
+	target(
+		Page::Notifications,
+		"notification-settings-notification-settings-enable-desktop-notifications",
+	),
+	target(
+		Page::Notifications,
+		"notification-settings-notification-settings-sound-volume",
+	),
+	target(
+		Page::Notifications,
+		"notification-settings-notification-settings-disable-all-notification-sounds",
+	),
+	target(
+		Page::Notifications,
+		"notification-settings-notification-settings-enable-unread-message-badge",
+	),
+	section_target(
+		Page::Voice,
+		"voice-voice-audio-controls-microphone",
+		"voice-voice-settings-content-devices-levels",
+	),
+	section_target(
+		Page::Voice,
+		"voice-voice-audio-controls-speakers",
+		"voice-voice-settings-content-devices-levels",
+	),
+	section_target(
+		Page::Voice,
+		"voice-voice-processing-controls-noise-suppression",
+		"voice-voice-settings-content-voice-processing",
+	),
+	target(Page::Voice, "voice-voice-processing-controls-push-to-talk"),
+	target(Page::Voice, "voice-voice-settings-content-camera"),
+	target(Page::Voice, "voice-video-settings-title"),
+];
+
+fn search_targets(query: &str, language: Language) -> impl Iterator<Item = SearchTarget> + '_ {
+	let query = query.trim();
+	SEARCH_TARGETS
+		.iter()
+		.copied()
+		.filter(move |target| !query.is_empty() && target.matches(query, language))
+}
+
+impl Settings {
+	fn refresh_search(&mut self, language: Language) {
+		let raw_query = self.query.trim();
+		if self
+			.search_cache
+			.as_ref()
+			.is_some_and(|(cached_language, cached_query)| {
+				*cached_language == language && cached_query.as_str() == raw_query
+			}) {
+			return;
+		}
+		let query = raw_query.to_lowercase();
+		self.search_results = search_targets(&query, language)
+			.map(|target| SearchResult {
+				target,
+				label: format!(
+					"{} · {}",
+					language.text(target.label),
+					target.page.label(language)
+				),
+			})
+			.collect();
+		self.search_pages = 0;
+		for page in Page::ALL {
+			if page.matches(&query, language)
+				|| self
+					.search_results
+					.iter()
+					.any(|result| result.target.page == page)
+			{
+				self.search_pages |= 1u32 << page as u8;
+			}
+		}
+		self.search_cache = Some((language, raw_query.to_owned()));
+	}
+
+	fn search_matches_page(&self, page: Page) -> bool {
+		self.search_pages & (1u32 << page as u8) != 0
+	}
+}
+
+// The target exists only while painting the selected settings page. A scoped, thread-local slot
+// avoids locking or allocating for ordinary settings controls and cannot affect another window.
+thread_local! {
+	static SEARCH_SCROLL_TARGET: RefCell<Option<(&'static str, String)>> = const { RefCell::new(None) };
+}
+
+struct SearchScrollScope(Option<(&'static str, String)>);
+impl SearchScrollScope {
+	fn new(target: Option<SearchTarget>, language: Language) -> Self {
+		let previous = SEARCH_SCROLL_TARGET.with(|slot| {
+			slot.replace(target.map(|target| (target.anchor, language.text(target.anchor))))
+		});
+		Self(previous)
+	}
+
+	fn revealed(&self) -> bool {
+		SEARCH_SCROLL_TARGET.with(|slot| slot.borrow().is_none())
+	}
+}
+impl Drop for SearchScrollScope {
+	fn drop(&mut self) {
+		SEARCH_SCROLL_TARGET.with(|slot| {
+			slot.replace(self.0.take());
+		});
+	}
+}
+
+/// Reveal the matching real control without activating it or changing its value.
+pub(super) fn reveal_search_target(ui: &mut egui::Ui, label: &str) {
+	let matched = SEARCH_SCROLL_TARGET.with(|slot| {
+		slot.borrow()
+			.as_ref()
+			.is_some_and(|(key, translated)| label == *key || label == translated)
+	});
+	if matched {
+		if ui.is_sizing_pass() {
+			// A newly opened Area first measures invisibly; keep the request until its
+			// geometry is real rather than scrolling against provisional coordinates.
+			ui.ctx().request_repaint();
+			return;
+		}
+		SEARCH_SCROLL_TARGET.with(|slot| {
+			slot.borrow_mut().take();
+		});
+		ui.scroll_to_rect(
+			egui::Rect::from_min_size(ui.cursor().min, egui::vec2(1.0, 48.0)),
+			Some(egui::Align::Min),
+		);
 	}
 }
 
@@ -427,8 +1274,9 @@ impl MessagingUi {
 		let composing = self.settings.ime_active || ime_this_frame;
 		let colors = design::palette_for(ctx);
 		let size = ctx.content_rect().size() - egui::vec2(32.0, 40.0);
-		let width = size.x.clamp(280.0, 1100.0);
-		let height = size.y.clamp(240.0, 820.0);
+		let width = size.x.clamp(0.0, 1100.0);
+		let height = size.y.clamp(0.0, 820.0);
+		let compact = width < 280.0 || height < 240.0;
 		let wide = width >= 620.0;
 		let modal = egui::Modal::new(egui::Id::unique("user-settings"))
 			.backdrop_color(egui::Color32::from_black_alpha(180))
@@ -466,10 +1314,16 @@ impl MessagingUi {
 				}
 				egui::CentralPanel::default()
 					.frame(egui::Frame::new().inner_margin(egui::Margin {
-						left: if wide { 40 } else { 20 },
-						right: 20,
-						top: 24,
-						bottom: 24,
+						left: if wide {
+							40
+						} else if compact {
+							8
+						} else {
+							20
+						},
+						right: if compact { 8 } else { 20 },
+						top: if compact { 8 } else { 24 },
+						bottom: if compact { 8 } else { 24 },
 					}))
 					.show(ui, |ui| {
 						let editing_theme =
@@ -484,36 +1338,43 @@ impl MessagingUi {
 						} else {
 							self.settings.page.description(self.language)
 						};
-						if page_header(ui, &heading, &description).clicked() {
+						if page_header(ui, &heading, &description, compact).clicked() {
 							self.settings.open = false;
 						}
 						if !wide {
-							ui.add_space(8.0);
-							self.settings_search(ui);
-							egui::ComboBox::from_id_salt("settings-page")
-								.selected_text(self.settings.page.label(self.language))
-								.width(ui.available_width())
-								.show_ui(ui, |ui| {
-									for page in Page::ALL {
-										if page.matches(
-											&self.settings.query.to_lowercase(),
-											self.language,
-										) {
-											ui.selectable_value(
-												&mut self.settings.page,
-												page,
-												page.label(self.language),
-											);
-										}
-									}
+							ui.add_space(if compact { 2.0 } else { 8.0 });
+							if compact {
+								ui.horizontal_top(|ui| {
+									let search_width = ((ui.available_width()
+										- ui.spacing().item_spacing.x) * 0.5)
+										.max(1.0);
+									ui.allocate_ui_with_layout(
+										egui::vec2(search_width, 0.0),
+										egui::Layout::top_down(egui::Align::Min),
+										|ui| {
+											ui.set_width(search_width);
+											self.settings_search(ui);
+										},
+									);
+									self.settings_page_picker(ui);
 								});
+							} else {
+								self.settings_search(ui);
+								self.settings_page_picker(ui);
+							}
 						}
-						ui.add_space(16.0);
+						ui.add_space(if compact { 4.0 } else { 16.0 });
 						if self.settings.page == Page::Themes && self.extensions.editing_theme() {
 							self.extensions.theme_editor_toolbar(ui);
 							ui.add_space(12.0);
 						}
-						egui::ScrollArea::vertical()
+						self.cancel_search_jump_on_content_interaction(ui);
+						let content_scroll = if compact {
+							egui::ScrollArea::both()
+						} else {
+							egui::ScrollArea::vertical()
+						};
+						content_scroll
 							.id_salt((
 								"settings-content",
 								self.settings.page as u8,
@@ -536,22 +1397,17 @@ impl MessagingUi {
 								};
 								ui.set_width((ui.available_width() - scroll_padding).min(720.0));
 								ui.spacing_mut().item_spacing.y = 12.0;
-								let query = self.settings.query.to_lowercase();
-								if !Page::ALL
-									.into_iter()
-									.any(|p| p.matches(&query, self.language))
-								{
-									ui.label(
-										design::semibold(
-											ui,
-											self.language.text("no-settings-found"),
-											16.0,
-										)
-										.color(colors.text_strong),
-									);
-									ui.weak(self.language.text("search-suggestion"));
-									return;
-								}
+								let jump = self
+									.settings
+									.search_jump
+									.take()
+									.filter(|target| target.page == self.settings.page);
+								let section_jump =
+									jump.filter(|target| target.page == Page::MessagingPermissions);
+								let control_jump =
+									jump.filter(|target| target.page != Page::MessagingPermissions);
+								let search_scope =
+									SearchScrollScope::new(control_jump, self.language);
 								match self.settings.page {
 									Page::General => self.general_settings(ui, state.demo),
 									Page::LanguageTime => self.language_time_settings(ui),
@@ -570,7 +1426,17 @@ impl MessagingUi {
 									Page::Appearance => self.appearance_settings(ui, state.demo),
 									Page::Chat => self.chat_settings(ui, state.demo),
 									Page::MessagingPermissions => {
-										self.messaging_permissions_settings(ui, state, commands)
+										self.messaging_permissions_settings(ui, state, commands);
+										if let Some(target) = section_jump
+											&& let Some(tab) =
+												crate::messaging_permissions::Tab::ALL
+													.into_iter()
+													.find(|tab| tab.label() == target.anchor)
+										{
+											self.settings.messaging_permissions.jump = Some(tab);
+											self.settings.messaging_permissions.active = tab;
+											ui.ctx().request_repaint();
+										}
 									}
 									Page::Notifications => {
 										self.notification_settings(ui, state.demo)
@@ -595,6 +1461,13 @@ impl MessagingUi {
 											.select_themes(self.settings.page == Page::Themes);
 										self.extensions.settings(ui, state);
 									}
+								}
+								if let Some(target) = control_jump
+									&& !search_scope.revealed()
+								{
+									// A profile can still be loading. Keep one bounded target until it appears,
+									// the query/page changes, or the settings window closes.
+									self.settings.search_jump = Some(target);
 								}
 								if state.demo {
 									ui.add_space(20.0);
@@ -625,6 +1498,10 @@ impl MessagingUi {
 		if !self.settings.open {
 			self.settings.messaging_permissions.requested = false;
 			self.settings.ime_active = false;
+			self.settings.search_jump = None;
+		}
+		if !self.settings.open || self.settings.page != Page::MessagingPermissions {
+			self.settings.messaging_permissions.jump = None;
 		}
 		if !self.settings.open || self.settings.page != Page::Account {
 			self.settings.account.conceal();
@@ -682,12 +1559,11 @@ impl MessagingUi {
 				ui.spacing_mut().item_spacing.y = 2.0;
 				self.settings_search(ui);
 				ui.add_space(12.0);
-				let query = self.settings.query.to_lowercase();
 				for (heading, pages) in Page::SECTIONS {
 					let visible: Vec<Page> = pages
 						.iter()
 						.copied()
-						.filter(|page| page.matches(&query, language))
+						.filter(|page| self.settings.search_matches_page(*page))
 						.collect();
 					if visible.is_empty() {
 						continue;
@@ -759,6 +1635,57 @@ impl MessagingUi {
 			});
 	}
 
+	fn settings_page_picker(&mut self, ui: &mut egui::Ui) {
+		egui::ComboBox::from_id_salt("settings-page")
+			.selected_text(self.settings.page.label(self.language))
+			.width(ui.available_width().max(1.0))
+			.truncate()
+			.show_ui(ui, |ui| {
+				for page in Page::ALL {
+					if self.settings.search_matches_page(page) {
+						ui.selectable_value(
+							&mut self.settings.page,
+							page,
+							page.label(self.language),
+						);
+					}
+				}
+			});
+	}
+
+	fn activate_search_target(&mut self, target: SearchTarget) {
+		if target.page == Page::MessagingPermissions && self.settings.page != target.page {
+			self.settings.messaging_permissions.requested = false;
+		}
+		if target.page == Page::Profile {
+			self.settings.server_profile = false;
+		}
+		self.settings.page = target.page;
+		self.settings.search_jump = Some(target);
+	}
+
+	fn cancel_search_jump_on_content_interaction(&mut self, ui: &egui::Ui) {
+		if !ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
+			return;
+		}
+		let manual = ui.input(|input| {
+			input.smooth_scroll_delta() != egui::Vec2::ZERO
+				|| input.pointer.any_pressed()
+				|| [
+					egui::Key::PageUp,
+					egui::Key::PageDown,
+					egui::Key::Home,
+					egui::Key::End,
+				]
+				.into_iter()
+				.any(|key| input.key_pressed(key))
+		});
+		if manual {
+			self.settings.search_jump = None;
+			self.settings.messaging_permissions.jump = None;
+		}
+	}
+
 	fn settings_search(&mut self, ui: &mut egui::Ui) {
 		let colors = design::palette(ui);
 		let language = self.language;
@@ -775,20 +1702,40 @@ impl MessagingUi {
 							.hint_text(language.text("search"))
 							.char_limit(64)
 							.frame(egui::Frame::NONE)
-							.desired_width(ui.available_width() - 24.0),
+							.desired_width((ui.available_width() - 24.0).max(1.0)),
 					);
 					icons::inline(ui, icons::Icon::Search, 16.0, colors.muted);
 					if response.changed() {
-						let query = self.settings.query.to_lowercase();
-						if !self.settings.page.matches(&query, language)
-							&& let Some(page) =
-								Page::ALL.into_iter().find(|p| p.matches(&query, language))
-						{
-							self.settings.page = page;
-						}
+						self.settings.search_jump = None;
+						self.settings.messaging_permissions.jump = None;
 					}
 				});
 			});
+		self.settings.refresh_search(language);
+		if !self.settings.query.trim().is_empty() {
+			if !self.settings.search_results.is_empty() {
+				let max_height = (ui.available_height() * 0.3).clamp(40.0, 200.0);
+				let mut selected = None;
+				egui::ScrollArea::vertical()
+					.id_salt("settings-search-results")
+					.max_height(max_height)
+					.auto_shrink([false, true])
+					.show_rows(ui, 34.0, self.settings.search_results.len(), |ui, range| {
+						for index in range {
+							let result = &self.settings.search_results[index];
+							if nav_item(ui, &result.label, false).clicked() {
+								selected = Some(result.target);
+							}
+						}
+					});
+				if let Some(target) = selected {
+					self.activate_search_target(target);
+				}
+			}
+			if self.settings.search_pages == 0 {
+				ui.weak(language.text("no-settings-found"));
+			}
+		}
 	}
 
 	fn settings_logout(&mut self, ui: &mut egui::Ui, demo: bool) {
@@ -1796,7 +2743,12 @@ fn account_row(ui: &mut egui::Ui, label: &str, value: &str) {
 }
 
 /// Reserve the close column before wrapping a page's title and description.
-fn page_header(ui: &mut egui::Ui, heading: &str, description: &str) -> egui::Response {
+fn page_header(
+	ui: &mut egui::Ui,
+	heading: &str,
+	description: &str,
+	compact: bool,
+) -> egui::Response {
 	let colors = design::palette(ui);
 	ui.horizontal_top(|ui| {
 		let text_width = (ui.available_width() - 40.0 - ui.spacing().item_spacing.x).max(1.0);
@@ -1806,17 +2758,24 @@ fn page_header(ui: &mut egui::Ui, heading: &str, description: &str) -> egui::Res
 			|ui| {
 				ui.set_width(text_width);
 				ui.spacing_mut().item_spacing.y = 2.0;
-				ui.add(
-					egui::Label::new(design::semibold(ui, heading, 20.0).color(colors.text_strong))
-						.wrap(),
-				);
-				ui.add(
-					egui::Label::new(RichText::new(description).size(13.0).color(colors.muted))
-						.wrap(),
-				);
+				let title =
+					egui::Label::new(design::semibold(ui, heading, 20.0).color(colors.text_strong));
+				let title = ui.add(if compact {
+					title.truncate()
+				} else {
+					title.wrap()
+				});
+				if compact {
+					title.on_hover_text(description);
+				} else {
+					ui.add(
+						egui::Label::new(RichText::new(description).size(13.0).color(colors.muted))
+							.wrap(),
+					);
+				}
 			},
 		);
-		close_control(ui)
+		close_control_mode(ui, compact)
 	})
 	.inner
 }
@@ -1896,8 +2855,15 @@ pub(super) fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::
 
 /// Discord's round close button with the "ESC" hint underneath.
 pub(super) fn close_control(ui: &mut egui::Ui) -> egui::Response {
+	close_control_mode(ui, false)
+}
+
+fn close_control_mode(ui: &mut egui::Ui, compact: bool) -> egui::Response {
 	let colors = design::palette(ui);
-	let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0, 56.0), egui::Sense::click());
+	let (rect, response) = ui.allocate_exact_size(
+		egui::vec2(40.0, if compact { 40.0 } else { 56.0 }),
+		egui::Sense::click(),
+	);
 	response.widget_info(|| {
 		egui::WidgetInfo::labeled(
 			egui::Role::Button,
@@ -1927,13 +2893,15 @@ pub(super) fn close_control(ui: &mut egui::Ui) -> egui::Response {
 			colors.muted
 		},
 	);
-	ui.painter().text(
-		egui::pos2(rect.center().x, rect.bottom() - 6.0),
-		egui::Align2::CENTER_CENTER,
-		"ESC",
-		egui::FontId::new(11.0, design::semibold_family(ui.ctx())),
-		colors.muted,
-	);
+	if !compact {
+		ui.painter().text(
+			egui::pos2(rect.center().x, rect.bottom() - 6.0),
+			egui::Align2::CENTER_CENTER,
+			"ESC",
+			egui::FontId::new(11.0, design::semibold_family(ui.ctx())),
+			colors.muted,
+		);
+	}
 	response.on_hover_text(crate::i18n::translate(
 		"settings-close-control-close-settings-esc",
 	))
@@ -2246,7 +3214,7 @@ mod keybind_tests {
 					|ui| {
 						ui.set_width(width);
 						let available = ui.available_rect_before_wrap();
-						let response = page_header(ui, heading, &description);
+						let response = page_header(ui, heading, &description, false);
 						close = response.rect;
 						clicked = response.clicked();
 						assert!(

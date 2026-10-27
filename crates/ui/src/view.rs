@@ -266,7 +266,7 @@ impl MessagingUi {
 				);
 			}
 			if let Some(guild) = self.server_settings.events_requested.take()
-				&& self.server_settings.navigate_away(state)
+				&& self.navigate_away_from_server_settings(state)
 			{
 				self.server_menu.events_requested = Some(guild);
 			}
@@ -274,7 +274,7 @@ impl MessagingUi {
 				self.user_action = Some(action);
 			}
 			if let Some(channel) = self.server_settings.admin.message.take()
-				&& self.server_settings.navigate_away(state)
+				&& self.navigate_away_from_server_settings(state)
 				&& let Some(command) = state.select(channel)
 			{
 				commands.push(command);
@@ -1484,9 +1484,14 @@ impl MessagingUi {
 		if let Some(action) = self.user_action.take().or(self.timeline.user_action.take()) {
 			let command = match action {
 				user_menu::Action::ModView { guild, user } => {
-					if state.can_open_mod_view(guild) && self.server_settings.navigate_away(state) {
-						self.profile.hide();
-						self.mod_view.open(state, guild, user)
+					if state.can_open_mod_view(guild)
+						&& self.navigate_away_from_server_settings(state)
+					{
+						let command = self.mod_view.open(state, guild, user);
+						if command.is_some() {
+							self.profile.hide();
+						}
+						command
 					} else {
 						None
 					}
@@ -1636,7 +1641,9 @@ impl MessagingUi {
 				}
 				Some(profiles::Action::Server(guild)) => {
 					self.profile.close();
-					if state.guild(guild).is_some() && self.server_settings.navigate_away(state) {
+					if state.guild(guild).is_some()
+						&& self.navigate_away_from_server_settings(state)
+					{
 						self.guild = Some(guild);
 						if let Some(command) = state.select_guild(guild) {
 							commands.push(command);
@@ -1778,6 +1785,10 @@ impl MessagingUi {
 				},
 			) {
 			commands.push(command);
+		}
+		if let Some(notice) = self.mod_view.take_notice() {
+			self.toasts
+				.push(design::Level::Warning, crate::i18n::translate(notice));
 		}
 		if let Some(intent) = self.mod_view.show(&ctx, state, &mut commands) {
 			self.apply_mod_view_intent(intent, state, &mut commands);

@@ -6,6 +6,38 @@ use super::{
 };
 
 impl MessagingUi {
+	// `State::status` is retained for callers that inspect the last outcome. In the
+	// signed-in UI it is not a visible status line, so an explicit composer action
+	// also needs a transient notice. Toasts coalesce repeated identical notices.
+	fn composer_notice(
+		&mut self,
+		state: &mut State,
+		status: &'static str,
+		key: &'static str,
+		level: design::Level,
+	) {
+		state.status = status;
+		self.toasts.push(level, crate::i18n::translate(key));
+	}
+
+	// Core retains static status strings for its callers. Translate the known
+	// admission failures only at the presentation boundary.
+	pub(super) fn composer_send_failure(&mut self, state: &State) {
+		let key = match state.status {
+			"Nitro is required to use this sticker outside its server" => "composer-sticker-nitro",
+			"This sticker is unavailable in this conversation" => "composer-sticker-unavailable",
+			"Sending is unavailable with the current connection or permissions" => {
+				"composer-gif-unavailable"
+			}
+			"Attach up to 10 files per message" => "composer-attachment-count",
+			"Attachment filename is invalid or too long" => "composer-attachment-name",
+			"Send exceeds the session input budget" => "composer-send-budget",
+			_ => "composer-send-failed",
+		};
+		self.toasts
+			.push(design::Level::Warning, crate::i18n::translate(key));
+	}
+
 	/// Ctrl+V or a context-menu Paste in the focused field `target`: starts one bounded read of
 	/// the system clipboard (files, images and text from any app), or delivers its text.
 	pub(super) fn clipboard_paste(
@@ -37,7 +69,12 @@ impl MessagingUi {
 				ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
 				self.pasted_text_frame = Some(ctx.cumulative_frame_nr());
 			} else {
-				state.status = "Paste cancelled; focus the message and paste again";
+				self.composer_notice(
+					state,
+					"Paste cancelled; focus the message and paste again",
+					"composer-paste-cancelled",
+					design::Level::Warning,
+				);
 			}
 		} else if paste_enabled && self.pasted_text_frame != Some(ctx.cumulative_frame_nr()) {
 			let mut request = AttachmentPaste {
@@ -85,13 +122,23 @@ impl MessagingUi {
 					.as_ref()
 					.is_some_and(|text| text.len() > MAX_DRAFT_BYTES)
 				{
-					state.status = "Pasted text exceeds the draft limit";
+					self.composer_notice(
+						state,
+						"Pasted text exceeds the draft limit",
+						"composer-paste-too-large",
+						design::Level::Error,
+					);
 				} else if request
 					.image
 					.as_ref()
 					.is_some_and(|image| image.pixels.len() > 4 * 1024 * 1024)
 				{
-					state.status = "Paste an image with at most 4 million pixels";
+					self.composer_notice(
+						state,
+						"Paste an image with at most 4 million pixels",
+						"composer-paste-image-too-large",
+						design::Level::Error,
+					);
 				} else {
 					self.attachment_paste_requested = Some(request);
 					self.upload_busy = true;
@@ -199,15 +246,29 @@ impl MessagingUi {
 			p.nonce == nonce && p.channel == channel && p.delivery != model::Delivery::Sending
 		}) {
 			if !state.drafts.contains_key(&channel) && state.drafts.len() >= 64 {
-				state.status =
-					"Draft budget full. Clear an existing draft before restoring pending text";
+				self.composer_notice(
+					state,
+					"Draft budget full. Clear an existing draft before restoring pending text",
+					"composer-restore-draft-budget",
+					design::Level::Warning,
+				);
 			} else if state.pending[index].reply_conflicts(state.reply) {
 				// Restoring now would send this text to the newer reply's author.
-				state.status = "Cancel the current reply before restoring this message";
+				self.composer_notice(
+					state,
+					"Cancel the current reply before restoring this message",
+					"composer-restore-reply-conflict",
+					design::Level::Warning,
+				);
 			} else if state.drafts.get(&channel).is_none_or(String::is_empty) {
 				let pending = state.pending.remove(index);
 				if !pending.attachments.is_empty() {
-					state.status = "Text restored; reselect the attachment before sending again";
+					self.composer_notice(
+						state,
+						"Text restored; reselect the attachment before sending again",
+						"composer-restore-reselect-attachment",
+						design::Level::Info,
+					);
 				}
 				state.drafts.insert(channel, pending.content);
 				self.draft_changes.push(channel);
@@ -218,7 +279,12 @@ impl MessagingUi {
 						.filter(|reply| !state.timeline.is_deleted(reply.target()));
 				}
 			} else {
-				state.status = "Keep or clear the existing draft before restoring pending text";
+				self.composer_notice(
+					state,
+					"Keep or clear the existing draft before restoring pending text",
+					"composer-restore-existing-draft",
+					design::Level::Warning,
+				);
 			}
 		}
 	}
@@ -243,7 +309,10 @@ impl MessagingUi {
 		self.reply_author
 			.as_ref()
 			.filter(|(id, _)| *id == target)
-			.map_or_else(|| "an earlier message".to_owned(), |(_, name)| name.clone())
+			.map_or_else(
+				|| crate::i18n::translate("composer-earlier-author"),
+				|(_, name)| name.clone(),
+			)
 	}
 	pub(super) fn submit_composer(
 		&mut self,
@@ -258,12 +327,16 @@ impl MessagingUi {
 			return;
 		}
 		let draft = state.drafts.get(&channel).map_or("", String::as_str);
-		if self.selected_files().is_empty()
-			&& let Some(assets) = model::ImageShare::markdown_only(draft)
-		{
+		let has_files = !self.selected_files().is_empty();
+		let attempted = !model::message_options::content(draft).0.trim().is_empty() || has_files;
+		if !has_files && let Some(assets) = model::ImageShare::markdown_only(draft) {
 			if !state.can_attach(channel) {
-				state.status =
-					"Attaching images is unavailable here; add text to send a named link.";
+				self.composer_notice(
+					state,
+					"Attaching images is unavailable here; add text to send a named link.",
+					"composer-attach-denied",
+					design::Level::Warning,
+				);
 				return;
 			}
 			self.image_share_requested =
@@ -289,8 +362,13 @@ impl MessagingUi {
 			self.stage_pending_upload(ctx, &command);
 			self.timeline.follow_latest(state);
 			commands.push(command);
-		} else if let Some(original) = original_draft {
-			state.drafts.insert(channel, original);
+		} else {
+			if let Some(original) = original_draft {
+				state.drafts.insert(channel, original);
+			}
+			if attempted {
+				self.composer_send_failure(state);
+			}
 		}
 	}
 	/// Submits message drafts or edits after applying the device conversion preference.
@@ -443,7 +521,12 @@ impl MessagingUi {
 		}
 		if !editing_here && !state.can_compose(channel) {
 			if self.pending_mention.take().is_some() {
-				state.status = "You don't have permission to mention anyone in this channel.";
+				self.composer_notice(
+					state,
+					"You don't have permission to mention anyone in this channel.",
+					"composer-mention-denied",
+					design::Level::Warning,
+				);
 			}
 			// Returning to an edit must restore its focus after visiting a read-only channel.
 			self.composer_edit = None;
@@ -495,8 +578,7 @@ impl MessagingUi {
 			design::glass_frame(ui, colors.raised, egui::Margin::same(12))
 				.corner_radius(8)
 				.show(ui, |ui| {
-					let mut hint =
-						"You don't have permission to send messages in this channel.".to_owned();
+					let mut hint = crate::i18n::translate("composer-send-permission");
 					ui.add_enabled(
 						false,
 						TextEdit::singleline(&mut hint)
@@ -1037,16 +1119,17 @@ impl MessagingUi {
                             },
                             Some(emoji_picker::Pick::React(_, _) | emoji_picker::Pick::Choose(_)) => None,
                             Some(emoji_picker::Pick::Sticker(sticker)) => {
-                                if editing_here { state.status = "Finish or cancel the edit before sending a sticker."; }
-                                else if self.upload_busy { state.status = "Wait for the upload before sending a sticker."; }
+                                if editing_here { self.composer_notice(state, "Finish or cancel the edit before sending a sticker.", "composer-sticker-edit", design::Level::Warning); }
+                                else if self.upload_busy { self.composer_notice(state, "Wait for the upload before sending a sticker.", "composer-sticker-upload", design::Level::Warning); }
                                 else if let Some(command) = state.prepare_sticker_send(&sticker) { self.timeline.follow_latest(state); commands.push(command); }
+                                else { self.composer_send_failure(state); }
                                 None
                             },
                             Some(emoji_picker::Pick::Send(url)) => {
                                 if editing_here {
-                                    state.status = "Finish or cancel the edit before sending a GIF.";
+                                    self.composer_notice(state, "Finish or cancel the edit before sending a GIF.", "composer-gif-edit", design::Level::Warning);
                                 } else if self.upload_busy || !state.can_send(channel) {
-                                    state.status = "Sending is unavailable with the current connection or permissions";
+                                    self.composer_notice(state, "Sending is unavailable with the current connection or permissions", "composer-gif-unavailable", design::Level::Warning);
                                 } else {
                                     let saved = state.drafts.insert(channel, url);
                                     let command = state.prepare_send();
@@ -1061,6 +1144,8 @@ impl MessagingUi {
                                     if let Some(command) = command {
                                         self.timeline.follow_latest(state);
                                         commands.push(command);
+                                    } else {
+                                        self.composer_send_failure(state);
                                     }
                                 }
                                 None
@@ -1121,7 +1206,7 @@ impl MessagingUi {
 							None => {}
 							Some(MentionWrite::Inserted) => mention_changed = true,
 							Some(MentionWrite::DidNotFit) => {
-								state.status = "Mention will not fit. Shorten this message or free draft space.";
+								self.composer_notice(state, "Mention will not fit. Shorten this message or free draft space.", "composer-mention-too-large", design::Level::Warning);
 							}
 						}
 						if let Some(pick) = pick {
@@ -1137,8 +1222,7 @@ impl MessagingUi {
                                 edit_state.store(ctx, composer_id);
                                 mention_changed = true;
                             } else {
-                                state.status =
-                                    "Emoji will not fit. Shorten this message or free draft space.";
+                                self.composer_notice(state, "Emoji will not fit. Shorten this message or free draft space.", "composer-emoji-too-large", design::Level::Warning);
                             }
                         }
                         if let Some(pick) = slash_pick
@@ -1188,7 +1272,7 @@ impl MessagingUi {
                                 edit_state.store(ctx, composer_id);
                                 mention_changed = true;
                             } else {
-                                state.status = "Formatting will not fit. Shorten this message or free draft space.";
+                                self.composer_notice(state, "Formatting will not fit. Shorten this message or free draft space.", "composer-formatting-too-large", design::Level::Warning);
                             }
                         }
                         let rich_layout = &mut self.composer_layout;
@@ -1377,6 +1461,7 @@ impl MessagingUi {
                                     commands.push(command);
                                 } else {
                                     state.status = "Edit kept. Wait for your current message and connection, and enter nonempty text.";
+                                    self.toasts.push(design::Level::Warning, crate::i18n::translate("composer-edit-kept"));
                                 }
                             } else if self.send_application_command(state, channel, commands)
                                 || self.handle_builtin_slash(state, channel, ctx, commands) {
@@ -1538,5 +1623,114 @@ impl MessagingUi {
 			)));
 		edit_state.store(ctx, composer_id);
 		Some(MentionWrite::Inserted)
+	}
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+	use super::*;
+
+	fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
+		match shape {
+			egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
+			egui::Shape::Vec(shapes) => {
+				for shape in shapes {
+					collect_text(shape, out);
+				}
+			}
+			_ => {}
+		}
+	}
+
+	pub(crate) fn frame(ctx: &egui::Context, show: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(900.0, 700.0),
+				)),
+				..Default::default()
+			},
+			show,
+		);
+		let mut labels = Vec::new();
+		for shape in &output.shapes {
+			collect_text(&shape.shape, &mut labels);
+		}
+		output.drop_without_applying_deltas();
+		labels
+	}
+
+	#[test]
+	fn cancelled_paste_is_visible_once_in_the_selected_language() {
+		struct ResetLanguage;
+		impl Drop for ResetLanguage {
+			fn drop(&mut self) {
+				crate::i18n::set_current(crate::i18n::Language::English);
+			}
+		}
+		let _reset = ResetLanguage;
+		crate::i18n::set_current(crate::i18n::Language::Spanish);
+		let ctx = egui::Context::default();
+		let mut state = test_support::demo_state();
+		let channel = state.selected.expect("demo conversation");
+		state.drafts.insert(channel, "Keep this draft".into());
+		let mut view = MessagingUi::default();
+		let target = egui::Id::unique("synthetic-composer");
+		for _ in 0..2 {
+			view.pasted_text = Some((channel, target, "clipboard text".into()));
+			frame(&ctx, |ui| {
+				view.clipboard_paste(ui.ctx(), &mut state, channel, target, false);
+				view.toasts.show(ui.ctx(), 0.0);
+			});
+		}
+		let labels = frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		assert_eq!(
+			labels
+				.iter()
+				.filter(|text| *text == "Pegado cancelado; enfoca el mensaje e inténtalo de nuevo")
+				.count(),
+			1,
+			"Repeated failures produce one translated notice"
+		);
+		assert_eq!(
+			state.status,
+			"Paste cancelled; focus the message and paste again"
+		);
+		assert_eq!(state.drafts[&channel], "Keep this draft");
+		assert!(view.attachment_paste_requested.is_none());
+	}
+
+	#[test]
+	fn rejected_send_keeps_the_draft_and_explains_why() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		let ctx = egui::Context::default();
+		let mut state = test_support::demo_state();
+		let channel = state.selected.expect("demo conversation");
+		for _ in 0..64 {
+			state.drafts.insert(channel, "Queued".into());
+			assert!(state.prepare_send().is_some());
+		}
+		state.drafts.insert(channel, "Keep this draft".into());
+		let mut view = MessagingUi::default();
+		let mut commands = Vec::new();
+		for _ in 0..2 {
+			frame(&ctx, |ui| {
+				view.submit_composer(&mut state, ui.ctx(), &mut commands);
+				view.toasts.show(ui.ctx(), 0.0);
+			});
+		}
+		let labels = frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		assert_eq!(
+			labels
+				.iter()
+				.filter(|text| *text
+					== "Message could not be queued. Free draft space or wait for pending messages to finish.")
+				.count(),
+			1
+		);
+		assert!(commands.is_empty());
+		assert_eq!(state.drafts[&channel], "Keep this draft");
+		assert_eq!(state.pending.len(), 64);
 	}
 }

@@ -1,4 +1,5 @@
 //! Forum post menus share the bounded channel action worker and account favorites.
+const FAVORITES_SYNCED_HINT: &str = "channel-favorites-synced-description";
 use crate::{channel_menu::row, design, dialog, shortcuts::ShortcutView, user_menu};
 use client_core::{
 	Command, State,
@@ -101,9 +102,7 @@ impl PostMenu {
 						&& state.channel(post.id).is_some(),
 					false,
 				)
-				.on_hover_text(crate::i18n::translate(
-					"Favorites are synchronized with your Discord account",
-				))
+				.on_hover_text(crate::i18n::translate(FAVORITES_SYNCED_HINT))
 				.clicked()
 				{
 					self.shortcut_requested = Some(crate::shortcuts::Intent {
@@ -759,4 +758,25 @@ fn noun_action(noun: &str, post: &str, thread: &str) -> String {
 	} else {
 		thread
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::FAVORITES_SYNCED_HINT;
+	use crate::i18n::Language;
+
+	#[test]
+	fn account_favorite_hint_is_valid_in_each_interface_language() {
+		assert_eq!(
+			Language::English.text(FAVORITES_SYNCED_HINT),
+			"Favorites are synchronized with your Discord account"
+		);
+		for language in Language::ALL {
+			let text = language.text(FAVORITES_SYNCED_HINT);
+			assert!(
+				!text.starts_with("Unknown localization key:"),
+				"{language:?}: {text}"
+			);
+		}
+	}
 }

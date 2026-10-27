@@ -522,9 +522,9 @@ fn activity_row(
 
 fn activity_timer(start: Option<u64>, end: Option<u64>, now: u64) -> Option<String> {
 	match end {
-		Some(end) => {
-			activity_elapsed(0, end.saturating_sub(now)).map(|time| format!("{time} remaining"))
-		}
+		Some(end) => activity_elapsed(0, end.saturating_sub(now)).map(|time| {
+			crate::i18n::translate_args("profiles-activity-remaining", &[("time", &time)])
+		}),
 		None => start.and_then(|start| activity_elapsed(start, now)),
 	}
 }
@@ -587,7 +587,7 @@ fn clan_chip(
 	theme: &Theme,
 	avatars: &mut Avatars,
 	clan: &model::ClanTag,
-	demo: bool,
+	state: &State,
 ) {
 	egui::Frame::new()
 		.fill(theme.chip)
@@ -595,16 +595,30 @@ fn clan_chip(
 		.inner_margin(egui::Margin::symmetric(6, 2))
 		.show(ui, |ui| {
 			ui.spacing_mut().item_spacing.x = 4.0;
-			avatars.show_icon(ui, clan.badge_key(), 14.0, demo, "Server tag badge");
+			avatars.show_icon(ui, clan.badge_key(), 14.0, state.demo, "Server tag badge");
 			ui.add(egui::Label::new(RichText::new(&clan.tag).size(12.0).strong()).extend());
 		})
 		.response
-		.on_hover_text(format!(
-			"{} · {} {}",
-			crate::i18n::translate("profiles-show-server-tag"),
-			crate::i18n::translate("profiles-show-server"),
-			clan.guild
-		));
+		.on_hover_text(clan_tooltip(state, clan));
+}
+
+fn clan_tooltip(state: &State, clan: &model::ClanTag) -> String {
+	let server = state
+		.guild(clan.guild)
+		.filter(|guild| !guild.name.trim().is_empty())
+		.map_or_else(
+			|| {
+				crate::i18n::translate_args(
+					"profiles-server-id",
+					&[("id", &clan.guild.to_string())],
+				)
+			},
+			|guild| guild.name.clone(),
+		);
+	format!(
+		"{} · {server}",
+		crate::i18n::translate("profiles-show-server-tag")
+	)
 }
 /// Discord's official support request form. No supported in-app reporting API is used.
 const REPORT_URL: &str = "https://support.discord.com/hc/en-us/requests/new";
@@ -3467,7 +3481,7 @@ pub fn show_with_session(
 								},
 							);
 							if let Some(clan) = clan.filter(|_| !full) {
-								clan_chip(ui, &theme, avatars, clan, state.demo);
+								clan_chip(ui, &theme, avatars, clan, state);
 							}
 						});
 						let mut identity = Vec::new();
@@ -3497,7 +3511,7 @@ pub fn show_with_session(
 								ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
 								ui.label(RichText::new(identity.join(" • ")).size(15.0));
 								if let Some(clan) = clan {
-									clan_chip(ui, &theme, avatars, clan, state.demo);
+									clan_chip(ui, &theme, avatars, clan, state);
 								}
 								for badge in &icon_badges {
 									let response = crate::badges::badge_icon(
@@ -5458,21 +5472,65 @@ mod tests {
 
 	#[test]
 	fn countdown_takes_precedence_and_stops_at_zero() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		let timer = |start, end, now| {
+			activity_timer(start, end, now).map(|text| text.replace(['\u{2068}', '\u{2069}'], ""))
+		};
 		assert_eq!(
-			activity_timer(None, Some(131_000), 1_000).as_deref(),
+			timer(None, Some(131_000), 1_000).as_deref(),
 			Some("2:10 remaining")
 		);
 		assert_eq!(
-			activity_timer(Some(0), Some(131_000), 1_000).as_deref(),
+			timer(Some(0), Some(131_000), 1_000).as_deref(),
 			Some("2:10 remaining")
 		);
 		assert_eq!(
-			activity_timer(None, Some(131_000), 132_000).as_deref(),
+			timer(None, Some(131_000), 132_000).as_deref(),
 			Some("0:00 remaining")
 		);
 		assert_eq!(
 			activity_timer(Some(1_000), None, 131_000).as_deref(),
 			Some("2:10")
+		);
+	}
+
+	#[test]
+	fn countdown_is_localized_without_changing_the_time_value() {
+		crate::i18n::set_current(crate::i18n::Language::French);
+		let text = activity_timer(None, Some(131_000), 1_000)
+			.unwrap()
+			.replace(['\u{2068}', '\u{2069}'], "");
+		assert_eq!(text, "2:10 restants");
+		assert!(!text.starts_with("Unknown localization key:"));
+		assert_eq!(
+			activity_timer(Some(1_000), None, 131_000).as_deref(),
+			Some("2:10")
+		);
+		crate::i18n::set_current(crate::i18n::Language::English);
+	}
+
+	#[test]
+	fn server_tag_tooltip_uses_only_a_loaded_name_or_an_explicit_id() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		let mut state = test_support::demo_state();
+		let mut clan = model::ClanTag {
+			guild: Id(10),
+			tag: "SRN".into(),
+			badge: None,
+		};
+		assert_eq!(
+			clan_tooltip(&state, &clan),
+			"Server tag · Synthetic workspace"
+		);
+		state.guilds[0].name.clear();
+		assert_eq!(
+			clan_tooltip(&state, &clan).replace(['\u{2068}', '\u{2069}'], ""),
+			"Server tag · Server ID: 10"
+		);
+		clan.guild = Id(998877);
+		assert_eq!(
+			clan_tooltip(&state, &clan).replace(['\u{2068}', '\u{2069}'], ""),
+			"Server tag · Server ID: 998877"
 		);
 	}
 

@@ -136,7 +136,7 @@ impl Dialog {
 			dismissable,
 		} = self;
 		let available = ctx.content_rect().size();
-		let width = width.min(available.x - 32.0).max(200.0);
+		let width = width.min((available.x - 32.0).max(0.0));
 		let mut close = false;
 		let mut toolbar = toolbar;
 		let modal = egui::Modal::new(id)
@@ -308,8 +308,8 @@ impl SettingsShell {
 		let Self { id, save_bar } = self;
 		let colors = design::palette_for(ctx);
 		let size = ctx.content_rect().size();
-		let width = (size.x - 32.0).clamp(260.0, 1160.0);
-		let height = (size.y - 32.0).max(220.0);
+		let width = (size.x - 32.0).clamp(0.0, 1160.0);
+		let height = (size.y - 32.0).max(0.0);
 		let wide = width >= 720.0;
 		let mut close = false;
 		let modal = egui::Modal::new(id)
@@ -366,7 +366,7 @@ impl SettingsShell {
 							close = crate::settings::close_control(&mut close_ui).clicked();
 						} else {
 							ui.horizontal_top(|ui| {
-								let width = (ui.available_width() - 48.0).max(120.0);
+								let width = (ui.available_width() - 48.0).max(0.0);
 								ui.allocate_ui_with_layout(
 									egui::vec2(width, 0.0),
 									egui::Layout::top_down(egui::Align::Min),
@@ -807,5 +807,64 @@ fn enter_after_shown_frame(
 		ctx.data_mut(|data| data.remove_temp::<u64>(key));
 	} else if !ctx.will_discard() {
 		ctx.data_mut(|data| data.insert_temp(key, frame));
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn dialog_and_settings_shell_fit_small_viewports() {
+		for size in [egui::vec2(180.0, 200.0), egui::vec2(640.0, 480.0)] {
+			for shell in [false, true] {
+				let ctx = egui::Context::default();
+				let id = if shell {
+					"small-settings"
+				} else {
+					"small-dialog"
+				};
+				for _ in 0..4 {
+					let output = ctx.run_ui(
+						egui::RawInput {
+							screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+							focused: true,
+							..Default::default()
+						},
+						|_| {
+							if shell {
+								SettingsShell::new(id).show(&ctx, |ui, region| match region {
+									ShellRegion::Navigation { .. } => {
+										ui.label("Menu");
+									}
+									ShellRegion::Body => {
+										ui.label("Content");
+									}
+									ShellRegion::SaveBar => {}
+								});
+							} else {
+								Dialog::new(id, "Title").show(&ctx, |body| {
+									body.content(|ui| {
+										ui.label("Content");
+									});
+								});
+							}
+						},
+					);
+					output.drop_without_applying_deltas();
+				}
+				let rect = ctx
+					.memory(|memory| memory.area_rect(egui::Id::unique(id)))
+					.unwrap();
+				assert!(
+					rect.width() <= size.x + 1.0,
+					"{id}: {rect:?} exceeds {size:?}"
+				);
+				assert!(
+					rect.height() <= size.y + 1.0,
+					"{id}: {rect:?} exceeds {size:?}"
+				);
+			}
+		}
 	}
 }

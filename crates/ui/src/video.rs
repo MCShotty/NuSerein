@@ -1020,15 +1020,18 @@ impl VideoUi {
 							let (rect, button) = ui
 								.allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::click());
 							let label = if fullscreen {
-								"Exit fullscreen (Esc)"
+								format!(
+									"{} (Esc)",
+									crate::i18n::translate("video-provider-exit-fullscreen")
+								)
 							} else {
-								"Fullscreen"
+								crate::i18n::translate("video-provider-fullscreen")
 							};
 							button.widget_info(|| {
 								egui::WidgetInfo::labeled(
 									egui::Role::Button,
 									ui.is_enabled(),
-									label,
+									&label,
 								)
 							});
 							if fullscreen {
@@ -1058,7 +1061,7 @@ impl VideoUi {
 							response |= button.clone();
 							let button_id = button.id;
 							if button
-								.on_hover_text(label)
+								.on_hover_text(&label)
 								.on_hover_cursor(egui::CursorIcon::PointingHand)
 								.clicked()
 							{
@@ -1083,7 +1086,7 @@ impl VideoUi {
 								egui::WidgetInfo::slider(
 									ui.is_enabled(),
 									volume_value as f64,
-									"Video volume",
+									crate::i18n::translate("video-show-player-video-volume"),
 								)
 							});
 							controls_focused |= volume.has_focus();
@@ -1129,7 +1132,7 @@ impl VideoUi {
 								ui,
 								crate::icons::Icon::Download,
 								28.0,
-								"Download",
+								&crate::i18n::translate("attachments-download-button-download"),
 							)
 						})
 						.inner
@@ -1147,7 +1150,7 @@ impl VideoUi {
 						ui,
 						crate::icons::Icon::External,
 						28.0,
-						"Open original…",
+						&crate::i18n::translate("attachments-media-menu-open-original"),
 					)
 					.clicked()
 				{
@@ -1596,6 +1599,109 @@ mod tests {
 				"{raw}"
 			);
 		}
+	}
+
+	#[test]
+	fn provider_controls_and_error_messages_are_available_in_every_language() {
+		for language in crate::i18n::Language::ALL {
+			for key in [
+				"video-provider-play",
+				"video-provider-close",
+				"video-provider-loading",
+				"video-provider-separate-window",
+				"video-provider-retry",
+				"video-provider-open-original",
+				"video-provider-load-failed",
+				"video-provider-expand",
+				"video-provider-return-inline",
+				"video-provider-fullscreen",
+				"video-provider-exit-fullscreen",
+				"video-provider-unavailable",
+				"video-provider-embedding-disabled",
+				"video-provider-identity-failed",
+				"video-provider-buffering-failed",
+				"video-provider-open-window",
+			] {
+				let text = language.text(key);
+				assert!(
+					!text.starts_with("Unknown localization key:"),
+					"{language:?}: {key}"
+				);
+				if matches!(
+					key,
+					"video-provider-play" | "video-provider-identity-failed"
+				) {
+					assert!(text.contains("YouTube"), "{language:?}: {key}: {text}");
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn video_overlay_accessible_controls_follow_the_display_language() {
+		crate::i18n::set_current(crate::i18n::Language::Spanish);
+		let ctx = egui::Context::default();
+		ctx.enable_accesskit();
+		crate::design::apply(&ctx);
+		let message = test_support::message(1, Id(2));
+		let attachment = Attachment {
+			id: Id(3),
+			filename: "synthetic.mp4".into(),
+			description: None,
+			content_type: Some("video/mp4".into()),
+			size: 128,
+			media: model::EmbedMedia {
+				url: Some("https://cdn.discordapp.com/attachments/2/3/synthetic.mp4".into()),
+				width: 640,
+				height: 360,
+				..Default::default()
+			},
+			spoiler: false,
+			duration_ms: None,
+			waveform: Vec::new(),
+		};
+		let mut video = VideoUi::default();
+		video.active = Some((message.channel, message.id, attachment.clone()));
+		video.state = VideoState::Paused;
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(640.0, 480.0),
+				)),
+				focused: true,
+				..Default::default()
+			},
+			|ui| {
+				video.show(
+					ui,
+					&message,
+					&attachment,
+					&mut crate::DownloadUi::default(),
+					&mut None,
+					false,
+				);
+			},
+		);
+		let update = output.platform_output.accesskit_update.as_ref().unwrap();
+		for key in [
+			"attachments-download-button-download",
+			"attachments-media-menu-open-original",
+			"video-provider-fullscreen",
+			"video-show-player-video-volume",
+		] {
+			let label = crate::i18n::Language::Spanish.text(key);
+			assert!(!label.starts_with("Unknown localization key:"), "{key}");
+			assert!(
+				update
+					.nodes
+					.iter()
+					.any(|(_, node)| node.label() == Some(label.as_str())),
+				"{label}"
+			);
+		}
+		output.drop_without_applying_deltas();
+		crate::i18n::set_current(crate::i18n::Language::English);
 	}
 
 	#[test]

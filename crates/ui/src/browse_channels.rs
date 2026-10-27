@@ -1,5 +1,5 @@
 //! Account channel selection in the main pane; browsing never acknowledges messages.
-use crate::{MessagingUi, channel_menu::ChannelMenu, design, icons, shortcuts::ShortcutView};
+use crate::{MessagingUi, channel_menu::ChannelMenu, design, i18n, icons, shortcuts::ShortcutView};
 use client_core::{Command, State, channel_actions::Action, preferences_sync::Status};
 use egui::{RichText, Vec2};
 use model::Id;
@@ -13,11 +13,11 @@ enum Filter {
 	Hidden,
 }
 impl Filter {
-	fn label(self) -> &'static str {
+	fn label(self) -> String {
 		match self {
-			Self::All => "All",
-			Self::Shown => "In My Channel List",
-			Self::Hidden => "Not In My Channel List",
+			Self::All => i18n::translate("browse-channels-all"),
+			Self::Shown => i18n::translate("browse-channels-shown"),
+			Self::Hidden => i18n::translate("browse-channels-hidden"),
 		}
 	}
 }
@@ -141,14 +141,20 @@ impl Browser {
 					))
 					.layout(egui::Layout::left_to_right(egui::Align::Center)),
 				|ui| {
-					if icons::button(ui, icons::Icon::ArrowLeft, 32.0, "Back to conversation")
-						.clicked()
+					if icons::button(
+						ui,
+						icons::Icon::ArrowLeft,
+						32.0,
+						&i18n::translate("browse-channels-back"),
+					)
+					.clicked()
 					{
 						back = true;
 					}
 					ui.add(
 						egui::Label::new(
-							design::semibold(ui, "Browse Channels", 24.0).color(colors.text_strong),
+							design::semibold(ui, i18n::translate("browse-channels-title"), 24.0)
+								.color(colors.text_strong),
 						)
 						.truncate(),
 					);
@@ -162,16 +168,28 @@ impl Browser {
 					))
 					.layout(egui::Layout::right_to_left(egui::Align::Center)),
 				|ui| {
-					let more =
-						icons::button(ui, icons::Icon::More, 32.0, "More channel-list options");
+					let more = icons::button(
+						ui,
+						icons::Icon::More,
+						32.0,
+						&i18n::translate("browse-channels-more"),
+					);
 					egui::Popup::menu(&more).show(|ui| {
-						if ui.button("Import device favorites…").clicked() {
+						if ui
+							.button(i18n::translate("browse-channels-import-device"))
+							.clicked()
+						{
 							self.import = true;
 							ui.close();
 						}
 					});
-					if icons::button(ui, icons::Icon::Reload, 32.0, "Refresh channel preferences")
-						.clicked()
+					if icons::button(
+						ui,
+						icons::Icon::Reload,
+						32.0,
+						&i18n::translate("browse-channels-refresh-preferences"),
+					)
+					.clicked()
 					{
 						commands.extend(state.refresh_channel_preferences(guild));
 					}
@@ -180,7 +198,7 @@ impl Browser {
 			ui.add_space(6.0);
 			ui.add(
 				egui::Label::new(
-					RichText::new("Choose what appears in your channel list.")
+					RichText::new(i18n::translate("browse-channels-description"))
 						.size(14.0)
 						.color(colors.muted),
 				)
@@ -191,7 +209,7 @@ impl Browser {
 				[ui.available_width(), 36.0],
 				egui::TextEdit::singleline(&mut self.search)
 					.id_salt(("browse-channel-search", guild))
-					.hint_text("Search channels or categories")
+					.hint_text(i18n::translate("browse-channels-search"))
 					.char_limit(100)
 					.margin(egui::vec2(12.0, 8.0)),
 			);
@@ -210,7 +228,10 @@ impl Browser {
 					ui.selectable_value(&mut self.filter, filter, filter.label());
 				}
 				ui.separator();
-				ui.toggle_value(&mut self.muted_only, "Muted");
+				ui.toggle_value(
+					&mut self.muted_only,
+					i18n::translate("browse-channels-muted"),
+				);
 				if before != (self.filter, self.muted_only) {
 					self.anchor = None;
 					self.restore_offset = Some(0.0);
@@ -231,7 +252,10 @@ impl Browser {
 						if ui
 							.add_enabled(
 								enabled,
-								egui::Checkbox::new(&mut all, "Show All Channels"),
+								egui::Checkbox::new(
+									&mut all,
+									i18n::translate("browse-channels-show-all"),
+								),
 							)
 							.changed()
 						{
@@ -242,7 +266,10 @@ impl Browser {
 						if ui
 							.add_enabled(
 								enabled && state.hides_muted_channels(guild).is_some(),
-								egui::Checkbox::new(&mut muted, "Hide Muted Channels"),
+								egui::Checkbox::new(
+									&mut muted,
+									i18n::translate("browse-channels-hide-muted"),
+								),
 							)
 							.changed()
 						{
@@ -250,29 +277,31 @@ impl Browser {
 						}
 					});
 					if state.hides_muted_channels(guild).is_none() {
-						ui.small(
-							"The muted-channel preference is unavailable. Refresh to load it.",
-						);
+						ui.small(i18n::translate("browse-channels-muted-unavailable"));
 					}
 					if state.personally_shows_all_channels(guild) {
 						ui.label(
-							RichText::new(
-								"Showing all channels. Your custom list is kept; removing a channel switches back to it.",
-							)
-							.size(12.0)
-							.color(colors.muted),
+							RichText::new(i18n::translate("browse-channels-showing-all"))
+								.size(12.0)
+								.color(colors.muted),
 						);
 					}
 				});
 			preference_feedback(ui, state, guild, None, commands);
 			if let Some(error) = self.edit_error {
 				ui.horizontal_wrapped(|ui| {
-					ui.colored_label(colors.danger, error);
-					if ui.small_button("Refresh").clicked() {
+					ui.colored_label(colors.danger, i18n::translate(error));
+					if ui
+						.small_button(i18n::translate("screen-body-refresh"))
+						.clicked()
+					{
 						commands.extend(state.refresh_channel_preferences(guild));
 						self.edit_error = None;
 					}
-					if ui.small_button("Dismiss").clicked() {
+					if ui
+						.small_button(i18n::translate("channel-menu-show-feedback-dismiss"))
+						.clicked()
+					{
 						self.edit_error = None;
 					}
 				});
@@ -281,7 +310,7 @@ impl Browser {
 				ui.add_space(8.0);
 				ui.colored_label(
 					colors.warning,
-					"Channel preferences are not available yet. Refresh to load your saved list.",
+					i18n::translate("browse-channels-preferences-unavailable"),
 				);
 			}
 			if self.import {
@@ -290,14 +319,14 @@ impl Browser {
 					.corner_radius(8)
 					.inner_margin(egui::Margin::same(12))
 					.show(ui, |ui| {
-						ui.label(
-							"Add this device’s favorites to your Discord account? Existing account favorites are kept.",
-						);
+						ui.label(i18n::translate("browse-channels-import-confirm"));
 						ui.horizontal(|ui| {
 							if ui
 								.add_enabled(
 									state.personal_channel_controls_available(guild),
-									egui::Button::new("Import favorites"),
+									egui::Button::new(i18n::translate(
+										"browse-channels-import-favorites",
+									)),
 								)
 								.clicked()
 							{
@@ -307,7 +336,10 @@ impl Browser {
 								);
 								self.import = false;
 							}
-							if ui.button("Cancel").clicked() {
+							if ui
+								.button(i18n::translate("channel-menu-show-cancel"))
+								.clicked()
+							{
 								self.import = false;
 							}
 						});
@@ -317,8 +349,12 @@ impl Browser {
 			self.prepare_rows(state, guild, show_locked);
 			if self.rows.is_empty() {
 				ui.add_space(28.0);
-				ui.label(design::semibold(ui, "No channels match", 18.0));
-				ui.weak("Choose All or clear your search to find a channel.");
+				ui.label(design::semibold(
+					ui,
+					i18n::translate("browse-channels-empty-title"),
+					18.0,
+				));
+				ui.weak(i18n::translate("browse-channels-empty-help"));
 				return;
 			}
 			let body = ui.text_style_height(&egui::TextStyle::Body);
@@ -340,13 +376,25 @@ impl Browser {
 						} else {
 							(body * 2.4).max(40.0)
 						}
-					} else if let Row::Channel(id) = row
-						&& state.channel_preference_status(guild, Some(*id)).is_some()
-					{
-						if stacked {
+					} else if let Row::Channel(id) = row {
+						let feedback = state.channel_preference_status(guild, Some(*id)).is_some();
+						let base = if feedback && stacked {
 							(body * 9.0).max(144.0)
-						} else {
+						} else if feedback {
 							(body * 5.5).max(88.0)
+						} else {
+							channel_height
+						};
+						// A third reason needs its own line without overlapping the next row.
+						if self
+							.channel_detail_keys(state, guild, *id)
+							.iter()
+							.flatten()
+							.count() == 3
+						{
+							base + (body * 1.15).max(16.0)
+						} else {
+							base
 						}
 					} else {
 						channel_height
@@ -452,9 +500,8 @@ impl Browser {
 		if let Some(action) = action {
 			let revision = state.revision;
 			commands.extend(state.request_personal_channel_action(guild, action));
-			self.edit_error = (state.revision == revision).then_some(
-				"This change could not be queued. Refresh your preferences and try again.",
-			);
+			self.edit_error =
+				(state.revision == revision).then_some("browse-channels-queue-failed");
 		}
 		if let Some(channel) = navigate {
 			commands.extend(state.select(channel));
@@ -562,6 +609,72 @@ impl Browser {
 		self.heights.clear();
 		self.key = Some(key);
 	}
+
+	// Keep the displayed reasons and their reserved virtualized row height in sync.
+	fn channel_detail_keys(&self, state: &State, guild: Id, id: Id) -> [Option<&'static str>; 3] {
+		let Some(channel) = state.channel(id) else {
+			return [None; 3];
+		};
+		let allowed = state.can_view(id);
+		let membership = state.channel_in_custom_list(id);
+		let mut details = [None; 3];
+		let mut count = 0;
+		let mut push = |key| {
+			details[count] = Some(key);
+			count += 1;
+		};
+		if allowed && state.guild_channel_effectively_muted(id) == Some(true) {
+			push(if state.guild_channel_muted(id) == Some(true) {
+				"browse-channels-muted"
+			} else {
+				"browse-channels-muted-category"
+			});
+		}
+		if allowed && membership.is_none() {
+			push("browse-channels-selection-unavailable");
+		} else if allowed && membership == Some(false) {
+			push(
+				if state
+					.voice
+					.active
+					.as_ref()
+					.is_some_and(|call| call.channel == id)
+				{
+					"browse-channels-visible-call"
+				} else if state.selected == Some(id)
+					|| state
+						.selected
+						.and_then(|selected| state.channel(selected))
+						.is_some_and(|selected| selected.parent_id == Some(id))
+				{
+					"browse-channels-visible-open"
+				} else if self.mentions.contains_key(&id) {
+					"browse-channels-visible-mentions"
+				} else if state.personally_shows_all_channels(guild) {
+					"browse-channels-visible-show-all"
+				} else {
+					"browse-channels-not-in-list"
+				},
+			);
+		} else if membership == Some(true)
+			&& channel
+				.parent_id
+				.and_then(|parent| state.personal_channel_flags(parent))
+				.is_some_and(|flags| flags & model::channel_visibility::OPT_IN_ENABLED != 0)
+			&& !state
+				.personal_channel_flags(id)
+				.is_some_and(|flags| flags & model::channel_visibility::OPT_IN_ENABLED != 0)
+		{
+			push("browse-channels-included-category");
+		}
+		if state.hides_muted_channels(guild) == Some(true)
+			&& state.guild_channel_effectively_muted(id) == Some(true)
+		{
+			push("browse-channels-hide-muted-on");
+		}
+		details
+	}
+
 	#[allow(clippy::too_many_arguments)]
 	fn category_row(
 		&mut self,
@@ -581,27 +694,65 @@ impl Browser {
 		ui.horizontal(|ui| {
 			if let Some(category) = id.and_then(|id| state.channel(id)) {
 				let mut checked = total > 0 && selected == total;
-				let response = membership_checkbox(ui,&mut checked,selected>0&&selected<total,state.personal_channel_controls_available(guild)&&state.can_personally_manage_channel(category.id));
+				let response = membership_checkbox(
+					ui,
+					&mut checked,
+					selected > 0 && selected < total,
+					state.personal_channel_controls_available(guild)
+						&& state.can_personally_manage_channel(category.id),
+				);
 				response.widget_info(|| {
-					if selected>0&&selected<total {
-						egui::WidgetInfo::labeled(egui::Role::CheckBox,response.enabled(),format!("Include {} (partially included)",category.name))
-					}else{
-						egui::WidgetInfo::selected(egui::Role::CheckBox,response.enabled(),checked,format!("Include {}",category.name))
+					if selected > 0 && selected < total {
+						egui::WidgetInfo::labeled(
+							egui::Role::CheckBox,
+							response.enabled(),
+							i18n::translate_args(
+								"browse-channels-include-category-partial",
+								&[("name", &category.name)],
+							),
+						)
+					} else {
+						egui::WidgetInfo::selected(
+							egui::Role::CheckBox,
+							response.enabled(),
+							checked,
+							i18n::translate_args(
+								"browse-channels-include-category",
+								&[("name", &category.name)],
+							),
+						)
 					}
 				});
 				if response.changed() {
 					*action = state.personal_visibility_change(category.id, checked);
-					self.edit_error = action.is_none().then_some("This category could not be changed. Refresh first; large selections are limited to 1,024 entries.");
+					self.edit_error = action
+						.is_none()
+						.then_some("browse-channels-category-change-failed");
 				}
-				let name = ui.allocate_ui_with_layout(
-					egui::vec2((ui.available_width()-80.0).max(20.0),ui.text_style_height(&egui::TextStyle::Body)),
-					egui::Layout::left_to_right(egui::Align::Center),
-					|ui|ui.add(egui::Label::new(design::semibold(ui,&category.name,14.0).color(colors.text)).truncate()),
-				).inner;
+				let name = ui
+					.allocate_ui_with_layout(
+						egui::vec2(
+							(ui.available_width() - 80.0).max(20.0),
+							ui.text_style_height(&egui::TextStyle::Body),
+						),
+						egui::Layout::left_to_right(egui::Align::Center),
+						|ui| {
+							ui.add(
+								egui::Label::new(
+									design::semibold(ui, &category.name, 14.0).color(colors.text),
+								)
+								.truncate(),
+							)
+						},
+					)
+					.inner;
 				menu.context(&name, state, category, view);
 			} else {
 				ui.add_space(30.0);
-				ui.label(design::semibold(ui, "Channels", 14.0).color(colors.text));
+				ui.label(
+					design::semibold(ui, i18n::translate("browse-channels-channels"), 14.0)
+						.color(colors.text),
+				);
 			}
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 				ui.label(
@@ -663,12 +814,17 @@ impl Browser {
 						egui::Role::CheckBox,
 						enabled,
 						checked,
-						format!("Include {} in my channel list", channel.name),
+						i18n::translate_args(
+							"browse-channels-include-channel",
+							&[("name", &channel.name)],
+						),
 					)
 				});
 				if response.changed() {
 					*action = state.personal_visibility_change(id, checked);
-				self.edit_error = action.is_none().then_some("This channel could not be changed. Refresh first; large selections are limited to 1,024 entries.");
+					self.edit_error = action
+						.is_none()
+						.then_some("browse-channels-channel-change-failed");
 				}
 			},
 		);
@@ -685,17 +841,6 @@ impl Browser {
 				rect.bottom() - 6.0,
 			),
 		);
-		let response = ui.interact(
-			content,
-			ui.scope_id().with(("browse-open", id)),
-			egui::Sense::click(),
-		);
-		response
-			.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, allowed, &channel.name));
-		menu.context(&response, state, channel, view);
-		if allowed && response.clicked() {
-			*navigate = Some(id);
-		}
 		let content_response = ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
 			ui.horizontal(|ui| {
 				let icon = if !allowed {
@@ -721,11 +866,11 @@ impl Browser {
 					.selectable(false),
 				);
 			});
-			let description = state.channel_description(id).unwrap_or(if allowed {
-				""
-			} else {
-				"Unavailable through your current permissions"
-			});
+			let unavailable = i18n::translate("browse-channels-permissions-unavailable");
+			let description =
+				state
+					.channel_description(id)
+					.unwrap_or(if allowed { "" } else { &unavailable });
 			if !description.is_empty() {
 				ui.add(
 					egui::Label::new(RichText::new(description).size(12.0).color(colors.muted))
@@ -734,60 +879,37 @@ impl Browser {
 				);
 			}
 		});
-		let mut details = [None; 3];
-		let mut detail_count = 0;
-		let mut detail = |text| {
-			details[detail_count] = Some(text);
-			detail_count += 1;
-		};
-		if allowed && state.guild_channel_effectively_muted(id) == Some(true) {
-			detail(if state.guild_channel_muted(id) == Some(true) {
-				"Muted"
+		let link_rect = egui::Rect::from_min_max(
+			content.min,
+			egui::pos2(
+				content.max.x,
+				(content_response.response.rect.bottom() + 4.0).min(content.bottom()),
+			),
+		);
+		let response = ui.interact(
+			link_rect,
+			ui.scope_id().with(("browse-open", id)),
+			if allowed {
+				egui::Sense::click()
 			} else {
-				"Muted by category"
-			});
+				egui::Sense::CLICK
+			},
+		);
+		response
+			.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, allowed, &channel.name));
+		if allowed && response.has_focus() {
+			ui.painter().rect_stroke(
+				link_rect.shrink(1.0),
+				6,
+				egui::Stroke::new(1.5, colors.accent),
+				egui::StrokeKind::Inside,
+			);
 		}
-		if allowed && membership.is_none() {
-			detail("Selection unavailable · refresh");
-		} else if allowed && membership == Some(false) {
-			let reason = if state
-				.voice
-				.active
-				.as_ref()
-				.is_some_and(|call| call.channel == id)
-			{
-				"Visible during your call"
-			} else if state.selected == Some(id)
-				|| state
-					.selected
-					.and_then(|id| state.channel(id))
-					.is_some_and(|selected| selected.parent_id == Some(id))
-			{
-				"Visible while open"
-			} else if self.mentions.contains_key(&id) {
-				"Visible for mentions"
-			} else if state.personally_shows_all_channels(guild) {
-				"Visible with Show All"
-			} else {
-				"Not in your list"
-			};
-			detail(reason);
-		} else if membership == Some(true)
-			&& channel
-				.parent_id
-				.and_then(|id| state.personal_channel_flags(id))
-				.is_some_and(|flags| flags & model::channel_visibility::OPT_IN_ENABLED != 0)
-			&& !state
-				.personal_channel_flags(id)
-				.is_some_and(|flags| flags & model::channel_visibility::OPT_IN_ENABLED != 0)
-		{
-			detail("Included by category");
+		menu.context(&response, state, channel, view);
+		if allowed && response.clicked() {
+			*navigate = Some(id);
 		}
-		if state.hides_muted_channels(guild) == Some(true)
-			&& state.guild_channel_effectively_muted(id) == Some(true)
-		{
-			detail("Hide Muted Channels is on");
-		}
+		let details = self.channel_detail_keys(state, guild, id);
 		let status_rect = egui::Rect::from_min_max(
 			if stacked {
 				egui::pos2(
@@ -810,12 +932,14 @@ impl Browser {
 			|ui| {
 				ui.spacing_mut().item_spacing.y = 2.0;
 				preference_feedback(ui, state, guild, Some(id), commands);
-				for text in details.into_iter().flatten().take(2) {
+				for key in details.into_iter().flatten() {
+					let text = i18n::translate(key);
 					ui.add(
-						egui::Label::new(RichText::new(text).size(11.0).color(colors.muted))
+						egui::Label::new(RichText::new(&text).size(11.0).color(colors.muted))
 							.truncate()
 							.selectable(false),
-					);
+					)
+					.on_hover_text(text);
 				}
 			},
 		);
@@ -899,14 +1023,24 @@ pub(super) fn preference_feedback(
 		Some(Status::Saving) => {
 			ui.horizontal(|ui| {
 				ui.add(egui::Spinner::new().size(12.0));
-				ui.label(RichText::new("Saving…").size(12.0).color(colors.muted));
+				ui.label(
+					RichText::new(i18n::translate("contact-editor-show-saving"))
+						.size(12.0)
+						.color(colors.muted),
+				);
 			});
 		}
 		Some(Status::Failed(error)) => {
 			ui.horizontal_wrapped(|ui| {
-				ui.colored_label(colors.danger, RichText::new("Not saved").size(12.0))
-					.on_hover_text(error);
-				if ui.small_button("Retry").clicked() {
+				ui.colored_label(
+					colors.danger,
+					RichText::new(i18n::translate("browse-channels-not-saved")).size(12.0),
+				)
+				.on_hover_text(error);
+				if ui
+					.small_button(i18n::translate("channel-menu-show-retry"))
+					.clicked()
+				{
 					state.retry_channel_preference(guild, channel);
 				}
 			});
@@ -915,17 +1049,26 @@ pub(super) fn preference_feedback(
 			ui.horizontal_wrapped(|ui| {
 				ui.colored_label(
 					colors.warning,
-					RichText::new("Changed in Discord").size(12.0),
+					RichText::new(i18n::translate("browse-channels-changed-discord")).size(12.0),
 				);
-				if ui.small_button("Apply Again").clicked() {
+				if ui
+					.small_button(i18n::translate("browse-channels-apply-again"))
+					.clicked()
+				{
 					state.retry_channel_preference(guild, channel);
 				}
 			});
 		}
 		Some(Status::Unconfirmed) => {
 			ui.horizontal_wrapped(|ui| {
-				ui.colored_label(colors.warning, RichText::new("Not confirmed").size(12.0));
-				if ui.small_button("Refresh").clicked() {
+				ui.colored_label(
+					colors.warning,
+					RichText::new(i18n::translate("browse-channels-not-confirmed")).size(12.0),
+				);
+				if ui
+					.small_button(i18n::translate("screen-body-refresh"))
+					.clicked()
+				{
 					commands.extend(state.refresh_channel_preferences(guild));
 				}
 			});
@@ -953,6 +1096,8 @@ mod tests {
 		commands: Vec<Command>,
 		copied: Vec<String>,
 		focused: Option<String>,
+		focus_outlines: Vec<Rect>,
+		show_locked: bool,
 	}
 	impl Harness {
 		fn new() -> Self {
@@ -969,6 +1114,7 @@ mod tests {
 						entries: vec![client_core::notifications::Setting {
 							guild: Some(Id(10)),
 							flags: Some(0),
+							hide_muted_channels: Some(false),
 							overrides_known: true,
 							..Default::default()
 						}],
@@ -988,6 +1134,8 @@ mod tests {
 				commands: vec![],
 				copied: vec![],
 				focused: None,
+				focus_outlines: vec![],
+				show_locked: false,
 			}
 		}
 		fn frame(&mut self, ctx: &egui::Context, events: Vec<Event>) -> Vec<(String, Rect)> {
@@ -999,6 +1147,7 @@ mod tests {
 			events: Vec<Event>,
 			size: Vec2,
 		) -> Vec<(String, Rect)> {
+			let mut accent = egui::Color32::TRANSPARENT;
 			let output = ctx.run_ui(
 				egui::RawInput {
 					screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
@@ -1006,11 +1155,12 @@ mod tests {
 					..Default::default()
 				},
 				|ui| {
+					accent = design::palette(ui).accent;
 					self.browser.show(
 						ui,
 						&mut self.state,
 						Some(Id(10)),
-						(ShortcutView::new(&self.local, true), false),
+						(ShortcutView::new(&self.local, true), self.show_locked),
 						&mut self.menu,
 						&mut self.commands,
 					);
@@ -1034,8 +1184,23 @@ mod tests {
 				}
 			}
 			let mut labels = vec![];
+			self.focus_outlines.clear();
+			fn outlines(shape: &egui::Shape, accent: egui::Color32, result: &mut Vec<Rect>) {
+				match shape {
+					egui::Shape::Rect(value)
+						if value.stroke.width == 1.5 && value.stroke.color == accent =>
+					{
+						result.push(value.rect)
+					}
+					egui::Shape::Vec(shapes) => shapes
+						.iter()
+						.for_each(|shape| outlines(shape, accent, result)),
+					_ => {}
+				}
+			}
 			for shape in &output.shapes {
 				text(&shape.shape, &mut labels);
+				outlines(&shape.shape, accent, &mut self.focus_outlines);
 			}
 			for command in &output.platform_output.commands {
 				if let egui::OutputCommand::CopyText(value) = command {
@@ -1234,9 +1399,9 @@ mod tests {
 		let mut h = Harness::new();
 		h.frame(&ctx, vec![]);
 		h.frame(&ctx, vec![]);
-		let target = format!(
-			"Include {} in my channel list",
-			h.state.channel(Id(20)).unwrap().name
+		let target = i18n::translate_args(
+			"browse-channels-include-channel",
+			&[("name", &h.state.channel(Id(20)).unwrap().name)],
 		);
 		let mut reached = false;
 		for step in 1..=24 {
@@ -1266,6 +1431,455 @@ mod tests {
 		assert_eq!(h.state.selected, selected);
 		assert_eq!(h.state.request, request);
 		assert!(h.commands.is_empty());
+	}
+
+	#[test]
+	fn keyboard_channel_link_has_a_focus_outline_and_opens_without_changing_membership() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut h = Harness::new();
+		h.frame(&ctx, vec![]);
+		h.frame(&ctx, vec![]);
+		let target = h.state.channel(Id(20)).unwrap().name.clone();
+		let mut reached = false;
+		for _ in 0..24 {
+			h.key(&ctx, egui::Key::Tab);
+			if h.focused.as_deref() == Some(target.as_str()) {
+				reached = true;
+				break;
+			}
+		}
+		assert!(
+			reached,
+			"channel link must be reachable by keyboard: {:?}",
+			h.focused
+		);
+		let labels = h.frame(&ctx, vec![]);
+		let text = labels.iter().find(|(label, _)| label == &target).unwrap().1;
+		assert!(
+			h.focus_outlines
+				.iter()
+				.any(|rect| rect.contains(text.center())),
+			"focused channel link must paint an outline around its label"
+		);
+		let membership = h.state.channel_in_custom_list(Id(20));
+		let request = h.state.request;
+		h.key(&ctx, egui::Key::Enter);
+		assert_eq!(h.state.browse_channels, None);
+		assert_eq!(h.state.selected, Some(Id(20)));
+		assert_eq!(h.state.channel_in_custom_list(Id(20)), membership);
+		assert_eq!(h.state.request, request);
+		assert!(h.commands.is_empty());
+	}
+
+	#[test]
+	fn inaccessible_channel_is_skipped_by_keyboard_but_keeps_its_copy_menu() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut h = Harness::new();
+		h.show_locked = true;
+		h.state.permissions.channels.remove(&Id(20));
+		h.state.permissions.clear_cache();
+		assert!(!h.state.can_view(Id(20)));
+		h.frame(&ctx, vec![]);
+		let labels = h.frame(&ctx, vec![]);
+		let name = h.state.channel(Id(20)).unwrap().name.clone();
+		let row = labels.iter().find(|(label, _)| label == &name).unwrap().1;
+		for _ in 0..32 {
+			h.key(&ctx, egui::Key::Tab);
+			assert_ne!(
+				h.focused.as_deref(),
+				Some(name.as_str()),
+				"unavailable link must not take keyboard focus"
+			);
+		}
+		assert_eq!(h.state.browse_channels, Some(Id(10)));
+		h.click(&ctx, row.center(), PointerButton::Secondary);
+		let labels = h.frame(&ctx, vec![]);
+		let copy_label = i18n::translate("channel-menu-context-copy-link");
+		let copy = labels
+			.iter()
+			.find(|(label, _)| label == &copy_label)
+			.expect("copy action remains available")
+			.1
+			.center();
+		h.click(&ctx, copy, PointerButton::Primary);
+		assert_eq!(h.copied, ["https://discord.com/channels/10/20"]);
+		assert_eq!(h.state.browse_channels, Some(Id(10)));
+		assert!(h.commands.is_empty());
+	}
+
+	#[test]
+	fn narrow_status_label_does_not_open_its_channel() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut h = Harness::new();
+		let channel = Id(21);
+		let selected = h.state.selected;
+		h.state.request_channel_action(
+			channel,
+			Action::Mute(client_core::channel_actions::Mute::Forever),
+		);
+		let size = egui::vec2(500.0, 1100.0);
+		h.frame_size(&ctx, vec![], size);
+		let labels = h.frame_size(&ctx, vec![], size);
+		let name = h.state.channel(channel).unwrap().name.clone();
+		let row = labels.iter().find(|(label, _)| label == &name).unwrap().1;
+		let muted = labels
+			.iter()
+			.find(|(label, rect)| label == "Muted" && rect.top() > row.top())
+			.unwrap()
+			.1;
+		for pressed in [true, false] {
+			h.frame_size(
+				&ctx,
+				vec![
+					Event::PointerMoved(muted.center()),
+					Event::PointerButton {
+						pos: muted.center(),
+						button: PointerButton::Primary,
+						pressed,
+						modifiers: Modifiers::NONE,
+					},
+				],
+				size,
+			);
+		}
+		assert_eq!(h.state.browse_channels, Some(Id(10)));
+		assert_eq!(h.state.selected, selected);
+		for pressed in [true, false] {
+			h.frame_size(
+				&ctx,
+				vec![
+					Event::PointerMoved(row.center()),
+					Event::PointerButton {
+						pos: row.center(),
+						button: PointerButton::Primary,
+						pressed,
+						modifiers: Modifiers::NONE,
+					},
+				],
+				size,
+			);
+		}
+		assert_eq!(h.state.selected, Some(channel));
+	}
+
+	#[test]
+	fn all_three_channel_visibility_reasons_fit_before_the_next_row() {
+		for width in [500.0, 1100.0] {
+			for scale in [1.0, 2.0] {
+				let ctx = egui::Context::default();
+				design::apply(&ctx);
+				ctx.set_zoom_factor(scale);
+				let mut h = Harness::new();
+				h.state
+					.request_channel_action(Id(20), Action::HideMuted(true));
+				h.state.request_channel_action(
+					Id(20),
+					Action::Mute(client_core::channel_actions::Mute::Forever),
+				);
+				let remove = h.state.personal_visibility_change(Id(20), false).unwrap();
+				h.state.request_personal_channel_action(Id(10), remove);
+				assert_eq!(h.state.hides_muted_channels(Id(10)), Some(true));
+				assert_eq!(h.state.guild_channel_effectively_muted(Id(20)), Some(true));
+				assert_eq!(h.state.channel_in_custom_list(Id(20)), Some(false));
+				let size = egui::vec2(width, 1100.0);
+				h.frame_size(&ctx, vec![], size);
+				let labels = h.frame_size(&ctx, vec![], size);
+				let name = h.state.channel(Id(20)).unwrap().name.as_str();
+				let row = labels.iter().find(|(text, _)| text == name).unwrap().1;
+				let find = |text: &str| {
+					labels
+						.iter()
+						.find(|(label, rect)| label == text && rect.top() >= row.top())
+						.unwrap_or_else(|| panic!("missing {text}: {labels:?}"))
+						.1
+				};
+				let muted = find("Muted");
+				let visible = find("Visible while open");
+				let hidden = find("Hide Muted Channels is on");
+				let next = find(&h.state.channel(Id(21)).unwrap().name);
+				assert!(
+					muted.bottom() <= visible.top()
+						&& visible.bottom() <= hidden.top()
+						&& hidden.bottom() < next.top(),
+					"overlapping channel reasons at width {width}, scale {scale}: {muted:?} {visible:?} {hidden:?} {next:?}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn translated_conflict_and_three_reasons_stay_within_the_channel_row() {
+		use model::{
+			Patch,
+			guild_preferences::{Fields, Row, Update},
+		};
+		for language in [i18n::Language::German, i18n::Language::Russian] {
+			for scale in [1.0, 2.0] {
+				let ctx = egui::Context::default();
+				design::apply(&ctx);
+				ctx.set_zoom_factor(scale);
+				let mut h = Harness::new();
+				i18n::set_current(language);
+				h.state
+					.request_channel_action(Id(20), Action::HideMuted(true));
+				h.state.request_channel_action(
+					Id(20),
+					Action::Mute(client_core::channel_actions::Mute::Forever),
+				);
+				let remove = h.state.personal_visibility_change(Id(20), false).unwrap();
+				h.state.request_personal_channel_action(Id(10), remove);
+				h.state
+					.request_channel_action(Id(20), Action::Notifications(1));
+				h.state.flush_channel_preferences();
+				let Some(Command::ChannelPreferences(_request)) =
+					h.state.poll_channel_preferences(std::time::Instant::now())
+				else {
+					panic!("queued preference write")
+				};
+				h.state.apply(client_core::Envelope {
+					generation: h.state.generation,
+					event: client_core::Event::NotificationPreferences(
+						client_core::notifications::Event::Updates {
+							entries: vec![Update {
+								guild: Some(Id(10)),
+								channels: Some(vec![Row {
+									channel: Id(20),
+									fields: Fields {
+										level: Patch::Value(0),
+										..Default::default()
+									},
+								}]),
+								..Default::default()
+							}],
+							replace: false,
+						},
+					),
+				});
+				assert_eq!(
+					h.state.channel_preference_status(Id(10), Some(Id(20))),
+					Some(Status::Conflict)
+				);
+				assert_eq!(h.state.guild_channel_effectively_muted(Id(20)), Some(true));
+				assert_eq!(h.state.channel_in_custom_list(Id(20)), Some(false));
+				assert_eq!(h.state.hides_muted_channels(Id(10)), Some(true));
+				let size = egui::vec2(260.0, 1600.0);
+				h.frame_size(&ctx, vec![], size);
+				let labels = h.frame_size(&ctx, vec![], size);
+				let name = h.state.channel(Id(20)).unwrap().name.as_str();
+				let row = labels.iter().find(|(text, _)| text == name).unwrap().1;
+				let find = |key| {
+					let text = i18n::translate(key);
+					labels
+						.iter()
+						.find(|(label, rect)| label == &text && rect.top() >= row.top())
+						.unwrap_or_else(|| panic!("missing {key}: {labels:?}"))
+						.1
+				};
+				let conflict = find("browse-channels-changed-discord");
+				let retry = find("browse-channels-apply-again");
+				let muted = find("browse-channels-muted");
+				let visible = find("browse-channels-visible-open");
+				let filtered = find("browse-channels-hide-muted-on");
+				let next_name = &h.state.channel(Id(21)).unwrap().name;
+				let next = labels
+					.iter()
+					.find(|(label, _)| label == next_name)
+					.expect("following channel")
+					.1;
+				assert!(
+					conflict.bottom() <= muted.top()
+						&& retry.bottom() <= muted.top()
+						&& muted.bottom() <= visible.top()
+						&& visible.bottom() <= filtered.top()
+						&& filtered.bottom() < next.top(),
+					"{language:?} at {scale}x: {conflict:?}, {retry:?}, {muted:?}, {visible:?}, {filtered:?}, {next:?}"
+				);
+			}
+		}
+		i18n::set_current(i18n::Language::English);
+	}
+
+	#[test]
+	fn row_height_changes_preserve_the_scroll_anchor_after_save_and_mute_expiry() {
+		use model::{
+			Patch,
+			guild_preferences::{Fields, Row as PreferenceRow, Update},
+		};
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut h = Harness::new();
+		let template = h.state.channel(Id(21)).unwrap().clone();
+		for index in 0..20 {
+			let mut channel = template.clone();
+			channel.id = Id(1_000 + index);
+			channel.name = format!("synthetic-scroll-{index}");
+			channel.position = i32::try_from(index).unwrap() + 2;
+			h.state.channels.push(channel);
+			h.browser.attempted.push(Id(1_000 + index));
+		}
+		h.state
+			.permissions
+			.replace(test_support::permission_snapshot(&h.state))
+			.unwrap();
+		h.state.revision += 1;
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.unwrap()
+			.as_secs() as i64;
+		let update = |until| client_core::notifications::Event::Updates {
+			entries: vec![Update {
+				guild: Some(Id(10)),
+				fields: Fields {
+					hide_muted: Patch::Value(true),
+					..Default::default()
+				},
+				channels: Some(vec![PreferenceRow {
+					channel: Id(20),
+					fields: Fields {
+						muted: Patch::Value(true),
+						mute_until: Patch::Value(until),
+						..Default::default()
+					},
+				}]),
+				..Default::default()
+			}],
+			replace: false,
+		};
+		h.state.apply(client_core::Envelope {
+			generation: h.state.generation,
+			event: client_core::Event::NotificationPreferences(update(now + 3600)),
+		});
+		let remove = h.state.personal_visibility_change(Id(20), false).unwrap();
+		h.state.request_personal_channel_action(Id(10), remove);
+		h.state
+			.request_channel_action(Id(20), Action::Notifications(1));
+		assert_eq!(
+			h.state.channel_preference_status(Id(10), Some(Id(20))),
+			Some(Status::Saving)
+		);
+		assert_eq!(h.state.guild_channel_effectively_muted(Id(20)), Some(true));
+		let size = egui::vec2(500.0, 650.0);
+		h.browser.restore_offset = Some(240.0);
+		for _ in 0..3 {
+			h.frame_size(&ctx, vec![], size);
+		}
+		let before_save = h.browser.anchor.expect("visible scroll anchor");
+		assert_ne!(
+			before_save.0,
+			Row::Channel(Id(20)).identity(),
+			"anchor must be below the row changing height"
+		);
+		h.state.flush_channel_preferences();
+		let Some(Command::ChannelPreferences(request)) =
+			h.state.poll_channel_preferences(std::time::Instant::now())
+		else {
+			panic!("queued preference write")
+		};
+		let result = h.state.demo_channel_preferences(&request);
+		h.state.apply(client_core::Envelope {
+			generation: h.state.generation,
+			event: client_core::Event::ChannelPreferences(result),
+		});
+		assert_eq!(
+			h.state.channel_preference_status(Id(10), Some(Id(20))),
+			None
+		);
+		h.frame_size(&ctx, vec![], size);
+		let after_save = h.browser.anchor.unwrap();
+		assert_eq!(after_save.0, before_save.0);
+		assert!(
+			(after_save.1 - before_save.1).abs() <= 1.0,
+			"save shifted the anchor: {before_save:?} -> {after_save:?}"
+		);
+		h.state.apply(client_core::Envelope {
+			generation: h.state.generation,
+			event: client_core::Event::NotificationPreferences(update(now - 1)),
+		});
+		assert_eq!(h.state.guild_channel_effectively_muted(Id(20)), Some(false));
+		h.frame_size(&ctx, vec![], size);
+		let after_expiry = h.browser.anchor.unwrap();
+		assert_eq!(after_expiry.0, after_save.0);
+		assert!(
+			(after_expiry.1 - after_save.1).abs() <= 1.0,
+			"mute expiry shifted the anchor: {after_save:?} -> {after_expiry:?}"
+		);
+		assert_eq!(h.state.selected, Some(Id(20)));
+	}
+
+	#[test]
+	fn browser_labels_and_accessible_names_are_available_in_every_language() {
+		let ordinary = [
+			"all",
+			"shown",
+			"hidden",
+			"back",
+			"title",
+			"more",
+			"import-device",
+			"refresh-preferences",
+			"description",
+			"search",
+			"muted",
+			"show-all",
+			"hide-muted",
+			"muted-unavailable",
+			"showing-all",
+			"preferences-unavailable",
+			"import-confirm",
+			"import-favorites",
+			"empty-title",
+			"empty-help",
+			"queue-failed",
+			"category-change-failed",
+			"channels",
+			"channel-change-failed",
+			"permissions-unavailable",
+			"muted-category",
+			"selection-unavailable",
+			"visible-call",
+			"visible-open",
+			"visible-mentions",
+			"visible-show-all",
+			"not-in-list",
+			"included-category",
+			"hide-muted-on",
+			"not-saved",
+			"changed-discord",
+			"apply-again",
+			"not-confirmed",
+		];
+		for language in i18n::Language::ALL {
+			i18n::set_current(language);
+			for suffix in ordinary {
+				let key = format!("browse-channels-{suffix}");
+				let label = i18n::translate(&key);
+				assert!(
+					!label.is_empty() && !label.starts_with("Unknown localization key:"),
+					"{language:?}: {key}"
+				);
+			}
+			for suffix in [
+				"include-category-partial",
+				"include-category",
+				"include-channel",
+			] {
+				let key = format!("browse-channels-{suffix}");
+				let label = i18n::translate_args(&key, &[("name", "synthetic-channel")]);
+				assert!(
+					label.contains("synthetic-channel")
+						&& !label.starts_with("Unknown localization key:"),
+					"{language:?}: {key}: {label}"
+				);
+			}
+		}
+		assert_ne!(
+			i18n::Language::Japanese.text("browse-channels-title"),
+			i18n::Language::English.text("browse-channels-title")
+		);
+		i18n::set_current(i18n::Language::English);
 	}
 	#[test]
 	fn filters_use_saved_membership_not_show_all_or_temporary_reveals() {

@@ -16,6 +16,7 @@ pub(super) struct ModViewUi {
 	nickname: String,
 	nickname_initialized: bool,
 	role_search: String,
+	notice: Option<&'static str>,
 }
 impl ModViewUi {
 	pub fn close(&mut self, state: &mut State) {
@@ -23,17 +24,15 @@ impl ModViewUi {
 		state.close_member_review();
 	}
 	pub fn open(&mut self, state: &mut State, guild: Id, user: Id) -> Option<Command> {
+		self.notice = None;
 		if !state.can_open_mod_view(guild) {
 			return None;
 		}
-		if self.scope.is_some() {
-			state.close_member_review();
-		}
 		if state.server_admin.pending {
 			state.status = "Wait for the current administrative action to finish.";
+			self.notice = Some("mod-view-pending");
 			return None;
 		}
-
 		let channel = state
 			.selected
 			.filter(|id| {
@@ -61,6 +60,9 @@ impl ModViewUi {
 		self.nickname_initialized = false;
 		self.role_search.clear();
 		Some(command)
+	}
+	pub fn take_notice(&mut self) -> Option<&'static str> {
+		self.notice.take()
 	}
 	pub fn show(
 		&mut self,
@@ -235,6 +237,168 @@ fn visible_excerpt(text: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn rejected_replacement_keeps_existing_review() {
+		for missing_channel in [false, true] {
+			let mut state = test_support::demo_state();
+			let guild = Id(10);
+			let channel = state.selected.unwrap();
+			let mut permissions = test_support::permission_snapshot(&state);
+			for row in &mut permissions.guilds {
+				row.owner = state.user.as_ref().map(|user| user.id);
+			}
+			state.permissions.replace(permissions).unwrap();
+			assert!(state.can_open_mod_view(guild));
+			let mut user = state.user.as_ref().unwrap().clone();
+			user.id = Id(776);
+			state.server_admin.guild = Some(guild);
+			state.server_admin.member_review = Some(model::moderation::Review {
+				guild,
+				channel,
+				member: model::server_admin::Member {
+					user,
+					nick: None,
+					roles: vec![],
+					joined_at: None,
+					join_source: None,
+					invite_code: None,
+					flags: None,
+					unusual_dm_until: None,
+					timeout_until: None,
+				},
+				roles: vec![],
+				messages: vec![],
+				audit: vec![],
+				audit_window: None,
+				messages_error: None,
+				audit_error: None,
+			});
+			let mut view = ModViewUi::default();
+			let old_scope = (state.generation, guild, Id(776), state.selected);
+			view.scope = Some(old_scope);
+			state.server_admin.member_review_loading = REVIEW_ROLES;
+			if missing_channel {
+				state
+					.channels
+					.retain(|channel| channel.guild != Some(guild));
+			} else {
+				state.server_settings.saving = true;
+			}
+			assert!(view.open(&mut state, guild, Id(777)).is_none());
+			assert_eq!(view.scope, Some(old_scope));
+			assert_eq!(
+				state
+					.server_admin
+					.member_review
+					.as_ref()
+					.unwrap()
+					.member
+					.user
+					.id,
+				Id(776)
+			);
+			assert_eq!(state.server_admin.member_review_loading, REVIEW_ROLES);
+		}
+	}
+
+	#[test]
+	fn rejected_mod_view_action_keeps_the_open_profile() {
+		let mut state = test_support::demo_state();
+		let guild = Id(10);
+		let mut permissions = test_support::permission_snapshot(&state);
+		for row in &mut permissions.guilds {
+			row.owner = state.user.as_ref().map(|user| user.id);
+		}
+		state.permissions.replace(permissions).unwrap();
+		let mut user = state.user.as_ref().unwrap().clone();
+		user.id = Id(777);
+		let mut view = crate::MessagingUi::default();
+		view.profile.command_open(user);
+		view.user_action = Some(crate::user_menu::Action::ModView {
+			guild,
+			user: Id(777),
+		});
+		state.server_admin.pending = true;
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut commands = Vec::new();
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(1200.0, 900.0),
+				)),
+				..Default::default()
+			},
+			|ui| commands.extend(view.show(ui, &mut state)),
+		);
+		assert_eq!(view.profile.open_user().map(|user| user.id), Some(Id(777)));
+		assert!(commands.iter().all(|command| !matches!(command, Command::ServerAdmin { action, .. } if matches!(action.as_ref(), server_admin::Action::Moderation(Action::Review { .. })))));
+		output.drop_without_applying_deltas();
+	}
+
+	#[test]
+	fn busy_mod_view_open_preserves_the_current_view_and_displays_one_notice() {
+		let mut state = test_support::demo_state();
+		let guild = Id(10);
+		let mut permissions = test_support::permission_snapshot(&state);
+		for row in &mut permissions.guilds {
+			row.owner = state.user.as_ref().map(|user| user.id);
+		}
+		state.permissions.replace(permissions).unwrap();
+		assert!(state.can_open_mod_view(guild));
+		state.server_admin.guild = Some(guild);
+		state.server_admin.pending = true;
+		let mut view = crate::MessagingUi {
+			language: crate::i18n::Language::Czech,
+			..Default::default()
+		};
+		let old_scope = (state.generation, guild, Id(776), state.selected);
+		view.mod_view.scope = Some(old_scope);
+		for _ in 0..2 {
+			assert!(view.preview_mod_view(&mut state, guild, Id(777)).is_none());
+			assert_eq!(view.mod_view.scope, Some(old_scope));
+		}
+		assert!(state.server_admin.pending);
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		for _ in 0..3 {
+			let mut commands = Vec::new();
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1200.0, 900.0),
+					)),
+					..Default::default()
+				},
+				|ui| commands.extend(view.show(ui, &mut state)),
+			);
+			fn count(shape: &egui::Shape, text: &str) -> usize {
+				match shape {
+					egui::Shape::Text(value) => usize::from(value.galley.job.text == text),
+					egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, text)).sum(),
+					_ => 0,
+				}
+			}
+			let expected = crate::i18n::translate("mod-view-pending");
+			assert_eq!(
+				output
+					.shapes
+					.iter()
+					.map(|shape| count(&shape.shape, &expected))
+					.sum::<usize>(),
+				1
+			);
+			assert!(commands.iter().all(|command| !matches!(command, Command::ServerAdmin { action, .. } if matches!(action.as_ref(), server_admin::Action::Moderation(Action::Review { .. })))));
+			output.drop_without_applying_deltas();
+		}
+		assert_eq!(view.mod_view.scope, Some(old_scope));
+		assert!(state.server_admin.pending);
+		crate::i18n::set_current(crate::i18n::Language::English);
+	}
+
 	#[test]
 	fn members_context_menu_opens_an_actionable_drawer_above_the_conversation() {
 		fn render(

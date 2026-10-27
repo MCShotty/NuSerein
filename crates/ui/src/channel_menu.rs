@@ -174,7 +174,7 @@ impl ChannelMenu {
 					false,
 				)
 				.on_hover_text(crate::i18n::translate(
-					"Favorites are synchronized with your Discord account",
+					"channel-favorites-synced-description",
 				))
 				.clicked()
 			{
@@ -2429,6 +2429,76 @@ mod tests {
 			assert_eq!(after.name, before.name);
 			assert!(h.commands.is_empty());
 		}
+	}
+
+	#[test]
+	fn account_favorite_tooltip_uses_the_selected_language() {
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		ctx.all_styles_mut(|style| {
+			style.interaction.tooltip_delay = 0.0;
+			style.interaction.show_tooltips_only_when_still = false;
+		});
+		crate::i18n::set_current(crate::i18n::Language::Czech);
+		let mut state = test_support::chat_demo_state();
+		state
+			.permissions
+			.replace(test_support::permission_snapshot(&state))
+			.unwrap();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::NotificationPreferences(
+				client_core::notifications::Event::Settings {
+					entries: vec![client_core::notifications::Setting {
+						guild: Some(Id(10)),
+						flags: Some(0),
+						overrides_known: true,
+						..Default::default()
+					}],
+					replace: false,
+				},
+			),
+		});
+		assert!(state.personal_channel_controls_available(Id(10)));
+		let mut h = Harness {
+			state,
+			menu: ChannelMenu::default(),
+			prefs: Default::default(),
+			commands: vec![],
+			copied: vec![],
+			width: 1000.0,
+		};
+		let (source, _) = h.frame(&ctx, vec![]);
+		h.click(&ctx, source.rect.center(), PointerButton::Secondary);
+		let (_, labels) = h.frame(&ctx, vec![]);
+		let favorite = crate::i18n::translate("channel-menu-context-add-to-favorites");
+		let position = labels
+			.iter()
+			.find(|(label, _)| label == &favorite)
+			.expect("favorite action")
+			.1
+			.center();
+		let expected = crate::i18n::translate("channel-favorites-synced-description");
+		assert!(!expected.starts_with("Unknown localization key:"));
+		let mut found = false;
+		let mut last = Vec::new();
+		for index in 0..8 {
+			let events = if index == 0 {
+				vec![Event::PointerMoved(position)]
+			} else {
+				vec![]
+			};
+			let (_, labels) = h.frame(&ctx, events);
+			found |= labels.iter().any(|(label, _)| label == &expected);
+			last = labels;
+		}
+		assert!(
+			found,
+			"account favorite tooltip must be localized and rendered: expected {expected:?}, pointer {position:?}, labels {last:?}"
+		);
+		assert!(h.commands.is_empty());
+		assert!(h.menu.shortcut_requested.is_none());
+		crate::i18n::set_current(crate::i18n::Language::English);
 	}
 
 	#[test]
