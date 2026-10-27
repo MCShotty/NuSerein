@@ -32,8 +32,8 @@ impl CameraDenoiser {
 			&& height > 0
 			&& width <= 7680
 			&& height <= 4320
-			&& width % 2 == 0
-			&& height % 2 == 0
+			&& width.is_multiple_of(2)
+			&& height.is_multiple_of(2)
 			&& width
 				.checked_mul(height)
 				.is_some_and(|pixels| pixels <= 1920 * 1080)

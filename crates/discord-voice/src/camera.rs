@@ -587,8 +587,8 @@ fn preview_i420(
 		.ok_or("Camera preview dimensions exceed bounds")?;
 	if width == 0
 		|| height == 0
-		|| width % 2 != 0
-		|| height % 2 != 0
+		|| !width.is_multiple_of(2)
+		|| !height.is_multiple_of(2)
 		|| pixels.checked_mul(3).map(|size| size / 2) != Some(data.len())
 	{
 		return Err("Camera preview dimensions exceed bounds");
@@ -1220,10 +1220,10 @@ mod tests {
 		encoder.frame_budget = std::time::Duration::from_secs(60);
 		let mut saw_dark = false;
 		for _ in 0..10 {
-			if let Some(frame) = encoder.encode(vec![16; WIDTH * HEIGHT * 3]).unwrap() {
-				if !frame.data.is_empty() {
-					saw_dark = true;
-				}
+			if let Some(frame) = encoder.encode(vec![16; WIDTH * HEIGHT * 3]).unwrap()
+				&& !frame.data.is_empty()
+			{
+				saw_dark = true;
 			}
 		}
 		assert!(saw_dark);
@@ -1236,11 +1236,11 @@ mod tests {
 		);
 		let mut fresh = None;
 		for _ in 0..10 {
-			if let Some(frame) = encoder.encode(vec![240; WIDTH * HEIGHT * 3]).unwrap() {
-				if !frame.data.is_empty() {
-					fresh = Some(frame);
-					break;
-				}
+			if let Some(frame) = encoder.encode(vec![240; WIDTH * HEIGHT * 3]).unwrap()
+				&& !frame.data.is_empty()
+			{
+				fresh = Some(frame);
+				break;
 			}
 		}
 		let fresh = fresh.expect("post-reset denoised frame");
