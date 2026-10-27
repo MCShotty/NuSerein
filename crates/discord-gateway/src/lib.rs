@@ -1144,6 +1144,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 		watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
 		watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	),
+	delivery: watch::Receiver<bool>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
 	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
 	emit: impl Fn(Event) -> Result<(), Failure>,
@@ -1161,7 +1162,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 			observe: &observe,
 		}),
 		Some(&reconnect),
-		None,
+		Some(delivery),
 		diagnostics,
 		emit,
 		#[cfg(test)]

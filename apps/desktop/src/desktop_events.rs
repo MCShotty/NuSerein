@@ -563,7 +563,9 @@ impl Desktop {
 		}
 		let mut events = Vec::new();
 		let mut terminal = None;
+		let mut delivery_pressure = false;
 		if let Some(connection) = &mut self.connection {
+			delivery_pressure = connection.events.take_pressure();
 			for _ in 0..client_core::EVENT_SLOTS {
 				match connection.events.try_recv() {
 					Ok(event) => events.push(event),
@@ -846,6 +848,21 @@ impl Desktop {
 			};
 			self.queue_cache(operation);
 		}
+		if delivery_pressure {
+			self.voice.stop();
+			self.state.apply(Envelope {
+				generation: self.state.generation,
+				event: Event::Resync,
+			});
+			// Results already lost to congestion may include accepted writes. Show
+			// uncertainty; a fresh snapshot never authorizes replaying these writes.
+			for pending in &mut self.state.pending {
+				if pending.delivery == Delivery::Sending {
+					pending.delivery = Delivery::Ambiguous;
+				}
+			}
+		}
+
 		if let Some(failure) = terminal {
 			for (setting, scope) in [
 				("SEREIN_MEMBER_DIAGNOSTICS", "members"),

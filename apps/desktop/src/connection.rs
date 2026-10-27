@@ -5,7 +5,7 @@ mod session;
 mod voice;
 use client_core::{
 	COMMAND_SLOTS, Command, EVENT_SLOTS, Envelope, Event, MAX_EVENT_BYTES,
-	auth::{AuthProvider, Failure, SessionSecret},
+	auth::{Failure, SessionSecret},
 	server_admin::{ReadKey, ReadScopes},
 };
 use discord_api::DiscordApi;
@@ -1557,14 +1557,16 @@ mod tests {
 				},
 				&ctx
 			),
-			Err(Failure::CapacityAt(
-				"Account startup snapshot is already queued; connection stopped"
-			))
+			Err(Failure::Busy)
 		);
 		let mut later = queued_channel(25_000);
 		later.generation = generation;
-		emit_event(&send, &typing, later, &ctx).unwrap();
+		assert!(events.take_pressure());
+		assert_eq!(emit_event(&send, &typing, later, &ctx), Err(Failure::Busy));
 		state.apply(events.try_recv().unwrap());
+		let mut later = queued_channel(25_000);
+		later.generation = generation;
+		emit_event(&send, &typing, later, &ctx).unwrap();
 		assert_eq!(state.auth, client_core::auth::AuthState::Authenticated);
 		assert_eq!((state.guilds.len(), state.channels.len()), (200, 20_000));
 		assert!(state.can_read_history(model::Id(1000)));
@@ -1603,11 +1605,11 @@ mod tests {
 		let retained = send.bytes.available_permits();
 		assert_eq!(
 			emit_event(&send, &typing, queued_channel(0), &ctx),
-			Err(Failure::CapacityAt(
-				"Account synchronization event queue is full; connection stopped"
-			))
+			Err(Failure::Busy)
 		);
 		assert_eq!(send.bytes.available_permits(), retained);
+		assert!(events.take_pressure());
+		assert!(send.delivery_blocked());
 		for id in 1..=RELIABLE_ITEMS as u64 {
 			let envelope = events.try_recv().unwrap();
 			assert_eq!(envelope.generation, 1);
@@ -1637,15 +1639,19 @@ mod tests {
 		assert_eq!(send.bytes.available_permits(), 0);
 		assert_eq!(
 			emit_event(&send, &typing, queued_channel(3), &ctx),
-			Err(Failure::CapacityAt(
-				"Account synchronization queue exceeds 32 MiB; connection stopped"
-			))
+			Err(Failure::Busy)
 		);
 		assert_eq!(events.receive.len(), 1);
 		events.try_recv().unwrap();
 		assert_eq!(send.bytes.available_permits(), charge);
-		emit_event(&send, &typing, queued_channel(3), &ctx).unwrap();
+		assert!(events.take_pressure());
+		assert_eq!(
+			emit_event(&send, &typing, queued_channel(3), &ctx),
+			Err(Failure::Busy)
+		);
 		drop(held);
+		assert!(!events.take_pressure());
+		emit_event(&send, &typing, queued_channel(3), &ctx).unwrap();
 		let before = send.bytes.available_permits();
 		let mut oversized = queued_channel(4);
 		if let Event::ChannelCreated(channel) = &mut oversized.event {

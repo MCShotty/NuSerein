@@ -1439,6 +1439,10 @@ impl State {
 				self.apply_send_challenge(nonce, reply, *challenge);
 				Ok(())
 			}
+			Event::CommandRejected(command) => {
+				self.command_rejected(*command);
+				Ok(())
+			}
 			Event::Failure(f) => {
 				self.fail(f);
 				Ok(())
