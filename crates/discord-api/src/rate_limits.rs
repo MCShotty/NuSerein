@@ -28,7 +28,10 @@ impl Route {
 			.enumerate()
 		{
 			key.push('/');
-			if index == 1 && matches!(previous, "channels" | "guilds" | "webhooks") {
+			if matches!(previous, "channels" | "guilds" | "webhooks")
+				&& !part.is_empty()
+				&& part.bytes().all(|b| b.is_ascii_digit())
+			{
 				major = format!("{previous}/{part}");
 				key.push_str(part);
 			} else if major.starts_with("webhooks/") && index == 2 {
@@ -154,6 +157,24 @@ mod tests {
 			.unwrap();
 		assert!(limits.deadline(&a).unwrap() > Instant::now() + Duration::from_secs(29));
 		assert!(limits.deadline(&other).unwrap() <= Instant::now());
+		// Guild IDs also scope nested normal-account and application routes.
+		for path in [
+			"/users/@me/guilds/1/settings",
+			"/applications/5/guilds/1/commands/9/permissions",
+		] {
+			let nested = Route::new(&Method::GET, path);
+			let independent = Route::new(&Method::GET, &path.replace("guilds/1/", "guilds/2/"));
+			limits
+				.observe(
+					&nested,
+					Some("nested"),
+					Some(Duration::from_secs(30)),
+					false,
+				)
+				.unwrap();
+			assert!(limits.deadline(&nested).unwrap() > Instant::now() + Duration::from_secs(29));
+			assert!(limits.deadline(&independent).unwrap() <= Instant::now());
+		}
 		limits
 			.observe(&a, None, Some(Duration::from_secs(60)), true)
 			.unwrap();
