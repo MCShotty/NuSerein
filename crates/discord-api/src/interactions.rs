@@ -69,7 +69,7 @@ pub(crate) fn valid_uploads(request: &Request, count: usize) -> bool {
 }
 
 fn catalog_failure(failure: Failure) -> Failure {
-	if failure == Failure::Capacity {
+	if matches!(failure, Failure::Capacity | Failure::ResponseLimit) {
 		Failure::ProtocolAt("Application commands exceed the catalog limit")
 	} else {
 		failure

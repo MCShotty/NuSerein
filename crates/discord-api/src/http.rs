@@ -10,6 +10,30 @@ use super::{API_ON_TEST_HOST, API_ORIGINS, api_v10_base};
 use discord_protocol::{ErrorBody, MAX_WIRE, decode};
 
 impl DiscordApi {
+	async fn request_permit<'a>(
+		&self,
+		semaphore: &'a tokio::sync::Semaphore,
+		deadline: Option<Instant>,
+	) -> Result<tokio::sync::SemaphorePermit<'a>, Failure> {
+		let acquire = async {
+			semaphore.acquire().await.map_err(|_| {
+				if self.stopped() {
+					Failure::Expired
+				} else {
+					Failure::Network
+				}
+			})
+		};
+		match deadline {
+			Some(deadline) => tokio::time::timeout_at(deadline, acquire)
+				.await
+				.map_err(|_| {
+					Failure::ProtocolAt("Verification expired before the request could resume")
+				})?,
+			None => acquire.await,
+		}
+	}
+
 	/// Credential-free client snapshot for Discord REST; authorization is added per request.
 	pub async fn rest_client(&self) -> Result<Client, Failure> {
 		let mut state = self.proxy.lock().await;
@@ -206,34 +230,9 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 		let speculative = SPECULATIVE.try_with(|()| ()).is_ok();
-		// Acquire at the HTTP boundary only: nested adapter methods cannot hold a permit
-		// while awaiting another permit. Review section futures share this two-read ceiling.
-		let _admin_read = if ADMIN_READ.try_with(|()| ()).is_ok() {
-			Some(
-				self.admin_reads
-					.acquire()
-					.await
-					.map_err(|_| Failure::Network)?,
-			)
-		} else {
-			None
-		};
-		let _permit = if speculative {
-			// A hover preload takes only spare capacity, so it never delays a click.
-			if self.requests.available_permits() <= FOREGROUND_PERMITS {
-				return Err(Failure::Capacity);
-			}
-			self.requests.try_acquire().map_err(|_| Failure::Capacity)?
-		} else {
-			self.requests
-				.acquire()
-				.await
-				.map_err(|_| Failure::Network)?
-		};
-		// Four permits bound concurrent REST work. A slow profile body must not hold the
-		// cooldown mutex and delay a message write; only service rate admission is shared.
 		let idempotent = method == Method::GET && body.is_none() && !speculative;
 		let mut body = body;
+		let route = super::rate_limits::Route::new(&method, path);
 		let mut rate_limits = 0u8;
 		let mut mfa_replay: Option<reqwest::RequestBuilder> = None;
 		let mut mfa_resumed = false;
@@ -250,18 +249,47 @@ impl DiscordApi {
 				self.rest_client().await?
 			};
 			loop {
-				let next = *self.cooldown.lock().await;
+				let stopped = self.stop_signal.notified();
+				tokio::pin!(stopped);
+				stopped.as_mut().enable();
+
+				if self.stopped() {
+					return Err(Failure::Expired);
+				}
+				let next = self.cooldown.lock().await.deadline(&route)?;
 				if speculative && Instant::now() < next {
 					return Err(Failure::Capacity);
 				}
 				if let Some(deadline) = mfa_deadline {
-					tokio::select! { _=sleep_until(deadline)=>return Err(Failure::ProtocolAt("Verification expired before the request could resume")), _=sleep_until(next)=>{} }
+					tokio::select! { _=&mut stopped=>return Err(Failure::Expired), _=sleep_until(deadline)=>return Err(Failure::ProtocolAt("Verification expired before the request could resume")), _=sleep_until(next)=>{} }
 				} else {
-					sleep_until(next).await;
+					tokio::select! { _=&mut stopped=>return Err(Failure::Expired), _=sleep_until(next)=>{} }
 				}
-				if Instant::now() >= *self.cooldown.lock().await {
+				if Instant::now() >= self.cooldown.lock().await.deadline(&route)? {
 					break;
 				}
+			}
+			// Acquire at the HTTP boundary only: nested adapter methods cannot hold a permit
+			// while awaiting another permit. Review section futures share this two-read ceiling.
+			let _admin_read = if ADMIN_READ.try_with(|()| ()).is_ok() {
+				Some(self.request_permit(&self.admin_reads, mfa_deadline).await?)
+			} else {
+				None
+			};
+			let _permit = if speculative {
+				// A hover preload takes only spare capacity, so it never delays a click.
+				if self.requests.available_permits() <= FOREGROUND_PERMITS {
+					return Err(Failure::Capacity);
+				}
+				self.requests.try_acquire().map_err(|_| Failure::Capacity)?
+			} else {
+				self.request_permit(&self.requests, mfa_deadline).await?
+			};
+			// Four permits bound concurrent REST work. A slow profile body must not hold the
+			// cooldown mutex and delay a message write; only service rate admission is shared.
+
+			if Instant::now() < self.cooldown.lock().await.deadline(&route)? {
+				continue;
 			}
 			if self.stopped() {
 				return Err(Failure::Expired);
@@ -352,6 +380,20 @@ impl DiscordApi {
 				.get("x-ratelimit-reset-after")
 				.and_then(|v| v.to_str().ok())
 				.and_then(|s| s.parse::<f64>().ok());
+			let bucket = response
+				.headers()
+				.get("x-ratelimit-bucket")
+				.and_then(|v| v.to_str().ok())
+				.filter(|v| v.len() <= 128)
+				.map(str::to_owned);
+			let global_header = response
+				.headers()
+				.get("x-ratelimit-global")
+				.is_some_and(|v| v == "true")
+				|| response
+					.headers()
+					.get("x-ratelimit-scope")
+					.is_some_and(|v| v == "global");
 			let retry_header = response
 				.headers()
 				.get("retry-after")
@@ -368,7 +410,7 @@ impl DiscordApi {
 			let overflow = if uncertain_write {
 				Failure::Ambiguous
 			} else {
-				Failure::Capacity
+				Failure::ResponseLimit
 			};
 			if response
 				.content_length()
@@ -418,6 +460,8 @@ impl DiscordApi {
 					&& !mfa_resumed && let (Some(target), Some(replay), Some(challenge)) =
 					(mfa_target, exact_retry, mfa::challenge(&bytes))
 				{
+					drop(_permit);
+					drop(_admin_read);
 					let proof = self.wait_for_mfa(target, challenge).await?;
 					if self.stopped() {
 						return Err(Failure::Expired);
@@ -457,16 +501,30 @@ impl DiscordApi {
 			if bytes.len() > max_bytes {
 				return Err(overflow);
 			}
-			if exhausted && status != StatusCode::TOO_MANY_REQUESTS {
-				let mut next = self.cooldown.lock().await;
-				let delay = safe_delay(reset.or(retry_header)).map_err(|failure| {
-					if uncertain_write {
-						Failure::Ambiguous
-					} else {
-						failure
-					}
-				})?;
-				*next = (*next).max(Instant::now() + delay);
+			if status != StatusCode::TOO_MANY_REQUESTS {
+				let delay = if exhausted {
+					Some(safe_delay(reset.or(retry_header)).map_err(|f| {
+						if uncertain_write {
+							Failure::Ambiguous
+						} else {
+							f
+						}
+					})?)
+				} else {
+					None
+				};
+				// Metadata capacity cannot turn an accepted write into a definite failure.
+				self.cooldown
+					.lock()
+					.await
+					.observe(&route, bucket.as_deref(), delay, false)
+					.map_err(|f| {
+						if uncertain_write {
+							Failure::Ambiguous
+						} else {
+							f
+						}
+					})?;
 			}
 			if let Some(error) = error {
 				if error.captcha_key.is_some() || matches!(error.code, Some(60003 | 50014)) {
@@ -506,8 +564,10 @@ impl DiscordApi {
 					}
 					// A block page has no JSON penalty. The short read retry must not run.
 					let delay = safe_delay(retry_header.or(reset).or(Some(60.0)))?;
-					let mut next = self.cooldown.lock().await;
-					*next = (*next).max(Instant::now() + delay);
+					self.cooldown
+						.lock()
+						.await
+						.observe(&route, None, Some(delay), true)?;
 					return Err(Failure::RateLimited);
 				}
 				if status == StatusCode::TOO_MANY_REQUESTS {
@@ -515,8 +575,12 @@ impl DiscordApi {
 					// header must not send the retry early.
 					let delay = safe_delay(error.retry_after.or(retry_header).or(reset))?;
 					{
-						let mut next = self.cooldown.lock().await;
-						*next = (*next).max(Instant::now() + delay);
+						self.cooldown.lock().await.observe(
+							&route,
+							bucket.as_deref(),
+							Some(delay),
+							error.global || global_header,
+						)?;
 					}
 					if idempotent
 						&& delay <= MAX_READ_RATE_LIMIT_WAIT
@@ -545,6 +609,8 @@ impl DiscordApi {
 					Failure::Forbidden
 				} else if status.is_server_error() && write {
 					Failure::Ambiguous
+				} else if status.is_server_error() {
+					Failure::Network
 				} else {
 					Failure::Protocol
 				});

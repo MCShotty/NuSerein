@@ -1,5 +1,5 @@
 //! Bounded history windows, reply originals and conversation search.
-use super::{DiscordApi, Event, Failure, Id, Instant, Method, safe_delay};
+use super::{DiscordApi, Event, Failure, Id, Method, safe_delay};
 use discord_protocol::{MessageDto, decode, pins, search};
 
 impl DiscordApi {
@@ -186,8 +186,12 @@ impl DiscordApi {
 			.code
 			.is_some_and(|code| (110000..119999).contains(&code))
 		{
-			let mut next = self.cooldown.lock().await;
-			*next = (*next).max(Instant::now() + safe_delay(reply.retry_after)?);
+			self.cooldown.lock().await.observe(
+				&super::rate_limits::Route::new(&Method::GET, &path),
+				None,
+				Some(safe_delay(reply.retry_after)?),
+				false,
+			)?;
 			return Ok(client_core::search::Outcome::Indexing);
 		}
 		reply
