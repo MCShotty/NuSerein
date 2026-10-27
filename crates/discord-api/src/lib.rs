@@ -1545,6 +1545,7 @@ mod tests {
 						("after=9", vec![11, 10]),
 						("before=9", vec![8, 7]),
 						("after=99", (100..151).collect()),
+						("after=150", vec![152, 151]),
 					] {
 						let (mut socket, _) = listener.accept().await.unwrap();
 						let mut request = Vec::new();
@@ -1618,15 +1619,46 @@ mod tests {
 					assert_eq!(messages.len(), 2);
 					assert_eq!(messages[0].id, first);
 				}
-				assert!(matches!(
-					api.execute(Command::History {
+				let oversized = api
+					.execute(Command::History {
 						channel: Id(1),
 						before: None,
 						after: Some(Id(99)),
 						request: 8,
 					})
-					.await,
-					Event::Failure(Failure::Capacity)
+					.await;
+				assert!(matches!(
+					oversized,
+					Event::HistoryFailed {
+						channel: Id(1),
+						request: 8,
+						failure: Failure::ResponseLimit,
+					}
+				));
+				let mut state = client_core::State::default();
+				state.apply(client_core::Envelope {
+					generation: state.generation,
+					event: Event::Ready {
+						user: decode::<UserDto>(br#"{"id":"3","username":"Synthetic"}"#)
+							.unwrap()
+							.into_model(),
+						guilds: vec![],
+						channels: vec![],
+						permissions: Default::default(),
+					},
+				});
+				state.apply(client_core::Envelope {
+					generation: state.generation,
+					event: oversized,
+				});
+				assert_eq!(state.auth, client_core::auth::AuthState::Authenticated);
+				assert!(state.gateway_connected);
+				assert!(!api.stopped());
+				assert!(matches!(
+					api.execute(Command::History {
+						channel: Id(1), before: None, after: Some(Id(150)), request: 9,
+					}).await,
+					Event::History { messages, .. } if messages.len() == 2
 				));
 				server.await.unwrap();
 			})

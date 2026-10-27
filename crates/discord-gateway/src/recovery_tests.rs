@@ -143,7 +143,7 @@ async fn partial_delivery_waits_for_capacity_then_identifies_and_resynchronizes(
 		None,
 		None,
 		diagnostics.clone(),
-		|event| {
+		|event, _| {
 			if blocked.load(Ordering::Acquire) {
 				return Err(Failure::Busy);
 			}
@@ -236,6 +236,92 @@ async fn partial_delivery_waits_for_capacity_then_identifies_and_resynchronizes(
 			.summary()
 			.contains(ConnectionReason::DeliveryCongestion.label())
 	);
+}
+
+#[tokio::test]
+async fn coalesced_delivery_loss_still_retires_the_socket_generation() {
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+	let (delivery, observed) = watch::channel(DeliveryState::default());
+	let resynchronized = AtomicBool::new(false);
+	let delivered = AtomicBool::new(false);
+	let client = run_observed(
+		Arc::new(SessionSecret::from_owner_input("synthetic-delivery-generation".into()).unwrap()),
+		"wss://gateway.discord.gg/".into(),
+		watch::channel(None).1,
+		mpsc::channel(1).1,
+		None,
+		None,
+		Some(observed),
+		Arc::new(Mutex::new(ConnectionDiagnostics::default())),
+		|event, epoch| {
+			if matches!(&event, Event::Resync) {
+				assert_eq!(epoch, 1);
+				resynchronized.store(true, Ordering::Release);
+			}
+			if matches!(
+				&event,
+				Event::UserAction(client_core::user_actions::Event::NoteChanged { .. })
+			) {
+				assert_eq!(epoch, 1);
+				assert!(resynchronized.load(Ordering::Acquire));
+				delivered.store(true, Ordering::Release);
+			}
+			Ok(())
+		},
+		Some((&endpoint, &endpoint)),
+	);
+	let server = async {
+		let (stream, _) = listener.accept().await.unwrap();
+		let mut socket = accept_async(stream).await.unwrap();
+		send(
+			&mut socket,
+			json!({"op":10,"d":{"heartbeat_interval":120000}}),
+		)
+		.await;
+		assert_eq!(packet(&mut socket).await["op"], 2);
+		send(&mut socket, ready(1, "synthetic-old-generation")).await;
+		acknowledge(&mut socket, 1).await;
+		// No yield between these changes: a boolean watch would lose the failure.
+		delivery.send_replace(DeliveryState {
+			blocked: true,
+			recovering: true,
+			generation: 1,
+		});
+		delivery.send_replace(DeliveryState {
+			blocked: false,
+			recovering: true,
+			generation: 1,
+		});
+		let (stream, _) = listener.accept().await.unwrap();
+		let mut fresh = accept_async(stream).await.unwrap();
+		send(
+			&mut fresh,
+			json!({"op":10,"d":{"heartbeat_interval":120000}}),
+		)
+		.await;
+		assert_eq!(
+			packet(&mut fresh).await["op"],
+			2,
+			"lost delivery requires fresh synchronization"
+		);
+		send(&mut fresh, ready(1, "synthetic-new-generation")).await;
+		send(
+			&mut fresh,
+			json!({"op":0,"t":"USER_NOTE_UPDATE","s":2,"d":{"id":"9","note":"Synthetic current"}}),
+		)
+		.await;
+		while !delivered.load(Ordering::Acquire) {
+			tokio::task::yield_now().await;
+		}
+		close(&mut fresh, 4004).await;
+	};
+	let (result, ()) = timeout(Duration::from_secs(5), async {
+		tokio::join!(client, server)
+	})
+	.await
+	.unwrap();
+	assert_eq!(result, Err(Failure::Expired));
 }
 
 #[tokio::test]
@@ -598,7 +684,7 @@ async fn gateway_rate_limit_reports_disconnect_immediately_and_manual_recovery_c
 		Some(&reconnect),
 		None,
 		diagnostics.clone(),
-		|event| {
+		|event, _| {
 			if matches!(event, Event::Disconnected) {
 				disconnected.store(true, Ordering::Relaxed);
 			}
@@ -685,7 +771,7 @@ async fn protocol_errors_from_dispatch_are_retained_by_the_diagnostic_boundary()
 		None,
 		None,
 		diagnostics.clone(),
-		|_| Ok(()),
+		|_, _| Ok(()),
 		Some((&endpoint, &endpoint)),
 	);
 	let server = async {

@@ -4,7 +4,7 @@ use super::{
 	DiscordApi, Envelope, Event, Failure, Handle, InboxTasks, Instant, Mutex, Ordering,
 	PresenceSync, ReadKey, ReadScopes, RecipientCalls, SessionSecret, TypingGate, VoiceLifecycle,
 	abandonment_blocks_join, admin_mutation_busy, admin_read_failure, apply_voice_lifecycle, egui,
-	emit_event, join_taken_over, mfa_job_available, mpsc, private_call, queue_abandonment,
+	emit_event_at, join_taken_over, mfa_job_available, mpsc, private_call, queue_abandonment,
 	queue_confirmation, queue_join, recipient_action, recipient_ids, recipient_write_allowed,
 	reject_prefetch_at_capacity, release_taken_over, reliable_events, report_confirmation_failure,
 	resolve_account_presence, ring_action, run_activity_sharing, run_presence_sync,
@@ -213,23 +213,21 @@ impl Connection {
 		let task=runtime.spawn(async move {
             let gateway_delivery=send.clone();
             let delivery_gate=send.delivery();
-            let emit=move |event:Event| -> Result<(),Failure> {
-                let result=(|| {
+            let emit_scoped=Arc::new(move |event:Event,epoch:Option<u64>| -> Result<(),Failure> {
                 if event.changes_access() || matches!(&event,Event::Disconnected|Event::Resumed|Event::Voice(client_core::voice::Event::TakenOver{..})) {
                     community_fence.send_modify(|r|*r=r.wrapping_add(1));
-                    emit_event(&send,&typing_send,Envelope{generation,event:Event::CommunityFence(*community_fence.borrow())},&ctx)?;
+                    emit_event_at(&send,&typing_send,Envelope{generation,event:Event::CommunityFence(*community_fence.borrow())},&ctx,epoch)?;
                 }
                 if let Event::AccountSettings { status: true, .. } = &event { status_changed.notify_one(); }
                 if let Event::Typing(signal) = &event {
                     let active = active_typing.load(Ordering::Relaxed);
                     if !typing_gate.lock().is_ok_and(|mut gate| gate.accept(*signal, active, Instant::now())) { return Ok(()); }
                 }
-                emit_event(&send, &typing_send, Envelope {generation,event}, &ctx)
-                })();
-                // Delivery loss is reported independently to the UI and triggers a fresh
-                // Gateway snapshot. A completed HTTP mutation must never be replayed.
-                if result==Err(Failure::Busy) {Ok(())} else {result}
-            };
+                emit_event_at(&send, &typing_send, Envelope {generation,event}, &ctx,epoch)
+            });
+            let gateway_emit_scoped=emit_scoped.clone();
+            // HTTP completion loss triggers a fresh snapshot, never a repeated mutation.
+            let emit=move |event| {let result=emit_scoped(event,None);if result==Err(Failure::Busy){Ok(())}else{result}};
             let result=async {
                 let api=DiscordApi::with_proxy(secret.clone(), api_proxy)?;
                 let (user,gateway)=api.bootstrap().await?;
@@ -274,7 +272,7 @@ impl Connection {
                 let (voice_lifecycle,mut lifecycle_changed)=watch::channel(VoiceLifecycle::default());
                 let (takeover_send,mut takeover_receive)=watch::channel(None);
                 let gateway_takeover=takeover_send.clone();
-                let gateway_api=api.clone();let gateway_emit=emit.clone();let terminal_send=finished.clone();
+                let gateway_api=api.clone();let gateway_emit=gateway_emit_scoped;let terminal_send=finished.clone();
                 let gateway_wake=wake.clone();
                 let activity_wake=wake.clone();
                 let gateway_delivery_gate=delivery_gate.clone();
@@ -282,7 +280,7 @@ impl Connection {
                     let error=discord_gateway::run_with_activity_recovery_diagnostics(secret,gateway,member_receive,voice_receive,gateway_reconnect,(activity_receive,presence_receive,member_query_receive,spotify_receive),gateway_delivery_gate,gateway_diagnostics,move |observation| {
                         if activity_observed.send_if_modified(|current| { if *current == observation { false } else { *current = observation; true } }) { activity_wake.request_repaint(); }
                         Ok(())
-                    },|event|{
+                    },|event,epoch|{
                         if gateway_delivery.delivery_blocked() {let _=voice_online.send(false);gateway_api.interaction_session(None)?;return Err(Failure::Busy);}
                         if let Event::Interaction(client_core::interactions::Event::Session(session)) = event { return gateway_api.interaction_session(Some(session)); }
                         if matches!(&event,Event::Disconnected|Event::Resync) { gateway_api.interaction_session(None)?; }
@@ -321,7 +319,7 @@ impl Connection {
                         if let Event::Voice(client_core::voice::Event::Stream{channel,request,stream_request,event:client_core::screen::Event::Deleted{..}})=&event {let _=stream_ended.send_replace(Some((*channel,*request,*stream_request)));}
                         voice_lifecycle.send_if_modified(|lifecycle|lifecycle.observe(&event));
                         if let Event::Voice(client_core::voice::Event::TakenOver{channel,request})=&event {let _=gateway_takeover.send_replace(Some((*channel,*request)));}
-                        gateway_emit(event)?;
+                        gateway_emit(event,Some(epoch))?;
                         if gateway_delivery.delivery_blocked(){let _=voice_online.send(false);gateway_api.interaction_session(None)?;Err(Failure::Busy)}else{Ok(())}
                     }).await.err().unwrap_or(Failure::Network).protocol_at("Gateway connection: unsupported handshake or event");
                     gateway_api.stop();let _=terminal_send.send(Some(error));gateway_wake.request_repaint();
@@ -332,7 +330,7 @@ impl Connection {
                 let mut write_delivery=delivery_gate;
                 let mut writes=AbortTask(tokio::spawn(async move {
                     while let Some(command)=write_receive.recv().await {
-                        if write_delivery.wait_for(|blocked| !*blocked).await.is_err(){break;}
+                        if write_delivery.wait_for(|state| !state.blocked && !state.recovering).await.is_err(){break;}
                         let event=write_api.execute_write(command,|nonce|{let _=write_emit(Event::SendThrottled{nonce:nonce.to_owned()});write_wake.request_repaint();}).await;
                         let failure=match &event {Event::MemberGuide(client_core::member_guide::Event{result:Err(f),..})=>Some(*f),Event::Interaction(client_core::interactions::Event::Submitted{result:Err(f),..})=>Some(*f),Event::MessagingPermissions{result:Err(f),..}=>Some(*f),Event::ChannelAction(client_core::channel_actions::Event::Finished{result:Err(f),..})=>Some(*f),Event::ChannelPreferences(client_core::preferences_sync::Finished{result:Err(f),..})=>Some(*f),Event::ServerAdmin(client_core::server_admin::Event{result:Err(f),..})=>Some(*f),Event::ServerSettings(client_core::server_settings::Event{result:Err(f),..})=>Some(*f),Event::Onboarding(client_core::onboarding::Event::Loaded{result:Err(f),..}|client_core::onboarding::Event::Submitted{result:Err(f),..})=>Some(*f),Event::Failure(f)=>Some(*f),Event::ProfileEdited{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::OwnedCosmetics(client_core::owned_cosmetics::Event{result:Err(f),..})|Event::ServerProfile(client_core::server_profile::Event{result:Err(f),..})|Event::AccountOverview{result:Err(f),..}|Event::AccountConnections{result:Err(f),..} if *f != Failure::Capacity =>Some(*f),Event::Edited{result:Err(f),..}|Event::Pinned{result:Err(f),..}=>Some(*f),Event::GuildFolders(Err(f))=>Some(*f),Event::JoinInvite{result:Err(f),..}|Event::GuildCreated{result:Err(f),..}=>Some(*f),Event::SendResult{result:Err(f),..}=>Some(*f),Event::UserAction(client_core::user_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::UserAction(client_core::user_actions::Event::DmOpened{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::Written{result:Err(f),..})=>Some(*f),Event::ServerAction(client_core::server_actions::Event::InviteSent{result:Err(f),..})=>Some(*f),Event::GroupAction(client_core::group_actions::Event::Written{result:Err(f),..}|client_core::group_actions::Event::MembersLoaded{result:Err(f),..}|client_core::group_actions::Event::Created{result:Err(f),..})=>Some(*f),Event::Reactions(client_core::reactions::Event::Written{result:Err(f),..})=>Some(*f),Event::ReadState(client_core::read_state::Event::Result{result:Err(f),..})=>Some(*f),_=>None};
                         let error=write_emit(event).err().or(failure.filter(|f|f.ends_session()));

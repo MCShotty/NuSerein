@@ -23,7 +23,7 @@ impl DiscordApi {
 			Ok(_) => Event::HistoryFailed {
 				channel,
 				request,
-				failure: Failure::Protocol,
+				failure: Failure::ResponseLimit,
 			},
 			Err(failure) if failure.ends_session() => Event::Failure(failure),
 			Err(failure) => Event::HistoryFailed {
@@ -94,7 +94,11 @@ impl DiscordApi {
 				older: before.is_some(),
 				messages: messages.into_iter().map(MessageDto::into_model).collect(),
 			},
-			Ok(_) => Event::Failure(Failure::Capacity),
+			Ok(_) => Event::HistoryFailed {
+				channel,
+				request,
+				failure: Failure::ResponseLimit,
+			},
 			Err(Failure::Forbidden) => Event::Unavailable(channel),
 			Err(f) => Event::Failure(f),
 		}

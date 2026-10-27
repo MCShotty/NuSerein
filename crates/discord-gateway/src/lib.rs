@@ -59,6 +59,14 @@ fn socket_failure(error: tokio_tungstenite::tungstenite::Error) -> Failure {
 	}
 }
 
+/// One bounded delivery generation; coalesced watch notifications cannot erase a loss.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeliveryState {
+	pub blocked: bool,
+	pub recovering: bool,
+	pub generation: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reconnect {
 	Resume,
@@ -1144,10 +1152,10 @@ pub async fn run_with_activity_recovery_diagnostics(
 		watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
 		watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	),
-	delivery: watch::Receiver<bool>,
+	delivery: watch::Receiver<DeliveryState>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
 	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
-	emit: impl Fn(Event) -> Result<(), Failure>,
+	emit: impl Fn(Event, u64) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
 	run_observed(
 		secret,
@@ -1220,7 +1228,7 @@ async fn run_recoverable(
 		reconnect,
 		None,
 		Arc::new(Mutex::new(ConnectionDiagnostics::default())),
-		emit,
+		|event, _| emit(event),
 		#[cfg(test)]
 		test_endpoints,
 	)
@@ -1234,9 +1242,9 @@ async fn run_observed(
 	mut voice_controls: mpsc::Receiver<client_core::voice::Command>,
 	activity: Option<ActivityInput<'_>>,
 	reconnect: Option<&Notify>,
-	delivery: Option<watch::Receiver<bool>>,
+	delivery: Option<watch::Receiver<DeliveryState>>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
-	emit: impl Fn(Event) -> Result<(), Failure>,
+	emit: impl Fn(Event, u64) -> Result<(), Failure>,
 	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
 ) -> Result<(), Failure> {
 	let limits = Arc::new(Mutex::new(outgoing::Cooldowns::default()));
@@ -1244,6 +1252,7 @@ async fn run_observed(
 	let mut recovery_attempt = 0;
 	let result = loop {
 		let started = Instant::now();
+		let epoch = delivery.as_ref().map_or(0, |d| d.borrow().generation);
 		let result = run_observed_inner(
 			secret.clone(),
 			initial_url.clone(),
@@ -1255,7 +1264,7 @@ async fn run_observed(
 			diagnostics.clone(),
 			limits.clone(),
 			recovering,
-			&emit,
+			|event| emit(event, epoch),
 			#[cfg(test)]
 			test_endpoints,
 		)
@@ -1279,7 +1288,8 @@ async fn run_observed(
 		// Once any part of a dispatch was admitted, replaying it could duplicate
 		// mutations. Revoke stale permissions and obtain a fresh snapshot instead.
 		loop {
-			match emit(Event::Disconnected).and_then(|()| emit(Event::Resync)) {
+			let epoch = delivery.as_ref().map_or(0, |d| d.borrow().generation);
+			match emit(Event::Disconnected, epoch).and_then(|()| emit(Event::Resync, epoch)) {
 				Ok(()) => break,
 				Err(Failure::Busy) => sleep(Duration::from_millis(250)).await,
 				Err(failure) => return Err(failure),
@@ -1331,7 +1341,7 @@ async fn run_observed_inner(
 	voice_controls: &mut mpsc::Receiver<client_core::voice::Command>,
 	activity: Option<ActivityInput<'_>>,
 	reconnect: Option<&Notify>,
-	mut delivery: Option<watch::Receiver<bool>>,
+	mut delivery: Option<watch::Receiver<DeliveryState>>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
 	limits: Arc<Mutex<outgoing::Cooldowns>>,
 	recovering: bool,
@@ -1346,6 +1356,17 @@ async fn run_observed_inner(
 	if recovering {
 		while voice_controls.try_recv().is_ok() {}
 	}
+	let delivery_fence = delivery.clone();
+	let delivery_epoch = delivery.as_ref().map_or(0, |d| d.borrow().generation);
+	let emit = |event| {
+		if delivery_fence.as_ref().is_some_and(|d| {
+			let state = *d.borrow();
+			state.blocked || state.generation != delivery_epoch
+		}) {
+			return Err(Failure::Busy);
+		}
+		emit(event)
+	};
 	let mut delivery_open = delivery.is_some();
 	let initial_url = validated_url(&initial_url)?;
 	let activity_enabled = activity.is_some();
@@ -1607,7 +1628,10 @@ async fn run_observed_inner(
 		let mut member_ticket = 0;
 		outgoing_activity.reconnect();
 		loop {
-			if delivery.as_ref().is_some_and(|d| *d.borrow()) {
+			if delivery.as_ref().is_some_and(|d| {
+				let state = *d.borrow();
+				state.blocked || state.generation != delivery_epoch
+			}) {
 				return Err(Failure::Busy);
 			}
 			if !heartbeat.collect(&writer) {
@@ -1776,7 +1800,7 @@ async fn run_observed_inner(
 			};
 			tokio::select! {
 				changed=async {match delivery.as_mut() {Some(d)=>d.changed().await,None=>std::future::pending().await}}, if delivery_open => {
-					if changed.is_err(){delivery_open=false;}else if delivery.as_ref().is_some_and(|d|*d.borrow()){return Err(Failure::Busy);}
+					if changed.is_err(){delivery_open=false;}else if delivery.as_ref().is_some_and(|d| {let state=*d.borrow();state.blocked || state.generation!=delivery_epoch}){return Err(Failure::Busy);}
 				}
 				changed=writer.progress.changed() => {
 					if changed.is_err() {record(ConnectionReason::SocketWrite,None,attempt,writer.occupancy());break;}
@@ -1972,7 +1996,7 @@ async fn run_observed_inner(
 					};
 					match frame {
 						Some(Ok(Frame::Text(text))) => {
-							let packet: GatewayPacket = decode_gateway(text.as_bytes()).map_err(|_| diagnosed(&emit, Failure::Protocol, diagnose_packet(text.as_bytes())))?;
+							let packet: GatewayPacket = decode_gateway(text.as_bytes()).map_err(|_| diagnosed(emit, Failure::Protocol, diagnose_packet(text.as_bytes())))?;
 							// Every dispatch shares one monotonic replay cursor. READY starts a new session.
 							if packet.op == 0 && packet.t.as_deref()!=Some("READY")
 								&& packet.s.zip(state.sequence).is_some_and(|(next,last)|next<=last) {continue;}
@@ -2010,11 +2034,11 @@ async fn run_observed_inner(
 									"READY" => {
 										direct_presence=presence::Pending::default();
 										active_members=None;members_deadline=None;sent_members = !subscriptions_open;
-										let envelope = ready::decode(packet.d.get().as_bytes()).map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid READY identity or relationships"), ready::diagnose(packet.d.get().as_bytes())))?;
+										let envelope = ready::decode(packet.d.get().as_bytes()).map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid READY identity or relationships"), ready::diagnose(packet.d.get().as_bytes())))?;
 										if envelope.user.bot { return Err(Failure::InvalidCredential); }
-										let permissions = envelope.permissions().map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid permission metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
+										let permissions = envelope.permissions().map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid permission metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
 										let gates = envelope.onboarding();
-										let (mut ready, mut warnings) = envelope.navigation().map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid READY guild or channel metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
+										let (mut ready, mut warnings) = envelope.navigation().map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid READY guild or channel metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
 										owner_id=Some(ready.user.id);
 										if ready.user.username.is_empty() || ready.user.username.len() > 128 || ready.user.username.chars().any(char::is_control) || ready.session_id.is_empty() || ready.session_id.chars().any(char::is_control) {
 											return Err(Failure::ProtocolAt("Gateway login: invalid account identity or session ID"));
@@ -2116,7 +2140,7 @@ async fn run_observed_inner(
 										if let Some(event) = queries.chunk(packet.d.get().as_bytes()) { emit(event)?; }
 									}
 									"READY_SUPPLEMENTAL" => {
-										let (mut extra, warnings) = ready::supplemental(packet.d.get().as_bytes()).map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid supplemental guild or voice metadata"), ready::diagnose_supplemental(packet.d.get().as_bytes())))?;
+										let (mut extra, warnings) = ready::supplemental(packet.d.get().as_bytes()).map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid supplemental guild or voice metadata"), ready::diagnose_supplemental(packet.d.get().as_bytes())))?;
 										if warnings != model::account::Warnings::default() { emit(Event::StartupWarnings(warnings))?; }
 										if let Some(friends) = extra.merged_presences.as_ref().and_then(|m| m.friends.as_deref()).or(extra.presences.as_deref()) {
 											direct_presence.friends(friends, Instant::now(), &emit)?;

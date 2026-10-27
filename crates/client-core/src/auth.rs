@@ -20,10 +20,6 @@ pub enum Failure {
 	Forbidden,
 	#[error("Rate limited; wait for the service cooldown before retrying")]
 	RateLimited,
-	#[error("This operation is busy; try again when queued work finishes")]
-	Busy,
-	#[error("This response exceeds the operation’s safe limit")]
-	ResponseLimit,
 	#[error("Connection failed; no automatic write retry")]
 	Network,
 	#[error("Outcome unknown; inspect the conversation before a deliberate retry")]
@@ -40,6 +36,10 @@ pub enum Failure {
 	CapacityAt(&'static str),
 	#[error("Only an owner-supplied normal-user session is supported")]
 	InvalidCredential,
+	#[error("This operation is busy; try again when queued work finishes")]
+	Busy,
+	#[error("This response exceeds the operation’s safe limit")]
+	ResponseLimit,
 }
 impl Failure {
 	pub fn protocol_at(self, stage: &'static str) -> Self {

@@ -10,8 +10,6 @@ use super::{
 };
 
 pub enum Event {
-	/// Returns one already-bounded transport command to the existing rejection path.
-	CommandRejected(Box<crate::Command>),
 	ChannelPreferences(crate::preferences_sync::Finished),
 	Mfa(mfa::Event),
 	Autocomplete(application_commands::CompletionEvent),
@@ -296,6 +294,8 @@ pub enum Event {
 	Unavailable(Id),
 	PermissionsChanged,
 	Permissions(permissions::Event),
+	/// Returns one already-bounded transport command to the existing rejection path.
+	CommandRejected(Box<crate::Command>),
 }
 
 pub struct Envelope {
