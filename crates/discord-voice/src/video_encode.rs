@@ -528,6 +528,12 @@ impl Encoder {
 		!self.timeline.is_empty()
 	}
 
+	#[cfg(test)]
+	pub(crate) fn simulate_pending_for_test(&mut self) {
+		self.timeline.push_back((self.next_input, 0));
+		self.next_input += 1;
+	}
+
 	fn open(config: Config, backend: Backend) -> Result<Self, &'static str> {
 		Self::open_controlled(config, backend, Arc::new(AtomicBool::new(false)))
 	}

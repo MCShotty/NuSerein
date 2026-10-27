@@ -1,7 +1,7 @@
 # Shared FFmpeg media libraries
 
 The camera/screen-share engine links to a small FFmpeg 7.1.5
-LGPL-2.1-or-later build of libavcodec, libavutil, libavformat, libswscale and
+LGPL-2.1-or-later build of libavcodec, libavutil, libavformat, libavfilter, libswscale and
 libswresample. The native bridge in `crates/platform` also serves incoming
 streams and bounded video-attachment playback. FFmpeg is the only outgoing encoder
 engine; the former Media Foundation, direct VideoToolbox and GStreamer encoder
@@ -41,8 +41,9 @@ fallback applies only to H264 selection/negotiation. An explicit HEVC/AV1 select
 cannot send H264 bytes
 under that codec's transport metadata. FFmpeg Media Foundation and all three
 `h264_vaapi`/`hevc_vaapi`/`av1_vaapi` encoders,
-GPL/nonfree components, command-line programs, networking and avfilter are
-disabled. Decoder allowlists include H.264/HEVC, AV1/dav1d and supported
+GPL/nonfree components, command-line programs and networking are disabled.
+The filter allowlist enables atadenoise alongside FFmpeg’s built-in audio/video
+buffer sources and sinks. Decoder allowlists include H.264/HEVC, AV1/dav1d and supported
 hardware paths, plus AAC, Opus, Vorbis, MP3 and required PCM audio. MOV/MP4,
 Matroska/WebM demuxers, scaling and audio resampling serve attachment
 playback. `build.json` records exact encoder and decoder names; native registry
@@ -52,6 +53,10 @@ Standalone audio playback and bundled sounds feed bounded packets from the
 existing audio demuxer into these same libraries, falling back when the compiled
 codec is absent. Video posters and short embedded clips also prefer the shared media decoder.
 These paths require no additional codec libraries or FFmpeg network protocols.
+
+Windows installations from before libavfilter was bundled have an updater with a
+fixed DLL allowlist. Upgrade those installations with the full Windows installer;
+the older in-app updater rejects an archive containing the new filter library.
 
 Incoming streams admit visible pictures through 7680×4320, including portrait
 equivalents and 6144×2560. Admission checks coded geometry, reference counts and

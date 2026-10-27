@@ -2037,6 +2037,18 @@ impl MessagingUi {
 			if !self.voice_camera_status.is_empty() {
 				notices.push((self.voice_camera_status.into(), false));
 			}
+			if call.camera
+				&& let Some(
+					status @ (model::voice_settings::CameraDenoisingStatus::Unavailable
+					| model::voice_settings::CameraDenoisingStatus::ResolutionUnsupported
+					| model::voice_settings::CameraDenoisingStatus::TooSlow),
+				) = self.call_camera_denoising_status
+			{
+				notices.push((
+					crate::i18n::translate(camera_denoising_status_key(status)),
+					true,
+				));
+			}
 			if call.watching.is_none() && !self.voice_stream_status.is_empty() {
 				notices.push((self.voice_stream_status.into(), false));
 			}
@@ -2803,7 +2815,7 @@ impl MessagingUi {
 	}
 
 	fn video_settings_controls(&mut self, ui: &mut egui::Ui) {
-		use model::voice_settings::{VideoFrameRate, VideoResolution};
+		use model::voice_settings::{CameraDenoising, VideoFrameRate, VideoResolution};
 		let colors = design::palette(ui);
 		ui.add(
 			egui::Label::new(
@@ -2860,6 +2872,43 @@ impl MessagingUi {
 			)
 			.wrap(),
 		);
+		ui.add_space(8.0);
+		ui.label(crate::i18n::translate("voice-video-camera-denoising"));
+		ui.horizontal_wrapped(|ui| {
+			for (mode, label) in [
+				(CameraDenoising::Auto, "voice-video-camera-denoising-auto"),
+				(CameraDenoising::Off, "voice-video-camera-denoising-off"),
+				(CameraDenoising::On, "voice-video-camera-denoising-on"),
+			] {
+				ui.selectable_value(
+					&mut self.video_settings.camera_denoising,
+					mode,
+					crate::i18n::translate(label),
+				);
+			}
+		});
+		let description = match self.video_settings.camera_denoising {
+			CameraDenoising::Auto => "voice-video-camera-denoising-auto-description",
+			CameraDenoising::Off => "voice-video-camera-denoising-off-description",
+			CameraDenoising::On => "voice-video-camera-denoising-on-description",
+		};
+		ui.add(
+			egui::Label::new(
+				RichText::new(crate::i18n::translate(description))
+					.size(12.0)
+					.color(colors.muted),
+			)
+			.wrap(),
+		);
+		if let Some(status) = self
+			.preview_camera_denoising_status
+			.or(self.call_camera_denoising_status)
+		{
+			design::hint(
+				ui,
+				&crate::i18n::translate(camera_denoising_status_key(status)),
+			);
+		}
 		ui.add(
 			egui::Label::new(
 				RichText::new(crate::i18n::translate("voice-video-settings-apply"))
@@ -5609,6 +5658,23 @@ fn elapsed_label(call: &client_core::voice::Call) -> Option<String> {
 	))
 }
 
+fn camera_denoising_status_key(
+	status: model::voice_settings::CameraDenoisingStatus,
+) -> &'static str {
+	use model::voice_settings::CameraDenoisingStatus;
+	match status {
+		CameraDenoisingStatus::Starting => "voice-video-camera-denoising-status-starting",
+		CameraDenoisingStatus::Off => "voice-video-camera-denoising-status-off",
+		CameraDenoisingStatus::AutomaticUnknown => "voice-video-camera-denoising-status-auto",
+		CameraDenoisingStatus::Active => "voice-video-camera-denoising-status-active",
+		CameraDenoisingStatus::Unavailable => "voice-video-camera-denoising-status-unavailable",
+		CameraDenoisingStatus::ResolutionUnsupported => {
+			"voice-video-camera-denoising-status-resolution"
+		}
+		CameraDenoisingStatus::TooSlow => "voice-video-camera-denoising-status-slow",
+	}
+}
+
 pub(super) fn video_codec_name(codec: model::voice_settings::VideoCodec) -> &'static str {
 	use model::voice_settings::VideoCodec;
 	match codec {
@@ -5851,6 +5917,51 @@ mod tests {
 		assert_eq!((view.voice_muted, view.voice_deafened), before);
 		view.show_call_switch(&ctx, &mut state, &mut commands);
 		assert!(!toast_text(&mut view, &ctx, 9.0).contains(&expected));
+	}
+
+	#[test]
+	fn camera_denoising_failure_is_visible_in_the_call_only_while_camera_is_on() {
+		use model::voice_settings::CameraDenoisingStatus;
+		let mut state = test_support::voice_demo_state();
+		let call = state.voice.active.as_mut().unwrap();
+		let channel = call.channel;
+		call.camera = true;
+		let mut view = MessagingUi {
+			call_camera_denoising_status: Some(CameraDenoisingStatus::TooSlow),
+			preview_camera_denoising_status: Some(CameraDenoisingStatus::Active),
+			..Default::default()
+		};
+		let expected =
+			crate::i18n::translate(camera_denoising_status_key(CameraDenoisingStatus::TooSlow));
+		assert!(
+			view.stage_notices(&state, channel, true)
+				.contains(&(expected.clone(), true))
+		);
+		view.call_camera_denoising_status = Some(CameraDenoisingStatus::Active);
+		view.preview_camera_denoising_status = Some(CameraDenoisingStatus::TooSlow);
+		assert!(
+			!view
+				.stage_notices(&state, channel, true)
+				.iter()
+				.any(|(text, _)| text == &expected),
+			"A preview failure must not be attributed to the outgoing camera"
+		);
+		view.call_camera_denoising_status = Some(CameraDenoisingStatus::ResolutionUnsupported);
+		let resolution = crate::i18n::translate(camera_denoising_status_key(
+			CameraDenoisingStatus::ResolutionUnsupported,
+		));
+		assert!(
+			view.stage_notices(&state, channel, true)
+				.contains(&(resolution, true))
+		);
+		view.call_camera_denoising_status = Some(CameraDenoisingStatus::TooSlow);
+		state.voice.active.as_mut().unwrap().camera = false;
+		assert!(
+			!view
+				.stage_notices(&state, channel, true)
+				.iter()
+				.any(|(text, _)| text == &expected)
+		);
 	}
 
 	#[test]
@@ -6188,6 +6299,66 @@ mod tests {
 	}
 
 	#[test]
+	fn camera_denoising_controls_explain_and_update_the_requested_mode() {
+		use model::voice_settings::CameraDenoising;
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi::default();
+		assert_eq!(
+			messaging.video_settings.camera_denoising,
+			CameraDenoising::Auto
+		);
+		for (label, mode, explanation) in [
+			(
+				"Off",
+				CameraDenoising::Off,
+				"Serein does not add camera denoising.",
+			),
+			(
+				"On",
+				CameraDenoising::On,
+				"Serein will try ATADenoise. If it is unavailable, the camera continues without added denoising.",
+			),
+			(
+				"Auto",
+				CameraDenoising::Auto,
+				"Existing camera processing cannot currently be detected. Auto leaves the camera image unchanged to avoid applying denoising twice.",
+			),
+		] {
+			video_controls_click(&ctx, &mut messaging, 320.0, label);
+			assert_eq!(messaging.video_settings.camera_denoising, mode);
+			assert!(
+				video_controls_frame(&ctx, &mut messaging, 320.0, vec![])
+					.iter()
+					.any(|(text, _)| text == explanation)
+			);
+		}
+	}
+
+	#[test]
+	fn camera_denoising_runtime_status_reports_fallback_and_startup() {
+		use model::voice_settings::CameraDenoisingStatus;
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi::default();
+		for status in [
+			CameraDenoisingStatus::Starting,
+			CameraDenoisingStatus::Off,
+			CameraDenoisingStatus::AutomaticUnknown,
+			CameraDenoisingStatus::Active,
+			CameraDenoisingStatus::Unavailable,
+			CameraDenoisingStatus::ResolutionUnsupported,
+			CameraDenoisingStatus::TooSlow,
+		] {
+			messaging.preview_camera_denoising_status = Some(status);
+			let expected = crate::i18n::translate(camera_denoising_status_key(status));
+			assert!(
+				video_controls_frame(&ctx, &mut messaging, 320.0, vec![])
+					.iter()
+					.any(|(text, _)| text == &expected)
+			);
+		}
+	}
+
+	#[test]
 	fn camera_resolution_controls_are_selectable_through_8k() {
 		use model::voice_settings::VideoResolution;
 		let ctx = egui::Context::default();
@@ -6276,6 +6447,7 @@ mod tests {
 						bandwidth: VideoBandwidth::High,
 						camera_resolution: VideoResolution::P1080,
 						camera_frame_rate: VideoFrameRate::Fps60,
+						..Default::default()
 					};
 					let mut messaging = MessagingUi {
 						video_settings: saved,

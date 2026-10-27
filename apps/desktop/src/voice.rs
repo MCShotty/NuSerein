@@ -943,6 +943,17 @@ impl Voice {
 			ctx.request_repaint();
 		}
 		self.poll_camera_test(state, ui, ctx);
+		ui.preview_camera_denoising_status = self
+			.camera_test
+			.as_ref()
+			.map(|preview| preview.camera.denoising_status());
+		ui.call_camera_denoising_status = state
+			.voice
+			.active
+			.as_ref()
+			.filter(|call| call.camera)
+			.and(self.camera.as_ref())
+			.map(discord_voice::camera::Camera::denoising_status);
 		if ui.voice_messages.capture_busy {
 			ui.voice_preview_requested = false;
 			ctx.request_repaint_after(Duration::from_millis(50));

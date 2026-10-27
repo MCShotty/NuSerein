@@ -208,7 +208,7 @@ assets/licenses/voice/PROVENANCE.md and staged by the existing voice packager.
 Native screen capture uses **screencapturekit 10.0.3** (MIT OR Apache-2.0) on macOS and **windows-capture 2.0.1** (MIT) on Windows. Incoming software decoding uses **openh264 / openh264-sys2 0.9.8** (BSD-2-Clause). Media reuses **image 0.25.10** (MIT OR Apache-2.0) for bounded scaling. Native frameworks are supplied by the OS. Voice and video ship in the standard build. Unmodified available license texts and source provenance are retained in `assets/licenses/voice/PROVENANCE.md`; the noted missing binding license text and existing full per-artifact redistribution review remain outstanding.
 
 Experimental camera/screen encoding, incoming video and supported attachments
-share **FFmpeg 7.1.5** libavcodec/libavutil/libavformat/libswscale/libswresample,
+share **FFmpeg 7.1.5** libavcodec/libavutil/libavformat/libavfilter/libswscale/libswresample,
 source-built **Cisco OpenH264 2.6.0**, and **nv-codec-headers 12.2.72.0** on
 supported NVIDIA platforms. AMD AMF uses **AMF 1.4.36** MIT-licensed public headers;
 the unchanged AMD license includes its standards/patent notice. Intel Quick Sync

@@ -1,4 +1,4 @@
-"""Check a Windows media-v4 release ZIP before uploading it as an update asset."""
+"""Check a Windows media-v5 release ZIP before uploading it as an update asset."""
 
 import argparse
 from pathlib import Path
@@ -11,7 +11,7 @@ REQUIRED_FILES = (
     "serein.exe",
     "avcodec-serein-61.dll",
     "avutil-serein-59.dll",
-    "avformat-serein-61.dll",
+    "avformat-serein-61.dll", "avfilter-serein-10.dll",
     "swscale-serein-8.dll",
     "swresample-serein-5.dll",
     "openh264.dll",
@@ -35,7 +35,7 @@ REQUIRED_FILES = (
 )
 ALLOWED_ROOTS = {
     "serein.exe", "avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll",
-    "avformat-serein-61.dll", "swscale-serein-8.dll", "swresample-serein-5.dll",
+    "avformat-serein-61.dll", "avfilter-serein-10.dll", "swscale-serein-8.dll", "swresample-serein-5.dll",
     "ffmpeg-source", "README.md", "LICENSE-MIT", "LICENSE-APACHE",
     "THIRD_PARTY_NOTICES.md", "docs", "licenses", "source",
     "install-notifications.ps1", "setup.ps1",
@@ -45,8 +45,8 @@ ALLOWED_ROOTS = {
 
 def check_archive(path):
     path = Path(path)
-    if not re.fullmatch(r"serein-v[A-Za-z0-9.+-]{1,95}-Windows-(X64|ARM64)-media-v4\.zip", path.name):
-        raise ValueError("Windows FFmpeg ZIPs must use the media-v4 asset name, never the legacy update name")
+    if not re.fullmatch(r"serein-v[A-Za-z0-9.+-]{1,95}-Windows-(X64|ARM64)-media-v5\.zip", path.name):
+        raise ValueError("Windows FFmpeg ZIPs must use the media-v5 asset name, never the legacy update name")
     if path.stat().st_size > 512 * 1024 * 1024:
         raise ValueError("Windows update ZIP exceeds the download limit")
     with zipfile.ZipFile(path) as archive:
@@ -82,7 +82,7 @@ def main():
     parser.add_argument("archive", type=Path)
     args = parser.parse_args()
     check_archive(args.archive)
-    print(f"Windows media-v4 update asset checked: {args.archive.name}")
+    print(f"Windows media-v5 update asset checked: {args.archive.name}")
 
 
 if __name__ == "__main__":

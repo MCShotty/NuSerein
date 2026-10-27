@@ -1,6 +1,8 @@
 //! User-started, ephemeral camera capture. No capture stream starts before `start`.
 
-use model::voice_settings::{VideoCodec, VideoFrameRate, VideoResolution, VideoSettings};
+use model::voice_settings::{
+	CameraDenoisingStatus, VideoCodec, VideoFrameRate, VideoResolution, VideoSettings,
+};
 use openh264::formats::{RgbSliceU8, YUVBuffer, YUVSource};
 use std::sync::{
 	Arc, Mutex,
@@ -75,6 +77,7 @@ struct Shared {
 	keyframe_request: Arc<AtomicBool>,
 	reset: Arc<AtomicU64>,
 	capacity: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+	denoising_status: Arc<Mutex<CameraDenoisingStatus>>,
 }
 
 pub struct Camera {
@@ -218,9 +221,35 @@ impl Camera {
 		*self.shared.error.lock().ok()?
 	}
 
+	pub fn denoising_status(&self) -> CameraDenoisingStatus {
+		self.shared
+			.denoising_status
+			.lock()
+			.map_or(CameraDenoisingStatus::Unavailable, |status| *status)
+	}
+
 	pub fn active(&self) -> bool {
 		!self.shared.stopped.load(Ordering::Acquire) && self.shared.active.load(Ordering::Acquire)
 	}
+}
+
+fn new_camera_denoiser(
+	width: usize,
+	height: usize,
+) -> (
+	Option<platform::video::denoise::CameraDenoiser>,
+	CameraDenoisingStatus,
+) {
+	if !platform::video::denoise::CameraDenoiser::supports_dimensions(width, height) {
+		return (None, CameraDenoisingStatus::ResolutionUnsupported);
+	}
+	let filter = platform::video::denoise::CameraDenoiser::new(width, height);
+	let status = if filter.is_some() {
+		CameraDenoisingStatus::Active
+	} else {
+		CameraDenoisingStatus::Unavailable
+	};
+	(filter, status)
 }
 
 /// Camera encoding preserves prediction order through the shared FFmpeg worker.
@@ -236,6 +265,12 @@ struct CameraEncoder {
 	awaiting_keyframe: bool,
 	reset: Arc<AtomicU64>,
 	reset_generation: u64,
+	denoiser: Option<platform::video::denoise::CameraDenoiser>,
+	denoising_status: Arc<Mutex<CameraDenoisingStatus>>,
+	frame_budget: std::time::Duration,
+	denoising_slow_frames: u8,
+	denoising_paused: bool,
+	wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl CameraEncoder {
@@ -277,6 +312,13 @@ impl CameraEncoder {
 		config.adapter = adapter;
 		let (width, height) = (config.width as usize, config.height as usize);
 		let encoder = crate::video_encode::Encoder::new(config)?;
+		let (denoiser, status) = match video.camera_denoising {
+			model::voice_settings::CameraDenoising::Off => (None, CameraDenoisingStatus::Off),
+			model::voice_settings::CameraDenoising::Auto => {
+				(None, CameraDenoisingStatus::AutomaticUnknown)
+			}
+			model::voice_settings::CameraDenoising::On => new_camera_denoiser(width, height),
+		};
 		Ok(Self {
 			diagnostics: crate::diagnostics::EncoderRegistration::new(
 				false,
@@ -293,7 +335,49 @@ impl CameraEncoder {
 			awaiting_keyframe: true,
 			reset,
 			reset_generation: 0,
+			denoiser,
+			denoising_status: Arc::new(Mutex::new(status)),
+			frame_budget: std::time::Duration::from_secs_f64(
+				1.0 / video.camera_frame_rate.fps() as f64,
+			),
+			denoising_slow_frames: 0,
+			denoising_paused: false,
+			wake: None,
 		})
+	}
+
+	fn connect_status(
+		&mut self,
+		target: Arc<Mutex<CameraDenoisingStatus>>,
+		wake: Arc<dyn Fn() + Send + Sync>,
+	) {
+		let status = self
+			.denoising_status
+			.lock()
+			.map_or(CameraDenoisingStatus::Unavailable, |status| *status);
+		if let Ok(mut slot) = target.lock() {
+			*slot = status;
+		}
+		self.denoising_status = target;
+		wake();
+		self.wake = Some(wake);
+	}
+
+	fn disable_denoising(&mut self, status: CameraDenoisingStatus) {
+		self.denoiser = None;
+		if let Ok(mut slot) = self.denoising_status.lock() {
+			*slot = status;
+		}
+		if let Some(wake) = &self.wake {
+			wake();
+		}
+	}
+
+	// Do not let buffered temporal pictures survive arbitrarily long congestion.
+	fn pause_denoising(&mut self) {
+		if self.denoiser.take().is_some() {
+			self.denoising_paused = true;
+		}
 	}
 
 	fn encode(&mut self, rgb: Vec<u8>) -> Result<Option<Frame>, &'static str> {
@@ -306,32 +390,93 @@ impl CameraEncoder {
 			return Err("Camera security reset generation exhausted");
 		}
 		if reset != self.reset_generation {
+			// Destroy the temporal window before accepting a post-reset capture.
+			if self.denoiser.take().is_some() {
+				let (filter, status) = new_camera_denoiser(width, height);
+				self.denoiser = filter;
+				if self.denoiser.is_none() {
+					self.disable_denoising(status);
+				}
+			}
+			self.denoising_slow_frames = 0;
 			self.encoder.restart()?;
 			self.reset_generation = reset;
 			self.awaiting_keyframe = true;
 			// Capture can span the reset. The following input must be newly captured.
 			return Ok(None);
 		}
+		if self.denoising_paused {
+			self.denoising_paused = false;
+			self.denoising_slow_frames = 0;
+			// Retire encoder-delayed pictures, if any, along with filter history.
+			if self.encoder.pending() {
+				self.encoder.restart()?;
+				self.awaiting_keyframe = true;
+			}
+			let (filter, status) = new_camera_denoiser(width, height);
+			self.denoiser = filter;
+			if self.denoiser.is_none() {
+				self.disable_denoising(status);
+			}
+		}
 		self.yuv.read_rgb8(RgbSliceU8::new(&rgb, (width, height)));
 		self.i420.clear();
 		self.i420.extend_from_slice(self.yuv.y());
 		self.i420.extend_from_slice(self.yuv.u());
 		self.i420.extend_from_slice(self.yuv.v());
+		let capture_timestamp = (self.origin.elapsed().as_micros() * 90 / 1000) as i64;
+		let mut filtered = false;
+		let mut timestamp = capture_timestamp;
+		if let Some(denoiser) = &mut self.denoiser {
+			let start = std::time::Instant::now();
+			let result = denoiser.process(&mut self.i420, capture_timestamp);
+			if denoising_too_slow(
+				&mut self.denoising_slow_frames,
+				start.elapsed(),
+				self.frame_budget,
+			) {
+				self.disable_denoising(CameraDenoisingStatus::TooSlow);
+			}
+			match result {
+				Ok(Some(pts)) => {
+					filtered = true;
+					timestamp = pts;
+				}
+				Ok(None) if self.denoiser.is_some() => return Ok(None),
+				Ok(None) => {}
+				Err(_) => self.disable_denoising(CameraDenoisingStatus::Unavailable),
+			}
+		}
 		// Coalesce repeated feedback while lookahead is still producing the first IDR.
 		if self.keyframe_request.swap(false, Ordering::AcqRel) && !self.awaiting_keyframe {
 			self.encoder.restart()?;
 			self.awaiting_keyframe = true;
 		}
-		let timestamp = (self.origin.elapsed().as_micros() * 90 / 1000) as u32;
-		let packet = self.encoder.encode_at(&self.i420, false, timestamp)?;
+		let packet = self
+			.encoder
+			.encode_at(&self.i420, false, timestamp as u32)?;
 		self.diagnostics
 			.set(Some((self.encoder.hardware(), self.encoder.amf_split())));
-		self.finish_packet(rgb, packet).map(Some)
+		if filtered {
+			let preview = self.filtered_preview()?;
+			self.finish_packet_with_preview(preview, packet).map(Some)
+		} else {
+			self.finish_packet(rgb, packet).map(Some)
+		}
 	}
 
 	fn finish_packet(
 		&mut self,
 		rgb: Vec<u8>,
+		packet: crate::video_encode::EncodedPacket,
+	) -> Result<Frame, &'static str> {
+		let frame = self.preview(rgb)?;
+		self.finish_packet_with_preview(frame, packet)
+	}
+
+	fn finish_packet_with_preview(
+		&mut self,
+		mut frame: Frame,
 		packet: crate::video_encode::EncodedPacket,
 	) -> Result<Frame, &'static str> {
 		if !packet.data.is_empty() {
@@ -341,7 +486,6 @@ impl CameraEncoder {
 			self.awaiting_keyframe = false;
 		}
 		// Lookahead delays media output, but the current capture is ready for local preview.
-		let mut frame = self.preview(rgb)?;
 		frame.keyframe = !packet.data.is_empty() && packet.keyframe;
 		frame.data = packet.data;
 		frame.timestamp = packet.timestamp;
@@ -352,7 +496,18 @@ impl CameraEncoder {
 	fn preview(&self, rgb: Vec<u8>) -> Result<Frame, &'static str> {
 		let (width, height) = self.dimensions;
 		let (rgb, preview_width, preview_height) = preview_rgb(rgb, width, height)?;
-		Ok(Frame {
+		Ok(self.preview_frame(rgb, preview_width, preview_height))
+	}
+
+	fn filtered_preview(&self) -> Result<Frame, &'static str> {
+		let (width, height) = self.dimensions;
+		let (rgb, preview_width, preview_height) = preview_i420(&self.i420, width, height)?;
+		Ok(self.preview_frame(rgb, preview_width, preview_height))
+	}
+
+	fn preview_frame(&self, rgb: Vec<u8>, preview_width: u32, preview_height: u32) -> Frame {
+		let (width, height) = self.dimensions;
+		Frame {
 			width: width as u32,
 			height: height as u32,
 			preview_width,
@@ -366,8 +521,22 @@ impl CameraEncoder {
 			keyframe_request: self.keyframe_request.clone(),
 			reset: self.reset.clone(),
 			reset_generation: self.reset_generation,
-		})
+		}
 	}
+}
+
+// A single slow sample can be scheduler noise; sustained overload bypasses the filter.
+fn denoising_too_slow(
+	streak: &mut u8,
+	elapsed: std::time::Duration,
+	budget: std::time::Duration,
+) -> bool {
+	if elapsed > budget {
+		*streak = streak.saturating_add(1);
+	} else {
+		*streak = 0;
+	}
+	*streak >= 3
 }
 
 /// Only the worker sees full-resolution RGB; UI queues retain a small preview.
@@ -406,6 +575,47 @@ fn preview_rgb(
 	Ok((preview, preview_width as u32, preview_height as u32))
 }
 
+// Convert only the small preview from the filtered picture, avoiding another
+// full-resolution RGB buffer. Camera RGB conversion uses limited-range I420.
+fn preview_i420(
+	data: &[u8],
+	width: usize,
+	height: usize,
+) -> Result<(Vec<u8>, u32, u32), &'static str> {
+	let pixels = width
+		.checked_mul(height)
+		.ok_or("Camera preview dimensions exceed bounds")?;
+	if width == 0
+		|| height == 0
+		|| width % 2 != 0
+		|| height % 2 != 0
+		|| pixels.checked_mul(3).map(|size| size / 2) != Some(data.len())
+	{
+		return Err("Camera preview dimensions exceed bounds");
+	}
+	let scale = (WIDTH as f64 / width as f64)
+		.min(HEIGHT as f64 / height as f64)
+		.min(1.0);
+	let pw = ((width as f64 * scale).round() as usize).clamp(1, WIDTH);
+	let ph = ((height as f64 * scale).round() as usize).clamp(1, HEIGHT);
+	let mut preview = vec![0; pw * ph * 3];
+	for y in 0..ph {
+		for x in 0..pw {
+			let sx = x * width / pw;
+			let sy = y * height / ph;
+			let yv = i32::from(data[sy * width + sx]) - 16;
+			let chroma = (sy / 2) * (width / 2) + sx / 2;
+			let u = i32::from(data[pixels + chroma]) - 128;
+			let v = i32::from(data[pixels + pixels / 4 + chroma]) - 128;
+			let pixel = &mut preview[(y * pw + x) * 3..][..3];
+			pixel[0] = ((298 * yv + 409 * v + 128) >> 8).clamp(0, 255) as u8;
+			pixel[1] = ((298 * yv - 100 * u - 208 * v + 128) >> 8).clamp(0, 255) as u8;
+			pixel[2] = ((298 * yv + 516 * u + 128) >> 8).clamp(0, 255) as u8;
+		}
+	}
+	Ok((preview, pw as u32, ph as u32))
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn run(
 	shared: &Shared,
@@ -421,12 +631,16 @@ fn run(
 		shared.keyframe_request.clone(),
 		shared.reset.clone(),
 	)?;
+	encoder.connect_status(shared.denoising_status.clone(), wake.clone());
 	let mut emit = |rgb| {
 		if shared.stopped.load(Ordering::Acquire) {
 			return Ok(());
 		}
 		let frame = if shared.capacity.as_ref().is_none_or(|capacity| capacity()) {
 			encoder.encode(rgb)?
+		} else if encoder.denoiser.is_some() || encoder.denoising_paused {
+			encoder.pause_denoising();
+			None
 		} else {
 			Some(encoder.preview(rgb)?)
 		};
@@ -723,6 +937,7 @@ mod macos {
 			shared.keyframe_request.clone(),
 			shared.reset.clone(),
 		)?;
+		encoder.connect_status(shared.denoising_status.clone(), wake.clone());
 		let target_fps = video.camera_frame_rate.fps();
 		let cadence =
 			format::Cadence::new(target_fps, Instant::now()).ok_or("Invalid camera frame rate")?;
@@ -835,6 +1050,9 @@ mod macos {
 			}
 			let frame = if shared.capacity.as_ref().is_none_or(|capacity| capacity()) {
 				encoder.encode(rgb)?
+			} else if encoder.denoiser.is_some() || encoder.denoising_paused {
+				encoder.pause_denoising();
+				None
 			} else {
 				Some(encoder.preview(rgb)?)
 			};
@@ -985,6 +1203,196 @@ mod tests {
 		reset.store(u64::MAX, Ordering::Release);
 		assert!(encoder.encode(vec![192; WIDTH * HEIGHT * 3]).is_err());
 	}
+	#[test]
+	fn denoised_camera_discards_temporal_history_on_security_reset() {
+		let reset = Arc::new(AtomicU64::new(0));
+		let mut encoder = CameraEncoder::new_on_adapter(
+			VideoSettings {
+				camera_denoising: model::voice_settings::CameraDenoising::On,
+				..VideoSettings::default()
+			},
+			Some(model::VideoAdapter::default()),
+			Arc::new(AtomicBool::new(false)),
+			reset.clone(),
+		)
+		.unwrap();
+		assert!(encoder.denoiser.is_some());
+		encoder.frame_budget = std::time::Duration::from_secs(60);
+		let mut saw_dark = false;
+		for _ in 0..10 {
+			if let Some(frame) = encoder.encode(vec![16; WIDTH * HEIGHT * 3]).unwrap() {
+				if !frame.data.is_empty() {
+					saw_dark = true;
+				}
+			}
+		}
+		assert!(saw_dark);
+		reset.store(1, Ordering::Release);
+		assert!(
+			encoder
+				.encode(vec![16; WIDTH * HEIGHT * 3])
+				.unwrap()
+				.is_none()
+		);
+		let mut fresh = None;
+		for _ in 0..10 {
+			if let Some(frame) = encoder.encode(vec![240; WIDTH * HEIGHT * 3]).unwrap() {
+				if !frame.data.is_empty() {
+					fresh = Some(frame);
+					break;
+				}
+			}
+		}
+		let fresh = fresh.expect("post-reset denoised frame");
+		assert!(fresh.keyframe);
+		assert_eq!((fresh.reset_generation, fresh.epoch), (1, 1));
+		assert!(fresh.rgb.iter().all(|v| *v > 190));
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		assert!(
+			decoder
+				.decode(&fresh.data)
+				.unwrap()
+				.unwrap()
+				.y()
+				.iter()
+				.all(|v| *v > 190)
+		);
+	}
+
+	#[test]
+	fn denoiser_discards_buffered_frames_on_backpressure() {
+		for force_pending in [false, true] {
+			let mut encoder = CameraEncoder::new_on_adapter(
+				VideoSettings {
+					camera_denoising: model::voice_settings::CameraDenoising::On,
+					..VideoSettings::default()
+				},
+				Some(model::VideoAdapter::default()),
+				Arc::new(AtomicBool::new(false)),
+				Arc::new(AtomicU64::new(0)),
+			)
+			.unwrap();
+			encoder.frame_budget = std::time::Duration::from_secs(60);
+			let mut decoder = openh264::decoder::Decoder::new().unwrap();
+			for _ in 0..8 {
+				if let Some(frame) = encoder.encode(vec![16; WIDTH * HEIGHT * 3]).unwrap()
+					&& !frame.data.is_empty()
+				{
+					let _ = decoder.decode(&frame.data).unwrap();
+				}
+			}
+			assert!(encoder.denoiser.is_some());
+			assert!(!encoder.encoder.pending());
+			if force_pending {
+				encoder.encoder.simulate_pending_for_test();
+			}
+			let old_epoch = encoder.encoder.epoch();
+			encoder.pause_denoising();
+			assert!(encoder.denoiser.is_none() && encoder.denoising_paused);
+			encoder.pause_denoising();
+			let mut received = false;
+			for _ in 0..10 {
+				if let Some(frame) = encoder.encode(vec![240; WIDTH * HEIGHT * 3]).unwrap() {
+					assert!(frame.rgb.iter().all(|v| *v > 190));
+					if !frame.data.is_empty() {
+						assert_eq!(frame.epoch, old_epoch + u64::from(force_pending));
+						if force_pending {
+							assert!(frame.keyframe);
+						}
+						assert!(
+							decoder
+								.decode(&frame.data)
+								.unwrap()
+								.unwrap()
+								.y()
+								.iter()
+								.all(|v| *v > 190)
+						);
+						received = true;
+						break;
+					}
+				}
+			}
+			assert!(received, "no fresh frame after pressure subsided");
+		}
+	}
+
+	#[test]
+	fn timely_denoising_resets_the_overload_streak() {
+		let mut streak = 0;
+		let budget = std::time::Duration::from_millis(10);
+		let slow = std::time::Duration::from_millis(11);
+		assert!(!denoising_too_slow(&mut streak, slow, budget));
+		assert!(!denoising_too_slow(&mut streak, slow, budget));
+		assert!(!denoising_too_slow(&mut streak, budget, budget));
+		assert_eq!(streak, 0);
+		assert!(!denoising_too_slow(&mut streak, slow, budget));
+		assert!(!denoising_too_slow(&mut streak, slow, budget));
+		assert!(denoising_too_slow(&mut streak, slow, budget));
+	}
+
+	#[test]
+	fn slow_denoiser_bypasses_without_stalling_video() {
+		let mut encoder = CameraEncoder::new_on_adapter(
+			VideoSettings {
+				camera_denoising: model::voice_settings::CameraDenoising::On,
+				..VideoSettings::default()
+			},
+			Some(model::VideoAdapter::default()),
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicU64::new(0)),
+		)
+		.unwrap();
+		// An impossible budget makes the adaptive bypass deterministic.
+		encoder.frame_budget = std::time::Duration::ZERO;
+		let mut timestamps = Vec::new();
+		for _ in 0..8 {
+			if let Some(frame) = encoder.encode(vec![128; WIDTH * HEIGHT * 3]).unwrap()
+				&& !frame.data.is_empty()
+			{
+				timestamps.push(frame.timestamp);
+			}
+		}
+		assert!(!timestamps.is_empty());
+		assert!(timestamps.windows(2).all(|pair| pair[0] <= pair[1]));
+		assert!(encoder.denoiser.is_none());
+		assert_eq!(
+			*encoder.denoising_status.lock().unwrap(),
+			CameraDenoisingStatus::TooSlow
+		);
+	}
+
+	#[test]
+	fn oversized_camera_reports_the_resolution_limit() {
+		for (width, height) in [(3840, 2160), (usize::MAX, usize::MAX)] {
+			let (filter, status) = new_camera_denoiser(width, height);
+			assert!(filter.is_none());
+			assert_eq!(status, CameraDenoisingStatus::ResolutionUnsupported);
+		}
+	}
+
+	#[test]
+	fn unavailable_denoising_leaves_camera_operational() {
+		let mut encoder = CameraEncoder::new_on_adapter(
+			VideoSettings::default(),
+			Some(model::VideoAdapter::default()),
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicU64::new(0)),
+		)
+		.unwrap();
+		encoder.disable_denoising(CameraDenoisingStatus::Unavailable);
+		assert_eq!(
+			*encoder.denoising_status.lock().unwrap(),
+			CameraDenoisingStatus::Unavailable
+		);
+		assert!(
+			encoder
+				.encode(vec![128; WIDTH * HEIGHT * 3])
+				.unwrap()
+				.is_some()
+		);
+	}
+
 	#[test]
 	fn selected_camera_rate_configures_the_selected_bandwidth_profile() {
 		let default = CameraEncoder::config(VideoSettings::default());

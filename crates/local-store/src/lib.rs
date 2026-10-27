@@ -740,6 +740,39 @@ mod tests {
 	}
 
 	#[test]
+	fn camera_denoising_preferences_round_trip_and_unknown_values_default_safely() {
+		use model::voice_settings::CameraDenoising;
+		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
+		for mode in [
+			CameraDenoising::Auto,
+			CameraDenoising::Off,
+			CameraDenoising::On,
+		] {
+			let mut value = AppPreferences {
+				input_percent: 75,
+				..Default::default()
+			};
+			value.video_settings.camera_denoising = mode;
+			store.save_app_preferences(&value).unwrap();
+			assert_eq!(store.app_preferences().unwrap(), value);
+		}
+		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
+		assert_eq!(
+			legacy.video_settings.camera_denoising,
+			CameraDenoising::Auto
+		);
+		let future: AppPreferences = serde_json::from_str(
+			r#"{"input_percent":75,"video_settings":{"camera_denoising":"Future"}}"#,
+		)
+		.unwrap();
+		assert_eq!(
+			future.video_settings.camera_denoising,
+			CameraDenoising::Auto
+		);
+		assert_eq!(future.input_percent, 75);
+	}
+
+	#[test]
 	fn bandwidth_and_vendor_quality_choices_round_trip_without_resetting_preferences() {
 		use model::voice_settings::{EncoderPreset, VideoBandwidth};
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();

@@ -94,7 +94,7 @@ def main():
         fixture.write_text('fn main() { if let Some(p) = std::env::args().nth(1) { std::fs::write(p, b"ready").unwrap(); std::thread::sleep(std::time::Duration::from_secs(120)); } }')
         subprocess.run(["rustc", "--edition=2024", "-O", str(fixture), "-o", str(payload / "serein.exe")], check=True)
         (payload / "LICENSE-MIT").write_text("Synthetic installer fixture")
-        for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avformat-serein-61.dll", "swscale-serein-8.dll", "swresample-serein-5.dll", "openh264.dll"):
+        for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avformat-serein-61.dll", "avfilter-serein-10.dll", "swscale-serein-8.dll", "swresample-serein-5.dll", "openh264.dll"):
             (payload / name).write_bytes(b"synthetic DLL; never loaded")
         (payload / "ffmpeg-source/source").mkdir(parents=True)
         (payload / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz").write_bytes(b"synthetic LGPL source")
@@ -164,7 +164,7 @@ def main():
                 subprocess.run(f'"{setup}" /S /D={installed}', check=True, timeout=30)
                 timings.append(round((time.perf_counter() - start) * 1000, 3))
                 assert (installed / "serein.exe").read_bytes() == (payload / "serein.exe").read_bytes()
-                for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll", "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll", "msvcp140_1.dll"):
+                for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avfilter-serein-10.dll", "openh264.dll", "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll", "msvcp140_1.dll"):
                     assert (installed / name).read_bytes() == (payload / name).read_bytes()
                 assert uninstaller.is_file()
                 assert unrelated.read_text() == "Owner data must survive install, upgrade and uninstall"

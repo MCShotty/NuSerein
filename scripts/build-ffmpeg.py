@@ -541,6 +541,7 @@ def patch_ffmpeg(tree):
                     ("libavcodec/libavcodec.v", "LIBAVCODEC_MAJOR", "SEREIN_LIBAVCODEC_MAJOR"),
                     ("libavutil/libavutil.v", "LIBAVUTIL_MAJOR", "SEREIN_LIBAVUTIL_MAJOR"),
                     ("libavformat/libavformat.v", "LIBAVFORMAT_MAJOR", "SEREIN_LIBAVFORMAT_MAJOR"),
+                    ("libavfilter/libavfilter.v", "LIBAVFILTER_MAJOR", "SEREIN_LIBAVFILTER_MAJOR"),
                     ("libswscale/libswscale.v", "LIBSWSCALE_MAJOR", "SEREIN_LIBSWSCALE_MAJOR"),
                     ("libswresample/libswresample.v", "LIBSWRESAMPLE_MAJOR", "SEREIN_LIBSWRESAMPLE_MAJOR"),
                     ("libavcodec/qsvenc.c", "ret = av_new_packet(&pkt.pkt, q->packet_size);",
@@ -808,7 +809,8 @@ def validate_completed_build(prefix, system, backends):
     required = [f"include/{name}" for name in (
         "libavcodec/avcodec.h", "libavutil/avutil.h", "libavutil/error.h", "libavutil/frame.h",
         "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h",
-        "libavformat/avformat.h", "libswscale/swscale.h", "libswresample/swresample.h")]
+        "libavformat/avformat.h", "libavfilter/avfilter.h", "libavfilter/buffersrc.h", "libavfilter/buffersink.h",
+        "libswscale/swscale.h", "libswresample/swresample.h")]
     required += ["lib/pkgconfig/libavcodec-serein.pc", "lib/pkgconfig/libavutil-serein.pc"]
     required += {
         "Linux": ["lib/libavcodec-serein.so", "lib/libavcodec-serein.so.61",
@@ -818,7 +820,7 @@ def validate_completed_build(prefix, system, backends):
         "Windows": ["bin/avcodec-serein-61.dll", "bin/avutil-serein-59.dll", "bin/openh264.dll",
                     "lib/avcodec-serein.lib", "lib/avutil-serein.lib"],
     }[system]
-    for name, version in (("avformat", "61"), ("swscale", "8"), ("swresample", "5")):
+    for name, version in (("avformat", "61"), ("avfilter", "10"), ("swscale", "8"), ("swresample", "5")):
         required.append(f"lib/pkgconfig/lib{name}-serein.pc")
         if system == "Linux":
             required += [f"lib/lib{name}-serein.so", f"lib/lib{name}-serein.so.{version}"]
@@ -973,7 +975,7 @@ def build(args):
         f"--prefix={posix(prefix)}", "--build-suffix=-serein", "--disable-autodetect", "--disable-everything",
         "--disable-programs", "--disable-doc", "--disable-network", "--disable-static", "--enable-shared",
         "--disable-gpl", "--disable-nonfree", "--disable-version3", "--disable-avdevice", "--enable-avformat",
-        "--disable-avfilter", "--enable-swscale", "--enable-swresample", "--disable-postproc",
+        "--enable-avfilter", "--enable-filter=buffer,buffersink,atadenoise", "--enable-swscale", "--enable-swresample", "--disable-postproc",
         "--disable-vdpau", "--disable-cuvid", "--disable-cuda-llvm",
         "--enable-avcodec", "--enable-avutil", "--enable-libopenh264", "--enable-encoder=libopenh264",
         "--enable-libdav1d", "--enable-decoder=" + ",".join(sorted(decoder_names(backends))),
@@ -1007,13 +1009,21 @@ def build(args):
                        and "_DECODER 1" in line}
     if actual_decoders != expected_decoders:
         raise ValueError(f"Unexpected FFmpeg decoder allowlist: {sorted(actual_decoders)}")
+    # FFmpeg always compiles its four audio/video buffer source/sink filters;
+    # they are not CONFIG_*_FILTER entries. Only enable atadenoise explicitly.
+    expected_filters = {"ATADENOISE"}
+    actual_filters = {line.split()[1].removeprefix("CONFIG_").removesuffix("_FILTER")
+                      for line in component_config.splitlines() if line.startswith("#define CONFIG_")
+                      and "_FILTER 1" in line}
+    if actual_filters != expected_filters:
+        raise ValueError(f"Unexpected FFmpeg filter allowlist: {sorted(actual_filters)}, expected {sorted(expected_filters)}")
     if "#define CONFIG_NETWORK 0" not in configuration:
         raise ValueError("Media decoders must never perform network I/O")
     run("make", f"-j{args.jobs}", cwd=trees["ffmpeg"], env=env)
     run("make", "install", cwd=trees["ffmpeg"], env=env)
     if system == "Windows":
         # FFmpeg installs MSVC import libraries with DLLs in bin; Cargo searches lib.
-        for name in ("avcodec-serein.lib", "avutil-serein.lib", "avformat-serein.lib", "swscale-serein.lib", "swresample-serein.lib"):
+        for name in ("avcodec-serein.lib", "avutil-serein.lib", "avformat-serein.lib", "avfilter-serein.lib", "swscale-serein.lib", "swresample-serein.lib"):
             shutil.copyfile(prefix / "bin" / name, prefix / "lib" / name)
     if system == "Linux":
         for library in (prefix / "lib").glob("*.so.*"):

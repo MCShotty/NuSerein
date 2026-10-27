@@ -47,7 +47,8 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ env.SOURCE_RUN }}
           name: serein-Windows-${{ matrix.arch }}-unsigned
-          path: dist
+          # The native artifact contains dist/ and dist-installer/ at its root.
+          path: .
       - name: Install NSIS
         run: choco install nsis --no-progress -y
       - name: Compile the installer from the matching source
