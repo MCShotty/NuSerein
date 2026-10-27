@@ -741,35 +741,46 @@ mod tests {
 
 	#[test]
 	fn camera_denoising_preferences_round_trip_and_unknown_values_default_safely() {
-		use model::voice_settings::CameraDenoising;
+		use model::voice_settings::{CameraDenoising, VideoCodec, VideoFrameRate};
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
-		for mode in [
-			CameraDenoising::Auto,
-			CameraDenoising::Off,
-			CameraDenoising::On,
-		] {
+		for (mode, saved) in [(CameraDenoising::Off, "Off"), (CameraDenoising::On, "On")] {
 			let mut value = AppPreferences {
 				input_percent: 75,
 				..Default::default()
 			};
 			value.video_settings.camera_denoising = mode;
+			assert_eq!(serde_json::to_value(mode).unwrap(), saved);
 			store.save_app_preferences(&value).unwrap();
 			assert_eq!(store.app_preferences().unwrap(), value);
 		}
 		let legacy: AppPreferences = serde_json::from_str("{}").unwrap();
-		assert_eq!(
-			legacy.video_settings.camera_denoising,
-			CameraDenoising::Auto
+		assert_eq!(legacy.video_settings.camera_denoising, CameraDenoising::Off);
+		for saved in ["Auto", "Future"] {
+			let value: AppPreferences = serde_json::from_value(serde_json::json!({
+				"input_percent": 75,
+				"video_settings": {
+					"camera_denoising": saved,
+					"codec": "Av1",
+					"camera_frame_rate": "Fps30"
+				}
+			}))
+			.unwrap();
+			assert_eq!(value.video_settings.camera_denoising, CameraDenoising::Off);
+			assert_eq!(value.input_percent, 75);
+			assert_eq!(value.video_settings.codec, VideoCodec::Av1);
+			assert_eq!(
+				value.video_settings.camera_frame_rate,
+				VideoFrameRate::Fps30
+			);
+			store.save_app_preferences(&value).unwrap();
+			assert_eq!(store.app_preferences().unwrap(), value);
+		}
+		assert!(
+			serde_json::from_str::<AppPreferences>(
+				r#"{"video_settings":{"camera_denoising":true}}"#,
+			)
+			.is_err()
 		);
-		let future: AppPreferences = serde_json::from_str(
-			r#"{"input_percent":75,"video_settings":{"camera_denoising":"Future"}}"#,
-		)
-		.unwrap();
-		assert_eq!(
-			future.video_settings.camera_denoising,
-			CameraDenoising::Auto
-		);
-		assert_eq!(future.input_percent, 75);
 	}
 
 	#[test]

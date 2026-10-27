@@ -314,9 +314,6 @@ impl CameraEncoder {
 		let encoder = crate::video_encode::Encoder::new(config)?;
 		let (denoiser, status) = match video.camera_denoising {
 			model::voice_settings::CameraDenoising::Off => (None, CameraDenoisingStatus::Off),
-			model::voice_settings::CameraDenoising::Auto => {
-				(None, CameraDenoisingStatus::AutomaticUnknown)
-			}
 			model::voice_settings::CameraDenoising::On => new_camera_denoiser(width, height),
 		};
 		Ok(Self {
@@ -1203,6 +1200,28 @@ mod tests {
 		reset.store(u64::MAX, Ordering::Release);
 		assert!(encoder.encode(vec![192; WIDTH * HEIGHT * 3]).is_err());
 	}
+	#[test]
+	fn default_denoising_is_off_and_delivers_without_filter_warmup() {
+		let mut encoder = CameraEncoder::new_on_adapter(
+			VideoSettings::default(),
+			Some(model::VideoAdapter::default()),
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicU64::new(0)),
+		)
+		.unwrap();
+		assert!(encoder.denoiser.is_none());
+		assert_eq!(
+			*encoder.denoising_status.lock().unwrap(),
+			CameraDenoisingStatus::Off
+		);
+		let frame = encoder
+			.encode(vec![128; WIDTH * HEIGHT * 3])
+			.unwrap()
+			.unwrap();
+		assert!(frame.keyframe && !frame.data.is_empty());
+		assert!(frame.rgb.iter().all(|value| *value == 128));
+	}
+
 	#[test]
 	fn denoised_camera_discards_temporal_history_on_security_reset() {
 		let reset = Arc::new(AtomicU64::new(0));

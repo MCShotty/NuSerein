@@ -2876,7 +2876,6 @@ impl MessagingUi {
 		ui.label(crate::i18n::translate("voice-video-camera-denoising"));
 		ui.horizontal_wrapped(|ui| {
 			for (mode, label) in [
-				(CameraDenoising::Auto, "voice-video-camera-denoising-auto"),
 				(CameraDenoising::Off, "voice-video-camera-denoising-off"),
 				(CameraDenoising::On, "voice-video-camera-denoising-on"),
 			] {
@@ -2888,7 +2887,6 @@ impl MessagingUi {
 			}
 		});
 		let description = match self.video_settings.camera_denoising {
-			CameraDenoising::Auto => "voice-video-camera-denoising-auto-description",
 			CameraDenoising::Off => "voice-video-camera-denoising-off-description",
 			CameraDenoising::On => "voice-video-camera-denoising-on-description",
 		};
@@ -5665,7 +5663,6 @@ fn camera_denoising_status_key(
 	match status {
 		CameraDenoisingStatus::Starting => "voice-video-camera-denoising-status-starting",
 		CameraDenoisingStatus::Off => "voice-video-camera-denoising-status-off",
-		CameraDenoisingStatus::AutomaticUnknown => "voice-video-camera-denoising-status-auto",
 		CameraDenoisingStatus::Active => "voice-video-camera-denoising-status-active",
 		CameraDenoisingStatus::Unavailable => "voice-video-camera-denoising-status-unavailable",
 		CameraDenoisingStatus::ResolutionUnsupported => {
@@ -6305,7 +6302,16 @@ mod tests {
 		let mut messaging = MessagingUi::default();
 		assert_eq!(
 			messaging.video_settings.camera_denoising,
-			CameraDenoising::Auto
+			CameraDenoising::Off
+		);
+		let controls = video_controls_frame(&ctx, &mut messaging, 320.0, vec![]);
+		assert_eq!(
+			controls
+				.iter()
+				.map(|(text, _)| text.as_str())
+				.filter(|text| matches!(*text, "Off" | "ATADenoise" | "Auto" | "On" | "BSVD"))
+				.collect::<Vec<_>>(),
+			["Off", "ATADenoise"]
 		);
 		for (label, mode, explanation) in [
 			(
@@ -6314,14 +6320,9 @@ mod tests {
 				"Serein does not add camera denoising.",
 			),
 			(
-				"On",
+				"ATADenoise",
 				CameraDenoising::On,
 				"Serein will try ATADenoise. If it is unavailable, the camera continues without added denoising.",
-			),
-			(
-				"Auto",
-				CameraDenoising::Auto,
-				"Existing camera processing cannot currently be detected. Auto leaves the camera image unchanged to avoid applying denoising twice.",
 			),
 		] {
 			video_controls_click(&ctx, &mut messaging, 320.0, label);
@@ -6331,6 +6332,14 @@ mod tests {
 					.iter()
 					.any(|(text, _)| text == explanation)
 			);
+		}
+		for (label, mode, key) in [
+			("Off", CameraDenoising::Off, egui::Key::Enter),
+			("ATADenoise", CameraDenoising::On, egui::Key::Space),
+		] {
+			video_controls_focus(&ctx, &mut messaging, label);
+			video_controls_key(&ctx, &mut messaging, key);
+			assert_eq!(messaging.video_settings.camera_denoising, mode);
 		}
 	}
 
@@ -6342,7 +6351,6 @@ mod tests {
 		for status in [
 			CameraDenoisingStatus::Starting,
 			CameraDenoisingStatus::Off,
-			CameraDenoisingStatus::AutomaticUnknown,
 			CameraDenoisingStatus::Active,
 			CameraDenoisingStatus::Unavailable,
 			CameraDenoisingStatus::ResolutionUnsupported,

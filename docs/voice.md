@@ -1061,15 +1061,15 @@ ID is session-local. Refresh discovers added/removed devices; a missing selected
 device is reported rather than silently opening another camera. Changing selection
 stops active capture and requires another camera-on click.
 
-Voice & Video offers camera denoising as **Auto**, **Off**, or **On**. Auto currently
-leaves the image unchanged because Serein cannot reliably determine whether the selected
-camera already applies hardware denoising. On explicitly attempts FFmpeg ATADenoise for
+Voice & Video offers camera denoising as **Off** (the default) or **ATADenoise**.
+ATADenoise explicitly enables FFmpeg filtering for
 camera output up to 2,073,600 pixels; it requires a five-frame temporal window and adds
 lookahead. If initialization fails or processing repeatedly exceeds the frame interval,
 Serein continues without the filter and displays the reason. This processing stays on the
 camera worker and applies to its local preview and outgoing video, not screen sharing.
-GPU/NPU BSVD processing is not yet available: its RGB model weights and redistribution
-terms have not been verified. Native camera quality and latency remain unverified.
+Changes apply when the camera or preview next starts. Older saved Auto preferences
+become Off; saved On preferences select ATADenoise. Native camera quality and latency
+remain unverified.
 
 Voice & Video also offers an explicit **Preview camera / Stop preview** control outside
 calls. It reuses the bounded camera worker and latest-frame texture; frames have no

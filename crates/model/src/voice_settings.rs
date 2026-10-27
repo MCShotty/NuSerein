@@ -485,12 +485,10 @@ impl VideoCapabilities {
 	}
 }
 
-/// Controls additional local webcam processing. Auto avoids double processing when
-/// the selected camera's existing image processing cannot be determined.
+/// Controls additional local webcam processing, explicitly selected by the user.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraDenoising {
 	#[default]
-	Auto,
 	Off,
 	On,
 }
@@ -501,7 +499,6 @@ pub enum CameraDenoisingStatus {
 	#[default]
 	Starting,
 	Off,
-	AutomaticUnknown,
 	Active,
 	Unavailable,
 	ResolutionUnsupported,
