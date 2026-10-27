@@ -1,5 +1,36 @@
 # Discord compatibility — checked 2026-09-10
 
+## Connection recovery and delivery pressure
+
+Gateway operation cooldowns now belong to the account connection rather than a socket;
+RESUME and fresh synchronization preserve unexpired penalties. Sequenced dispatches advance
+the resume cursor only after complete admission, and older/duplicate dispatches are skipped.
+Heartbeat send receipts are retained in a bounded FIFO so an older ACK cannot retire a newer
+probe. Existing heartbeat deadlines and the documented connection-wide sending limit remain.
+
+REST global penalties are separate from route/bucket penalties, including major resource
+parameters. Cooling requests wait outside concurrency permits. The retained table is bounded
+to 256 entries / 64 KiB; active penalties are never evicted to make room. Safe startup reads
+may retry two transient failures within 30 seconds; authentication rejection stays terminal.
+Busy queues and oversized optional responses fail their operation. Accepted or uncertain
+writes are never automatically replayed.
+
+If account-event delivery loses an update, the account remains authenticated while the
+Gateway owner retires and waits for queue capacity. An independent, generation-stamped
+pressure notification prevents old queued updates from restoring access. A fresh snapshot
+must follow an explicit synchronization barrier before normal delivery and queued writes
+resume. Media is retired when permissions become uncertain; this exceptional recovery may
+interrupt an active call/share. Ordinary socket RESUME keeps its existing voice behavior.
+Malformed optional catalogs are invalidated; uncertain live permission metadata instead
+requires authoritative synchronization. Identity, framing and unsafe session-wide bounds
+remain strict.
+
+Copy Issue Diagnostics retains fixed failure-stage labels and queue occupancy in the existing
+32-entry / 8-KiB session ring, without payloads, credentials or account identifiers.
+Local synthetic WebSocket, HTTP, delivery-queue and reducer regressions exercise these paths.
+Normal-account member subscriptions/rate-limit details remain **unofficial**; owner-controlled
+Discord, sleep/wake and network-interruption acceptance remains **unverified**.
+
 ## Channel preference synchronization and Browse Channels — October 26, 2026
 
 Browse Channels is a main-content page with the server sidebar and Back/Forward navigation.
