@@ -5,7 +5,7 @@ use super::{
 };
 use crate::screen::probe::{ProbeMode, ProbeSnapshot, ProbeStats};
 use crate::screen::{
-	AudioChunk, CapturedFrame, RequestSettings as CaptureSettings, Source, SourceId,
+	AudioChunk, AudioStatus, CapturedFrame, RequestSettings as CaptureSettings, Source, SourceId,
 };
 use platform::video::capture::{PixelFormat, Processor, Stats as NativeStats};
 use std::sync::{
@@ -461,6 +461,7 @@ impl Capture {
 		cancel: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,
 		audio_epoch: Arc<AtomicU64>,
+		audio_status: Arc<Mutex<AudioStatus>>,
 		pending: Arc<AtomicBool>,
 		adapter: Option<model::VideoAdapter>,
 		gpu: bool,
@@ -468,6 +469,19 @@ impl Capture {
 		if !settings.valid() {
 			return Err("Invalid screen capture settings");
 		}
+		// Resolve before opening capture. The retained process object and repeated
+		// HWND ownership checks prevent a recycled native ID from retargeting audio.
+		let audio_target = audio.as_ref().map(|_| match settings.source {
+			SourceId::Display(_) => Ok(audio::Target::System),
+			SourceId::Window(id) => Window::enumerate()
+				.map_err(|_| "Application audio is unavailable; sharing video only")?
+				.into_iter()
+				.find(|window| window_id(window) == id)
+				.ok_or("The selected application closed; sharing video only")
+				.and_then(audio::Target::application),
+			_ => Err("Application audio isolation is unavailable; sharing video only"),
+		});
+
 		let mut capture = Self::start_video(
 			settings,
 			frames,
@@ -480,7 +494,29 @@ impl Capture {
 			Arc::new(ProbeStats::default()),
 		)?;
 		if let Some(send) = audio {
-			capture.audio = Some(audio::Audio::start(send, stop, cancel, ready, audio_epoch)?);
+			let result = audio_target
+				.expect("audio target was resolved")
+				.and_then(|target| {
+					audio::Audio::start(
+						target,
+						send,
+						stop.clone(),
+						cancel.clone(),
+						ready,
+						audio_epoch,
+						audio_status.clone(),
+					)
+				});
+			match result {
+				Ok(audio) => capture.audio = Some(audio),
+				Err(reason) if !cancel.load(Ordering::Acquire) && !stop.load(Ordering::Acquire) => {
+					crate::screen::set_audio_status(
+						&audio_status,
+						AudioStatus::Unavailable(reason),
+					);
+				}
+				Err(_) => {}
+			}
 		}
 		Ok(capture)
 	}
@@ -571,8 +607,7 @@ impl Capture {
 		self.stats.snapshot()
 	}
 	pub(crate) fn failed(&self) -> bool {
-		self.audio.as_ref().is_some_and(audio::Audio::failed)
-			|| self.poll_failed.load(Ordering::Acquire)
+		self.poll_failed.load(Ordering::Acquire)
 			|| self
 				.control
 				.as_ref()

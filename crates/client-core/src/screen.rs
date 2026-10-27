@@ -17,6 +17,23 @@ pub enum SourceId {
 	Window(u64),
 }
 
+/// The audio scope implied by the selected visual source. Pickers resolve it later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioScope {
+	Application,
+	System,
+	Pending,
+}
+impl SourceId {
+	pub fn audio_scope(self) -> AudioScope {
+		match self {
+			Self::Window(_) => AudioScope::Application,
+			Self::Display(_) | Self::X11Desktop => AudioScope::System,
+			Self::SystemPicker | Self::Portal => AudioScope::Pending,
+		}
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Source {
 	pub id: SourceId,
@@ -143,7 +160,7 @@ pub struct Settings {
 	pub height: u32,
 	pub fps: u32,
 	pub cursor: bool,
-	/// Share system audio with the screen; call microphone settings are independent.
+	/// Request source-scoped shared audio; call microphone settings are independent.
 	pub audio: bool,
 }
 impl Settings {
@@ -181,6 +198,15 @@ impl From<Settings> for RequestSettings {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn shared_audio_scope_follows_the_visual_source_without_guessing_picker_results() {
+		assert_eq!(SourceId::Window(5).audio_scope(), AudioScope::Application);
+		assert_eq!(SourceId::Display(3).audio_scope(), AudioScope::System);
+		assert_eq!(SourceId::X11Desktop.audio_scope(), AudioScope::System);
+		for picker in [SourceId::Portal, SourceId::SystemPicker] {
+			assert_eq!(picker.audio_scope(), AudioScope::Pending);
+		}
+	}
 
 	#[test]
 	fn presets_follow_all_source_ratios_and_physical_pixel_sizes() {

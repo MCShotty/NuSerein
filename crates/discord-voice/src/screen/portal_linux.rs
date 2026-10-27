@@ -36,6 +36,8 @@ pub(super) struct Portal {
 	closed_seen: bool,
 	pub(super) node_id: u32,
 	pub(super) pipewire_serial: Option<u64>,
+	/// Portal-approved visual source kind: 1 monitor, 2 window; absent is unknown.
+	pub(super) source_type: Option<u32>,
 }
 
 impl Portal {
@@ -176,6 +178,7 @@ impl Portal {
 			return Err(INVALID);
 		}
 		let node_id = streams[0].0;
+		let source_type = stream_source_type(&streams[0].1);
 		let pipewire_serial = streams[0]
 			.1
 			.get("pipewire-serial")
@@ -191,6 +194,7 @@ impl Portal {
 			closed_seen: false,
 			node_id,
 			pipewire_serial,
+			source_type,
 		};
 		if result.is_closed() {
 			return Err("The desktop stopped screen sharing.");
@@ -361,5 +365,35 @@ async fn wait<T>(
 			_ = &mut deadline => return Err("The screen-sharing portal timed out."),
 			result = &mut future => return Ok(result),
 		}
+	}
+}
+
+/// Only values defined by ScreenCast establish an audio scope. Unknown metadata
+/// still permits video, but must never opt a window into full-system audio.
+fn stream_source_type(properties: &Properties) -> Option<u32> {
+	properties
+		.get("source_type")
+		.and_then(|value| u32::try_from(value).ok())
+		.filter(|kind| matches!(kind, 1 | 2))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn source_metadata_preserves_monitor_and_window_but_leaves_unknowns_unresolved() {
+		assert_eq!(stream_source_type(&Properties::new()), None);
+		for (raw, expected) in [
+			(1, Some(1)),
+			(2, Some(2)),
+			(0, None),
+			(3, None),
+			(u32::MAX, None),
+		] {
+			let properties = Properties::from([("source_type".into(), OwnedValue::from(raw))]);
+			assert_eq!(stream_source_type(&properties), expected);
+		}
+		let properties = Properties::from([("source_type".into(), OwnedValue::from(1i32))]);
+		assert_eq!(stream_source_type(&properties), None);
 	}
 }

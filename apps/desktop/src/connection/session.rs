@@ -188,6 +188,10 @@ impl Connection {
 		let typing_gate = Mutex::new(TypingGate::default());
 		let reconnect = Arc::new(tokio::sync::Notify::new());
 		let gateway_reconnect = reconnect.clone();
+		let diagnostics = discord_gateway::ConnectionDiagnostics::default();
+		let diagnostic_revision = diagnostics.revision();
+		let diagnostics = Arc::new(Mutex::new(diagnostics));
+		let gateway_diagnostics = diagnostics.clone();
 		let status_changed = Arc::new(tokio::sync::Notify::new());
 		let status_refresh = status_changed.clone();
 		let (community_fence, community_scope) = watch::channel(0u64);
@@ -253,7 +257,7 @@ impl Connection {
                 let gateway_wake=wake.clone();
                 let activity_wake=wake.clone();
                 let mut gateway_task=AbortTask(tokio::spawn(async move {
-                    let error=discord_gateway::run_with_activity_recovery(secret,gateway,member_receive,voice_receive,gateway_reconnect,(activity_receive,presence_receive,member_query_receive,spotify_receive),move |observation| {
+                    let error=discord_gateway::run_with_activity_recovery_diagnostics(secret,gateway,member_receive,voice_receive,gateway_reconnect,(activity_receive,presence_receive,member_query_receive,spotify_receive),gateway_diagnostics,move |observation| {
                         if activity_observed.send_if_modified(|current| { if *current == observation { false } else { *current = observation; true } }) { activity_wake.request_repaint(); }
                         Ok(())
                     },|event|{
@@ -1025,6 +1029,10 @@ impl Connection {
 			activity_sharing_request,
 			typing_channel,
 			reconnect,
+			diagnostics,
+			diagnostic_revision,
+			diagnostic_copied: std::cell::Cell::new(0),
+			foreground: std::cell::Cell::new(super::ForegroundRecovery::new(Instant::now())),
 			send_recovery_pending: std::cell::Cell::new(false),
 			task,
 		}

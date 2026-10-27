@@ -45,6 +45,8 @@ impl Desktop {
 		self.state.interrupt_gif_favorites();
 		self.state.interrupt_preloads();
 		self.connection = None;
+		self.messaging.connection_diagnostics.clear();
+		self.messaging.connection_reason = None;
 		if let Some(worker) = self.avatars.take() {
 			self.avatar_cleanup = Some(worker.shutdown());
 		}
@@ -129,6 +131,8 @@ impl Desktop {
 		self.clear_avatars(ctx);
 		self.login = None;
 		self.connection = None;
+		self.messaging.connection_diagnostics.clear();
+		self.messaging.connection_reason = None;
 		self.pending_save = None;
 		self.current_login = None;
 		self.plaintext_save_pending = false;

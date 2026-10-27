@@ -5140,3 +5140,9 @@ menu-close = Zamknij
 menu-back = Wstecz
 menu-open-discord = Otwórz w Discordzie
 menu-application = Aplikacja
+
+screen-audio-application = Udostępnij dźwięk aplikacji
+screen-audio-application-description = Udostępniany jest tylko dźwięk wybranej aplikacji i jej procesów pomocniczych. Inne aplikacje pozostają prywatne.
+screen-audio-system-description = Udostępnij dźwięk systemu z wyłączeniem Serein, aby zapobiec echu rozmowy.
+screen-audio-selected-source = Udostępnij dźwięk
+screen-audio-selected-source-description = Okna udostępniają tylko dźwięk swojej aplikacji, a monitory dźwięk systemu. Jeśli izolacja jest niedostępna, obraz jest udostępniany bez dźwięku.

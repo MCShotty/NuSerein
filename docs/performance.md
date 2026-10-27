@@ -3960,3 +3960,20 @@ actual release settings.
 The live two-client synchronization check, physical Windows/macOS input,
 assistive technologies and real-account responsiveness remain unverified.
 No media/voice performance improvement is claimed from these synthetic workloads.
+
+## Gateway recovery and application audio — October 26, 2026
+
+This follow-up freezes installer `e73bb7b0` and implements runtime `f5349e74`.
+Its PR records comparable release reducer, native preview CPU/RSS/callback and
+package-size results, with separate current-head Windows/macOS/Linux CI comparisons.
+The nightly reference is the current published release pinned to its source,
+rather than a moving branch. Reused executables retain their verified hashes and
+original build provenance. Historical results above keep their original revisions.
+
+See the [methods and synthetic UI evidence](pr-evidence/gateway-audio/README.md).
+The offline preview does not contain Gateway or native audio workers, so its CPU/RSS
+cannot establish connected-client or application-isolation overhead. The loopback
+regressions check recovery deadlines and bounded queues; they are not comparative
+live-network latency measurements. Real dropout recovery and two-application audio
+acceptance remain owner-controlled. No encoding-quality or game-FPS improvement
+is claimed by this change.

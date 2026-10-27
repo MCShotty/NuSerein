@@ -419,6 +419,9 @@ pub struct MessagingUi {
 	/// Drop one saved account: its token, cached history and drafts.
 	pub forget_account_requested: Option<Id>,
 	pub reconnect_requested: bool,
+	/// Fixed-label, session-only connection history prepared by the desktop transport.
+	pub connection_diagnostics: String,
+	pub connection_reason: Option<&'static str>,
 	pub draft_changes: Vec<Id>,
 	pub draft_restore_pending: bool,
 	/// The reply target's author, kept while that message leaves the loaded window.
@@ -2019,6 +2022,16 @@ mod composer_tests {
 			repeat: false,
 			modifiers: egui::Modifiers::NONE,
 		};
+		view.connection_diagnostics =
+			"0 ms: server requested reconnect; attempt 1\n12 ms: resumed".into();
+		assert!(
+			view.diagnostic_info(&ctx)
+				.contains("Connection history (this session):")
+		);
+		assert!(
+			view.diagnostic_info(&ctx)
+				.contains("server requested reconnect")
+		);
 		for (assigned, capturing, composing, copies) in [
 			(false, false, false, false),
 			(true, false, false, true),

@@ -1012,6 +1012,19 @@ struct StreamAudio {
 	last_tick: Instant,
 }
 impl StreamAudio {
+	fn new() -> Result<Self, &'static str> {
+		let mut encoder = Encoder::new(48_000, Channels::Stereo, Application::Audio)
+			.map_err(|_| "Stream audio encoder initialization failed; sharing video only")?;
+		encoder
+			.set_bitrate(Bitrate::Bits(128_000))
+			.map_err(|_| "Stream audio bitrate configuration failed; sharing video only")?;
+		Ok(Self {
+			encoder,
+			pending: Vec::with_capacity(STREAM_AUDIO_PENDING),
+			speaking: false,
+			last_tick: Instant::now(),
+		})
+	}
 	fn clear(&mut self) {
 		self.pending.clear();
 		self.speaking = false;
@@ -1058,10 +1071,24 @@ impl StreamAudio {
 	}
 }
 
-fn soundshare_announcement(audio: &mut Option<StreamAudio>, ssrc: u32) -> Option<Value> {
+fn soundshare_announcement(
+	audio: &mut Option<StreamAudio>,
+	ssrc: u32,
+	active: bool,
+) -> Option<Value> {
+	if !active {
+		return None;
+	}
 	let audio = audio.as_mut()?;
 	audio.speaking = true;
 	Some(json!({"op":5,"d":{"speaking":2,"delay":0,"ssrc":ssrc}}))
+}
+
+fn soundshare_unavailable(audio: &mut Option<StreamAudio>, ssrc: u32) -> Option<Value> {
+	let audio = audio.as_mut()?;
+	let was_speaking = audio.speaking;
+	audio.clear();
+	was_speaking.then(|| json!({"op":5,"d":{"speaking":0,"delay":0,"ssrc":ssrc}}))
 }
 
 /// The voice server ended this device's session on purpose; rejoining automatically is wrong.
@@ -1499,22 +1526,21 @@ async fn run_stream_inner(
 	let mut next_sink_wants = Instant::now();
 	let mut watch = VideoWatch::new();
 	let mut receive_tick = Instant::now();
-	// Shared system audio: 20 ms stereo Opus frames on the stream's own audio SSRC.
-	let mut share_audio = match video.as_ref().and_then(|video| video.audio.as_ref()) {
-		Some(_) => {
-			let mut encoder = Encoder::new(48_000, Channels::Stereo, Application::Audio)
-				.map_err(|_| "Stream audio encoder initialization failed")?;
-			encoder
-				.set_bitrate(Bitrate::Bits(128_000))
-				.map_err(|_| "Stream audio bitrate configuration failed")?;
-			Some(StreamAudio {
-				encoder,
-				pending: Vec::with_capacity(STREAM_AUDIO_PENDING),
-				speaking: false,
-				last_tick: Instant::now(),
-			})
+	// Captured source audio: 20 ms stereo Opus frames on the stream's own audio SSRC.
+	let mut share_audio = if let Some(video) = video.as_mut().filter(|video| video.audio.is_some())
+	{
+		match StreamAudio::new() {
+			Ok(audio) => Some(audio),
+			Err(reason) => {
+				if let Ok(mut status) = video.audio_status.lock() {
+					*status = crate::screen::AudioStatus::Unavailable(reason);
+				}
+				video.audio = None;
+				None
+			}
 		}
-		None => None,
+	} else {
+		None
 	};
 	// Audio has its own RTP sequence space; the video SSRC keeps `sequence`.
 	let mut audio_encoded = [0u8; 1275];
@@ -1740,7 +1766,7 @@ async fn run_stream_inner(
 				if secure && !announced && (video.is_none() || resolved.is_some()) {
 					invalidate_stream(&mut video, &mut share_audio);
 					if let Some(video)=&video {
-						if let Some(event)=soundshare_announcement(&mut share_audio,audio_ssrc) {json_send(&mut ws,event).await?;}
+						if let Some(event)=soundshare_announcement(&mut share_audio,audio_ssrc,video.audio_status().active()) {json_send(&mut ws,event).await?;}
 						let output=resolved.ok_or("Screen dimensions are unresolved")?;
 						json_send(&mut ws,screen_announcement(output,audio_ssrc,video_ssrc,rtx_ssrc)).await?;
 						if announced_output!=Some(output) {rate=crate::video::Rate::new(output.rates.maximum,now);video.bitrate.store(output.rates.maximum,Ordering::Release);}
@@ -1803,10 +1829,12 @@ async fn run_stream_inner(
 					for media in requests {let (header,body)=pli(audio_ssrc,media);udp_failures.send(socket,&crypto.seal_rtcp(&header,&body)?,"Stream RTCP send failed")?;}
 					next_pli=now+Duration::from_millis(500);
 				}
+				let audio_active=video.as_ref().is_some_and(|video|video.audio_status().active());
+				if !audio_active && let Some(event)=soundshare_unavailable(&mut share_audio,audio_ssrc) {json_send(&mut ws,event).await?;}
 				if let Some(shared)=&mut share_audio
 					&& let Some(video)=video.as_mut()
 					&& let Some(source)=video.audio.as_mut()
-					&& let Some(frame)=shared.next(source,video.audio_epoch.load(Ordering::Acquire),secure && video.ready.load(Ordering::Acquire),Instant::now()) {
+					&& let Some(frame)=shared.next(source,video.audio_epoch.load(Ordering::Acquire),audio_active && secure && video.ready.load(Ordering::Acquire),Instant::now()) {
 					if !shared.speaking {
 						shared.encoder.reset_state().map_err(|_|"Stream audio encoder reset failed")?;
 						json_send(&mut ws,json!({"op":5,"d":{"speaking":2,"delay":0,"ssrc":audio_ssrc}})).await?;
@@ -2767,6 +2795,44 @@ mod tests {
 		}
 	}
 	#[test]
+	fn unavailable_source_audio_discards_queued_and_retained_samples_before_reactivation() {
+		use crate::screen::AudioStatus;
+		for status in [
+			AudioStatus::Disabled,
+			AudioStatus::Pending,
+			AudioStatus::Unavailable("Synthetic isolation failure"),
+		] {
+			let mut shared = StreamAudio::new().unwrap();
+			let (send, mut receive) = tokio::sync::mpsc::channel(2);
+			let now = Instant::now();
+			shared
+				.pending
+				.extend_from_slice(&[0.75; STREAM_AUDIO_FRAME]);
+			send.try_send(crate::screen::AudioChunk {
+				samples: vec![0.75; STREAM_AUDIO_FRAME],
+				epoch: 0,
+			})
+			.unwrap();
+			assert!(shared.next(&mut receive, 0, status.active(), now).is_none());
+			assert!(shared.pending.is_empty() && receive.is_empty());
+			assert!(
+				shared
+					.next(&mut receive, 1, true, now + Duration::from_millis(20))
+					.is_none()
+			);
+			send.try_send(crate::screen::AudioChunk {
+				samples: vec![0.25; STREAM_AUDIO_FRAME],
+				epoch: 1,
+			})
+			.unwrap();
+			assert_eq!(
+				shared.next(&mut receive, 1, true, now + Duration::from_millis(40)),
+				Some([0.25; STREAM_AUDIO_FRAME])
+			);
+		}
+	}
+
+	#[test]
 	fn stream_audio_is_bounded_paced_and_cleared_on_rekey_or_stall() {
 		let start = Instant::now();
 		let mut shared = StreamAudio {
@@ -2875,6 +2941,7 @@ mod tests {
 			keyframe: Arc::new(AtomicBool::new(false)),
 			bitrate: Arc::new(std::sync::atomic::AtomicU32::new(4_000_000)),
 			audio_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+			audio_status: Arc::new(std::sync::Mutex::new(crate::screen::AudioStatus::System)),
 			audio: Some(receive),
 		});
 		let mut shared = Some(shared);
@@ -2951,12 +3018,21 @@ mod tests {
 				speaking: false,
 				last_tick: Instant::now(),
 			});
-			let event = soundshare_announcement(&mut audio, 42).unwrap();
+			assert!(soundshare_announcement(&mut audio, 42, false).is_none());
+			let event = soundshare_announcement(&mut audio, 42, true).unwrap();
 			assert_eq!(
 				event,
 				json!({"op":5,"d":{"speaking":2,"delay":0,"ssrc":42}})
 			);
-			assert!(audio.unwrap().speaking);
+			assert!(audio.as_ref().unwrap().speaking);
+			let stopped = soundshare_unavailable(&mut audio, 42).unwrap();
+			assert_eq!(
+				stopped,
+				json!({"op":5,"d":{"speaking":0,"delay":0,"ssrc":42}})
+			);
+			assert!(!audio.as_ref().unwrap().speaking);
+			assert!(audio.as_ref().unwrap().pending.is_empty());
+			assert!(soundshare_unavailable(&mut audio, 42).is_none());
 		}
 	}
 	#[test]

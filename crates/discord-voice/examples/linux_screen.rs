@@ -11,9 +11,9 @@ use discord_voice as _;
 mod screen;
 #[cfg(target_os = "linux")]
 use screen::{
-	AudioChunk, EncodedFrame, MAX_AUDIO_SAMPLES, MAX_RAW_BYTES, Output, RawFrame, RequestSettings,
-	ScreenEncoder, Settings, SourceId, preview_frame, publish_output, retain_screen_frame,
-	valid_dimensions,
+	AudioChunk, AudioStatus, EncodedFrame, MAX_AUDIO_SAMPLES, MAX_RAW_BYTES, Output, RawFrame,
+	RequestSettings, ScreenEncoder, Settings, SourceId, preview_frame, publish_output,
+	retain_screen_frame, set_audio_status, valid_dimensions,
 };
 #[cfg(target_os = "linux")]
 #[path = "../src/screen/audio_linux.rs"]
@@ -137,7 +137,7 @@ fn main() {
 		audio_linux::check_isolation();
 		stop.store(true, Ordering::Release);
 		drop(pipeline);
-		let mut cancelled = audio_linux::Worker::start(send, stop.clone(), ready.clone(), epoch).unwrap();
+		let mut cancelled = audio_linux::Worker::start(send, stop.clone(), ready.clone(), epoch, Arc::new(std::sync::Mutex::new(AudioStatus::Pending))).unwrap();
 		let deadline = Instant::now() + Duration::from_secs(3);
 		loop {
 			if let Some(result) = cancelled.result() { result.unwrap(); break; }

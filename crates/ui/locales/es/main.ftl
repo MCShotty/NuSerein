@@ -5145,3 +5145,9 @@ menu-close = Cerrar
 menu-back = Atrás
 menu-open-discord = Abrir en Discord
 menu-application = Aplicación
+
+screen-audio-application = Compartir audio de la aplicación
+screen-audio-application-description = Solo se comparte el audio de la aplicación seleccionada y sus procesos auxiliares. Las demás aplicaciones quedan privadas.
+screen-audio-system-description = Comparte el sonido del sistema, excluyendo Serein para evitar el eco de la llamada.
+screen-audio-selected-source = Compartir audio
+screen-audio-selected-source-description = Las ventanas comparten solo el audio de su aplicación. Los monitores comparten el audio del sistema. Si no se puede aislar, el vídeo continúa sin audio.

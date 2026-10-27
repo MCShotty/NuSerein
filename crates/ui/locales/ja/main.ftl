@@ -5121,3 +5121,9 @@ menu-close = 閉じる
 menu-back = 戻る
 menu-open-discord = Discordで開く
 menu-application = アプリケーション
+
+screen-audio-application = アプリの音声を共有
+screen-audio-application-description = 選択したアプリとその補助プロセスの音声だけを共有します。他のアプリの音声は共有しません。
+screen-audio-system-description = 通話のエコーを防ぐため、Serein を除くシステム音声を共有します。
+screen-audio-selected-source = 音声を共有
+screen-audio-selected-source-description = ウィンドウでは選択したアプリの音声のみ、モニターではシステム音声を共有します。音声を分離できない場合は映像のみを共有します。

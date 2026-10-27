@@ -5234,3 +5234,9 @@ menu-close = 关闭
 menu-back = 返回
 menu-open-discord = 在 Discord 中打开
 menu-application = 应用程序
+
+screen-audio-application = 分享应用音频
+screen-audio-application-description = 仅分享所选应用及其辅助进程的音频。不会分享其他应用的音频。
+screen-audio-system-description = 分享系统音频，但不包含 Serein，以防止通话回声。
+screen-audio-selected-source = 分享音频
+screen-audio-selected-source-description = 窗口仅分享所属应用的音频；显示器分享系统音频。如果无法隔离应用音频，则继续分享无声视频。

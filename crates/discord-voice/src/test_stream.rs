@@ -1,6 +1,6 @@
 //! Device-free Go Live sender/viewer integration; no Discord connection or capture device.
 use super::*;
-use crate::screen::{AudioChunk, EncodedFrame, Settings, SourceId, Video};
+use crate::screen::{AudioChunk, AudioStatus, EncodedFrame, Settings, SourceId, Video};
 use client_core::voice::Secret;
 use model::Id;
 use std::sync::atomic::AtomicU64;
@@ -206,6 +206,7 @@ async fn reject_h264_selection(codec: VideoCodec) {
 		bitrate: Arc::new(std::sync::atomic::AtomicU32::new(4_000_000)),
 		audio: None,
 		audio_epoch: Arc::new(AtomicU64::new(0)),
+		audio_status: Arc::new(std::sync::Mutex::new(AudioStatus::Disabled)),
 	};
 	let sender = tokio::spawn(run_stream_inner(
 		credentials(1),
@@ -335,6 +336,7 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 		bitrate: Arc::new(std::sync::atomic::AtomicU32::new(4_000_000)),
 		audio: Some(audio),
 		audio_epoch: epoch.clone(),
+		audio_status: Arc::new(std::sync::Mutex::new(AudioStatus::System)),
 	};
 	let sender_url = url.clone();
 	let sharing = Arc::new(AtomicBool::new(false));

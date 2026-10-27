@@ -2297,3 +2297,20 @@ Serein-owned secret buffers use redacted zeroizing wrappers. The native text fie
 is masked and clears its undo history each frame. Transport/framework transient
 copies are not covered by a forensic-erasure claim. Completion, cancellation,
 expiry and session teardown release the pending check.
+
+### Main connection diagnostic history — October 26, 2026
+
+Each account connection keeps at most 32 fixed-size diagnostic observations in RAM,
+with formatted export capped at 8 KiB. Reasons are local enums; only numeric close codes,
+elapsed durations, attempt counts and queue occupancy are retained. No received close
+reason, Gateway payload, token, session/account identifier, source title or audio enters
+the report. The existing explicit Copy Issue Diagnostics action copies its session-only
+representation; nothing is automatically uploaded or written to a new log. A terminal
+failure leaves the report available for troubleshooting until another account session
+starts or the user signs out. Account changes clear both the transport owner and UI copy.
+
+The Gateway writer holds at most 16 packets and 64 KiB, including in-flight admission.
+Replaceable updates are coalesced and protocol/control capacity is reserved. Application
+audio source identities and native process handles are ephemeral capture state, never
+persisted preferences. Captured PCM retains the existing bounded queues; source retirement
+and security transitions discard pending audio before transmission can resume.

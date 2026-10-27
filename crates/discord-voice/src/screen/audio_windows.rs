@@ -1,4 +1,8 @@
+#[cfg(target_os = "windows")]
+use crate::screen::AudioStatus;
 use crate::screen::{AudioChunk, MAX_AUDIO_SAMPLES};
+#[cfg(target_os = "windows")]
+use std::sync::Mutex;
 use std::sync::{
 	Arc,
 	atomic::{AtomicBool, AtomicU64, Ordering},
@@ -9,22 +13,29 @@ use tokio::sync::mpsc::Sender;
 pub(super) struct Audio {
 	thread: Option<std::thread::JoinHandle<()>>,
 	stop: Arc<AtomicBool>,
-	failed: Arc<AtomicBool>,
 }
 
 #[cfg(target_os = "windows")]
+pub(super) use native::Target;
+
+#[cfg(target_os = "windows")]
 impl Audio {
+	#[allow(clippy::too_many_arguments)] // One selected target and its bounded audio/control outputs.
 	pub(super) fn start(
+		target: Target,
 		send: Sender<AudioChunk>,
 		stop: Arc<AtomicBool>,
 		cancel: Arc<AtomicBool>,
 		ready: Arc<AtomicBool>,
 		audio_epoch: Arc<AtomicU64>,
+		status: Arc<Mutex<AudioStatus>>,
 	) -> Result<Self, &'static str> {
+		let audio_stop = Arc::new(AtomicBool::new(false));
 		let failed = Arc::new(AtomicBool::new(false));
 		let input = Samples {
 			send,
-			stop: stop.clone(),
+			stop: audio_stop.clone(),
+			capture_stop: stop,
 			cancel,
 			ready,
 			epoch: audio_epoch,
@@ -34,16 +45,23 @@ impl Audio {
 		let thread = std::thread::Builder::new()
 			.name("screen-audio".into())
 			.spawn(move || {
-				if native::run(&input, started).is_err() && !input.cancel.load(Ordering::Acquire) {
+				let result = native::run(&input, &target, started, &status);
+				if (input.failed.load(Ordering::Acquire) || (result.is_err() && !input.stopped()))
+					&& !input.cancel.load(Ordering::Acquire)
+					&& !input.capture_stop.load(Ordering::Acquire)
+				{
 					input.failed.store(true, Ordering::Release);
 					input.stop.store(true, Ordering::Release);
+					crate::screen::set_audio_status(
+						&status,
+						AudioStatus::Unavailable(target.unavailable()),
+					);
 				}
 			})
 			.map_err(|_| "System audio worker could not start")?;
 		let audio = Self {
 			thread: Some(thread),
-			stop,
-			failed,
+			stop: audio_stop,
 		};
 		result
 			.recv_timeout(std::time::Duration::from_secs(4))
@@ -51,14 +69,6 @@ impl Audio {
 				|_| "Echo-free system audio could not start; Windows build 20348 or newer is required",
 			)?;
 		Ok(audio)
-	}
-
-	pub(super) fn failed(&self) -> bool {
-		self.failed.load(Ordering::Acquire)
-			|| self
-				.thread
-				.as_ref()
-				.is_some_and(std::thread::JoinHandle::is_finished)
 	}
 }
 
@@ -95,12 +105,97 @@ mod native {
 						PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0,
 					},
 				},
-				Threading::{CreateEventW, WaitForSingleObject},
+				Threading::{
+					CreateEventW, GetProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+					PROCESS_SYNCHRONIZE, WaitForSingleObject,
+				},
 				Variant::VT_BLOB,
 			},
 		},
 		core::{HRESULT, Interface, Ref, Result, implement},
 	};
+
+	pub(crate) enum Target {
+		System,
+		Application {
+			pid: u32,
+			window: windows_capture::window::Window,
+			// Keep the exact process object alive across activation and every security reset.
+			process: OwnedHandle,
+		},
+	}
+	impl Target {
+		pub(crate) fn application(
+			window: windows_capture::window::Window,
+		) -> std::result::Result<Self, &'static str> {
+			let pid = window
+				.process_id()
+				.map_err(|_| "Application audio is unavailable; sharing video only")?;
+			if pid == 0 || pid == std::process::id() {
+				return Err("This application's audio cannot be shared; sharing video only");
+			}
+			let process = unsafe {
+				OpenProcess(
+					PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+					false,
+					pid,
+				)
+			}
+			.map_err(
+				|_| "The selected application's audio cannot be isolated; sharing video only",
+			)?;
+			let target = Self::Application {
+				pid,
+				window,
+				process: unsafe { OwnedHandle::from_raw_handle(process.0) },
+			};
+			if !target.valid() {
+				return Err("The selected application changed or closed; sharing video only");
+			}
+			Ok(target)
+		}
+		fn valid(&self) -> bool {
+			match self {
+				Self::System => true,
+				Self::Application {
+					pid,
+					window,
+					process,
+				} => {
+					let handle = HANDLE(process.as_raw_handle());
+					owner_matches(
+						*pid,
+						window.process_id().ok(),
+						unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT,
+					) && unsafe { GetProcessId(handle) } == *pid
+				}
+			}
+		}
+		fn activation(&self) -> AUDIOCLIENT_ACTIVATION_PARAMS {
+			match self {
+				Self::System => activation_params(std::process::id(), false),
+				Self::Application { pid, .. } => activation_params(*pid, true),
+			}
+		}
+		fn status(&self) -> AudioStatus {
+			match self {
+				Self::System => AudioStatus::System,
+				Self::Application { .. } => AudioStatus::Application,
+			}
+		}
+		pub(super) fn unavailable(&self) -> &'static str {
+			match self {
+				Self::System => "System audio is unavailable; sharing video only",
+				Self::Application { .. } => {
+					"The selected application's audio stopped or is unavailable; sharing video only"
+				}
+			}
+		}
+	}
+
+	fn owner_matches(expected: u32, observed: Option<u32>, alive: bool) -> bool {
+		expected != 0 && alive && observed == Some(expected)
+	}
 
 	#[implement(IActivateAudioInterfaceCompletionHandler)]
 	struct Completion {
@@ -119,25 +214,34 @@ mod native {
 		}
 	}
 
-	fn activation_params(pid: u32) -> AUDIOCLIENT_ACTIVATION_PARAMS {
+	fn activation_params(pid: u32, include: bool) -> AUDIOCLIENT_ACTIVATION_PARAMS {
 		AUDIOCLIENT_ACTIVATION_PARAMS {
 			ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
 			Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
 				ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
 					TargetProcessId: pid,
-					ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+					ProcessLoopbackMode: if include {
+						PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
+					} else {
+						PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
+					},
 				},
 			},
 		}
 	}
 
-	pub(super) fn run(input: &Samples, started: SyncSender<()>) -> Result<()> {
+	pub(super) fn run(
+		input: &Samples,
+		target: &Target,
+		started: SyncSender<()>,
+		status: &Mutex<AudioStatus>,
+	) -> Result<()> {
 		// This dedicated thread initializes and releases all COM objects in one MTA.
 		unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
 		let result = (|| {
 			let mut started = Some(started);
 			while !input.stopped() && !input.send.is_closed() {
-				capture(input, &mut started)?;
+				capture(input, target, &mut started, status)?;
 			}
 			Ok(())
 		})();
@@ -145,11 +249,16 @@ mod native {
 		result
 	}
 
-	fn capture(input: &Samples, started: &mut Option<SyncSender<()>>) -> Result<()> {
-		if input.stopped() {
+	fn capture(
+		input: &Samples,
+		target: &Target,
+		started: &mut Option<SyncSender<()>>,
+		status: &Mutex<AudioStatus>,
+	) -> Result<()> {
+		if input.stopped() || !target.valid() {
 			return Err(E_FAIL.into());
 		}
-		let params = Arc::new(activation_params(std::process::id()));
+		let params = Arc::new(target.activation());
 		let (send, done) = sync_channel(1);
 		let completion: IActivateAudioInterfaceCompletionHandler = Completion {
 			send,
@@ -184,20 +293,20 @@ mod native {
 		};
 		let deadline = Instant::now() + Duration::from_secs(3);
 		loop {
-			if input.stopped() || Instant::now() >= deadline {
+			if input.stopped() || !target.valid() || Instant::now() >= deadline {
 				return Err(E_FAIL.into());
 			}
 			if done.recv_timeout(Duration::from_millis(50)).is_ok() {
 				break;
 			}
 		}
-		let mut status = HRESULT(0);
+		let mut activation_status = HRESULT(0);
 		let mut activated = None;
 		// Completion has fired; GetActivateResult returns an owned COM reference.
-		unsafe { operation.GetActivateResult(&mut status, &mut activated)? };
+		unsafe { operation.GetActivateResult(&mut activation_status, &mut activated)? };
 		drop(operation);
-		status.ok()?;
-		if input.stopped() || input.send.is_closed() {
+		activation_status.ok()?;
+		if input.stopped() || input.send.is_closed() || !target.valid() {
 			return Err(E_FAIL.into());
 		}
 		let event = unsafe { CreateEventW(None, false, false, None)? };
@@ -231,7 +340,7 @@ mod native {
 		}
 		let capture: IAudioCaptureClient = unsafe { client.GetService()? };
 		unsafe { client.SetEventHandle(HANDLE(event.as_raw_handle()))? };
-		if input.stopped() || input.send.is_closed() {
+		if input.stopped() || input.send.is_closed() || !target.valid() {
 			return Err(E_FAIL.into());
 		}
 		let epoch = input.epoch.load(Ordering::Acquire);
@@ -239,12 +348,17 @@ mod native {
 		metrics.checkpoint();
 		let start = metrics.start();
 		unsafe { client.Start()? };
+		if input.stopped() || !target.valid() {
+			let _ = unsafe { client.Stop() };
+			return Err(E_FAIL.into());
+		}
+		crate::screen::set_audio_status(status, target.status());
 		metrics.finish(Stage::CaptureRestart, start);
 		metrics.checkpoint();
 		if let Some(started) = started.take() {
 			let _ = started.try_send(());
 		}
-		let result = packets(input, &capture, &event, epoch, &mut metrics);
+		let result = packets(input, target, &capture, &event, epoch, &mut metrics);
 		// Always stop before releasing the capture client and event, including packet errors.
 		let stopped = unsafe { client.Stop() };
 		result.and(stopped)
@@ -252,12 +366,16 @@ mod native {
 
 	fn packets(
 		input: &Samples,
+		target: &Target,
 		capture: &IAudioCaptureClient,
 		event: &OwnedHandle,
 		epoch: u64,
 		metrics: &mut Metrics,
 	) -> Result<()> {
 		while !input.stopped() && !input.send.is_closed() {
+			if !target.valid() {
+				return Err(E_FAIL.into());
+			}
 			if input.epoch.load(Ordering::Acquire) != epoch {
 				// Stop/Reset/Start can leave process loopback permanently empty on Windows.
 				// Recreate it instead; the old client's immutable epoch prevents buffered
@@ -277,7 +395,10 @@ mod native {
 			let mut dropped = 0;
 			// Bound work per wakeup as well as the bytes in each packet.
 			for _ in 0..32 {
-				if input.stopped() || unsafe { capture.GetNextPacketSize()? } == 0 {
+				if input.stopped()
+					|| !target.valid()
+					|| unsafe { capture.GetNextPacketSize()? } == 0
+				{
 					break;
 				}
 				let start = metrics.start();
@@ -288,7 +409,7 @@ mod native {
 				let valid = count <= MAX_AUDIO_SAMPLES
 					&& (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0
 						|| (!data.is_null() && data.align_offset(align_of::<f32>()) == 0));
-				if valid && count != 0 {
+				if valid && count != 0 && target.valid() {
 					let start = metrics.start();
 					let queued = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
 						input.push_at(&[0.0; MAX_AUDIO_SAMPLES][..count], epoch)
@@ -320,7 +441,7 @@ mod native {
 		use super::*;
 		#[test]
 		fn activation_excludes_our_entire_process_tree() {
-			let params = activation_params(42);
+			let params = activation_params(42, false);
 			assert_eq!(
 				params.ActivationType,
 				AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK
@@ -332,12 +453,33 @@ mod native {
 				PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE
 			);
 		}
+		#[test]
+		fn activation_includes_only_the_selected_application_tree() {
+			let params = activation_params(1234, true);
+			let process = unsafe { params.Anonymous.ProcessLoopbackParams };
+			assert_eq!(process.TargetProcessId, 1234);
+			assert_eq!(
+				process.ProcessLoopbackMode,
+				PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
+			);
+			assert_eq!(Target::System.status(), AudioStatus::System);
+		}
+		#[test]
+		fn closed_or_reassigned_windows_never_retarget_audio() {
+			assert!(owner_matches(42, Some(42), true));
+			assert!(!owner_matches(42, Some(43), true));
+			assert!(!owner_matches(42, Some(42), false));
+			assert!(!owner_matches(42, None, true));
+			assert!(!owner_matches(0, Some(0), true));
+		}
 	}
 }
 
 struct Samples {
 	send: Sender<AudioChunk>,
+	/// This stop belongs only to audio; malformed PCM must not stop video.
 	stop: Arc<AtomicBool>,
+	capture_stop: Arc<AtomicBool>,
 	cancel: Arc<AtomicBool>,
 	ready: Arc<AtomicBool>,
 	epoch: Arc<AtomicU64>,
@@ -346,7 +488,9 @@ struct Samples {
 
 impl Samples {
 	fn stopped(&self) -> bool {
-		self.stop.load(Ordering::Acquire) || self.cancel.load(Ordering::Acquire)
+		self.stop.load(Ordering::Acquire)
+			|| self.capture_stop.load(Ordering::Acquire)
+			|| self.cancel.load(Ordering::Acquire)
 	}
 	#[cfg(test)]
 	fn push(&self, data: &[f32]) {
@@ -403,6 +547,7 @@ mod tests {
 		let samples = Samples {
 			send,
 			stop: Arc::new(AtomicBool::new(false)),
+			capture_stop: Arc::new(AtomicBool::new(false)),
 			cancel: Arc::new(AtomicBool::new(false)),
 			ready: Arc::new(AtomicBool::new(false)),
 			epoch: Arc::new(AtomicU64::new(7)),
@@ -428,6 +573,11 @@ mod tests {
 		samples.push(&[0.25, -0.25]);
 		assert!(receive.try_recv().is_err());
 		samples.stop.store(false, Ordering::Release);
+		samples.capture_stop.store(true, Ordering::Release);
+		samples.push(&[0.25, -0.25]);
+		assert!(receive.try_recv().is_err());
+		assert!(samples.stopped());
+		samples.capture_stop.store(false, Ordering::Release);
 		// User cancellation reaches loopback immediately, independently of
 		// an encoder worker which has not finished unwinding native resources.
 		samples.cancel.store(true, Ordering::Release);
@@ -440,6 +590,10 @@ mod tests {
 		samples.push(&vec![0.0; MAX_AUDIO_SAMPLES + 2]);
 		assert!(samples.failed.load(Ordering::Acquire));
 		assert!(samples.stop.load(Ordering::Acquire));
+		assert!(
+			!samples.capture_stop.load(Ordering::Acquire),
+			"audio failure cannot stop video"
+		);
 		assert!(receive.try_recv().is_err());
 	}
 }

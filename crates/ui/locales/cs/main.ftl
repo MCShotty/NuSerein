@@ -5234,3 +5234,9 @@ menu-close = Zavřít
 menu-back = Zpět
 menu-open-discord = Otevřít v Discordu
 menu-application = Aplikace
+
+screen-audio-application = Sdílet zvuk aplikace
+screen-audio-application-description = Sdílí se pouze zvuk vybrané aplikace a jejích pomocných procesů. Ostatní aplikace zůstávají soukromé.
+screen-audio-system-description = Sdílet zvuk systému kromě Serein, aby se zabránilo ozvěně hovoru.
+screen-audio-selected-source = Sdílet zvuk
+screen-audio-selected-source-description = Okna sdílejí pouze zvuk své aplikace, monitory zvuk systému. Pokud izolace není dostupná, video pokračuje bez zvuku.

@@ -236,6 +236,28 @@ pub(super) fn publish_output(
 	Ok(current)
 }
 
+/// Effective native capture state; requested audio remains a separate saved choice.
+/// Reasons are fixed local labels, never process names or operating-system errors.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AudioStatus {
+	#[default]
+	Disabled,
+	Pending,
+	Application,
+	System,
+	Unavailable(&'static str),
+}
+impl AudioStatus {
+	pub fn active(self) -> bool {
+		matches!(self, Self::Application | Self::System)
+	}
+}
+pub(super) fn set_audio_status(status: &Mutex<AudioStatus>, value: AudioStatus) {
+	if let Ok(mut status) = status.lock() {
+		*status = value;
+	}
+}
+
 /// Longest system-audio chunk accepted from the OS: 100 ms of 48 kHz stereo.
 pub const MAX_AUDIO_SAMPLES: usize = 4800 * 2;
 
@@ -447,9 +469,16 @@ pub struct Video {
 	/// Interleaved 48 kHz stereo system audio, present only when the share requested it.
 	pub audio: Option<tokio::sync::mpsc::Receiver<AudioChunk>>,
 	pub audio_epoch: Arc<AtomicU64>,
+	pub audio_status: Arc<Mutex<AudioStatus>>,
 }
 
 impl Video {
+	pub fn audio_status(&self) -> AudioStatus {
+		self.audio_status.lock().map_or(
+			AudioStatus::Unavailable("Shared audio state is unavailable"),
+			|status| *status,
+		)
+	}
 	pub(crate) fn output(&self) -> Option<Output> {
 		self.output
 			.lock()
@@ -520,6 +549,7 @@ pub struct Worker {
 	#[cfg(target_os = "linux")]
 	status: Arc<Mutex<&'static str>>,
 	preview_visible: Arc<AtomicBool>,
+	audio_status: Arc<Mutex<AudioStatus>>,
 }
 
 impl Worker {
@@ -547,6 +577,12 @@ impl Worker {
 		let ready = Arc::new(AtomicBool::new(false));
 		let audio_epoch = Arc::new(AtomicU64::new(0));
 		let worker_audio_epoch = audio_epoch.clone();
+		let audio_status = Arc::new(Mutex::new(if settings.audio {
+			AudioStatus::Pending
+		} else {
+			AudioStatus::Disabled
+		}));
+		let worker_audio_status = audio_status.clone();
 		let keyframe = Arc::new(AtomicBool::new(true));
 		let bitrate = Arc::new(AtomicU32::new(model::voice_settings::VideoBitrate::MINIMUM));
 		let output = Arc::new(Mutex::new(None));
@@ -577,6 +613,7 @@ impl Worker {
 				// The MFT event poll and capture pacing sleep 1 ms at a time.
 				let _resolution = crate::timer::Resolution::acquire();
 				let finished_ready = worker_ready.clone();
+				let finished_audio_status = worker_audio_status.clone();
 				#[cfg(target_os = "linux")]
 				let result = linux::run(
 					settings,
@@ -590,6 +627,7 @@ impl Worker {
 					send,
 					audio_send,
 					worker_audio_epoch,
+					worker_audio_status,
 					worker_preview,
 					worker_status,
 					worker_preview_visible,
@@ -609,12 +647,18 @@ impl Worker {
 					send,
 					audio_send,
 					worker_audio_epoch,
+					worker_audio_status,
 					worker_preview,
 					worker_preview_visible,
 					worker_progress.clone(),
 					&wake,
 				);
 				finished_ready.store(false, Ordering::Release);
+				if let Ok(mut status) = finished_audio_status.lock()
+					&& !matches!(*status, AudioStatus::Unavailable(_))
+				{
+					*status = AudioStatus::Disabled;
+				}
 				if let Ok(mut state) = worker_progress.0.lock() {
 					state.snapshot.operation = None;
 				}
@@ -642,6 +686,7 @@ impl Worker {
 				#[cfg(target_os = "linux")]
 				status,
 				preview_visible,
+				audio_status: audio_status.clone(),
 			},
 			Video {
 				progress,
@@ -653,6 +698,7 @@ impl Worker {
 				bitrate,
 				audio,
 				audio_epoch,
+				audio_status,
 			},
 		))
 	}
@@ -665,6 +711,11 @@ impl Worker {
 	}
 
 	pub fn capture_status(&self) -> Option<&'static str> {
+		if let Ok(status) = self.audio_status.try_lock()
+			&& let AudioStatus::Unavailable(reason) = *status
+		{
+			return Some(reason);
+		}
 		#[cfg(target_os = "linux")]
 		return self.status.try_lock().ok().map(|status| *status);
 		#[cfg(not(target_os = "linux"))]
@@ -812,6 +863,7 @@ fn encode_loop(
 	send: tokio::sync::mpsc::Sender<EncodedFrame>,
 	audio: Option<tokio::sync::mpsc::Sender<AudioChunk>>,
 	audio_epoch: Arc<AtomicU64>,
+	audio_status: Arc<Mutex<AudioStatus>>,
 	preview: Arc<Mutex<Option<image::RgbaImage>>>,
 	preview_visible: Arc<AtomicBool>,
 	progress: Arc<Progress>,
@@ -836,6 +888,7 @@ fn encode_loop(
 		stop.clone(),
 		ready.clone(),
 		audio_epoch.clone(),
+		audio_status.clone(),
 		raw_pending.clone(),
 		adapter,
 		true,
@@ -849,6 +902,7 @@ fn encode_loop(
 		capture_stop.clone(),
 		ready.clone(),
 		audio_epoch.clone(),
+		audio_status.clone(),
 		stop.clone(),
 		&progress,
 	)?;
@@ -2189,6 +2243,7 @@ mod tests {
 			#[cfg(target_os = "linux")]
 			status: Arc::new(Mutex::new("synthetic")),
 			preview_visible: Arc::new(AtomicBool::new(false)),
+			audio_status: Arc::new(Mutex::new(AudioStatus::Disabled)),
 		};
 		let done = worker.shutdown();
 		assert!(stop.load(Ordering::Acquire));
@@ -2212,6 +2267,7 @@ mod tests {
 			#[cfg(target_os = "linux")]
 			status: Arc::new(Mutex::new("synthetic")),
 			preview_visible: Arc::new(AtomicBool::new(true)),
+			audio_status: Arc::new(Mutex::new(AudioStatus::Disabled)),
 		};
 		worker.set_preview_visible(false);
 		assert!(worker.take_preview().is_none());
@@ -2318,6 +2374,7 @@ mod tests {
 			bitrate: bitrate.clone(),
 			audio: None,
 			audio_epoch: Arc::new(AtomicU64::new(0)),
+			audio_status: Arc::new(Mutex::new(AudioStatus::Disabled)),
 		};
 		assert!(video.enable_output(first));
 		assert_eq!(
@@ -2603,6 +2660,7 @@ mod tests {
 			#[cfg(target_os = "linux")]
 			status: Arc::new(Mutex::new("")),
 			preview_visible: Arc::new(AtomicBool::new(true)),
+			audio_status: Arc::new(Mutex::new(AudioStatus::Disabled)),
 		};
 		assert!(worker.take_preview().is_some());
 		assert!(worker.take_preview().is_none());

@@ -590,6 +590,9 @@ impl Desktop {
 				events.push(failure);
 			}
 			terminal = *connection.terminal.borrow();
+			if terminal.is_some() {
+				connection.copy_diagnostics_to(&mut self.messaging);
+			}
 		}
 		let mut persist_timeline = false;
 		let mut full_window = false;
