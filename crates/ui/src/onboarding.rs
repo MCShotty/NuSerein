@@ -218,6 +218,7 @@ impl OnboardingUi {
 			if option_card(
 				ui,
 				selected,
+				prompt.single_select,
 				option.emoji.as_deref(),
 				&option.title,
 				option.description.as_deref(),
@@ -330,6 +331,7 @@ fn field_ui(ui: &mut egui::Ui, field: &Field, answer: &mut Answer) {
 fn option_card(
 	ui: &mut egui::Ui,
 	selected: bool,
+	single_select: bool,
 	emoji: Option<&str>,
 	title: &str,
 	detail: Option<&str>,
@@ -381,8 +383,26 @@ fn option_card(
 			egui::Sense::hover()
 		},
 	);
-	response
-		.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, enabled, selected, title));
+	response.widget_info(|| {
+		egui::WidgetInfo::selected(
+			if single_select {
+				egui::Role::RadioButton
+			} else {
+				egui::Role::CheckBox
+			},
+			enabled,
+			selected,
+			title,
+		)
+	});
+	if enabled && response.has_focus() {
+		ui.painter().rect_stroke(
+			response.rect.shrink(1.0),
+			8,
+			egui::Stroke::new(2.0, colors.accent),
+			egui::StrokeKind::Inside,
+		);
+	}
 	if response.hovered() && enabled {
 		ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
 	}
@@ -402,4 +422,153 @@ fn server_name(state: &State, guild: Id) -> String {
 				.and_then(|preview| preview.embed.title.clone())
 		})
 		.unwrap_or_else(|| translate("onboarding-show-this-server"))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use model::onboarding::PromptOption;
+	use std::cell::Cell;
+
+	fn input(events: Vec<egui::Event>) -> egui::RawInput {
+		egui::RawInput {
+			screen_rect: Some(egui::Rect::from_min_size(
+				egui::Pos2::ZERO,
+				egui::vec2(480.0, 400.0),
+			)),
+			focused: true,
+			events,
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn onboarding_options_expose_selection_role_and_visible_keyboard_focus() {
+		for single in [true, false] {
+			let ctx = egui::Context::default();
+			ctx.enable_accesskit();
+			let id = Cell::new(egui::Id::NULL);
+			let rect = Cell::new(egui::Rect::NOTHING);
+			let selected = Cell::new(false);
+			let render = |events| {
+				ctx.run_ui(input(events), |ui| {
+					let response =
+						option_card(ui, selected.get(), single, None, "Synthetic answer", None);
+					id.set(response.id);
+					rect.set(response.rect);
+					if response.clicked() {
+						selected.set(!selected.get());
+					}
+				})
+			};
+			let output = render(vec![]);
+			let node = output
+				.platform_output
+				.accesskit_update
+				.as_ref()
+				.unwrap()
+				.nodes
+				.iter()
+				.find(|(_, node)| {
+					node.label() == Some("Synthetic answer")
+						&& matches!(node.role(), egui::Role::RadioButton | egui::Role::CheckBox)
+				})
+				.unwrap();
+			assert_eq!(
+				node.1.role(),
+				if single {
+					egui::Role::RadioButton
+				} else {
+					egui::Role::CheckBox
+				}
+			);
+			output.drop_without_applying_deltas();
+			ctx.memory_mut(|memory| memory.request_focus(id.get()));
+			let output = render(vec![]);
+			assert!(output.shapes.iter().any(|shape| matches!(
+				&shape.shape,
+				egui::Shape::Rect(border)
+					if border.rect == rect.get().shrink(1.0) && border.stroke.width == 2.0
+			)));
+			output.drop_without_applying_deltas();
+			let output = render(vec![egui::Event::Key {
+				key: egui::Key::Space,
+				physical_key: None,
+				pressed: true,
+				repeat: false,
+				modifiers: egui::Modifiers::NONE,
+			}]);
+			output.drop_without_applying_deltas();
+			assert!(selected.get(), "Space activates the focused answer");
+		}
+	}
+
+	#[test]
+	fn onboarding_prompt_keeps_single_and_multiple_selection_behavior() {
+		for single in [true, false] {
+			let ctx = egui::Context::default();
+			ctx.enable_accesskit();
+			let mut view = OnboardingUi::default();
+			let prompt = Prompt {
+				id: Id(1),
+				title: "Question".into(),
+				single_select: single,
+				required: false,
+				options: ["First answer", "Second answer"]
+					.into_iter()
+					.enumerate()
+					.map(|(index, title)| PromptOption {
+						id: Id(index as u64 + 10),
+						title: title.into(),
+						description: None,
+						emoji: None,
+					})
+					.collect(),
+			};
+			let frame = |view: &mut OnboardingUi, events| {
+				ctx.run_ui(input(events), |ui| view.prompt(ui, &prompt))
+			};
+			let output = frame(&mut view, vec![]);
+			let nodes = &output
+				.platform_output
+				.accesskit_update
+				.as_ref()
+				.unwrap()
+				.nodes;
+			let positions = ["First answer", "Second answer"].map(|label| {
+				let node = &nodes
+					.iter()
+					.find(|(_, node)| {
+						node.label() == Some(label)
+							&& matches!(node.role(), egui::Role::RadioButton | egui::Role::CheckBox)
+					})
+					.unwrap()
+					.1;
+				let bounds = node.bounds().unwrap();
+				egui::pos2(
+					((bounds.x0 + bounds.x1) / 2.0) as f32,
+					((bounds.y0 + bounds.y1) / 2.0) as f32,
+				)
+			});
+			output.drop_without_applying_deltas();
+			for pos in [positions[0], positions[1], positions[1]] {
+				for pressed in [true, false] {
+					frame(
+						&mut view,
+						vec![
+							egui::Event::PointerMoved(pos),
+							egui::Event::PointerButton {
+								pos,
+								button: egui::PointerButton::Primary,
+								pressed,
+								modifiers: egui::Modifiers::NONE,
+							},
+						],
+					)
+					.drop_without_applying_deltas();
+				}
+			}
+			assert_eq!(view.chosen, if single { vec![] } else { vec![Id(10)] });
+		}
+	}
 }

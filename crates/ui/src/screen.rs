@@ -138,10 +138,10 @@ impl ScreenUi {
 				]
 			};
 			self.selected = self.sources.first().map(|source| source.id);
-			self.status = "Offline preview · no screen is captured";
+			self.status = "screen-source-status-offline";
 		} else {
 			self.refresh_requested = true;
-			self.status = "Looking for screens and windows…";
+			self.status = "screen-source-status-loading";
 		}
 	}
 	fn resolution_choice(
@@ -283,7 +283,7 @@ impl ScreenUi {
 				{
 					self.sources.clear();
 					self.refresh_requested = true;
-					self.status = "Looking for screens and windows…";
+					self.status = "screen-source-status-loading";
 				}
 			});
 		});
@@ -388,7 +388,7 @@ impl ScreenUi {
 					ui.set_width(ui.available_width());
 					ui.add(
 						egui::Label::new(
-							egui::RichText::new(self.status)
+							egui::RichText::new(crate::i18n::translate_if_key(self.status))
 								.size(12.0)
 								.color(colors.muted),
 						)
@@ -458,39 +458,50 @@ impl ScreenUi {
 					colors.muted
 				},
 			);
-			let text_left = rect.left() + 46.0;
-			let text_width = (rect.right() - 36.0 - text_left).max(40.0);
+			let text_left = (rect.left() + 46.0).min(rect.right());
+			let text_width = (rect.right() - 36.0 - text_left).max(0.0);
 			let source_name = if source.id == SourceId::SystemPicker {
 				crate::i18n::translate("screen-macos-system-picker")
 			} else {
 				source.name.clone()
 			};
-			let name = ui.painter().layout(
+			// Both labels occupy one line inside the fixed-height row, even for
+			// long window titles and large text scales. Keep the full name in the
+			// accessible label and hover text below.
+			let layout = |text: String, font: egui::FontId, color: egui::Color32| {
+				let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
+				job.wrap.max_width = text_width;
+				job.wrap.max_rows = 1;
+				job.wrap.break_anywhere = true;
+				job.wrap.overflow_character = Some('…');
+				ui.painter().layout_job(job)
+			};
+			let name = layout(
 				source_name.clone(),
 				egui::FontId::new(14.0, crate::design::medium_family(ui.ctx())),
 				colors.text_strong,
-				text_width,
 			);
-			let kind = ui.painter().layout_no_wrap(
+			let kind = layout(
 				match source.id {
-					SourceId::Display(_) | SourceId::X11Desktop => "Screen".to_owned(),
-					SourceId::Window(_) => "Window".to_owned(),
+					SourceId::Display(_) | SourceId::X11Desktop => {
+						crate::i18n::translate("screen-source-kind-screen")
+					}
+					SourceId::Window(_) => crate::i18n::translate("screen-source-kind-window"),
 					SourceId::SystemPicker => {
 						crate::i18n::translate("screen-macos-system-picker-kind")
 					}
 					#[allow(unreachable_patterns)] // Portal may be absent outside Linux.
-					_ => "System permission dialog".to_owned(),
+					_ => crate::i18n::translate("screen-source-kind-portal"),
 				},
 				egui::FontId::proportional(11.0),
 				colors.muted,
 			);
 			let total = name.size().y + kind.size().y;
 			let mut y = rect.center().y - total * 0.5;
-			ui.painter()
-				.galley(egui::pos2(text_left, y), name, colors.text_strong);
+			let painter = ui.painter().with_clip_rect(rect);
+			painter.galley(egui::pos2(text_left, y), name, colors.text_strong);
 			y += total - kind.size().y;
-			ui.painter()
-				.galley(egui::pos2(text_left, y), kind, colors.muted);
+			painter.galley(egui::pos2(text_left, y), kind, colors.muted);
 			if selected {
 				crate::icons::paint(
 					ui.painter(),
@@ -505,6 +516,7 @@ impl ScreenUi {
 			response.widget_info(|| {
 				egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, &source_name)
 			});
+			let response = response.on_hover_text(&source_name);
 			if response.clicked() {
 				self.selected = Some(source.id);
 			}
@@ -558,6 +570,145 @@ fn segment(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn long_source_names_stay_inside_rows_and_keep_full_accessible_names() {
+		let long_name = "A very long window title with many words and details ".repeat(8);
+		for width in [120.0, 220.0] {
+			for scale in [1.0, 2.0] {
+				let ctx = egui::Context::default();
+				ctx.enable_accesskit();
+				ctx.set_pixels_per_point(scale);
+				let mut picker = ScreenUi::default();
+				picker.replace_sources(vec![
+					Source {
+						id: SourceId::Window(1),
+						name: long_name.clone(),
+						dimensions: Some((1920, 1080)),
+					},
+					Source {
+						id: SourceId::Window(2),
+						name: "Second window".into(),
+						dimensions: Some((1600, 900)),
+					},
+				]);
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(400.0, 300.0),
+						)),
+						focused: true,
+						..Default::default()
+					},
+					|ui| {
+						ui.set_width(width);
+						picker.source_list(ui);
+					},
+				);
+				let label = output
+					.shapes
+					.iter()
+					.find(
+						|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == long_name),
+					)
+					.expect("source name is rendered");
+				let egui::Shape::Text(text) = &label.shape else {
+					unreachable!()
+				};
+				assert_eq!(
+					text.galley.rows.len(),
+					1,
+					"source names must not wrap into adjacent rows"
+				);
+				assert!(
+					label.clip_rect.height() <= 48.0,
+					"source text must be clipped to its row"
+				);
+				assert!(
+					output
+						.platform_output
+						.accesskit_update
+						.as_ref()
+						.unwrap()
+						.nodes
+						.iter()
+						.any(|(_, node)| node.label() == Some(long_name.as_str())),
+					"the full source name remains accessible"
+				);
+				let next = output.shapes.iter().find(|shape| {
+					matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Second window")
+				}).expect("second source is rendered").clip_rect.center();
+				output.drop_without_applying_deltas();
+				for pressed in [true, false] {
+					ctx.run_ui(
+						egui::RawInput {
+							screen_rect: Some(egui::Rect::from_min_size(
+								egui::Pos2::ZERO,
+								egui::vec2(400.0, 300.0),
+							)),
+							events: vec![
+								egui::Event::PointerMoved(next),
+								egui::Event::PointerButton {
+									pos: next,
+									button: egui::PointerButton::Primary,
+									pressed,
+									modifiers: egui::Modifiers::NONE,
+								},
+							],
+							focused: true,
+							..Default::default()
+						},
+						|ui| {
+							ui.set_width(width);
+							picker.source_list(ui);
+						},
+					)
+					.drop_without_applying_deltas();
+				}
+				assert_eq!(picker.selected, Some(SourceId::Window(2)));
+			}
+		}
+	}
+
+	#[test]
+	fn source_status_translates_known_keys_and_preserves_backend_errors() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		let state = test_support::demo_state();
+		for (status, expected) in [
+			(
+				"screen-source-status-loading",
+				"Looking for screens and windows…",
+			),
+			(
+				"screen-source-status-empty",
+				"No shareable screens or windows were found",
+			),
+			("A backend error", "A backend error"),
+		] {
+			let ctx = egui::Context::default();
+			let mut picker = ScreenUi {
+				status,
+				..Default::default()
+			};
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(600.0, 1000.0),
+					)),
+					..Default::default()
+				},
+				|ui| picker.body(ui, &state),
+			);
+			assert!(
+				output.shapes.iter().any(|shape| matches!(
+					&shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected
+				)),
+				"missing rendered status: {expected}"
+			);
+			output.drop_without_applying_deltas();
+		}
+	}
 	#[test]
 	fn audio_controls_describe_the_selected_source_without_widening_picker_scope() {
 		assert_eq!(

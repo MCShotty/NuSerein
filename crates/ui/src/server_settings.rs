@@ -628,6 +628,18 @@ impl MessagingUi {
 				.load(state, guild, page == Page::Members)
 		}
 	}
+	pub(super) fn navigate_away_from_server_settings(&mut self, state: &mut State) -> bool {
+		if self.server_settings.navigate_away(state) {
+			true
+		} else {
+			self.toasts.push(
+				design::Level::Warning,
+				crate::i18n::translate("server-settings-save-before-leaving"),
+			);
+			false
+		}
+	}
+
 	pub(super) fn open_member_audit(
 		&mut self,
 		state: &mut State,
@@ -639,6 +651,10 @@ impl MessagingUi {
 		}
 		if self.has_server_settings_changes() {
 			state.status = "Save or reset server settings before opening the member audit log.";
+			self.toasts.push(
+				design::Level::Warning,
+				crate::i18n::translate("admin-member-audit-save"),
+			);
 			return None;
 		}
 		let command = state.request_server_admin(
@@ -666,10 +682,18 @@ impl MessagingUi {
 		}
 		if self.has_server_settings_changes() {
 			state.status = "Save or discard server settings changes before opening member review.";
+			self.toasts.push(
+				design::Level::Warning,
+				crate::i18n::translate("admin-member-review-save"),
+			);
 			return None;
 		}
 		if state.server_admin.saving {
 			state.status = "Finish the current server action before opening member review.";
+			self.toasts.push(
+				design::Level::Warning,
+				crate::i18n::translate("admin-member-review-pending"),
+			);
 			return None;
 		}
 		let query = model::server_admin::Query {
@@ -1218,18 +1242,16 @@ impl Editor {
 				state.server_settings.saving || state.server_admin.saving || self.invites.busy();
 			let mut confirmation = dialog::Confirm::new(
 				"discard-server-settings",
-				"Discard unsaved changes?",
-				"Your changes to this server will be lost.",
+				"channel-menu-discard-title",
+				"server-settings-discard-message",
 			)
 			.danger()
-			.confirm_label("Discard Changes")
-			.cancel_label("Keep Editing")
+			.confirm_label("channel-menu-discard-confirm")
+			.cancel_label("channel-menu-discard-keep")
 			.enabled(!busy);
 			if busy {
-				confirmation = confirmation.note(
-					dialog::Level::Info,
-					"Wait for the current save to finish before closing.",
-				);
+				confirmation =
+					confirmation.note(dialog::Level::Info, "server-settings-discard-busy");
 			}
 			match confirmation.show(ctx) {
 				Some(dialog::Choice::Confirmed) => {
@@ -2773,6 +2795,225 @@ mod navigation_tests {
 				modifiers: egui::Modifiers::NONE,
 			},
 		]
+	}
+
+	#[test]
+	fn translated_discard_confirmation_keeps_draft_and_blocks_discard_while_saving() {
+		let (mut state, _guild, mut editor) = fixture();
+		crate::i18n::set_current(crate::i18n::Language::Czech);
+		editor.draft.as_mut().unwrap().name = "Edited synthetic server".into();
+		editor.discard = true;
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		for _ in 0..3 {
+			let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+			for key in [
+				"channel-menu-discard-title",
+				"server-settings-discard-message",
+				"channel-menu-discard-confirm",
+				"channel-menu-discard-keep",
+			] {
+				let label = crate::i18n::translate(key);
+				let _ = text_position(&output, &label);
+			}
+			output.drop_without_applying_deltas();
+		}
+		let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+		let keep = text_position(
+			&output,
+			&crate::i18n::translate("channel-menu-discard-keep"),
+		);
+		output.drop_without_applying_deltas();
+		let (output, commands) = access_frame(&ctx, &mut editor, &mut state, click(keep));
+		output.drop_without_applying_deltas();
+		assert!(!editor.discard);
+		assert_eq!(
+			editor.draft.as_ref().unwrap().name,
+			"Edited synthetic server"
+		);
+		assert!(
+			commands
+				.iter()
+				.all(|command| client_core::mfa::Target::from_command(command).is_none())
+		);
+
+		editor.discard = true;
+		state.server_settings.saving = true;
+		for _ in 0..3 {
+			let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+			let _ = text_position(
+				&output,
+				&crate::i18n::translate("server-settings-discard-busy"),
+			);
+			output.drop_without_applying_deltas();
+		}
+		let (output, _) = access_frame(&ctx, &mut editor, &mut state, vec![]);
+		let discard = text_position(
+			&output,
+			&crate::i18n::translate("channel-menu-discard-confirm"),
+		);
+		output.drop_without_applying_deltas();
+		let (output, commands) = access_frame(&ctx, &mut editor, &mut state, click(discard));
+		output.drop_without_applying_deltas();
+		assert!(editor.discard && editor.is_open());
+		assert_eq!(
+			editor.draft.as_ref().unwrap().name,
+			"Edited synthetic server"
+		);
+		assert!(
+			commands
+				.iter()
+				.all(|command| client_core::mfa::Target::from_command(command).is_none())
+		);
+		crate::i18n::set_current(crate::i18n::Language::English);
+	}
+
+	#[test]
+	fn blocked_settings_exit_preserves_draft_and_shows_one_localized_notice() {
+		let (mut state, _, mut editor) = fixture();
+		crate::i18n::set_current(crate::i18n::Language::Czech);
+		editor.draft.as_mut().unwrap().name = "Edited synthetic server".into();
+		let mut view = MessagingUi {
+			server_settings: editor,
+			..Default::default()
+		};
+		let selected = state.selected;
+		for _ in 0..2 {
+			assert!(!view.navigate_away_from_server_settings(&mut state));
+		}
+		assert!(view.server_settings.is_open());
+		assert_eq!(
+			view.server_settings.draft.as_ref().unwrap().name,
+			"Edited synthetic server"
+		);
+		assert_eq!(state.selected, selected);
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let warmup = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(900.0, 700.0),
+				)),
+				..Default::default()
+			},
+			|_| view.toasts.show(&ctx, 0.0),
+		);
+		warmup.drop_without_applying_deltas();
+		let output = ctx.run_ui(
+			egui::RawInput {
+				screen_rect: Some(egui::Rect::from_min_size(
+					egui::Pos2::ZERO,
+					egui::vec2(900.0, 700.0),
+				)),
+				..Default::default()
+			},
+			|_| view.toasts.show(&ctx, 0.0),
+		);
+		fn count(shape: &egui::Shape, text: &str) -> usize {
+			match shape {
+				egui::Shape::Text(value) => usize::from(value.galley.job.text == text),
+				egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, text)).sum(),
+				_ => 0,
+			}
+		}
+		let notice = crate::i18n::translate("server-settings-save-before-leaving");
+		let visible = output
+			.shapes
+			.iter()
+			.map(|shape| count(&shape.shape, &notice))
+			.sum::<usize>();
+		output.drop_without_applying_deltas();
+		assert_eq!(visible, 1);
+		crate::i18n::set_current(crate::i18n::Language::English);
+	}
+
+	#[test]
+	fn blocked_member_routes_show_one_localized_notice_and_preserve_the_draft() {
+		fn notice_count(view: &mut MessagingUi, ctx: &egui::Context, key: &str) -> usize {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(900.0, 700.0),
+					)),
+					..Default::default()
+				},
+				|_| view.toasts.show(ctx, 0.0),
+			);
+			fn count(shape: &egui::Shape, text: &str) -> usize {
+				match shape {
+					egui::Shape::Text(value) => usize::from(value.galley.job.text == text),
+					egui::Shape::Vec(shapes) => shapes.iter().map(|shape| count(shape, text)).sum(),
+					_ => 0,
+				}
+			}
+			let expected = crate::i18n::translate(key);
+			let total = output
+				.shapes
+				.iter()
+				.map(|shape| count(&shape.shape, &expected))
+				.sum();
+			output.drop_without_applying_deltas();
+			total
+		}
+		for (audit, key) in [
+			(true, "admin-member-audit-save"),
+			(false, "admin-member-review-save"),
+		] {
+			let (mut state, guild, mut editor) = fixture();
+			crate::i18n::set_current(crate::i18n::Language::Czech);
+			editor.draft.as_mut().unwrap().name = "Edited synthetic server".into();
+			let mut view = MessagingUi {
+				server_settings: editor,
+				..Default::default()
+			};
+			let selected = state.selected;
+			for _ in 0..2 {
+				let request = if audit {
+					view.open_member_audit(&mut state, guild, Id(777))
+				} else {
+					view.review_activity_members(&mut state, guild, Default::default())
+				};
+				assert!(request.is_none());
+			}
+			assert_eq!(
+				view.server_settings.draft.as_ref().unwrap().name,
+				"Edited synthetic server"
+			);
+			assert_eq!(state.selected, selected);
+			let ctx = egui::Context::default();
+			design::apply(&ctx);
+			let _ = notice_count(&mut view, &ctx, key);
+			for _ in 0..2 {
+				assert_eq!(
+					notice_count(&mut view, &ctx, key),
+					1,
+					"repeated attempts must not stack notices"
+				);
+			}
+		}
+		let (mut state, guild, editor) = fixture();
+		crate::i18n::set_current(crate::i18n::Language::Czech);
+		let mut view = MessagingUi {
+			server_settings: editor,
+			..Default::default()
+		};
+		state.server_admin.saving = true;
+		state.server_admin.pending = true;
+		assert!(
+			view.review_activity_members(&mut state, guild, Default::default())
+				.is_none()
+		);
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let _ = notice_count(&mut view, &ctx, "admin-member-review-pending");
+		assert_eq!(
+			notice_count(&mut view, &ctx, "admin-member-review-pending"),
+			1
+		);
+		assert!(view.server_settings.is_open());
+		crate::i18n::set_current(crate::i18n::Language::English);
 	}
 	fn access_fixture() -> (State, Id, Editor) {
 		let (mut state, guild, mut editor) = fixture();

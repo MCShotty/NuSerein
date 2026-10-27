@@ -3,8 +3,36 @@ use crate::{avatars::Avatars, design, icons, mentions, slash_builtin};
 use client_core::{Command, State};
 use model::{
 	Id,
-	application_commands::{CommandOption, Value},
+	application_commands::{CommandOption, OptionProblem, Value},
 };
+
+fn option_problem_text(problem: &OptionProblem) -> String {
+	let translate = crate::i18n::translate_args;
+	match problem {
+		OptionProblem::CharactersBetween(min, max) => translate(
+			"slash-option-chars-between",
+			&[("min", &min.to_string()), ("max", &max.to_string())],
+		),
+		OptionProblem::CharactersMinimum(min) => {
+			translate("slash-option-chars-min", &[("min", &min.to_string())])
+		}
+		OptionProblem::CharactersMaximum(max) => {
+			translate("slash-option-chars-max", &[("max", &max.to_string())])
+		}
+		OptionProblem::NumberBetween(min, max) => {
+			translate("slash-option-number-between", &[("min", min), ("max", max)])
+		}
+		OptionProblem::NumberMinimum(min) => translate("slash-option-number-min", &[("min", min)]),
+		OptionProblem::NumberMaximum(max) => translate("slash-option-number-max", &[("max", max)]),
+		OptionProblem::WholeNumber => crate::i18n::translate("action-app-whole-number"),
+		OptionProblem::Boolean => crate::i18n::translate("action-app-boolean"),
+		OptionProblem::Number => crate::i18n::translate("action-app-number"),
+		OptionProblem::Unsupported => crate::i18n::translate("action-app-unsupported"),
+		OptionProblem::ChooseId => crate::i18n::translate("action-app-choose-id"),
+		OptionProblem::Limits => crate::i18n::translate("action-app-option-limits"),
+		OptionProblem::Choices => crate::i18n::translate("action-app-choose-option"),
+	}
+}
 
 const RESULTS: usize = 64;
 const ROW: f32 = 56.0;
@@ -58,6 +86,7 @@ pub(super) struct Menu {
 	generation: u64,
 	query: Option<String>,
 	stamp: (u64, bool, usize, bool, bool, bool),
+	language: Option<crate::i18n::Language>,
 	filter: Filter,
 	items: Vec<Pick>,
 	applications: std::collections::BTreeSet<Id>,
@@ -154,7 +183,10 @@ impl Menu {
 			state.can_request_application_commands(channel),
 			state.can_view(channel),
 		);
-		if self.query == query && self.stamp == stamp {
+		if self.query == query
+			&& self.stamp == stamp
+			&& self.language == Some(crate::i18n::current())
+		{
 			return;
 		}
 		if self.query != query {
@@ -164,6 +196,7 @@ impl Menu {
 		}
 		self.query = query;
 		self.stamp = stamp;
+		self.language = Some(crate::i18n::current());
 		self.rebuild(state);
 	}
 	fn rebuild(&mut self, state: &State) {
@@ -177,16 +210,16 @@ impl Menu {
 		};
 		if matches!(self.filter, Filter::All | Filter::Builtins) {
 			for entry in slash_builtin::ALL {
+				let description = entry.command.description();
 				if entry.command.available(state, channel)
-					&& (entry.name.contains(query)
-						|| entry.description.to_lowercase().contains(query))
+					&& (entry.name.contains(query) || description.to_lowercase().contains(query))
 				{
 					self.items.push(Pick {
 						id: None,
 						path: Vec::new(),
 						name: entry.name.into(),
-						description: entry.description.into(),
-						application: "Built-In".into(),
+						description,
+						application: crate::i18n::translate("slash-builtin-name"),
 						application_id: None,
 						icon: None,
 					});
@@ -434,9 +467,9 @@ impl Menu {
 						egui::vec2(body.available_width(), HEADING),
 						egui::Sense::hover(),
 					);
-					let title = format!(
-						"Commands matching /{}",
-						self.query.as_deref().unwrap_or_default()
+					let title = crate::i18n::translate_args(
+						"slash-commands-matching",
+						&[("query", self.query.as_deref().unwrap_or_default())],
 					)
 					.to_uppercase();
 					let mut label = body.new_child(egui::UiBuilder::new().max_rect(
@@ -658,9 +691,9 @@ impl Menu {
 		body.set_clip_rect(footer_rect);
 		body.spacing_mut().item_spacing.x = 8.0;
 		let (hint, color) = if state.application_commands.loading {
-			("Loading application commands…", colors.muted)
+			(crate::i18n::translate("action-app-loading"), colors.muted)
 		} else if let Some(error) = self.error.or(state.application_commands.error) {
-			(error, colors.danger)
+			(crate::slash_builtin::status_text(error), colors.danger)
 		} else {
 			return;
 		};
@@ -676,7 +709,7 @@ impl Menu {
 		{
 			self.retry = true;
 		}
-		body.add(egui::Label::new(egui::RichText::new(hint).size(12.0).color(color)).truncate())
+		body.add(egui::Label::new(egui::RichText::new(&hint).size(12.0).color(color)).truncate())
 			.on_hover_text(hint);
 	}
 	/// The active application's icon replaces the attach button, as in the official client.
@@ -822,7 +855,7 @@ impl Menu {
 					if !allowed {
 						ui.add(
 							egui::Label::new(
-								egui::RichText::new(crate::i18n::translate_if_key(
+								egui::RichText::new(crate::slash_builtin::status_text(
 									if self.submitted.is_some() {
 										"slash-commands-sending"
 									} else if command.is_some() {
@@ -1160,16 +1193,22 @@ impl Menu {
 				.values
 				.iter()
 				.find(|(name, _)| *name == option.name)
-				.and_then(|(_, value)| option.problem(value))
+				.and_then(|(_, value)| option.typed_problem(value))
 		});
 		let error = error.filter(|_| problem.is_none());
+		let problem_text = problem.as_ref().map(option_problem_text);
+		let error_text = error.map(crate::slash_builtin::status_text);
 		let file_help = crate::i18n::translate("slash-commands-file-help");
-		let (detail, color) = if let Some(problem) = problem.as_deref() {
+		let waiting = crate::i18n::translate("action-app-waiting");
+		let unavailable = crate::i18n::translate(
+			"slash-commands-composer-command-unavailable-your-arguments-are-kept",
+		);
+		let (detail, color) = if let Some(problem) = problem_text.as_deref() {
 			(problem, colors.danger)
-		} else if let Some(error) = error {
+		} else if let Some(error) = error_text.as_deref() {
 			(error, colors.danger)
 		} else if state.interactions.busy() {
-			("Waiting for the application…", colors.muted)
+			(waiting.as_str(), colors.muted)
 		} else if option.is_some_and(|option| option.kind == 11) {
 			(file_help.as_str(), colors.muted)
 		} else {
@@ -1177,12 +1216,15 @@ impl Menu {
 				option
 					.map(|option| option.description.as_str())
 					.or_else(|| command.map(|command| command.description.as_str()))
-					.unwrap_or("This command is unavailable. Your arguments are kept."),
+					.unwrap_or(&unavailable),
 				colors.muted,
 			)
 		};
 		let detail = if error.is_none() && option.is_some_and(|option| !option.required) {
-			format!("{detail} · Optional")
+			format!(
+				"{detail} · {}",
+				crate::i18n::translate("action-app-optional")
+			)
 		} else {
 			detail.to_owned()
 		};
@@ -1704,7 +1746,11 @@ impl crate::MessagingUi {
 				|| self.slash_commands.files_busy
 				|| (self.slash_commands.upload_slot_busy && !self.slash_commands.files.is_empty()))
 		{
-			state.status = "Wait for the current command or file selection to finish";
+			self.action_notice(
+				state,
+				"Wait for the current command or file selection to finish",
+				crate::design::Level::Warning,
+			);
 			return true;
 		}
 		let Some(active) = self.slash_commands.active.as_ref() else {
@@ -1728,8 +1774,12 @@ impl crate::MessagingUi {
 			if matching.peek().is_some()
 				&& !matching.any(|command| state.can_use_application_command(channel, command))
 			{
-				state.status = NO_PERMISSION;
 				self.slash_commands.error = Some(NO_PERMISSION);
+				if self.slash_commands.visible() {
+					state.status = NO_PERMISSION;
+				} else {
+					self.action_notice(state, NO_PERMISSION, crate::design::Level::Warning);
+				}
 				return true;
 			}
 			if state.application_commands.loading
@@ -1740,8 +1790,14 @@ impl crate::MessagingUi {
 					.iter()
 					.any(|command| command.name == name)
 			{
-				state.status = "Choose a command from the list before running it.";
+				let status = "Choose a command from the list before running it.";
 				self.slash_commands.dismissed = false;
+				self.slash_commands.error = Some(status);
+				if self.slash_commands.visible() {
+					state.status = status;
+				} else {
+					self.action_notice(state, status, crate::design::Level::Warning);
+				}
 				return true;
 			}
 			return false;
@@ -1755,7 +1811,11 @@ impl crate::MessagingUi {
 			}
 			Err(error) => {
 				self.slash_commands.error = Some(error);
-				state.status = error;
+				if self.slash_commands.visible() {
+					state.status = error;
+				} else {
+					self.action_notice(state, error, crate::design::Level::Warning);
+				}
 			}
 		}
 		true
@@ -1765,6 +1825,126 @@ impl crate::MessagingUi {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn localized_builtin_picker_refreshes_and_option_help_uses_typed_bounds() {
+		struct ResetLanguage;
+		impl Drop for ResetLanguage {
+			fn drop(&mut self) {
+				crate::i18n::set_current(crate::i18n::Language::English);
+			}
+		}
+		let _reset = ResetLanguage;
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let mut permissions = test_support::permission_snapshot(&state);
+		for guild in &mut permissions.guilds {
+			for role in guild.roles.iter_mut().flatten() {
+				role.bits |= model::permissions::USE_APPLICATION_COMMANDS
+					| model::permissions::SEND_MESSAGES;
+			}
+		}
+		state.permissions.replace(permissions).unwrap();
+		let mut menu = Menu::default();
+		crate::i18n::set_current(crate::i18n::Language::English);
+		menu.refresh(&state, channel, "/", true);
+		assert!(
+			menu.items
+				.iter()
+				.any(|item| item.name == "gif" && item.description == "Search animated GIFs.")
+		);
+		crate::i18n::set_current(crate::i18n::Language::Spanish);
+		menu.refresh(&state, channel, "/", true);
+		assert!(menu.items.iter().any(|item| item.name == "gif"
+			&& item.description == crate::i18n::translate("slash-builtin-gif")));
+		assert_ne!(
+			crate::i18n::translate("slash-builtin-gif"),
+			"Search animated GIFs."
+		);
+		let option = CommandOption {
+			kind: 3,
+			name: "text".into(),
+			description: "Bot-provided description".into(),
+			required: true,
+			min_length: Some(2),
+			max_length: Some(4),
+			..Default::default()
+		};
+		state
+			.application_commands
+			.commands
+			.push(model::application_commands::Command {
+				id: Id(987),
+				version: Id(1),
+				application_id: Id(986),
+				guild_id: None,
+				kind: 1,
+				name: "sample".into(),
+				description: "Bot description".into(),
+				options: vec![option],
+				contexts: None,
+				integration_types: None,
+				application_name: "Bot".into(),
+				application_icon: None,
+				default_member_permissions: None,
+				permissions: Default::default(),
+				application_permissions: Default::default(),
+			});
+		menu.active = Some(Active {
+			id: Id(987),
+			path: vec![],
+			name: "sample".into(),
+			values: vec![("text".into(), "x".into())],
+		});
+		let ctx = egui::Context::default();
+		let labels = crate::composer::tests::frame(&ctx, |ui| menu.help(ui, &state, channel));
+		let expected = crate::i18n::translate_args(
+			"slash-option-chars-between",
+			&[("min", "2"), ("max", "4")],
+		);
+		assert!(labels.contains(&expected), "{labels:?}");
+		menu.active.as_mut().unwrap().values[0].1 = "good".into();
+		let labels = crate::composer::tests::frame(&ctx, |ui| menu.help(ui, &state, channel));
+		assert!(
+			labels.contains(&"Bot-provided description".to_owned()),
+			"{labels:?}"
+		);
+	}
+
+	#[test]
+	fn busy_command_shows_an_actionable_notice_without_losing_arguments() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let mut view = crate::MessagingUi {
+			slash_commands: Menu {
+				enabled: true,
+				files_busy: true,
+				active: Some(Active {
+					id: Id(987),
+					path: vec![],
+					name: "example".into(),
+					values: vec![("text".into(), "Keep this text".into())],
+				}),
+				..Default::default()
+			},
+			..Default::default()
+		};
+		let mut commands = Vec::new();
+		let ctx = egui::Context::default();
+		assert!(view.send_application_command(&mut state, channel, &mut commands));
+		for _ in 0..2 {
+			crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		}
+		let labels = crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		let expected = crate::i18n::translate("action-command-busy");
+		assert_eq!(labels.iter().filter(|label| *label == &expected).count(), 1);
+		assert!(commands.is_empty());
+		assert_eq!(
+			view.slash_commands.active.as_ref().unwrap().values[0].1,
+			"Keep this text"
+		);
+	}
+
 	#[test]
 	fn command_files_reindex_without_losing_arguments_and_keyboard_opens_the_picker() {
 		let mut state = test_support::demo_state();

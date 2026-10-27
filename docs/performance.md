@@ -3977,3 +3977,26 @@ regressions check recovery deadlines and bounded queues; they are not comparativ
 live-network latency measurements. Real dropout recovery and two-application audio
 acceptance remain owner-controlled. No encoding-quality or game-FPS improvement
 is claimed by this change.
+
+## Desktop UI polish — October 27, 2026
+
+The implementation revision is `dd20fca9`, with installer source `3e4b854b` as the
+frozen base and published nightly `v1.0.0-nightly.20261026.65` (`38e46b8f`)
+as a separate reference. CI used Rust 1.98.1, opt3, thin LTO, one codegen unit,
+stripped symbols and abort-on-panic; each workload used one warmup and five
+order-rotated samples. The table reports median synthetic reducer time in
+milliseconds. It does not measure UI callbacks, presentation or input latency.
+
+| CI runner | Nightly | Base | Implementation | Base → implementation |
+| --- | ---: | ---: | ---: | ---: |
+| Linux x64 | 47.524 | 46.633 | 46.399 | −0.5% |
+| Windows x64 | 106.615 | 111.130 | 110.710 | −0.4% |
+| macOS ARM64 | 73.785 | 62.735 | 65.407 | +4.3% |
+
+The macOS increase exceeds the 3% investigation threshold. The timed reducer,
+fixture and comparison script are unchanged; the changed application-command
+validation code was not found on the measured message path. Different builds
+can still change machine code and layout. The macOS runner was not pinned, and
+the overlapping samples do not establish whether the increase is repeatable.
+Its cause remains unresolved. See the [CI run](https://github.com/MCShotty/Serein/actions/runs/40442719612)
+and the [surface audit](pr-evidence/desktop-ui-polish/README.md).

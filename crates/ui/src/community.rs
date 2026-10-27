@@ -1221,19 +1221,17 @@ impl CommunityUi {
 			.as_ref()
 			.filter(|s| s.channel == channel)
 			.map(|s| s.topic.clone());
-		ui.heading(topic.as_deref().unwrap_or("Stage channel"));
-		ui.small("Stage audio uses transport encryption. Discord can process this audio; there is no end-to-end privacy code.");
+		if let Some(topic) = topic.as_deref() {
+			ui.heading(topic);
+		} else {
+			ui.heading(crate::i18n::translate("stage-channel"));
+		}
+		ui.small(crate::i18n::translate("stage-transport-privacy"));
 		let ready = !state.community.pending()
 			&& !state.community.stage_stale
 			&& !state.community.needs_refresh;
 		ui.horizontal_wrapped(|ui| {
-			if ui
-				.add_enabled(
-					!state.community.pending(),
-					egui::Button::new("Refresh Stage"),
-				)
-				.clicked()
-			{
+			if stage_button(ui, !state.community.pending(), "stage-refresh", false) {
 				submit(
 					state,
 					guild,
@@ -1250,17 +1248,16 @@ impl CommunityUi {
 				);
 			}
 			if state.stage_moderator(channel)
-				&& ui
-					.add_enabled(
-						ready,
-						egui::Button::new(if topic.is_some() {
-							"Edit topic"
-						} else {
-							"Start Stage"
-						}),
-					)
-					.clicked()
-			{
+				&& stage_button(
+					ui,
+					ready,
+					if topic.is_some() {
+						"stage-edit-topic"
+					} else {
+						"stage-start"
+					},
+					true,
+				) {
 				self.open_stage_editor(
 					state,
 					channel,
@@ -1283,72 +1280,57 @@ impl CommunityUi {
 				phase,
 				client_core::voice::Phase::Connected | client_core::voice::Phase::Waiting
 			) {
-				ui.label("Connecting to the audience…");
+				ui.label(crate::i18n::translate("stage-connecting"));
 				return;
 			}
 			let mut action = None;
 			ui.horizontal_wrapped(|ui| {
 				match stage {
 					StageParticipation::Speaker => {
-						ui.label("You are a speaker");
-						if ui
-							.add_enabled(ready, egui::Button::new("Move to audience"))
-							.clicked()
-						{
+						ui.label(crate::i18n::translate("stage-you-are-speaker"));
+						if stage_button(ui, ready, "stage-move-audience", false) {
 							action = Some(StageVoiceChange::Audience);
 						}
 					}
 					StageParticipation::Invited => {
-						ui.label("You can speak after accepting. Your microphone is off.");
-						if ui
-							.add_enabled(ready, egui::Button::new("Accept invitation"))
-							.clicked()
-						{
+						ui.label(crate::i18n::translate("stage-invitation-hint"));
+						if stage_button(ui, ready, "stage-accept-invitation", true) {
 							action = Some(StageVoiceChange::AcceptInvitation);
 						}
-						if ui
-							.add_enabled(ready, egui::Button::new("Decline"))
-							.clicked()
-						{
+						if stage_button(ui, ready, "stage-decline", false) {
 							action = Some(StageVoiceChange::Audience);
 						}
 					}
 					StageParticipation::Audience { requested } => {
-						ui.label(if requested {
-							"In audience · request to speak sent"
+						ui.label(crate::i18n::translate(if requested {
+							"stage-request-sent"
 						} else {
-							"In audience · microphone off"
-						});
-						if ui
-							.add_enabled(
-								ready
-									&& (requested
-										|| state.permission(
-											channel,
-											model::permissions::REQUEST_TO_SPEAK,
-										) == Some(true)),
-								egui::Button::new(if requested {
-									"Cancel request"
-								} else {
-									"Request to speak"
-								}),
-							)
-							.clicked()
-						{
+							"stage-audience-muted"
+						}));
+						if stage_button(
+							ui,
+							ready
+								&& (requested
+									|| state
+										.permission(channel, model::permissions::REQUEST_TO_SPEAK)
+										== Some(true)),
+							if requested {
+								"stage-cancel-request"
+							} else {
+								"stage-request-to-speak"
+							},
+							!requested,
+						) {
 							action = Some(StageVoiceChange::RequestToSpeak(!requested));
 						}
 					}
 					StageParticipation::Unknown => {
-						ui.label(
-							"Audience mode · waiting for current Stage state. Microphone off.",
-						);
+						ui.label(crate::i18n::translate("stage-waiting-for-state"));
 					}
 				}
 				if stage != StageParticipation::Speaker
 					&& state.permission(channel, model::permissions::MUTE_MEMBERS) == Some(true)
-					&& ui
-						.add_enabled(ready, egui::Button::new("Become speaker"))
-						.clicked()
+					&& stage_button(ui, ready, "stage-become-speaker", false)
 				{
 					action = Some(StageVoiceChange::BecomeSpeaker);
 				}
@@ -1394,19 +1376,33 @@ impl CommunityUi {
 					)
 				})
 				.collect::<Vec<_>>();
-			egui::CollapsingHeader::new(format!("Stage members ({total})")).show(ui, |ui| {
+			egui::CollapsingHeader::new(crate::i18n::translate_args(
+				"stage-members",
+				&[("count", &total.to_string())],
+			))
+			.show(ui, |ui| {
 				ui.horizontal_wrapped(|ui| {
-					if ui
-						.add_enabled(self.audience_page > 0, egui::Button::new("Previous"))
-						.clicked()
-					{
+					if stage_button(
+						ui,
+						self.audience_page > 0,
+						"search-page-previous-short",
+						false,
+					) {
 						self.audience_page = self.audience_page.saturating_sub(1);
 					}
-					ui.label(format!("Page {} of {pages}", self.audience_page + 1));
-					if ui
-						.add_enabled(self.audience_page + 1 < pages, egui::Button::new("Next"))
-						.clicked()
-					{
+					ui.label(crate::i18n::translate_args(
+						"stage-page",
+						&[
+							("current", &(self.audience_page + 1).to_string()),
+							("total", &pages.to_string()),
+						],
+					));
+					if stage_button(
+						ui,
+						self.audience_page + 1 < pages,
+						"search-page-next-short",
+						false,
+					) {
 						self.audience_page += 1;
 					}
 				});
@@ -1416,30 +1412,29 @@ impl CommunityUi {
 						for (p, name) in participants {
 							ui.horizontal_wrapped(|ui| {
 								ui.label(name);
-								ui.small(match p.stage {
-									StageParticipation::Speaker => "Speaker",
-									StageParticipation::Invited => "Invitation pending",
+								ui.small(crate::i18n::translate(match p.stage {
+									StageParticipation::Speaker => "stage-speaker",
+									StageParticipation::Invited => "stage-invitation-pending",
 									StageParticipation::Audience { requested: true } => {
-										"Requested to speak"
+										"stage-requested-to-speak"
 									}
-									_ => "Audience",
-								});
+									_ => "stage-audience",
+								}));
 								let speaker = matches!(
 									p.stage,
 									StageParticipation::Speaker | StageParticipation::Invited
 								);
 								if moderator
-									&& ui
-										.add_enabled(
-											ready,
-											egui::Button::new(if speaker {
-												"Move to audience"
-											} else {
-												"Invite to speak"
-											}),
-										)
-										.clicked()
-								{
+									&& stage_button(
+										ui,
+										ready,
+										if speaker {
+											"stage-move-audience"
+										} else {
+											"stage-invite-to-speak"
+										},
+										false,
+									) {
 									submit(
 										state,
 										guild,
@@ -1460,7 +1455,7 @@ impl CommunityUi {
 					});
 			});
 		} else {
-			ui.small("Join this Stage as an audience member to listen or request to speak.");
+			ui.small(crate::i18n::translate("stage-join-audience-hint"));
 		}
 		ui.separator();
 	}
@@ -1504,138 +1499,163 @@ impl CommunityUi {
 					.is_some_and(|s| s.event != Some(id))
 			});
 		let mut open = true;
-		egui::Window::new(if exists { "Stage topic" } else { "Start Stage" })
-			.id(egui::Id::unique("stage-topic-editor"))
-			.open(&mut open)
-			.default_width(420.0)
-			.min_width(240.0)
-			.max_width((ctx.content_rect().width() - 32.0).max(240.0))
-			.show(ctx, |ui| {
-				ui.label("Topic");
-				if let Some(event) = self.stage_event.and_then(|id| {
-					state
-						.community
-						.events
-						.as_ref()
-						.and_then(|p| p.events.iter().find(|e| e.id == id))
-				}) {
-					ui.label(format!("Scheduled event: {}", event.draft.name));
-				}
-				let inputs = self.inputs.get_or_insert_with(|| {
-					TextInputStates::new(egui::Id::unique("community-inputs"), 8)
-				});
-				if owned_input(
-					inputs,
-					ui.add(
-						egui::TextEdit::multiline(&mut self.stage_topic)
-							.id(egui::Id::unique((
-								"community-topic",
-								self.generation,
-								channel,
-							)))
-							.char_limit(120)
-							.desired_rows(2)
-							.desired_width(f32::INFINITY),
-					),
-				)
-				.changed()
-				{
-					self.stage_dirty = true;
-				}
-				if let Some(error) = state.community.error {
-					ui.colored_label(crate::design::palette(ui).danger, error);
-				}
-				if event_conflict {
-					ui.label(
-						"A Stage is already active. End it before starting this scheduled event.",
-					);
-				}
-				if self.end_stage_confirm {
-					ui.label("End this Stage for everyone? This closes the Stage instance.");
-					ui.horizontal_wrapped(|ui| {
-						if ui
-							.add_enabled(
-								!state.community.pending()
-									&& !state.community.stage_stale
-									&& !state.community.needs_refresh
-									&& state.community_action_allowed(
-										guild,
-										&Action::EndStage(channel),
-									),
-								egui::Button::new("End Stage"),
-							)
-							.clicked()
-						{
-							self.stage_submitted =
-								submit(state, guild, Action::EndStage(channel), commands);
-							self.end_stage_confirm = false;
-						}
-						if ui.button("Back").clicked() {
-							self.end_stage_confirm = false;
-						}
-					});
-					return;
-				}
-				let action = if exists {
-					Action::EditStage {
-						channel,
-						topic: self.stage_topic.trim().to_owned(),
-					}
-				} else {
-					Action::CreateStage {
-						channel,
-						topic: self.stage_topic.trim().to_owned(),
-						event: self.stage_event,
-					}
-				};
-				let allowed = state.community_action_allowed(guild, &action);
+		egui::Window::new(crate::i18n::translate(if exists {
+			"stage-topic"
+		} else {
+			"stage-start"
+		}))
+		.id(egui::Id::unique("stage-topic-editor"))
+		.open(&mut open)
+		.default_width(420.0)
+		.min_width(240.0)
+		.max_width((ctx.content_rect().width() - 32.0).max(240.0))
+		.show(ctx, |ui| {
+			ui.label(crate::i18n::translate("channel-menu-overview-topic"));
+			if let Some(event) = self.stage_event.and_then(|id| {
+				state
+					.community
+					.events
+					.as_ref()
+					.and_then(|p| p.events.iter().find(|e| e.id == id))
+			}) {
+				ui.label(crate::i18n::translate_args(
+					"stage-scheduled-event",
+					&[("name", &event.draft.name)],
+				));
+			}
+			let inputs = self.inputs.get_or_insert_with(|| {
+				TextInputStates::new(egui::Id::unique("community-inputs"), 8)
+			});
+			if owned_input(
+				inputs,
+				ui.add(
+					egui::TextEdit::multiline(&mut self.stage_topic)
+						.id(egui::Id::unique((
+							"community-topic",
+							self.generation,
+							channel,
+						)))
+						.char_limit(120)
+						.desired_rows(2)
+						.desired_width(f32::INFINITY),
+				),
+			)
+			.changed()
+			{
+				self.stage_dirty = true;
+			}
+			if let Some(error) = state.community.error {
+				ui.colored_label(crate::design::palette(ui).danger, error);
+			}
+			if event_conflict {
+				ui.label(crate::i18n::translate("stage-event-conflict"));
+			}
+			if self.end_stage_confirm {
+				ui.label(crate::i18n::translate("stage-end-confirmation"));
 				ui.horizontal_wrapped(|ui| {
 					if ui
-						.add_enabled(
+						.add_enabled_ui(
 							!state.community.pending()
 								&& !state.community.stage_stale
 								&& !state.community.needs_refresh
-								&& !event_conflict && allowed,
-							egui::Button::new(if exists { "Save topic" } else { "Start Stage" }),
+								&& state
+									.community_action_allowed(guild, &Action::EndStage(channel)),
+							|ui| {
+								crate::design::button(
+									ui,
+									"stage-end",
+									crate::design::ButtonKind::Danger,
+								)
+							},
 						)
+						.inner
 						.clicked()
 					{
-						self.stage_dirty = true;
-						self.stage_submitted = submit(state, guild, action, commands);
+						self.stage_submitted =
+							submit(state, guild, Action::EndStage(channel), commands);
+						self.end_stage_confirm = false;
 					}
-					if exists
-						&& ui
-							.add_enabled(
-								!state.community.pending(),
-								egui::Button::new("End Stage…"),
-							)
-							.clicked()
-					{
-						self.end_stage_confirm = true;
+					if stage_button(ui, true, "join-server-audience-back", false) {
+						self.end_stage_confirm = false;
 					}
 				});
-				if self.stage_dirty
-					&& !state.community.pending()
-					&& ui.button("Discard topic draft").clicked()
-				{
-					self.stage_topic = state
-						.community
-						.stage
-						.as_ref()
-						.filter(|s| s.channel == channel)
-						.map(|s| s.topic.clone())
-						.unwrap_or_default();
-					self.stage_event = None;
-					self.stage_dirty = false;
-					self.inputs = None;
+				return;
+			}
+			let action = if exists {
+				Action::EditStage {
+					channel,
+					topic: self.stage_topic.trim().to_owned(),
 				}
-				ui.small("Starting a Stage does not enable your microphone or notify @everyone.");
+			} else {
+				Action::CreateStage {
+					channel,
+					topic: self.stage_topic.trim().to_owned(),
+					event: self.stage_event,
+				}
+			};
+			let allowed = state.community_action_allowed(guild, &action);
+			ui.horizontal_wrapped(|ui| {
+				if stage_button(
+					ui,
+					!state.community.pending()
+						&& !state.community.stage_stale
+						&& !state.community.needs_refresh
+						&& !event_conflict && allowed,
+					if exists {
+						"stage-save-topic"
+					} else {
+						"stage-start"
+					},
+					true,
+				) {
+					self.stage_dirty = true;
+					self.stage_submitted = submit(state, guild, action, commands);
+				}
+				if exists
+					&& stage_button(ui, !state.community.pending(), "stage-end-ellipsis", false)
+				{
+					self.end_stage_confirm = true;
+				}
 			});
+			if self.stage_dirty
+				&& !state.community.pending()
+				&& stage_button(ui, true, "stage-discard-topic", false)
+			{
+				self.stage_topic = state
+					.community
+					.stage
+					.as_ref()
+					.filter(|s| s.channel == channel)
+					.map(|s| s.topic.clone())
+					.unwrap_or_default();
+				self.stage_event = None;
+				self.stage_dirty = false;
+				self.inputs = None;
+			}
+			ui.small(crate::i18n::translate("stage-start-hint"));
+		});
 		if !open {
 			self.stage_channel = None;
 		}
 	}
 }
+
+fn stage_button(ui: &mut egui::Ui, enabled: bool, label: &str, primary: bool) -> bool {
+	ui.add_enabled_ui(enabled, |ui| {
+		crate::design::button(
+			ui,
+			label,
+			if primary {
+				crate::design::ButtonKind::Primary
+			} else {
+				crate::design::ButtonKind::Outline
+			},
+		)
+	})
+	.inner
+	.clicked()
+}
+
 fn event_status(status: u8) -> &'static str {
 	match status {
 		1 => "Scheduled",
@@ -1649,6 +1669,25 @@ fn event_status(status: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn stage_labels_and_dynamic_values_are_available_in_each_language() {
+		for language in crate::i18n::Language::ALL {
+			crate::i18n::set_current(language);
+			assert_ne!(crate::i18n::translate("stage-start"), "stage-start");
+			assert!(crate::i18n::translate("stage-start-hint").contains("@everyone"));
+			assert!(crate::i18n::translate("stage-transport-privacy").contains("Discord"));
+			let page =
+				crate::i18n::translate_args("stage-page", &[("current", "4"), ("total", "17")]);
+			assert!(
+				page.contains('4') && page.contains("17"),
+				"{language:?}: {page}"
+			);
+			let members = crate::i18n::translate_args("stage-members", &[("count", "123")]);
+			assert!(members.contains("123"), "{language:?}: {members}");
+		}
+		crate::i18n::set_current(crate::i18n::Language::English);
+	}
+
 	#[test]
 	fn editor_uses_explicit_offsets_and_recurs_from_utc_weekday() {
 		let mut editor = Editor::new(Id(1), None);

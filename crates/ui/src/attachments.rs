@@ -388,7 +388,10 @@ pub(crate) fn show_subset(
 									egui::WidgetInfo::labeled(
 										egui::Role::Button,
 										ui.is_enabled(),
-										format!("View image {}", attachment.filename),
+										crate::i18n::translate_args(
+											"attachments-viewer-view-image",
+											&[("name", &attachment.filename)],
+										),
 									)
 								});
 								media_context_menu(&response, attachment, download, opening, demo);
@@ -423,10 +426,11 @@ pub(crate) fn show_subset(
 									.is_some_and(|star| star.hovered() || star.clicked())
 									&& response
 										.on_hover_text(
-											attachment
-												.description
-												.as_deref()
-												.unwrap_or("Enlarge image"),
+											attachment.description.clone().unwrap_or_else(|| {
+												crate::i18n::translate(
+													"attachments-viewer-enlarge-image",
+												)
+											}),
 										)
 										.clicked()
 								{
@@ -780,6 +784,7 @@ pub(crate) fn glass_button(
 	let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(diameter), Sense::click());
 	let enabled = ui.is_enabled();
 	let hot = enabled && (response.hovered() || response.has_focus());
+	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
 	ui.painter().circle_filled(
 		rect.center(),
 		diameter / 2.0,
@@ -801,17 +806,27 @@ pub(crate) fn glass_button(
 			Color32::from_gray(220)
 		},
 	);
+	if enabled && response.has_focus() {
+		ui.painter().circle_stroke(
+			rect.center(),
+			(diameter * 0.5 - 1.0).max(0.0),
+			Stroke::new(1.5, Color32::WHITE),
+		);
+	}
 	response.on_hover_text(label)
 }
 
 fn quality_pill(ui: &egui::Ui, stage: Rect, quality: Quality) {
+	if !stage.is_positive() {
+		return;
+	}
 	let id = egui::Id::unique("attachment-viewer-quality");
 	let state = match quality {
 		Quality::Full => None,
-		Quality::Upgrading => Some(("Loading full quality", true)),
-		Quality::Placeholder { failed: false } => Some(("Loading image", true)),
+		Quality::Upgrading => Some(("attachments-viewer-loading-full-quality", true)),
+		Quality::Placeholder { failed: false } => Some(("attachments-viewer-loading-image", true)),
 		Quality::Placeholder { failed: true } | Quality::Degraded => {
-			Some(("Full quality unavailable", false))
+			Some(("attachments-viewer-full-quality-unavailable", false))
 		}
 	};
 	let opacity = ui.ctx().animate_bool_with_time(id, state.is_some(), 0.15);
@@ -822,30 +837,36 @@ fn quality_pill(ui: &egui::Ui, stage: Rect, quality: Quality) {
 		None if opacity == 0.0 => return,
 		None => {}
 	}
-	let (text, loading) = ui
+	let (key, loading) = ui
 		.data(|data| data.get_temp::<(&'static str, bool)>(id))
-		.unwrap_or(("Loading full quality", false));
-	let painter = ui.painter();
-	let galley = painter.layout_no_wrap(
-		text.into(),
+		.unwrap_or(("attachments-viewer-loading-full-quality", false));
+	let text = crate::i18n::translate(key);
+	let painter = ui.painter().with_clip_rect(stage);
+	let galley = painter.layout(
+		text.clone(),
 		egui::FontId::proportional(13.0),
 		Color32::from_gray(230).gamma_multiply(opacity),
+		(stage.width() - 28.0).max(1.0),
 	);
-	let size = galley.size() + egui::vec2(28.0, 14.0);
-	let pill = Rect::from_center_size(
-		egui::pos2(stage.center().x, stage.bottom() - 16.0 - size.y / 2.0),
-		size,
-	);
+	let size = (galley.size() + egui::vec2(28.0, 14.0)).min(stage.size());
+	let center_y = (stage.bottom() - 16.0 - size.y / 2.0)
+		.clamp(stage.top() + size.y / 2.0, stage.bottom() - size.y / 2.0);
+	let pill = Rect::from_center_size(egui::pos2(stage.center().x, center_y), size);
+	// Keep fading visuals independent from the current accessibility state.
+	if state.is_some() {
+		let response = ui.interact(pill, id.with("status"), Sense::hover());
+		response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &text));
+		if galley.size().x > size.x || galley.size().y > size.y {
+			response.on_hover_text(&text);
+		}
+	}
 	painter.rect_filled(
 		pill,
 		size.y / 2.0,
 		Color32::from_black_alpha(150).gamma_multiply(opacity),
 	);
-	painter.galley(
-		pill.center() - galley.size() / 2.0,
-		galley,
-		Color32::from_gray(230),
-	);
+	let text_pos = pill.min + ((size - galley.size()) * 0.5).max(egui::Vec2::ZERO);
+	painter.galley(text_pos, galley, Color32::from_gray(230));
 	if loading {
 		let track = Rect::from_min_max(
 			egui::pos2(pill.left() + size.y / 2.0, pill.bottom() - 3.0),
@@ -1051,11 +1072,22 @@ pub fn viewer(
 					.layout(egui::Layout::right_to_left(egui::Align::Center)),
 				|ui| {
 					ui.spacing_mut().item_spacing.x = 8.0;
-					close = glass_button(ui, Icon::Close, 40.0, "Close (Esc)").clicked();
+					close = glass_button(
+						ui,
+						Icon::Close,
+						40.0,
+						&crate::i18n::translate("dialog-header-close-dialog-esc"),
+					)
+					.clicked();
 					let idle = !demo && !download.busy();
 					if ui
 						.add_enabled_ui(idle, |ui| {
-							glass_button(ui, Icon::Download, 40.0, "Download")
+							glass_button(
+								ui,
+								Icon::Download,
+								40.0,
+								&crate::i18n::translate("attachments-download-button-download"),
+							)
 						})
 						.inner
 						.on_disabled_hover_text(crate::i18n::translate_if_key(if demo {
@@ -1080,20 +1112,22 @@ pub fn viewer(
 						true,
 						egui::pos2(full.left() + side / 2.0, stage.center().y),
 						Icon::CaretLeft,
-						"Previous (←)",
+						"attachments-viewer-previous",
 					),
 					(
 						false,
 						egui::pos2(full.right() - side / 2.0, stage.center().y),
 						Icon::ChevronRight,
-						"Next (→)",
+						"attachments-viewer-next",
 					),
 				] {
 					ui.scope_builder(
 						egui::UiBuilder::new()
 							.max_rect(Rect::from_center_size(center, egui::Vec2::splat(48.0))),
 						|ui| {
-							if glass_button(ui, icon, 48.0, label).clicked() {
+							if glass_button(ui, icon, 48.0, &crate::i18n::translate(label))
+								.clicked()
+							{
 								current =
 									gallery_step(attachments, current, previous).unwrap_or(current);
 							}
@@ -1291,6 +1325,202 @@ pub fn estimated_height(attachments: &[Attachment], width: f32) -> f32 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn viewer_status_and_controls_are_available_in_every_language() {
+		for language in crate::i18n::Language::ALL {
+			crate::i18n::set_current(language);
+			for key in [
+				"attachments-viewer-loading-full-quality",
+				"attachments-viewer-loading-image",
+				"attachments-viewer-full-quality-unavailable",
+				"attachments-viewer-enlarge-image",
+				"attachments-viewer-previous",
+				"attachments-viewer-next",
+			] {
+				let text = crate::i18n::translate(key);
+				assert!(
+					!text.starts_with("Unknown localization key:"),
+					"{language:?}: {key}"
+				);
+			}
+			let label = crate::i18n::translate_args(
+				"attachments-viewer-view-image",
+				&[("name", "synthetic.png")],
+			);
+			assert!(label.contains("synthetic.png"), "{language:?}: {label}");
+		}
+		crate::i18n::set_current(crate::i18n::Language::English);
+	}
+
+	#[test]
+	fn viewer_quality_status_is_accessible_and_clipped_to_narrow_stage() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		for (quality, label) in [
+			(Quality::Placeholder { failed: false }, "Loading image"),
+			(Quality::Upgrading, "Loading full quality"),
+			(
+				Quality::Placeholder { failed: true },
+				"Full quality unavailable",
+			),
+			(Quality::Degraded, "Full quality unavailable"),
+		] {
+			for scale in [1.0, 2.0] {
+				let ctx = egui::Context::default();
+				ctx.enable_accesskit();
+				ctx.set_pixels_per_point(scale);
+				let stage = Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(100.0, 60.0));
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(280.0, 200.0),
+						)),
+						focused: true,
+						..Default::default()
+					},
+					|ui| quality_pill(ui, stage, quality),
+				);
+				let update = output.platform_output.accesskit_update.as_ref().unwrap();
+				let bounds = update
+					.nodes
+					.iter()
+					.find_map(|(_, node)| {
+						(node.role() == egui::Role::Label && node.value() == Some(label))
+							.then(|| node.bounds())
+							.flatten()
+					})
+					.expect("quality state has an accessible label and bounds");
+				assert!(
+					bounds.x0 >= f64::from(stage.left()) && bounds.x1 <= f64::from(stage.right())
+				);
+				assert!(
+					bounds.y0 >= f64::from(stage.top()) && bounds.y1 <= f64::from(stage.bottom())
+				);
+				assert!(
+					output
+						.shapes
+						.iter()
+						.filter(|shape| matches!(&shape.shape, egui::Shape::Text(_)))
+						.all(|shape| stage.contains_rect(shape.clip_rect))
+				);
+				output.drop_without_applying_deltas();
+			}
+		}
+		let ctx = egui::Context::default();
+		ctx.enable_accesskit();
+		let stage = Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(100.0, 60.0));
+		let status_id = egui::Id::unique("attachment-viewer-quality").with("status");
+		for (quality, visible) in [(Quality::Degraded, true), (Quality::Full, false)] {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(280.0, 200.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					quality_pill(ui, stage, quality);
+					assert_eq!(ui.ctx().has_accesskit_node(status_id), visible);
+				},
+			)
+			.drop_without_applying_deltas();
+		}
+	}
+
+	#[test]
+	fn tiny_viewer_status_exposes_full_localized_text_on_hover() {
+		crate::i18n::set_current(crate::i18n::Language::German);
+		let label = crate::i18n::translate("attachments-viewer-full-quality-unavailable");
+		assert!(!label.starts_with("Unknown localization key:"));
+		for size in [egui::vec2(100.0, 60.0), egui::vec2(60.0, 25.0)] {
+			let ctx = egui::Context::default();
+			ctx.enable_accesskit();
+			ctx.set_pixels_per_point(2.0);
+			ctx.all_styles_mut(|style| {
+				style.interaction.tooltip_delay = 0.0;
+				style.interaction.show_tooltips_only_when_still = false;
+			});
+			let stage = Rect::from_min_size(egui::pos2(20.0, 20.0), size);
+			let mut tooltip_visible = false;
+			let mut accessible = false;
+			for frame in 0..3 {
+				let output = ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(280.0, 200.0),
+						)),
+						time: Some(f64::from(frame) * 0.2),
+						events: vec![egui::Event::PointerMoved(stage.center())],
+						focused: true,
+						..Default::default()
+					},
+					|ui| quality_pill(ui, stage, Quality::Degraded),
+				);
+				if let Some(update) = &output.platform_output.accesskit_update {
+					accessible |= update.nodes.iter().any(|(_, node)| {
+						node.role() == egui::Role::Label && node.value() == Some(label.as_str())
+					});
+				}
+				tooltip_visible = output.shapes.iter().any(|shape| match &shape.shape {
+					egui::Shape::Text(text) => {
+						text.galley.job.text == label && !stage.contains_rect(shape.clip_rect)
+					}
+					_ => false,
+				});
+				output.drop_without_applying_deltas();
+			}
+			assert!(accessible);
+			if size.x == 60.0 {
+				assert!(
+					tooltip_visible,
+					"the unclipped tooltip must retain the full localized status"
+				);
+			}
+		}
+		crate::i18n::set_current(crate::i18n::Language::English);
+	}
+
+	#[test]
+	fn viewer_glass_buttons_expose_labels_and_visible_keyboard_focus() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		let ctx = egui::Context::default();
+		ctx.enable_accesskit();
+		crate::icons::install(&ctx);
+		let mut button_id = None;
+		let input = || egui::RawInput {
+			screen_rect: Some(Rect::from_min_size(
+				egui::Pos2::ZERO,
+				egui::vec2(280.0, 180.0),
+			)),
+			focused: true,
+			..Default::default()
+		};
+		ctx.run_ui(input(), |ui| {
+			button_id = Some(glass_button(ui, Icon::Close, 40.0, "Close dialog (Esc)").id);
+		})
+		.drop_without_applying_deltas();
+		ctx.memory_mut(|memory| memory.request_focus(button_id.unwrap()));
+		let output = ctx.run_ui(input(), |ui| {
+			let button = glass_button(ui, Icon::Close, 40.0, "Close dialog (Esc)");
+			assert!(button.has_focus());
+		});
+		assert!(
+			output
+				.platform_output
+				.accesskit_update
+				.as_ref()
+				.unwrap()
+				.nodes
+				.iter()
+				.any(|(_, node)| node.label() == Some("Close dialog (Esc)"))
+		);
+		assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+			egui::Shape::Circle(circle) if circle.stroke.width == 1.5 && circle.stroke.color == Color32::WHITE)));
+		output.drop_without_applying_deltas();
+	}
 
 	#[test]
 	fn favorite_stars_follow_replacements_removals_and_logout() {

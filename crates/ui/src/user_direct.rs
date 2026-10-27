@@ -70,6 +70,50 @@ mod tests {
 	}
 
 	#[test]
+	fn rejected_profile_message_notifies_once_without_changing_the_draft_or_dispatching() {
+		let (mut state, user, _) = fixture();
+		let origin = state.selected.unwrap();
+		state
+			.drafts
+			.insert(origin, "Keep the conversation draft".into());
+		let mut view = crate::MessagingUi::default();
+		let mut commands = vec![];
+		let ctx = egui::Context::default();
+		for _ in 0..2 {
+			view.open_user_direct(
+				&mut state,
+				user.clone(),
+				Intent::Send("x".repeat(client_core::MAX_CONTENT + 1)),
+				&mut commands,
+			);
+			crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		}
+		let labels = crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		let expected = crate::i18n::translate("action-direct-unavailable");
+		assert_eq!(labels.iter().filter(|label| *label == &expected).count(), 1);
+		assert_eq!(state.selected, Some(origin));
+		assert_eq!(state.drafts[&origin], "Keep the conversation draft");
+		assert!(commands.is_empty());
+	}
+
+	#[test]
+	fn unavailable_non_send_action_does_not_claim_a_message_was_kept() {
+		let (mut state, mut user, _) = fixture();
+		user.id = Id(0);
+		let mut view = crate::MessagingUi::default();
+		let mut commands = vec![];
+		let ctx = egui::Context::default();
+		view.open_user_direct(&mut state, user, Intent::Message, &mut commands);
+		for _ in 0..2 {
+			crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		}
+		let labels = crate::composer::tests::frame(&ctx, |ui| view.toasts.show(ui.ctx(), 0.0));
+		assert!(labels.contains(&crate::i18n::translate("action-direct-unavailable-generic")));
+		assert!(!labels.contains(&crate::i18n::translate("action-direct-unavailable")));
+		assert!(commands.is_empty());
+	}
+
+	#[test]
 	fn nonfriend_actions_wait_for_confirmation_and_dispatch_only_the_requested_action() {
 		for purpose in 0..3 {
 			let (mut state, user, channel) = fixture();
@@ -221,11 +265,19 @@ impl crate::MessagingUi {
 		commands: &mut Vec<Command>,
 	) {
 		if self.user_direct.is_some() {
-			state.status = "Wait for the current direct message action to finish";
+			self.action_notice(
+				state,
+				"Wait for the current direct message action to finish",
+				crate::design::Level::Warning,
+			);
 			return;
 		}
 		if matches!(intent, Intent::Call) && (state.demo || !self.voice_available) {
-			state.status = "Calls are unavailable in this session";
+			self.action_notice(
+				state,
+				"Calls are unavailable in this session",
+				crate::design::Level::Warning,
+			);
 			return;
 		}
 		if !state.can_open_user_dm(&user)
@@ -233,8 +285,25 @@ impl crate::MessagingUi {
 			|| matches!(&intent, Intent::Send(content) if content.trim().is_empty()
 				|| content.len() > client_core::MAX_CONTENT * 4
 				|| content.chars().count() > client_core::MAX_CONTENT)
-			|| !self.server_settings.navigate_away(state)
 		{
+			self.profile.finish_message(user.id, false);
+			if matches!(&intent, Intent::Send(_)) {
+				self.action_notice(
+					state,
+					"This direct message action is unavailable; your message was kept",
+					crate::design::Level::Warning,
+				);
+			} else {
+				state.status = "This direct message action is unavailable; your message was kept";
+				self.toasts.push(
+					crate::design::Level::Warning,
+					crate::i18n::translate("action-direct-unavailable-generic"),
+				);
+			}
+			return;
+		}
+		// The settings panel already presents its own unsaved-changes warning.
+		if !self.server_settings.navigate_away(state) {
 			self.profile.finish_message(user.id, false);
 			state.status = "This direct message action is unavailable; your message was kept";
 			return;
@@ -312,7 +381,7 @@ impl crate::MessagingUi {
 			}
 			Intent::Call => {
 				if let Some(reason) = self.call_unavailable(state, channel) {
-					state.status = reason;
+					self.action_notice(state, reason, crate::design::Level::Warning);
 				} else {
 					self.profile.close();
 					self.request_call(state, channel, true, commands);
@@ -325,6 +394,7 @@ impl crate::MessagingUi {
 					self.profile.close();
 				} else {
 					self.profile.finish_message(pending.user.id, false);
+					self.composer_send_failure(state);
 				}
 			}
 		}

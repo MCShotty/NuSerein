@@ -101,6 +101,46 @@ pub struct CommandOption {
 	pub max_length: Option<u16>,
 }
 
+/// Typed explanation for a composer value rejected by a command option.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OptionProblem {
+	WholeNumber,
+	Boolean,
+	Number,
+	Unsupported,
+	ChooseId,
+	CharactersBetween(u16, u16),
+	CharactersMinimum(u16),
+	CharactersMaximum(usize),
+	NumberBetween(String, String),
+	NumberMinimum(String),
+	NumberMaximum(String),
+	Limits,
+	Choices,
+}
+
+impl std::fmt::Display for OptionProblem {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::WholeNumber => f.write_str("Enter a whole number"),
+			Self::Boolean => f.write_str("Choose true or false"),
+			Self::Number => f.write_str("Enter a number"),
+			Self::Unsupported => f.write_str("This option is unsupported"),
+			Self::ChooseId => f.write_str("Choose from the list or enter an ID"),
+			Self::CharactersBetween(min, max) => {
+				write!(f, "Use between {min} and {max} characters")
+			}
+			Self::CharactersMinimum(min) => write!(f, "Use at least {min} characters"),
+			Self::CharactersMaximum(max) => write!(f, "Use at most {max} characters"),
+			Self::NumberBetween(min, max) => write!(f, "Enter a value between {min} and {max}"),
+			Self::NumberMinimum(min) => write!(f, "Enter at least {min}"),
+			Self::NumberMaximum(max) => write!(f, "Enter at most {max}"),
+			Self::Limits => f.write_str("Value does not match this option's limits"),
+			Self::Choices => f.write_str("Choose one of the listed options"),
+		}
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Choice {
 	pub name: String,
@@ -245,6 +285,10 @@ impl CommandOption {
 	/// Why a typed composer value cannot be submitted, or `None` for an acceptable value.
 	/// An empty value is acceptable here; required-but-missing is a submission concern.
 	pub fn problem(&self, text: &str) -> Option<String> {
+		self.typed_problem(text).map(|problem| problem.to_string())
+	}
+	/// The same validation as `problem`, with structured bounds for localized presentation.
+	pub fn typed_problem(&self, text: &str) -> Option<OptionProblem> {
 		if text.is_empty() {
 			return None;
 		}
@@ -259,20 +303,20 @@ impl CommandOption {
 			3 | 6..=9 | 11 => Value::String(text.to_owned()),
 			4 => match text.parse::<i64>() {
 				Ok(n) => Value::Integer(n),
-				Err(_) => return Some("Enter a whole number".into()),
+				Err(_) => return Some(OptionProblem::WholeNumber),
 			},
 			5 => match text.parse::<bool>() {
 				Ok(b) => Value::Boolean(b),
-				Err(_) => return Some("Choose true or false".into()),
+				Err(_) => return Some(OptionProblem::Boolean),
 			},
 			10 => match text.parse::<f64>() {
 				Ok(n) if n.is_finite() => Value::Number(n),
-				_ => return Some("Enter a number".into()),
+				_ => return Some(OptionProblem::Number),
 			},
-			_ => return Some("This option is unsupported".into()),
+			_ => return Some(OptionProblem::Unsupported),
 		};
 		if matches!(self.kind, 6..=9) && text.parse::<Id>().is_err() {
-			return Some("Choose from the list or enter an ID".into());
+			return Some(OptionProblem::ChooseId);
 		}
 		if self.kind == 3 {
 			let count = text.chars().count();
@@ -280,9 +324,9 @@ impl CommandOption {
 			let max = usize::from(self.max_length.unwrap_or(6000));
 			if count < min || count > max {
 				return Some(match (self.min_length, self.max_length) {
-					(Some(min), Some(max)) => format!("Use between {min} and {max} characters"),
-					(Some(min), None) => format!("Use at least {min} characters"),
-					_ => format!("Use at most {max} characters"),
+					(Some(min), Some(max)) => OptionProblem::CharactersBetween(min, max),
+					(Some(min), None) => OptionProblem::CharactersMinimum(min),
+					_ => OptionProblem::CharactersMaximum(max),
 				});
 			}
 		}
@@ -291,19 +335,17 @@ impl CommandOption {
 				|| self.max_value.is_some_and(|max| n > max))
 		{
 			return Some(match (self.min_value, self.max_value) {
-				(Some(min), Some(max)) => {
-					format!("Enter a value between {} and {}", bound(min), bound(max))
-				}
-				(Some(min), None) => format!("Enter at least {}", bound(min)),
-				(None, Some(max)) => format!("Enter at most {}", bound(max)),
+				(Some(min), Some(max)) => OptionProblem::NumberBetween(bound(min), bound(max)),
+				(Some(min), None) => OptionProblem::NumberMinimum(bound(min)),
+				(None, Some(max)) => OptionProblem::NumberMaximum(bound(max)),
 				(None, None) => unreachable!(),
 			});
 		}
 		if !self.value_valid(&value) {
 			return Some(if self.choices.is_empty() {
-				"Value does not match this option's limits".into()
+				OptionProblem::Limits
 			} else {
-				"Choose one of the listed options".into()
+				OptionProblem::Choices
 			});
 		}
 		None
@@ -742,6 +784,58 @@ impl Completion {
 #[cfg(test)]
 mod attachment_tests {
 	use super::*;
+	#[test]
+	fn typed_option_problems_keep_the_existing_english_contract() {
+		let mut option = CommandOption {
+			kind: 3,
+			min_length: Some(2),
+			max_length: Some(4),
+			..Default::default()
+		};
+		assert_eq!(
+			option.typed_problem("a"),
+			Some(OptionProblem::CharactersBetween(2, 4))
+		);
+		assert_eq!(
+			option.problem("a").as_deref(),
+			Some("Use between 2 and 4 characters")
+		);
+		assert_eq!(option.problem("abc"), None);
+		option.max_length = None;
+		assert_eq!(
+			option.problem("a").as_deref(),
+			Some("Use at least 2 characters")
+		);
+		option.min_length = None;
+		option.max_length = Some(1);
+		assert_eq!(
+			option.problem("ab").as_deref(),
+			Some("Use at most 1 characters")
+		);
+		option.kind = 10;
+		option.min_value = Some(1.5);
+		option.max_value = Some(3.0);
+		assert_eq!(
+			option.typed_problem("4"),
+			Some(OptionProblem::NumberBetween("1.5".into(), "3".into()))
+		);
+		assert_eq!(
+			option.problem("4").as_deref(),
+			Some("Enter a value between 1.5 and 3")
+		);
+		option.max_value = None;
+		assert_eq!(option.problem("1").as_deref(), Some("Enter at least 1.5"));
+		option.min_value = None;
+		option.max_value = Some(3.0);
+		assert_eq!(option.problem("4").as_deref(), Some("Enter at most 3"));
+		option.kind = 4;
+		assert_eq!(
+			option.problem("nope").as_deref(),
+			Some("Enter a whole number")
+		);
+		assert_eq!(option.problem(""), None);
+	}
+
 	#[test]
 	fn nested_attachments_require_unique_dense_indexes_and_preserve_types() {
 		let command = Command {
