@@ -3888,3 +3888,75 @@ installer sizes. Current package deltas and artifact provenance belong in the PR
 Performance section after its native builds complete. Capture/game FPS, hardware
 encoder throughput, CPU/RSS and actual viewer playback still require the
 owner-controlled Windows session; no improvement is claimed from synthetic tests.
+
+## Channel preferences and browser — October 26, 2026
+
+Runtime revision `52836c95` starts from installer `d11d2aee`. The pinned current
+published nightly is `v1.0.0-nightly.20261025.64` (`38e46b8f`), verified on October 26.
+Separate worktrees/targets, Rust 1.98.1 and committed lockfiles were used.
+No dependency versions, media quality or encoder settings changed.
+
+The initial implementation `f8d99c95` introduced unnecessary complete preference
+snapshot reads during ordinary message processing. CI measured reducer changes
+of +4.5% Linux / +7.0% Windows / +25.5% macOS versus `d11d2aee`; the macOS samples
+varied substantially. An independent local pair measured +7.3%. The follow-up
+uses narrow policy reads and skips guild-mention policy work when no such mention
+exists, preserving pending preferences, suppression and mute-expiry behavior.
+
+Local core comparisons use matching opt3/thin-LTO/codegen1/stripped release builds,
+one warmup and five alternating/reversed samples per binary, pinned to one logical
+CPU on Linux x86_64 / Xeon Platinum 8573C. The first corrected run measured
+95.926 / 96.814 ms (+0.9%) for 100,000 events and 9.521 / 9.472 ms (−0.5%) for the
+wide-channel workload. A repeat measured 123.970 / 103.625 ms (−16.4%) and
+14.311 / 13.105 ms (−8.4%); this host variability does not establish a speedup.
+Final source-labeled native CI comparisons for Windows, macOS and Linux are linked
+in the PR, including the immutable nightly and sample ranges.
+
+| Linux browser metric | `d11d2aee` | `52836c95` | Delta |
+| --- | ---: | ---: | ---: |
+| Idle CPU, one core | 0.00 % | 0.00 % | +0.00 pp |
+| Idle sampled peak/settled RSS | 152.50 MiB | 148.13 MiB | -4.38 MiB (-2.9%) |
+| Instrumented callback p50 | 1.456 ms | 0.528 ms | -0.928 ms (-63.8%) |
+| Instrumented callback p95 | 2.772 ms | 0.927 ms | -1.845 ms (-66.6%) |
+| Instrumented process CPU, one core | 57.84 % | 27.42 % | -30.43 pp |
+| Instrumented sampled peak/settled RSS | 152.92 MiB | 147.76 MiB | -5.16 MiB (-3.4%) |
+| Release preview executable | 65,757,968 B | 65,903,888 B | +145,920 B (+0.22%) |
+
+Idle medians are at the sampling floor, rather than proof of zero CPU. No helper/provider
+processes were observed. This workload compares the old modal over the conversation
+with the dedicated page; it is not a whole-app or hardware-rendering speedup claim.
+
+Native browser sampling uses the release preview, explicit synthetic demo,
+1280 × 900, scale 1, Mesa llvmpipe and isolated Xvfb, with no service adapters.
+After a three-second startup warmup, idle sampling is 15 seconds at 0.5-second
+intervals. Optional callback instrumentation measures `MessagingUi::show` only,
+with three seconds warmup and five seconds sampling at 10 Hz. Each comparison has
+one warmup pair and five alternating/reversed measured pairs. Reported CPU is a
+percentage of one core; memory is process RSS. Callback times are neither
+presented-frame nor input latency. Helper processes are counted separately.
+
+| Canonical `d11d2aee` package metric | Windows x64 | macOS ARM64 | Linux x64 |
+| --- | ---: | ---: | ---: |
+| Application executable, bytes | 99,234,816 | 78,176,144 | 97,601,944 |
+| Installed payload, bytes | 225,998,044 | 201,435,975 | 226,392,420 |
+| Compressed distribution, bytes | 136,666,723 | 136,143,729 | 141,514,680 |
+
+Baseline artifacts are from run [40208513242](https://github.com/MCShotty/Serein/actions/runs/40208513242).
+Windows payload excludes the generated uninstaller; compression is NSIS. macOS
+counts the complete app bundle and its CI ZIP. Linux counts the installed payload
+and Debian package. Formats are compared within each platform, never across them.
+
+Normal CI packages use the canonical release profile; local directory packaging
+uses thin LTO and is labelled separately. PR #27 records canonical executable, installed payload
+and compressed distribution comparisons as native checks complete, with exact
+artifact/source IDs; local and CI profiles are not mixed in a delta.
+
+Release replay and the 120-second lifecycle soak passed on `52836c95` (2,684 passes, 85,888 visits,
+51,532,800 inserts, 11 logout cycles; 120.031 seconds). The row/byte bounds held throughout. These
+counters describe a bounded stress check rather than comparable application throughput. The PR
+tracks normal clean/cached directory packaging and current-head native package outcomes with their
+actual release settings.
+
+The live two-client synchronization check, physical Windows/macOS input,
+assistive technologies and real-account responsiveness remain unverified.
+No media/voice performance improvement is claimed from these synthetic workloads.

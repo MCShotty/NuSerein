@@ -291,6 +291,7 @@ pub struct MessagingUi {
 	group_create: group_members::NewGroup,
 	server_menu: server_menu::ServerMenu,
 	browse_channels: browse_channels::Browser,
+	navigation_browser: Option<Id>,
 	community_ui: community::CommunityUi,
 	channel_menu: channel_menu::ChannelMenu,
 	pub channel_preferences: model::ChannelPreferences,

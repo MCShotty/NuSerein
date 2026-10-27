@@ -1,5 +1,32 @@
 # Discord compatibility — checked 2026-09-10
 
+## Channel preference synchronization and Browse Channels — October 26, 2026
+
+Browse Channels is a main-content page with the server sidebar and Back/Forward navigation.
+Its checkboxes edit saved membership; opening a channel is a separate navigation action.
+All / In My Channel List / Not In My Channel List and Muted filters distinguish membership,
+muting and temporary reveals. Category selection is inherited by its children and their threads;
+removing one inherited child materializes the siblings before removing the category selection.
+Show All keeps the custom list, and an explicit hide returns to that list. Unknown preferences
+show a loading/error state and disable the affected controls; accessible sidebar rows remain
+available with an unsynced hint. Browsing does not acknowledge the selected conversation.
+
+Personal channel and server notification changes apply immediately, debounce for 250 ms and
+save through one serialized lane. Confirmed settings remain separate from pending choices.
+Gateway updates and REST confirmations share normalized field presence, full/sparse collection
+handling and server versions. Request/observation ordering fences legacy unversioned responses,
+including refreshes. Sparse writes use the latest confirmed flags and preserve unknown bits.
+A conflicting authoritative choice is shown with Apply Again. Rejected writes restore confirmed
+values and offer Retry; uncertain writes stay visibly unconfirmed and are never replayed
+without a new explicit choice. Unsent work is revalidated after waiting behind another mutation
+and again at worker entry. Only a proven-unsent stale flag payload may be rebased automatically.
+
+Refresh requests the current representation using an empty PATCH to the existing
+[unofficial account guild-settings route](https://docs.discord.food/resources/user-settings#modify-user-guild-settings).
+Closing the page preserves authorized saves; account/guild/access changes retire stale work.
+Local synthetic decoding, HTTP, reducer and UI tests cover these paths. Synchronization in both
+directions with an owner-controlled Discord session remains **unverified**.
+
 ## Server administration and personal channel controls — October 23, 2026
 
 This milestone connects the existing native administration pages with personal channel

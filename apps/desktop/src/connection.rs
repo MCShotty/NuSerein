@@ -32,6 +32,7 @@ use voice::*;
 pub struct Connection {
 	pub commands: mpsc::Sender<Command>,
 	admin_scopes: watch::Sender<ReadScopes>,
+	preference_scope: watch::Sender<Option<(u64, model::Id, u64)>>,
 	pub uploads: mpsc::Sender<crate::uploads::UploadRequest>,
 	pub events: ReliableEvents,
 	pub typing: mpsc::Receiver<Envelope>,
@@ -134,6 +135,15 @@ impl Connection {
 			.store(channel.map_or(0, |id| id.0), Ordering::Relaxed);
 	}
 	pub fn sync_admin_reads(&self, state: &client_core::State) {
+		let preference = state.channel_preference_scope();
+		self.preference_scope.send_if_modified(|current| {
+			if *current == preference {
+				false
+			} else {
+				*current = preference;
+				true
+			}
+		});
 		let latest = state.admin_read_scopes();
 		self.admin_scopes.send_if_modified(|current| {
 			if *current == latest {

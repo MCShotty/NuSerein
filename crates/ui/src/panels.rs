@@ -662,11 +662,24 @@ impl MessagingUi {
 					&& ui
 						.add_sized(
 							[ui.available_width(), 30.0],
-							egui::Button::new("Browse Channels"),
+							egui::Button::new("Browse Channels")
+								.selected(state.browse_channels == Some(guild)),
 						)
 						.clicked()
 				{
 					self.browse_channels.open(state, guild);
+				}
+				if let Some(guild) = self.guild
+					&& !state.channel_preferences_known(guild)
+				{
+					ui.small("Channel list not synced").on_hover_text(
+						"Open Browse Channels to load or retry your saved channel list.",
+					);
+				}
+				if let Some(guild) = self.guild
+					&& state.browse_channels != Some(guild)
+				{
+					crate::browse_channels::preference_feedback(ui, state, guild, None, commands);
 				}
 				ui.add_space(6.0);
 				if self.guild.is_none() {

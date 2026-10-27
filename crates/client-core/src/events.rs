@@ -10,6 +10,7 @@ use super::{
 };
 
 pub enum Event {
+	ChannelPreferences(crate::preferences_sync::Finished),
 	Mfa(mfa::Event),
 	Autocomplete(application_commands::CompletionEvent),
 
@@ -555,6 +556,9 @@ impl Event {
 				Self::ReadState(read_state::Event::Snapshot { entries, .. }) => entries
 					.as_ref()
 					.map_or(0, |e| e.capacity() * size_of::<(Id, Option<Id>, u32)>()),
+				Self::ChannelPreferences(event) => {
+					event.result.as_ref().map_or(0, |update| update.bytes())
+				}
 				Self::NotificationPreferences(event) => event.bytes(),
 				Self::ReadState(read_state::Event::Latest(entries)) => {
 					entries.capacity() * size_of::<(Id, Patch<Id>)>()

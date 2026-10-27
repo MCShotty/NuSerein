@@ -71,6 +71,14 @@ impl DiscordApi {
 	}
 	pub(super) async fn execute_unscoped(&self, command: Command) -> Event {
 		match command {
+			Command::ChannelPreferences(request) => {
+				Event::ChannelPreferences(client_core::preferences_sync::Finished {
+					generation: request.generation,
+					guild: request.guild,
+					request: request.request,
+					result: self.channel_preferences(&request).await,
+				})
+			}
 			Command::Mfa(request) => Event::Mfa(self.mfa_request(*request).await),
 			Command::Report(request) => Event::Report(client_core::reporting::Event {
 				target: request.target,

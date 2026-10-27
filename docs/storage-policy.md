@@ -1,5 +1,20 @@
 # Local storage policy and audit
 
+## Account channel preferences (October 26, 2026)
+
+Confirmed guild settings and optimistic choices are session state, isolated by account generation.
+No local hiding database or settings schema is added. Pending edits, statuses, active request
+copies and observation metadata share a 1,024-target / 256 KiB bound within the existing 32 MiB
+notification-settings budget. One write is active; rapid edits coalesce for 250 ms. A fixed-size
+scope watch fences unsent transport work after account, guild or access changes. Rejected and
+uncertain results remain bounded; uncertain writes are not automatically replayed. Explicit
+Refresh reads the authoritative representation without resending the uncertain choice.
+
+Browse Channels retains bounded navigation IDs, row heights and search text, while descriptions
+reuse the existing bounded cache and read lane. Its navigation entry keeps the conversation and
+reading anchor resident. Closing the page does not cancel an authorized save. Logout clears the
+queue and page state, and late results cannot restore another account's preferences.
+
 ## Reply previews and local time preferences (October 21, 2026)
 
 Reply summaries are session-only and deduplicated by conversation/message. At most 128

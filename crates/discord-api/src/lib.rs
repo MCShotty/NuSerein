@@ -11,6 +11,7 @@ mod badges;
 mod channel_actions;
 mod collectibles;
 mod community_admin;
+mod preferences_sync;
 
 mod community;
 pub mod detectable;

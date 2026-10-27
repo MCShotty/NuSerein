@@ -92,12 +92,21 @@ impl eframe::App for Preview {
 				.count()
 		});
 		let measured = Instant::now();
-		let commands = self.messaging.show(ui, &mut self.state);
+		let mut commands = self.messaging.show(ui, &mut self.state);
+		commands.extend(self.state.poll_channel_preferences(Instant::now()));
+		if let Some(deadline) = self.state.next_channel_preference_deadline() {
+			ctx.request_repaint_after(deadline.saturating_duration_since(Instant::now()));
+		}
 		if let Some(metrics) = &mut self.metrics {
 			metrics.record(&ctx, measured.elapsed(), wheel_events);
 		}
 		for command in commands {
 			let event = match command {
+				client_core::Command::ChannelPreferences(request) => {
+					client_core::Event::ChannelPreferences(
+						self.state.demo_channel_preferences(&request),
+					)
+				}
 				command @ (client_core::Command::History { .. }
 				| client_core::Command::HistoryAround { .. }
 				| client_core::Command::ReplyPreview { .. }
@@ -1647,7 +1656,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					}
 				}
 			} else if page == "channels" {
-				messaging.preview_browse_channels(&state, model::Id(10));
+				// The historical fixture omits this setting; demonstrate the loaded
+				// controls while separate regressions cover unknown preferences.
+				state.apply(client_core::Envelope {
+					generation: state.generation,
+					event: client_core::Event::NotificationPreferences(
+						client_core::notifications::Event::Updates {
+							entries: vec![model::guild_preferences::Update {
+								guild: Some(model::Id(10)),
+								fields: model::guild_preferences::Fields {
+									hide_muted: model::Patch::Value(false),
+									..Default::default()
+								},
+								..Default::default()
+							}],
+							replace: false,
+						},
+					),
+				});
+				messaging.preview_browse_channels(&mut state, model::Id(10));
 			} else if page == "mod-view" {
 				prime_mod_view(&mut state, &mut messaging);
 			} else if page.starts_with("server") {
@@ -1685,10 +1712,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					if let Some(backend) = args
 						.iter()
 						.find_map(|arg| arg.strip_prefix("--video-backend="))
+						&& backend != "ffmpeg"
 					{
-						if backend != "ffmpeg" {
-							return Err("Video backend must be ffmpeg".into());
-						}
+						return Err("Video backend must be ffmpeg".into());
 					}
 					if let Some(codec) = args
 						.iter()

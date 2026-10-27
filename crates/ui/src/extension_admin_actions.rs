@@ -93,6 +93,13 @@ impl MessagingUi {
 		commands: &mut Vec<Command>,
 	) -> Result<(), String> {
 		action.validate().map_err(|error| error.to_string())?;
+		let debounced = matches!(
+			&action,
+			AppAction::SetChannelMute { .. }
+				| AppAction::SetChannelNotifications { .. }
+				| AppAction::SetGuildHideMuted { .. }
+		);
+		let revision = state.revision;
 		let command = match action {
 			AppAction::SetChannelMute {
 				channel_id,
@@ -222,6 +229,9 @@ impl MessagingUi {
 			}
 			other => return self.apply_extension_server_action(state, other, commands),
 		};
+		if command.is_none() && debounced && state.revision != revision {
+			return Ok(());
+		}
 		queue(command, commands)
 	}
 }
@@ -230,12 +240,37 @@ impl MessagingUi {
 mod tests {
 	use super::*;
 
-	fn apply(action: AppAction) -> (State, Command) {
+	fn known_state() -> State {
 		let mut state = test_support::demo_state();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::NotificationPreferences(
+				client_core::notifications::Event::Updates {
+					entries: vec![model::guild_preferences::Update {
+						guild: Some(Id(10)),
+						fields: model::guild_preferences::Fields {
+							hide_muted: Patch::Value(false),
+							..Default::default()
+						},
+						..Default::default()
+					}],
+					replace: false,
+				},
+			),
+		});
+		state
+	}
+
+	fn apply(action: AppAction) -> (State, Command) {
+		let mut state = known_state();
 		let mut commands = Vec::new();
 		MessagingUi::default()
 			.apply_extension_admin_action(&mut state, action, &mut commands)
 			.unwrap();
+		if commands.is_empty() {
+			state.flush_channel_preferences();
+			commands.extend(state.poll_channel_preferences(std::time::Instant::now()));
+		}
 		assert_eq!(commands.len(), 1);
 		(state, commands.pop().unwrap())
 	}
@@ -246,40 +281,38 @@ mod tests {
 			channel_id: "20".into(),
 			duration_seconds: Some(3600),
 		});
-		assert!(matches!(
-			command,
-			Command::ChannelAction {
-				channel: Id(20),
-				action: Action::Mute(Mute::For(3600)),
-				..
-			}
-		));
+		let Command::ChannelPreferences(request) = command else {
+			panic!("debounced native preferences")
+		};
+		assert_eq!(request.guild, Id(10));
+		assert_eq!(request.patch.channels.len(), 1);
+		assert_eq!(request.patch.channels[0].channel, Id(20));
+		assert_eq!(request.patch.channels[0].fields.muted, Patch::Value(true));
+		assert!(
+			matches!(request.patch.channels[0].fields.mute_until,Patch::Value(until) if until>std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64)
+		);
 
 		let (_, command) = apply(AppAction::SetChannelNotifications {
 			channel_id: "20".into(),
 			level: 1,
 		});
-		assert!(matches!(
-			command,
-			Command::ChannelAction {
-				channel: Id(20),
-				action: Action::Notifications(1),
-				..
-			}
-		));
+		let Command::ChannelPreferences(request) = command else {
+			panic!("debounced native preferences")
+		};
+		assert_eq!(request.patch.channels[0].channel, Id(20));
+		assert_eq!(request.patch.channels[0].fields.level, Patch::Value(1));
+		assert_eq!(request.patch.channels[0].fields.muted, Patch::Absent);
 
 		let (_, command) = apply(AppAction::SetGuildHideMuted {
 			guild_id: "10".into(),
 			hide: true,
 		});
-		assert!(matches!(
-			command,
-			Command::ChannelAction {
-				guild: Id(10),
-				action: Action::HideMuted(true),
-				..
-			}
-		));
+		let Command::ChannelPreferences(request) = command else {
+			panic!("debounced native preferences")
+		};
+		assert_eq!(request.guild, Id(10));
+		assert_eq!(request.patch.fields.hide_muted, Patch::Value(true));
+		assert!(request.patch.channels.is_empty());
 
 		let (_, command) = apply(AppAction::CreateChannel {
 			guild_id: "10".into(),
@@ -362,7 +395,7 @@ mod tests {
 			}
 		));
 
-		let mut state = test_support::demo_state();
+		let mut state = known_state();
 		let mut commands = Vec::new();
 		assert!(
 			MessagingUi::default()
@@ -374,6 +407,88 @@ mod tests {
 					&mut commands,
 				)
 				.is_err()
+		);
+		assert!(commands.is_empty());
+	}
+	#[test]
+	fn accepted_preferences_are_successful_without_an_immediate_command_but_admission_still_applies()
+	 {
+		let mut state = known_state();
+		let mut commands = Vec::new();
+		let mut ui = MessagingUi::default();
+		ui.apply_extension_admin_action(
+			&mut state,
+			AppAction::SetGuildHideMuted {
+				guild_id: "10".into(),
+				hide: true,
+			},
+			&mut commands,
+		)
+		.unwrap();
+		assert!(commands.is_empty());
+		assert_eq!(state.hides_muted_channels(Id(10)), Some(true));
+		assert!(
+			ui.apply_extension_admin_action(
+				&mut state,
+				AppAction::SetChannelNotifications {
+					channel_id: "999999".into(),
+					level: 1
+				},
+				&mut commands
+			)
+			.is_err()
+		);
+		assert!(commands.is_empty());
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = false;
+		assert!(
+			ui.apply_extension_admin_action(
+				&mut state,
+				AppAction::SetGuildHideMuted {
+					guild_id: "10".into(),
+					hide: false
+				},
+				&mut commands
+			)
+			.is_err()
+		);
+		assert_eq!(state.hides_muted_channels(Id(10)), Some(true));
+		assert!(commands.is_empty());
+	}
+	#[test]
+	fn unchanged_known_preference_is_a_success_but_an_unknown_preference_is_not_admitted() {
+		let mut state = known_state();
+		let mut commands = Vec::new();
+		let mut ui = MessagingUi::default();
+		ui.apply_extension_admin_action(
+			&mut state,
+			AppAction::SetGuildHideMuted {
+				guild_id: "10".into(),
+				hide: false,
+			},
+			&mut commands,
+		)
+		.unwrap();
+		assert!(commands.is_empty());
+		state.flush_channel_preferences();
+		assert!(
+			state
+				.poll_channel_preferences(std::time::Instant::now())
+				.is_none()
+		);
+		let mut unknown = test_support::demo_state();
+		assert_eq!(unknown.hides_muted_channels(Id(10)), None);
+		assert!(
+			ui.apply_extension_admin_action(
+				&mut unknown,
+				AppAction::SetGuildHideMuted {
+					guild_id: "10".into(),
+					hide: true
+				},
+				&mut commands
+			)
+			.is_err()
 		);
 		assert!(commands.is_empty());
 	}

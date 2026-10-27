@@ -30,6 +30,7 @@ impl MessagingUi {
 				"reading-wheel",
 				state.generation,
 				state.selected,
+				state.browse_channels,
 				self.settings.open,
 				self.search.open,
 			)),
@@ -345,7 +346,7 @@ impl MessagingUi {
 		if let Some(target) = self.switcher.show(&ctx, state, &mut self.avatars) {
 			match target {
 				switcher::Target::Channel(channel) => {
-					if state.selected != Some(channel)
+					if (state.selected != Some(channel) || state.browse_channels.is_some())
 						&& let Some(command) = state.select(channel)
 					{
 						commands.push(command);
@@ -369,6 +370,9 @@ impl MessagingUi {
 				.selected
 				.and_then(|id| state.channel(id))
 				.and_then(|channel| channel.guild);
+		}
+		if let Some(guild) = state.browse_channels {
+			self.guild = Some(guild);
 		}
 		let title = self
 			.guild
@@ -399,7 +403,7 @@ impl MessagingUi {
 					.inner_margin(0),
 			)
 			.show(ui, |ui| {
-				egui::Panel::bottom("account-footer")
+				let footer = egui::Panel::bottom("account-footer")
 					.show_separator_line(false)
 					.frame(
 						egui::Frame::new()
@@ -428,6 +432,13 @@ impl MessagingUi {
 							}),
 					)
 					.show(ui, |ui| self.account_card(ui, state, &mut commands));
+				// Nested panels use their parent's full cross-axis. Limit subsequent
+				// navigation painting so the rail/list cannot cover the account controls.
+				let navigation_clip = egui::Rect::from_min_max(
+					ui.clip_rect().min,
+					egui::pos2(ui.clip_rect().right(), footer.response.rect.top()),
+				);
+				ui.shrink_clip_rect(navigation_clip);
 				self.notification_rail(ui, state, &mut commands);
 				// The lists sit on their own rounded surface beside the rail, above the card.
 				let lists = ui.available_rect_before_wrap();
@@ -513,18 +524,24 @@ impl MessagingUi {
 		if let Some((guild, action)) = self.server_menu.channel_preferences_requested.take() {
 			commands.extend(state.request_personal_channel_action(guild, action));
 		}
-		let browse_shortcuts = shortcuts::ShortcutView::new(
-			&self.channel_preferences,
-			self.shortcuts_available(state),
-		);
-		self.browse_channels.show(
-			&ctx,
-			state,
-			self.guild,
-			(browse_shortcuts, self.show_hidden_channels),
-			&mut self.channel_menu,
-			&mut commands,
-		);
+		self.browse_channels.sync(state, self.guild);
+		if self.navigation_browser != state.browse_channels {
+			self.navigation_browser = state.browse_channels;
+			if state.browse_channels.is_some() {
+				self.browse_channels.focus_search();
+			}
+			if state.browse_channels.is_none() {
+				self.guild = state
+					.selected
+					.and_then(|id| state.channel(id))
+					.and_then(|channel| channel.guild);
+			}
+			crate::scroll::reset_wheel(&ctx);
+			self.timeline.menu = Default::default();
+			self.pins_anchor = None;
+			self.focus_switched_composer =
+				state.browse_channels.is_none() && state.selected.is_some();
+		}
 		if let Some(guild) = self.server_menu.settings_requested.take()
 			&& let Some(command) = self.preview_server_settings(state, guild)
 		{
@@ -548,6 +565,7 @@ impl MessagingUi {
 			.and_then(|id| state.channel(id))
 			.is_some_and(|c| matches!(c.kind, 2 | 13));
 		let selected_forum = state.selected.is_some_and(|id| state.is_forum(id));
+		let browsing_channels = state.browse_channels.is_some();
 		if let Some(id) = state.posting.created.take()
 			&& let Some(command) = state.select(id)
 		{
@@ -555,6 +573,7 @@ impl MessagingUi {
 		}
 		let wide_members = ui.available_width() >= 720.0;
 		if !settings_open
+			&& !browsing_channels
 			&& !self.switcher_frame
 			&& !self.ime_active
 			&& state.can_search()
@@ -580,10 +599,24 @@ impl MessagingUi {
 			self.search.focus_conversation(channel, state);
 		}
 		self.reconcile_submitted_command(state);
+		if browsing_channels
+			&& !self.ime_active
+			&& ctx.input_mut(|input| {
+				crate::keybinds::pressed_exact(
+					input,
+					self.keybinds
+						.chord(model::KeybindAction::SearchConversation),
+				)
+			}) {
+			self.browse_channels.focus_search();
+		}
 		self.search.sync(&ctx, state, &mut commands);
-		let search_open =
-			self.search.results_visible(state) && state.selected.is_some() && !selected_voice;
-		let show_members = !selected_voice
+		let search_open = !browsing_channels
+			&& self.search.results_visible(state)
+			&& state.selected.is_some()
+			&& !selected_voice;
+		let show_members = !browsing_channels
+			&& !selected_voice
 			&& !search_open
 			&& state.selected.is_some()
 			&& if wide_members {
@@ -695,6 +728,21 @@ impl MessagingUi {
 					.inner_margin(0),
 			)
 			.show(ui, |ui| {
+				if browsing_channels {
+					let browse_shortcuts = shortcuts::ShortcutView::new(
+						&self.channel_preferences,
+						self.shortcuts_available(state),
+					);
+					self.browse_channels.show(
+						ui,
+						state,
+						self.guild,
+						(browse_shortcuts, self.show_hidden_channels),
+						&mut self.channel_menu,
+						&mut commands,
+					);
+					return;
+				}
 				let message_surface =
 					design::section_surface(ui, background.chat, design::ImageSection::MessageList);
 				if design::has_section_background(ui)
@@ -1153,8 +1201,10 @@ impl MessagingUi {
 		self.voice_messages.show(&ctx, state);
 		self.external_upload
 			.show(&ctx, state, &mut self.draft_changes);
-		self.search
-			.overlays(&ctx, state, &mut self.avatars, &mut commands);
+		if !browsing_channels {
+			self.search
+				.overlays(&ctx, state, &mut self.avatars, &mut commands);
+		}
 		if state.invite_challenge().is_none() {
 			self.join_server
 				.show(&ctx, state, &mut self.avatars, &mut commands);
@@ -1280,6 +1330,7 @@ impl MessagingUi {
 			}
 		}
 		if let Some((channel, message)) = self.timeline.leave_read.take()
+			&& !browsing_channels
 			&& !settings_open
 			&& !self.inbox_open
 			&& let Some(command) = state.prepare_mark_left_channel_read(channel, message)
@@ -1307,6 +1358,7 @@ impl MessagingUi {
 			}
 		} else if let Some(message) = self.timeline.mark_read.take() {
 			if !settings_open
+				&& !browsing_channels
 				&& !self.inbox_open
 				&& state.search_target.is_none()
 				&& let Some(command) = state.prepare_mark_read(message)

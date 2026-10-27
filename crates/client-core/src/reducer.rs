@@ -38,7 +38,7 @@ impl State {
 		}
 		if matches!(envelope.event, Event::Resync) {
 			self.read_state.reset();
-			self.notification_preferences = Default::default();
+			self.notification_preferences.suspend();
 		}
 		if matches!(
 			envelope.event,
@@ -47,6 +47,7 @@ impl State {
 			if matches!(envelope.event, Event::Ready { .. } | Event::Resync) {
 				self.set_premium_type(0);
 			}
+			self.interrupt_channel_preferences();
 			self.interrupt_preloads();
 			self.interrupt_reaction_preferences();
 			self.interrupt_stickers();
@@ -446,6 +447,7 @@ impl State {
 				Ok(())
 			}
 			Event::ReadState(event) => self.apply_read_state(event),
+			Event::ChannelPreferences(event) => self.finish_channel_preferences(event),
 			Event::NotificationPreferences(event) => self.apply_notification_preferences(event),
 			Event::MessagingPermissions { request, result } => {
 				self.apply_messaging_permissions(request, result);
@@ -1106,6 +1108,8 @@ impl State {
 				self.profile_cache.clear();
 				self.read_state.reset();
 				self.notification_preferences = notifications::Preferences::default();
+				self.preference_queue = Default::default();
+				self.browse_channels = None;
 				self.cancel_user_action();
 				self.cancel_server_action();
 				self.cancel_channel_action();

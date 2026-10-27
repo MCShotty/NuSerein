@@ -72,7 +72,10 @@ fuzz_target!(|data: &[u8]| {
 			let (entries, complete) = settings.entries();
 			black_box(complete);
 			for entry in entries {
-				black_box(entry.with_defaults());
+				let update = entry.into_update(payload.len() % 2 == 0);
+				black_box(update.valid());
+				black_box(update.bytes());
+				black_box(update);
 			}
 		}
 		return;

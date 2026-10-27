@@ -32,6 +32,16 @@ impl Desktop {
 		);
 		self.messaging.sync_reading_zoom(ctx);
 		self.poll(ctx);
+		if let Some(connection) = &self.connection {
+			connection.sync_admin_reads(&self.state);
+		}
+		let preference_now = std::time::Instant::now();
+		if let Some(command) = self.state.poll_channel_preferences(preference_now) {
+			self.command(command);
+		}
+		if let Some(deadline) = self.state.next_channel_preference_deadline() {
+			ctx.request_repaint_after(deadline.saturating_duration_since(preference_now));
+		}
 		self.sync_message_speech(ctx);
 		self.sync_fonts(ctx);
 		self.hotkeys.sync(&self.messaging.keybinds, &self.runtime);
@@ -1548,6 +1558,11 @@ impl Desktop {
 				}
 				None => {}
 			}
+		}
+		if let Some(deadline) = self.state.next_channel_preference_deadline() {
+			ctx.request_repaint_after(
+				deadline.saturating_duration_since(std::time::Instant::now()),
+			);
 		}
 		ui::design::window_resize(&ctx);
 		self.frame_metrics.reflows = self.messaging.timeline_reflows();

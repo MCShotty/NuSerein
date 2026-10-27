@@ -1,11 +1,8 @@
 //! Synthetic input checks for account notification controls; no service requests are sent.
 use crate::{MessagingUi, design};
-use client_core::{
-	Command, Envelope, Event, State,
-	server_actions::{Action, NotificationOptions},
-};
+use client_core::{Command, Envelope, Event, State};
 use egui::{Pos2, Rect};
-use model::Id;
+use model::{Id, Patch};
 
 struct Harness {
 	ctx: egui::Context,
@@ -164,6 +161,23 @@ impl Harness {
 		self.settle();
 	}
 
+	fn write(&mut self) -> Box<client_core::preferences_sync::Request> {
+		self.state.flush_channel_preferences();
+		let Some(Command::ChannelPreferences(request)) = self
+			.state
+			.poll_channel_preferences(std::time::Instant::now())
+		else {
+			panic!("queued account preference write")
+		};
+		request
+	}
+	fn acknowledge(&mut self, request: &client_core::preferences_sync::Request) {
+		let event = self.state.demo_channel_preferences(request);
+		self.state.apply(Envelope {
+			generation: self.state.generation,
+			event: Event::ChannelPreferences(event),
+		});
+	}
 	fn shown(&mut self) -> bool {
 		self.settle()
 			.iter()
@@ -197,91 +211,129 @@ fn ordinary_members_open_notification_settings_from_header_and_rail() {
 }
 
 #[test]
-fn notification_edits_require_save_and_submit_one_sparse_write() {
+fn notification_edits_apply_immediately_and_coalesce_one_sparse_write() {
 	let mut h = Harness::new(900.0, 900.0, false);
 	let original = h.state.server_notification_settings(Id(10));
 	h.open();
+	let before = std::time::Instant::now();
 	h.click("Only mentions");
 	h.click("Suppress role mentions");
 	assert!(h.commands.is_empty());
-	assert_eq!(h.state.server_notification_settings(Id(10)), original);
-	h.click("Save changes");
-	assert_eq!(h.commands.len(), 1);
-	let Command::ServerAction { action, request } = h.commands[0] else {
-		panic!("expected account settings write");
-	};
-	assert_eq!(
-		action,
-		Action::Notifications {
-			guild: Id(10),
-			options: NotificationOptions {
-				level: Some(1),
-				suppress_roles: Some(!original.suppress_roles.unwrap_or(false)),
-				..Default::default()
-			},
-		}
-	);
-	assert!(h.state.server_action_pending());
-	h.click("Saving…");
-	h.click("All messages");
-	assert_eq!(
-		h.commands.len(),
-		1,
-		"pending controls cannot enqueue a second write"
-	);
-	h.state.apply(Envelope {
-		generation: h.state.generation,
-		event: Event::ServerAction(client_core::server_actions::Event::Written {
-			action,
-			request,
-			result: Ok(None),
-		}),
-	});
-	h.settle();
-	assert!(!h.state.server_action_pending());
 	assert_eq!(h.state.server_notification_settings(Id(10)).level, Some(1));
-	h.click("Save changes");
-	assert_eq!(h.commands.len(), 1, "acknowledged draft is clean");
+	assert_eq!(
+		h.state.server_notification_settings(Id(10)).suppress_roles,
+		Some(!original.suppress_roles.unwrap_or(false))
+	);
+	assert!(h.state.poll_channel_preferences(before).is_none());
+	let first = h.write();
+	assert_eq!(first.guild, Id(10));
+	assert_eq!(first.patch.fields.level, Patch::Value(1));
+	assert_eq!(
+		first.patch.fields.suppress_roles,
+		Patch::Value(!original.suppress_roles.unwrap_or(false))
+	);
+	assert_eq!(first.patch.fields.muted, Patch::Absent);
+	assert!(first.patch.channels.is_empty());
+	h.click("All messages");
+	assert_eq!(h.state.server_notification_settings(Id(10)).level, Some(0));
+	assert!(
+		h.state
+			.poll_channel_preferences(std::time::Instant::now() + std::time::Duration::from_secs(1))
+			.is_none(),
+		"one serialized write remains active while controls accept a later choice"
+	);
+	h.acknowledge(&first);
+	assert_eq!(h.state.server_notification_settings(Id(10)).level, Some(0));
+	let next = h.write();
+	assert_eq!(next.patch.fields.level, Patch::Value(0));
+	assert_eq!(next.patch.fields.suppress_roles, Patch::Absent);
+	h.acknowledge(&next);
+	h.settle();
+	assert_eq!(h.state.channel_preference_status(Id(10), None), None);
+	assert!(
+		h.state
+			.poll_channel_preferences(std::time::Instant::now() + std::time::Duration::from_secs(1))
+			.is_none()
+	);
+	assert!(!h.settle().iter().any(|(label, _)| label == "Save changes"));
 }
 
 #[test]
-fn closing_or_changing_context_discards_unsaved_notification_edits() {
-	for reason in 0..4 {
+fn closing_or_changing_view_preserves_authorized_saves_and_removing_the_server_cancels_unsent_work()
+{
+	for reason in 0..3 {
 		let mut h = Harness::new(900.0, 900.0, false);
 		h.open();
 		h.click("Nothing");
+		assert_eq!(h.state.server_notification_settings(Id(10)).level, Some(2));
 		match reason {
 			0 => h.click("Close"),
-			1 => {
-				h.state.generation += 1;
-			}
-			2 => {
-				h.view.guild = None;
-			}
-			_ => {
-				h.state.guilds.retain(|guild| guild.id != Id(10));
-			}
+			1 => h.view.guild = None,
+			_ => h.state.apply(Envelope {
+				generation: h.state.generation,
+				event: Event::GuildRemoved(Id(10)),
+			}),
 		}
 		assert!(!h.shown());
 		assert!(h.commands.is_empty());
-		if reason != 3 {
-			h.view.guild = Some(Id(10));
-			h.open();
-			h.click("Save changes");
+		if reason == 2 {
 			assert!(
-				h.commands.is_empty(),
-				"reopening must not save an old draft"
+				h.state
+					.poll_channel_preferences(
+						std::time::Instant::now() + std::time::Duration::from_secs(1)
+					)
+					.is_none()
 			);
+			continue;
 		}
+		let request = h.write();
+		assert_eq!(request.patch.fields.level, Patch::Value(2));
+		h.acknowledge(&request);
+		h.view.guild = Some(Id(10));
+		h.open();
+		assert_eq!(h.state.server_notification_settings(Id(10)).level, Some(2));
+		assert!(
+			h.state
+				.poll_channel_preferences(
+					std::time::Instant::now() + std::time::Duration::from_secs(1)
+				)
+				.is_none()
+		);
 	}
 }
 
 #[test]
-fn ordinary_member_can_choose_timed_mute_and_save_without_changing_other_fields() {
+fn an_old_notification_completion_cannot_cross_logout_generation() {
+	let mut h = Harness::new(900.0, 900.0, false);
+	h.open();
+	h.click("Nothing");
+	let request = h.write();
+	let generation = request.generation;
+	h.state.logout();
+	assert!(!h.shown());
+	let completion = h.state.demo_channel_preferences(&request);
+	h.state.apply(Envelope {
+		generation,
+		event: Event::ChannelPreferences(completion),
+	});
+	assert!(!h.state.channel_preferences_known(Id(10)));
+	assert!(
+		h.state
+			.poll_channel_preferences(std::time::Instant::now() + std::time::Duration::from_secs(1))
+			.is_none()
+	);
+}
+
+#[test]
+fn ordinary_member_can_choose_a_timed_mute_without_changing_other_fields() {
 	for keyboard in [false, true] {
 		let mut h = Harness::new(800.0, 850.0, false);
 		h.open();
 		h.click("Mute server");
+		assert_eq!(
+			h.state.server_notification_settings(Id(10)).muted,
+			Some(true)
+		);
 		h.click("Until I Turn It Back On");
 		if keyboard {
 			h.key(egui::Key::ArrowDown);
@@ -290,31 +342,52 @@ fn ordinary_member_can_choose_timed_mute_and_save_without_changing_other_fields(
 			h.click("For 15 Minutes");
 		}
 		assert!(!egui::Popup::is_any_open(&h.ctx));
-		h.click("Save changes");
-		let [
-			Command::ServerAction {
-				action: Action::Notifications { guild, options },
-				..
-			},
-		] = h.commands.as_slice()
-		else {
-			panic!("one explicit timed mute write")
-		};
-		assert_eq!(*guild, Id(10));
-		assert_eq!(options.muted, Some(true));
+		let request = h.write();
+		assert_eq!(request.guild, Id(10));
+		assert_eq!(request.patch.fields.muted, Patch::Value(true));
 		let now = std::time::SystemTime::now()
 			.duration_since(std::time::UNIX_EPOCH)
 			.unwrap()
 			.as_secs() as i64;
 		assert!(
-			options
-				.mute_until
-				.is_some_and(|until| (now + 895..=now + 900).contains(&until))
+			matches!(request.patch.fields.mute_until,Patch::Value(until) if (now+895..=now+900).contains(&until))
 		);
-		assert_eq!(options.level, None);
-		assert_eq!(options.suppress_everyone, None);
+		assert_eq!(request.patch.fields.level, Patch::Absent);
+		assert_eq!(request.patch.fields.suppress_everyone, Patch::Absent);
 		assert!(!h.state.can_manage_guild(Id(10)));
 	}
+}
+
+#[test]
+fn an_uncertain_notification_save_requires_an_explicit_refresh() {
+	let mut h = Harness::new(900.0, 900.0, false);
+	h.open();
+	h.click("Only mentions");
+	let request = h.write();
+	h.state.apply(Envelope {
+		generation: h.state.generation,
+		event: Event::ChannelPreferences(client_core::preferences_sync::Finished {
+			generation: request.generation,
+			guild: request.guild,
+			request: request.request,
+			result: Err(client_core::auth::Failure::Network),
+		}),
+	});
+	assert!(h.settle().iter().any(|(label, _)| label == "Not confirmed"));
+	assert!(h.commands.is_empty());
+	assert!(
+		h.state
+			.poll_channel_preferences(
+				std::time::Instant::now() + std::time::Duration::from_secs(60)
+			)
+			.is_none()
+	);
+	h.click("Refresh");
+	let [Command::ChannelPreferences(refresh)] = h.commands.as_slice() else {
+		panic!("one explicit refresh")
+	};
+	assert_eq!(refresh.guild, Id(10));
+	assert_eq!(refresh.patch, model::guild_preferences::Write::default());
 }
 
 #[test]
@@ -326,33 +399,32 @@ fn notification_modal_can_edit_channel_overrides_without_management_permissions(
 	assert!(!egui::Popup::is_any_open(&h.ctx));
 	assert!(h.commands.is_empty(), "selecting a channel never writes");
 	h.click("Nothing");
-	assert!(matches!(
-		h.commands.as_slice(),
-		[Command::ChannelAction {
-			guild: Id(10),
-			channel: Id(20),
-			action: client_core::channel_actions::Action::Notifications(2),
-			..
-		}]
-	));
+	assert_eq!(h.state.channel_notification_level(Id(20)), Some(2));
+	assert!(h.commands.is_empty());
+	let request = h.write();
+	assert_eq!(request.guild, Id(10));
+	assert_eq!(request.patch.channels.len(), 1);
+	assert_eq!(request.patch.channels[0].channel, Id(20));
+	assert_eq!(request.patch.channels[0].fields.level, Patch::Value(2));
+	assert_eq!(
+		request.patch.fields,
+		model::guild_preferences::Fields::default()
+	);
 	assert!(!h.state.can_manage_channel(Id(20)));
 	assert!(h.shown());
 }
 
 #[test]
-fn narrow_notification_dialog_keeps_footer_visible_and_scrolls_controls() {
+fn narrow_notification_dialog_keeps_close_visible_and_scrolls_controls() {
 	for light in [false, true] {
 		let mut h = Harness::new(320.0, 550.0, light);
 		h.open();
 		let screen = Rect::from_min_size(Pos2::ZERO, h.size);
-		for label in [
-			"Notification Settings",
-			"Use server default",
-			"Save changes",
-			"Close",
-		] {
-			let point = h.point(label);
-			assert!(screen.contains(point), "{label} must stay in the viewport");
+		for label in ["Notification Settings", "Use server default", "Close"] {
+			assert!(
+				screen.contains(h.point(label)),
+				"{label} must stay in the viewport"
+			);
 		}
 		for (text, rect) in h.settle() {
 			assert!(
@@ -377,22 +449,14 @@ fn narrow_notification_dialog_keeps_footer_visible_and_scrolls_controls() {
 		assert!(screen.contains(roles));
 		h.click_at(roles, egui::PointerButton::Primary);
 		assert!(h.commands.is_empty());
-		h.click("Save changes");
+		let request = h.write();
 		assert!(matches!(
-			h.commands.as_slice(),
-			[Command::ServerAction {
-				action: Action::Notifications {
-					options: NotificationOptions {
-						suppress_roles: Some(_),
-						level: None,
-						muted: None,
-						suppress_everyone: None,
-						mute_until: None
-					},
-					..
-				},
-				..
-			}]
+			request.patch.fields.suppress_roles,
+			Patch::Value(_)
 		));
+		assert_eq!(request.patch.fields.level, Patch::Absent);
+		assert_eq!(request.patch.fields.muted, Patch::Absent);
+		assert_eq!(request.patch.fields.suppress_everyone, Patch::Absent);
+		assert_eq!(request.patch.fields.mute_until, Patch::Absent);
 	}
 }

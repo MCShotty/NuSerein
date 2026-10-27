@@ -56,7 +56,7 @@ pub(super) struct ChannelMenu {
 	requested: Option<(Id, Intent)>,
 	dialog: Option<Dialog>,
 	feedback: Option<Id>,
-	failure: Option<Id>,
+	preference_feedback: Option<Id>,
 	preference_error: bool,
 	generation: u64,
 }
@@ -243,55 +243,59 @@ impl ChannelMenu {
 				ui.close();
 			}
 			ui.separator();
-			ui.add_enabled_ui(available, |ui| {
-				if state.guild_channel_muted(channel.id) == Some(true)
-					&& row(
+			ui.add_enabled_ui(
+				state.personal_channel_controls_available(guild)
+					&& state.guild_channel_muted(channel.id).is_some(),
+				|ui| {
+					if state.guild_channel_muted(channel.id) == Some(true)
+						&& row(
+							ui,
+							if channel.kind == 4 {
+								"qol-unmute-category"
+							} else {
+								"channel-menu-context-unmute-channel"
+							},
+							true,
+							false,
+						)
+						.clicked()
+					{
+						intent = Some(Intent::Write(Action::Mute(Mute::Unmute)));
+					}
+					if let Some(mute) = crate::server_notifications::mute_menu(
 						ui,
 						if channel.kind == 4 {
-							"qol-unmute-category"
+							"qol-mute-category"
 						} else {
-							"channel-menu-context-unmute-channel"
+							"channel-menu-context-mute-channel"
 						},
-						true,
-						false,
-					)
-					.clicked()
-				{
-					intent = Some(Intent::Write(Action::Mute(Mute::Unmute)));
-				}
-				if let Some(mute) = crate::server_notifications::mute_menu(
-					ui,
-					if channel.kind == 4 {
-						"qol-mute-category"
-					} else {
-						"channel-menu-context-mute-channel"
-					},
-				) {
-					intent = Some(Intent::Write(Action::Mute(mute)));
-				}
-				ui.menu_button(
-					crate::i18n::translate("channel-menu-context-notification-settings"),
-					|ui| {
-						let level = state.channel_notification_level(channel.id);
-						for (value, label) in [
-							(0, "channel-menu-report-capacity-all-messages"),
-							(1, "channel-menu-report-capacity-only-mentions"),
-							(2, "channel-menu-report-capacity-nothing"),
-							(3, "qol-use-inherited"),
-						] {
-							if ui
-								.selectable_label(
-									level == Some(value),
-									crate::i18n::translate_if_key(label),
-								)
-								.clicked()
-							{
-								intent = Some(Intent::Write(Action::Notifications(value)));
+					) {
+						intent = Some(Intent::Write(Action::Mute(mute)));
+					}
+					ui.menu_button(
+						crate::i18n::translate("channel-menu-context-notification-settings"),
+						|ui| {
+							let level = state.channel_notification_level(channel.id);
+							for (value, label) in [
+								(0, "channel-menu-report-capacity-all-messages"),
+								(1, "channel-menu-report-capacity-only-mentions"),
+								(2, "channel-menu-report-capacity-nothing"),
+								(3, "qol-use-inherited"),
+							] {
+								if ui
+									.selectable_label(
+										level == Some(value),
+										crate::i18n::translate_if_key(label),
+									)
+									.clicked()
+								{
+									intent = Some(Intent::Write(Action::Notifications(value)));
+								}
 							}
-						}
-					},
-				);
-			});
+						},
+					);
+				},
+			);
 			ui.add_enabled_ui(state.personal_channel_controls_available(guild), |ui| {
 				ui.menu_button("Unread Badges", |ui| {
 					let mask = model::channel_visibility::UNREADS_ONLY_MENTIONS
@@ -428,12 +432,20 @@ impl ChannelMenu {
 		.show(|ui| {
 			ui.set_width(232.0);
 			ui.spacing_mut().button_padding = egui::vec2(12.0, 8.0);
-			if toggle_row(
-				ui,
-				"channel-menu-sidebar-context-hide-muted-channels",
-				hide_muted,
-			)
-			.changed()
+			if ui
+				.add_enabled_ui(
+					state.hides_muted_channels(guild).is_some()
+						&& (state.demo || state.gateway_connected),
+					|ui| {
+						toggle_row(
+							ui,
+							"channel-menu-sidebar-context-hide-muted-channels",
+							hide_muted,
+						)
+					},
+				)
+				.inner
+				.changed()
 			{
 				ui.close();
 			}
@@ -507,17 +519,19 @@ impl ChannelMenu {
 					}
 				}
 				Intent::Write(action) => {
-					let on_fail = matches!(action, Action::Mute(_) | Action::Notifications(_));
-					if let Some(command) = state.request_channel_action(id, action) {
-						commands.push(command);
-						if on_fail {
-							self.failure = Some(id);
-						} else {
-							self.feedback = Some(id);
-						}
-					} else {
-						self.feedback = Some(id);
+					if matches!(
+						action,
+						Action::Personal(_)
+							| Action::HideMuted(_)
+							| Action::Mute(_) | Action::Notifications(_)
+					) {
+						commands.extend(state.request_channel_action(id, action));
+						self.preference_feedback = Some(id);
+						self.feedback = None;
+						return;
 					}
+					commands.extend(state.request_channel_action(id, action));
+					self.feedback = Some(id);
 				}
 				Intent::Dialog(kind) => {
 					let name = if matches!(kind, Kind::Create | Kind::CreateCategory) {
@@ -561,13 +575,37 @@ impl ChannelMenu {
 				}
 			}
 		}
-		if let Some(id) = self.failure.take() {
-			if state.channel_action_pending() {
-				self.failure = Some(id);
-			} else if !state.channel_action_succeeded(id)
-				&& state.channel_action_status(id).is_some()
+
+		if let Some(id) = self.preference_feedback {
+			let scope = state.channel(id).and_then(|channel| channel.guild);
+			if scope != active
+				|| scope
+					.is_none_or(|guild| state.channel_preference_status(guild, Some(id)).is_none())
 			{
-				self.feedback = Some(id);
+				self.preference_feedback = None;
+			} else if state.browse_channels.is_none()
+				&& let Some(guild) = scope
+			{
+				egui::Area::new(egui::Id::unique("channel-preference-feedback"))
+					.anchor(egui::Align2::RIGHT_BOTTOM, [-24.0, -24.0])
+					.order(egui::Order::Foreground)
+					.show(ctx, |ui| {
+						egui::Frame::popup(ui.style())
+							.inner_margin(12)
+							.show(ui, |ui| {
+								ui.set_max_width(300.0);
+								crate::browse_channels::preference_feedback(
+									ui,
+									state,
+									guild,
+									Some(id),
+									commands,
+								);
+								if ui.small_button("Dismiss").clicked() {
+									self.preference_feedback = None;
+								}
+							});
+					});
 			}
 		}
 		self.show_feedback(ctx, state, active);
