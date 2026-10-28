@@ -132,6 +132,57 @@ fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
 }
 
 #[test]
+fn live_identity_growth_reports_a_scoped_member_search_limit() {
+	let mut state = state();
+	let Command::MemberSearch(request) = state.search_members(Id(20), "Name", 0).unwrap() else {
+		panic!()
+	};
+	let mut rows = Vec::new();
+	for id in 100..200 {
+		let mut user = message(id, Id(20)).author;
+		user.id = Id(id);
+		user.name = "N".repeat(128);
+		rows.push(model::Member {
+			user,
+			nick: None,
+			roles: (1000..1080).map(Id).collect(),
+			status: None,
+			custom_status: None,
+			activities: vec![],
+			clients: Default::default(),
+		});
+		apply(
+			&mut state,
+			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				guild: Id(10),
+				user: Id(id),
+				profile: None,
+				nick: Patch::Value("😀".repeat(128)),
+				roles: Patch::Absent,
+				departed: false,
+			})),
+		);
+	}
+	let bytes = rows.iter().map(model::Member::bytes).sum::<usize>();
+	assert!(bytes <= crate::member_search::MAX_BYTES);
+	assert!(bytes + 512 * rows.len() > crate::member_search::MAX_BYTES);
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request,
+			result: Ok(rows),
+		},
+	);
+	assert!(state.member_search[0].finished);
+	assert_eq!(
+		state.member_search[0].error,
+		Some("Member search exceeded its safety limit")
+	);
+	assert!(state.member_search[0].rows.is_empty());
+	assert!(state.gateway_connected && state.can_send(Id(20)));
+}
+
+#[test]
 fn member_identity_is_scoped_bounded_and_retired_on_recovery() {
 	let mut state = state();
 	let update = |guild, user| model::MemberIdentity {
@@ -165,6 +216,15 @@ fn member_identity_is_scoped_bounded_and_retired_on_recovery() {
 	);
 	apply(&mut state, Event::Disconnected);
 	assert_eq!(state.member_labels.bytes(), 0);
+	apply(&mut state, Event::MemberIdentity(Box::new(update(10, 999))));
+	assert!(state.member_identity(Id(30), Id(999)).is_some());
+	apply(&mut state, Event::Resumed);
+	assert!(
+		state.member_identity(Id(30), Id(999)).is_some(),
+		"RESUMED must retain replayed identity changes"
+	);
+	apply(&mut state, Event::Disconnected);
+	state.auth = crate::auth::AuthState::Unauthenticated;
 	apply(&mut state, Event::MemberIdentity(Box::new(update(10, 999))));
 	assert_eq!(state.member_labels.bytes(), 0);
 }
@@ -1750,8 +1810,8 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 		});
 		assert_eq!(
 			state.message_author_color(&chat),
-			Some(0x112233),
-			"empty live membership keeps the message snapshot"
+			None,
+			"current empty roles remove historical color; omitted wire fields are preserved before projection"
 		);
 		state.members = Some(crate::MemberList {
 			guild: Some(Id(10)),

@@ -3248,8 +3248,17 @@ mod tests {
 					(6,"TYPING_START", json!({"guild_id":"10","channel_id":"20","user_id":"7","timestamp":stamp,"member":{"user":{"id":"7","username":"account"},"nick":"Typing nickname","roles":[]}})),
 					(7,"PASSIVE_UPDATE_V2", json!({"guild_id":"10","updated_members":[{"user":{"id":"7","username":"account"},"nick":"Passive nickname","roles":["11"]}]})),
 					(8,"GUILD_MEMBER_REMOVE", json!({"guild_id":"10","user":{"id":"7"}})),
-					(9,"MESSAGE_CREATE", json!({"id":"101","channel_id":"20","author":{"id":"8","username":"Other account"},"content":"After identity changes"})),
 				] { send(&mut socket, json!({"op":0,"t":name,"s":sequence,"d":data})).await; }
+				send(&mut socket, json!({"op":7,"d":null})).await;
+				drop(socket);
+				let (stream, _) = listener.accept().await.unwrap();
+				let mut socket = accept_async(stream).await.unwrap();
+				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
+				assert_eq!(packet(&mut socket).await["op"], 6);
+				// Replayed member changes arrive before RESUMED; the reducer must keep them.
+				send(&mut socket, json!({"op":0,"t":"GUILD_MEMBER_UPDATE","s":9,"d":{"guild_id":"10","user":{"id":"7","username":"account"},"nick":"Resumed nickname","roles":[]}})).await;
+				send(&mut socket, json!({"op":0,"t":"RESUMED","s":10,"d":{}})).await;
+				send(&mut socket, json!({"op":0,"t":"MESSAGE_CREATE","s":11,"d":{"id":"101","channel_id":"20","author":{"id":"8","username":"Other account"},"content":"After identity changes"}})).await;
 				observed.await.unwrap();
 			};
 			let state = std::sync::Mutex::new(client_core::State::default());
@@ -3275,7 +3284,7 @@ mod tests {
 						assert!(state.can_send(Id(20)));
 					}
 					if last {
-						assert!(state.member_identity(Id(20), Id(7)).unwrap().departed);
+						assert_eq!(state.member_nickname(Id(20), Id(7)), Some(Some("Resumed nickname")));
 						assert!(state.timeline.get(Id(101)).is_some());
 						finished.lock().unwrap().take().unwrap().send(()).unwrap();
 						return Err(Failure::Expired);
@@ -3284,7 +3293,7 @@ mod tests {
 				}, Some(&endpoint));
 			let ((), result) = tokio::join!(server, client);
 			assert_eq!(result, Err(Failure::Expired));
-			assert_eq!(*names.lock().unwrap(), vec![Some("New nickname".into()), None, None, Some("Typing nickname".into()), Some("Passive nickname".into()), None]);
+			assert_eq!(*names.lock().unwrap(), vec![Some("New nickname".into()), None, None, Some("Typing nickname".into()), Some("Passive nickname".into()), None, Some("Resumed nickname".into())]);
 		}).await.expect("member changes interrupted message delivery");
 	}
 

@@ -1494,7 +1494,7 @@ impl State {
 			}
 			Event::Resumed => {
 				self.member_search = Default::default();
-				self.member_labels.clear();
+				// Keep member changes replayed before RESUMED; Disconnected retired old labels.
 				self.gateway_connected = true;
 				self.cancel_history();
 				self.freshness = Freshness::Stale;

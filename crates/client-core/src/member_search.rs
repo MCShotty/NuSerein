@@ -261,6 +261,8 @@ impl State {
 					self.member_search[request.slot].identity_revision,
 				);
 				if rows.iter().map(Member::bytes).sum::<usize>() > MAX_BYTES {
+					self.member_search[request.slot].error =
+						Some("Member search exceeded its safety limit");
 					return;
 				}
 				if request.slot == 1 {

@@ -206,7 +206,9 @@ impl State {
 		let Some(channel) = self.selected.filter(|channel| self.can_view(*channel)) else {
 			return;
 		};
-		if !self.gateway_connected
+		// A valid RESUME replays dispatches before its terminal RESUMED event. Account
+		// generation and permission scope still gate these observations while reconnecting.
+		if self.auth != crate::auth::AuthState::Authenticated
 			|| !update.valid()
 			|| self.channel(channel).and_then(|c| c.guild) != Some(update.guild)
 		{
