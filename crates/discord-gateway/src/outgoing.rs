@@ -82,7 +82,10 @@ impl Meta {
 							.as_array()
 							.is_none_or(Vec::is_empty);
 					// Keep the initial guild subscription before its ranges; only viewport replacements coalesce.
-					if setting.get("typing").is_none() && setting.get("members").is_some() {
+					if setting.get("members").is_some()
+						&& setting.get("channels").is_none()
+						&& setting.get("thread_member_lists").is_none()
+					{
 						meta.key = meta.guild.map(Key::MemberIdentities);
 						meta.critical = false;
 					} else if setting["typing"] == true {
@@ -691,7 +694,7 @@ mod tests {
 		for user in 1..=5 {
 			writer
 				.send(frame(
-					serde_json::json!({"op":37,"d":{"subscriptions":{"2":{"members":[user.to_string()]}}}}),
+					serde_json::json!({"op":37,"d":{"subscriptions":{"2":{"typing":true,"members":[user.to_string()]}}}}),
 				))
 				.await
 				.unwrap();

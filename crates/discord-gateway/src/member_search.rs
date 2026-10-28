@@ -128,10 +128,16 @@ impl Search {
 			(_, Some(guild)) => (guild, self.users.clone()),
 			_ => return None,
 		};
-		// A sparse update leaves channel ranges, thread lists and typing subscriptions intact.
+		// A sparse update leaves channel ranges and thread lists intact.
 		let ids: Vec<_> = users.iter().map(ToString::to_string).collect();
+		let mut setting = serde_json::json!({"members":ids});
+		if !users.is_empty() {
+			// Large guilds are not subscribed at READY. Member requests take effect only
+			// after activating the guild, including when the member sidebar stays closed.
+			setting["typing"] = true.into();
+		}
 		let frame = Frame::Text(
-			serde_json::json!({"op":37,"d":{"subscriptions":{guild.to_string():{"members":ids}}}})
+			serde_json::json!({"op":37,"d":{"subscriptions":{guild.to_string():setting}}})
 				.to_string()
 				.into(),
 		);
@@ -432,7 +438,7 @@ mod tests {
 		let packet: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
 		assert_eq!(
 			packet,
-			serde_json::json!({"op":37,"d":{"subscriptions":{"1":{"members":["7"]}}}})
+			serde_json::json!({"op":37,"d":{"subscriptions":{"1":{"typing":true,"members":["7"]}}}})
 		);
 		search.subscribed(guild, users);
 		assert!(search.pending_subscription().is_none());

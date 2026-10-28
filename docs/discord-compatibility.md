@@ -3461,6 +3461,34 @@ metadata refreshes matching cached labels, including nickname removal, so moving
 the sidebar away cannot restore an older name. It takes precedence over embedded labels.
 Offline fixtures verify these paths; live account synchronization remains unverified.
 
+### Live member identity synchronization — October 28, 2026
+
+The unofficial normal-account Gateway supplies partial member identities in
+`GUILD_MEMBER_UPDATE`, `PASSIVE_UPDATE_V2` and `TYPING_START`. These now refresh
+nicknames and assigned roles across the selected guild's loaded member rows,
+mention results, messages and typing labels. Missing fields preserve known values;
+explicit null nicknames and empty role lists clear them. Member removal retires
+mention candidates. Permission authorization still uses the separate strict
+permission snapshot, never this display cache.
+
+Resolved mention results and visible authors receive sparse opcode 37 `members`
+subscriptions, capped at 128 IDs, through the existing rate-limited writer.
+They activate the guild's typing subscription even with the sidebar closed, as
+required for member updates in large guilds. Range updates preserve those
+subscriptions; guild changes retire them and RESUME restores them. Replayed
+identities arriving before RESUMED remain available afterward. See the unofficial
+[member update delivery rules](https://docs.discord.food/topics/gateway-events#guild-member-update).
+No full directory is requested. Live identity observations are session-only,
+capped at 128 entries / 128 KiB and charged to the resident-memory budget. Delayed
+member queries cannot overwrite newer observations; account/recovery transitions
+retire the display cache.
+
+The composer retains resolved identities while a new query is pending or cooling
+down, includes visible-author results, and accepts spaces in nickname searches.
+The typing indicator uses the supplied guild nickname even with the sidebar
+closed. Synthetic WebSocket → decoder → reducer and UI fixtures cover these
+paths; real account/server synchronization remains owner-controlled and unverified.
+
 Message and link context menus share ordered reaction, message, utility, destructive and
 identifier groups. Link actions retain the exact clicked URL, including signed parameters.
 Image cards and viewers use the shorter copy/save/media-link/message-ID menu. Message identity,

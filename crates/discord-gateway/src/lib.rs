@@ -3234,6 +3234,7 @@ mod tests {
 						continue;
 					}
 					if subscribed["op"] == 37 {
+						assert_eq!(subscribed["d"]["subscriptions"]["10"]["typing"], true);
 						assert_eq!(subscribed["d"]["subscriptions"]["10"]["members"], json!(["7"]));
 						break;
 					}
