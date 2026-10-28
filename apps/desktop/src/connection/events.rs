@@ -186,6 +186,10 @@ pub(super) fn emit_event_at(
 ) -> Result<(), Failure> {
 	let epoch = epoch.unwrap_or_else(|| reliable.pressure.revision.load(super::Ordering::Acquire));
 	if matches!(envelope.event, Event::Typing(_)) {
+		// Optional member labels use the same eight lossy slots, with a per-slot byte cap.
+		if envelope.event.bytes() > 32 * 1024 {
+			return Ok(());
+		}
 		if reliable.pressure.blocked.borrow().blocked
 			|| epoch != reliable.pressure.revision.load(super::Ordering::Acquire)
 		{
@@ -256,7 +260,7 @@ pub(super) struct TypingGate {
 impl TypingGate {
 	pub(super) fn accept(
 		&mut self,
-		signal: client_core::typing::Signal,
+		signal: &client_core::typing::Signal,
 		active: u64,
 		now: Instant,
 	) -> bool {

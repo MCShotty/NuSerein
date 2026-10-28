@@ -1819,6 +1819,7 @@ mod tests {
 						channel: model::Id(10),
 						user: model::Id(user),
 						timestamp: 1,
+						member: None,
 					}),
 				},
 				&ctx,
@@ -1859,38 +1860,39 @@ mod tests {
 			channel: Id(10),
 			user: Id(1),
 			timestamp: 1,
+			member: None,
 		};
-		assert!(!gate.accept(signal, 0, now));
-		assert!(!gate.accept(signal, 11, now));
+		assert!(!gate.accept(&signal, 0, now));
+		assert!(!gate.accept(&signal, 11, now));
 		for user in 1..=8 {
 			let signal = Signal {
 				user: Id(user),
-				..signal
+				..signal.clone()
 			};
-			assert!(gate.accept(signal, 10, now));
-			assert!(!gate.accept(signal, 10, now));
+			assert!(gate.accept(&signal, 10, now));
+			assert!(!gate.accept(&signal, 10, now));
 		}
 		for user in 9..=1_000 {
 			assert!(!gate.accept(
-				Signal {
+				&Signal {
 					user: Id(user),
-					..signal
+					..signal.clone()
 				},
 				10,
 				now
 			));
 		}
-		assert!(!gate.accept(signal, 10, now + Duration::from_millis(1_999)));
-		assert!(gate.accept(signal, 10, now + Duration::from_secs(2)));
+		assert!(!gate.accept(&signal, 10, now + Duration::from_millis(1_999)));
+		assert!(gate.accept(&signal, 10, now + Duration::from_secs(2)));
 		assert!(gate.accept(
-			Signal {
+			&Signal {
 				channel: Id(11),
-				..signal
+				..signal.clone()
 			},
 			11,
 			now
 		));
-		assert!(!gate.accept(signal, 11, now));
+		assert!(!gate.accept(&signal, 11, now));
 	}
 	use super::*;
 	#[test]

@@ -1,0 +1,339 @@
+//! Small live identity overlay shared by the sidebar, composer, messages and typing.
+//! No directory, permissions or persistent data is derived from these display observations.
+use crate::{State, member_search};
+use model::{Id, Member, MemberIdentity, MemberSlot, Patch, User};
+use std::collections::VecDeque;
+
+const LIMIT: usize = 128;
+const MAX_BYTES: usize = 128 * 1024;
+
+#[derive(Default)]
+pub struct Labels {
+	entries: VecDeque<(u64, MemberIdentity)>,
+	revision: u64,
+	bytes: usize,
+}
+impl Labels {
+	pub(crate) fn clear(&mut self) {
+		*self = Self::default();
+	}
+	pub(crate) fn revision(&self) -> u64 {
+		self.revision
+	}
+	pub fn bytes(&self) -> usize {
+		self.bytes + self.entries.capacity() * size_of::<(u64, MemberIdentity)>()
+	}
+	fn get(&self, guild: Id, user: Id) -> Option<&MemberIdentity> {
+		self.entries
+			.iter()
+			.rev()
+			.find(|(_, row)| row.guild == guild && row.user == user)
+			.map(|(_, row)| row)
+	}
+	fn insert(&mut self, mut update: MemberIdentity) {
+		if let Some(index) = self
+			.entries
+			.iter()
+			.position(|(_, old)| old.guild == update.guild && old.user == update.user)
+		{
+			let (_, old) = self.entries.remove(index).unwrap();
+			self.bytes -= old.bytes();
+			if !update.departed && !old.departed {
+				if update.profile.is_none() {
+					update.profile = old.profile;
+				}
+				if matches!(update.nick, Patch::Absent) {
+					update.nick = old.nick;
+				}
+				if matches!(update.roles, Patch::Absent) {
+					update.roles = old.roles;
+				}
+			}
+		}
+		self.revision = self.revision.wrapping_add(1);
+		if self.entries.len() == LIMIT
+			&& let Some((_, old)) = self.entries.pop_front()
+		{
+			self.bytes -= old.bytes();
+		}
+		self.bytes += update.bytes();
+		self.entries.push_back((self.revision, update));
+		while self.entries.len() > LIMIT || self.bytes() > MAX_BYTES {
+			if let Some((_, old)) = self.entries.pop_front() {
+				self.bytes -= old.bytes();
+			} else {
+				break;
+			}
+		}
+	}
+	/// A query started before a live update cannot restore its old nickname/roles.
+	pub(crate) fn reconcile(&mut self, guild: Id, rows: &mut Vec<Member>, started: u64) {
+		if self.entries.is_empty() {
+			return;
+		}
+		rows.retain_mut(|member| {
+			if let Some((revision, update)) = self
+				.entries
+				.iter_mut()
+				.find(|(_, update)| update.guild == guild && update.user == member.user.id)
+			{
+				if *revision > started {
+					if update.departed {
+						return false;
+					}
+					update.apply(member);
+				} else {
+					self.bytes -= update.bytes();
+					update.profile = Some(member.user.clone());
+					update.nick = member.nick.clone().map_or(Patch::Null, Patch::Value);
+					update.roles = Patch::Value(member.roles.clone());
+					update.departed = false;
+					self.bytes += update.bytes();
+				}
+			}
+			true
+		});
+		while self.bytes() > MAX_BYTES {
+			if let Some((_, old)) = self.entries.pop_front() {
+				self.bytes -= old.bytes();
+			} else {
+				break;
+			}
+		}
+	}
+	pub(crate) fn refresh(&mut self, list: &model::MemberList) {
+		if self.entries.is_empty() {
+			return;
+		}
+		let Some(guild) = list.guild else {
+			return;
+		};
+		let mut rows: Vec<_> = list
+			.slots
+			.iter()
+			.flatten()
+			.filter_map(|slot| match slot {
+				MemberSlot::Person(member) if self.get(guild, member.user.id).is_some() => {
+					Some(member.clone())
+				}
+				_ => None,
+			})
+			.collect();
+		self.reconcile(guild, &mut rows, self.revision);
+		if !rows.is_empty() {
+			self.revision = self.revision.wrapping_add(1);
+			for (revision, entry) in &mut self.entries {
+				if entry.guild == guild && rows.iter().any(|row| row.user.id == entry.user) {
+					*revision = self.revision;
+				}
+			}
+		}
+	}
+}
+
+impl State {
+	pub fn member_identity(&self, channel: Id, user: Id) -> Option<&MemberIdentity> {
+		if !self.can_view(channel) {
+			return None;
+		}
+		self.member_labels.get(self.channel(channel)?.guild?, user)
+	}
+	/// Outer None means unknown; Some(None) is an authoritative nickname removal.
+	pub fn member_nickname(&self, channel: Id, user: Id) -> Option<Option<&str>> {
+		if self.channel(channel)?.guild.is_none() || !self.can_view(channel) {
+			return None;
+		}
+		if let Some(update) = self.member_identity(channel, user) {
+			match &update.nick {
+				Patch::Value(nick) => return Some((!nick.is_empty()).then_some(nick.as_str())),
+				Patch::Null => return Some(None),
+				Patch::Absent => {}
+			}
+		}
+		self.display_member(channel, user)
+			.map(|member| member.nick.as_deref())
+			.or_else(|| {
+				self.timeline
+					.iter()
+					.rev()
+					.filter(|message| {
+						message.channel == channel
+							&& message.author.id == user
+							&& !message.author.webhook
+					})
+					.find_map(|message| message.author_nick.as_deref().map(Some))
+			})
+	}
+	pub fn observed_member_users(
+		&self,
+		channel: Id,
+	) -> impl Iterator<Item = std::borrow::Cow<'_, User>> {
+		let guild = self
+			.channel(channel)
+			.filter(|_| self.can_view(channel))
+			.and_then(|c| c.guild);
+		self.member_labels
+			.entries
+			.iter()
+			.rev()
+			.filter_map(move |(_, update)| {
+				if update.departed || Some(update.guild) != guild {
+					return None;
+				}
+				if let Some(user) = &update.profile {
+					return Some(std::borrow::Cow::Borrowed(user));
+				}
+				let Patch::Value(nick) = &update.nick else {
+					return None;
+				};
+				if nick.is_empty() {
+					return None;
+				}
+				Some(std::borrow::Cow::Owned(User {
+					id: update.user,
+					name: nick.clone(),
+					username: None,
+					avatar: None,
+					discriminator: 0,
+					primary_guild: None,
+					cosmetics: None,
+					webhook: false,
+					kind: Default::default(),
+				}))
+			})
+	}
+	pub(crate) fn apply_member_identity(&mut self, mut update: MemberIdentity) {
+		let Some(channel) = self.selected.filter(|channel| self.can_view(*channel)) else {
+			return;
+		};
+		if !self.gateway_connected
+			|| !update.valid()
+			|| self.channel(channel).and_then(|c| c.guild) != Some(update.guild)
+		{
+			return;
+		}
+		if let Some(profile) = &mut update.profile {
+			let known = self
+				.display_member(channel, update.user)
+				.map(|member| &member.user)
+				.or_else(|| {
+					self.member_labels
+						.get(update.guild, update.user)
+						.and_then(|old| old.profile.as_ref())
+				})
+				.or_else(|| {
+					self.timeline
+						.iter()
+						.rev()
+						.find(|message| {
+							message.channel == channel
+								&& message.author.id == update.user
+								&& !message.author.webhook
+						})
+						.map(|message| &message.author)
+				});
+			if let Some(known) = known {
+				let mut merged = known.clone();
+				merged.name.clone_from(&profile.name);
+				merged.username.clone_from(&profile.username);
+				*profile = merged;
+			}
+		}
+		if !update.departed
+			&& update.profile.is_none()
+			&& matches!(update.nick, Patch::Absent)
+			&& matches!(update.roles, Patch::Absent)
+		{
+			return;
+		}
+		if self
+			.member_labels
+			.get(update.guild, update.user)
+			.is_some_and(|old| {
+				old.departed == update.departed
+					&& (update.profile.is_none() || update.profile == old.profile)
+					&& (matches!(update.nick, Patch::Absent) || update.nick == old.nick)
+					&& (matches!(update.roles, Patch::Absent) || update.roles == old.roles)
+			}) {
+			// Still advance observation ordering to fence in-flight search replies, without
+			// relaying unchanged typing metadata through every cached row and layout.
+			self.member_labels.insert(update);
+			return;
+		}
+		fn patch_slots(slots: &mut [Option<MemberSlot>], update: &MemberIdentity) {
+			for slot in slots {
+				if let Some(MemberSlot::Person(member)) = slot
+					&& member.user.id == update.user
+				{
+					if update.departed {
+						*slot = None;
+					} else {
+						update.apply(member);
+					}
+				}
+			}
+		}
+		if let Some(list) = &mut self.members
+			&& list.guild == Some(update.guild)
+		{
+			patch_slots(&mut list.slots, &update);
+			let mut bytes = list.slot_bytes();
+			for slot in list.slots.iter_mut().rev() {
+				if bytes <= 256 * 1024 {
+					break;
+				}
+				if let Some(old) = slot.take() {
+					bytes -= old.bytes();
+				}
+			}
+			for slots in self.member_chunks.chunks.values_mut() {
+				patch_slots(slots, &update);
+			}
+			self.member_chunks.evict(&list.ranges);
+			// Identity growth must respect the cap even if every remaining chunk is visible.
+			while self.member_chunks.bytes() > crate::MEMBER_CACHE_BYTES {
+				let Some(key) = self
+					.member_chunks
+					.chunks
+					.keys()
+					.copied()
+					.max_by_key(|start| start.abs_diff(self.member_chunks.viewport))
+				else {
+					break;
+				};
+				self.member_chunks.chunks.remove(&key);
+			}
+		}
+		for view in &mut self.member_search {
+			if view
+				.request
+				.as_ref()
+				.is_some_and(|r| r.guild == update.guild)
+			{
+				for rows in [&mut view.rows, &mut view.retained] {
+					rows.retain_mut(|member| {
+						if member.user.id != update.user {
+							return true;
+						}
+						if update.departed {
+							return false;
+						}
+						update.apply(member);
+						true
+					});
+					let mut bytes = rows.iter().map(Member::bytes).sum::<usize>();
+					while bytes > member_search::MAX_BYTES {
+						bytes -= rows.remove(0).bytes();
+					}
+				}
+			}
+		}
+		self.timeline.apply_author_identity(&update);
+		if update.departed {
+			self.typing.remove(update.user);
+		}
+		self.member_labels.insert(update);
+		self.revision = self.revision.wrapping_add(1);
+		self.enforce_resident_budget();
+	}
+}

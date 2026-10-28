@@ -221,7 +221,7 @@ impl Connection {
                 if let Event::AccountSettings { status: true, .. } = &event { status_changed.notify_one(); }
                 if let Event::Typing(signal) = &event {
                     let active = active_typing.load(Ordering::Relaxed);
-                    if !typing_gate.lock().is_ok_and(|mut gate| gate.accept(*signal, active, Instant::now())) { return Ok(()); }
+                    if !typing_gate.lock().is_ok_and(|mut gate| gate.accept(signal, active, Instant::now())) { return Ok(()); }
                 }
                 emit_event_at(&send, &typing_send, Envelope {generation,event}, &ctx,epoch)
             });
@@ -984,6 +984,14 @@ impl Connection {
                                 continue;
                             }
                             if let Command::Members {guild,channel,request,list_id,thread,ranges} = command {
+                                if let Some(channel)=channel {
+                                    member_query_send.send_if_modified(|queries| {
+                                        let mut changed=false;
+                                        for query in queries { if query.as_ref().is_some_and(|r| r.channel!=channel || Some(r.guild)!=guild) { *query=None; changed=true; } }
+                                        changed
+                                    });
+                                }
+
                                 let subscription=match (guild,channel,list_id) {
                                     (Some(guild),Some(channel),list_id) if thread || list_id.is_some() => Some(discord_gateway::MemberSubscription {guild,channel,request,thread,list_id:list_id.unwrap_or_default(),ranges}),
                                     _=>None

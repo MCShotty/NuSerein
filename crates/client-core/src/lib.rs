@@ -38,6 +38,7 @@ pub mod admin_resources;
 mod forwarding;
 pub mod interactions;
 pub mod invites;
+pub mod member_identity;
 pub mod member_search;
 pub mod message_actions;
 pub mod messaging_permissions;
@@ -222,6 +223,7 @@ pub struct State {
 	pub members: Option<MemberList>,
 	pub member_chunks: MemberChunks,
 	pub member_search: [member_search::View; 2],
+	pub member_labels: member_identity::Labels,
 	pub member_search_nonce: u64,
 	pub direct_presences: Vec<MemberPresence>,
 	pub local_game_activity: Option<model::RichActivity>,
@@ -467,6 +469,7 @@ impl Default for State {
 			members: None,
 			member_chunks: MemberChunks::default(),
 			member_search: Default::default(),
+			member_labels: Default::default(),
 			member_search_nonce: 0,
 			game_mentions: Default::default(),
 			direct_presences: vec![],

@@ -15,6 +15,161 @@ const BITS: u128 = p::VIEW_CHANNEL
 	| p::USE_VAD;
 
 #[test]
+fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
+	let mut state = state();
+	let mut colored = state.guild_roles(Id(10)).unwrap()[1].clone();
+	colored.color = 0x112233;
+	permission(
+		&mut state,
+		PermissionEvent::Role {
+			guild: Id(10),
+			role: colored,
+		},
+	);
+	let mut chat = message(101, Id(20));
+	chat.author.id = Id(7);
+	chat.author_nick = Some("Old nickname".into());
+	chat.author_roles = vec![Id(11)];
+	let row = model::Member {
+		user: chat.author.clone(),
+		nick: chat.author_nick.clone(),
+		roles: chat.author_roles.clone(),
+		status: Some("online".into()),
+		custom_status: None,
+		activities: vec![],
+		clients: Default::default(),
+	};
+	apply(&mut state, Event::Message(chat.clone()));
+	state.request_members();
+	let mut list = state.members.clone().unwrap();
+	list.slots = vec![Some(model::MemberSlot::Person(row.clone()))];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list.clone()));
+	assert_eq!(state.message_author_color(&chat), Some(0x112233));
+	let Command::MemberSearch(request) = state.search_members(Id(20), "Old", 0).unwrap() else {
+		panic!()
+	};
+	let update = |nick, roles| model::MemberIdentity {
+		guild: Id(10),
+		user: Id(7),
+		profile: None,
+		nick,
+		roles,
+		departed: false,
+	};
+	let permissions = state.can_send(Id(20));
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(update(
+			Patch::Value("New nickname".into()),
+			Patch::Value(vec![]),
+		))),
+	);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("New nickname"))
+	);
+	assert_eq!(state.message_author_name(&chat), "New nickname");
+	assert_eq!(
+		state.message_author_colors(&chat),
+		None,
+		"empty current roles clear historical color"
+	);
+	assert_eq!(
+		state.can_send(Id(20)),
+		permissions,
+		"presentation cannot grant permission"
+	);
+	let Some(model::MemberSlot::Person(cached)) = state.member_slot(0) else {
+		panic!("cached sidebar member")
+	};
+	assert_eq!(cached.nick.as_deref(), Some("New nickname"));
+	assert!(cached.roles.is_empty());
+	assert_eq!(cached.status.as_deref(), Some("online"));
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request,
+			result: Ok(vec![row.clone()]),
+		},
+	);
+	assert_eq!(
+		state.member_search[0].rows[0].nick.as_deref(),
+		Some("New nickname"),
+		"delayed query cannot restore old labels"
+	);
+	assert!(state.member_search[0].rows[0].roles.is_empty());
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(update(Patch::Absent, Patch::Value(vec![Id(11)])))),
+	);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("New nickname"))
+	);
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(update(Patch::Null, Patch::Value(vec![])))),
+	);
+	assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
+	assert_eq!(state.message_author_name(&chat), chat.author.name);
+	assert!(state.timeline.get(Id(101)).unwrap().author_nick.is_none());
+	assert!(state.timeline.get(Id(101)).unwrap().author_roles.is_empty());
+	// A later authoritative sidebar snapshot replaces the overlay too.
+	apply(&mut state, Event::Members(list));
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Old nickname"))
+	);
+	let mut departed = update(Patch::Null, Patch::Value(vec![]));
+	departed.departed = true;
+	apply(&mut state, Event::MemberIdentity(Box::new(departed)));
+	assert!(state.member_slot(0).is_none());
+	assert!(state.member_search[0].rows.is_empty());
+	assert!(state.member_identity(Id(20), Id(7)).unwrap().departed);
+	assert!(state.can_send(Id(20)));
+}
+
+#[test]
+fn member_identity_is_scoped_bounded_and_retired_on_recovery() {
+	let mut state = state();
+	let update = |guild, user| model::MemberIdentity {
+		guild: Id(guild),
+		user: Id(user),
+		profile: None,
+		nick: Patch::Value("Nickname".repeat(16)),
+		roles: Patch::Value(vec![]),
+		departed: false,
+	};
+	state.apply(Envelope {
+		generation: state.generation.wrapping_sub(1),
+		event: Event::MemberIdentity(Box::new(update(10, 7))),
+	});
+	assert!(state.member_identity(Id(20), Id(7)).is_none());
+	apply(&mut state, Event::MemberIdentity(Box::new(update(99, 7))));
+	assert!(state.member_identity(Id(20), Id(7)).is_none());
+	for user in 7..1000 {
+		apply(
+			&mut state,
+			Event::MemberIdentity(Box::new(update(10, user))),
+		);
+	}
+	assert!(state.member_labels.bytes() <= 128 * 1024);
+	assert!(state.member_identity(Id(20), Id(7)).is_none());
+	assert!(state.member_identity(Id(20), Id(999)).is_some());
+	state.select(Id(30));
+	assert!(
+		state.member_identity(Id(30), Id(999)).is_some(),
+		"same guild navigation retains fresh identity"
+	);
+	apply(&mut state, Event::Disconnected);
+	assert_eq!(state.member_labels.bytes(), 0);
+	apply(&mut state, Event::MemberIdentity(Box::new(update(10, 999))));
+	assert_eq!(state.member_labels.bytes(), 0);
+}
+
+#[test]
 fn author_gradients_follow_role_hierarchy_and_reject_invalid_stops() {
 	let mut state = state();
 	let mut role = state.guild_roles(Id(10)).unwrap()[1].clone();

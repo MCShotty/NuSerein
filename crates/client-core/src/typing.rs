@@ -2,11 +2,12 @@ use crate::{State, auth::AuthState};
 use model::{Freshness, Id};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Signal {
 	pub channel: Id,
 	pub user: Id,
 	pub timestamp: u64,
+	pub member: Option<Box<model::MemberIdentity>>,
 }
 
 /// Selected-conversation state only; fixed storage with no per-signal allocation.
@@ -19,7 +20,7 @@ impl Typing {
 	pub(crate) fn clear(&mut self) {
 		*self = Self::default();
 	}
-	fn remove(&mut self, user: Id) {
+	pub(crate) fn remove(&mut self, user: Id) {
 		for slot in &mut self.users {
 			if slot.is_some_and(|(id, _)| id == user) {
 				*slot = None;
@@ -73,6 +74,12 @@ impl State {
 		let Some(expires) = now.checked_add(remaining) else {
 			return;
 		};
+		if let Some(member) = signal
+			.member
+			.filter(|member| member.user == signal.user && !member.departed)
+		{
+			self.apply_member_identity(*member);
+		}
 		if self.typing.channel != Some(signal.channel) {
 			self.typing.clear();
 			self.typing.channel = Some(signal.channel);
@@ -174,6 +181,7 @@ mod tests {
 			channel: Id(10),
 			user: Id(user),
 			timestamp,
+			member: None,
 		}
 	}
 	fn message(user: u64, channel: u64) -> Message {
@@ -343,6 +351,7 @@ mod tests {
 				channel: Id(11),
 				user: Id(2),
 				timestamp,
+				member: None,
 			}),
 		);
 		assert_eq!(

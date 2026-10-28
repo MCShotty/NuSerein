@@ -53,6 +53,11 @@ pub(crate) fn member_roles<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Id>, D
 	roles.shrink_to_fit();
 	Ok(roles)
 }
+pub(crate) fn member_role_patch<'de, D: Deserializer<'de>>(
+	d: D,
+) -> Result<Patch<Vec<Id>>, D::Error> {
+	member_roles(d).map(Patch::Value)
+}
 #[derive(Deserialize)]
 struct Bits(#[serde(deserialize_with = "bits")] u128);
 pub(crate) fn bits<'de, D: Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
@@ -537,6 +542,21 @@ pub fn owner(bytes: &[u8]) -> Result<Option<(Id, Patch<Id>)>, DecodeError> {
 	Ok((!matches!(owner, Patch::Absent)).then_some((update.id, owner)))
 }
 pub fn member(bytes: &[u8], user: Id) -> Result<Option<MemberUpdate>, DecodeError> {
+	#[derive(Deserialize)]
+	struct Scope {
+		#[serde(default)]
+		user: Option<Identity>,
+		#[serde(default)]
+		user_id: Option<Id>,
+	}
+	let scope: Scope = decode(bytes)?;
+	let embedded = scope.user.map(|user| user.id);
+	if embedded.zip(scope.user_id).is_some_and(|(a, b)| a != b) {
+		return Err(DecodeError);
+	}
+	if embedded.or(scope.user_id).ok_or(DecodeError)? != user {
+		return Ok(None);
+	}
 	#[derive(Deserialize)]
 	struct Update {
 		guild_id: Id,

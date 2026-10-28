@@ -143,6 +143,7 @@ impl Desktop {
 						channel,
 						user: model::Id(user),
 						timestamp,
+						member: None,
 					},
 					wall,
 					std::time::Instant::now(),

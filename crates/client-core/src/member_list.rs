@@ -192,6 +192,7 @@ impl State {
 	}
 	pub(super) fn invalidate_members(&mut self) {
 		self.member_search = Default::default();
+		self.member_labels.clear();
 		self.member_request = self.member_request.wrapping_add(1);
 		self.member_chunks.clear();
 		if let Some(list) = &mut self.members {

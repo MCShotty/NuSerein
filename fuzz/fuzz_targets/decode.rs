@@ -112,6 +112,18 @@ fuzz_target!(|data: &[u8]| {
 		let _ = black_box(discord_protocol::inbox::saved(payload));
 		return;
 	}
+	if selector == 18 {
+		if let Ok(identity) = discord_protocol::member_identity::update(payload) {
+			assert!(identity.valid());
+			black_box(identity.bytes());
+		}
+		if let Ok(typing) = discord_protocol::typing::decode(payload)
+			&& let Some(identity) = typing.member
+		{
+			assert!(identity.valid());
+		}
+		return;
+	}
 	match selector % 8 {
 		0 => {
 			if let Ok(message) = discord_protocol::decode::<MessageDto>(payload) {

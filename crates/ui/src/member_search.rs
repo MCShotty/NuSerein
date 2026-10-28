@@ -21,10 +21,23 @@ impl Search {
 		let text = self.text.trim();
 		let key = (state.generation, channel, text.to_owned());
 		if self.key.as_ref() != Some(&key) {
+			let changed_scope = self
+				.key
+				.as_ref()
+				.is_some_and(|old| old.0 != key.0 || old.1 != key.1)
+				|| state.member_search[slot]
+					.request
+					.as_ref()
+					.is_some_and(|request| {
+						request.channel != channel
+							|| state.channel(channel).and_then(|c| c.guild) != Some(request.guild)
+					});
 			self.key = Some(key);
 			self.changed = now;
 			self.sent = false;
-			state.member_search[slot] = Default::default();
+			if changed_scope {
+				state.member_search[slot] = Default::default();
+			}
 		}
 		if self.sent && state.gateway_connected && state.member_search[slot].request.is_none() {
 			self.sent = false;

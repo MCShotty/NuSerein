@@ -46,6 +46,7 @@ pub enum Event {
 		request: member_search::Request,
 		result: Result<Vec<Member>, auth::Failure>,
 	},
+	MemberIdentity(Box<model::MemberIdentity>),
 	Startup(Box<PreparedStartup>),
 	StartupWarnings(model::account::Warnings),
 	/// Redacted decode cause preceding a session failure; schema paths only, never remote values.
@@ -662,6 +663,8 @@ impl Event {
 							.map(presence::Update::heap_bytes)
 							.sum::<usize>()
 				}
+				Self::MemberIdentity(update) => update.bytes(),
+				Self::Typing(signal) => signal.member.as_ref().map_or(0, |member| member.bytes()),
 				Self::MemberSearch { request, result } => {
 					request.query.capacity()
 						+ request.users.capacity() * size_of::<Id>()

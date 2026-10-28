@@ -1722,6 +1722,7 @@ mod tests {
 					.duration_since(std::time::UNIX_EPOCH)
 					.unwrap()
 					.as_secs(),
+				member: None,
 			},
 			wall,
 			now,

@@ -24,6 +24,7 @@ enum Key {
 	Presence,
 	Subscription(Id, bool),
 	CancelSubscription(Id),
+	MemberIdentities(Id),
 	Query(crate::member_search::Purpose),
 }
 #[derive(Clone, Copy, Debug)]
@@ -81,7 +82,10 @@ impl Meta {
 							.as_array()
 							.is_none_or(Vec::is_empty);
 					// Keep the initial guild subscription before its ranges; only viewport replacements coalesce.
-					if setting["typing"] == true {
+					if setting.get("typing").is_none() && setting.get("members").is_some() {
+						meta.key = meta.guild.map(Key::MemberIdentities);
+						meta.critical = false;
+					} else if setting["typing"] == true {
 						meta.key = meta.guild.map(|id| Key::Subscription(id, empty));
 						meta.critical = false;
 					} else {
@@ -331,7 +335,9 @@ impl Outgoing {
 					if packet.meta.heartbeat {
 						p.heartbeat = Some((packet.serial, sent));
 					}
-					if packet.meta.opcode == Some(37) {
+					if packet.meta.opcode == Some(37)
+						&& !matches!(packet.meta.key, Some(Key::MemberIdentities(_)))
+					{
 						p.subscription = Some((packet.serial, sent));
 					}
 					if let (Some(Key::Query(purpose)), Some(guild), Some(nonce)) =
@@ -434,7 +440,7 @@ impl Outgoing {
 		if let Some(Key::CancelSubscription(guild)) = meta.key {
 			let mut removed = 0;
 			state.queue.retain(|packet| {
-				if matches!(packet.meta.key,Some(Key::Subscription(id,_)) if id==guild) {
+				if matches!(packet.meta.key,Some(Key::Subscription(id,_) | Key::MemberIdentities(id)) if id==guild) {
 					removed += packet.bytes;
 					false
 				} else {
@@ -473,7 +479,7 @@ impl Outgoing {
 		if meta.heartbeat {
 			state.heartbeat_serial = serial;
 		}
-		if meta.opcode == Some(37) {
+		if meta.opcode == Some(37) && !matches!(meta.key, Some(Key::MemberIdentities(_))) {
 			state.subscription_serial = serial;
 		}
 		state.bytes += bytes;
@@ -676,6 +682,52 @@ mod tests {
 			serde_json::from_str::<serde_json::Value>(frames[2].to_text().unwrap()).unwrap()["d"]["subscriptions"]
 				["2"]["channels"],
 			serde_json::json!({"3":[[100,199]]})
+		);
+	}
+	#[tokio::test]
+	async fn member_identity_updates_coalesce_without_resetting_range_progress() {
+		let (sink, ready, wake, frames) = fixture();
+		let mut writer = Outgoing::start(sink, Duration::from_secs(45));
+		for user in 1..=5 {
+			writer
+				.send(frame(
+					serde_json::json!({"op":37,"d":{"subscriptions":{"2":{"members":[user.to_string()]}}}}),
+				))
+				.await
+				.unwrap();
+		}
+		assert_eq!(writer.occupancy().0, 1);
+		assert_eq!(writer.subscription_ticket(), 0);
+		writer
+			.send(crate::subscription_packet(
+				Id(2),
+				true,
+				Some((Id(3), &[[0, 99]])),
+				false,
+			))
+			.await
+			.unwrap();
+		let ticket = writer.subscription_ticket();
+		assert_ne!(ticket, 0);
+		ready.store(true, Ordering::Release);
+		if let Some(wake) = wake.lock().unwrap().take() {
+			wake.wake();
+		}
+		timeout(Duration::from_secs(1), async {
+			while writer.progress.borrow().subscription.is_none() {
+				writer.progress.changed().await.unwrap();
+			}
+		})
+		.await
+		.unwrap();
+		assert_eq!(writer.progress.borrow().subscription.unwrap().0, ticket);
+		let frames = frames.lock().unwrap();
+		assert_eq!(frames.len(), 2);
+		let identity: serde_json::Value =
+			serde_json::from_str(frames[0].to_text().unwrap()).unwrap();
+		assert_eq!(
+			identity["d"]["subscriptions"]["2"]["members"],
+			serde_json::json!(["5"])
 		);
 	}
 	#[tokio::test]

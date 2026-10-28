@@ -62,12 +62,16 @@ impl State {
 			self.interrupt_account_settings();
 			self.interrupt_owned_cosmetics();
 		}
-		if let Event::Typing(signal) = &envelope.event {
+		if let Event::Typing(signal) = envelope.event {
 			self.observe_typing_at(
-				*signal,
+				signal,
 				std::time::SystemTime::now(),
 				std::time::Instant::now(),
 			);
+			return;
+		}
+		if let Event::MemberIdentity(update) = envelope.event {
+			self.apply_member_identity(*update);
 			return;
 		}
 		if let Event::MemberPresence {
@@ -315,6 +319,9 @@ impl State {
 				Ok(())
 			}
 			Event::Typing(_) => unreachable!("typing is handled before timeline invalidation"),
+			Event::MemberIdentity(_) => {
+				unreachable!("member identity handled before timeline invalidation")
+			}
 			Event::Permissions(mut event) => {
 				let known = |id: Id| self.guild(id).is_some();
 				match &mut event {
@@ -1104,6 +1111,7 @@ impl State {
 				self.voice.ring_error = None;
 				self.members = None;
 				self.member_search = Default::default();
+				self.member_labels.clear();
 				self.clear_profile();
 				self.profile_cache.clear();
 				self.read_state.reset();
@@ -1459,6 +1467,7 @@ impl State {
 					"Verification ended by disconnect; retry the message",
 				);
 				self.member_search = Default::default();
+				self.member_labels.clear();
 				self.cancel_message_actions();
 				self.cancel_user_action();
 				self.cancel_server_action();
@@ -1485,6 +1494,7 @@ impl State {
 			}
 			Event::Resumed => {
 				self.member_search = Default::default();
+				self.member_labels.clear();
 				self.gateway_connected = true;
 				self.cancel_history();
 				self.freshness = Freshness::Stale;
@@ -1514,6 +1524,7 @@ impl State {
 					"Discord session or permissions changed; rejoin after refreshing",
 				);
 				self.member_search = Default::default();
+				self.member_labels.clear();
 				self.members = None;
 				self.timeline.clear();
 				self.freshness = Freshness::Stale;

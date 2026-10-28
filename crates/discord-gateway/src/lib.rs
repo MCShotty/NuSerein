@@ -421,7 +421,15 @@ fn subscription_packet(
 		.map(|(id, _)| id.to_string())
 		.into_iter()
 		.collect();
-	Frame::Text(serde_json::json!({"op":37,"d":{"subscriptions":{guild.to_string():{"typing":typing,"threads":false,"activities":true,"member_updates":false,"members":[],"channels":channels,"thread_member_lists":threads}}}}).to_string().into())
+	let mut setting = serde_json::json!({"typing":typing,"threads":false,"activities":true,"member_updates":false,"channels":channels,"thread_member_lists":threads});
+	if !typing {
+		setting["members"] = serde_json::json!([]);
+	}
+	Frame::Text(
+		serde_json::json!({"op":37,"d":{"subscriptions":{guild.to_string():setting}}})
+			.to_string()
+			.into(),
+	)
 }
 
 #[derive(Clone)]
@@ -754,6 +762,26 @@ impl ActiveMembers {
 			ranges: self.subscription.ranges.clone(),
 		}
 	}
+	fn identity(&mut self, update: &model::MemberIdentity) {
+		if update.guild != self.subscription.guild || !update.valid() {
+			return;
+		}
+		for slot in &mut self.slots {
+			if let Some(model::MemberSlot::Person(member)) = slot
+				&& member.user.id == update.user
+			{
+				if update.departed {
+					*slot = None;
+				} else {
+					update.apply(member);
+				}
+			}
+		}
+		if update.departed {
+			self.pending_presence.remove(&update.user);
+		}
+		self.fit_budget();
+	}
 	fn update(&mut self, update: MemberUpdate) -> Result<bool, Failure> {
 		if self.subscription.thread
 			|| update.guild_id != self.subscription.guild
@@ -841,7 +869,7 @@ impl ActiveMembers {
 						if let Some(model::MemberSlot::Person(previous)) =
 							&self.slots[index - span_start]
 						{
-							item.preserve_presence(previous);
+							item.preserve_missing(previous);
 						}
 						self.write_slot(index, item);
 					}
@@ -1709,6 +1737,16 @@ async fn run_observed_inner(
 				observe(outgoing_activity.observation)?;
 				last_observation = Some(outgoing_activity.observation);
 			}
+			if ready_at.is_some()
+				&& writer.optional_capacity(1)
+				&& let Some((guild, users, frame)) = queries.pending_subscription()
+			{
+				match writer.send(frame).await {
+					Ok(()) => queries.subscribed(guild, users),
+					Err(Failure::Busy) => {}
+					Err(_) => break,
+				}
+			}
 			if ready_at.is_some() && !sent_members && writer.optional_capacity(2) {
 				let subscription = subscriptions.borrow_and_update().clone();
 				if let Some(subscription) = subscription {
@@ -1948,6 +1986,7 @@ async fn run_observed_inner(
 								retired_lists.push((old.subscription.guild, old.subscription.list_id.clone(), old.wire_list.clone()));
 							}
 							if !matches!(timeout(Duration::from_secs(5),writer.send(subscription_packet(old.subscription.guild,false,None,old.subscription.thread))).await,Ok(Ok(()))) {break;}
+							queries.canceled_subscription(old.subscription.guild);
 						}
 						members_deadline=None;
 					}
@@ -2225,7 +2264,7 @@ async fn run_observed_inner(
 									"TYPING_START" => {
 										// Malformed ephemeral signals must not interrupt message delivery.
 										if let Ok(typing)=discord_protocol::typing::decode(packet.d.get().as_bytes()) {
-											emit(Event::Typing(client_core::typing::Signal { channel:typing.channel_id,user:typing.user_id,timestamp:typing.timestamp }))?;
+											emit(Event::Typing(client_core::typing::Signal { channel:typing.channel_id,user:typing.user_id,timestamp:typing.timestamp, member:typing.member }))?;
 										}
 									}
 									"CHANNEL_RECIPIENT_ADD" => {let d:RecipientAdded=decode(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;emit(Event::RecipientAdded {channel:d.channel_id,user:d.user.into_model()})?;}
@@ -2295,6 +2334,10 @@ async fn run_observed_inner(
 										let envelope = ready::passive(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
 										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=envelope.permissions(owner).map_err(|_|Failure::Protocol)? {
 											emit(Event::Permissions(client_core::permissions::Event::Member {guild,roles,timeout_until}))?;
+										}
+										for update in envelope.member_identities() {
+											if let Some(active) = &mut active_members { active.identity(&update); }
+											emit(Event::MemberIdentity(Box::new(update)))?;
 										}
 										let mut update = envelope.voice().map_err(|_|Failure::Protocol)?;
 										let latest = std::mem::take(&mut update.updated_channels);
@@ -2420,10 +2463,20 @@ async fn run_observed_inner(
 										emit(Event::BulkModeration {guild,report})?;
 									}
 									"GUILD_MEMBER_UPDATE" => {
+										if let Ok(update) = discord_protocol::member_identity::update(packet.d.get().as_bytes()) {
+											if let Some(active) = &mut active_members { active.identity(&update); }
+											emit(Event::MemberIdentity(Box::new(update)))?;
+										}
 										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=permissions::member(packet.d.get().as_bytes(),owner).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))? {
 											emit(Event::Permissions(client_core::permissions::Event::Member {guild,roles,timeout_until}))?;
 										}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::member(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
+									}
+									"GUILD_MEMBER_REMOVE" => {
+										if let Ok(update) = discord_protocol::member_identity::removed(packet.d.get().as_bytes()) {
+											if let Some(active) = &mut active_members { active.identity(&update); }
+											emit(Event::MemberIdentity(Box::new(update)))?;
+										}
 									}
 									"GUILD_DELETE" => {
 										#[derive(serde::Deserialize)]
@@ -3155,6 +3208,116 @@ mod tests {
             assert_eq!(result, Err(Failure::Expired));
             assert_eq!(observed.into_inner().unwrap(), vec![(Id(2), Id(3), 1700000000), (Id(2), Id(3), 0)]);
         }).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn local_member_identity_dispatches_update_names_roles_and_keep_delivery() {
+		timeout(Duration::from_secs(10), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+			let (finished, observed) = tokio::sync::oneshot::channel();
+			let finished = std::sync::Mutex::new(Some(finished));
+			let (queries, member_queries) = watch::channel(Default::default());
+			let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+			let server = async {
+				let (stream, _) = listener.accept().await.unwrap();
+				let mut socket = accept_async(stream).await.unwrap();
+				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
+				assert_eq!(packet(&mut socket).await["op"], 2);
+				let mut initial = ready(1, "synthetic-member-session");
+				initial["d"]["guilds"] = json!([{"id":"10","name":"Synthetic guild","owner_id":"99","roles":[{"id":"10","permissions":"68608"},{"id":"11","permissions":"0","name":"Colored role","color":65280}],"members":[{"user":{"id":"1","username":"synthetic"},"roles":[]}],"channels":[{"id":"20","type":0,"name":"general","permission_overwrites":[]}]}]);
+				send(&mut socket, initial).await;
+				loop {
+					let subscribed = packet(&mut socket).await;
+					if subscribed["op"] == 1 {
+						send(&mut socket, json!({"op":11,"d":null})).await;
+						continue;
+					}
+					if subscribed["op"] == 37 {
+						assert_eq!(subscribed["d"]["subscriptions"]["10"]["members"], json!(["7"]));
+						break;
+					}
+					assert!(matches!(subscribed["op"].as_u64(), Some(3 | 8)));
+				}
+				for (sequence, name, data) in [
+					(2,"MESSAGE_CREATE", json!({"id":"100","channel_id":"20","guild_id":"10","author":{"id":"7","username":"account"},"member":{"nick":"Old nickname","roles":["11"]},"content":"Before change"})),
+					(3,"GUILD_MEMBER_UPDATE", json!({"guild_id":"10","user":{"id":"7","username":"account"},"nick":"New nickname","roles":["11"]})),
+					(4,"GUILD_MEMBER_UPDATE", json!({"guild_id":"10","user":{"id":"7"},"nick":null,"roles":[]})),
+					// Invalid optional fields on someone else must not invalidate the owner's permissions.
+					(5,"GUILD_MEMBER_UPDATE", json!({"guild_id":"10","user":{"id":"7"},"roles":"unsupported","nick":false})),
+					(6,"TYPING_START", json!({"guild_id":"10","channel_id":"20","user_id":"7","timestamp":stamp,"member":{"user":{"id":"7","username":"account"},"nick":"Typing nickname","roles":[]}})),
+					(7,"PASSIVE_UPDATE_V2", json!({"guild_id":"10","updated_members":[{"user":{"id":"7","username":"account"},"nick":"Passive nickname","roles":["11"]}]})),
+					(8,"GUILD_MEMBER_REMOVE", json!({"guild_id":"10","user":{"id":"7"}})),
+					(9,"MESSAGE_CREATE", json!({"id":"101","channel_id":"20","author":{"id":"8","username":"Other account"},"content":"After identity changes"})),
+				] { send(&mut socket, json!({"op":0,"t":name,"s":sequence,"d":data})).await; }
+				observed.await.unwrap();
+			};
+			let state = std::sync::Mutex::new(client_core::State::default());
+			let names = std::sync::Mutex::new(Vec::new());
+			let client = run_inner(
+				Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_SESSION".into()).unwrap()),
+				"wss://gateway.discord.gg/".into(), watch::channel(None).1, mpsc::channel(1).1,
+				Some(ActivityInput { spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
+				|event| {
+					let startup = matches!(&event, Event::Startup(_) | Event::Ready { .. });
+					let changed = matches!(&event, Event::MemberIdentity(_) | Event::Typing(_));
+					let last = matches!(&event, Event::Message(message) if message.id == Id(101));
+					let mut state = state.lock().unwrap();
+					let generation = state.generation;
+					state.apply(client_core::Envelope { generation, event });
+					if startup {
+						let Some(client_core::Command::History { request, .. }) = state.select(Id(20)) else { panic!("synthetic guild accessible") };
+						state.apply(client_core::Envelope { generation, event: Event::History { channel: Id(20), request, older: false, messages: vec![] } });
+						queries.send_replace([None, Some(client_core::member_search::Request {guild: Id(10), channel: Id(20), nonce: 1, slot: 1, query: String::new(), users: vec![Id(7)]})]);
+					}
+					if changed {
+						names.lock().unwrap().push(state.member_nickname(Id(20), Id(7)).flatten().map(str::to_owned));
+						assert!(state.can_send(Id(20)));
+					}
+					if last {
+						assert!(state.member_identity(Id(20), Id(7)).unwrap().departed);
+						assert!(state.timeline.get(Id(101)).is_some());
+						finished.lock().unwrap().take().unwrap().send(()).unwrap();
+						return Err(Failure::Expired);
+					}
+					Ok(())
+				}, Some(&endpoint));
+			let ((), result) = tokio::join!(server, client);
+			assert_eq!(result, Err(Failure::Expired));
+			assert_eq!(*names.lock().unwrap(), vec![Some("New nickname".into()), None, None, Some("Typing nickname".into()), Some("Passive nickname".into()), None]);
+		}).await.expect("member changes interrupted message delivery");
+	}
+
+	#[test]
+	fn incremental_member_rows_preserve_omitted_identity_fields() {
+		let mut active = ActiveMembers::new(MemberSubscription {
+			guild: Id(10),
+			channel: Id(20),
+			request: 1,
+			thread: false,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99]],
+		});
+		active.update(decode::<MemberUpdate>(br#"{"guild_id":"10","id":"everyone","ops":[{"op":"SYNC","range":[0,0],"items":[{"member":{"user":{"id":"7","username":"account"},"nick":"Guild nickname","roles":["11"]},"presence":{"status":"online","activities":[]}}]}]}"#).unwrap()).unwrap();
+		active.update(decode::<MemberUpdate>(br#"{"guild_id":"10","id":"everyone","ops":[{"op":"UPDATE","index":0,"item":{"member":{"user":{"id":"7","username":"account"}},"presence":{"status":"idle","activities":[]}}}]}"#).unwrap()).unwrap();
+		let row = active.people().next().unwrap();
+		assert_eq!(row.nick.as_deref(), Some("Guild nickname"));
+		assert_eq!(row.roles, vec![Id(11)]);
+		assert_eq!(row.status.as_deref(), Some("idle"));
+		let update = discord_protocol::member_identity::update(
+			br#"{"guild_id":"10","user":{"id":"7"},"nick":"Changed nickname","roles":[]}"#,
+		)
+		.unwrap();
+		active.identity(&update);
+		let list = active.snapshot(Freshness::Fresh);
+		let Some(model::MemberSlot::Person(row)) = &list.slots[0] else {
+			panic!()
+		};
+		assert_eq!(row.nick.as_deref(), Some("Changed nickname"));
+		assert!(row.roles.is_empty());
+		active.update(decode::<MemberUpdate>(br#"{"guild_id":"10","id":"everyone","ops":[{"op":"UPDATE","index":0,"item":{"member":{"user":{"id":"7","username":"account"},"nick":null,"roles":[]}}}]}"#).unwrap()).unwrap();
+		assert!(active.people().next().unwrap().nick.is_none());
+		assert!(active.people().next().unwrap().roles.is_empty());
 	}
 
 	#[tokio::test]
@@ -4311,12 +4474,13 @@ mod member_tests {
 	                    assert_eq!(subscription["threads"],false);
 	                    assert_eq!(subscription["activities"],true);
 	                    assert_eq!(subscription["member_updates"],false);
-	                    assert_eq!(subscription["members"],json!([]));
 	                    if subscription["typing"]==false {
+	                        assert_eq!(subscription["members"],json!([]));
 	                        assert!(subscribed && switched && scrolled, "unsubscribe before the scrolled range");
 	                        assert_eq!(subscription["channels"],json!({}));
 	                        break;
 	                    }
+	                    assert!(subscription.get("members").is_none(), "range updates must preserve separately subscribed members");
 	                    if subscription["channels"]==json!({}) && subscription["thread_member_lists"]==json!([]) {
 	                        assert!(!subscribed, "cleared the open channel subscription while scrolling");
 	                        typing_ready=true;

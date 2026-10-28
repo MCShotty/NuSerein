@@ -28,6 +28,7 @@ pub mod inbox;
 pub mod invites;
 mod lossy;
 pub mod member_guide;
+pub mod member_identity;
 pub mod messaging_permissions;
 pub mod moderation;
 pub mod notifications;
@@ -1545,11 +1546,11 @@ fn member_list_id(everyone: u128, overwrites: &[Overwrite]) -> Option<String> {
 }
 #[derive(Deserialize)]
 pub struct MemberDto {
-	#[serde(default, deserialize_with = "permissions::member_roles")]
-	pub roles: Vec<Id>,
+	#[serde(default, deserialize_with = "permissions::member_role_patch")]
+	pub roles: Patch<Vec<Id>>,
 	pub user: UserDto,
 	#[serde(default)]
-	pub nick: Option<String>,
+	pub nick: Patch<String>,
 	#[serde(default)]
 	pub presence: Patch<PresenceDto>,
 	#[serde(default)]
@@ -1563,11 +1564,11 @@ pub struct MemberDto {
 /// fail the row, only be dropped.
 #[derive(Deserialize)]
 struct LenientMemberDto {
-	#[serde(default, deserialize_with = "permissions::member_roles")]
-	roles: Vec<Id>,
+	#[serde(default, deserialize_with = "permissions::member_role_patch")]
+	roles: Patch<Vec<Id>>,
 	user: UserDto,
 	#[serde(default)]
-	nick: Option<String>,
+	nick: Patch<String>,
 	#[serde(default, deserialize_with = "lenient_presence")]
 	presence: Patch<PresenceDto>,
 	#[serde(default)]
@@ -1689,7 +1690,17 @@ pub struct MemberGroup {
 	pub id: String,
 }
 impl MemberItem {
-	pub fn preserve_presence(&mut self, previous: &model::Member) {
+	pub fn preserve_missing(&mut self, previous: &model::Member) {
+		if let Self::Member { member, .. } = self
+			&& member.user.id == previous.user.id
+		{
+			if matches!(member.nick, Patch::Absent) {
+				member.nick = previous.nick.clone().map_or(Patch::Null, Patch::Value);
+			}
+			if matches!(member.roles, Patch::Absent) {
+				member.roles = Patch::Value(previous.roles.clone());
+			}
+		}
 		if let Self::Member { member, presence } = self
 			&& member.user.id == previous.user.id
 			&& matches!(member.presence, Patch::Absent)
@@ -1737,9 +1748,15 @@ impl MemberItem {
 				collectibles::apply_member(&mut user, m.avatar_decoration_data, m.collectibles);
 				collectibles::apply_member_style(&mut user, m.display_name_styles);
 				let mut member = model::Member {
-					roles: m.roles,
+					roles: match m.roles {
+						Patch::Value(roles) => roles,
+						_ => vec![],
+					},
 					user,
-					nick: m.nick.map(|n| n.chars().take(128).collect()),
+					nick: match m.nick {
+						Patch::Value(nick) => Some(nick.chars().take(128).collect()),
+						_ => None,
+					},
 					custom_status: presence
 						.as_ref()
 						.filter(|p| p.status != "offline")
