@@ -1346,9 +1346,11 @@ impl Desktop {
 			}
 			if let Some(connection) = &self.connection {
 				connection.sync_admin_reads(&self.state);
+				connection.sync_member_watches(&self.state);
 			}
 			// A click that adopted a hover preload sends no request of its own.
 			self.load_cached_history();
+			self.sync_member_cache();
 			if self.messaging.logout_requested {
 				self.messaging.logout_requested = false;
 				self.request_session_end(&ctx, SessionEnd::Logout);

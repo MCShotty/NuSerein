@@ -5988,3 +5988,5 @@ voice-stage-synthetic = Synthetic participants · microphone and speakers are of
 voice-stage-server-deafened = Deafened by the server
 voice-stage-server-muted = Muted by the server
 voice-fullscreen-exit-hint = Exit fullscreen (Esc)
+
+mentions-member-cooldown = More members are queued. Discord allows another search in up to { $seconds } seconds.

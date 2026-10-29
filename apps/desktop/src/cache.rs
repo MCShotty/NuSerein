@@ -82,6 +82,18 @@ pub enum Operation {
 		channel: Id,
 		request: u64,
 	},
+	LoadMembers {
+		guild: Id,
+		revision: u64,
+	},
+	SaveMembers(Vec<model::MemberDisplay>),
+	RemoveMember {
+		guild: Id,
+		user: Option<Id>,
+	},
+	ClearChannel {
+		channel: Id,
+	},
 	SaveDraft {
 		channel: Id,
 		content: String,
@@ -140,6 +152,15 @@ pub enum Outcome {
 	},
 	Saved,
 	HistoryCleared,
+	Members {
+		guild: Id,
+		revision: u64,
+		epoch: u64,
+		result: Result<Vec<model::MemberDisplay>, StoreError>,
+	},
+	ScopedCleanupFailed {
+		account: Id,
+	},
 	Failed {
 		error: StoreError,
 		message: &'static str,
@@ -152,6 +173,27 @@ pub struct Cache {
 	pub receive: Receiver<(u64, Outcome, Reservation)>,
 	budget: Arc<Budget>,
 	pub history: Arc<HistorySafety>,
+}
+/// Retry a rejected read only after storage has made progress or its scope changes.
+#[derive(Default)]
+pub struct HistoryLoad {
+	attempted: Option<(u64, Id, u64, u64)>,
+	accepted: Option<(u64, Id, u64, u64)>,
+}
+impl HistoryLoad {
+	pub fn attempt(&mut self, key: (u64, Id, u64, u64)) -> bool {
+		if self.accepted == Some(key) || self.attempted == Some(key) {
+			return false;
+		}
+		self.attempted = Some(key);
+		true
+	}
+	pub fn accepted(&mut self, key: (u64, Id, u64, u64)) {
+		self.accepted = Some(key);
+	}
+	pub fn capacity_changed(&mut self) {
+		self.attempted = None;
+	}
 }
 #[derive(Default)]
 pub struct HistorySafety {
@@ -257,6 +299,17 @@ impl AccountForgets {
 	}
 }
 impl Cache {
+	/// FIFO cleanup plus the epoch fence prevents earlier reads/writes restoring removed data.
+	pub fn invalidate_scope(&self, generation: u64, account: Id, operation: Operation) -> bool {
+		let blocked = !self.history.allows(self.history.epoch());
+		self.history.invalidate();
+		if blocked || !self.queue(generation, account, operation) {
+			self.history.block();
+			false
+		} else {
+			true
+		}
+	}
 	pub fn delete_messages(&self, generation: u64, account: Id, channel: Id, ids: Vec<Id>) -> bool {
 		let blocked = !self.history.allows(self.history.epoch());
 		self.history.invalidate();
@@ -278,6 +331,16 @@ impl Cache {
 			return false;
 		}
 		let payload = match &operation {
+			Operation::SaveMembers(rows) => {
+				if rows.len() > 4096
+					|| rows.iter().any(|row| !row.valid())
+					|| rows.iter().map(model::MemberDisplay::bytes).sum::<usize>() > 2 * 1024 * 1024
+				{
+					return false;
+				}
+				rows.iter().map(model::MemberDisplay::bytes).sum::<usize>()
+					+ rows.capacity().saturating_sub(rows.len()) * size_of::<model::MemberDisplay>()
+			}
 			Operation::SaveCustomFont(font) => font
 				.as_ref()
 				.map_or(0, |font| font.bytes().len() + font.name.capacity()),
@@ -352,6 +415,8 @@ impl Cache {
 			Operation::LoadChannel { .. }
 				| Operation::SaveChannel { .. }
 				| Operation::SaveChanges { .. }
+				| Operation::LoadMembers { .. }
+				| Operation::SaveMembers(_)
 		) && !self.history.allows(epoch)
 		{
 			return false;
@@ -377,6 +442,11 @@ impl Cache {
 						font.bytes().len() + font.name.capacity()
 					}
 					Outcome::Channel { messages, .. } => message_bytes(messages),
+					Outcome::Members { result, .. } => result.as_ref().map_or(0, |rows| {
+						rows.iter().map(model::MemberDisplay::bytes).sum::<usize>()
+							+ rows.capacity().saturating_sub(rows.len())
+								* size_of::<model::MemberDisplay>()
+					}),
 					Outcome::Drafts(drafts) => drafts.values().map(String::capacity).sum(),
 					Outcome::GifFavorites(favorites) => {
 						favorites.iter().map(model::Gif::bytes).sum::<usize>()
@@ -544,20 +614,44 @@ fn execute(
 		}
 		_ => {}
 	}
+	if let Operation::LoadMembers { guild, revision } = operation {
+		return Outcome::Members {
+			guild,
+			revision,
+			epoch,
+			result: if history.allows(epoch) {
+				match store {
+					Ok(store) => store.load_member_displays(account, guild),
+					Err(error) => Err(*error),
+				}
+			} else {
+				Ok(Vec::new())
+			},
+		};
+	}
 	if matches!(
 		operation,
 		Operation::LoadChannel { .. }
 			| Operation::SaveChannel { .. }
 			| Operation::SaveChanges { .. }
+			| Operation::SaveMembers(_)
 	) && !history.allows(epoch)
 	{
 		return Outcome::Saved;
 	}
 	let draft_restore = matches!(operation, Operation::LoadDrafts);
 	let history_cleanup = matches!(operation, Operation::ClearHistory);
+	let scoped_cleanup = matches!(
+		operation,
+		Operation::ClearChannel { .. } | Operation::RemoveMember { .. }
+	);
 	let history_unsafe = matches!(
 		operation,
-		Operation::DeleteMessages { .. } | Operation::ClearHistory | Operation::Forget
+		Operation::DeleteMessages { .. }
+			| Operation::ClearHistory
+			| Operation::Forget
+			| Operation::ClearChannel { .. }
+			| Operation::RemoveMember { .. }
 	);
 	let failure_message = match &operation {
 		Operation::LoadAppearance => "Could not load saved appearance; using system theme",
@@ -569,6 +663,12 @@ fn execute(
 		}
 		Operation::ClearHistory => {
 			"Could not clear cached history; history cache disabled until restart; messages may remain on disk"
+		}
+		Operation::ClearChannel { .. } | Operation::RemoveMember { .. } => {
+			"Could not remove inaccessible cached data; history cache disabled until restart"
+		}
+		Operation::SaveMembers(_) => {
+			"Could not save member names; current names remain available in this session"
 		}
 		Operation::DeleteMessages { .. } => {
 			"Could not remove deleted cached messages; history cache disabled until restart; messages may remain on disk"
@@ -586,6 +686,7 @@ fn execute(
 		}
 		Operation::LoadChannel { .. } => "Could not read cached history",
 		Operation::LoadCustomFont
+		| Operation::LoadMembers { .. }
 		| Operation::SaveCustomFont(_)
 		| Operation::LoadAccounts
 		| Operation::SaveAccount(_)
@@ -605,6 +706,7 @@ fn execute(
 	let result = match store {
 		Ok(store) => match operation {
 			Operation::LoadCustomFont
+			| Operation::LoadMembers { .. }
 			| Operation::SaveCustomFont(_)
 			| Operation::LoadAccounts
 			| Operation::SaveAccount(_)
@@ -647,6 +749,17 @@ fn execute(
 					})
 				})
 			}
+			Operation::SaveMembers(rows) => store
+				.save_member_displays(account, &rows)
+				.map(|_| Outcome::Saved),
+			Operation::RemoveMember { guild, user } => match user {
+				Some(user) => store.remove_member_display(account, guild, user),
+				None => store.clear_member_guild(account, guild),
+			}
+			.map(|_| Outcome::Saved),
+			Operation::ClearChannel { channel } => store
+				.clear_channel_history(account, channel)
+				.map(|_| Outcome::Saved),
 			Operation::SaveDraft { channel, content } => store
 				.save_draft(account, channel, &content)
 				.map(|_| Outcome::Saved),
@@ -678,6 +791,9 @@ fn execute(
 	result.unwrap_or_else(|error| {
 		if history_unsafe {
 			history.fail();
+		}
+		if scoped_cleanup {
+			return Outcome::ScopedCleanupFailed { account };
 		}
 		Outcome::Failed {
 			error,
@@ -774,6 +890,182 @@ pub fn debug_voice_preferences_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn rejected_history_read_waits_for_capacity_then_retries_once() {
+		let (send, commands) = mpsc::sync_channel(1);
+		let (_, receive) = mpsc::sync_channel(1);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			history: Arc::new(HistorySafety::default()),
+		};
+		let mut load = HistoryLoad::default();
+		let key = (1, Id(2), 7, cache.history.epoch());
+		assert!(cache.queue(1, Id(1), Operation::LoadDrafts));
+		assert!(load.attempt(key));
+		assert!(!cache.queue(
+			1,
+			Id(1),
+			Operation::LoadChannel {
+				channel: Id(2),
+				request: 7
+			}
+		));
+		for _ in 0..100 {
+			assert!(!load.attempt(key), "repainting cannot spin on a full queue");
+		}
+		drop(commands.try_recv().unwrap());
+		load.capacity_changed();
+		assert!(load.attempt(key));
+		assert!(cache.queue(
+			1,
+			Id(1),
+			Operation::LoadChannel {
+				channel: Id(2),
+				request: 7
+			}
+		));
+		load.accepted(key);
+		load.capacity_changed();
+		assert!(!load.attempt(key), "accepted read is never duplicated");
+		assert!(
+			load.attempt((2, Id(2), 7, 1)),
+			"account and safety changes retire the attempt"
+		);
+	}
+	#[test]
+	fn scoped_cleanup_fences_old_writes_and_preserves_other_windows() {
+		let (send, commands) = mpsc::sync_channel(4);
+		let (_, receive) = mpsc::sync_channel(1);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			history: Arc::new(HistorySafety::default()),
+		};
+		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
+		for (account, channel) in [(Id(1), Id(2)), (Id(1), Id(3)), (Id(9), Id(2))] {
+			store
+				.as_mut()
+				.unwrap()
+				.save_channel(
+					account,
+					channel,
+					&[test_support::message(10, channel)],
+					false,
+				)
+				.unwrap();
+		}
+		let old = cache.history.epoch();
+		assert!(cache.queue(
+			1,
+			Id(1),
+			Operation::SaveChannel {
+				channel: Id(2),
+				messages: vec![test_support::message(11, Id(2))],
+				start: false
+			}
+		));
+		assert!(cache.invalidate_scope(1, Id(1), Operation::ClearChannel { channel: Id(2) }));
+		assert!(!cache.history.allows(old));
+		while let Ok((_, account, epoch, op, _reservation)) = commands.try_recv() {
+			assert!(matches!(
+				execute(&mut store, &cache.history, account, epoch, op),
+				Outcome::Saved
+			));
+		}
+		let db = store.as_ref().unwrap();
+		assert!(db.load_channel(Id(1), Id(2)).unwrap().is_empty());
+		assert_eq!(db.load_channel(Id(1), Id(3)).unwrap().len(), 1);
+		assert_eq!(db.load_channel(Id(9), Id(2)).unwrap().len(), 1);
+		assert!(cache.history.allows(cache.history.epoch()));
+		let mut unavailable = Err(StoreError::Unavailable);
+		assert!(matches!(
+			execute(
+				&mut unavailable,
+				&cache.history,
+				Id(1),
+				cache.history.epoch(),
+				Operation::ClearChannel { channel: Id(3) }
+			),
+			Outcome::ScopedCleanupFailed { account: Id(1) }
+		));
+		assert!(!cache.history.allows(cache.history.epoch()));
+	}
+	#[test]
+	fn member_storage_worker_roundtrip_and_deletion_are_epoch_fenced() {
+		let safety = HistorySafety::default();
+		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
+		let row = model::MemberDisplay {
+			guild: Id(10),
+			user: Id(2),
+			name: "Synthetic".into(),
+			username: Some("account".into()),
+			nick: Some("Nickname".into()),
+		};
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				0,
+				Operation::SaveMembers(vec![row.clone()])
+			),
+			Outcome::Saved
+		));
+		let Outcome::Members {
+			result: Ok(rows),
+			epoch,
+			..
+		} = execute(
+			&mut store,
+			&safety,
+			Id(1),
+			0,
+			Operation::LoadMembers {
+				guild: Id(10),
+				revision: 0,
+			},
+		)
+		else {
+			panic!("worker read");
+		};
+		assert_eq!(rows, vec![row.clone()]);
+		safety.invalidate();
+		assert!(!safety.allows(epoch));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::RemoveMember {
+					guild: Id(10),
+					user: Some(Id(2))
+				}
+			),
+			Outcome::Saved
+		));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				0,
+				Operation::SaveMembers(vec![row])
+			),
+			Outcome::Saved
+		));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(1), Id(10))
+				.unwrap()
+				.is_empty()
+		);
+	}
 
 	#[test]
 	fn credential_cleanup_retries_full_storage_without_repeating_keyring_deletion() {

@@ -206,8 +206,41 @@ impl Desktop {
 		}
 		for (generation, outcome, _reservation) in cached {
 			self.cache_pending = self.cache_pending.saturating_sub(1);
+			self.cached_history_request.capacity_changed();
+			self.member_cache_load.capacity_changed();
 			// Settings are global; account removal/write failures still matter after logout.
 			match &outcome {
+				cache::Outcome::ScopedCleanupFailed { account } => {
+					// One account-wide cleanup follows a failed scoped deletion. Its own
+					// failure has the existing terminal cache status, never another retry.
+					self.request_history_clear(*account);
+					continue;
+				}
+				cache::Outcome::Members {
+					guild,
+					revision,
+					epoch,
+					result,
+				} => {
+					if generation == self.state.generation
+						&& self
+							.cache
+							.as_ref()
+							.is_some_and(|cache| cache.history.allows(*epoch))
+					{
+						match result {
+							Ok(rows) => {
+								self.state
+									.hydrate_member_displays(*guild, *revision, rows.clone())
+							}
+							Err(_) => {
+								self.cache_error = true;
+								self.cache_status = "Could not restore cached member names; live lookups remain available";
+							}
+						}
+					}
+					continue;
+				}
 				cache::Outcome::CustomFont(result) => {
 					self.accept_font(ctx, result);
 					continue;
@@ -424,6 +457,8 @@ impl Desktop {
 				| cache::Outcome::ReadingPreferencesSaved(_)
 				| cache::Outcome::Accounts { .. }
 				| cache::Outcome::HistoryCleared
+				| cache::Outcome::ScopedCleanupFailed { .. }
+				| cache::Outcome::Members { .. }
 				| cache::Outcome::Failed { .. }
 				| cache::Outcome::AccountPresences(_)
 				| cache::Outcome::AccountPresenceSaved(_) => unreachable!(),
@@ -607,6 +642,7 @@ impl Desktop {
 				generation: self.state.generation,
 				event: Event::Resync,
 			});
+			self.queue_cache(cache::Operation::ClearHistory);
 			// Results already lost to congestion may include accepted writes. Show
 			// uncertainty; a fresh snapshot never authorizes replaying these writes.
 			for pending in &mut self.state.pending {
@@ -672,13 +708,51 @@ impl Desktop {
 			};
 			let mut removed_channels = access_candidates(&self.state, &event.event);
 			removed_channels.retain(|id| self.state.can_read_history(*id));
-			let invalidate = matches!(
-				event.event,
-				Event::Resync | Event::PermissionsChanged | Event::Unavailable(_)
-			) || matches!(&event.event, Event::RecipientRemoved { user, .. } if self.state.user.as_ref().is_some_and(|owner| owner.id == *user))
-				|| matches!(&event.event, Event::Reactions(client_core::reactions::Event::Read {channel,result:Err(Failure::Forbidden),..}) if self.state.selected==Some(*channel))
-				|| matches!(&event.event, Event::HistoryFailed { channel, request, failure: Failure::Forbidden }
-                if self.state.selected == Some(*channel) && self.state.request == self.state.history_request(*request) && self.state.history_pending);
+			let invalidate = matches!(event.event, Event::Resync | Event::PermissionsChanged);
+			let scoped_loss = match &event.event {
+				Event::Unavailable(channel) => Some(*channel),
+				Event::RecipientRemoved { channel, user }
+					if self
+						.state
+						.user
+						.as_ref()
+						.is_some_and(|owner| owner.id == *user) =>
+				{
+					Some(*channel)
+				}
+				Event::Reactions(client_core::reactions::Event::Read {
+					channel,
+					result: Err(Failure::Forbidden),
+					..
+				}) if self.state.selected == Some(*channel) => Some(*channel),
+				Event::HistoryFailed {
+					channel,
+					request,
+					failure: Failure::Forbidden,
+				} if self.state.selected == Some(*channel)
+					&& self.state.request == self.state.history_request(*request)
+					&& self.state.history_pending =>
+				{
+					Some(*channel)
+				}
+				_ => None,
+			};
+			let removed_member = match &event.event {
+				Event::MemberIdentity(update) if update.departed && update.valid() => {
+					Some((update.guild, update.user))
+				}
+				_ => None,
+			};
+			let affected_guilds: std::collections::BTreeMap<_, _> = removed_channels
+				.iter()
+				.chain(scoped_loss.iter())
+				.filter_map(|id| {
+					self.state
+						.channel(*id)
+						.and_then(|c| c.guild)
+						.map(|guild| (*id, guild))
+				})
+				.collect();
 			let history_changed = changes_active_history(&self.state, &event.event);
 			if history_changed {
 				match &event.event {
@@ -788,10 +862,31 @@ impl Desktop {
 			{
 				self.command(command);
 			}
-			// ponytail: accepted navigation removals clear account-wide history;
-			// add scoped disk deletion if channel churn makes refetch cost significant.
-			if invalidate || !removed_channels.is_empty() {
+			if invalidate {
 				self.queue_cache(cache::Operation::ClearHistory);
+			} else {
+				let mut removed: std::collections::BTreeSet<_> =
+					removed_channels.iter().copied().collect();
+				removed.extend(scoped_loss);
+				let guilds: std::collections::BTreeSet<_> = removed
+					.iter()
+					.filter_map(|id| affected_guilds.get(id).copied())
+					.collect();
+				for channel in removed {
+					self.clear_channel_cache(channel);
+				}
+				for guild in guilds {
+					self.invalidate_cache_scope(cache::Operation::RemoveMember {
+						guild,
+						user: None,
+					});
+				}
+				if let Some((guild, user)) = removed_member {
+					self.invalidate_cache_scope(cache::Operation::RemoveMember {
+						guild,
+						user: Some(user),
+					});
+				}
 			}
 			persist_timeline |= history_changed;
 			if let Some(channel) = confirmed_channel {

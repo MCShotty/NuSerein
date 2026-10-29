@@ -6,14 +6,72 @@ impl Desktop {
 	pub(super) fn load_cached_history(&mut self) {
 		let (state, request) = (&self.state, self.state.request);
 		if let Some(channel) = state.selected
-			&& self.cached_history_request != Some((channel, request))
 			&& state.history_before.is_none()
 			&& state.history_after.is_none()
 			&& !state.history_targeted
 			&& wants_cached_history(state, channel, request)
+			&& let Some(cache) = &self.cache
+			&& cache.history.allows(cache.history.epoch())
 		{
-			self.cached_history_request = Some((channel, request));
-			self.queue_cache(cache::Operation::LoadChannel { channel, request });
+			let key = (state.generation, channel, request, cache.history.epoch());
+			if self.cached_history_request.attempt(key)
+				&& self.queue_cache(cache::Operation::LoadChannel { channel, request })
+			{
+				self.cached_history_request.accepted(key);
+			}
+		}
+	}
+	pub(super) fn sync_member_cache(&mut self) {
+		if self.state.demo || self.fixture_only || !self.state.gateway_connected {
+			return;
+		}
+		let Some(channel) = self.state.selected.filter(|id| self.state.can_view(*id)) else {
+			return;
+		};
+		let Some(guild) = self.state.channel(channel).and_then(|c| c.guild) else {
+			return;
+		};
+		let Some(cache) = &self.cache else {
+			return;
+		};
+		let epoch = cache.history.epoch();
+		if !cache.history.allows(epoch) {
+			return;
+		}
+		let revision = self.state.member_display_revision();
+		let key = (self.state.generation, guild, 0, epoch);
+		if self.member_cache_load.attempt(key)
+			&& self.queue_cache(cache::Operation::LoadMembers { guild, revision })
+		{
+			self.member_cache_load.accepted(key);
+		}
+		let changed = (self.state.generation, self.state.member_display_revision());
+		// Coalesce identity snapshots behind existing storage work, keeping at most one
+		// pending copy. Worker completion wakes the next pass without an idle timer.
+		if self.member_cache_saved != Some(changed) && self.cache_pending == 0 {
+			let rows = self.state.cached_member_displays(guild);
+			if rows.is_empty() || self.queue_cache(cache::Operation::SaveMembers(rows)) {
+				self.member_cache_saved = Some(changed);
+			}
+		}
+	}
+	pub(super) fn clear_channel_cache(&mut self, channel: model::Id) {
+		self.invalidate_cache_scope(cache::Operation::ClearChannel { channel });
+	}
+	pub(super) fn invalidate_cache_scope(&mut self, operation: cache::Operation) {
+		if self.state.demo || self.fixture_only {
+			return;
+		}
+		let Some(account) = self.state.user.as_ref().map(|user| user.id) else {
+			return;
+		};
+		let Some(cache) = &self.cache else {
+			return;
+		};
+		if cache.invalidate_scope(self.state.generation, account, operation) {
+			self.cache_pending += 1;
+		} else {
+			self.request_history_clear(account);
 		}
 	}
 	pub(super) fn queue_cache(&mut self, operation: cache::Operation) -> bool {
@@ -36,6 +94,10 @@ impl Desktop {
 			return false;
 		}
 		if let Some(cache) = &self.cache {
+			let read = matches!(
+				&operation,
+				cache::Operation::LoadChannel { .. } | cache::Operation::LoadMembers { .. }
+			);
 			if matches!(
 				operation,
 				cache::Operation::LoadChannel { .. }
@@ -52,8 +114,10 @@ impl Desktop {
 				}
 				return true;
 			} else {
-				self.cache_error = true;
-				self.cache_status = "Local storage queue full; some changes are not saved";
+				if !read {
+					self.cache_error = true;
+					self.cache_status = "Local storage queue full; some changes are not saved";
+				}
 			}
 		}
 		false

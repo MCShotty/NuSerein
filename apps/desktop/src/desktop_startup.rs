@@ -927,7 +927,9 @@ impl Desktop {
 			window_blur: transparency_available
 				.then(|| platform::window_effects::Blur::new(window.clone())),
 			window,
-			cached_history_request: None,
+			cached_history_request: Default::default(),
+			member_cache_load: Default::default(),
+			member_cache_saved: None,
 			maximize_after_show: false,
 			monitor_geometry: None,
 			monitor_period: None,

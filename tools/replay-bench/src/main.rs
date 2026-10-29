@@ -3,6 +3,10 @@ use model::Id;
 use std::time::Instant;
 mod soak;
 fn main() {
+	if std::env::args().nth(1).as_deref() == Some("--loading") {
+		loading();
+		return;
+	}
 	if std::env::args().nth(1).as_deref() == Some("--soak") {
 		let seconds = std::env::args()
 			.nth(2)
@@ -274,4 +278,220 @@ fn hover_navigation() {
 		state.resident_window_count(),
 		state.resident_history_bytes()
 	);
+}
+
+/// Busy navigation and member-cache availability. The service page is deliberately withheld
+/// until after selection/lookup observations; no wall-clock delay is inferred from this fixture.
+fn loading() {
+	println!(
+		"Synthetic loading workload: 1000 busy 50-row channel switches and 100 sidebar cycles; one warmup + five measured repetitions; release core-only, no SQLite, HTTP, rendering, presented-frame latency or live Discord compatibility."
+	);
+	let _ = loading_sample();
+	let mut times = Vec::with_capacity(5);
+	for sample in 0..5 {
+		let result = loading_sample();
+		println!(
+			"loading sample={sample} elapsed_ms={:.3} immediate_previews={}/1000 history_requests={} delayed_preview_observations={} known_member_hits={}/1000 author_requests={} sidebar_chunk_hits={}/100 pane_reopen_hits={}/100 subscription_requests={} select_p50_us={:.3} select_p95_us={:.3} lookup_p50_us={:.3} lookup_p95_us={:.3} retained_rows={} retained_bytes={}",
+			result.elapsed.as_secs_f64() * 1000.0,
+			result.previews,
+			result.histories,
+			result.delayed_previews,
+			result.known_members,
+			result.author_requests,
+			result.chunk_hits,
+			result.reopen_hits,
+			result.subscriptions,
+			result.selects[500].as_secs_f64() * 1e6,
+			result.selects[949].as_secs_f64() * 1e6,
+			result.lookups[500].as_secs_f64() * 1e6,
+			result.lookups[949].as_secs_f64() * 1e6,
+			result.retained_rows,
+			result.retained_bytes,
+		);
+		times.push(result.elapsed);
+	}
+	times.sort_unstable();
+	println!(
+		"Synthetic loading median elapsed {:?}; availability/request counters above are deterministic, CPU timings exclude the withheld service response delay. Retained bytes are core estimates, not process RSS.",
+		times[2]
+	);
+}
+
+#[derive(Default)]
+struct LoadingSample {
+	elapsed: std::time::Duration,
+	previews: usize,
+	histories: usize,
+	delayed_previews: usize,
+	known_members: usize,
+	author_requests: usize,
+	chunk_hits: usize,
+	reopen_hits: usize,
+	subscriptions: usize,
+	selects: Vec<std::time::Duration>,
+	lookups: Vec<std::time::Duration>,
+	retained_rows: usize,
+	retained_bytes: usize,
+}
+fn loading_state() -> client_core::State {
+	let mut state = test_support::demo_state();
+	state.demo = false;
+	state.auth = client_core::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	state
+}
+fn loading_person(id: u64) -> model::Member {
+	let mut user = test_support::message(2, Id(20)).author;
+	user.id = Id(id);
+	user.name = format!("Synthetic member {id}");
+	user.username = Some(format!("synthetic_{id}").into());
+	user.cosmetics = None;
+	model::Member {
+		user,
+		nick: Some(format!("Synthetic nickname {id}")),
+		roles: vec![],
+		status: None,
+		custom_status: None,
+		activities: vec![],
+		clients: Default::default(),
+	}
+}
+fn loading_event(state: &mut client_core::State, event: Event) {
+	state.apply(Envelope {
+		generation: state.generation,
+		event,
+	});
+}
+fn loading_page(state: &mut client_core::State, channel: Id, request: u64, latest: u64) {
+	loading_event(
+		state,
+		Event::History {
+			channel,
+			request,
+			older: false,
+			messages: ((latest - 49)..=latest)
+				.map(|id| test_support::message(id, channel))
+				.collect(),
+		},
+	);
+	assert_eq!(state.timeline.len(), 50);
+	assert_eq!(state.freshness, model::Freshness::Fresh);
+}
+fn loading_resolve_author(state: &mut client_core::State, counters: &mut LoadingSample) {
+	if let Some(client_core::Command::MemberSearch(request)) =
+		state.request_author_members(&[Id(987654321)])
+	{
+		counters.author_requests += 1;
+		loading_event(
+			state,
+			Event::MemberSearch {
+				request,
+				result: Ok(vec![loading_person(987654321)]),
+			},
+		);
+	}
+}
+fn loading_sample() -> LoadingSample {
+	use client_core::Command;
+	let mut result = LoadingSample::default();
+	let mut state = loading_state();
+	let channels = [Id(20), Id(21)];
+	let mut latest = [20_050u64, 21_050];
+	// Seed two equally sized, authoritative windows before measuring busy revisits.
+	for index in 0..2 {
+		let _ = state.select(channels[index]);
+		let Command::History { request, .. } = state.history(None) else {
+			unreachable!()
+		};
+		loading_page(&mut state, channels[index], request, latest[index]);
+	}
+	loading_resolve_author(&mut state, &mut result);
+	let started = Instant::now();
+	for step in 0..1000 {
+		let index = step % 2;
+		let channel = channels[index];
+		latest[index] += 1;
+		loading_event(
+			&mut state,
+			Event::Message(test_support::message(latest[index], channel)),
+		);
+		let at = Instant::now();
+		let command = state.select(channel);
+		result.selects.push(at.elapsed());
+		let preview = state.timeline.row_count() != 0;
+		result.previews += usize::from(preview);
+		assert!(
+			state
+				.timeline
+				.iter()
+				.all(|message| message.channel == channel)
+		);
+		let at = Instant::now();
+		let known = state
+			.member_nickname(channel, Id(987654321))
+			.flatten()
+			.is_some();
+		result.lookups.push(at.elapsed());
+		result.known_members += usize::from(known);
+		// Simulate several UI observations while the current HTTP response is held.
+		// These observations must neither create rows nor imply a network-time measurement.
+		for _ in 0..8 {
+			result.delayed_previews +=
+				usize::from(std::hint::black_box(state.timeline.row_count() != 0));
+			assert_eq!(state.timeline.row_count() != 0, preview);
+		}
+		if let Some(Command::History { request, .. }) = command {
+			result.histories += 1;
+			assert!(state.history_pending);
+			loading_page(&mut state, channel, request, latest[index]);
+		} else {
+			assert!(!state.history_pending);
+		}
+		loading_resolve_author(&mut state, &mut result);
+	}
+	result.retained_rows = state.resident_history_rows();
+	result.retained_bytes = state.resident_history_bytes();
+	assert!(result.retained_rows <= 1475);
+	assert!(result.retained_bytes <= 16 * 1024 * 1024);
+	// Each cycle isolates sidebar range retention from the composer query result.
+	for _ in 0..100 {
+		let mut pane = loading_state();
+		result.subscriptions += usize::from(pane.request_members().is_some());
+		let request = pane.members.as_ref().unwrap().request;
+		let list = |start, user, ranges| model::MemberList {
+			guild: Some(Id(10)),
+			channel: Id(20),
+			request,
+			start,
+			total: 300,
+			slots: vec![Some(model::MemberSlot::Person(loading_person(user)))],
+			lazy: true,
+			freshness: model::Freshness::Fresh,
+			groups: vec![],
+			ranges,
+		};
+		loading_event(&mut pane, Event::Members(list(0, 987654321, vec![[0, 99]])));
+		result.subscriptions += usize::from(pane.focus_member_ranges(100, 110).is_some());
+		loading_event(
+			&mut pane,
+			Event::Members(list(100, 987654322, vec![[100, 199]])),
+		);
+		assert!(pane.member_slot(0).is_some());
+		result.chunk_hits += usize::from(
+			pane.member_nickname(Id(20), Id(987654321))
+				.flatten()
+				.is_some(),
+		);
+		let _ = pane.close_members();
+		result.subscriptions += usize::from(pane.request_members().is_some());
+		result.reopen_hits += usize::from(pane.members_cached());
+		pane.logout();
+	}
+	result.elapsed = started.elapsed();
+	result.selects.sort_unstable();
+	result.lookups.sort_unstable();
+	state.logout();
+	assert_eq!(state.timeline.row_count(), 0);
+	assert!(!state.has_unsent());
+	result
 }
