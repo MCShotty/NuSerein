@@ -128,7 +128,7 @@ class BundleTest(unittest.TestCase):
 
     def test_cached_build_requires_platform_artifacts_and_source_payload(self):
         headers = ("libavcodec/avcodec.h", "libavutil/avutil.h", "libavutil/error.h", "libavutil/frame.h",
-                   "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h", "libavformat/avformat.h", "libswscale/swscale.h", "libswresample/swresample.h")
+                   "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h", "libavformat/avformat.h", "libavfilter/avfilter.h", "libavfilter/buffersrc.h", "libavfilter/buffersink.h", "libswscale/swscale.h", "libswresample/swresample.h")
         provenance = ("build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
                       "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "source/dav1d-1.5.1.tar.xz", "dav1d-COPYING",
                       "nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE",
@@ -146,7 +146,7 @@ class BundleTest(unittest.TestCase):
                 aliases = {"Linux": ["lib/libavcodec-serein.so", "lib/libavutil-serein.so"],
                            "Darwin": ["lib/libavcodec-serein.dylib", "lib/libavutil-serein.dylib"],
                            "Windows": ["lib/avcodec-serein.lib", "lib/avutil-serein.lib"]}[system]
-                for name, version in (("avformat", "61"), ("swscale", "8"), ("swresample", "5")):
+                for name, version in (("avformat", "61"), ("avfilter", "10"), ("swscale", "8"), ("swresample", "5")):
                     relative_files.append(f"lib/pkgconfig/lib{name}-serein.pc")
                     aliases.append(f"lib/lib{name}-serein.so" if system == "Linux" else
                                    f"lib/lib{name}-serein.dylib" if system == "Darwin" else f"lib/{name}-serein.lib")
@@ -385,7 +385,7 @@ class BundleTest(unittest.TestCase):
                 "        dev_select.drm_major = major(drm_node_info.st_dev);\n"
                 "        dev_select.drm_minor = minor(drm_node_info.st_dev);\n"
                 "    if (select->has_uuid) {\n")
-            for directory, version in [("libavformat", "LIBAVFORMAT"), ("libswscale", "LIBSWSCALE"), ("libswresample", "LIBSWRESAMPLE")]:
+            for directory, version in [("libavformat", "LIBAVFORMAT"), ("libavfilter", "LIBAVFILTER"), ("libswscale", "LIBSWSCALE"), ("libswresample", "LIBSWRESAMPLE")]:
                 (root / directory).mkdir()
                 (root / directory / (directory + ".v")).write_text(version + "_MAJOR { global: av*; sw*; local: *; };\n")
             (root / "libavutil/hwcontext_videotoolbox.h").write_text("typedef struct AVVTFramesContext {\n")
@@ -578,6 +578,17 @@ class BundleTest(unittest.TestCase):
             for system in ("Linux", "Darwin"):
                 self.assertEqual(builder.configure_shell(system, {}), "bash")
             resolve.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("FFMPEG_DIR") and bundle.platform.system() == "Linux",
+                         "Requires the native Linux FFmpeg build")
+    def test_private_filter_registry_only_contains_allowed_filters(self):
+        library = ctypes.CDLL(str(Path(os.environ["FFMPEG_DIR"]) / "lib/libavfilter-serein.so.10"))
+        library.avfilter_get_by_name.argtypes = [ctypes.c_char_p]
+        library.avfilter_get_by_name.restype = ctypes.c_void_p
+        for name in (b"buffer", b"buffersink", b"abuffer", b"abuffersink", b"atadenoise"):
+            self.assertTrue(library.avfilter_get_by_name(name), name)
+        for name in (b"movie", b"zmq", b"scale", b"overlay"):
+            self.assertFalse(library.avfilter_get_by_name(name), name)
 
     @unittest.skipUnless(os.environ.get("FFMPEG_DIR") and bundle.platform.system() == "Windows",
                          "Requires the native MSVC FFmpeg build and dumpbin")

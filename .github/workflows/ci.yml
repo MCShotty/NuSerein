@@ -210,7 +210,7 @@ jobs:
         run: |
           $checkDir = Join-Path $env:RUNNER_TEMP 'serein-package-clean'
           New-Item -ItemType Directory -Path $checkDir -Force | Out-Null
-          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v4.zip"
+          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v5.zip"
           Compress-Archive -Path "dist/*" -DestinationPath $archive
           python packaging/windows/check_update_archive.py $archive
           if ($LASTEXITCODE -ne 0) { throw "Windows media update archive validation failed" }
@@ -245,7 +245,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cached packaging failed' }
           $checkDir = Join-Path $env:RUNNER_TEMP 'serein-package-cached'
           New-Item -ItemType Directory -Path $checkDir -Force | Out-Null
-          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v4.zip"
+          $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v5.zip"
           Compress-Archive -Path "dist/*" -DestinationPath $archive
           python packaging/windows/check_update_archive.py $archive
           if ($LASTEXITCODE -ne 0) { throw 'Cached archive validation failed' }

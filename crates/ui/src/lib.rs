@@ -461,6 +461,9 @@ pub struct MessagingUi {
 	pub screen: screen::ScreenUi,
 	pub voice_camera_available: bool,
 	pub voice_camera_status: &'static str,
+	/// Runtime denoising state for the outgoing camera and settings preview, respectively.
+	pub call_camera_denoising_status: Option<model::voice_settings::CameraDenoisingStatus>,
+	pub preview_camera_denoising_status: Option<model::voice_settings::CameraDenoisingStatus>,
 	pub voice_cameras: Vec<(String, String)>,
 	pub voice_camera_device: Option<String>,
 	pub voice_refresh_cameras: bool,

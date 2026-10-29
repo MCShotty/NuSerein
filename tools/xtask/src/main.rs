@@ -521,6 +521,7 @@ fn package() -> Result<(), String> {
 			"libavcodec-serein.61.dylib",
 			"libavutil-serein.59.dylib",
 			"libavformat-serein.61.dylib",
+			"libavfilter-serein.10.dylib",
 			"libswscale-serein.8.dylib",
 			"libswresample-serein.5.dylib",
 			"libopenh264.8.dylib",

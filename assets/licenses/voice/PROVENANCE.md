@@ -2,14 +2,14 @@
 
 ## Shared FFmpeg media libraries — October 11, 2026
 
-`scripts/build-ffmpeg.py` builds shared FFmpeg 7.1.5 avcodec, avutil, avformat,
+`scripts/build-ffmpeg.py` builds shared FFmpeg 7.1.5 avcodec, avutil, avformat, avfilter,
 swscale and swresample with GPL,
 nonfree, Media Foundation and VA-API encoders disabled. It enables libopenh264 2.6.0,
 supported NVENC, AMD AMF, Intel Quick Sync and macOS VideoToolbox backends. The Linux
 VA interface remains enabled for Quick Sync and selected-device hardware decoding.
 H.264/HEVC and AV1 decoding are explicitly allowlisted; software AV1 uses
-statically linked dav1d 1.5.1 (BSD-2-Clause). Network protocols and avfilter stay
-disabled. The small demux/audio allowlists serve the anonymous bounded
+statically linked dav1d 1.5.1 (BSD-2-Clause). Network protocols stay disabled; the filter allowlist enables atadenoise alongside FFmpeg’s built-in
+audio/video buffer sources and sinks. The small demux/audio allowlists serve the anonymous bounded
 attachment reader. OpenH264 2.6.0 matches the existing
 openh264-sys2 0.9.8 bundled codec version. The LGPL FFmpeg corresponding source
 archive, exact recipe/source metadata, namespace patch and configure arguments are staged from

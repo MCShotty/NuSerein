@@ -485,6 +485,26 @@ impl VideoCapabilities {
 	}
 }
 
+/// Controls additional local webcam processing, explicitly selected by the user.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CameraDenoising {
+	#[default]
+	Off,
+	On,
+}
+
+/// Current processing state for a running camera, distinct from the saved choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CameraDenoisingStatus {
+	#[default]
+	Starting,
+	Off,
+	Active,
+	Unavailable,
+	ResolutionUnsupported,
+	TooSlow,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct VideoSettings {
 	pub codec: VideoCodec,
@@ -492,6 +512,7 @@ pub struct VideoSettings {
 	pub quality: EncoderPreset,
 	pub camera_resolution: VideoResolution,
 	pub camera_frame_rate: VideoFrameRate,
+	pub camera_denoising: CameraDenoising,
 }
 impl<'de> Deserialize<'de> for VideoSettings {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -518,6 +539,8 @@ impl<'de> Deserialize<'de> for VideoSettings {
 			camera_resolution: Option<VideoResolution>,
 			#[serde(deserialize_with = "known")]
 			camera_frame_rate: Option<VideoFrameRate>,
+			#[serde(deserialize_with = "known")]
+			camera_denoising: Option<CameraDenoising>,
 		}
 		let saved = Saved::deserialize(deserializer)?;
 		Ok(Self {
@@ -526,6 +549,7 @@ impl<'de> Deserialize<'de> for VideoSettings {
 			quality: saved.quality.unwrap_or_default(),
 			camera_resolution: saved.camera_resolution.unwrap_or_default(),
 			camera_frame_rate: saved.camera_frame_rate.unwrap_or_default(),
+			camera_denoising: saved.camera_denoising.unwrap_or_default(),
 		})
 	}
 }

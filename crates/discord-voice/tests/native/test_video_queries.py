@@ -437,7 +437,7 @@ def run_patch(archive):
         modified = root / "modified"
         reproduced = root / "reproduced"
         # Only these upstream files are involved; no large build/capture fixture.
-        paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavformat/libavformat.v", "libavutil/hwcontext_videotoolbox.h", "libavutil/hwcontext_videotoolbox.c", "libavcodec/videotoolbox.c",
+        paths = ["configure", "libavcodec/libavcodec.v", "libavutil/libavutil.v", "libavformat/libavformat.v", "libavfilter/libavfilter.v", "libavutil/hwcontext_videotoolbox.h", "libavutil/hwcontext_videotoolbox.c", "libavcodec/videotoolbox.c",
                  "libswscale/libswscale.v", "libswresample/libswresample.v", "libavcodec/qsvenc.c", "libavcodec/qsvenc.h",
                  "libavcodec/amfenc.c", "libavcodec/amfenc.h", "libavcodec/amfenc_hevc.c",
                  "libavcodec/amfenc_av1.c", "libavcodec/amfenc_h264.c", "libavcodec/videotoolboxenc.c", "libavutil/hwcontext_vulkan.c", "libavcodec/libdav1d.c"]

@@ -10,6 +10,8 @@ use std::io::{Read, Seek};
 
 #[cfg(target_os = "windows")]
 pub mod capture;
+/// Bounded temporal denoising for local webcam frames.
+pub mod denoise;
 /// Audited, shared FFmpeg native ABI for encoding, decoding and GPU identity.
 pub mod ffmpeg;
 mod picture;

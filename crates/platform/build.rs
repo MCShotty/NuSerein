@@ -4,6 +4,7 @@ fn main() {
 	println!("cargo:rerun-if-changed=src/video/video_decode_ffmpeg.c");
 	println!("cargo:rerun-if-changed=src/video/video_encode_ffmpeg.h");
 	println!("cargo:rerun-if-changed=src/video/video_gpu.c");
+	println!("cargo:rerun-if-changed=src/video/video_denoise.c");
 	println!("cargo:rerun-if-changed=src/video/capture_windows.c");
 	println!("cargo:rerun-if-changed=src/video/capture_windows.h");
 	for file in ["video_query.c", "video_query_amf.cpp"] {
@@ -29,6 +30,7 @@ fn main() {
 		.file("src/video/video_encode_ffmpeg.c")
 		.file("src/video/video_decode_ffmpeg.c")
 		.file("src/video/video_gpu.c")
+		.file("src/video/video_denoise.c")
 		.file("src/video/capture_windows.c")
 		.file("src/video/video_query.c")
 		.static_crt(target == "windows")
@@ -52,7 +54,12 @@ fn main() {
 		);
 		println!("cargo:rustc-link-lib=dylib=avcodec-serein");
 		println!("cargo:rustc-link-lib=dylib=avutil-serein");
-		for library in ["avformat-serein", "swscale-serein", "swresample-serein"] {
+		for library in [
+			"avformat-serein",
+			"avfilter-serein",
+			"swscale-serein",
+			"swresample-serein",
+		] {
 			println!("cargo:rustc-link-lib=dylib={library}");
 		}
 		if matches!(target.as_str(), "linux" | "macos")
@@ -84,6 +91,7 @@ fn main() {
 			.unwrap();
 		for (library, version) in [
 			("libavformat-serein", "61"),
+			("libavfilter-serein", "10"),
 			("libswscale-serein", "8"),
 			("libswresample-serein", "5"),
 		] {
