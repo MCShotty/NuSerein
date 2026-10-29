@@ -230,6 +230,12 @@ impl Desktop {
 					{
 						match result {
 							Ok(rows) => {
+								if !rows.is_empty()
+									&& *revision != self.state.member_display_revision()
+								{
+									self.member_cache_load
+										.retry((generation, *guild, 0, *epoch));
+								}
 								self.state
 									.hydrate_member_displays(*guild, *revision, rows.clone())
 							}
@@ -821,6 +827,12 @@ impl Desktop {
 						if Some(*channel) == self.state.selected && *request == self.state.request && self.state.history_pending))
 			{
 				self.extensions.access_changed(&mut self.messaging);
+			}
+			if self
+				.member_cache_load
+				.observe_session(self.state.generation, &event)
+			{
+				self.member_cache_saved = None;
 			}
 			self.state.apply(event);
 			if let Some(message) = takeover_notice {

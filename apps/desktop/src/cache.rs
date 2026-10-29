@@ -194,6 +194,29 @@ impl HistoryLoad {
 	pub fn capacity_changed(&mut self) {
 		self.attempted = None;
 	}
+	/// A completed read discarded by its consumer may retry after that worker progress.
+	pub fn retry(&mut self, key: (u64, Id, u64, u64)) {
+		if self.accepted == Some(key) {
+			*self = Self::default();
+		}
+	}
+	/// RAM identities are retired on these accepted session transitions even when the
+	/// account generation and disk-safety epoch survive a successful RESUME.
+	pub fn observe_session(&mut self, generation: u64, event: &client_core::Envelope) -> bool {
+		if event.generation == generation
+			&& (event.event.ready_navigation().is_some()
+				|| matches!(
+					event.event,
+					client_core::Event::Disconnected
+						| client_core::Event::Resync
+						| client_core::Event::PermissionsChanged
+				)) {
+			*self = Self::default();
+			true
+		} else {
+			false
+		}
+	}
 }
 #[derive(Default)]
 pub struct HistorySafety {
@@ -932,6 +955,156 @@ mod tests {
 		assert!(
 			load.attempt((2, Id(2), 7, 1)),
 			"account and safety changes retire the attempt"
+		);
+	}
+	fn member_hint_store(account: Id) -> Result<LocalStore, StoreError> {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:")).unwrap();
+		store
+			.save_member_displays(
+				account,
+				&[model::MemberDisplay {
+					guild: Id(10),
+					user: Id(900000),
+					name: "Cached account".into(),
+					username: Some("cached_account".into()),
+					nick: Some("Cached nickname".into()),
+				}],
+			)
+			.unwrap();
+		Ok(store)
+	}
+	fn member_hint_rows(
+		store: &mut Result<LocalStore, StoreError>,
+		safety: &HistorySafety,
+		account: Id,
+		revision: u64,
+	) -> Vec<model::MemberDisplay> {
+		let Outcome::Members { result, .. } = execute(
+			store,
+			safety,
+			account,
+			safety.epoch(),
+			Operation::LoadMembers {
+				guild: Id(10),
+				revision,
+			},
+		) else {
+			panic!("member load")
+		};
+		result.unwrap()
+	}
+	#[test]
+	fn resumed_session_reloads_member_hints_without_changing_history_epoch() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let account = state.user.as_ref().unwrap().id;
+		let safety = HistorySafety::default();
+		let epoch = safety.epoch();
+		let mut store = member_hint_store(account);
+		let mut load = HistoryLoad::default();
+		let generation = state.generation;
+		let key = (generation, Id(10), 0, epoch);
+		assert!(load.attempt(key));
+		load.accepted(key);
+		let revision = state.member_display_revision();
+		let rows = member_hint_rows(&mut store, &safety, account, revision);
+		state.hydrate_member_displays(Id(10), revision, rows);
+		assert_eq!(
+			state.member_nickname(Id(20), Id(900000)),
+			Some(Some("Cached nickname"))
+		);
+		let stale = client_core::Envelope {
+			generation: generation.wrapping_add(1),
+			event: client_core::Event::Disconnected,
+		};
+		assert!(!load.observe_session(generation, &stale));
+		state.apply(stale);
+		assert!(
+			!load.attempt(key),
+			"obsolete session events cannot duplicate accepted reads"
+		);
+		let disconnected = client_core::Envelope {
+			generation,
+			event: client_core::Event::Disconnected,
+		};
+		assert!(load.observe_session(generation, &disconnected));
+		state.apply(disconnected);
+		assert!(state.member_identity(Id(20), Id(900000)).is_none());
+		let resumed = client_core::Envelope {
+			generation,
+			event: client_core::Event::Resumed,
+		};
+		assert!(!load.observe_session(generation, &resumed));
+		state.apply(resumed);
+		assert_eq!(state.generation, generation);
+		assert_eq!(safety.epoch(), epoch);
+		assert!(load.attempt(key));
+		load.accepted(key);
+		let revision = state.member_display_revision();
+		let rows = member_hint_rows(&mut store, &safety, account, revision);
+		state.hydrate_member_displays(Id(10), revision, rows);
+		assert_eq!(
+			state.member_nickname(Id(20), Id(900000)),
+			Some(Some("Cached nickname"))
+		);
+		load.capacity_changed();
+		assert!(!load.attempt(key));
+	}
+	#[test]
+	fn discarded_member_hints_retry_after_worker_progress_and_keep_live_updates() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let account = state.user.as_ref().unwrap().id;
+		let safety = HistorySafety::default();
+		let mut store = member_hint_store(account);
+		let mut load = HistoryLoad::default();
+		let key = (state.generation, Id(10), 0, safety.epoch());
+		assert!(load.attempt(key));
+		load.accepted(key);
+		let revision = state.member_display_revision();
+		let rows = member_hint_rows(&mut store, &safety, account, revision);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberIdentity(Box::new(model::MemberIdentity {
+				guild: Id(10),
+				user: Id(900001),
+				profile: None,
+				nick: model::Patch::Value("Live nickname".into()),
+				roles: model::Patch::Absent,
+				departed: false,
+			})),
+		});
+		assert_ne!(revision, state.member_display_revision());
+		state.hydrate_member_displays(Id(10), revision, rows);
+		assert!(
+			state.member_identity(Id(20), Id(900000)).is_none(),
+			"stale completion remains rejected"
+		);
+		assert!(
+			!load.attempt(key),
+			"repaint does not retry an accepted read"
+		);
+		// The worker completion is the explicit retry signal; it is not a frame timer.
+		load.retry(key);
+		assert!(load.attempt(key));
+		load.accepted(key);
+		let revision = state.member_display_revision();
+		let rows = member_hint_rows(&mut store, &safety, account, revision);
+		state.hydrate_member_displays(Id(10), revision, rows);
+		assert_eq!(
+			state.member_nickname(Id(20), Id(900000)),
+			Some(Some("Cached nickname"))
+		);
+		assert_eq!(
+			state.member_nickname(Id(20), Id(900001)),
+			Some(Some("Live nickname"))
+		);
+		load.capacity_changed();
+		assert!(!load.attempt(key));
+		load.retry((key.0, Id(11), key.2, key.3));
+		assert!(
+			!load.attempt(key),
+			"another guild's completion cannot restart this read"
 		);
 	}
 	#[test]
