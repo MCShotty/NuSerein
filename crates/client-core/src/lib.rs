@@ -222,6 +222,8 @@ pub struct State {
 	pub user: Option<User>,
 	pub members: Option<MemberList>,
 	pub member_chunks: MemberChunks,
+	#[doc(hidden)]
+	pub parked_members: Option<ParkedMembers>,
 	pub member_search: [member_search::View; 2],
 	pub member_labels: member_identity::Labels,
 	pub member_search_nonce: u64,
@@ -384,6 +386,16 @@ impl MemberChunks {
 	}
 }
 
+/// One closed pane. Moved rather than copied, with the same chunk/slot budgets as the active pane.
+#[doc(hidden)]
+pub struct ParkedMembers {
+	list: MemberList,
+	chunks: MemberChunks,
+	list_id: String,
+	generation: u64,
+	parked: std::time::Instant,
+}
+
 /// Result of a back/forward step that landed. `command` is the optional history fetch.
 pub struct NavStep {
 	pub command: Option<Command>,
@@ -468,6 +480,7 @@ impl Default for State {
 			user: None,
 			members: None,
 			member_chunks: MemberChunks::default(),
+			parked_members: None,
 			member_search: Default::default(),
 			member_labels: Default::default(),
 			member_search_nonce: 0,

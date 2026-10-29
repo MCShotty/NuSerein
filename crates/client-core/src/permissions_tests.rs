@@ -2112,3 +2112,278 @@ fn new_animated_reactions_need_entitlement_but_existing_reactions_do_not() {
 		}))
 	));
 }
+
+fn cached_person(id: u64, nick: &str) -> model::Member {
+	let mut user = user();
+	user.id = Id(id);
+	user.name = format!("Account {id}");
+	user.username = Some(format!("account{id}").into());
+	model::Member {
+		user,
+		nick: Some(nick.into()),
+		roles: vec![Id(11)],
+		status: Some("online".into()),
+		custom_status: None,
+		activities: vec![],
+		clients: Default::default(),
+	}
+}
+
+#[test]
+fn resolved_member_cache_survives_channel_switch_and_reuses_names() {
+	let mut state = state();
+	let Command::MemberSearch(request) = state.search_members(Id(20), "nickname", 0).unwrap()
+	else {
+		panic!()
+	};
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request,
+			result: Ok(vec![cached_person(7, "Persistent nickname")]),
+		},
+	);
+	state.select(Id(30));
+	assert_eq!(
+		state.member_nickname(Id(30), Id(7)),
+		Some(Some("Persistent nickname"))
+	);
+	state.select(Id(20));
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Persistent nickname"))
+	);
+	assert!(state.display_member(Id(20), Id(7)).is_some());
+	assert!(
+		state.request_author_members(&[Id(7)]).is_none(),
+		"fresh observed member does not consume another query cooldown"
+	);
+	let watches = state.watched_member_users().unwrap();
+	assert!(watches.2.contains(&Id(7)));
+}
+
+#[test]
+fn member_chunk_identity_and_closed_pane_remain_available_and_live() {
+	let mut state = state();
+	state.request_members();
+	let mut first = state.members.clone().unwrap();
+	first.slots = vec![Some(model::MemberSlot::Person(cached_person(
+		7,
+		"First nickname",
+	)))];
+	first.freshness = Freshness::Fresh;
+	first.total = 300;
+	apply(&mut state, Event::Members(first));
+	state.focus_member_ranges(100, 110).unwrap();
+	let mut next = state.members.clone().unwrap();
+	next.start = 100;
+	next.slots = vec![Some(model::MemberSlot::Person(cached_person(
+		8,
+		"Second nickname",
+	)))];
+	next.freshness = Freshness::Fresh;
+	apply(&mut state, Event::Members(next));
+	assert!(state.member_slot(0).is_some());
+	assert!(state.display_member(Id(20), Id(7)).is_some());
+	state.close_members();
+	assert!(state.members.is_none());
+	assert!(state.parked_members.is_some());
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			nick: Patch::Value("Changed while closed".into()),
+			roles: Patch::Value(vec![]),
+			departed: false,
+		})),
+	);
+	state.request_members().unwrap();
+	assert_eq!(state.members.as_ref().unwrap().freshness, Freshness::Stale);
+	let Some(model::MemberSlot::Person(member)) = state.member_slot(0) else {
+		panic!()
+	};
+	assert_eq!(member.nick.as_deref(), Some("Changed while closed"));
+	assert!(member.roles.is_empty());
+	assert!(state.parked_members.is_none());
+	state.close_members();
+	apply(&mut state, Event::Disconnected);
+	assert!(state.parked_members.is_none());
+}
+
+#[test]
+fn persisted_member_names_are_display_only_and_do_not_override_live_updates() {
+	let mut state = state();
+	let before = state.can_send(Id(20));
+	let row = model::MemberDisplay {
+		guild: Id(10),
+		user: Id(7),
+		name: "Account".into(),
+		username: Some("account".into()),
+		nick: Some("Disk nickname".into()),
+	};
+	let started = state.member_display_revision();
+	state.hydrate_member_displays(Id(10), started, vec![row.clone()]);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Disk nickname"))
+	);
+	assert!(matches!(
+		state.member_identity(Id(20), Id(7)).unwrap().roles,
+		Patch::Absent
+	));
+	assert_eq!(state.can_send(Id(20)), before);
+	assert!(
+		state.request_author_members(&[Id(7)]).is_some(),
+		"disk names do not assert fresh roles or suppress refresh"
+	);
+	let started = state.member_display_revision();
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			nick: Patch::Null,
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	state.hydrate_member_displays(Id(10), started, vec![row.clone()]);
+	assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
+	let started = state.member_display_revision();
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: true,
+		})),
+	);
+	state.hydrate_member_displays(Id(10), started, vec![row]);
+	assert!(state.member_identity(Id(20), Id(7)).unwrap().departed);
+	assert!(state.cached_member_displays(Id(10)).is_empty());
+	apply(&mut state, Event::Disconnected);
+	assert_eq!(state.member_labels.bytes(), 0);
+}
+
+#[test]
+fn nickname_updates_preserve_navigation_caches_and_cooldown_stays_pending() {
+	let mut state = state();
+	let keys = |state: &State| {
+		[
+			state.catalog_revision(),
+			state.channel_list_revision(),
+			state.channel_labels_revision(),
+			state.rail_revision(),
+		]
+	};
+	let before = keys(&state);
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			nick: Patch::Value("A nickname".into()),
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	assert_eq!(keys(&state), before);
+	let Command::MemberSearch(request) = state.search_members(Id(20), "Name", 0).unwrap() else {
+		panic!()
+	};
+	apply(
+		&mut state,
+		Event::MemberSearchCooldown {
+			request: request.clone(),
+			seconds: 30,
+		},
+	);
+	assert!(!state.member_search[0].finished);
+	assert!(state.member_search[0].cooldown_until.is_some());
+	assert!(state.member_search[0].error.is_none());
+	let mut stale = request.clone();
+	stale.nonce = stale.nonce.wrapping_sub(1);
+	let deadline = state.member_search[0].cooldown_until;
+	apply(
+		&mut state,
+		Event::MemberSearchCooldown {
+			request: stale,
+			seconds: 60,
+		},
+	);
+	assert_eq!(state.member_search[0].cooldown_until, deadline);
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request,
+			result: Ok(vec![cached_person(7, "Name")]),
+		},
+	);
+	assert!(state.member_search[0].finished);
+	assert!(state.member_search[0].cooldown_until.is_none());
+}
+
+#[test]
+fn disk_hydration_preserves_live_departures_and_most_recent_bounded_rows() {
+	let mut state = state();
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: true,
+		})),
+	);
+	let started = state.member_display_revision();
+	let rows = (7..4103)
+		.map(|id| model::MemberDisplay {
+			guild: Id(10),
+			user: Id(id),
+			name: "Account".into(),
+			username: None,
+			nick: Some(format!("Cached {id}")),
+		})
+		.collect();
+	state.hydrate_member_displays(Id(10), started, rows);
+	assert!(state.member_identity(Id(20), Id(7)).unwrap().departed);
+	assert_eq!(state.member_nickname(Id(20), Id(8)), Some(Some("Cached 8")));
+	assert!(state.member_identity(Id(20), Id(4102)).is_none());
+	assert!(state.member_labels.bytes() <= 128 * 1024);
+	let revision = state.member_display_revision();
+	let ui_revision = state.revision;
+	state.hydrate_member_displays(Id(10), revision, vec![]);
+	assert_eq!(
+		(state.member_display_revision(), state.revision),
+		(revision, ui_revision)
+	);
+}
+
+#[test]
+fn viewport_member_watch_prioritizes_old_visible_authors_without_repeated_changes() {
+	let mut state = state();
+	for id in 1000..1200 {
+		let mut message = message(id, Id(20));
+		message.author.id = Id(id);
+		apply(&mut state, Event::Message(message));
+	}
+	state.request_author_members(&[Id(90000), Id(90001)]);
+	let revision = state.member_watch_revision();
+	state.request_author_members(&[Id(90000), Id(90001)]);
+	assert_eq!(state.member_watch_revision(), revision);
+	let (_, _, users) = state.watched_member_users().unwrap();
+	assert_eq!(users.len(), 128);
+	assert!(users.windows(2).all(|ids| ids[0] < ids[1]));
+	assert!(users.contains(&Id(90000)) && users.contains(&Id(90001)));
+	state.request_author_members(&[Id(90002)]);
+	assert_ne!(state.member_watch_revision(), revision);
+}

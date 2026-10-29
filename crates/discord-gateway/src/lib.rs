@@ -1120,6 +1120,7 @@ pub async fn run_with_activity(
 			receiver: activity.0,
 			own_presence: activity.1,
 			member_queries: activity.2,
+			member_watches: None,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1156,6 +1157,7 @@ pub async fn run_with_activity_recovery(
 			receiver: activity.0,
 			own_presence: activity.1,
 			member_queries: activity.2,
+			member_watches: None,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1166,6 +1168,10 @@ pub async fn run_with_activity_recovery(
 	)
 	.await
 }
+/// Sparse display-identity observations for the current accessible conversation.
+/// IDs are bounded to 128 and never authorize membership or permissions.
+pub type MemberWatch = (Id, Id, Vec<Id>);
+
 /// As recovery, with one account-owned bounded diagnostic history.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn run_with_activity_recovery_diagnostics(
@@ -1185,6 +1191,41 @@ pub async fn run_with_activity_recovery_diagnostics(
 	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
 	emit: impl Fn(Event, u64) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
+	run_with_activity_recovery_diagnostics_members(
+		secret,
+		initial_url,
+		subscriptions,
+		controls,
+		reconnect,
+		activity,
+		None,
+		delivery,
+		diagnostics,
+		observe,
+		emit,
+	)
+	.await
+}
+/// As diagnostics, with independent watches for already-cached member identities.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub async fn run_with_activity_recovery_diagnostics_members(
+	secret: Arc<SessionSecret>,
+	initial_url: String,
+	subscriptions: watch::Receiver<Option<MemberSubscription>>,
+	controls: mpsc::Receiver<client_core::voice::Command>,
+	reconnect: Arc<Notify>,
+	activity: (
+		watch::Receiver<Option<discord_protocol::rpc::Activity>>,
+		watch::Receiver<model::OwnPresence>,
+		watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
+		watch::Receiver<Option<discord_protocol::spotify::Activity>>,
+	),
+	member_watches: Option<watch::Receiver<Option<MemberWatch>>>,
+	delivery: watch::Receiver<DeliveryState>,
+	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
+	emit: impl Fn(Event, u64) -> Result<(), Failure>,
+) -> Result<(), Failure> {
 	run_observed(
 		secret,
 		initial_url,
@@ -1194,6 +1235,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 			receiver: activity.0,
 			own_presence: activity.1,
 			member_queries: activity.2,
+			member_watches,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1210,6 +1252,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 struct ActivityInput<'a> {
 	spotify: watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	member_queries: watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
+	member_watches: Option<watch::Receiver<Option<MemberWatch>>>,
 	receiver: watch::Receiver<Option<discord_protocol::rpc::Activity>>,
 	own_presence: watch::Receiver<model::OwnPresence>,
 	observe: &'a (dyn Fn(ActivityObservation) -> Result<(), Failure> + Sync),
@@ -1406,15 +1449,19 @@ async fn run_observed_inner(
 		receiver: mut activity,
 		mut spotify,
 		mut member_queries,
+		member_watches,
 		mut own_presence,
 		observe,
 	} = activity.unwrap_or_else(|| ActivityInput {
 		receiver: watch::channel(None).1,
 		spotify: watch::channel(None).1,
 		member_queries: watch::channel(Default::default()).1,
+		member_watches: None,
 		own_presence: watch::channel(model::OwnPresence::default()).1,
 		observe: &ignore_observation,
 	});
+	let mut watches_open = member_watches.is_some();
+	let mut member_watches = member_watches.unwrap_or_else(|| watch::channel(None).1);
 	let mut last_observation = None;
 	let mut outgoing_activity = activity::Pending::default();
 	outgoing_activity.update(&activity.borrow_and_update())?;
@@ -1653,6 +1700,10 @@ async fn run_observed_inner(
 		let mut subscriptions_open = true;
 		let mut queries_open = true;
 		queries.reconnect(state.session.is_some());
+		if watches_open {
+			writer.clear_queries(queries.watch(&member_watches.borrow_and_update()));
+		}
+		queries.update(&member_queries.borrow_and_update());
 		let mut member_ticket = 0;
 		outgoing_activity.reconnect();
 		loop {
@@ -1661,6 +1712,9 @@ async fn run_observed_inner(
 				state.blocked || state.generation != delivery_epoch
 			}) {
 				return Err(Failure::Busy);
+			}
+			if watches_open && member_watches.has_changed().unwrap_or(false) {
+				writer.clear_queries(queries.watch(&member_watches.borrow_and_update()));
 			}
 			if !heartbeat.collect(&writer) {
 				record(
@@ -1938,6 +1992,12 @@ async fn run_observed_inner(
 				_=tokio::time::sleep_until(calls.departure_deadline.unwrap_or(ready_deadline)), if calls.departure_deadline.is_some() => {
 					if let Some(event)=calls.departure_expired() {emit(event)?;}
 				}
+				changed = member_watches.changed(), if watches_open && ready_at.is_some() => {
+					watches_open = changed.is_ok();
+					if watches_open { writer.clear_queries(queries.watch(&member_watches.borrow_and_update())); }
+					else { writer.clear_queries(queries.watch(&None)); }
+				}
+
 				changed = member_queries.changed(), if queries_open && ready_at.is_some() => {
 					queries_open = changed.is_ok();
 					let changed_queries=queries.update(&member_queries.borrow_and_update());
@@ -3081,7 +3141,7 @@ mod tests {
 	                let result = run_inner(
 	                    Arc::new(SessionSecret::from_owner_input("synthetic-owner-session".into()).unwrap()),
 	                    "wss://gateway.discord.gg/".into(), watch::channel(None).1,
-	                    mpsc::channel(1).1, Some(ActivityInput { spotify: watch::channel(None).1, member_queries: watch::channel(Default::default()).1, receiver, own_presence: presence_receiver, observe: &|value| { observations.send_replace(value); Ok(()) } }), |_| Ok(()), Some(&endpoint),
+	                    mpsc::channel(1).1, Some(ActivityInput { member_watches: None, spotify: watch::channel(None).1, member_queries: watch::channel(Default::default()).1, receiver, own_presence: presence_receiver, observe: &|value| { observations.send_replace(value); Ok(()) } }), |_| Ok(()), Some(&endpoint),
 	                ).await;
 	                finished.send(()).unwrap();
 	                result
@@ -3212,12 +3272,14 @@ mod tests {
 
 	#[tokio::test]
 	async fn local_member_identity_dispatches_update_names_roles_and_keep_delivery() {
-		timeout(Duration::from_secs(10), async {
+		for cached_watch in [false, true] {
+			timeout(Duration::from_secs(10), async {
 			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
 			let (finished, observed) = tokio::sync::oneshot::channel();
 			let finished = std::sync::Mutex::new(Some(finished));
 			let (queries, member_queries) = watch::channel(Default::default());
+			let (watch_send, watch_receive) = watch::channel(None);
 			let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 			let server = async {
 				let (stream, _) = listener.accept().await.unwrap();
@@ -3238,7 +3300,7 @@ mod tests {
 						assert_eq!(subscribed["d"]["subscriptions"]["10"]["members"], json!(["7"]));
 						break;
 					}
-					assert!(matches!(subscribed["op"].as_u64(), Some(3 | 8)));
+					assert!(subscribed["op"] == 3 || (!cached_watch && subscribed["op"] == 8));
 				}
 				for (sequence, name, data) in [
 					(2,"MESSAGE_CREATE", json!({"id":"100","channel_id":"20","guild_id":"10","author":{"id":"7","username":"account"},"member":{"nick":"Old nickname","roles":["11"]},"content":"Before change"})),
@@ -3267,7 +3329,7 @@ mod tests {
 			let client = run_inner(
 				Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_SESSION".into()).unwrap()),
 				"wss://gateway.discord.gg/".into(), watch::channel(None).1, mpsc::channel(1).1,
-				Some(ActivityInput { spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
+				Some(ActivityInput { member_watches: cached_watch.then_some(watch_receive), spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
 				|event| {
 					let startup = matches!(&event, Event::Startup(_) | Event::Ready { .. });
 					let changed = matches!(&event, Event::MemberIdentity(_) | Event::Typing(_));
@@ -3278,7 +3340,13 @@ mod tests {
 					if startup {
 						let Some(client_core::Command::History { request, .. }) = state.select(Id(20)) else { panic!("synthetic guild accessible") };
 						state.apply(client_core::Envelope { generation, event: Event::History { channel: Id(20), request, older: false, messages: vec![] } });
+						if cached_watch {
+							let revision=state.member_display_revision();
+							state.hydrate_member_displays(Id(10),revision,vec![model::MemberDisplay{guild:Id(10),user:Id(7),name:"Cached account".into(),username:Some("account".into()),nick:Some("Cached nickname".into())}]);
+							watch_send.send_replace(Some((Id(10),Id(20),vec![Id(7)])));
+						} else {
 						queries.send_replace([None, Some(client_core::member_search::Request {guild: Id(10), channel: Id(20), nonce: 1, slot: 1, query: String::new(), users: vec![Id(7)]})]);
+						}
 					}
 					if changed {
 						names.lock().unwrap().push(state.member_nickname(Id(20), Id(7)).flatten().map(str::to_owned));
@@ -3296,6 +3364,7 @@ mod tests {
 			assert_eq!(result, Err(Failure::Expired));
 			assert_eq!(*names.lock().unwrap(), vec![Some("New nickname".into()), None, None, Some("Typing nickname".into()), Some("Passive nickname".into()), None, Some("Resumed nickname".into())]);
 		}).await.expect("member changes interrupted message delivery");
+		}
 	}
 
 	#[test]

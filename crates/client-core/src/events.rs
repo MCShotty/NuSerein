@@ -297,6 +297,11 @@ pub enum Event {
 	Permissions(permissions::Event),
 	/// Returns one already-bounded transport command to the existing rejection path.
 	CommandRejected(Box<crate::Command>),
+	/// A queued query remains pending until this service cooldown expires.
+	MemberSearchCooldown {
+		request: member_search::Request,
+		seconds: u32,
+	},
 }
 
 pub struct Envelope {
@@ -665,6 +670,9 @@ impl Event {
 				}
 				Self::MemberIdentity(update) => update.bytes(),
 				Self::Typing(signal) => signal.member.as_ref().map_or(0, |member| member.bytes()),
+				Self::MemberSearchCooldown { request, .. } => {
+					request.query.capacity() + request.users.capacity() * size_of::<Id>()
+				}
 				Self::MemberSearch { request, result } => {
 					request.query.capacity()
 						+ request.users.capacity() * size_of::<Id>()

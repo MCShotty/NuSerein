@@ -1,7 +1,7 @@
 //! Dormant, account-session-local conversation windows. Entries are moved, never cloned.
-//! Live events evict a window, so one that survives untouched still holds the latest page and
-//! reopens without a request; anything older or changed revalidates. Exact loaded message links
-//! may use an eligible, previously fresh window without another page.
+//! Live changes retain a bounded preview but make it stale until authoritative revalidation.
+//! Untouched windows can reopen without a request. Exact loaded message links may use an
+//! eligible, previously fresh window without another page.
 use crate::{Event, State, reactions};
 use model::{Channel, Freshness, Id, Message};
 use session_cache::Timeline;
@@ -43,6 +43,8 @@ struct Window {
 	timeline: Timeline,
 	parked: Instant,
 	older_exhausted: bool,
+	/// A live change or interrupted revalidation requires an authoritative page.
+	stale: bool,
 	/// Parked by a hover preload and never opened; evicted before visited windows.
 	speculative: bool,
 	/// For a preloaded page, the channel's latest known message when it was parked. The page is
@@ -117,8 +119,13 @@ impl State {
 		self.resident
 			.entries
 			.iter()
-			.find(|entry| entry.identity == Identity::from(current))
+			.find(|entry| entry.identity == Identity::from(current) && !entry.stale)
 			.map(|entry| &entry.timeline)
+	}
+	/// Whether an exact target may use a previously validated resident snapshot.
+	/// Unlike `current`, this permits an older reading window, but never a changed preview.
+	pub(crate) fn resident_target_current(&self, channel: Id) -> bool {
+		self.resident_timeline(channel).is_some()
 	}
 	/// Active plus dormant reading rows, including deletion placeholders.
 	pub fn resident_history_rows(&self) -> usize {
@@ -213,6 +220,7 @@ impl State {
 			.channel(entry.identity.id)
 			.and_then(|channel| channel.last_message);
 		self.gateway_connected
+			&& !entry.stale
 			&& entry.parked.elapsed() < TRUST_AGE
 			&& latest.is_some()
 			&& (entry.timeline.iter().next_back().map(|message| message.id) == latest
@@ -277,6 +285,7 @@ impl State {
 			timeline,
 			parked: Instant::now(),
 			older_exhausted,
+			stale: false,
 			speculative: true,
 			validated: self.channel(channel).and_then(|entry| entry.last_message),
 		});
@@ -309,7 +318,8 @@ impl State {
 			self.search_target.is_none()
 				&& !self.history_targeted
 				&& self.archived_thread != Some(identity.id)
-				&& self.freshness == Freshness::Fresh
+				&& (self.freshness == Freshness::Fresh
+					|| (self.freshness == Freshness::Loading && self.gateway_connected))
 				&& self.can_read_history(identity.id)
 				&& self
 					.channels
@@ -333,6 +343,7 @@ impl State {
 					timeline,
 					parked: Instant::now(),
 					older_exhausted,
+					stale: self.freshness != Freshness::Fresh,
 					speculative: false,
 					validated: None,
 				});
@@ -400,19 +411,42 @@ impl State {
 		};
 		if let Some(channel) = channel {
 			self.preload.conversations.touch(Some(channel));
-			if !matches!(event, Event::RecipientRemoved { .. })
-				&& let Some(window) = self
-					.resident
-					.entries
-					.iter_mut()
-					.find(|w| w.identity.id == channel)
-			{
-				window.timeline.drop_live_history();
-				if window.timeline.display_iter().next().is_some() {
-					return;
-				}
+			if matches!(event, Event::RecipientRemoved { .. }) {
+				self.resident.remove(channel);
+				return;
 			}
-			self.resident.remove(channel);
+			let Some(window) = self
+				.resident
+				.entries
+				.iter_mut()
+				.find(|window| window.identity.id == channel)
+			else {
+				return;
+			};
+			// A bounded visible preview is useful while a fresh page loads. Even a complete
+			// mutation is not proof that every dormant-channel dispatch was delivered.
+			window.stale = true;
+			let result = match event {
+				Event::Message(message) if !message.ephemeral => {
+					window.timeline.insert(message.clone(), true, false)
+				}
+				Event::Patch(patch) => window.timeline.patch(patch.clone()),
+				Event::Reactions(
+					reactions::Event::Changed { message, .. }
+					| reactions::Event::Delta { message, .. }
+					| reactions::Event::Cleared { message, .. }
+					| reactions::Event::Written { message, .. },
+				) => {
+					// Counts may already be incomplete; a page refresh supplies the authoritative
+					// snapshot. Hiding them avoids displaying a known-outdated reaction state.
+					window.timeline.set_reactions(*message, None)
+				}
+				_ => Ok(()),
+			};
+			if result.is_err() {
+				// Never leave a partially applied edit or over-budget preview available.
+				self.resident.remove(channel);
+			}
 		}
 	}
 }
@@ -737,7 +771,8 @@ mod tests {
 				state.select(Id(1)).unwrap();
 				assert!(state.timeline.get_display(Id(1001)).is_some());
 				assert!(state.timeline.get(Id(1001)).is_none());
-				assert_eq!(state.timeline.row_count(), 1);
+				assert!(state.timeline.row_count() >= 50);
+				assert_eq!(state.freshness, Freshness::Loading);
 				let request = state.request;
 				apply(
 					&mut state,
@@ -810,7 +845,7 @@ mod tests {
 	}
 
 	#[test]
-	fn inactive_mutations_evict_only_the_affected_window_and_ignore_old_generations() {
+	fn inactive_mutations_keep_stale_previews_and_ignore_old_generations() {
 		{
 			for event in [
 				Event::Message(message(1, 1099)),
@@ -870,11 +905,15 @@ mod tests {
 					assert!(state.timeline.get(Id(1001)).is_none());
 					assert_eq!(state.timeline.row_count(), 50);
 				} else {
-					assert_eq!(state.resident_window_count(), 1);
+					assert_eq!(state.resident_window_count(), 2);
+					assert!(!state.resident_target_current(Id(1)));
 					assert!(state.select(Id(2)).is_none(), "untouched window");
 					assert_eq!(state.timeline.row_count(), 50);
 					state.select(Id(1)).unwrap();
-					assert_eq!(state.timeline.row_count(), 0);
+					assert!(state.timeline.row_count() >= 50);
+					assert_eq!(state.freshness, Freshness::Loading);
+					assert!(state.history_pending);
+					assert!(!state.can_load_older());
 				}
 			}
 		}
@@ -1037,5 +1076,205 @@ mod tests {
 		assert_eq!(state.freshness, Freshness::Fresh);
 		assert_eq!(state.resident_window_count(), 0);
 		assert!(!state.channels.iter().any(|channel| channel.id == Id(2)));
+	}
+	#[test]
+	fn busy_preview_preserves_mutations_but_waits_for_authoritative_refresh() {
+		let mut state = state();
+		load(&mut state, 1);
+		load(&mut state, 2);
+		let before = state.read_marker(Id(1));
+		let mut incoming = message(1, 1051);
+		incoming.author.id = Id(8);
+		apply(&mut state, Event::Message(incoming));
+		apply(&mut state, Event::Patch(patch(1)));
+		apply(
+			&mut state,
+			Event::Delete {
+				channel: Id(1),
+				id: Id(1002),
+			},
+		);
+		apply(
+			&mut state,
+			Event::Reactions(reactions::Event::Changed {
+				channel: Id(1),
+				message: Id(1003),
+			}),
+		);
+		assert!(matches!(
+			state.select(Id(1)),
+			Some(Command::History {
+				before: None,
+				after: None,
+				..
+			})
+		));
+		assert_eq!(state.timeline.get(Id(1001)).unwrap().content, "Updated");
+		assert!(state.timeline.get(Id(1002)).is_none());
+		assert!(state.timeline.get(Id(1051)).is_some());
+		assert!(state.timeline.get(Id(1003)).unwrap().reactions.is_none());
+		assert_eq!(state.freshness, Freshness::Loading);
+		assert!(state.live_edge_latest().is_none());
+		assert!(state.prepare_mark_read(Id(1051)).is_none());
+		assert_eq!(state.read_marker(Id(1)), before);
+		let request = state.request;
+		// An obsolete response cannot replace a changed preview.
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request: request.wrapping_sub(1),
+				older: false,
+				messages: vec![message(1, 9000)],
+			},
+		);
+		assert!(state.timeline.get(Id(1051)).is_some());
+		assert_eq!(state.freshness, Freshness::Loading);
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: vec![message(1, 1002), message(1, 1051)],
+			},
+		);
+		assert_eq!(state.freshness, Freshness::Fresh);
+		assert!(
+			state.timeline.get(Id(1002)).is_none(),
+			"refresh cannot resurrect deleted content"
+		);
+		assert!(state.timeline.get(Id(1051)).is_some());
+	}
+
+	#[test]
+	fn rapid_navigation_keeps_revalidating_previews_without_accepting_late_pages() {
+		let mut state = state();
+		load(&mut state, 1);
+		load(&mut state, 2);
+		apply(&mut state, Event::Message(message(1, 1051)));
+		state.select(Id(1)).unwrap();
+		let old_request = state.request;
+		assert!(state.select(Id(2)).is_none());
+		assert!(state.select(Id(1)).is_some());
+		assert_eq!(state.timeline.row_count(), 51);
+		assert_eq!(state.freshness, Freshness::Loading);
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request: old_request,
+				older: false,
+				messages: vec![message(1, 9000)],
+			},
+		);
+		assert_eq!(state.timeline.row_count(), 51);
+		assert!(state.timeline.get(Id(9000)).is_none());
+	}
+
+	#[test]
+	fn stale_exact_links_refresh_and_never_open_offline() {
+		{
+			let mut state = state();
+			load(&mut state, 1);
+			load(&mut state, 2);
+			apply(&mut state, Event::Patch(patch(1)));
+			assert!(matches!(
+				state.open_chat_link(None, Id(1), Some(Id(1001))).unwrap(),
+				Some(Command::HistoryAround { .. })
+			));
+			assert_ne!(state.freshness, Freshness::Fresh);
+			assert!(state.history_pending);
+			assert!(state.prepare_mark_read(Id(1001)).is_none());
+		}
+		{
+			let mut state = state();
+			load(&mut state, 1);
+			load(&mut state, 2);
+			apply(&mut state, Event::Message(message(1, 1051)));
+			state.gateway_connected = false;
+			let selected = state.selected;
+			assert!(state.open_chat_link(None, Id(1), Some(Id(1001))).is_err());
+			assert_eq!(state.selected, selected);
+		}
+	}
+
+	#[test]
+	fn stale_preview_pressure_and_invalid_mutations_stay_scoped() {
+		let mut state = state();
+		load(&mut state, 1);
+		load(&mut state, 2);
+		load(&mut state, 3);
+		for id in 1100..2100 {
+			apply(&mut state, Event::Message(message(1, id)));
+			assert!(state.resident_history_rows() <= MAX_ROWS);
+			assert!(state.resident_history_bytes() <= MAX_BYTES);
+		}
+		assert_eq!(
+			state
+				.resident
+				.entries
+				.iter()
+				.find(|entry| entry.identity.id == Id(1))
+				.unwrap()
+				.timeline
+				.row_count(),
+			500
+		);
+		// An unsafe mutation drops its own preview, never another valid conversation.
+		let mut invalid = patch(1);
+		invalid.content = Patch::Value("x".repeat(64 * 1024 + 1));
+		apply(&mut state, Event::Patch(invalid));
+		assert_eq!(state.resident_window_count(), 1);
+		assert!(state.select(Id(2)).is_none());
+		assert_eq!(state.timeline.row_count(), 50);
+		state.select(Id(1)).unwrap();
+		assert_eq!(state.timeline.row_count(), 0);
+	}
+	#[test]
+	fn stale_saved_reading_cursor_keeps_preview_and_restores_its_offset() {
+		let mut state = state();
+		load(&mut state, 1);
+		state.remember_reading(
+			Id(1),
+			crate::ReadingCursor {
+				message: Some(Id(1015)),
+				inset: 4.0,
+			},
+		);
+		load(&mut state, 2);
+		apply(&mut state, Event::Patch(patch(1)));
+		let Some(Command::History {
+			request,
+			after: Some(after),
+			..
+		}) = state.select(Id(1))
+		else {
+			panic!()
+		};
+		assert_eq!(after, Id(1014));
+		assert_eq!(
+			state.timeline.row_count(),
+			50,
+			"the reading preview stays visible"
+		);
+		assert_eq!(state.freshness, Freshness::Loading);
+		assert!(state.history_pending && state.history_targeted);
+		assert_eq!(state.search_target, Some(Id(1015)));
+		assert!(state.restore_scroll);
+		assert_eq!(state.reading(Id(1)).unwrap().inset, 4.0);
+		apply(
+			&mut state,
+			Event::History {
+				channel: Id(1),
+				request,
+				older: false,
+				messages: (1015..=1050).map(|id| message(1, id)).collect(),
+			},
+		);
+		assert_eq!(state.freshness, Freshness::Fresh);
+		assert_eq!(state.search_target, Some(Id(1015)));
+		assert!(state.restore_scroll);
+		assert_eq!(state.reading(Id(1)).unwrap().inset, 4.0);
 	}
 }

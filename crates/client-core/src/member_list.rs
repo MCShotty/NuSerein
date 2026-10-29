@@ -22,6 +22,33 @@ impl State {
 	pub fn request_members(&mut self) -> Option<Command> {
 		let index = self.channel_index(self.selected?)?;
 		let channel_id = self.channels[index].id;
+		if let Some(mut parked) = self.parked_members.take()
+			&& parked.generation == self.generation
+			&& parked.parked.elapsed() < std::time::Duration::from_secs(5 * 60)
+			&& self.freshness != Freshness::Unavailable
+			&& self.can_view(channel_id)
+			&& self.channel(channel_id).is_some_and(|channel| {
+				channel.guild == parked.list.guild
+					&& !matches!(channel.kind, 10..=12)
+					&& self.member_list_id(channel).as_deref() == Some(parked.list_id.as_str())
+			}) {
+			self.member_request = self.member_request.wrapping_add(1);
+			parked.list.channel = channel_id;
+			parked.list.request = self.member_request;
+			parked.list.freshness = Freshness::Stale;
+			parked.chunks.request = self.member_request;
+			let command = Command::Members {
+				thread: false,
+				guild: parked.list.guild,
+				channel: Some(channel_id),
+				request: self.member_request,
+				list_id: Some(parked.list_id),
+				ranges: parked.list.ranges.clone(),
+			};
+			self.member_chunks = parked.chunks;
+			self.members = Some(parked.list);
+			return Some(command);
+		}
 		if let Some(list_id) = self.shared_member_list_id(channel_id) {
 			let (request, ranges, guild) = {
 				let list = self.members.as_mut()?;
@@ -111,8 +138,26 @@ impl State {
 	}
 	pub fn close_members(&mut self) -> Command {
 		self.member_request = self.member_request.wrapping_add(1);
-		self.member_chunks.clear();
-		self.members = None;
+		let list_id = self
+			.members
+			.as_ref()
+			.filter(|list| list.lazy && list.freshness != Freshness::Unavailable)
+			.and_then(|list| self.channel(list.channel))
+			.filter(|channel| self.can_view(channel.id))
+			.and_then(|channel| self.member_list_id(channel));
+		self.parked_members = match (self.members.take(), list_id) {
+			(Some(list), Some(list_id)) => Some(crate::ParkedMembers {
+				list,
+				chunks: std::mem::take(&mut self.member_chunks),
+				list_id,
+				generation: self.generation,
+				parked: std::time::Instant::now(),
+			}),
+			_ => {
+				self.member_chunks.clear();
+				None
+			}
+		};
 		Command::Members {
 			thread: false,
 			guild: None,
@@ -191,6 +236,7 @@ impl State {
 		})
 	}
 	pub(super) fn invalidate_members(&mut self) {
+		self.parked_members = None;
 		self.member_search = Default::default();
 		self.member_labels.clear();
 		self.member_request = self.member_request.wrapping_add(1);

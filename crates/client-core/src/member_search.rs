@@ -44,6 +44,7 @@ pub struct View {
 	pub retained: Vec<Member>,
 	pub finished: bool,
 	pub error: Option<&'static str>,
+	pub cooldown_until: Option<std::time::Instant>,
 	pub identity_revision: u64,
 }
 impl State {
@@ -88,6 +89,14 @@ impl State {
 
 	/// Presentation metadata only; callers must use the permission state to authorize actions.
 	pub fn display_member(&self, channel: Id, user: Id) -> Option<&Member> {
+		self.current_display_member(channel, user).or_else(|| {
+			let guild = self.channel(channel)?.guild?;
+			self.can_view(channel)
+				.then(|| self.member_labels.member(guild, user))
+				.flatten()
+		})
+	}
+	fn current_display_member(&self, channel: Id, user: Id) -> Option<&Member> {
 		let guild = self.channel(channel)?.guild?;
 		if !self.can_view(channel) {
 			return None;
@@ -100,6 +109,25 @@ impl State {
 					model::MemberSlot::Person(member) if member.user.id == user => Some(member),
 					_ => None,
 				})
+			})
+			.or_else(|| {
+				let list = self.members.as_ref().filter(|list| {
+					list.guild == Some(guild)
+						&& list.channel == channel
+						&& list.request == self.member_chunks.request
+				})?;
+				if !list.lazy {
+					return None;
+				}
+				self.member_chunks
+					.chunks
+					.values()
+					.flatten()
+					.flatten()
+					.find_map(|slot| match slot {
+						model::MemberSlot::Person(member) if member.user.id == user => Some(member),
+						_ => None,
+					})
 			})
 			.or_else(|| {
 				self.member_search.iter().find_map(|view| {
@@ -175,11 +203,15 @@ impl State {
 		if self.demo || !self.gateway_connected || !self.can_view(channel) {
 			return None;
 		}
+		self.member_labels.watch_visible(guild, channel, users);
 		let mut users: Vec<_> = users
 			.iter()
 			.copied()
 			.filter(|id| id.0 != 0)
-			.filter(|id| self.display_member(channel, *id).is_none())
+			.filter(|id| {
+				self.current_display_member(channel, *id).is_none()
+					&& !self.member_labels.member_fresh(guild, *id)
+			})
 			.filter(|id| {
 				!self.member_identity(channel, *id).is_some_and(|update| {
 					update.departed
@@ -230,6 +262,25 @@ impl State {
 		};
 		Some(Command::MemberSearch(request))
 	}
+	pub(crate) fn member_search_cooldown(&mut self, request: Request, seconds: u32) {
+		if !request.valid()
+			|| self.selected != Some(request.channel)
+			|| !self.gateway_connected
+			|| !self.can_view(request.channel)
+			|| self.member_search[request.slot].request.as_ref() != Some(&request)
+			|| self.member_search[request.slot].finished
+		{
+			return;
+		}
+		let view = &mut self.member_search[request.slot];
+		view.cooldown_until = Some(
+			std::time::Instant::now()
+				+ std::time::Duration::from_secs(u64::from(seconds.min(86400))),
+		);
+		view.error = None;
+		self.revision = self.revision.wrapping_add(1);
+		self.skip_identity_navigation();
+	}
 	pub(crate) fn searched_members(
 		&mut self,
 		request: Request,
@@ -245,6 +296,7 @@ impl State {
 			return;
 		}
 		self.member_search[request.slot].finished = true;
+		self.member_search[request.slot].cooldown_until = None;
 		match result {
 			Ok(mut rows)
 				if rows.len() <= LIMIT
@@ -274,6 +326,7 @@ impl State {
 						);
 					}
 				}
+				self.member_labels.remember(request.guild, &rows);
 				let view = &mut self.member_search[request.slot];
 				for member in std::mem::replace(&mut view.rows, rows) {
 					view.retained.retain(|old| old.user.id != member.user.id);

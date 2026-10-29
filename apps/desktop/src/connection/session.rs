@@ -173,6 +173,7 @@ impl Connection {
 		ctx: egui::Context,
 	) -> Self {
 		let (commands, mut receive) = mpsc::channel(COMMAND_SLOTS);
+		let (member_watches, member_watch_receive) = watch::channel(None);
 		let (admin_scopes, mut admin_scope) = watch::channel(ReadScopes::default());
 		let (preference_scope, mut preference_updates) = watch::channel(None);
 		let (uploads, mut upload_receive) = mpsc::channel::<crate::uploads::UploadRequest>(1);
@@ -277,7 +278,7 @@ impl Connection {
                 let activity_wake=wake.clone();
                 let gateway_delivery_gate=delivery_gate.clone();
                 let mut gateway_task=AbortTask(tokio::spawn(async move {
-                    let error=discord_gateway::run_with_activity_recovery_diagnostics(secret,gateway,member_receive,voice_receive,gateway_reconnect,(activity_receive,presence_receive,member_query_receive,spotify_receive),gateway_delivery_gate,gateway_diagnostics,move |observation| {
+                    let error=discord_gateway::run_with_activity_recovery_diagnostics_members(secret,gateway,member_receive,voice_receive,gateway_reconnect,(activity_receive,presence_receive,member_query_receive,spotify_receive),Some(member_watch_receive),gateway_delivery_gate,gateway_diagnostics,move |observation| {
                         if activity_observed.send_if_modified(|current| { if *current == observation { false } else { *current = observation; true } }) { activity_wake.request_repaint(); }
                         Ok(())
                     },|event,epoch|{
@@ -1042,6 +1043,8 @@ impl Connection {
 		Self {
 			commands,
 			admin_scopes,
+			member_watches,
+			member_watch_key: std::cell::Cell::new(None),
 			preference_scope,
 			uploads,
 			events,

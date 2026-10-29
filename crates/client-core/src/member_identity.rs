@@ -1,15 +1,25 @@
 //! Small live identity overlay shared by the sidebar, composer, messages and typing.
-//! No directory, permissions or persistent data is derived from these display observations.
+//! No permissions or complete directory are derived from these display observations.
 use crate::{State, member_search};
-use model::{Id, Member, MemberIdentity, MemberSlot, Patch, User};
-use std::collections::VecDeque;
+use model::{Id, Member, MemberDisplay, MemberIdentity, MemberSlot, Patch, User};
+use std::{
+	collections::VecDeque,
+	time::{Duration, Instant},
+};
 
 const LIMIT: usize = 128;
 const MAX_BYTES: usize = 128 * 1024;
+const MEMBER_LIMIT: usize = 512;
+const MEMBER_BYTES: usize = 384 * 1024;
 
 #[derive(Default)]
 pub struct Labels {
 	entries: VecDeque<(u64, MemberIdentity)>,
+	members: VecDeque<(Id, Member, Instant)>,
+	member_bytes: usize,
+	visible_scope: Option<(Id, Id)>,
+	visible_users: Vec<Id>,
+	watch_revision: u64,
 	revision: u64,
 	bytes: usize,
 }
@@ -21,7 +31,94 @@ impl Labels {
 		self.revision
 	}
 	pub fn bytes(&self) -> usize {
+		self.bytes
+			+ self.entries.capacity() * size_of::<(u64, MemberIdentity)>()
+			+ self.member_bytes
+			+ self.members.capacity() * size_of::<(Id, Member, Instant)>()
+			+ self.visible_users.capacity() * size_of::<Id>()
+	}
+	pub(crate) fn watch_visible(&mut self, guild: Id, channel: Id, users: &[Id]) {
+		if self.visible_scope == Some((guild, channel))
+			&& self.visible_users.iter().copied().eq(users
+				.iter()
+				.copied()
+				.filter(|id| id.0 != 0)
+				.take(member_search::LIMIT))
+		{
+			return;
+		}
+		self.visible_scope = Some((guild, channel));
+		self.visible_users.clear();
+		self.visible_users.extend(
+			users
+				.iter()
+				.copied()
+				.filter(|id| id.0 != 0)
+				.take(member_search::LIMIT),
+		);
+		self.watch_revision = self.watch_revision.wrapping_add(1);
+	}
+	fn overlay_bytes(&self) -> usize {
 		self.bytes + self.entries.capacity() * size_of::<(u64, MemberIdentity)>()
+	}
+	pub(crate) fn member(&self, guild: Id, user: Id) -> Option<&Member> {
+		self.members
+			.iter()
+			.rev()
+			.find(|(g, m, _)| *g == guild && m.user.id == user)
+			.map(|(_, m, _)| m)
+	}
+	pub(crate) fn member_fresh(&self, guild: Id, user: Id) -> bool {
+		self.members.iter().any(|(g, m, at)| {
+			*g == guild && m.user.id == user && at.elapsed() < Duration::from_secs(5 * 60)
+		})
+	}
+	pub(crate) fn remember(&mut self, guild: Id, rows: &[Member]) {
+		let mut changed = false;
+		for member in rows {
+			if let Some(index) = self
+				.members
+				.iter()
+				.position(|(g, m, _)| *g == guild && m.user.id == member.user.id)
+			{
+				let (_, old, observed) = &mut self.members[index];
+				if old.user == member.user && old.roles == member.roles && old.nick == member.nick {
+					*observed = Instant::now();
+					continue;
+				}
+				let (_, old, _) = self.members.remove(index).unwrap();
+				self.member_bytes -= old.bytes();
+			}
+			// Presence remains owned by the current subscription, with no transient allocations copied.
+			let member = Member {
+				user: member.user.clone(),
+				roles: member.roles.clone(),
+				nick: member.nick.clone(),
+				status: None,
+				custom_status: None,
+				activities: vec![],
+				clients: Default::default(),
+			};
+			self.member_bytes += member.bytes();
+			self.members.push_back((guild, member, Instant::now()));
+			changed = true;
+		}
+		if changed {
+			self.revision = self.revision.wrapping_add(1);
+		}
+		self.trim_members();
+	}
+
+	fn trim_members(&mut self) {
+		while self.members.len() > MEMBER_LIMIT
+			|| self.member_bytes + self.members.capacity() * size_of::<(Id, Member, Instant)>()
+				> MEMBER_BYTES
+		{
+			let Some((_, old, _)) = self.members.pop_front() else {
+				break;
+			};
+			self.member_bytes -= old.bytes();
+		}
 	}
 	fn get(&self, guild: Id, user: Id) -> Option<&MemberIdentity> {
 		self.entries
@@ -50,6 +147,20 @@ impl Labels {
 				}
 			}
 		}
+		if let Some(index) = self
+			.members
+			.iter()
+			.position(|(g, m, _)| *g == update.guild && m.user.id == update.user)
+		{
+			let (guild, mut member, _) = self.members.remove(index).unwrap();
+			self.member_bytes -= member.bytes();
+			if !update.departed {
+				update.apply(&mut member);
+				self.member_bytes += member.bytes();
+				self.members.push_back((guild, member, Instant::now()));
+			}
+		}
+		self.trim_members();
 		self.revision = self.revision.wrapping_add(1);
 		if self.entries.len() == LIMIT
 			&& let Some((_, old)) = self.entries.pop_front()
@@ -58,7 +169,7 @@ impl Labels {
 		}
 		self.bytes += update.bytes();
 		self.entries.push_back((self.revision, update));
-		while self.entries.len() > LIMIT || self.bytes() > MAX_BYTES {
+		while self.entries.len() > LIMIT || self.overlay_bytes() > MAX_BYTES {
 			if let Some((_, old)) = self.entries.pop_front() {
 				self.bytes -= old.bytes();
 			} else {
@@ -93,7 +204,7 @@ impl Labels {
 			}
 			true
 		});
-		while self.bytes() > MAX_BYTES {
+		while self.overlay_bytes() > MAX_BYTES {
 			if let Some((_, old)) = self.entries.pop_front() {
 				self.bytes -= old.bytes();
 			} else {
@@ -102,36 +213,194 @@ impl Labels {
 		}
 	}
 	pub(crate) fn refresh(&mut self, list: &model::MemberList) {
-		if self.entries.is_empty() {
-			return;
-		}
-		let Some(guild) = list.guild else {
-			return;
-		};
+		let Some(guild) = list.guild else { return };
 		let mut rows: Vec<_> = list
 			.slots
 			.iter()
 			.flatten()
 			.filter_map(|slot| match slot {
-				MemberSlot::Person(member) if self.get(guild, member.user.id).is_some() => {
-					Some(member.clone())
-				}
+				MemberSlot::Person(member) => Some(member.clone()),
 				_ => None,
 			})
 			.collect();
 		self.reconcile(guild, &mut rows, self.revision);
-		if !rows.is_empty() {
-			self.revision = self.revision.wrapping_add(1);
-			for (revision, entry) in &mut self.entries {
-				if entry.guild == guild && rows.iter().any(|row| row.user.id == entry.user) {
-					*revision = self.revision;
-				}
+		self.remember(guild, &rows);
+		for (revision, entry) in &mut self.entries {
+			if entry.guild == guild && rows.iter().any(|row| row.user.id == entry.user) {
+				*revision = self.revision;
 			}
 		}
 	}
 }
 
 impl State {
+	/// The visible conversation's bounded live identity watch, independent of op-8 lookup admission.
+	pub fn watched_member_users(&self) -> Option<(Id, Id, Vec<Id>)> {
+		let channel = self.selected?;
+		let guild = self.channel(channel)?.guild?;
+		if self.auth != crate::auth::AuthState::Authenticated
+			|| !self.gateway_connected
+			|| !self.can_view(channel)
+		{
+			return None;
+		}
+		let mut users = Vec::with_capacity(128);
+		for user in self
+			.member_labels
+			.visible_users
+			.iter()
+			.copied()
+			.filter(|_| self.member_labels.visible_scope == Some((guild, channel)))
+			.chain(self.timeline.iter().rev().map(|m| m.author.id))
+			.chain(
+				self.member_search
+					.iter()
+					.flat_map(|v| v.rows.iter().chain(&v.retained))
+					.map(|m| m.user.id),
+			)
+			.chain(self.observed_member_users(channel).map(|u| u.id))
+		{
+			if user.0 != 0
+				&& !users.contains(&user)
+				&& !self
+					.member_labels
+					.get(guild, user)
+					.is_some_and(|entry| entry.departed)
+			{
+				users.push(user);
+			}
+			if users.len() == 128 {
+				break;
+			}
+		}
+		users.sort_unstable();
+		Some((guild, channel, users))
+	}
+	pub fn member_watch_revision(&self) -> u64 {
+		self.member_labels.watch_revision
+	}
+	/// Revision of bounded display observations, for deduplicated asynchronous disk work.
+	pub fn member_display_revision(&self) -> u64 {
+		self.member_labels.revision()
+	}
+	pub fn cached_member_displays(&self, guild: Id) -> Vec<MemberDisplay> {
+		let mut rows = std::collections::BTreeMap::new();
+		for (_, member, _) in self
+			.member_labels
+			.members
+			.iter()
+			.filter(|(g, _, _)| *g == guild)
+		{
+			let row = MemberDisplay {
+				guild,
+				user: member.user.id,
+				name: member.user.name.clone(),
+				username: member.user.username.clone(),
+				nick: member.nick.clone(),
+			};
+			if row.valid() {
+				rows.insert(row.user, row);
+			}
+		}
+		for (_, entry) in self
+			.member_labels
+			.entries
+			.iter()
+			.filter(|(_, e)| e.guild == guild)
+		{
+			if entry.departed {
+				rows.remove(&entry.user);
+				continue;
+			}
+			if let Some(profile) = &entry.profile
+				&& !matches!(entry.nick, Patch::Absent)
+			{
+				let row = MemberDisplay {
+					guild,
+					user: entry.user,
+					name: profile.name.clone(),
+					username: profile.username.clone(),
+					nick: match &entry.nick {
+						Patch::Value(nick) if !nick.is_empty() => Some(nick.clone()),
+						_ => None,
+					},
+				};
+				if row.valid() {
+					rows.insert(row.user, row);
+				}
+			}
+		}
+		rows.into_values().collect()
+	}
+	/// Older disk observations never override a live result, removal or account transition.
+	pub fn hydrate_member_displays(
+		&mut self,
+		guild: Id,
+		started_revision: u64,
+		rows: Vec<MemberDisplay>,
+	) {
+		if self.member_labels.revision() != started_revision
+			|| !self.gateway_connected
+			|| self.auth != crate::auth::AuthState::Authenticated
+			|| !self.selected.is_some_and(|channel| {
+				self.channel(channel)
+					.is_some_and(|c| c.guild == Some(guild))
+					&& self.can_view(channel)
+			}) || rows.len() > 4096
+			|| rows.iter().any(|row| row.guild != guild || !row.valid())
+			|| rows.iter().map(MemberDisplay::bytes).sum::<usize>() > 2 * 1024 * 1024
+		{
+			return;
+		}
+		let mut changed = false;
+		for row in rows {
+			if self.member_labels.get(guild, row.user).is_some()
+				|| self.member_labels.member(guild, row.user).is_some()
+			{
+				continue;
+			}
+			// Never evict a known live identity or departure to install an older disk name.
+			if self.member_labels.entries.len() >= LIMIT {
+				break;
+			}
+			let update = MemberIdentity {
+				guild,
+				user: row.user,
+				profile: Some(User {
+					id: row.user,
+					name: row.name,
+					username: row.username,
+					avatar: None,
+					discriminator: 0,
+					primary_guild: None,
+					cosmetics: None,
+					webhook: false,
+					kind: Default::default(),
+				}),
+				nick: row.nick.map_or(Patch::Null, Patch::Value),
+				roles: Patch::Absent,
+				departed: false,
+			};
+			let capacity = self.member_labels.entries.capacity();
+			let reserve = if self.member_labels.entries.len() == capacity {
+				capacity.max(2) * size_of::<(u64, MemberIdentity)>()
+			} else {
+				0
+			};
+			if self.member_labels.overlay_bytes() + reserve + update.bytes() > MAX_BYTES {
+				break;
+			}
+			self.member_labels.insert(update);
+			changed = true;
+		}
+		if !changed {
+			return;
+		}
+
+		self.revision = self.revision.wrapping_add(1);
+		self.skip_identity_navigation();
+		self.enforce_resident_budget();
+	}
 	pub fn member_identity(&self, channel: Id, user: Id) -> Option<&MemberIdentity> {
 		if !self.can_view(channel) {
 			return None;
@@ -201,6 +470,20 @@ impl State {
 					kind: Default::default(),
 				}))
 			})
+			.chain(
+				self.member_labels
+					.members
+					.iter()
+					.rev()
+					.filter_map(move |(g, member, _)| {
+						(Some(*g) == guild
+							&& !self
+								.member_labels
+								.get(*g, member.user.id)
+								.is_some_and(|e| e.departed))
+						.then_some(std::borrow::Cow::Borrowed(&member.user))
+					}),
+			)
 	}
 	pub(crate) fn apply_member_identity(&mut self, mut update: MemberIdentity) {
 		let Some(channel) = self.selected.filter(|channel| self.can_view(*channel)) else {
@@ -306,6 +589,30 @@ impl State {
 				self.member_chunks.chunks.remove(&key);
 			}
 		}
+		if let Some(parked) = &mut self.parked_members
+			&& parked.list.guild == Some(update.guild)
+		{
+			patch_slots(&mut parked.list.slots, &update);
+			for slots in parked.chunks.chunks.values_mut() {
+				patch_slots(slots, &update);
+			}
+			let mut bytes = parked.list.slot_bytes();
+			for slot in parked.list.slots.iter_mut().rev() {
+				if bytes <= 256 * 1024 {
+					break;
+				}
+				if let Some(old) = slot.take() {
+					bytes -= old.bytes();
+				}
+			}
+			parked.chunks.evict(&parked.list.ranges);
+			while parked.chunks.bytes() > crate::MEMBER_CACHE_BYTES {
+				let Some(key) = parked.chunks.chunks.keys().next_back().copied() else {
+					break;
+				};
+				parked.chunks.chunks.remove(&key);
+			}
+		}
 		for view in &mut self.member_search {
 			if view
 				.request
@@ -336,6 +643,7 @@ impl State {
 		}
 		self.member_labels.insert(update);
 		self.revision = self.revision.wrapping_add(1);
+		self.skip_identity_navigation();
 		self.enforce_resident_budget();
 	}
 }

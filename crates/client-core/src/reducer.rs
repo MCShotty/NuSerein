@@ -70,6 +70,10 @@ impl State {
 			);
 			return;
 		}
+		if let Event::MemberSearchCooldown { request, seconds } = envelope.event {
+			self.member_search_cooldown(request, seconds);
+			return;
+		}
 		if let Event::MemberIdentity(update) = envelope.event {
 			self.apply_member_identity(*update);
 			return;
@@ -319,7 +323,7 @@ impl State {
 				Ok(())
 			}
 			Event::Typing(_) => unreachable!("typing is handled before timeline invalidation"),
-			Event::MemberIdentity(_) => {
+			Event::MemberIdentity(_) | Event::MemberSearchCooldown { .. } => {
 				unreachable!("member identity handled before timeline invalidation")
 			}
 			Event::Permissions(mut event) => {
@@ -1112,6 +1116,7 @@ impl State {
 				self.members = None;
 				self.member_search = Default::default();
 				self.member_labels.clear();
+				self.parked_members = None;
 				self.clear_profile();
 				self.profile_cache.clear();
 				self.read_state.reset();
@@ -1468,6 +1473,7 @@ impl State {
 				);
 				self.member_search = Default::default();
 				self.member_labels.clear();
+				self.parked_members = None;
 				self.cancel_message_actions();
 				self.cancel_user_action();
 				self.cancel_server_action();
@@ -1525,6 +1531,7 @@ impl State {
 				);
 				self.member_search = Default::default();
 				self.member_labels.clear();
+				self.parked_members = None;
 				self.members = None;
 				self.timeline.clear();
 				self.freshness = Freshness::Stale;
