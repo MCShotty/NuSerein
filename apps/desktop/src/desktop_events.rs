@@ -260,26 +260,25 @@ impl Desktop {
 							.cache
 							.as_ref()
 							.is_some_and(|cache| cache.history.allows(*epoch))
+						&& let Ok(rows) = result
 					{
-						if let Ok(rows) = result {
-							let patches = rows
-								.iter()
-								.map(|row| model::GuildPatch {
-									id: row.guild,
-									name: row
-										.name
-										.clone()
-										.map_or(model::Patch::Absent, model::Patch::Value),
-									icon: match row.icon.clone() {
-										None => model::Patch::Absent,
-										Some(None) => model::Patch::Null,
-										Some(Some(icon)) => model::Patch::Value(icon),
-									},
-									default_message_notifications: model::Patch::Absent,
-								})
-								.collect();
-							self.state.hydrate_server_displays(*revision, patches);
-						}
+						let patches = rows
+							.iter()
+							.map(|row| model::GuildPatch {
+								id: row.guild,
+								name: row
+									.name
+									.clone()
+									.map_or(model::Patch::Absent, model::Patch::Value),
+								icon: match row.icon.clone() {
+									None => model::Patch::Absent,
+									Some(None) => model::Patch::Null,
+									Some(Some(icon)) => model::Patch::Value(icon),
+								},
+								default_message_notifications: model::Patch::Absent,
+							})
+							.collect();
+						self.state.hydrate_server_displays(*revision, patches);
 					}
 					continue;
 				}
