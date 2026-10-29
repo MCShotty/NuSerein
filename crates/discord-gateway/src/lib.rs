@@ -3706,6 +3706,10 @@ mod tests {
 								return Ok(());
 							}
 							Event::Startup(_) => "ready",
+							Event::GuildDisplayMetadata(patches) => {
+								assert!(patches.is_empty());
+								return Ok(());
+							}
 							Event::Onboarding(client_core::onboarding::Event::Gates {
 								snapshot,
 								gates,
