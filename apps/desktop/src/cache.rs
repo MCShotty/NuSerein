@@ -101,6 +101,17 @@ pub enum Operation {
 		emoji: Option<bool>,
 	},
 	SaveMembers(Vec<model::MemberDisplay>),
+	LoadServers {
+		revision: u64,
+		guilds: Vec<Id>,
+	},
+	SaveServers {
+		rows: Vec<local_store::ServerDisplay>,
+		revision: u64,
+	},
+	RemoveServer {
+		guild: Id,
+	},
 	RemoveMember {
 		guild: Id,
 		user: Option<Id>,
@@ -185,6 +196,17 @@ pub enum Outcome {
 		epoch: u64,
 		result: Result<Option<model::StickerPackHints>, StoreError>,
 	},
+	Servers {
+		revision: u64,
+		epoch: u64,
+		result: Result<Vec<local_store::ServerDisplay>, StoreError>,
+	},
+	ServersSaved {
+		revision: u64,
+		epoch: u64,
+		ids: Vec<Id>,
+		result: Option<Result<(), StoreError>>,
+	},
 	ScopedCleanupFailed {
 		account: Id,
 	},
@@ -206,6 +228,7 @@ pub fn coalesced_retry(operation: &Operation) -> bool {
 	matches!(
 		operation,
 		Operation::SaveGifFavorites(_)
+			| Operation::SaveServers { .. }
 			| Operation::SaveExpressions(_)
 			| Operation::SaveStickerPackHints(_)
 	)
@@ -563,6 +586,20 @@ impl Cache {
 				}
 				packs.bytes() + 2 * 1024 * 1024
 			}
+			Operation::SaveServers { rows, .. } => {
+				if rows.len() > 4096
+					|| rows.iter().any(|row| !row.valid())
+					|| rows
+						.iter()
+						.map(local_store::ServerDisplay::bytes)
+						.sum::<usize>() > 2 * 1024 * 1024
+				{
+					return false;
+				}
+				rows.iter()
+					.map(local_store::ServerDisplay::bytes)
+					.sum::<usize>() + rows.capacity() * size_of::<local_store::ServerDisplay>()
+			}
 			Operation::SaveMembers(rows) => {
 				if rows.len() > 4096
 					|| rows.iter().any(|row| !row.valid())
@@ -620,6 +657,12 @@ impl Cache {
 			_ => 0,
 		};
 		let ids = match &operation {
+			Operation::LoadServers { guilds, .. } => {
+				if guilds.len() > 4096 {
+					return false;
+				}
+				guilds.capacity() * size_of::<Id>()
+			}
 			Operation::SaveChanges { retained, .. } => {
 				if retained.len() > 500 {
 					return false;
@@ -653,6 +696,8 @@ impl Cache {
 				| Operation::SaveExpressions(_)
 				| Operation::LoadStickerPackHints { .. }
 				| Operation::SaveStickerPackHints(_)
+				| Operation::LoadServers { .. }
+				| Operation::SaveServers { .. }
 		) && !self.history.allows(epoch)
 		{
 			return false;
@@ -711,6 +756,13 @@ fn outcome_bytes(outcome: &Outcome) -> usize {
 			.ok()
 			.and_then(Option::as_ref)
 			.map_or(0, model::StickerPackHints::bytes),
+		Outcome::Servers { result, .. } => result.as_ref().map_or(0, |rows| {
+			rows.iter()
+				.map(local_store::ServerDisplay::bytes)
+				.sum::<usize>()
+				+ rows.capacity() * size_of::<local_store::ServerDisplay>()
+		}),
+		Outcome::ServersSaved { ids, .. } => ids.capacity() * size_of::<Id>(),
 		Outcome::Drafts(drafts) => drafts.values().map(String::capacity).sum(),
 		Outcome::GifFavorites(favorites) => {
 			favorites.iter().map(model::Gif::bytes).sum::<usize>()
@@ -862,6 +914,36 @@ fn execute(
 		}
 		_ => {}
 	}
+	if let Operation::LoadServers { revision, guilds } = operation {
+		return Outcome::Servers {
+			revision,
+			epoch,
+			result: if history.allows(epoch) {
+				match store {
+					Ok(store) => store.load_server_displays_for(account, &guilds),
+					Err(error) => Err(*error),
+				}
+			} else {
+				Ok(Vec::new())
+			},
+		};
+	}
+	if let Operation::SaveServers { rows, revision } = operation {
+		let ids = rows.iter().map(|row| row.guild).collect();
+		return Outcome::ServersSaved {
+			revision,
+			epoch,
+			ids,
+			result: if history.allows(epoch) {
+				Some(match store {
+					Ok(store) => store.save_server_displays(account, &rows),
+					Err(error) => Err(*error),
+				})
+			} else {
+				None
+			},
+		};
+	}
 	if let Operation::LoadMembers { guild, revision } = operation {
 		return Outcome::Members {
 			guild,
@@ -927,6 +1009,7 @@ fn execute(
 		Operation::ClearChannel { .. }
 			| Operation::RemoveMember { .. }
 			| Operation::ClearExpressions { .. }
+			| Operation::RemoveServer { .. }
 	);
 	let history_unsafe = matches!(
 		operation,
@@ -936,6 +1019,7 @@ fn execute(
 			| Operation::ClearChannel { .. }
 			| Operation::RemoveMember { .. }
 			| Operation::ClearExpressions { .. }
+			| Operation::RemoveServer { .. }
 	);
 	let failure_message = match &operation {
 		Operation::LoadAppearance => "Could not load saved appearance; using system theme",
@@ -962,6 +1046,7 @@ fn execute(
 		Operation::SaveStickerPackHints(_) => {
 			"Could not save cached sticker packs; live packs remain available"
 		}
+		Operation::RemoveServer { .. } => "Could not remove cached server data",
 		Operation::DeleteMessages { .. } => {
 			"Could not remove deleted cached messages; history cache disabled until restart; messages may remain on disk"
 		}
@@ -981,6 +1066,8 @@ fn execute(
 		| Operation::LoadMembers { .. }
 		| Operation::LoadExpressions { .. }
 		| Operation::LoadStickerPackHints { .. }
+		| Operation::LoadServers { .. }
+		| Operation::SaveServers { .. }
 		| Operation::SaveCustomFont(_)
 		| Operation::LoadAccounts
 		| Operation::SaveAccount(_)
@@ -1003,6 +1090,8 @@ fn execute(
 			| Operation::LoadMembers { .. }
 			| Operation::LoadExpressions { .. }
 			| Operation::LoadStickerPackHints { .. }
+			| Operation::LoadServers { .. }
+			| Operation::SaveServers { .. }
 			| Operation::SaveCustomFont(_)
 			| Operation::LoadAccounts
 			| Operation::SaveAccount(_)
@@ -1059,6 +1148,9 @@ fn execute(
 				None => store.clear_expression_guild(account, guild),
 			}
 			.map(|_| Outcome::Saved),
+			Operation::RemoveServer { guild } => store
+				.clear_server_display(account, guild)
+				.map(|_| Outcome::Saved),
 			Operation::RemoveMember { guild, user } => match user {
 				Some(user) => store.remove_member_display(account, guild, user),
 				None => store
@@ -1801,6 +1893,121 @@ mod tests {
 				.unwrap()
 				.is_empty()
 		);
+	}
+	#[test]
+	fn server_display_worker_obeys_account_and_history_fences() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		let safety = HistorySafety::default();
+		let row = local_store::ServerDisplay {
+			guild: Id(10),
+			name: Some("cached server".into()),
+			icon: Some(None),
+		};
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				0,
+				Operation::SaveServers {
+					rows: vec![row.clone()],
+					revision: 7
+				}
+			),
+			Outcome::ServersSaved {
+				result: Some(Ok(())),
+				..
+			}
+		));
+		let Outcome::Servers { result, .. } = execute(
+			&mut store,
+			&safety,
+			Id(1),
+			0,
+			Operation::LoadServers {
+				revision: 7,
+				guilds: vec![Id(10)],
+			},
+		) else {
+			panic!("server load")
+		};
+		assert_eq!(result.unwrap(), vec![row.clone()]);
+		let Outcome::Servers { result, .. } = execute(
+			&mut store,
+			&safety,
+			Id(2),
+			0,
+			Operation::LoadServers {
+				revision: 7,
+				guilds: vec![Id(10)],
+			},
+		) else {
+			panic!("server load")
+		};
+		assert!(result.unwrap().is_empty());
+		safety.invalidate();
+		let updated = local_store::ServerDisplay {
+			name: Some("renamed server".into()),
+			..row.clone()
+		};
+		assert!(
+			matches!(
+				execute(
+					&mut store,
+					&safety,
+					Id(1),
+					0,
+					Operation::SaveServers {
+						rows: vec![updated.clone()],
+						revision: 7
+					}
+				),
+				Outcome::ServersSaved { result: None, .. }
+			),
+			"an invalidated write must not acknowledge dirty fields"
+		);
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::SaveServers {
+					rows: vec![updated.clone()],
+					revision: 8
+				}
+			),
+			Outcome::ServersSaved {
+				result: Some(Ok(())),
+				..
+			}
+		));
+		let Outcome::Servers { result, .. } = execute(
+			&mut store,
+			&safety,
+			Id(1),
+			safety.epoch(),
+			Operation::LoadServers {
+				revision: 8,
+				guilds: vec![Id(10)],
+			},
+		) else {
+			panic!("server load")
+		};
+		assert_eq!(result.unwrap(), vec![updated]);
+		let Outcome::Servers { result, .. } = execute(
+			&mut store,
+			&safety,
+			Id(1),
+			0,
+			Operation::LoadServers {
+				revision: 7,
+				guilds: vec![Id(10)],
+			},
+		) else {
+			panic!("server load")
+		};
+		assert!(result.unwrap().is_empty());
 	}
 	#[test]
 	fn rejected_history_read_waits_for_capacity_then_retries_once() {

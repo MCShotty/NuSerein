@@ -610,6 +610,10 @@ impl LocalStore {
 			"DELETE FROM sticker_pack_hints WHERE account=?1",
 			[account.to_string()],
 		)?;
+		transaction.execute(
+			"DELETE FROM server_displays WHERE account=?1",
+			[account.to_string()],
+		)?;
 		transaction.commit()?;
 		self.0
 			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(64);")?;

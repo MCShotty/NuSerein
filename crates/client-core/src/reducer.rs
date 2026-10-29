@@ -21,6 +21,10 @@ impl State {
 		}
 		if !matches!(envelope.event, Event::Message(_) | Event::Typing(_)) {
 			self.invalidate_expression_event(&envelope.event);
+			self.observe_server_display(&envelope.event);
+			if matches!(envelope.event, Event::GuildDisplayMetadata(_)) {
+				return;
+			}
 		}
 		self.invalidate_reply_previews(&envelope.event);
 		if envelope.event.changes_access()
@@ -688,6 +692,7 @@ impl State {
 				}
 				Ok(())
 			}
+			Event::GuildDisplayMetadata(_) => unreachable!("handled before reduction"),
 			Event::GuildChanged(patch) => {
 				if !matches!(patch.default_message_notifications, Patch::Absent)
 					&& self.server_settings.guild == Some(patch.id)

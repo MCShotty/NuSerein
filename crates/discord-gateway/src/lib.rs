@@ -2176,6 +2176,22 @@ async fn run_observed_inner(
 												message_requests.push(channel.id);
 											}
 										}
+										// First occurrence wins, matching READY navigation admission. Rows omitted by
+										// the bounds are unknown and must not hydrate from stale display hints.
+										let mut display_seen = std::collections::BTreeSet::new();
+										let display_capacity = ready.guilds.len().min(4096);
+										let mut display_bytes = display_capacity * std::mem::size_of::<model::GuildPatch>();
+										let mut display_metadata = Vec::with_capacity(display_capacity);
+										for guild in &ready.guilds {
+											if display_metadata.len() >= 4096 { break; }
+											if guild.id.0 == 0 || !display_seen.insert(guild.id) { continue; }
+											let patch = guild.display_patch();
+											let field_bytes = |field: &model::Patch<String>| match field { model::Patch::Value(value) => value.capacity(), _ => 0 };
+									let bytes = field_bytes(&patch.name) + field_bytes(&patch.icon);
+											if display_bytes.saturating_add(bytes) > 2 * 1024 * 1024 { break; }
+											display_bytes += bytes;
+											display_metadata.push(patch);
+										}
 										let incident_now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as i128;
 										let incident_updates:Vec<_>=ready.guilds.iter().filter_map(|guild|match guild.incident_patch(){model::Patch::Value(incident) if incident.active(incident_now)=>Some((guild.id,incident)),_=>None}).take(256).collect();
 										let (guilds, channels) = ready.navigation().map_err(|_| Failure::ProtocolAt("Gateway login: invalid or oversized channel/thread navigation"))?;
@@ -2196,6 +2212,7 @@ async fn run_observed_inner(
 											read_state: client_core::read_state::Event::Snapshot {entries:read_entries,version:read_version,partial},
 											notifications, session_dnd: ready.sessions.as_ref().and_then(|s| s.dnd()), warnings,
 										}.prepare()?)))?;
+										emit(Event::GuildDisplayMetadata(display_metadata))?;
 										for(guild,incident)in incident_updates{emit(Event::ServerIncident{guild,incident:Some(incident)})?;}
 										// A new session does not replay settings changed while disconnected.
 										if was_ready { emit(Event::AccountSettings { status: true, folders: true })?; }
@@ -2479,15 +2496,16 @@ async fn run_observed_inner(
 										member_diagnostics.record("guild refresh received");
 										let permissions=owner_id.map(|owner|permissions::guild(packet.d.get().as_bytes(),owner)).transpose().map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										let mut guild: GuildDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::ProtocolAt("Gateway guild refresh: unsupported guild payload"))?;
+										let display = guild.display_patch();
 										if guild.channels.len() + calls.allowed.len() > MAX_NAV { return Err(Failure::Capacity); }
 										if !known_guilds.contains(&guild.id) {
 											if known_guilds.len() >= MAX_NAV { return Err(Failure::Capacity); }
 											known_guilds.insert(guild.id);
-											let name = guild.properties.as_ref().and_then(|p| match &p.name { model::Patch::Value(name) => Some(name), _ => None }).unwrap_or(&guild.name).chars().take(128).collect();
-											let icon = guild.properties.as_ref().and_then(|p| match &p.icon { model::Patch::Value(icon) => Some(icon.clone()), _ => None }).or_else(|| guild.icon.clone()).filter(|h| model::valid_avatar_hash(h));
+											let name = match &display.name { model::Patch::Value(name) => name.chars().take(128).collect(), _ => String::new() };
+											let icon = match &display.icon { model::Patch::Value(icon) if model::valid_avatar_hash(icon) => Some(icon.clone()), _ => None };
 											emit(Event::GuildJoined(model::Guild { default_message_notifications: guild.default_notification_level(), id: guild.id, name, icon, stickers: None, emojis: None }))?;
 										}
-									emit(Event::GuildChanged(model::GuildPatch { id: guild.id, name: model::Patch::Absent, icon: model::Patch::Absent, default_message_notifications: guild.default_notification_patch() }))?;
+										emit(Event::GuildChanged(display))?;
 										if let model::Patch::Value(incident)=guild.incident_patch(){emit(Event::ServerIncident{guild:guild.id,incident:Some(incident)})?;}
 
 										if let Some(permissions)=permissions {emit(Event::Permissions(client_core::permissions::Event::Snapshot(permissions)))?;}
@@ -2791,6 +2809,8 @@ mod tests {
 			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
 			let joined = std::sync::Mutex::new(Vec::new());
 			let removed = std::sync::Mutex::new(Vec::new());
+			let changed = std::sync::Mutex::new(Vec::new());
+			let startup_display = std::sync::Mutex::new(Vec::new());
 			let (client_finished, terminal_observed) = tokio::sync::oneshot::channel();
 			let server = async {
 				let (stream, _) = listener.accept().await.unwrap();
@@ -2802,7 +2822,7 @@ mod tests {
 				.await;
 				assert_eq!(packet(&mut socket).await["op"], 2);
 				let mut initial = ready(1, "synthetic-guild-rejoin");
-				initial["d"]["guilds"] = json!([{"id":"2","name":"Original"}]);
+				initial["d"]["guilds"] = json!([{"id":"2","name":"Original"},{"id":"2","name":"Duplicate"},{"id":"0","name":"Invalid"}]);
 				send(&mut socket, initial).await;
 				for (sequence, name, data) in [
 					(2, "GUILD_DELETE", json!({"id":"2","unavailable":true})),
@@ -2812,11 +2832,12 @@ mod tests {
 						json!({"id":"2","name":"Available again"}),
 					),
 					(4, "GUILD_DELETE", json!({"id":"2"})),
-					(5, "GUILD_CREATE", json!({"id":"2","name":"Rejoined"})),
+					(5, "GUILD_CREATE", json!({"id":"2","name":"Rejoined","icon":"0123456789abcdef0123456789abcdef","properties":{"icon":null}})),
+					(6, "GUILD_CREATE", json!({"id":"2"})),
 				] {
 					send(&mut socket, json!({"op":0,"t":name,"s":sequence,"d":data})).await;
 				}
-				acknowledge(&mut socket, 5).await;
+				acknowledge(&mut socket, 6).await;
 				socket
 					.send(Frame::Close(Some(CloseFrame {
 						code: CloseCode::from(4004),
@@ -2835,9 +2856,11 @@ mod tests {
 				|event| {
 					match event {
 						Event::GuildJoined(guild) => {
-							joined.lock().unwrap().push((guild.id, guild.name))
+							joined.lock().unwrap().push((guild.id, guild.name, guild.icon))
 						}
 						Event::GuildRemoved(guild) => removed.lock().unwrap().push(guild),
+						Event::GuildChanged(patch) => changed.lock().unwrap().push((patch.name,patch.icon)),
+						Event::GuildDisplayMetadata(patches) => startup_display.lock().unwrap().extend(patches.into_iter().map(|patch| (patch.id,patch.name,patch.icon))),
 						_ => {}
 					}
 					Ok(())
@@ -2853,9 +2876,15 @@ mod tests {
 			assert_eq!(result, Err(Failure::Expired));
 			assert_eq!(
 				joined.into_inner().unwrap(),
-				vec![(Id(2), "Rejoined".into())]
+				vec![(Id(2), "Rejoined".into(), None)]
 			);
 			assert_eq!(removed.into_inner().unwrap(), vec![Id(2)]);
+			assert_eq!(startup_display.into_inner().unwrap(), vec![(Id(2), model::Patch::Value("Original".into()), model::Patch::Absent)]);
+			assert_eq!(changed.into_inner().unwrap(), vec![
+				(model::Patch::Value("Available again".into()), model::Patch::Absent),
+				(model::Patch::Value("Rejoined".into()), model::Patch::Null),
+				(model::Patch::Absent, model::Patch::Absent),
+			]);
 		})
 		.await
 		.unwrap();

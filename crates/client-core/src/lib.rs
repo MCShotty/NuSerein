@@ -7,6 +7,7 @@ mod messages;
 mod navigation;
 mod outgoing;
 mod reducer;
+pub mod server_display;
 mod startup;
 pub use commands::Command;
 pub use events::{Envelope, Event};
@@ -241,6 +242,8 @@ pub struct State {
 	pub direct_presence_lossy: bool,
 	pub member_request: u64,
 	pub guilds: Vec<Guild>,
+	#[doc(hidden)]
+	pub server_display: server_display::Displays,
 	pub channels: Vec<Channel>,
 	#[doc(hidden)]
 	pub navigation_index: NavigationIndex,
@@ -496,6 +499,7 @@ impl Default for State {
 			direct_presence_lossy: false,
 			member_request: 0,
 			guilds: vec![],
+			server_display: Default::default(),
 			channels: vec![],
 			navigation_index: NavigationIndex::default(),
 			selected: None,

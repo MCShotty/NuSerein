@@ -202,6 +202,8 @@ pub enum Event {
 		removed: Vec<Id>,
 	},
 	GuildChanged(GuildPatch),
+	/// Presence of presentation fields in the current authoritative READY snapshot.
+	GuildDisplayMetadata(Vec<GuildPatch>),
 	ServerIncident {
 		guild: Id,
 		incident: Option<model::server_access::Incident>,
@@ -639,6 +641,17 @@ impl Event {
 						_ => 0,
 					})
 					.sum(),
+				Self::GuildDisplayMetadata(patches) => {
+					patches.capacity() * size_of::<GuildPatch>()
+						+ patches
+							.iter()
+							.flat_map(|p| [&p.name, &p.icon])
+							.map(|p| match p {
+								Patch::Value(s) => s.capacity(),
+								_ => 0,
+							})
+							.sum::<usize>()
+				}
 				Self::ChannelCreated(channel) | Self::ChannelRestored(channel) => channel.bytes(),
 				Self::ThreadsSync {
 					parents,

@@ -246,6 +246,16 @@ impl LocalStore {
             account TEXT PRIMARY KEY NOT NULL CHECK(length(account) BETWEEN 1 AND 20),
             packs TEXT NOT NULL CHECK(typeof(packs)='text' AND length(CAST(packs AS BLOB))<=2097152),
             touched INTEGER NOT NULL CHECK(typeof(touched)='integer'));")?;
+		transaction.execute_batch("CREATE TABLE IF NOT EXISTS server_displays(
+            account TEXT NOT NULL CHECK(length(account) BETWEEN 1 AND 20),
+            guild TEXT NOT NULL CHECK(length(guild) BETWEEN 1 AND 20),
+            name TEXT CHECK(name IS NULL OR (typeof(name)='text' AND length(CAST(name AS BLOB))<=512)),
+            icon_known INTEGER NOT NULL CHECK(typeof(icon_known)='integer' AND icon_known IN (0,1)),
+            icon TEXT CHECK(icon IS NULL OR (typeof(icon)='text' AND length(CAST(icon AS BLOB))<=34)),
+            touched INTEGER NOT NULL CHECK(typeof(touched)='integer'),
+            CHECK(icon_known=1 OR icon IS NULL),
+            PRIMARY KEY(account,guild));
+            CREATE INDEX IF NOT EXISTS server_displays_recency ON server_displays(touched,account,guild);")?;
 		transaction.pragma_update(None, "user_version", version.max(NATIVE_SCHEMA))?;
 		let has_animate_gifs: bool = transaction.query_row(
 			"SELECT EXISTS(SELECT 1 FROM pragma_table_info('reading_preferences') WHERE name='animate_gifs')",

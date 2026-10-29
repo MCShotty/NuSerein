@@ -503,6 +503,8 @@ struct Desktop {
 	sticker_pack_cache_save: cache::HistoryLoad,
 	gif_cache: cache::GifCache,
 	member_cache_saved: Option<(u64, model::Id, u64)>,
+	server_cache_load: cache::HistoryLoad,
+	server_cache_failed: bool,
 	/// The saved maximized state still has to be re-applied once the window is shown.
 	maximize_after_show: bool,
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,

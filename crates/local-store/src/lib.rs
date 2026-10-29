@@ -3,6 +3,8 @@ mod accounts;
 mod expression_catalog;
 mod history;
 mod member_displays;
+mod server_displays;
+pub use server_displays::ServerDisplay;
 mod preferences;
 mod schema;
 pub use preferences::{AppPreferences, Appearance, WindowGeometry};

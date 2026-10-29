@@ -1353,6 +1353,7 @@ impl Desktop {
 			self.sync_member_cache();
 			self.sync_expression_cache();
 			self.sync_sticker_pack_cache();
+			self.sync_server_cache();
 			if self.messaging.logout_requested {
 				self.messaging.logout_requested = false;
 				self.request_session_end(&ctx, SessionEnd::Logout);

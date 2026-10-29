@@ -154,6 +154,7 @@ impl LocalStore {
 			"member_displays",
 			"expression_catalogs",
 			"sticker_pack_hints",
+			"server_displays",
 			"channels",
 			"history_starts",
 			"drafts",

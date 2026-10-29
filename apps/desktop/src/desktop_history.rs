@@ -2,6 +2,59 @@
 use super::{Desktop, Event, cache, wants_cached_history};
 
 impl Desktop {
+	pub(super) fn sync_server_cache(&mut self) {
+		if self.state.demo
+			|| self.fixture_only
+			|| !self.state.gateway_connected
+			|| self.state.auth != client_core::auth::AuthState::Authenticated
+			|| !self.state.has_server_display_metadata()
+		{
+			return;
+		}
+		let Some(cache) = &self.cache else {
+			return;
+		};
+		let epoch = cache.history.epoch();
+		if !cache.history.allows(epoch) {
+			return;
+		}
+		let revision = self.state.server_display_revision();
+		let key = (self.state.generation, model::Id(0), 0, epoch);
+		if self.state.needs_server_display_hints()
+			&& self.server_cache_load.attempt(key)
+			&& self.queue_cache(cache::Operation::LoadServers {
+				revision,
+				guilds: self.state.missing_server_display_ids(),
+			}) {
+			self.server_cache_load.accepted(key);
+		}
+		if self.state.has_dirty_server_displays()
+			&& self.cache_pending == 0
+			&& !self.server_cache_failed
+		{
+			let rows = self
+				.state
+				.dirty_server_displays()
+				.into_iter()
+				.map(|patch| local_store::ServerDisplay {
+					guild: patch.id,
+					name: match patch.name {
+						model::Patch::Absent => None,
+						model::Patch::Null => Some(String::new()),
+						model::Patch::Value(name) => Some(name),
+					},
+					icon: match patch.icon {
+						model::Patch::Absent => None,
+						model::Patch::Null => Some(None),
+						model::Patch::Value(icon) => Some(Some(icon)),
+					},
+				})
+				.collect::<Vec<_>>();
+			if !rows.is_empty() {
+				self.queue_cache(cache::Operation::SaveServers { rows, revision });
+			}
+		}
+	}
 	/// Standard sticker packs are account scoped and available in DMs as well as servers.
 	pub(super) fn sync_sticker_pack_cache(&mut self) {
 		if self.state.demo
@@ -227,6 +280,7 @@ impl Desktop {
 				&operation,
 				cache::Operation::LoadChannel { .. }
 					| cache::Operation::LoadMembers { .. }
+					| cache::Operation::LoadServers { .. }
 					| cache::Operation::LoadExpressions { .. }
 					| cache::Operation::LoadStickerPackHints { .. }
 					| cache::Operation::LoadGifFavorites

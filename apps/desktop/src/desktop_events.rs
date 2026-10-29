@@ -212,8 +212,77 @@ impl Desktop {
 			self.sticker_pack_cache_load.capacity_changed();
 			self.sticker_pack_cache_save.capacity_changed();
 			self.gif_cache.capacity_changed();
+			self.server_cache_load.capacity_changed();
 			// Settings are global; account removal/write failures still matter after logout.
 			match &outcome {
+				cache::Outcome::ServersSaved {
+					revision,
+					epoch,
+					ids,
+					result,
+				} => {
+					if generation == self.state.generation
+						&& self
+							.cache
+							.as_ref()
+							.is_some_and(|cache| cache.history.allows(*epoch))
+					{
+						match result {
+							Some(Ok(())) => self.state.acknowledge_server_displays(*revision, ids),
+							Some(Err(_)) => {
+								self.server_cache_failed = true;
+								self.cache_error = true;
+								self.cache_status =
+									"Could not save server names; live names remain available";
+							}
+							_ => {}
+						}
+					}
+					continue;
+				}
+				cache::Outcome::Servers {
+					revision,
+					epoch,
+					result,
+				} => {
+					if generation == self.state.generation
+						&& (*revision != self.state.server_display_revision()
+							|| !self.state.gateway_connected
+							|| self.state.auth != AuthState::Authenticated)
+					{
+						self.server_cache_load
+							.retry((generation, model::Id(0), 0, *epoch));
+					}
+					if generation == self.state.generation
+						&& self.state.gateway_connected
+						&& self.state.auth == AuthState::Authenticated
+						&& self
+							.cache
+							.as_ref()
+							.is_some_and(|cache| cache.history.allows(*epoch))
+					{
+						if let Ok(rows) = result {
+							let patches = rows
+								.iter()
+								.map(|row| model::GuildPatch {
+									id: row.guild,
+									name: row
+										.name
+										.clone()
+										.map_or(model::Patch::Absent, model::Patch::Value),
+									icon: match row.icon.clone() {
+										None => model::Patch::Absent,
+										Some(None) => model::Patch::Null,
+										Some(Some(icon)) => model::Patch::Value(icon),
+									},
+									default_message_notifications: model::Patch::Absent,
+								})
+								.collect();
+							self.state.hydrate_server_displays(*revision, patches);
+						}
+					}
+					continue;
+				}
 				cache::Outcome::ScopedCleanupFailed { account } => {
 					// One account-wide cleanup follows a failed scoped deletion. Its own
 					// failure has the existing terminal cache status, never another retry.
@@ -574,6 +643,8 @@ impl Desktop {
 				| cache::Outcome::Members { .. }
 				| cache::Outcome::Expressions { .. }
 				| cache::Outcome::StickerPackHints { .. }
+				| cache::Outcome::Servers { .. }
+				| cache::Outcome::ServersSaved { .. }
 				| cache::Outcome::Failed { .. }
 				| cache::Outcome::AccountPresences(_)
 				| cache::Outcome::AccountPresenceSaved(_) => unreachable!(),
@@ -781,6 +852,9 @@ impl Desktop {
 			if event.generation != self.state.generation {
 				continue;
 			}
+			if let Event::GuildRemoved(guild) = &event.event {
+				self.invalidate_cache_scope(cache::Operation::RemoveServer { guild: *guild });
+			}
 			let user_action_notice = user_action_notice(&event.event);
 			let user_action_was_pending =
 				user_action_notice.is_some() && self.state.user_action_pending();
@@ -967,6 +1041,15 @@ impl Desktop {
 					.observe_session(self.state.generation, &event);
 				self.sticker_pack_cache_save
 					.observe_session(self.state.generation, &event);
+			}
+			if self
+				.server_cache_load
+				.observe_session(self.state.generation, &event)
+			{
+				self.server_cache_failed = false;
+			}
+			if matches!(event.event, Event::GuildJoined(_)) {
+				self.server_cache_load = Default::default();
 			}
 			self.state.apply(event);
 			if reset_session {

@@ -934,6 +934,8 @@ impl Desktop {
 			sticker_pack_cache_save: Default::default(),
 			gif_cache: Default::default(),
 			member_cache_saved: None,
+			server_cache_load: Default::default(),
+			server_cache_failed: false,
 			maximize_after_show: false,
 			monitor_geometry: None,
 			monitor_period: None,
