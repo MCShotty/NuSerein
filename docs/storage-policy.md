@@ -1,5 +1,35 @@
 # Local storage policy and audit
 
+## Conversation and member loading (October 29, 2026)
+
+Schema 30 adds account/server/user-scoped display hints: display name, username and
+nickname. They are cached by default, bounded globally to 4,096 entries and 2 MiB of
+charged row/text data within the existing SQLite page ceiling. Presence, permissions,
+role assignments, credentials and private profile fields are not persisted here.
+Current channel access is required before loading hints. Live results and departures
+take precedence over delayed disk reads; hint-only records cannot satisfy role queries
+or authorize an action. Clear cache and logout remove these rows with account history.
+
+The bounded session identity cache reuses observed people across channels. Closing the
+member pane retains one compatible, stale range snapshot, which requires current access
+and the same member-list identity to reopen. Independent bounded Gateway subscriptions
+keep cached visible identities current without requiring an additional member query.
+Discord's query cooldown remains in force for missing results.
+Session recovery resets the disk-load admission marker together with RAM identities;
+completed reads rejected by a newer live revision retry only after worker progress.
+Disk hints retain older provenance than in-flight live requests, including intervening
+role-only updates, and never acquire authority merely by being restored.
+
+Background messages, edits and reactions retain a bounded stale conversation preview.
+It is refreshed before becoming authoritative; existing deletion tombstones, permissions,
+generation checks, row and byte budgets still apply. Cache reads rejected by queue pressure
+retry after storage makes progress. Scoped cleanup invalidates earlier storage epochs and
+executes in FIFO order before later reads; uncertain access scope or cleanup failure keeps
+the existing account-wide invalidation/failure behavior. Unchanged message saves compare
+their persisted projection so session-only metadata cannot force repeated row writes.
+
+Historical session-only username and identity statements below describe earlier revisions.
+
 ## Account channel preferences (October 26, 2026)
 
 Confirmed guild settings and optimistic choices are session state, isolated by account generation.
