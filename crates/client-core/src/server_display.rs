@@ -56,6 +56,8 @@ impl State {
 		}
 	}
 
+	#[cold]
+	#[inline(never)]
 	pub(crate) fn observe_server_display(&mut self, event: &Event) {
 		match event {
 			Event::Ready { .. } | Event::Resync => {

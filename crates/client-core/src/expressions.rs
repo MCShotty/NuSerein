@@ -246,6 +246,8 @@ impl State {
 				.flatten()
 		})
 	}
+	#[cold]
+	#[inline(never)]
 	pub(crate) fn invalidate_expression_event(&mut self, event: &crate::Event) {
 		if event.invalidates_expression_catalogs() {
 			let catalogs = self.expression_hints.reset_catalogs();
