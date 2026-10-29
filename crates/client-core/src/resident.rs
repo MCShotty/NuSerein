@@ -108,8 +108,7 @@ impl State {
 	pub fn resident_window_count(&self) -> usize {
 		self.resident.entries.len()
 	}
-	/// Inspect an eligible dormant window without changing the active conversation.
-	pub(crate) fn resident_timeline(&self, channel: Id) -> Option<&Timeline> {
+	fn resident_window(&self, channel: Id) -> Option<&Window> {
 		let current = self
 			.channels
 			.iter()
@@ -121,12 +120,18 @@ impl State {
 			.entries
 			.iter()
 			.find(|entry| entry.identity == Identity::from(current) && !entry.stale)
-			.map(|entry| &entry.timeline)
+	}
+	/// Inspect an eligible dormant window without changing the active conversation.
+	pub(crate) fn resident_timeline(&self, channel: Id) -> Option<&Timeline> {
+		self.resident_window(channel).map(|entry| &entry.timeline)
 	}
 	/// Whether an exact target may use a previously validated resident snapshot.
 	/// Unlike `current`, this permits an older reading window, but never a changed preview.
+	/// Online shortcuts obey the same trust age as normal reopening; offline exact-target
+	/// navigation retains its existing access to a previously validated snapshot.
 	pub(crate) fn resident_target_current(&self, channel: Id) -> bool {
-		self.resident_timeline(channel).is_some()
+		self.resident_window(channel)
+			.is_some_and(|entry| !self.gateway_connected || entry.parked.elapsed() < TRUST_AGE)
 	}
 	/// Active plus dormant reading rows, including deletion placeholders.
 	pub fn resident_history_rows(&self) -> usize {
@@ -1197,6 +1202,113 @@ mod tests {
 			let selected = state.selected;
 			assert!(state.open_chat_link(None, Id(1), Some(Id(1001))).is_err());
 			assert_eq!(state.selected, selected);
+		}
+	}
+
+	#[test]
+	fn aged_exact_links_refresh_online_but_preserve_offline_navigation() {
+		for (aged, connected) in [(false, true), (true, true), (true, false)] {
+			let mut state = state();
+			load(&mut state, 1);
+			load(&mut state, 2);
+			if aged {
+				let entry = state.resident.entries.back_mut().unwrap();
+				assert_eq!(entry.identity.id, Id(1));
+				entry.parked = Instant::now().checked_sub(TRUST_AGE).unwrap();
+			}
+			state.gateway_connected = connected;
+			let result = state.open_chat_link(None, Id(1), Some(Id(1001))).unwrap();
+			assert_eq!(state.selected, Some(Id(1)));
+			assert!(state.timeline.get(Id(1001)).is_some());
+			if aged && connected {
+				assert!(matches!(
+					result,
+					Some(Command::HistoryAround {
+						channel: Id(1),
+						target: Id(1001),
+						..
+					})
+				));
+				assert_ne!(state.freshness, Freshness::Fresh);
+				assert!(state.history_pending);
+				assert!(state.prepare_mark_read(Id(1001)).is_none());
+			} else {
+				assert!(
+					result.is_none(),
+					"a recent or offline exact link uses its snapshot"
+				);
+				assert_eq!(state.search_target, Some(Id(1001)));
+				assert!(!state.history_pending);
+			}
+		}
+	}
+
+	#[test]
+	fn aged_deleted_target_is_rejected_before_switching_conversations() {
+		let mut state = state();
+		load(&mut state, 1);
+		load(&mut state, 2);
+		apply(
+			&mut state,
+			Event::Delete {
+				channel: Id(1),
+				id: Id(1001),
+			},
+		);
+		let entry = state.resident.entries.back_mut().unwrap();
+		assert_eq!(entry.identity.id, Id(1));
+		assert!(entry.timeline.is_deleted(Id(1001)));
+		entry.parked = Instant::now().checked_sub(TRUST_AGE).unwrap();
+		let request = state.request;
+		assert!(matches!(
+			state.open_chat_link(None, Id(1), Some(Id(1001))),
+			Err("This message was deleted")
+		));
+		assert_eq!(state.selected, Some(Id(2)));
+		assert_eq!(state.request, request);
+		assert!(!state.history_pending);
+	}
+
+	#[test]
+	fn aged_saved_reading_cursor_refreshes_while_retaining_its_preview() {
+		for aged in [false, true] {
+			let mut state = state();
+			load(&mut state, 1);
+			state.remember_reading(
+				Id(1),
+				crate::ReadingCursor {
+					message: Some(Id(1015)),
+					inset: 4.0,
+				},
+			);
+			load(&mut state, 2);
+			if aged {
+				let entry = state.resident.entries.back_mut().unwrap();
+				assert_eq!(entry.identity.id, Id(1));
+				entry.parked = Instant::now().checked_sub(TRUST_AGE).unwrap();
+			}
+			let result = state.select(Id(1));
+			assert_eq!(state.timeline.row_count(), 50);
+			assert_eq!(state.reading(Id(1)).unwrap().inset, 4.0);
+			assert_eq!(state.search_target, Some(Id(1015)));
+			assert!(state.restore_scroll);
+			if aged {
+				assert!(matches!(
+					result,
+					Some(Command::History {
+						channel: Id(1),
+						after: Some(Id(1014)),
+						..
+					})
+				));
+				assert_eq!(state.freshness, Freshness::Loading);
+				assert!(state.history_pending && state.history_targeted);
+				assert!(state.prepare_mark_read(Id(1015)).is_none());
+			} else {
+				assert!(result.is_none());
+				assert_eq!(state.freshness, Freshness::Fresh);
+				assert!(!state.history_pending);
+			}
 		}
 	}
 

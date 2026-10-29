@@ -502,7 +502,8 @@ struct Desktop {
 	sticker_pack_cache_load: cache::HistoryLoad,
 	sticker_pack_cache_save: cache::HistoryLoad,
 	gif_cache: cache::GifCache,
-	member_cache_saved: Option<(u64, model::Id, u64)>,
+	member_cache_saved: Option<(u64, model::Id, u64, u64)>,
+	member_cache_cleared: cache::MemberCacheClear,
 	server_cache_load: cache::HistoryLoad,
 	server_cache_failed: bool,
 	/// The saved maximized state still has to be re-applied once the window is shown.

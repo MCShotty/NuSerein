@@ -2387,6 +2387,108 @@ fn resolved_member_cache_survives_channel_switch_and_reuses_names() {
 }
 
 #[test]
+fn repeated_typing_and_role_updates_fence_lookups_without_resaving_names() {
+	use std::time::{Duration, Instant, UNIX_EPOCH};
+	let mut state = state();
+	let person = cached_person(7, "Current nickname");
+	let identity = model::MemberIdentity {
+		guild: Id(10),
+		user: Id(7),
+		profile: Some(person.user.clone()),
+		nick: Patch::Value("Current nickname".into()),
+		roles: Patch::Value(vec![Id(11)]),
+		departed: false,
+	};
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(identity.clone())),
+	);
+	let saved_revision = state.member_display_cache_revision();
+	let saved_rows = state.cached_member_displays(Id(10));
+	assert_eq!(saved_rows.len(), 1);
+	let Command::MemberSearch(request) = state.search_members(Id(20), "Current", 0).unwrap() else {
+		panic!("search must start")
+	};
+	let observation = state.member_display_revision();
+	let now = Instant::now();
+	let wall = UNIX_EPOCH + Duration::from_secs(100);
+	for _ in 0..20 {
+		state.observe_typing_at(
+			crate::typing::Signal {
+				channel: Id(20),
+				user: Id(7),
+				timestamp: 100,
+				member: Some(Box::new(identity.clone())),
+			},
+			wall,
+			now,
+		);
+	}
+	assert!(state.member_display_revision() > observation);
+	assert_eq!(state.member_display_cache_revision(), saved_revision);
+	assert_eq!(state.cached_member_displays(Id(10)), saved_rows);
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			profile: None,
+			nick: Patch::Absent,
+			roles: Patch::Value(vec![]),
+			..identity.clone()
+		})),
+	);
+	assert_eq!(state.member_display_cache_revision(), saved_revision);
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request,
+			result: Ok(vec![cached_person(7, "Stale nickname")]),
+		},
+	);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Current nickname"))
+	);
+	assert!(
+		state
+			.display_member(Id(20), Id(7))
+			.unwrap()
+			.roles
+			.is_empty()
+	);
+	let before_change = state.member_display_cache_revision();
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			profile: None,
+			nick: Patch::Value("Changed nickname".into()),
+			roles: Patch::Absent,
+			..identity.clone()
+		})),
+	);
+	assert_ne!(state.member_display_cache_revision(), before_change);
+	assert_eq!(
+		state.cached_member_displays(Id(10))[0].nick.as_deref(),
+		Some("Changed nickname")
+	);
+	let before_departure = state.member_display_cache_revision();
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			profile: None,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: true,
+			..identity
+		})),
+	);
+	assert_ne!(state.member_display_cache_revision(), before_departure);
+	assert!(state.cached_member_displays(Id(10)).is_empty());
+	let before_clear = state.member_display_cache_revision();
+	apply(&mut state, Event::Disconnected);
+	assert_ne!(state.member_display_cache_revision(), before_clear);
+}
+
+#[test]
 fn member_chunk_identity_and_closed_pane_remain_available_and_live() {
 	let mut state = state();
 	state.request_members();

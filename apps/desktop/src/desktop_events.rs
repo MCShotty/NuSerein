@@ -935,12 +935,11 @@ impl Desktop {
 				}
 				_ => None,
 			};
-			let removed_member = match &event.event {
-				Event::MemberIdentity(update) if update.departed && update.valid() => {
-					Some((update.guild, update.user))
-				}
-				_ => None,
-			};
+			let removed_member = cache::departed_member_target(&self.state, &event);
+			let partial_nickname = cache::nickname_target(&event.event);
+			let member_observation_guild = cache::member_observation_guild(&event.event);
+			let before_member_cache = self.state.member_display_cache_revision();
+			let before_member_observation = self.state.member_display_revision();
 			let affected_guilds: std::collections::BTreeMap<_, _> = removed_channels
 				.iter()
 				.chain(scoped_loss.iter())
@@ -1025,6 +1024,7 @@ impl Desktop {
 				.observe_session(self.state.generation, &event)
 			{
 				self.member_cache_saved = None;
+				self.member_cache_cleared = Default::default();
 			}
 			let reset_expression = event.event.invalidates_expression_catalogs();
 			let reset_session = event.event.ready_navigation().is_some()
@@ -1051,6 +1051,18 @@ impl Desktop {
 				self.server_cache_load = Default::default();
 			}
 			self.state.apply(event);
+			self.member_cache_cleared.observe(
+				&self.state,
+				member_observation_guild,
+				before_member_observation,
+			);
+			// A partial live nickname update must not leave an older disk nickname
+			// behind when there is no complete current row to overwrite it.
+			let incomplete_member = cache::incomplete_nickname_cleanup(
+				&self.state,
+				partial_nickname,
+				before_member_cache,
+			);
 			if reset_session {
 				self.expression_cache = Default::default();
 			}
@@ -1145,7 +1157,7 @@ impl Desktop {
 						emoji,
 					});
 				}
-				if let Some((guild, user)) = removed_member {
+				if let Some((guild, user)) = removed_member.or(incomplete_member) {
 					self.invalidate_cache_scope(cache::Operation::RemoveMember {
 						guild,
 						user: Some(user),

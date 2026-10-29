@@ -4,6 +4,35 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
+## Member cache follow-up
+
+The follow-up compares `65e69baf` with the member-cache and resident-history changes in
+this PR. On Linux x86_64 (Xeon Platinum 8573C), Rust 1.98.1 release builds used opt-level
+3, fat LTO, one codegen unit and CPU 0 affinity. Results are medians; neither workload
+measures GUI latency, live Discord traffic or cold disk I/O.
+
+| Synthetic workload | Before | After | Method |
+| --- | ---: | ---: | --- |
+| 100 in-memory SQLite saves, 512 members, one nickname changed per save | 403.883 ms | 80.576 ms | One warmup, five alternating runs; actual `LocalStore` calls |
+| 2,048 unchanged observations across 128 members | 58.595 ms; 2,048 snapshots | 1.321 ms; zero snapshots | One warmup, 15 alternating runs; assumes the worker finishes between observations |
+| Reducer, 100,000 messages | 83.103 ms | 80.073 ms | Same 15-run batch; 500 retained records |
+| Wide channels, 10,000 messages | 9.835 ms | 8.689 ms | Same 15-run batch; 500 retained records |
+
+The unchanged-observation workload models a worst case for repeated snapshot construction;
+real bursts may already coalesce. A preceding five-run batch showed the wide-channel median
+increase by 6.43%, while the 15-run batch above moved in the other direction. The samples
+were variable, so neither establishes a general reducer improvement or regression. The
+SQLite workload uses an in-memory database; persistent storage and end-to-end impact remain
+unmeasured. The measured source files have SHA-256 prefixes `8c8d24a5` (member identity),
+`48efe02f` (resident history), and `96135681` (SQLite member storage).
+
+The `65e69baf` native release baselines are 100,638,720 / 228,369,171 / 137,111,298 bytes
+for the Windows executable, installed payload and installer; 98,777,240 / 227,363,188 /
+141,899,312 bytes for the Linux executable, payload and DEB; and 79,212,416 / 202,656,528 /
+136,670,762 bytes for the macOS executable, app bundle and ZIP. Updated package sizes and
+native display, idle CPU, RSS and live synchronization measurements require native CI or
+owner-controlled testing.
+
 ## Conversation and member loading
 
 The October 29 follow-up compares frozen `af865308` with application source `d854f5fe`.

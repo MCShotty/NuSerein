@@ -410,6 +410,90 @@ impl HistoryLoad {
 	}
 }
 
+/// A scoped cleanup can retire a previously accepted save without changing the
+/// display revision, so the safety epoch is part of the save admission key.
+#[derive(Default)]
+pub struct MemberCacheClear {
+	generation: u64,
+	blocked: std::collections::BTreeSet<Id>,
+}
+impl MemberCacheClear {
+	pub fn reset(&mut self, state: &client_core::State) {
+		self.generation = state.generation;
+		self.blocked = state.cached_member_guilds().into_iter().collect();
+	}
+	pub fn observe(&mut self, state: &client_core::State, guild: Option<Id>, before: u64) {
+		if self.generation == state.generation
+			&& before != state.member_display_revision()
+			&& let Some(guild) = guild
+		{
+			self.blocked.remove(&guild);
+		}
+	}
+}
+
+pub fn member_save_key(
+	state: &client_core::State,
+	guild: Id,
+	epoch: u64,
+	cleared: &MemberCacheClear,
+) -> Option<(u64, Id, u64, u64)> {
+	let revision = state.member_display_cache_revision();
+	(cleared.generation != state.generation || !cleared.blocked.contains(&guild)).then_some((
+		state.generation,
+		guild,
+		revision,
+		epoch,
+	))
+}
+
+pub fn member_observation_guild(event: &client_core::Event) -> Option<Id> {
+	match event {
+		client_core::Event::MemberIdentity(update) => Some(update.guild),
+		client_core::Event::Typing(signal) => signal.member.as_ref().map(|member| member.guild),
+		client_core::Event::MemberSearch { request, .. } => Some(request.guild),
+		client_core::Event::Members(list) => list.guild,
+		_ => None,
+	}
+}
+
+/// Preserve only a bounded target while the reducer validates the event.
+pub fn nickname_target(event: &client_core::Event) -> Option<(Id, Id)> {
+	let update = match event {
+		client_core::Event::MemberIdentity(update) => Some(update.as_ref()),
+		client_core::Event::Typing(signal) => signal.member.as_deref(),
+		_ => None,
+	}?;
+	(!update.departed && update.valid() && !matches!(update.nick, model::Patch::Absent))
+		.then_some((update.guild, update.user))
+}
+
+pub fn departed_member_target(
+	state: &client_core::State,
+	envelope: &client_core::Envelope,
+) -> Option<(Id, Id)> {
+	match &envelope.event {
+		client_core::Event::MemberIdentity(update)
+			if envelope.generation == state.generation && update.departed && update.valid() =>
+		{
+			Some((update.guild, update.user))
+		}
+		_ => None,
+	}
+}
+
+/// A partial accepted nickname update cannot leave a stale complete row on disk.
+pub fn incomplete_nickname_cleanup(
+	state: &client_core::State,
+	target: Option<(Id, Id)>,
+	before: u64,
+) -> Option<(Id, Id)> {
+	let (guild, user) = target?;
+	(before != state.member_display_cache_revision()
+		&& !state.has_cached_member_display(guild, user))
+	.then_some((guild, user))
+}
+
 /// Admission state only: GIF contents remain in the bounded account-scoped state.
 #[derive(Default)]
 pub struct GifCache {
@@ -2385,6 +2469,256 @@ mod tests {
 				.unwrap()
 				.is_empty()
 		);
+	}
+
+	#[test]
+	fn scoped_cleanup_retries_member_save_without_undoing_an_explicit_clear() {
+		let (send, commands) = mpsc::sync_channel(4);
+		let (_, receive) = mpsc::sync_channel(4);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			history: Arc::new(HistorySafety::default()),
+		};
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let account = state.user.as_ref().unwrap().id;
+		let row = model::MemberDisplay {
+			guild: Id(10),
+			user: Id(900000),
+			name: "Synthetic".into(),
+			username: Some("account".into()),
+			nick: Some("Current nickname".into()),
+		};
+		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
+		let mut cleared = MemberCacheClear::default();
+		let first = member_save_key(&state, Id(10), cache.history.epoch(), &cleared).unwrap();
+		assert!(cache.queue(
+			state.generation,
+			account,
+			Operation::SaveMembers(vec![row.clone()])
+		));
+		assert!(cache.invalidate_scope(
+			state.generation,
+			account,
+			Operation::ClearChannel { channel: Id(20) },
+		));
+		while let Ok((_, owner, epoch, operation, _reservation)) = commands.try_recv() {
+			assert!(matches!(
+				execute(&mut store, &cache.history, owner, epoch, operation),
+				Outcome::Saved
+			));
+		}
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(account, Id(10))
+				.unwrap()
+				.is_empty()
+		);
+		let retry = member_save_key(&state, Id(10), cache.history.epoch(), &cleared).unwrap();
+		assert_ne!(
+			first, retry,
+			"scoped invalidation must retry the retired save"
+		);
+		assert!(cache.queue(
+			state.generation,
+			account,
+			Operation::SaveMembers(vec![row.clone()])
+		));
+		let (_, owner, epoch, operation, _reservation) = commands.try_recv().unwrap();
+		assert!(matches!(
+			execute(&mut store, &cache.history, owner, epoch, operation),
+			Outcome::Saved
+		));
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(account, Id(10))
+				.unwrap(),
+			vec![row.clone()]
+		);
+
+		// Full clearing suppresses retained hints for each guild independently. A
+		// fresh observation in one guild must not restore another guild's old rows.
+		state.hydrate_member_displays(Id(10), state.member_display_revision(), vec![row]);
+		let identity = model::MemberIdentity {
+			guild: Id(10),
+			user: Id(900001),
+			profile: None,
+			nick: model::Patch::Value("Fresh".into()),
+			roles: model::Patch::Absent,
+			departed: false,
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberIdentity(Box::new(identity.clone())),
+		});
+		cleared.reset(&state);
+		assert!(cleared.blocked.contains(&Id(10)));
+		cleared.blocked.insert(Id(11));
+		assert!(member_save_key(&state, Id(10), cache.history.epoch(), &cleared).is_none());
+		let before = state.member_display_revision();
+		let saved_revision = state.member_display_cache_revision();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberIdentity(Box::new(identity)),
+		});
+		assert_eq!(state.member_display_cache_revision(), saved_revision);
+		assert_ne!(state.member_display_revision(), before);
+		cleared.observe(&state, Some(Id(10)), before);
+		assert!(member_save_key(&state, Id(10), cache.history.epoch(), &cleared).is_some());
+		assert!(member_save_key(&state, Id(11), cache.history.epoch(), &cleared).is_none());
+		state.generation = state.generation.wrapping_add(1);
+		assert!(member_save_key(&state, Id(11), cache.history.epoch(), &cleared).is_some());
+	}
+
+	#[test]
+	fn partial_live_nickname_evicts_old_disk_hint_across_reopen() {
+		use std::time::{SystemTime, UNIX_EPOCH};
+		let root = std::env::temp_dir().join(format!(
+			"serein-partial-nickname-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.unwrap()
+				.as_nanos(),
+		));
+		std::fs::create_dir(&root).unwrap();
+		for (case, nick, typing) in [
+			(0, model::Patch::Null, false),
+			(1, model::Patch::Value("New nickname".into()), false),
+			(2, model::Patch::Value("Typing nickname".into()), true),
+		] {
+			let path = root.join(format!("{case}.sqlite3"));
+			let mut state = test_support::demo_state();
+			state.demo = false;
+			let account = state.user.as_ref().unwrap().id;
+			let mut store = Ok(LocalStore::open(&path).unwrap());
+			let stale = model::MemberDisplay {
+				guild: Id(10),
+				user: Id(900000),
+				name: "Cached".into(),
+				username: Some("cached".into()),
+				nick: Some("Old nickname".into()),
+			};
+			store
+				.as_mut()
+				.unwrap()
+				.save_member_displays(account, &[stale])
+				.unwrap();
+			let safety = HistorySafety::default();
+			let rows = member_hint_rows(
+				&mut store,
+				&safety,
+				account,
+				state.member_display_revision(),
+			);
+			state.hydrate_member_displays(Id(10), state.member_display_revision(), rows);
+			let identity = model::MemberIdentity {
+				guild: Id(10),
+				user: Id(900000),
+				profile: None,
+				nick,
+				roles: model::Patch::Absent,
+				departed: false,
+			};
+			let make_event = || {
+				if typing {
+					client_core::Event::Typing(client_core::typing::Signal {
+						channel: Id(20),
+						user: Id(900000),
+						timestamp: SystemTime::now()
+							.duration_since(UNIX_EPOCH)
+							.unwrap()
+							.as_secs(),
+						member: Some(Box::new(identity.clone())),
+					})
+				} else {
+					client_core::Event::MemberIdentity(Box::new(identity.clone()))
+				}
+			};
+			let departed = model::MemberIdentity {
+				departed: true,
+				..identity.clone()
+			};
+			let stale_departure = client_core::Envelope {
+				generation: state.generation.wrapping_sub(1),
+				event: client_core::Event::MemberIdentity(Box::new(departed.clone())),
+			};
+			assert_eq!(departed_member_target(&state, &stale_departure), None);
+			let current_departure = client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::MemberIdentity(Box::new(departed)),
+			};
+			assert_eq!(
+				departed_member_target(&state, &current_departure),
+				Some((Id(10), Id(900000)))
+			);
+			let target = nickname_target(&make_event());
+			let before = state.member_display_cache_revision();
+			state.apply(client_core::Envelope {
+				generation: state.generation.wrapping_sub(1),
+				event: make_event(),
+			});
+			assert_eq!(
+				incomplete_nickname_cleanup(&state, target, before),
+				None,
+				"stale generation is ignored"
+			);
+			let expired = client_core::Event::Typing(client_core::typing::Signal {
+				channel: Id(20),
+				user: Id(900000),
+				timestamp: 0,
+				member: Some(Box::new(identity.clone())),
+			});
+			let target = nickname_target(&expired);
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: expired,
+			});
+			assert_eq!(
+				incomplete_nickname_cleanup(&state, target, before),
+				None,
+				"expired typing is ignored"
+			);
+			let target = nickname_target(&make_event());
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: make_event(),
+			});
+			assert_eq!(
+				incomplete_nickname_cleanup(&state, target, before),
+				Some((Id(10), Id(900000)))
+			);
+			safety.invalidate();
+			let epoch = safety.epoch();
+			assert!(matches!(
+				execute(
+					&mut store,
+					&safety,
+					account,
+					epoch,
+					Operation::RemoveMember {
+						guild: Id(10),
+						user: Some(Id(900000))
+					}
+				),
+				Outcome::Saved
+			));
+			drop(store);
+			assert!(
+				LocalStore::open(&path)
+					.unwrap()
+					.load_member_displays(account, Id(10))
+					.unwrap()
+					.is_empty()
+			);
+		}
+		std::fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]

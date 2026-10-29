@@ -47,6 +47,13 @@ completed reads rejected by a newer live revision or navigation retry only after
 Disk hints retain older provenance than in-flight live requests, including intervening
 role-only updates, and never acquire authority merely by being restored.
 
+Member-cache writes use a display-data revision separate from the observation ordering
+used to reject stale searches and disk reads. Scoped cleanup fences queued writes; a full
+clear suppresses retained guild hints until a new accepted identity observation for that guild. A partial
+accepted nickname update removes an older disk row when it cannot form a complete
+replacement. Off-server member updates are not retained by this display cache; a cached
+nickname for another server may therefore remain stale until that server refreshes.
+
 Background messages, edits and reactions retain a bounded stale conversation preview.
 It is refreshed before becoming authoritative; existing deletion tombstones, permissions,
 generation checks, row and byte budgets still apply. Cache reads rejected by queue pressure

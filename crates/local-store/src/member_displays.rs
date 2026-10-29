@@ -44,14 +44,27 @@ impl LocalStore {
 		)?;
 		let touched = touched.checked_add(1).ok_or(StoreError::Incompatible)?;
 		let account = account.to_string();
+		// A snapshot can contain hundreds of peers, most of them unchanged. Prepare
+		// the lookup once for the transaction rather than once per peer.
+		let mut lookup = transaction.prepare(&format!(
+			"SELECT {ROW_CHARGE},name=?4 AND username IS ?5 AND nick IS ?6 FROM member_displays WHERE account=?1 AND guild=?2 AND user=?3"
+		))?;
 		for entry in entries {
 			let guild = entry.guild.to_string();
 			let user = entry.user.to_string();
-			let old: Option<(i64,bool)> = transaction.query_row(
-				&format!("SELECT {ROW_CHARGE},name=?4 AND username IS ?5 AND nick IS ?6 FROM member_displays WHERE account=?1 AND guild=?2 AND user=?3"),
-				params![account,guild,user,entry.name,entry.username.as_deref(),entry.nick],
-				|row|Ok((row.get(0)?,row.get(1)?)),
-			).optional()?;
+			let old: Option<(i64, bool)> = lookup
+				.query_row(
+					params![
+						account,
+						guild,
+						user,
+						entry.name,
+						entry.username.as_deref(),
+						entry.nick
+					],
+					|row| Ok((row.get(0)?, row.get(1)?)),
+				)
+				.optional()?;
 			if let Some((_, true)) = old {
 				// A snapshot can contain hundreds of unchanged peers after one identity changes.
 				// Keep this read-only; eviction recency follows changed observations.
@@ -85,6 +98,7 @@ impl LocalStore {
 			count += 1;
 			bytes += charge;
 		}
+		drop(lookup);
 		transaction.commit()?;
 		Ok(())
 	}
@@ -356,6 +370,33 @@ mod tests {
 				.iter()
 				.any(|entry| entry.user == Id(251)
 					&& entry.nick.as_deref() == Some("Changed nickname"))
+		);
+
+		// Reusing the lookup must retain account isolation and the existing eviction
+		// order: unchanged observations do not make older rows recently used.
+		let other_account = entry(10, 251);
+		store
+			.save_member_displays(Id(2), std::slice::from_ref(&other_account))
+			.unwrap();
+		let fill: Vec<_> = (1..=(LIMIT - entries.len() - 1) as u64)
+			.map(|user| entry(11, user))
+			.collect();
+		store.save_member_displays(Id(2), &fill).unwrap();
+		store.save_member_displays(Id(1), &entries).unwrap();
+		store
+			.save_member_displays(Id(2), &[entry(11, 5000)])
+			.unwrap();
+		let remaining = store.load_member_displays(Id(1), Id(10)).unwrap();
+		assert_eq!(remaining.len(), entries.len() - 1);
+		assert!(!remaining.iter().any(|row| row.user == Id(1)));
+		assert!(
+			remaining.iter().any(|row| {
+				row.user == Id(251) && row.nick.as_deref() == Some("Changed nickname")
+			})
+		);
+		assert_eq!(
+			store.load_member_displays(Id(2), Id(10)).unwrap(),
+			vec![other_account]
 		);
 	}
 	#[test]

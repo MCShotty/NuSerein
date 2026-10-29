@@ -21,11 +21,14 @@ pub struct Labels {
 	visible_users: Vec<Id>,
 	watch_revision: u64,
 	revision: u64,
+	display_revision: u64,
 	bytes: usize,
 }
 impl Labels {
 	pub(crate) fn clear(&mut self) {
+		let display_revision = self.display_revision.wrapping_add(1);
 		*self = Self::default();
+		self.display_revision = display_revision;
 	}
 	pub(crate) fn revision(&self) -> u64 {
 		self.revision
@@ -75,6 +78,7 @@ impl Labels {
 	}
 	pub(crate) fn remember(&mut self, guild: Id, rows: &[Member]) {
 		let mut changed = false;
+		let mut display_changed = false;
 		for member in rows {
 			if let Some(index) = self
 				.members
@@ -82,12 +86,17 @@ impl Labels {
 				.position(|(g, m, _)| *g == guild && m.user.id == member.user.id)
 			{
 				let (_, old, observed) = &mut self.members[index];
+				display_changed |= old.user.name != member.user.name
+					|| old.user.username != member.user.username
+					|| old.nick != member.nick;
 				if old.user == member.user && old.roles == member.roles && old.nick == member.nick {
 					*observed = Instant::now();
 					continue;
 				}
 				let (_, old, _) = self.members.remove(index).unwrap();
 				self.member_bytes -= old.bytes();
+			} else {
+				display_changed = true;
 			}
 			// Presence remains owned by the current subscription, with no transient allocations copied.
 			let member = Member {
@@ -105,6 +114,9 @@ impl Labels {
 		}
 		if changed {
 			self.revision = self.revision.wrapping_add(1);
+		}
+		if display_changed {
+			self.display_revision = self.display_revision.wrapping_add(1);
 		}
 		for (revision, entry) in &mut self.entries {
 			if *revision == 0
@@ -140,7 +152,7 @@ impl Labels {
 		self.bytes += update.bytes();
 		self.entries.push_back((0, update));
 	}
-	fn insert(&mut self, mut update: MemberIdentity) {
+	fn insert(&mut self, mut update: MemberIdentity, display_changed: bool) {
 		if let Some(index) = self
 			.entries
 			.iter()
@@ -176,6 +188,9 @@ impl Labels {
 		}
 		self.trim_members();
 		self.revision = self.revision.wrapping_add(1);
+		if display_changed {
+			self.display_revision = self.display_revision.wrapping_add(1);
+		}
 		if self.entries.len() == LIMIT
 			&& let Some((_, old)) = self.entries.pop_front()
 		{
@@ -196,6 +211,7 @@ impl Labels {
 		if self.entries.is_empty() {
 			return;
 		}
+		let mut display_changed = false;
 		rows.retain_mut(|member| {
 			if let Some((revision, update)) = self
 				.entries
@@ -208,6 +224,16 @@ impl Labels {
 					}
 					update.apply(member);
 				} else {
+					let nick = match &update.nick {
+						Patch::Value(nick) if !nick.is_empty() => Some(nick.as_str()),
+						_ => None,
+					};
+					display_changed |= update.departed
+						|| update.profile.as_ref().is_none_or(|profile| {
+							profile.name != member.user.name
+								|| profile.username != member.user.username
+						}) || matches!(update.nick, Patch::Absent)
+						|| nick != member.nick.as_deref().filter(|nick| !nick.is_empty());
 					self.bytes -= update.bytes();
 					update.profile = Some(member.user.clone());
 					update.nick = member.nick.clone().map_or(Patch::Null, Patch::Value);
@@ -218,6 +244,9 @@ impl Labels {
 			}
 			true
 		});
+		if display_changed {
+			self.display_revision = self.display_revision.wrapping_add(1);
+		}
 		while self.overlay_bytes() > MAX_BYTES {
 			if let Some((_, old)) = self.entries.pop_front() {
 				self.bytes -= old.bytes();
@@ -297,6 +326,27 @@ impl State {
 	pub fn member_display_revision(&self) -> u64 {
 		self.member_labels.revision()
 	}
+	/// Revision of the persisted name/username/nickname projection, independent of
+	/// observation ordering used to reject stale lookups and disk reads.
+	pub fn member_display_cache_revision(&self) -> u64 {
+		self.member_labels.display_revision
+	}
+	/// Guilds with retained member observations, bounded by the existing label caps.
+	pub fn cached_member_guilds(&self) -> Vec<Id> {
+		self.member_labels
+			.members
+			.iter()
+			.map(|(guild, _, _)| *guild)
+			.chain(
+				self.member_labels
+					.entries
+					.iter()
+					.map(|(_, entry)| entry.guild),
+			)
+			.collect::<std::collections::BTreeSet<_>>()
+			.into_iter()
+			.collect()
+	}
 	pub fn cached_member_displays(&self, guild: Id) -> Vec<MemberDisplay> {
 		let mut rows = std::collections::BTreeMap::new();
 		for (_, member, _) in self
@@ -345,6 +395,39 @@ impl State {
 			}
 		}
 		rows.into_values().collect()
+	}
+	/// Whether a single current observation can be written as a complete display
+	/// row. This does not confer membership, permissions or profile freshness.
+	pub fn has_cached_member_display(&self, guild: Id, user: Id) -> bool {
+		let valid = |profile: &User, nick: Option<&str>| {
+			MemberDisplay {
+				guild,
+				user,
+				name: profile.name.clone(),
+				username: profile.username.clone(),
+				nick: nick.map(str::to_owned),
+			}
+			.valid()
+		};
+		if let Some(update) = self.member_labels.get(guild, user) {
+			if update.departed {
+				return false;
+			}
+			if let Some(profile) = &update.profile {
+				match &update.nick {
+					Patch::Value(nick)
+						if valid(profile, (!nick.is_empty()).then_some(nick.as_str())) =>
+					{
+						return true;
+					}
+					Patch::Null if valid(profile, None) => return true,
+					_ => {}
+				}
+			}
+		}
+		self.member_labels
+			.member(guild, user)
+			.is_some_and(|member| valid(&member.user, member.nick.as_deref()))
 	}
 	/// Older disk observations never override a live result, removal or account transition.
 	pub fn hydrate_member_displays(
@@ -556,9 +639,18 @@ impl State {
 			}) {
 			// Still advance observation ordering to fence in-flight search replies, without
 			// relaying unchanged typing metadata through every cached row and layout.
-			self.member_labels.insert(update);
+			self.member_labels.insert(update, false);
 			return;
 		}
+		let previous = self.member_labels.get(update.guild, update.user);
+		let display_changed = update.departed
+			|| previous.is_some_and(|old| old.departed)
+			|| update.profile.as_ref().is_some_and(|profile| {
+				previous
+					.and_then(|old| old.profile.as_ref())
+					.is_none_or(|old| old.name != profile.name || old.username != profile.username)
+			}) || (!matches!(update.nick, Patch::Absent)
+			&& previous.is_none_or(|old| old.nick != update.nick));
 		fn patch_slots(slots: &mut [Option<MemberSlot>], update: &MemberIdentity) {
 			for slot in slots {
 				if let Some(MemberSlot::Person(member)) = slot
@@ -655,7 +747,7 @@ impl State {
 		if update.departed {
 			self.typing.remove(update.user);
 		}
-		self.member_labels.insert(update);
+		self.member_labels.insert(update, display_changed);
 		self.revision = self.revision.wrapping_add(1);
 		self.skip_identity_navigation();
 		self.enforce_resident_budget();

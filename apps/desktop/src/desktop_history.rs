@@ -222,14 +222,13 @@ impl Desktop {
 		{
 			self.member_cache_load.accepted(key);
 		}
-		let changed = (
-			self.state.generation,
-			guild,
-			self.state.member_display_revision(),
-		);
 		// Coalesce identity snapshots behind existing storage work, keeping at most one
 		// pending copy. Worker completion wakes the next pass without an idle timer.
-		if self.member_cache_saved != Some(changed) && self.cache_pending == 0 {
+		if let Some(changed) =
+			cache::member_save_key(&self.state, guild, epoch, &self.member_cache_cleared)
+			&& self.member_cache_saved != Some(changed)
+			&& self.cache_pending == 0
+		{
 			let rows = self.state.cached_member_displays(guild);
 			if rows.is_empty() || self.queue_cache(cache::Operation::SaveMembers(rows)) {
 				self.member_cache_saved = Some(changed);
@@ -316,6 +315,14 @@ impl Desktop {
 		let Some(cache) = &self.cache else {
 			return;
 		};
+		if self
+			.state
+			.user
+			.as_ref()
+			.is_some_and(|user| user.id == account)
+		{
+			self.member_cache_cleared.reset(&self.state);
+		}
 		cache.history.invalidate();
 		cache.history.block();
 		if !self.cache_clears.request(account) {
