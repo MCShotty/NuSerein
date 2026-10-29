@@ -44,9 +44,11 @@ pub struct View {
 	pub retained: Vec<Member>,
 	pub finished: bool,
 	pub error: Option<&'static str>,
+	pub identity_revision: u64,
 }
 impl State {
 	pub(crate) fn refresh_member_labels(&mut self, list: &model::MemberList) {
+		self.member_labels.refresh(list);
 		if self
 			.member_search
 			.iter()
@@ -161,6 +163,7 @@ impl State {
 		};
 		self.member_search[slot] = View {
 			retained,
+			identity_revision: self.member_labels.revision(),
 			request: Some(request.clone()),
 			..Default::default()
 		};
@@ -177,6 +180,13 @@ impl State {
 			.copied()
 			.filter(|id| id.0 != 0)
 			.filter(|id| self.display_member(channel, *id).is_none())
+			.filter(|id| {
+				!self.member_identity(channel, *id).is_some_and(|update| {
+					update.departed
+						|| (!matches!(update.nick, model::Patch::Absent)
+							&& matches!(update.roles, model::Patch::Value(_)))
+				})
+			})
 			.take(LIMIT)
 			.collect();
 		users.sort_unstable();
@@ -214,6 +224,7 @@ impl State {
 		self.member_search[1] = View {
 			rows,
 			retained,
+			identity_revision: self.member_labels.revision(),
 			request: Some(request.clone()),
 			..Default::default()
 		};
@@ -235,7 +246,7 @@ impl State {
 		}
 		self.member_search[request.slot].finished = true;
 		match result {
-			Ok(rows)
+			Ok(mut rows)
 				if rows.len() <= LIMIT
 					&& rows.iter().all(Member::valid)
 					&& (request.users.is_empty()
@@ -244,6 +255,16 @@ impl State {
 							.all(|member| request.users.contains(&member.user.id)))
 					&& rows.iter().map(Member::bytes).sum::<usize>() <= MAX_BYTES =>
 			{
+				self.member_labels.reconcile(
+					request.guild,
+					&mut rows,
+					self.member_search[request.slot].identity_revision,
+				);
+				if rows.iter().map(Member::bytes).sum::<usize>() > MAX_BYTES {
+					self.member_search[request.slot].error =
+						Some("Member search exceeded its safety limit");
+					return;
+				}
 				if request.slot == 1 {
 					for member in &rows {
 						self.timeline.apply_author_membership(

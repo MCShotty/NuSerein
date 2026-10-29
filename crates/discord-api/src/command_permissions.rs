@@ -68,7 +68,7 @@ impl DiscordApi {
 			})
 			.collect::<Vec<_>>();
 		if commands.len() > m::MAX_COMMANDS {
-			return Err(Failure::Capacity);
+			return Err(Failure::ResponseLimit);
 		}
 		if let m::Action::Save { before, after, .. } = action {
 			if before.id != app && !commands.iter().any(|command| command.id == before.id) {
@@ -135,7 +135,7 @@ impl DiscordApi {
 			return Err(if action.write() {
 				Failure::Ambiguous
 			} else {
-				Failure::Capacity
+				Failure::ResponseLimit
 			});
 		}
 		if let m::Action::Save { before, after, .. } = action

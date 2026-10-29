@@ -4,44 +4,37 @@ use model::Id;
 use std::time::Instant;
 
 fn name(state: &State, channel: Id, user: Id) -> Option<&str> {
+	if let Some(Some(nick)) = state.member_nickname(channel, user) {
+		return Some(nick);
+	}
+	if let Some(profile) = state
+		.member_identity(channel, user)
+		.and_then(|member| member.profile.as_ref())
+	{
+		return Some(state.user_display_name(profile));
+	}
+	if let Some(member) = state.display_member(channel, user) {
+		return Some(state.user_display_name(&member.user));
+	}
 	state
-		.channels
-		.iter()
-		.find(|entry| entry.id == channel)
-		.and_then(|entry| entry.recipients.iter().find(|entry| entry.id == user))
-		.map(|user| user.name.as_str())
-		.or_else(|| {
-			state
-				.members
-				.as_ref()
-				.filter(|members| members.channel == channel)
-				.and_then(|members| {
-					members
-						.slots
-						.iter()
-						.flatten()
-						.filter_map(|slot| match slot {
-							model::MemberSlot::Person(m) => Some(m),
-							_ => None,
-						})
-						.find(|member| member.user.id == user)
-				})
-				.map(|member| member.nick.as_deref().unwrap_or(&member.user.name))
-		})
+		.channel(channel)
+		.and_then(|channel| channel.recipients.iter().find(|entry| entry.id == user))
+		.map(|user| state.user_display_name(user))
 		.or_else(|| {
 			state
 				.timeline
 				.iter()
+				.rev()
 				.filter(|message| message.channel == channel)
 				.find_map(|message| {
 					if message.author.id == user {
-						Some(message.author.name.as_str())
+						Some(state.message_author_name(message))
 					} else {
 						message
 							.mentions
 							.iter()
 							.find(|entry| entry.id == user)
-							.map(|user| user.name.as_str())
+							.map(|user| state.user_display_name(user))
 					}
 				})
 		})
@@ -215,6 +208,81 @@ pub(super) fn overlay(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn guild_typing_uses_supplied_and_live_nicknames_without_sidebar() {
+		use model::{MemberIdentity, Patch};
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.history_pending = false;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+		let now = Instant::now();
+		let profile = test_support::message(999, channel).author;
+		let user = profile.id;
+		assert_ne!(Some(user), state.user.as_ref().map(|owner| owner.id));
+		let identity = MemberIdentity {
+			guild,
+			user,
+			profile: Some(profile.clone()),
+			nick: Patch::Value("Server nickname".into()),
+			roles: Patch::Value(vec![]),
+			departed: false,
+		};
+		state.observe_typing_at(
+			Signal {
+				channel,
+				user,
+				timestamp: 100,
+				member: Some(Box::new(identity.clone())),
+			},
+			wall,
+			now,
+		);
+		assert_eq!(
+			label(&state, channel, now).as_deref(),
+			Some("Server nickname is typing…")
+		);
+		for (nick, expected) in [
+			(Patch::Value("Changed nickname".into()), "Changed nickname"),
+			(Patch::Null, profile.name.as_str()),
+		] {
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::MemberIdentity(Box::new(MemberIdentity {
+					nick,
+					..identity.clone()
+				})),
+			});
+			assert_eq!(
+				label(&state, channel, now),
+				Some(format!("{expected} is typing…"))
+			);
+		}
+		// A stale signal must not restore a nickname that was explicitly removed.
+		state.observe_typing_at(
+			Signal {
+				channel,
+				user,
+				timestamp: 1,
+				member: Some(Box::new(identity)),
+			},
+			wall,
+			now,
+		);
+		assert_eq!(
+			label(&state, channel, now),
+			Some(format!("{} is typing…", profile.name))
+		);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Disconnected,
+		});
+		assert!(label(&state, channel, now).is_none());
+	}
 	use client_core::{auth::AuthState, typing::Signal};
 	use model::{Channel, Freshness, User};
 	use std::time::{Duration, SystemTime};
@@ -299,6 +367,7 @@ mod tests {
 					channel: Id(10),
 					user: Id(user),
 					timestamp: 1_000,
+					member: None,
 				},
 				wall,
 				now,
@@ -389,6 +458,7 @@ mod tests {
 				channel: Id(10),
 				user: Id(8),
 				timestamp,
+				member: None,
 			},
 			wall,
 			now,

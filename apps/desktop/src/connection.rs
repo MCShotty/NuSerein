@@ -5,7 +5,7 @@ mod session;
 mod voice;
 use client_core::{
 	COMMAND_SLOTS, Command, EVENT_SLOTS, Envelope, Event, MAX_EVENT_BYTES,
-	auth::{AuthProvider, Failure, SessionSecret},
+	auth::{Failure, SessionSecret},
 	server_admin::{ReadKey, ReadScopes},
 };
 use discord_api::DiscordApi;
@@ -1492,6 +1492,18 @@ mod tests {
 		}
 	}
 
+	fn queued_ready(generation: u64) -> Envelope {
+		Envelope {
+			generation,
+			event: Event::Ready {
+				user: test_support::message(1, model::Id(2)).author,
+				guilds: vec![],
+				channels: vec![],
+				permissions: Default::default(),
+			},
+		}
+	}
+
 	fn large_startup() -> client_core::Startup {
 		use serde_json::json;
 		let guilds: Vec<_> = (0..200_u64).map(|g| {
@@ -1557,14 +1569,43 @@ mod tests {
 				},
 				&ctx
 			),
-			Err(Failure::CapacityAt(
-				"Account startup snapshot is already queued; connection stopped"
-			))
+			Err(Failure::Busy)
 		);
 		let mut later = queued_channel(25_000);
 		later.generation = generation;
-		emit_event(&send, &typing, later, &ctx).unwrap();
+		assert!(events.take_pressure());
+		assert_eq!(
+			emit_event_at(&send, &typing, later, &ctx, Some(0)),
+			Err(Failure::Busy)
+		);
+		// A lost dispatch retires the complete old snapshot, including its permits.
+		assert!(events.try_recv().is_err());
+		assert_eq!(send.startup.available_permits(), 1);
+		emit_event(
+			&send,
+			&typing,
+			Envelope {
+				generation,
+				event: Event::Resync,
+			},
+			&ctx,
+		)
+		.unwrap();
+		emit_event(
+			&send,
+			&typing,
+			Envelope {
+				generation,
+				event: Event::Startup(Box::new(large_startup().prepare().unwrap())),
+			},
+			&ctx,
+		)
+		.unwrap();
 		state.apply(events.try_recv().unwrap());
+		state.apply(events.try_recv().unwrap());
+		let mut later = queued_channel(25_000);
+		later.generation = generation;
+		emit_event(&send, &typing, later, &ctx).unwrap();
 		assert_eq!(state.auth, client_core::auth::AuthState::Authenticated);
 		assert_eq!((state.guilds.len(), state.channels.len()), (200, 20_000));
 		assert!(state.can_read_history(model::Id(1000)));
@@ -1600,14 +1641,6 @@ mod tests {
 		for id in 1..=RELIABLE_ITEMS as u64 {
 			emit_event(&send, &typing, queued_channel(id), &ctx).unwrap();
 		}
-		let retained = send.bytes.available_permits();
-		assert_eq!(
-			emit_event(&send, &typing, queued_channel(0), &ctx),
-			Err(Failure::CapacityAt(
-				"Account synchronization event queue is full; connection stopped"
-			))
-		);
-		assert_eq!(send.bytes.available_permits(), retained);
 		for id in 1..=RELIABLE_ITEMS as u64 {
 			let envelope = events.try_recv().unwrap();
 			assert_eq!(envelope.generation, 1);
@@ -1616,8 +1649,109 @@ mod tests {
 			};
 			assert_eq!(channel.id, model::Id(id));
 		}
+		for id in 1..=RELIABLE_ITEMS as u64 {
+			emit_event(&send, &typing, queued_channel(id), &ctx).unwrap();
+		}
+		let retained = send.bytes.available_permits();
+		assert_eq!(
+			emit_event(&send, &typing, queued_channel(0), &ctx),
+			Err(Failure::Busy)
+		);
+		assert_eq!(send.bytes.available_permits(), retained);
+		assert!(events.take_pressure());
+		assert!(send.delivery_blocked());
+		while !events.receive.is_empty() {
+			assert!(
+				events.try_recv().is_err(),
+				"retired events must not restore stale state"
+			);
+		}
 		assert!(events.try_recv().is_err());
 		assert_eq!(send.bytes.available_permits(), RELIABLE_BYTES);
+		assert!(!send.delivery_blocked());
+		assert!(
+			send.delivery().borrow().recovering,
+			"writes must wait for the new snapshot"
+		);
+		assert_eq!(send.delivery().borrow().generation, 1);
+		assert_eq!(
+			emit_event_at(&send, &typing, queued_channel(9), &ctx, Some(0)),
+			Err(Failure::Busy)
+		);
+		// Current HTTP results cannot jump ahead of the new Gateway snapshot.
+		emit_event(&send, &typing, queued_channel(10), &ctx).unwrap();
+		assert!(events.try_recv().is_err());
+		emit_event(
+			&send,
+			&typing,
+			Envelope {
+				generation: 1,
+				event: Event::Resync,
+			},
+			&ctx,
+		)
+		.unwrap();
+		emit_event(&send, &typing, queued_ready(1), &ctx).unwrap();
+		emit_event(&send, &typing, queued_channel(11), &ctx).unwrap();
+		assert!(matches!(events.try_recv().unwrap().event, Event::Resync));
+		assert!(matches!(
+			events.try_recv().unwrap().event,
+			Event::Ready { .. }
+		));
+		assert!(!send.delivery().borrow().recovering);
+		assert!(
+			matches!(events.try_recv().unwrap().event, Event::ChannelCreated(c) if c.id==model::Id(11))
+		);
+		assert!(!events.take_pressure());
+		emit_event(&send, &typing, queued_channel(12), &ctx).unwrap();
+		assert!(
+			events.try_recv().is_ok(),
+			"the installed snapshot must release the fence"
+		);
+	}
+
+	#[test]
+	fn recovery_during_a_ui_batch_retires_old_events_without_resetting_the_new_snapshot() {
+		let ctx = egui::Context::default();
+		let (send, mut events) = reliable_events(ctx.clone());
+		let (typing, _) = mpsc::channel(8);
+		let mut state = client_core::State::default();
+		emit_event(&send, &typing, queued_ready(state.generation), &ctx).unwrap();
+		let (_, old_epoch) = events.try_recv_epoch().unwrap();
+		assert!(events.is_current(old_epoch));
+		// Pressure arrives after the UI has already collected part of its batch.
+		for id in 1..=RELIABLE_ITEMS as u64 {
+			emit_event(&send, &typing, queued_channel(id), &ctx).unwrap();
+		}
+		assert_eq!(
+			emit_event(&send, &typing, queued_channel(0), &ctx),
+			Err(Failure::Busy)
+		);
+		assert!(!events.is_current(old_epoch));
+		while !events.receive.is_empty() {
+			assert!(events.try_recv().is_err());
+		}
+		emit_event(
+			&send,
+			&typing,
+			Envelope {
+				generation: state.generation,
+				event: Event::Resync,
+			},
+			&ctx,
+		)
+		.unwrap();
+		emit_event(&send, &typing, queued_ready(state.generation), &ctx).unwrap();
+		for _ in 0..2 {
+			let (event, epoch) = events.try_recv_epoch().unwrap();
+			assert!(events.is_current(epoch));
+			state.apply(event);
+		}
+		assert!(state.gateway_connected);
+		// A late notification must not wipe out the completed recovery.
+		assert!(!events.take_pressure());
+		assert!(!send.delivery().borrow().recovering);
+		assert!(state.gateway_connected);
 	}
 
 	#[test]
@@ -1626,8 +1760,7 @@ mod tests {
 		let (send, mut events) = reliable_events(ctx.clone());
 		let (typing, _) = mpsc::channel(8);
 		let envelope = queued_channel(2);
-		let charge = envelope.event.bytes() + size_of::<(Envelope, OwnedSemaphorePermit)>()
-			- size_of::<Event>();
+		let charge = envelope.event.bytes() + size_of::<QueuedEvent>() - size_of::<Event>();
 		let held = send
 			.bytes
 			.clone()
@@ -1637,15 +1770,19 @@ mod tests {
 		assert_eq!(send.bytes.available_permits(), 0);
 		assert_eq!(
 			emit_event(&send, &typing, queued_channel(3), &ctx),
-			Err(Failure::CapacityAt(
-				"Account synchronization queue exceeds 32 MiB; connection stopped"
-			))
+			Err(Failure::Busy)
 		);
 		assert_eq!(events.receive.len(), 1);
-		events.try_recv().unwrap();
+		assert!(events.try_recv().is_err());
 		assert_eq!(send.bytes.available_permits(), charge);
-		emit_event(&send, &typing, queued_channel(3), &ctx).unwrap();
+		assert!(events.take_pressure());
+		assert_eq!(
+			emit_event(&send, &typing, queued_channel(3), &ctx),
+			Err(Failure::Busy)
+		);
 		drop(held);
+		assert!(!events.take_pressure());
+		emit_event(&send, &typing, queued_channel(3), &ctx).unwrap();
 		let before = send.bytes.available_permits();
 		let mut oversized = queued_channel(4);
 		if let Event::ChannelCreated(channel) = &mut oversized.event {
@@ -1682,6 +1819,7 @@ mod tests {
 						channel: model::Id(10),
 						user: model::Id(user),
 						timestamp: 1,
+						member: None,
 					}),
 				},
 				&ctx,
@@ -1722,38 +1860,39 @@ mod tests {
 			channel: Id(10),
 			user: Id(1),
 			timestamp: 1,
+			member: None,
 		};
-		assert!(!gate.accept(signal, 0, now));
-		assert!(!gate.accept(signal, 11, now));
+		assert!(!gate.accept(&signal, 0, now));
+		assert!(!gate.accept(&signal, 11, now));
 		for user in 1..=8 {
 			let signal = Signal {
 				user: Id(user),
-				..signal
+				..signal.clone()
 			};
-			assert!(gate.accept(signal, 10, now));
-			assert!(!gate.accept(signal, 10, now));
+			assert!(gate.accept(&signal, 10, now));
+			assert!(!gate.accept(&signal, 10, now));
 		}
 		for user in 9..=1_000 {
 			assert!(!gate.accept(
-				Signal {
+				&Signal {
 					user: Id(user),
-					..signal
+					..signal.clone()
 				},
 				10,
 				now
 			));
 		}
-		assert!(!gate.accept(signal, 10, now + Duration::from_millis(1_999)));
-		assert!(gate.accept(signal, 10, now + Duration::from_secs(2)));
+		assert!(!gate.accept(&signal, 10, now + Duration::from_millis(1_999)));
+		assert!(gate.accept(&signal, 10, now + Duration::from_secs(2)));
 		assert!(gate.accept(
-			Signal {
+			&Signal {
 				channel: Id(11),
-				..signal
+				..signal.clone()
 			},
 			11,
 			now
 		));
-		assert!(!gate.accept(signal, 11, now));
+		assert!(!gate.accept(&signal, 11, now));
 	}
 	use super::*;
 	#[test]
@@ -2889,6 +3028,20 @@ mod tests {
 	}
 	#[test]
 	fn reads_scope_permission_errors_but_expiry_stays_global() {
+		for failure in [Failure::Busy, Failure::ResponseLimit] {
+			assert!(matches!(
+				scope_history_failure(Event::Failure(failure), model::Id(1), 9),
+				Event::HistoryFailed {failure: actual,..} if actual == failure
+			));
+			assert!(
+				admin_read_failure(&Event::ServerAdmin(client_core::server_admin::Event {
+					guild: model::Id(2),
+					request: 9,
+					result: Err(failure),
+				}))
+				.is_none()
+			);
+		}
 		assert!(matches!(
 			scope_history_failure(Event::Unavailable(model::Id(1)), model::Id(1), 9),
 			Event::HistoryFailed {

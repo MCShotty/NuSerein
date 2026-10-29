@@ -304,11 +304,9 @@ impl State {
 			.and_then(|channel| channel.guild)
 			.is_some()
 		{
-			let member = self.display_member(message.channel, message.author.id);
-			let nick = match member {
-				Some(member) => member.nick.as_deref(),
-				None => message.author_nick.as_deref(),
-			};
+			let nick = self
+				.member_nickname(message.channel, message.author.id)
+				.unwrap_or(message.author_nick.as_deref());
 			if let Some(nick) = nick.filter(|nick| !nick.is_empty()) {
 				return nick;
 			}

@@ -265,6 +265,14 @@ impl State {
 			self.members = None;
 		}
 		self.member_search = Default::default();
+		if self
+			.selected
+			.and_then(|old| self.channel(old))
+			.and_then(|old| old.guild)
+			!= self.channel(channel).and_then(|next| next.guild)
+		{
+			self.member_labels.clear();
+		}
 		self.selected = Some(channel);
 		self.clear_search();
 		self.reset_thread_starter();

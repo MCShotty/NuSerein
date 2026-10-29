@@ -1,5 +1,5 @@
 //! Bounded history windows, reply originals and conversation search.
-use super::{DiscordApi, Event, Failure, Id, Instant, Method, safe_delay};
+use super::{DiscordApi, Event, Failure, Id, Method, safe_delay};
 use discord_protocol::{MessageDto, decode, pins, search};
 
 impl DiscordApi {
@@ -23,7 +23,7 @@ impl DiscordApi {
 			Ok(_) => Event::HistoryFailed {
 				channel,
 				request,
-				failure: Failure::Protocol,
+				failure: Failure::ResponseLimit,
 			},
 			Err(failure) if failure.ends_session() => Event::Failure(failure),
 			Err(failure) => Event::HistoryFailed {
@@ -94,7 +94,11 @@ impl DiscordApi {
 				older: before.is_some(),
 				messages: messages.into_iter().map(MessageDto::into_model).collect(),
 			},
-			Ok(_) => Event::Failure(Failure::Capacity),
+			Ok(_) => Event::HistoryFailed {
+				channel,
+				request,
+				failure: Failure::ResponseLimit,
+			},
 			Err(Failure::Forbidden) => Event::Unavailable(channel),
 			Err(f) => Event::Failure(f),
 		}
@@ -186,8 +190,12 @@ impl DiscordApi {
 			.code
 			.is_some_and(|code| (110000..119999).contains(&code))
 		{
-			let mut next = self.cooldown.lock().await;
-			*next = (*next).max(Instant::now() + safe_delay(reply.retry_after)?);
+			self.cooldown.lock().await.observe(
+				&super::rate_limits::Route::new(&Method::GET, &path),
+				None,
+				Some(safe_delay(reply.retry_after)?),
+				false,
+			)?;
 			return Ok(client_core::search::Outcome::Indexing);
 		}
 		reply

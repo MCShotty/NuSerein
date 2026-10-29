@@ -46,6 +46,7 @@ pub enum Event {
 		request: member_search::Request,
 		result: Result<Vec<Member>, auth::Failure>,
 	},
+	MemberIdentity(Box<model::MemberIdentity>),
 	Startup(Box<PreparedStartup>),
 	StartupWarnings(model::account::Warnings),
 	/// Redacted decode cause preceding a session failure; schema paths only, never remote values.
@@ -294,6 +295,8 @@ pub enum Event {
 	Unavailable(Id),
 	PermissionsChanged,
 	Permissions(permissions::Event),
+	/// Returns one already-bounded transport command to the existing rejection path.
+	CommandRejected(Box<crate::Command>),
 }
 
 pub struct Envelope {
@@ -362,6 +365,9 @@ impl Event {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
+				// Admitted desktop commands are at most 350 KiB; charge a conservative
+				// MiB including the boxed command instead of undercounting its payload.
+				Self::CommandRejected(_) => 1024 * 1024,
 				Self::Mfa(event) => event.bytes(),
 				Self::Report(event) => event.result.as_ref().map_or(0, reporting::Outcome::bytes),
 				Self::Interaction(event) => event.bytes(),
@@ -657,6 +663,8 @@ impl Event {
 							.map(presence::Update::heap_bytes)
 							.sum::<usize>()
 				}
+				Self::MemberIdentity(update) => update.bytes(),
+				Self::Typing(signal) => signal.member.as_ref().map_or(0, |member| member.bytes()),
 				Self::MemberSearch { request, result } => {
 					request.query.capacity()
 						+ request.users.capacity() * size_of::<Id>()

@@ -83,9 +83,7 @@ impl DiscordApi {
 			})
 			.collect();
 		if !snapshot.valid() {
-			return Err(Failure::CapacityAt(
-				"Community settings exceed safe capacity",
-			));
+			return Err(Failure::ResponseLimit);
 		}
 		Ok(snapshot)
 	}

@@ -4,6 +4,7 @@ mod channel_events;
 mod compression;
 mod connection_diagnostics;
 mod outgoing;
+const PERMISSION_REFRESH: &str = "Gateway permission metadata requires an authoritative refresh";
 pub use connection_diagnostics::{ConnectionDiagnostics, ConnectionReason};
 mod interactions;
 #[cfg(test)]
@@ -56,6 +57,14 @@ fn socket_failure(error: tokio_tungstenite::tungstenite::Error) -> Failure {
 		}
 		_ => Failure::Network,
 	}
+}
+
+/// One bounded delivery generation; coalesced watch notifications cannot erase a loss.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeliveryState {
+	pub blocked: bool,
+	pub recovering: bool,
+	pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +147,17 @@ fn reaction_event(
 	})
 }
 
+fn catalog_scope(bytes: &[u8]) -> Option<Id> {
+	#[derive(serde::Deserialize)]
+	struct Scope {
+		guild_id: Id,
+	}
+	decode::<Scope>(bytes)
+		.ok()
+		.map(|s| s.guild_id)
+		.filter(|id| id.0 != 0)
+}
+
 #[derive(Default)]
 struct ResumeState {
 	session: Option<Zeroizing<String>>,
@@ -178,34 +198,39 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 #[derive(Default)]
 struct Heartbeat {
-	awaiting_since: Option<Instant>,
-	last_ack: Option<Instant>,
+	pending: std::collections::VecDeque<(u64, Instant)>,
 }
 impl Heartbeat {
 	#[cfg(test)]
 	fn tick(&mut self, now: Instant, interval: Duration) -> Result<(), Failure> {
-		if self
-			.awaiting_since
-			.is_some_and(|sent| now.duration_since(sent) >= interval)
-		{
+		if self.expired(now, interval) {
 			return Err(Failure::Network);
 		}
-		self.sent(now);
+		self.pending.push_back((0, now));
 		Ok(())
 	}
 	fn expired(&self, now: Instant, interval: Duration) -> bool {
-		self.awaiting_since
-			.is_some_and(|sent| now.saturating_duration_since(sent) >= interval)
+		self.pending
+			.front()
+			.is_some_and(|(_, sent)| now.saturating_duration_since(*sent) >= interval)
 	}
-	fn sent(&mut self, now: Instant) {
-		if self.last_ack.is_some_and(|ack| ack >= now) {
-			return;
+	fn collect(&mut self, writer: &outgoing::Outgoing) -> bool {
+		while let Some(receipt) = writer.take_heartbeat() {
+			if self.pending.len() == outgoing::PACKETS {
+				return false;
+			}
+			self.pending.push_back(receipt);
 		}
-		self.awaiting_since.get_or_insert(now);
+		true
 	}
-	fn ack(&mut self) {
-		self.last_ack = Some(Instant::now());
-		self.awaiting_since = None;
+	fn probe_deadline(&self, requested: Option<u64>) -> Option<Instant> {
+		self.pending
+			.iter()
+			.find(|(ticket, _)| Some(*ticket) == requested)
+			.map(|(_, sent)| *sent + PROBE_TIMEOUT)
+	}
+	fn ack(&mut self) -> Option<u64> {
+		self.pending.pop_front().map(|(ticket, _)| ticket)
 	}
 }
 fn next_attempt(attempt: u32, ready_for: Option<Duration>) -> u32 {
@@ -396,7 +421,15 @@ fn subscription_packet(
 		.map(|(id, _)| id.to_string())
 		.into_iter()
 		.collect();
-	Frame::Text(serde_json::json!({"op":37,"d":{"subscriptions":{guild.to_string():{"typing":typing,"threads":false,"activities":true,"member_updates":false,"members":[],"channels":channels,"thread_member_lists":threads}}}}).to_string().into())
+	let mut setting = serde_json::json!({"typing":typing,"threads":false,"activities":true,"member_updates":false,"channels":channels,"thread_member_lists":threads});
+	if !typing {
+		setting["members"] = serde_json::json!([]);
+	}
+	Frame::Text(
+		serde_json::json!({"op":37,"d":{"subscriptions":{guild.to_string():setting}}})
+			.to_string()
+			.into(),
+	)
 }
 
 #[derive(Clone)]
@@ -729,6 +762,26 @@ impl ActiveMembers {
 			ranges: self.subscription.ranges.clone(),
 		}
 	}
+	fn identity(&mut self, update: &model::MemberIdentity) {
+		if update.guild != self.subscription.guild || !update.valid() {
+			return;
+		}
+		for slot in &mut self.slots {
+			if let Some(model::MemberSlot::Person(member)) = slot
+				&& member.user.id == update.user
+			{
+				if update.departed {
+					*slot = None;
+				} else {
+					update.apply(member);
+				}
+			}
+		}
+		if update.departed {
+			self.pending_presence.remove(&update.user);
+		}
+		self.fit_budget();
+	}
 	fn update(&mut self, update: MemberUpdate) -> Result<bool, Failure> {
 		if self.subscription.thread
 			|| update.guild_id != self.subscription.guild
@@ -816,7 +869,7 @@ impl ActiveMembers {
 						if let Some(model::MemberSlot::Person(previous)) =
 							&self.slots[index - span_start]
 						{
-							item.preserve_presence(previous);
+							item.preserve_missing(previous);
 						}
 						self.write_slot(index, item);
 					}
@@ -1127,9 +1180,10 @@ pub async fn run_with_activity_recovery_diagnostics(
 		watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
 		watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	),
+	delivery: watch::Receiver<DeliveryState>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
 	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
-	emit: impl Fn(Event) -> Result<(), Failure>,
+	emit: impl Fn(Event, u64) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
 	run_observed(
 		secret,
@@ -1144,6 +1198,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 			observe: &observe,
 		}),
 		Some(&reconnect),
+		Some(delivery),
 		diagnostics,
 		emit,
 		#[cfg(test)]
@@ -1151,6 +1206,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 	)
 	.await
 }
+#[derive(Clone)]
 struct ActivityInput<'a> {
 	spotify: watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	member_queries: watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
@@ -1198,8 +1254,9 @@ async fn run_recoverable(
 		voice_controls,
 		activity,
 		reconnect,
+		None,
 		Arc::new(Mutex::new(ConnectionDiagnostics::default())),
-		emit,
+		|event, _| emit(event),
 		#[cfg(test)]
 		test_endpoints,
 	)
@@ -1210,26 +1267,71 @@ async fn run_observed(
 	secret: Arc<SessionSecret>,
 	initial_url: String,
 	subscriptions: watch::Receiver<Option<MemberSubscription>>,
-	voice_controls: mpsc::Receiver<client_core::voice::Command>,
+	mut voice_controls: mpsc::Receiver<client_core::voice::Command>,
 	activity: Option<ActivityInput<'_>>,
 	reconnect: Option<&Notify>,
+	delivery: Option<watch::Receiver<DeliveryState>>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
-	emit: impl Fn(Event) -> Result<(), Failure>,
+	emit: impl Fn(Event, u64) -> Result<(), Failure>,
 	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
 ) -> Result<(), Failure> {
-	let result = run_observed_inner(
-		secret,
-		initial_url,
-		subscriptions,
-		voice_controls,
-		activity,
-		reconnect,
-		diagnostics.clone(),
-		emit,
-		#[cfg(test)]
-		test_endpoints,
-	)
-	.await;
+	let limits = Arc::new(Mutex::new(outgoing::Cooldowns::default()));
+	let mut recovering = false;
+	let mut recovery_attempt = 0;
+	let result = loop {
+		let started = Instant::now();
+		let epoch = delivery.as_ref().map_or(0, |d| d.borrow().generation);
+		let result = run_observed_inner(
+			secret.clone(),
+			initial_url.clone(),
+			subscriptions.clone(),
+			&mut voice_controls,
+			activity.clone(),
+			reconnect,
+			delivery.clone(),
+			diagnostics.clone(),
+			limits.clone(),
+			recovering,
+			|event| emit(event, epoch),
+			#[cfg(test)]
+			test_endpoints,
+		)
+		.await;
+		let permission_refresh = result == Err(Failure::ProtocolAt(PERMISSION_REFRESH));
+		if result != Err(Failure::Busy) && !permission_refresh {
+			break result;
+		}
+		if let Ok(mut history) = diagnostics.lock() {
+			history.record(
+				if permission_refresh {
+					ConnectionReason::PermissionRefresh
+				} else {
+					ConnectionReason::DeliveryCongestion
+				},
+				None,
+				0,
+				(0, 0),
+			);
+		}
+		// Once any part of a dispatch was admitted, replaying it could duplicate
+		// mutations. Revoke stale permissions and obtain a fresh snapshot instead.
+		loop {
+			let epoch = delivery.as_ref().map_or(0, |d| d.borrow().generation);
+			match emit(Event::Disconnected, epoch).and_then(|()| emit(Event::Resync, epoch)) {
+				Ok(()) => break,
+				Err(Failure::Busy) => sleep(Duration::from_millis(250)).await,
+				Err(failure) => return Err(failure),
+			}
+		}
+		if recovery_attempt > 0 {
+			sleep(Duration::from_millis(
+				(1000_u64 << recovery_attempt.min(5)) + jitter_ms(1000),
+			))
+			.await;
+		}
+		recovery_attempt = next_attempt(recovery_attempt, Some(started.elapsed()));
+		recovering = true;
+	};
 	if let Err(failure) = result
 		&& let Ok(mut history) = diagnostics.lock()
 	{
@@ -1264,10 +1366,13 @@ async fn run_observed_inner(
 	secret: Arc<SessionSecret>,
 	initial_url: String,
 	mut subscriptions: watch::Receiver<Option<MemberSubscription>>,
-	mut voice_controls: mpsc::Receiver<client_core::voice::Command>,
+	voice_controls: &mut mpsc::Receiver<client_core::voice::Command>,
 	activity: Option<ActivityInput<'_>>,
 	reconnect: Option<&Notify>,
+	mut delivery: Option<watch::Receiver<DeliveryState>>,
 	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	limits: Arc<Mutex<outgoing::Cooldowns>>,
+	recovering: bool,
 	emit: impl Fn(Event) -> Result<(), Failure>,
 	#[cfg(test)] test_endpoints: Option<(&str, &str)>,
 ) -> Result<(), Failure> {
@@ -1276,6 +1381,21 @@ async fn run_observed_inner(
 			history.record(reason, code, attempt, queue);
 		}
 	};
+	if recovering {
+		while voice_controls.try_recv().is_ok() {}
+	}
+	let delivery_fence = delivery.clone();
+	let delivery_epoch = delivery.as_ref().map_or(0, |d| d.borrow().generation);
+	let emit = |event| {
+		if delivery_fence.as_ref().is_some_and(|d| {
+			let state = *d.borrow();
+			state.blocked || state.generation != delivery_epoch
+		}) {
+			return Err(Failure::Busy);
+		}
+		emit(event)
+	};
+	let mut delivery_open = delivery.is_some();
 	let initial_url = validated_url(&initial_url)?;
 	let activity_enabled = activity.is_some();
 	let mut activity_open = activity_enabled;
@@ -1310,7 +1430,7 @@ async fn run_observed_inner(
 			== Some(std::ffi::OsStr::new("1")),
 	);
 	let mut state = ResumeState::default();
-	let mut was_ready = false;
+	let mut was_ready = recovering;
 	let mut owner_id = None;
 	let mut attempt = 0;
 	let mut calls = voice::Calls::default();
@@ -1320,16 +1440,30 @@ async fn run_observed_inner(
 	let mut known_guilds = std::collections::BTreeSet::new();
 	let mut voice_open = true;
 	let mut skip_backoff = false;
-	let mut cooldown_until: Option<Instant> = None;
 	let mut immediate_reconnect_used = false;
 	let mut queries = member_search::Search::default();
 	// Initial login is bounded, but an established session must survive long outages.
 	while was_ready || attempt < 6 {
+		if attempt == 0 {
+			let penalty = limits
+				.lock()
+				.map_err(|_| Failure::Network)?
+				.connection_until
+				.take();
+			if let Some(until) = penalty {
+				tokio::time::sleep_until(until).await;
+			}
+		}
 		if attempt > 0 {
 			calls.disconnected();
 			while voice_controls.try_recv().is_ok() {}
 			emit(Event::Disconnected)?;
-			if let Some(until) = cooldown_until.take() {
+			let penalty = limits
+				.lock()
+				.map_err(|_| Failure::Network)?
+				.connection_until
+				.take();
+			if let Some(until) = penalty {
 				tokio::time::sleep_until(until).await;
 				skip_backoff = true;
 			}
@@ -1430,7 +1564,10 @@ async fn run_observed_inner(
 				(0, 0),
 			);
 			if code == 4008 {
-				cooldown_until = Some(Instant::now() + Duration::from_secs(60));
+				limits
+					.lock()
+					.map_err(|_| Failure::Network)?
+					.connection_until = Some(Instant::now() + Duration::from_secs(60));
 			}
 			state.close(code)?;
 		}
@@ -1499,8 +1636,7 @@ async fn run_observed_inner(
 			interval,
 		);
 		let (sink, mut incoming) = socket.split();
-		let mut writer = outgoing::Outgoing::start(sink, interval);
-		let mut written_heartbeat = None;
+		let mut writer = outgoing::Outgoing::with_limits(sink, interval, limits.clone());
 		let mut written_subscription = None;
 		let mut probe_requested: Option<u64> = None;
 		let mut overdue_started: Option<Instant> = None;
@@ -1509,7 +1645,7 @@ async fn run_observed_inner(
 		timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let mut ready_at: Option<Instant> = None;
 		let ready_deadline = Instant::now() + Duration::from_secs(30);
-		let mut probe_deadline: Option<Instant> = None;
+
 		let mut active_members: Option<ActiveMembers> = None;
 		let mut direct_presence = presence::Pending::default();
 		let mut sent_members = false;
@@ -1520,6 +1656,22 @@ async fn run_observed_inner(
 		let mut member_ticket = 0;
 		outgoing_activity.reconnect();
 		loop {
+			if delivery.as_ref().is_some_and(|d| {
+				let state = *d.borrow();
+				state.blocked || state.generation != delivery_epoch
+			}) {
+				return Err(Failure::Busy);
+			}
+			if !heartbeat.collect(&writer) {
+				record(
+					ConnectionReason::LocalCapacity,
+					None,
+					attempt,
+					writer.occupancy(),
+				);
+				break;
+			}
+			let probe_deadline = heartbeat.probe_deadline(probe_requested);
 			if writer.is_finished() {
 				record(
 					ConnectionReason::SocketWrite,
@@ -1584,6 +1736,16 @@ async fn run_observed_inner(
 			if activity_enabled && last_observation != Some(outgoing_activity.observation) {
 				observe(outgoing_activity.observation)?;
 				last_observation = Some(outgoing_activity.observation);
+			}
+			if ready_at.is_some()
+				&& writer.optional_capacity(1)
+				&& let Some((guild, users, frame)) = queries.pending_subscription()
+			{
+				match writer.send(frame).await {
+					Ok(()) => queries.subscribed(guild, users),
+					Err(Failure::Busy) => {}
+					Err(_) => break,
+				}
 			}
 			if ready_at.is_some() && !sent_members && writer.optional_capacity(2) {
 				let subscription = subscriptions.borrow_and_update().clone();
@@ -1675,19 +1837,13 @@ async fn run_observed_inner(
 				None
 			};
 			tokio::select! {
+				changed=async {match delivery.as_mut() {Some(d)=>d.changed().await,None=>std::future::pending().await}}, if delivery_open => {
+					if changed.is_err(){delivery_open=false;}else if delivery.as_ref().is_some_and(|d| {let state=*d.borrow();state.blocked || state.generation!=delivery_epoch}){return Err(Failure::Busy);}
+				}
 				changed=writer.progress.changed() => {
 					if changed.is_err() {record(ConnectionReason::SocketWrite,None,attempt,writer.occupancy());break;}
 					let progress=*writer.progress.borrow_and_update();
 					if progress.failed {break;}
-					if progress.heartbeat!=written_heartbeat {
-						written_heartbeat=progress.heartbeat;
-						if let Some((ticket,sent))=progress.heartbeat {
-							heartbeat.sent(sent);
-							if probe_requested.is_some_and(|requested|ticket>=requested) {
-								if heartbeat.awaiting_since.is_some() {probe_deadline=Some(sent+PROBE_TIMEOUT);} else {probe_requested=None;}
-							}
-						}
-					}
 					if progress.subscription!=written_subscription {
 						written_subscription=progress.subscription;
 						if let (Some((ticket,sent)),Some(active))=(progress.subscription,active_members.as_ref()) && ticket==member_ticket && active.awaiting_sync {members_deadline=Some(sent+active.retry_delay());}
@@ -1830,6 +1986,7 @@ async fn run_observed_inner(
 								retired_lists.push((old.subscription.guild, old.subscription.list_id.clone(), old.wire_list.clone()));
 							}
 							if !matches!(timeout(Duration::from_secs(5),writer.send(subscription_packet(old.subscription.guild,false,None,old.subscription.thread))).await,Ok(Ok(()))) {break;}
+							queries.canceled_subscription(old.subscription.guild);
 						}
 						members_deadline=None;
 					}
@@ -1878,16 +2035,19 @@ async fn run_observed_inner(
 					};
 					match frame {
 						Some(Ok(Frame::Text(text))) => {
-							let packet: GatewayPacket = decode_gateway(text.as_bytes()).map_err(|_| diagnosed(&emit, Failure::Protocol, diagnose_packet(text.as_bytes())))?;
-							// Reaction and poll vote counts are additive: do not apply a repeated dispatch or
-							// move the resume cursor backwards when one is replayed.
-							if packet.op == 0
-								&& matches!(packet.t.as_deref(), Some("MESSAGE_POLL_VOTE_ADD" | "MESSAGE_POLL_VOTE_REMOVE" | "MESSAGE_REACTION_ADD" | "MESSAGE_REACTION_REMOVE" | "MESSAGE_REACTION_REMOVE_ALL" | "MESSAGE_REACTION_REMOVE_EMOJI"))
-								&& packet.s.zip(state.sequence).is_some_and(|(next, last)| next <= last)
-							{ continue; }
-							if let Some(sequence) = packet.s { state.sequence = Some(sequence); }
+							let packet: GatewayPacket = decode_gateway(text.as_bytes()).map_err(|_| diagnosed(emit, Failure::Protocol, diagnose_packet(text.as_bytes())))?;
+							// Every dispatch shares one monotonic replay cursor. READY starts a new session.
+							if packet.op == 0 && packet.t.as_deref()!=Some("READY")
+								&& packet.s.zip(state.sequence).is_some_and(|(next,last)|next<=last) {continue;}
+							let admitted_sequence=(packet.op==0).then_some(packet.s).flatten();
 							match packet.op {
-								11 => { heartbeat.ack(); if probe_deadline.is_some() {probe_deadline=None;probe_requested=None;} priority_reads=0;overdue_started=None; }
+								11 => {
+									// Read all actual send receipts before interpreting this ACK, even if the
+									// writer's watch notifications coalesced or raced socket readiness.
+									if !heartbeat.collect(&writer) {record(ConnectionReason::LocalCapacity,None,attempt,writer.occupancy());break;}
+									if heartbeat.ack().zip(probe_requested).is_some_and(|(acked,probe)|acked>=probe) {probe_requested=None;}
+									priority_reads=0;overdue_started=None;
+								}
 								1 => {
 									let packet = serde_json::json!({"op":1,"d":state.sequence}).to_string();
 									if !matches!(timeout(Duration::from_secs(5), writer.send(Frame::Text(packet.into()))).await, Ok(Ok(()))) { break; }
@@ -1913,11 +2073,11 @@ async fn run_observed_inner(
 									"READY" => {
 										direct_presence=presence::Pending::default();
 										active_members=None;members_deadline=None;sent_members = !subscriptions_open;
-										let envelope = ready::decode(packet.d.get().as_bytes()).map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid READY identity or relationships"), ready::diagnose(packet.d.get().as_bytes())))?;
+										let envelope = ready::decode(packet.d.get().as_bytes()).map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid READY identity or relationships"), ready::diagnose(packet.d.get().as_bytes())))?;
 										if envelope.user.bot { return Err(Failure::InvalidCredential); }
-										let permissions = envelope.permissions().map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid permission metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
+										let permissions = envelope.permissions().map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid permission metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
 										let gates = envelope.onboarding();
-										let (mut ready, mut warnings) = envelope.navigation().map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid READY guild or channel metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
+										let (mut ready, mut warnings) = envelope.navigation().map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid READY guild or channel metadata"), ready::diagnose(packet.d.get().as_bytes())))?;
 										owner_id=Some(ready.user.id);
 										if ready.user.username.is_empty() || ready.user.username.len() > 128 || ready.user.username.chars().any(char::is_control) || ready.session_id.is_empty() || ready.session_id.chars().any(char::is_control) {
 											return Err(Failure::ProtocolAt("Gateway login: invalid account identity or session ID"));
@@ -2004,10 +2164,10 @@ async fn run_observed_inner(
 										ready_at = Some(Instant::now());
 									}
 									"RATE_LIMITED" => {
-										#[derive(serde::Deserialize)]
+										#[derive(serde::Deserialize,Default)]
 										struct Meta { guild_id: Option<Id>, nonce: Option<String> }
 										#[derive(serde::Deserialize)]
-										struct Limited { opcode: u8, retry_after: f64, meta: Meta }
+										struct Limited { opcode: u8, retry_after: f64, #[serde(default)] meta: Meta }
 										if packet.d.get().len()<=4096 && let Ok(limited)=decode::<Limited>(packet.d.get().as_bytes()) && limited.retry_after.is_finite() && (0.0..=86400.0).contains(&limited.retry_after) {
 											let delay=Duration::from_secs_f64(limited.retry_after);
 											writer.cooldown(limited.opcode,limited.meta.guild_id,delay);
@@ -2019,7 +2179,7 @@ async fn run_observed_inner(
 										if let Some(event) = queries.chunk(packet.d.get().as_bytes()) { emit(event)?; }
 									}
 									"READY_SUPPLEMENTAL" => {
-										let (mut extra, warnings) = ready::supplemental(packet.d.get().as_bytes()).map_err(|_| diagnosed(&emit, Failure::ProtocolAt("Gateway login: invalid supplemental guild or voice metadata"), ready::diagnose_supplemental(packet.d.get().as_bytes())))?;
+										let (mut extra, warnings) = ready::supplemental(packet.d.get().as_bytes()).map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid supplemental guild or voice metadata"), ready::diagnose_supplemental(packet.d.get().as_bytes())))?;
 										if warnings != model::account::Warnings::default() { emit(Event::StartupWarnings(warnings))?; }
 										if let Some(friends) = extra.merged_presences.as_ref().and_then(|m| m.friends.as_deref()).or(extra.presences.as_deref()) {
 											direct_presence.friends(friends, Instant::now(), &emit)?;
@@ -2104,7 +2264,7 @@ async fn run_observed_inner(
 									"TYPING_START" => {
 										// Malformed ephemeral signals must not interrupt message delivery.
 										if let Ok(typing)=discord_protocol::typing::decode(packet.d.get().as_bytes()) {
-											emit(Event::Typing(client_core::typing::Signal { channel:typing.channel_id,user:typing.user_id,timestamp:typing.timestamp }))?;
+											emit(Event::Typing(client_core::typing::Signal { channel:typing.channel_id,user:typing.user_id,timestamp:typing.timestamp, member:typing.member }))?;
 										}
 									}
 									"CHANNEL_RECIPIENT_ADD" => {let d:RecipientAdded=decode(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;emit(Event::RecipientAdded {channel:d.channel_id,user:d.user.into_model()})?;}
@@ -2140,13 +2300,13 @@ async fn run_observed_inner(
 										emit(Event::UserAction(client_core::user_actions::Event::FriendProfile(profile)))?;
 									}
 									"USER_GUILD_SETTINGS_UPDATE" => {
-										let setting=decode::<discord_protocol::notifications::Setting>(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
-										emit(notification_settings(vec![setting],false))?;
+										if let Ok(setting)=decode::<discord_protocol::notifications::Setting>(packet.d.get().as_bytes()) {emit(notification_settings(vec![setting],false))?;}
+										else {emit(Event::NotificationPreferences(client_core::notifications::Event::Invalidate))?;gateway_diagnostics.record("notification metadata unavailable; refresh required");}
 									}
 									"SESSIONS_REPLACE" => {
 										if activity_enabled { outgoing_activity.observe(packet.d.get().as_bytes(), state.session.as_deref().map(String::as_str).unwrap_or_default()); }
-										let sessions=decode::<discord_protocol::notifications::Sessions>(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
-										emit(Event::NotificationPreferences(client_core::notifications::Event::Presence(sessions.dnd())))?;
+										let sessions=decode::<discord_protocol::notifications::Sessions>(packet.d.get().as_bytes()).ok();
+										emit(Event::NotificationPreferences(client_core::notifications::Event::Presence(sessions.and_then(|s|s.dnd()))))?;
 									}
 									// Status, appearance and server folders live here. Channel and guild
 									// mutes live on user guild settings, so this event must not clear them.
@@ -2174,6 +2334,10 @@ async fn run_observed_inner(
 										let envelope = ready::passive(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
 										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=envelope.permissions(owner).map_err(|_|Failure::Protocol)? {
 											emit(Event::Permissions(client_core::permissions::Event::Member {guild,roles,timeout_until}))?;
+										}
+										for update in envelope.member_identities() {
+											if let Some(active) = &mut active_members { active.identity(&update); }
+											emit(Event::MemberIdentity(Box::new(update)))?;
 										}
 										let mut update = envelope.voice().map_err(|_|Failure::Protocol)?;
 										let latest = std::mem::take(&mut update.updated_channels);
@@ -2232,12 +2396,13 @@ async fn run_observed_inner(
 										if let Some(event) = thread_events::decode_event(packet.t.as_deref().unwrap_or(""), packet.d.get().as_bytes(), owner_id)? { emit(event)?; }
 									}
 									"GUILD_STICKERS_UPDATE" => {
-										let update: discord_protocol::stickers::GuildStickersUpdate = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?;
-										emit(Event::GuildStickers { guild: update.guild_id, stickers: discord_protocol::stickers::guild_catalog(update.stickers.0, update.guild_id).map_err(|_| Failure::Protocol)? })?;
+										let update=decode::<discord_protocol::stickers::GuildStickersUpdate>(packet.d.get().as_bytes()).and_then(|u|discord_protocol::stickers::guild_catalog(u.stickers.0,u.guild_id).map(|stickers|(u.guild_id,stickers)));
+										if let Ok((guild,stickers))=update {emit(Event::GuildStickers{guild,stickers})?;}
+										else {if let Some(guild)=catalog_scope(packet.d.get().as_bytes()){emit(Event::GuildStickers{guild,stickers:Vec::new()})?;}gateway_diagnostics.record("sticker catalog unavailable; invalidated");}
 									}
 									"GUILD_EMOJIS_UPDATE" => {
-										let update: GuildEmojisUpdate = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?;
-										emit(Event::GuildEmojis { guild: update.guild_id, emojis: update.emojis.0 })?;
+										if let Ok(update)=decode::<GuildEmojisUpdate>(packet.d.get().as_bytes()) {emit(Event::GuildEmojis { guild:update.guild_id,emojis:update.emojis.0})?;}
+										else {if let Some(guild)=catalog_scope(packet.d.get().as_bytes()){emit(Event::GuildEmojis{guild,emojis:Vec::new()})?;}gateway_diagnostics.record("emoji catalog unavailable; invalidated");}
 									}
 									// Best-effort playback metadata: an unsupported effect never ends the session.
 									"VOICE_CHANNEL_EFFECT_SEND" => {
@@ -2252,7 +2417,7 @@ async fn run_observed_inner(
 									}
 									"GUILD_CREATE" => {
 										member_diagnostics.record("guild refresh received");
-										let permissions=owner_id.map(|owner|permissions::guild(packet.d.get().as_bytes(),owner)).transpose().map_err(|_|Failure::ProtocolAt("Gateway guild refresh: invalid permission metadata"))?;
+										let permissions=owner_id.map(|owner|permissions::guild(packet.d.get().as_bytes(),owner)).transpose().map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										let mut guild: GuildDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::ProtocolAt("Gateway guild refresh: unsupported guild payload"))?;
 										if guild.channels.len() + calls.allowed.len() > MAX_NAV { return Err(Failure::Capacity); }
 										if !known_guilds.contains(&guild.id) {
@@ -2288,7 +2453,7 @@ async fn run_observed_inner(
 									}
 									"GUILD_UPDATE" => {
 										if let Ok(Some((guild,incident)))=discord_protocol::server_access::incident_update(packet.d.get().as_bytes()){emit(Event::ServerIncident{guild,incident})?;}
-										let owner=permissions::owner(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										let owner=permissions::owner(packet.d.get().as_bytes()).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										emit(Event::GuildChanged(decode::<GuildPatchDto>(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?.into_model()))?;
 										if let Some((guild,owner))=owner {emit(Event::Permissions(client_core::permissions::Event::Owner {guild,owner}))?;}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::guild(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
@@ -2298,10 +2463,20 @@ async fn run_observed_inner(
 										emit(Event::BulkModeration {guild,report})?;
 									}
 									"GUILD_MEMBER_UPDATE" => {
-										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=permissions::member(packet.d.get().as_bytes(),owner).map_err(|_|Failure::Protocol)? {
+										if let Ok(update) = discord_protocol::member_identity::update(packet.d.get().as_bytes()) {
+											if let Some(active) = &mut active_members { active.identity(&update); }
+											emit(Event::MemberIdentity(Box::new(update)))?;
+										}
+										if let Some(owner)=owner_id && let Some((guild,roles,timeout_until))=permissions::member(packet.d.get().as_bytes(),owner).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))? {
 											emit(Event::Permissions(client_core::permissions::Event::Member {guild,roles,timeout_until}))?;
 										}
 										if let Some(gate)=owner_id.and_then(|owner|onboarding::member(packet.d.get().as_bytes(),owner)) {emit(Event::Onboarding(client_core::onboarding::Event::Gates { snapshot: false, gates: vec![gate] }))?;}
+									}
+									"GUILD_MEMBER_REMOVE" => {
+										if let Ok(update) = discord_protocol::member_identity::removed(packet.d.get().as_bytes()) {
+											if let Some(active) = &mut active_members { active.identity(&update); }
+											emit(Event::MemberIdentity(Box::new(update)))?;
+										}
 									}
 									"GUILD_DELETE" => {
 										#[derive(serde::Deserialize)]
@@ -2322,11 +2497,11 @@ async fn run_observed_inner(
 										}
 									}
 									"GUILD_ROLE_CREATE" | "GUILD_ROLE_UPDATE" => {
-										let (guild,role)=permissions::role(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										let (guild,role)=permissions::role(packet.d.get().as_bytes()).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										emit(Event::Permissions(client_core::permissions::Event::Role {guild,role}))?;
 									}
 									"GUILD_ROLE_DELETE" => {
-										let (guild,id)=permissions::role_removed(packet.d.get().as_bytes()).map_err(|_|Failure::Protocol)?;
+										let (guild,id)=permissions::role_removed(packet.d.get().as_bytes()).map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										emit(Event::Permissions(client_core::permissions::Event::RoleRemoved {guild,id}))?;
 									}
 									_ => gateway_diagnostics.record(ignored_dispatch_label(packet.t.as_deref())),
@@ -2336,11 +2511,12 @@ async fn run_observed_inner(
 									return Err(Failure::Protocol);
 								},
 							}
+							if let Some(sequence)=admitted_sequence {state.sequence=Some(sequence); }
 						}
 						Some(Ok(Frame::Close(close))) => {
 							let code = close.map_or(1006, |f| u16::from(f.code));
 							record(if code==4008 {ConnectionReason::RateLimited}else{ConnectionReason::ServerClose},Some(code),attempt,writer.occupancy());
-							if code==4008 {cooldown_until=Some(Instant::now()+Duration::from_secs(60));}
+							if code==4008 {limits.lock().map_err(|_|Failure::Network)?.connection_until=Some(Instant::now()+Duration::from_secs(60));}
 							state.close(code)?;
 							break;
 						}
@@ -2816,6 +2992,7 @@ mod tests {
 	            let (finished, done) = tokio::sync::oneshot::channel();
 	            let server = async {
 	                let mut previous = None;
+				let mut sequence=1;
 	                for connection in 0..2 {
 	                    let (stream, _) = listener.accept().await.unwrap();
 	                    let mut socket = accept_async(stream).await.unwrap();
@@ -2834,9 +3011,10 @@ mod tests {
 	                        assert_eq!(value["op"], 1);
 	                        send(&mut socket, json!({"op":11,"d":null})).await;
 	                    }
-	                    send(&mut socket, if connection == 0 {
+	                    if connection!=0 {sequence+=1;}
+						send(&mut socket, if connection == 0 {
 	                        ready(1, "synthetic-own-activity")
-	                    } else { json!({"op":0,"t":"RESUMED","s":2,"d":{}}) }).await;
+	                    } else { json!({"op":0,"t":"RESUMED","s":sequence,"d":{}}) }).await;
 	                    let expected = if connection == 0 { vec![Some("osu!"), Some("Minecraft")] } else { vec![Some("Minecraft"), None] };
 	                    for name in expected {
 	                        let value = loop {
@@ -2864,7 +3042,8 @@ mod tests {
 	                                    (false, false, ActivityObservation::ServerMissing),
 	                                ] {
 	                                    let game = json!({"type":0,"application_id":"42"});
-	                                    send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":2,"d":[{
+									sequence+=1;
+	                                    send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":sequence,"d":[{
 	                                        "session_id":"all","status":"online",
 	                                        "activities":if public {json!([game])} else {json!([])},
 	                                        "hidden_activities":if hidden {json!([game])} else {json!([])}
@@ -2878,7 +3057,8 @@ mod tests {
 	                            }
 	                            Some(_) if connection == 1 => activity.send(None).unwrap(),
 	                            Some(_) => {
-	                                send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":3,"d":[{
+								sequence+=1;
+	                                send(&mut socket, json!({"op":0,"t":"SESSIONS_REPLACE","s":sequence,"d":[{
 	                                    "session_id":"all","status":"online","activities":[{"type":0,"application_id":"42"}]
 	                                }]})).await;
 	                                observed.wait_for(|value| *value == ActivityObservation::ServerListed).await.unwrap();
@@ -2985,8 +3165,14 @@ mod tests {
                 ] {
                     send(&mut socket, json!({"op":0,"t":"TYPING_START","s":sequence,"d":data})).await;
                 }
-                send(&mut socket, json!({"op":0,"t":"MESSAGE_CREATE","s":9,"d":{"id":"4","channel_id":"2","author":{"id":"3","username":"Synthetic"},"content":"Message after invalid typing"}})).await;
-                acknowledge(&mut socket, 9).await;
+                for (sequence,name,data) in [
+                    (9,"SESSIONS_REPLACE",json!([{"status":42}])),
+                    (10,"USER_GUILD_SETTINGS_UPDATE",json!({"guild_id":"2","muted":42})),
+                    (11,"GUILD_STICKERS_UPDATE",json!({"guild_id":"2","stickers":"unsupported"})),
+                    (12,"GUILD_EMOJIS_UPDATE",json!({"guild_id":"2","emojis":"unsupported"})),
+                ] {send(&mut socket,json!({"op":0,"t":name,"s":sequence,"d":data})).await;}
+                send(&mut socket, json!({"op":0,"t":"MESSAGE_CREATE","s":13,"d":{"id":"4","channel_id":"2","author":{"id":"3","username":"Synthetic"},"content":"Message after invalid typing"}})).await;
+                acknowledge(&mut socket, 13).await;
                 // Exercise a heartbeat reply racing the terminal close.
                 send(&mut socket, json!({"op":1,"d":null})).await;
                 socket.send(Frame::Close(Some(CloseFrame {
@@ -3022,6 +3208,126 @@ mod tests {
             assert_eq!(result, Err(Failure::Expired));
             assert_eq!(observed.into_inner().unwrap(), vec![(Id(2), Id(3), 1700000000), (Id(2), Id(3), 0)]);
         }).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn local_member_identity_dispatches_update_names_roles_and_keep_delivery() {
+		timeout(Duration::from_secs(10), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+			let (finished, observed) = tokio::sync::oneshot::channel();
+			let finished = std::sync::Mutex::new(Some(finished));
+			let (queries, member_queries) = watch::channel(Default::default());
+			let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+			let server = async {
+				let (stream, _) = listener.accept().await.unwrap();
+				let mut socket = accept_async(stream).await.unwrap();
+				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
+				assert_eq!(packet(&mut socket).await["op"], 2);
+				let mut initial = ready(1, "synthetic-member-session");
+				initial["d"]["guilds"] = json!([{"id":"10","name":"Synthetic guild","owner_id":"99","roles":[{"id":"10","permissions":"68608"},{"id":"11","permissions":"0","name":"Colored role","color":65280}],"members":[{"user":{"id":"1","username":"synthetic"},"roles":[]}],"channels":[{"id":"20","type":0,"name":"general","permission_overwrites":[]}]}]);
+				send(&mut socket, initial).await;
+				loop {
+					let subscribed = packet(&mut socket).await;
+					if subscribed["op"] == 1 {
+						send(&mut socket, json!({"op":11,"d":null})).await;
+						continue;
+					}
+					if subscribed["op"] == 37 {
+						assert_eq!(subscribed["d"]["subscriptions"]["10"]["typing"], true);
+						assert_eq!(subscribed["d"]["subscriptions"]["10"]["members"], json!(["7"]));
+						break;
+					}
+					assert!(matches!(subscribed["op"].as_u64(), Some(3 | 8)));
+				}
+				for (sequence, name, data) in [
+					(2,"MESSAGE_CREATE", json!({"id":"100","channel_id":"20","guild_id":"10","author":{"id":"7","username":"account"},"member":{"nick":"Old nickname","roles":["11"]},"content":"Before change"})),
+					(3,"GUILD_MEMBER_UPDATE", json!({"guild_id":"10","user":{"id":"7","username":"account"},"nick":"New nickname","roles":["11"]})),
+					(4,"GUILD_MEMBER_UPDATE", json!({"guild_id":"10","user":{"id":"7"},"nick":null,"roles":[]})),
+					// Invalid optional fields on someone else must not invalidate the owner's permissions.
+					(5,"GUILD_MEMBER_UPDATE", json!({"guild_id":"10","user":{"id":"7"},"roles":"unsupported","nick":false})),
+					(6,"TYPING_START", json!({"guild_id":"10","channel_id":"20","user_id":"7","timestamp":stamp,"member":{"user":{"id":"7","username":"account"},"nick":"Typing nickname","roles":[]}})),
+					(7,"PASSIVE_UPDATE_V2", json!({"guild_id":"10","updated_members":[{"user":{"id":"7","username":"account"},"nick":"Passive nickname","roles":["11"]}]})),
+					(8,"GUILD_MEMBER_REMOVE", json!({"guild_id":"10","user":{"id":"7"}})),
+				] { send(&mut socket, json!({"op":0,"t":name,"s":sequence,"d":data})).await; }
+				send(&mut socket, json!({"op":7,"d":null})).await;
+				drop(socket);
+				let (stream, _) = listener.accept().await.unwrap();
+				let mut socket = accept_async(stream).await.unwrap();
+				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
+				assert_eq!(packet(&mut socket).await["op"], 6);
+				// Replayed member changes arrive before RESUMED; the reducer must keep them.
+				send(&mut socket, json!({"op":0,"t":"GUILD_MEMBER_UPDATE","s":9,"d":{"guild_id":"10","user":{"id":"7","username":"account"},"nick":"Resumed nickname","roles":[]}})).await;
+				send(&mut socket, json!({"op":0,"t":"RESUMED","s":10,"d":{}})).await;
+				send(&mut socket, json!({"op":0,"t":"MESSAGE_CREATE","s":11,"d":{"id":"101","channel_id":"20","author":{"id":"8","username":"Other account"},"content":"After identity changes"}})).await;
+				observed.await.unwrap();
+			};
+			let state = std::sync::Mutex::new(client_core::State::default());
+			let names = std::sync::Mutex::new(Vec::new());
+			let client = run_inner(
+				Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_SESSION".into()).unwrap()),
+				"wss://gateway.discord.gg/".into(), watch::channel(None).1, mpsc::channel(1).1,
+				Some(ActivityInput { spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
+				|event| {
+					let startup = matches!(&event, Event::Startup(_) | Event::Ready { .. });
+					let changed = matches!(&event, Event::MemberIdentity(_) | Event::Typing(_));
+					let last = matches!(&event, Event::Message(message) if message.id == Id(101));
+					let mut state = state.lock().unwrap();
+					let generation = state.generation;
+					state.apply(client_core::Envelope { generation, event });
+					if startup {
+						let Some(client_core::Command::History { request, .. }) = state.select(Id(20)) else { panic!("synthetic guild accessible") };
+						state.apply(client_core::Envelope { generation, event: Event::History { channel: Id(20), request, older: false, messages: vec![] } });
+						queries.send_replace([None, Some(client_core::member_search::Request {guild: Id(10), channel: Id(20), nonce: 1, slot: 1, query: String::new(), users: vec![Id(7)]})]);
+					}
+					if changed {
+						names.lock().unwrap().push(state.member_nickname(Id(20), Id(7)).flatten().map(str::to_owned));
+						assert!(state.can_send(Id(20)));
+					}
+					if last {
+						assert_eq!(state.member_nickname(Id(20), Id(7)), Some(Some("Resumed nickname")));
+						assert!(state.timeline.get(Id(101)).is_some());
+						finished.lock().unwrap().take().unwrap().send(()).unwrap();
+						return Err(Failure::Expired);
+					}
+					Ok(())
+				}, Some(&endpoint));
+			let ((), result) = tokio::join!(server, client);
+			assert_eq!(result, Err(Failure::Expired));
+			assert_eq!(*names.lock().unwrap(), vec![Some("New nickname".into()), None, None, Some("Typing nickname".into()), Some("Passive nickname".into()), None, Some("Resumed nickname".into())]);
+		}).await.expect("member changes interrupted message delivery");
+	}
+
+	#[test]
+	fn incremental_member_rows_preserve_omitted_identity_fields() {
+		let mut active = ActiveMembers::new(MemberSubscription {
+			guild: Id(10),
+			channel: Id(20),
+			request: 1,
+			thread: false,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99]],
+		});
+		active.update(decode::<MemberUpdate>(br#"{"guild_id":"10","id":"everyone","ops":[{"op":"SYNC","range":[0,0],"items":[{"member":{"user":{"id":"7","username":"account"},"nick":"Guild nickname","roles":["11"]},"presence":{"status":"online","activities":[]}}]}]}"#).unwrap()).unwrap();
+		active.update(decode::<MemberUpdate>(br#"{"guild_id":"10","id":"everyone","ops":[{"op":"UPDATE","index":0,"item":{"member":{"user":{"id":"7","username":"account"}},"presence":{"status":"idle","activities":[]}}}]}"#).unwrap()).unwrap();
+		let row = active.people().next().unwrap();
+		assert_eq!(row.nick.as_deref(), Some("Guild nickname"));
+		assert_eq!(row.roles, vec![Id(11)]);
+		assert_eq!(row.status.as_deref(), Some("idle"));
+		let update = discord_protocol::member_identity::update(
+			br#"{"guild_id":"10","user":{"id":"7"},"nick":"Changed nickname","roles":[]}"#,
+		)
+		.unwrap();
+		active.identity(&update);
+		let list = active.snapshot(Freshness::Fresh);
+		let Some(model::MemberSlot::Person(row)) = &list.slots[0] else {
+			panic!()
+		};
+		assert_eq!(row.nick.as_deref(), Some("Changed nickname"));
+		assert!(row.roles.is_empty());
+		active.update(decode::<MemberUpdate>(br#"{"guild_id":"10","id":"everyone","ops":[{"op":"UPDATE","index":0,"item":{"member":{"user":{"id":"7","username":"account"},"nick":null,"roles":[]}}}]}"#).unwrap()).unwrap();
+		assert!(active.people().next().unwrap().nick.is_none());
+		assert!(active.people().next().unwrap().roles.is_empty());
 	}
 
 	#[tokio::test]
@@ -3417,7 +3723,7 @@ mod tests {
 			let mut heartbeat = Heartbeat::default();
 			let now = Instant::now();
 			let interval = Duration::from_secs(10);
-			heartbeat.sent(now);
+			heartbeat.pending.push_back((1, now));
 			// An unsolicited heartbeat immediately before the timer is not a missed ACK.
 			assert!(
 				heartbeat
@@ -4178,12 +4484,13 @@ mod member_tests {
 	                    assert_eq!(subscription["threads"],false);
 	                    assert_eq!(subscription["activities"],true);
 	                    assert_eq!(subscription["member_updates"],false);
-	                    assert_eq!(subscription["members"],json!([]));
 	                    if subscription["typing"]==false {
+	                        assert_eq!(subscription["members"],json!([]));
 	                        assert!(subscribed && switched && scrolled, "unsubscribe before the scrolled range");
 	                        assert_eq!(subscription["channels"],json!({}));
 	                        break;
 	                    }
+	                    assert!(subscription.get("members").is_none(), "range updates must preserve separately subscribed members");
 	                    if subscription["channels"]==json!({}) && subscription["thread_member_lists"]==json!([]) {
 	                        assert!(!subscribed, "cleared the open channel subscription while scrolling");
 	                        typing_ready=true;

@@ -97,6 +97,48 @@ impl Timeline {
 		}
 		any
 	}
+	/// Live partial identity updates include authoritative clears, unlike older message snapshots.
+	pub fn apply_author_identity(&mut self, update: &model::MemberIdentity) {
+		if !update.valid() {
+			return;
+		}
+		for message in self.messages.values_mut().flatten() {
+			if message.author.id != update.user || message.author.webhook {
+				continue;
+			}
+			let before = message.bytes();
+			if let Some(user) = &update.profile {
+				message.author.clone_from(user);
+			}
+			match &update.nick {
+				Patch::Value(nick) => {
+					message.author_nick = (!nick.is_empty()).then(|| nick.clone())
+				}
+				Patch::Null => message.author_nick = None,
+				Patch::Absent => {}
+			}
+			if let Patch::Value(roles) = &update.roles {
+				message.author_roles.clone_from(roles);
+			}
+			self.bytes = self
+				.bytes
+				.saturating_sub(before)
+				.saturating_add(message.bytes());
+			self.changed.insert(message.id);
+		}
+		while self.row_bytes() > MAX_BYTES {
+			let old = if self.retain_older {
+				self.messages.pop_last()
+			} else {
+				self.older_evicted = true;
+				self.messages.pop_first()
+			};
+			if let Some((_, Some(old))) = old {
+				self.bytes -= old.bytes();
+				self.payload_count -= 1;
+			}
+		}
+	}
 	pub fn set_preserve_deleted_messages(&mut self, enabled: bool) {
 		if self.preserve_deleted_messages == enabled {
 			return;

@@ -531,31 +531,18 @@ impl State {
 	}
 	fn live_author_roles(&self, guild: Id, channel: Id, user: Id) -> Option<&[Id]> {
 		self.live_member_roles(guild, channel, user)
-			.filter(|roles| !roles.is_empty())
 	}
 	fn live_member_roles(&self, guild: Id, channel: Id, user: Id) -> Option<&[Id]> {
-		let member = self
-			.members
-			.as_ref()
-			.filter(|list| list.guild == Some(guild) && list.channel == channel)
-			.and_then(|list| {
-				list.slots
-					.iter()
-					.flatten()
-					.filter_map(|slot| match slot {
-						model::MemberSlot::Person(m) => Some(m),
-						_ => None,
-					})
-					.find(|member| member.user.id == user)
-			})
-			.or_else(|| {
-				let view = &self.member_search[1];
-				view.request
-					.as_ref()
-					.filter(|request| request.guild == guild && request.channel == channel)?;
-				view.rows.iter().find(|member| member.user.id == user)
-			})?;
-		Some(member.roles.as_slice())
+		if self.channel(channel)?.guild != Some(guild) {
+			return None;
+		}
+		if let Some(update) = self.member_identity(channel, user)
+			&& let model::Patch::Value(roles) = &update.roles
+		{
+			return Some(roles);
+		}
+		self.display_member(channel, user)
+			.map(|member| member.roles.as_slice())
 	}
 	fn display_roles(
 		&self,

@@ -2,6 +2,7 @@ mod commands;
 mod history;
 mod http;
 mod messages;
+mod rate_limits;
 mod read_state;
 // Origin-fixed REST adapter. No cookies, redirects, logging, persistence or bot SDK.
 mod account_settings;
@@ -100,7 +101,8 @@ pub struct DiscordApi {
 	proxy: Mutex<ProxyState>,
 	upload_client: tokio::sync::OnceCell<Client>,
 	secret: Arc<SessionSecret>,
-	cooldown: Mutex<Instant>,
+	cooldown: Mutex<rate_limits::Limits>,
+	stop_signal: tokio::sync::Notify,
 	requests: Semaphore,
 	admin_reads: Semaphore,
 	review_progress: std::sync::Mutex<Option<server_moderation::ReviewNotify>>,
@@ -278,7 +280,8 @@ impl DiscordApi {
 				cached: None,
 			}),
 			secret,
-			cooldown: Mutex::new(Instant::now()),
+			cooldown: Mutex::new(rate_limits::Limits::default()),
+			stop_signal: tokio::sync::Notify::new(),
 			requests: Semaphore::new(4),
 			admin_reads: Semaphore::new(2),
 			review_progress: std::sync::Mutex::default(),
@@ -295,10 +298,41 @@ impl DiscordApi {
 	}
 	pub fn stop(&self) {
 		self.stopped.store(true, Ordering::Release);
+		self.requests.close();
+		self.admin_reads.close();
+		self.stop_signal.notify_waiters();
 		self.mfa.cancel_all();
 	}
 	pub fn stopped(&self) -> bool {
 		self.stopped.load(Ordering::Acquire)
+	}
+	/// Read-only startup recovery. Rejected credentials and ambiguous writes are never retried.
+	pub async fn bootstrap(&self) -> Result<(User, String), Failure> {
+		let deadline = Instant::now() + Duration::from_secs(30);
+		for attempt in 0..=2 {
+			let result = tokio::time::timeout_at(deadline, async {
+				let user = self.current_user().await?;
+				let gateway = self.gateway_url().await?;
+				Ok((user, gateway))
+			})
+			.await
+			.unwrap_or(Err(Failure::Network));
+			if !matches!(result, Err(Failure::Network)) || attempt == 2 || self.stopped() {
+				return result;
+			}
+			let jitter = std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap_or_default()
+				.subsec_millis()
+				% 250;
+			let retry =
+				Instant::now() + Duration::from_millis((1000 << attempt) + u64::from(jitter));
+			if retry >= deadline {
+				return Err(Failure::Network);
+			}
+			sleep_until(retry).await;
+		}
+		Err(Failure::Network)
 	}
 	pub async fn gateway_url(&self) -> Result<String, Failure> {
 		let bytes = self
@@ -605,6 +639,137 @@ fn safe_delay(seconds: Option<f64>) -> Result<Duration, Failure> {
 mod tests {
 	use super::*;
 	#[tokio::test]
+	async fn startup_retries_transient_reads_but_not_revoked_credentials() {
+		for revoked in [false, true] {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let mut api = DiscordApi::new(Arc::new(
+				SessionSecret::from_owner_input("synthetic-bootstrap-recovery".into()).unwrap(),
+			))
+			.unwrap();
+			api.base = format!("http://{}", listener.local_addr().unwrap());
+			let server = async {
+				let replies = if revoked {
+					vec![("401 Unauthorized", "{\"code\":0}")]
+				} else {
+					vec![
+						("503 Service Unavailable", "{}"),
+						("200 OK", "{\"id\":\"1\",\"username\":\"Synthetic\"}"),
+						("200 OK", "{\"url\":\"wss://gateway.discord.gg/\"}"),
+					]
+				};
+				for (status, body) in replies {
+					let (mut stream, _) = listener.accept().await.unwrap();
+					let mut headers = Vec::new();
+					while !headers.ends_with(b"\r\n\r\n") {
+						headers.push(stream.read_u8().await.unwrap());
+						assert!(headers.len() < 4096);
+					}
+					stream
+						.write_all(
+							format!(
+								"HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+								body.len()
+							)
+							.as_bytes(),
+						)
+						.await
+						.unwrap();
+				}
+			};
+			let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+				tokio::join!(api.bootstrap(), server)
+			})
+			.await
+			.unwrap();
+			if revoked {
+				assert!(matches!(result, Err(Failure::Expired)));
+				assert!(api.stopped());
+			} else {
+				let (user, url) = result.unwrap();
+				assert_eq!(user.id, Id(1));
+				assert_eq!(url, "wss://gateway.discord.gg/");
+				assert!(!api.stopped());
+			}
+		}
+	}
+	#[tokio::test]
+	async fn cooling_route_waiters_leave_permits_for_unrelated_requests() {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let mut api = DiscordApi::new(Arc::new(
+			SessionSecret::from_owner_input("synthetic-isolated-cooldown".into()).unwrap(),
+		))
+		.unwrap();
+		api.base = format!("http://{}", listener.local_addr().unwrap());
+		api.cooldown
+			.lock()
+			.await
+			.observe(
+				&rate_limits::Route::new(&Method::GET, "/channels/1/messages"),
+				Some("messages"),
+				Some(Duration::from_secs(60)),
+				false,
+			)
+			.unwrap();
+		let server = async {
+			let (mut stream, _) = listener.accept().await.unwrap();
+			let mut bytes = Vec::new();
+			while !bytes.ends_with(b"\r\n\r\n") {
+				bytes.push(stream.read_u8().await.unwrap());
+				assert!(bytes.len() < 4096);
+			}
+			assert!(bytes.starts_with(b"GET /channels/2/messages "));
+			stream
+				.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+				.await
+				.unwrap();
+		};
+		let waiting = async {
+			let _ = tokio::join!(
+				api.request(Method::GET, "/channels/1/messages", None),
+				api.request(Method::GET, "/channels/1/messages", None),
+				api.request(Method::GET, "/channels/1/messages", None),
+				api.request(Method::GET, "/channels/1/messages", None)
+			);
+		};
+		let foreground = async {
+			tokio::task::yield_now().await;
+			assert_eq!(
+				api.request(Method::GET, "/channels/2/messages", None)
+					.await
+					.unwrap(),
+				b"{}"
+			);
+		};
+		tokio::time::timeout(Duration::from_secs(2),async {tokio::select! {()=waiting=>panic!("cooling route sent early"), _=async {tokio::join!(server,foreground);}=>{}}}).await.unwrap();
+		assert_eq!(api.requests.available_permits(), 4);
+		assert!(!api.stopped());
+	}
+	#[tokio::test]
+	async fn stop_wakes_a_rate_limit_wait_without_sending() {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let mut api = DiscordApi::new(Arc::new(
+			SessionSecret::from_owner_input("synthetic-stop-cooldown".into()).unwrap(),
+		))
+		.unwrap();
+		api.base = format!("http://{}", listener.local_addr().unwrap());
+		api.cooldown.lock().await.global = Instant::now() + Duration::from_secs(86400);
+		let stop = async {
+			tokio::task::yield_now().await;
+			api.stop();
+		};
+		let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+			tokio::join!(api.request(Method::GET, "/users/@me", None), stop)
+		})
+		.await
+		.unwrap();
+		assert_eq!(result, Err(Failure::Expired));
+		assert!(
+			tokio::time::timeout(Duration::from_millis(25), listener.accept())
+				.await
+				.is_err()
+		);
+	}
+	#[tokio::test]
 	async fn optional_read_preserves_missing_result_after_a_rate_limit_retry() {
 		tokio::time::timeout(Duration::from_secs(3), async {
 			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -655,10 +820,14 @@ mod tests {
 					"500 Internal Server Error",
 					Failure::Ambiguous,
 				),
-				(Method::POST, "400 Bad Request", Failure::Capacity),
-				(Method::POST, "403 Forbidden", Failure::Capacity),
-				(Method::POST, "429 Too Many Requests", Failure::Capacity),
-				(Method::GET, "200 OK", Failure::Capacity),
+				(Method::POST, "400 Bad Request", Failure::ResponseLimit),
+				(Method::POST, "403 Forbidden", Failure::ResponseLimit),
+				(
+					Method::POST,
+					"429 Too Many Requests",
+					Failure::ResponseLimit,
+				),
+				(Method::GET, "200 OK", Failure::ResponseLimit),
 			] {
 				let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 				let mut api = DiscordApi::new(Arc::new(
@@ -857,13 +1026,13 @@ mod tests {
 			)
 		};
 		// During a service cooldown a preload fails at once instead of waiting it out.
-		*api.cooldown.lock().await = Instant::now() + Duration::from_secs(30);
+		api.cooldown.lock().await.global = Instant::now() + Duration::from_secs(30);
 		let event = tokio::time::timeout(Duration::from_secs(1), api.execute(preload()))
 			.await
 			.expect("a preload never waits for the cooldown");
 		assert!(gave_way(event));
 		// Without spare permits it leaves the remaining ones to requests the user waits for.
-		*api.cooldown.lock().await = Instant::now();
+		api.cooldown.lock().await.global = Instant::now();
 		let _held = api.requests.acquire_many(2).await.unwrap();
 		let event = tokio::time::timeout(Duration::from_secs(1), api.execute(preload()))
 			.await
@@ -1376,6 +1545,7 @@ mod tests {
 						("after=9", vec![11, 10]),
 						("before=9", vec![8, 7]),
 						("after=99", (100..151).collect()),
+						("after=150", vec![152, 151]),
 					] {
 						let (mut socket, _) = listener.accept().await.unwrap();
 						let mut request = Vec::new();
@@ -1449,15 +1619,46 @@ mod tests {
 					assert_eq!(messages.len(), 2);
 					assert_eq!(messages[0].id, first);
 				}
-				assert!(matches!(
-					api.execute(Command::History {
+				let oversized = api
+					.execute(Command::History {
 						channel: Id(1),
 						before: None,
 						after: Some(Id(99)),
 						request: 8,
 					})
-					.await,
-					Event::Failure(Failure::Capacity)
+					.await;
+				assert!(matches!(
+					oversized,
+					Event::HistoryFailed {
+						channel: Id(1),
+						request: 8,
+						failure: Failure::ResponseLimit,
+					}
+				));
+				let mut state = client_core::State::default();
+				state.apply(client_core::Envelope {
+					generation: state.generation,
+					event: Event::Ready {
+						user: decode::<UserDto>(br#"{"id":"3","username":"Synthetic"}"#)
+							.unwrap()
+							.into_model(),
+						guilds: vec![],
+						channels: vec![],
+						permissions: Default::default(),
+					},
+				});
+				state.apply(client_core::Envelope {
+					generation: state.generation,
+					event: oversized,
+				});
+				assert_eq!(state.auth, client_core::auth::AuthState::Authenticated);
+				assert!(state.gateway_connected);
+				assert!(!api.stopped());
+				assert!(matches!(
+					api.execute(Command::History {
+						channel: Id(1), before: None, after: Some(Id(150)), request: 9,
+					}).await,
+					Event::History { messages, .. } if messages.len() == 2
 				));
 				server.await.unwrap();
 			})
@@ -1602,7 +1803,7 @@ mod tests {
             assert!(matches!(api.pins(Id(1),Some(i128::MAX)).await,Err(Failure::Protocol)));
             assert!(matches!(api.pins(Id(1),None).await,Err(Failure::Forbidden)));
             assert!(matches!(api.search(Id(1),None,"x",None,0,false).await,Ok(Outcome::Indexing)));
-            assert!(*api.cooldown.lock().await>Instant::now());
+            assert!(api.cooldown.lock().await.global<=Instant::now());
             server.await.unwrap();
         }).await.unwrap();
 	}
@@ -2207,7 +2408,7 @@ mod tests {
 			})
 			.await,
 			Event::Profile {
-				result: Err(Failure::Capacity),
+				result: Err(Failure::ResponseLimit),
 				request: 10,
 				..
 			}
@@ -2515,7 +2716,7 @@ mod tests {
 				api.current_user().await.map(|_| ()).unwrap_err(),
 				Failure::RateLimited
 			);
-			assert!(*api.cooldown.lock().await > Instant::now() + Duration::from_secs(30));
+			assert!(api.cooldown.lock().await.global > Instant::now() + Duration::from_secs(30));
 			assert!(!api.stopped());
 			test.await.unwrap();
 		}

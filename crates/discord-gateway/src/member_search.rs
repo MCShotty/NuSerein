@@ -45,6 +45,9 @@ pub(super) struct Search {
 	next_send: Instant,
 	seen: [Option<u64>; 2],
 	reported: [Option<u64>; 2],
+	following: Option<(Id, Id)>,
+	users: Vec<Id>,
+	announced: Option<(Id, Vec<Id>)>,
 }
 impl Default for Search {
 	fn default() -> Self {
@@ -55,22 +58,45 @@ impl Default for Search {
 			blocked_until: None,
 			seen: [None; 2],
 			reported: [None; 2],
+			following: None,
+			users: vec![],
+			announced: None,
 			next_send: Instant::now(),
 		}
 	}
 }
 impl Search {
 	pub fn reconnect(&mut self, resumable: bool) {
+		self.announced = None;
 		self.active = Default::default();
 		self.queued = Default::default();
 		self.seen = [None; 2];
 		self.reported = [None; 2];
 		if !resumable {
+			self.following = None;
+			self.users.clear();
 			self.cooldowns.clear();
 			self.blocked_until = None;
 		}
 	}
 	pub fn update(&mut self, requests: &[Option<Request>; 2]) -> u8 {
+		let scope = requests
+			.iter()
+			.flatten()
+			.filter(|r| r.valid())
+			.max_by_key(|r| r.nonce)
+			.map(|r| (r.guild, r.channel));
+		if self.following != scope {
+			self.following = scope;
+			self.users.clear();
+		}
+		for request in requests
+			.iter()
+			.flatten()
+			.filter(|r| Some((r.guild, r.channel)) == scope && r.valid())
+		{
+			self.follow_users(request.users.iter().copied());
+		}
 		let mut changed = 0;
 		for (slot, request) in requests.iter().enumerate() {
 			if self.seen[slot] != request.as_ref().map(|request| request.nonce) {
@@ -81,6 +107,53 @@ impl Search {
 			}
 		}
 		changed
+	}
+	fn follow_users(&mut self, users: impl IntoIterator<Item = Id>) {
+		for user in users {
+			self.users.retain(|known| *known != user);
+			if self.users.len() == 128 {
+				self.users.remove(0);
+			}
+			self.users.push(user);
+		}
+	}
+	pub fn pending_subscription(&self) -> Option<(Id, Vec<Id>, Frame)> {
+		let wanted = self
+			.following
+			.filter(|_| !self.users.is_empty())
+			.map(|scope| scope.0);
+		let (guild, users) = match (&self.announced, wanted) {
+			(Some((old, _)), next) if Some(*old) != next => (*old, vec![]),
+			(Some((_, sent)), Some(_)) if sent == &self.users => return None,
+			(_, Some(guild)) => (guild, self.users.clone()),
+			_ => return None,
+		};
+		// A sparse update leaves channel ranges and thread lists intact.
+		let ids: Vec<_> = users.iter().map(ToString::to_string).collect();
+		let mut setting = serde_json::json!({"members":ids});
+		if !users.is_empty() {
+			// Large guilds are not subscribed at READY. Member requests take effect only
+			// after activating the guild, including when the member sidebar stays closed.
+			setting["typing"] = true.into();
+		}
+		let frame = Frame::Text(
+			serde_json::json!({"op":37,"d":{"subscriptions":{guild.to_string():setting}}})
+				.to_string()
+				.into(),
+		);
+		Some((guild, users, frame))
+	}
+	pub fn subscribed(&mut self, guild: Id, users: Vec<Id>) {
+		self.announced = (!users.is_empty()).then_some((guild, users));
+	}
+	pub fn canceled_subscription(&mut self, guild: Id) {
+		if self
+			.announced
+			.as_ref()
+			.is_some_and(|(old, _)| *old == guild)
+		{
+			self.announced = None;
+		}
 	}
 	pub fn report_cooldowns(
 		&mut self,
@@ -284,6 +357,11 @@ impl Search {
 			}
 			Ok(rows)
 		})();
+		if self.following == Some((request.guild, request.channel))
+			&& let Ok(rows) = &result
+		{
+			self.follow_users(rows.iter().map(|member| member.user.id));
+		}
 		Some(Event::MemberSearch { request, result })
 	}
 }
@@ -343,6 +421,62 @@ mod tests {
 			nonce,
 			slot: 0,
 		}
+	}
+	#[test]
+	fn resolved_members_receive_bounded_sparse_live_subscriptions() {
+		let mut search = Search::default();
+		let lookup = request(1, 1);
+		search.update(&[Some(lookup), None]);
+		assert!(search.pending_subscription().is_none());
+		search.tick(&|_| Ok(())).unwrap().unwrap();
+		let event = search.chunk(br#"{"guild_id":"1","nonce":"1","chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"7","username":"account"},"nick":"Nickname","roles":[]}]}"#);
+		assert!(matches!(
+			event,
+			Some(Event::MemberSearch { result: Ok(_), .. })
+		));
+		let (guild, users, frame) = search.pending_subscription().unwrap();
+		let packet: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+		assert_eq!(
+			packet,
+			serde_json::json!({"op":37,"d":{"subscriptions":{"1":{"typing":true,"members":["7"]}}}})
+		);
+		search.subscribed(guild, users);
+		assert!(search.pending_subscription().is_none());
+		search.follow_users((1..=1000).map(Id));
+		assert_eq!(search.users.len(), 128);
+		assert_eq!(search.users.first(), Some(&Id(873)));
+		assert_eq!(search.users.last(), Some(&Id(1000)));
+		assert!(search.pending_subscription().unwrap().2.len() < 4096);
+	}
+	#[test]
+	fn identity_subscriptions_retire_and_resume_without_crossing_guilds() {
+		let mut search = Search::default();
+		let mut author = request(1, 1);
+		author.slot = 1;
+		author.query.clear();
+		author.users = vec![Id(7)];
+		search.update(&[None, Some(author.clone())]);
+		let (guild, users, _) = search.pending_subscription().unwrap();
+		search.subscribed(guild, users);
+		search.reconnect(true);
+		assert_eq!(search.pending_subscription().unwrap().1, vec![Id(7)]);
+		search.subscribed(Id(1), vec![Id(7)]);
+		author.guild = Id(2);
+		author.channel = Id(102);
+		author.nonce = 2;
+		author.users = vec![Id(8)];
+		search.update(&[None, Some(author)]);
+		let (old, users, _) = search.pending_subscription().unwrap();
+		assert_eq!(old, Id(1));
+		assert!(users.is_empty());
+		search.subscribed(old, users);
+		let (guild, users, _) = search.pending_subscription().unwrap();
+		assert_eq!((guild, users.clone()), (Id(2), vec![Id(8)]));
+		search.subscribed(guild, users);
+		search.canceled_subscription(Id(2));
+		assert_eq!(search.pending_subscription().unwrap().1, vec![Id(8)]);
+		search.reconnect(false);
+		assert!(search.pending_subscription().is_none());
 	}
 	#[test]
 	fn query_purpose_follows_its_slot_when_both_requests_encode_user_ids() {

@@ -223,7 +223,12 @@ pub(crate) fn show_role_icon(
 pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 	let mut users = Vec::new();
 	let mut add = |user: &User| {
-		if users.len() < 256 && !users.iter().any(|u: &User| u.id == user.id) {
+		if users.len() < 256
+			&& !state
+				.member_identity(channel, user.id)
+				.is_some_and(|update| update.departed)
+			&& !users.iter().any(|u: &User| u.id == user.id)
+		{
 			users.push(user.clone());
 		}
 	};
@@ -235,6 +240,9 @@ pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 		for member in &state.member_search[0].rows {
 			add(&member.user);
 		}
+	}
+	for user in state.observed_member_users(channel) {
+		add(&user);
 	}
 	if let Some(owner) = &state.user {
 		add(owner);
@@ -263,6 +271,19 @@ pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 		&& state.can_view(channel)
 	{
 		for member in &state.member_search[0].retained {
+			add(&member.user);
+		}
+	}
+	if let Some(request) = &state.member_search[1].request
+		&& request.channel == channel
+		&& state.channel(channel).and_then(|c| c.guild) == Some(request.guild)
+		&& state.can_view(channel)
+	{
+		for member in state.member_search[1]
+			.rows
+			.iter()
+			.chain(&state.member_search[1].retained)
+		{
 			add(&member.user);
 		}
 	}
@@ -353,6 +374,12 @@ pub fn find_user<'a>(
 	mentions: &'a [User],
 	source: Option<&MentionSource<'a>>,
 ) -> Option<&'a User> {
+	if let Some(user) = source
+		.and_then(|s| s.state.member_identity(s.channel, id))
+		.and_then(|update| update.profile.as_ref())
+	{
+		return Some(user);
+	}
 	if let Some(user) = mentions.iter().find(|user| user.id == id) {
 		return Some(user);
 	}
@@ -396,8 +423,10 @@ pub fn find_user<'a>(
 
 pub fn mention_label(id: Id, mentions: &[User], source: Option<&MentionSource<'_>>) -> String {
 	if let Some(source) = source
-		&& let Some(nick) = member(source.state, source.channel, id)
-			.and_then(|member| member.nick.as_deref())
+		&& let Some(nick) = source
+			.state
+			.member_nickname(source.channel, id)
+			.flatten()
 			.filter(|nick| !nick.is_empty())
 	{
 		return format!("@{nick}");
@@ -498,7 +527,7 @@ fn query(draft: &str, cursor: usize) -> Option<(Range<usize>, &str, Kind)> {
 		}
 		Kind::User | Kind::Channel | Kind::Game => {
 			if query.chars().any(|c| {
-				(c.is_whitespace() && !(matches!(kind, Kind::Channel | Kind::Game) && c == ' '))
+				(c.is_whitespace() && c != ' ')
 					|| matches!(c, '<' | '>' | '@' | '`')
 					|| (kind == Kind::Channel && c == '#')
 			}) {
@@ -1598,6 +1627,162 @@ mod tests {
 			state.channel(channel).unwrap().guild.unwrap();
 		state.member_search[0].request.as_mut().unwrap().channel = Id(99999);
 		assert!(state.display_member(channel, target).is_none());
+	}
+
+	#[test]
+	fn nickname_completion_survives_query_edits_and_live_member_changes() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let mut search = crate::member_search::Search::default();
+		let ctx = egui::Context::default();
+		let mut commands = vec![];
+		let mut frame = |search: &mut crate::member_search::Search,
+		                 state: &mut State,
+		                 text: &str,
+		                 time: f64| {
+			search.text = text.into();
+			let mut output = ctx.run_ui(
+				egui::RawInput {
+					time: Some(time),
+					..Default::default()
+				},
+				|_| search.sync(&ctx, state, channel, 0, &mut commands),
+			);
+			output.textures_delta.clear();
+		};
+		frame(&mut search, &mut state, "Guild", 0.0);
+		frame(&mut search, &mut state, "Guild", 0.4);
+		let request = state.member_search[0].request.clone().unwrap();
+		let target = Id(99001);
+		let member = model::Member {
+			user: user(target.0, "Account"),
+			nick: Some("Guild nickname".into()),
+			roles: vec![],
+			status: None,
+			custom_status: None,
+			activities: vec![],
+			clients: Default::default(),
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberSearch {
+				request,
+				result: Ok(vec![member]),
+			},
+		});
+		frame(&mut search, &mut state, "Guildn", 0.5);
+		assert!(
+			state.display_member(channel, target).is_some(),
+			"typing cannot erase a resolved member while the next query is cooling down"
+		);
+		frame(&mut search, &mut state, "Guild", 0.6);
+		let mut menu = Menu::default();
+		menu.refresh(
+			&state,
+			channel,
+			"@Guild",
+			Some(6),
+			&known_users(&state, channel),
+		);
+		assert!(
+			menu.candidates
+				.iter()
+				.any(|candidate| candidate.id() == target)
+		);
+		let update = |nick| model::MemberIdentity {
+			guild,
+			user: target,
+			profile: None,
+			nick,
+			roles: model::Patch::Absent,
+			departed: false,
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberIdentity(Box::new(update(model::Patch::Value(
+				"Renamed".into(),
+			)))),
+		});
+		menu.refresh(
+			&state,
+			channel,
+			"@Renamed",
+			Some(8),
+			&known_users(&state, channel),
+		);
+		let candidate = menu
+			.candidates
+			.iter()
+			.find(|candidate| candidate.id() == target)
+			.unwrap();
+		assert_eq!(candidate.token(), "<@99001> ");
+		assert_eq!(
+			mention_label(
+				target,
+				&[],
+				Some(&MentionSource {
+					state: &state,
+					channel
+				})
+			),
+			"@Renamed"
+		);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberIdentity(Box::new(update(model::Patch::Null))),
+		});
+		assert_eq!(
+			mention_label(
+				target,
+				&[],
+				Some(&MentionSource {
+					state: &state,
+					channel
+				})
+			),
+			"@Account"
+		);
+		let mut gone = update(model::Patch::Null);
+		gone.departed = true;
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberIdentity(Box::new(gone)),
+		});
+		assert!(
+			!known_users(&state, channel)
+				.iter()
+				.any(|user| user.id == target)
+		);
+	}
+
+	#[test]
+	fn embedded_message_nickname_is_searchable_before_sidebar_or_lookup() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let mut message = test_support::message(999999, channel);
+		message.author = user(90003, "Account");
+		message.author_nick = Some("Historical nickname".into());
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Message(message),
+		});
+		let mut menu = Menu::default();
+		menu.refresh(
+			&state,
+			channel,
+			"@Historical nickname",
+			Some(20),
+			&known_users(&state, channel),
+		);
+		assert!(
+			menu.candidates
+				.iter()
+				.any(|candidate| candidate.id() == Id(90003))
+		);
 	}
 
 	#[test]

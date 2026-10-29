@@ -71,7 +71,7 @@ async fn paused_route_obeys_cooldown_added_before_unpause() {
 		"request is awaiting its route"
 	);
 	let deadline = Instant::now() + Duration::from_millis(100);
-	*api.cooldown.lock().await = deadline;
+	api.cooldown.lock().await.global = deadline;
 	route.send_replace(Some(ApiProxy::Direct));
 	let server = tokio::spawn(async move {
 		let (mut stream, _) = origin.accept().await.unwrap();

@@ -234,7 +234,7 @@ fuzz_target!(|data: &[u8]| {
 	for op in data.as_chunks::<8>().0.iter().take(256) {
 		let channel = Id(20 + u64::from(op[1] % 3));
 		let id = Id(1 + u64::from(u16::from_le_bytes([op[2], op[3]])));
-		match op[0] % 27 {
+		match op[0] % 31 {
 			0 => {
 				state.select(channel);
 			}
@@ -243,7 +243,7 @@ fuzz_target!(|data: &[u8]| {
 				state.history(before);
 			}
 			2 | 3 => {
-				let stale = op[0] % 27 == 3;
+				let stale = op[0] % 31 == 3;
 				let prior = stale.then(|| fingerprint(&state));
 				let request = if stale {
 					state.request.wrapping_sub(1)
@@ -315,7 +315,7 @@ fuzz_target!(|data: &[u8]| {
 				},
 			),
 			8 | 9 => {
-				let revoked = op[0] % 27 == 8;
+				let revoked = op[0] % 31 == 8;
 				apply(
 					&mut state,
 					Event::Permissions(PermissionEvent::Channel {
@@ -530,6 +530,55 @@ fuzz_target!(|data: &[u8]| {
 						replace: false,
 					}),
 				);
+			}
+
+			27 => {
+				if let Some(command) = state.prepare_text_send("Synthetic queue rejection") {
+					apply(&mut state, Event::CommandRejected(Box::new(command)));
+				}
+			}
+			28 => {
+				let auth = state.auth;
+				let request = state.request;
+				apply(
+					&mut state,
+					Event::HistoryFailed {
+						channel,
+						request,
+						failure: if op[6] & 1 == 0 {
+							Failure::Busy
+						} else {
+							Failure::ResponseLimit
+						},
+					},
+				);
+				assert_eq!(
+					state.auth, auth,
+					"operation failures cannot revoke authentication"
+				);
+			}
+
+			29 => {
+				apply(
+					&mut state,
+					Event::MemberIdentity(Box::new(model::MemberIdentity {
+						guild: Id(10),
+						user: id,
+						profile: None,
+						nick: if op[6] & 1 == 0 {
+							Patch::Null
+						} else {
+							Patch::Value("Synthetic nickname".into())
+						},
+						roles: if op[6] & 2 == 0 {
+							Patch::Absent
+						} else {
+							Patch::Value(vec![])
+						},
+						departed: op[6] & 4 != 0,
+					})),
+				);
+				assert!(state.member_labels.bytes() <= 128 * 1024);
 			}
 
 			_ => {

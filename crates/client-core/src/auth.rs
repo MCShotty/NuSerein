@@ -36,6 +36,10 @@ pub enum Failure {
 	CapacityAt(&'static str),
 	#[error("Only an owner-supplied normal-user session is supported")]
 	InvalidCredential,
+	#[error("This operation is busy; try again when queued work finishes")]
+	Busy,
+	#[error("This response exceeds the operation’s safe limit")]
+	ResponseLimit,
 }
 impl Failure {
 	pub fn protocol_at(self, stage: &'static str) -> Self {
@@ -52,6 +56,8 @@ impl Failure {
 			Self::Forbidden => "Permission denied",
 			Self::RateLimited => "Rate limited · wait before retrying",
 			Self::Network => "Connection failed",
+			Self::Busy => "Operation busy · try again shortly",
+			Self::ResponseLimit => "Response exceeds this operation’s safe limit",
 			Self::Ambiguous => "Outcome unknown · check the official client before retrying",
 			Self::Protocol => "Unsupported service response",
 			Self::ProtocolAt(stage) | Self::CapacityAt(stage) => stage,

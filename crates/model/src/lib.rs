@@ -10,7 +10,7 @@ pub use presence::{
 	ActivityImage, ClientPlatforms, MemberPresence, OwnPresence, PresenceStatus, RichActivity,
 };
 mod members;
-pub use members::{Member, MemberList, MemberSlot};
+pub use members::{Member, MemberIdentity, MemberList, MemberSlot};
 use presence::valid_presence_text;
 pub mod account;
 pub mod account_settings;

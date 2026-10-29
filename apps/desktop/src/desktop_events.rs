@@ -563,10 +563,12 @@ impl Desktop {
 		}
 		let mut events = Vec::new();
 		let mut terminal = None;
+		let mut delivery_pressure = false;
 		if let Some(connection) = &mut self.connection {
+			delivery_pressure = connection.events.take_pressure();
 			for _ in 0..client_core::EVENT_SLOTS {
-				match connection.events.try_recv() {
-					Ok(event) => events.push(event),
+				match connection.events.try_recv_epoch() {
+					Ok((event, epoch)) => events.push((event, Some(epoch))),
 					Err(_) => break,
 				}
 			}
@@ -575,7 +577,7 @@ impl Desktop {
 			let reliable_count = events.len();
 			for _ in 0..8 {
 				match connection.typing.try_recv() {
-					Ok(event) => events.push(event),
+					Ok(event) => events.push((event, None)),
 					Err(_) => break,
 				}
 			}
@@ -587,17 +589,44 @@ impl Desktop {
 				&mut connection.confirmation_failure,
 				&connection.events,
 			) {
-				events.push(failure);
+				events.push((failure, None));
 			}
+			delivery_pressure |= connection.events.take_pressure();
 			terminal = *connection.terminal.borrow();
 			if terminal.is_some() {
 				connection.copy_diagnostics_to(&mut self.messaging);
 			}
 		}
+		if delivery_pressure {
+			self.voice.stop();
+			self.state.apply(Envelope {
+				generation: self.state.generation,
+				event: Event::Disconnected,
+			});
+			self.state.apply(Envelope {
+				generation: self.state.generation,
+				event: Event::Resync,
+			});
+			// Results already lost to congestion may include accepted writes. Show
+			// uncertainty; a fresh snapshot never authorizes replaying these writes.
+			for pending in &mut self.state.pending {
+				if pending.delivery == Delivery::Sending {
+					pending.delivery = Delivery::Ambiguous;
+				}
+			}
+		}
+
 		let mut persist_timeline = false;
 		let mut full_window = false;
 		let mut changed_messages = std::collections::BTreeSet::new();
-		for mut event in events {
+		for (mut event, epoch) in events {
+			if epoch.is_some_and(|epoch| {
+				self.connection
+					.as_ref()
+					.is_none_or(|c| !c.events.is_current(epoch))
+			}) {
+				continue;
+			}
 			if event.generation != self.state.generation {
 				continue;
 			}
@@ -846,6 +875,7 @@ impl Desktop {
 			};
 			self.queue_cache(operation);
 		}
+
 		if let Some(failure) = terminal {
 			for (setting, scope) in [
 				("SEREIN_MEMBER_DIAGNOSTICS", "members"),

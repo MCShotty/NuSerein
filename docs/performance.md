@@ -4,6 +4,147 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
+## Live member identity follow-up
+
+Compared final application source `1607575e` against frozen #30 `dff256ff` and
+published nightly `v1.0.0-nightly.20261027.67` (`2d0165bf`) in
+[source CI](https://github.com/MCShotty/Serein/actions/runs/40608770724).
+Rust 1.98.1 and committed locks; release optimization 3, thin LTO, one codegen
+unit, line-table debug information, stripped symbols and panic abort. Separate
+source/target directories, one warmup and five alternating measured repetitions.
+Linux 6.17 x64/glibc 2.39 and Windows Server 2025 x64 have four logical CPUs and
+use single-CPU affinity. macOS 26.6.2 ARM64 has three logical CPUs and uses its
+platform scheduler.
+These are the existing core replay workloads, timed with their monotonic timer.
+
+| Runner / median milliseconds | Nightly | Frozen baseline | Implementation | Baseline delta |
+| --- | ---: | ---: | ---: | ---: |
+| Linux / reducer | 56.525 | 58.137 | 57.705 | -0.7% |
+| Linux / wide channels | 99.621 | 6.473 | 6.429 | -0.7% |
+| Windows / reducer | 108.196 | 110.633 | 108.980 | -1.5% |
+| Windows / wide channels | 172.316 | 11.637 | 11.677 | +0.3% |
+| macOS / reducer | 68.023 | 64.722 | 65.831 | +1.7% |
+| macOS / wide channels | 102.371 | 7.027 | 6.933 | -1.3% |
+
+All six medians are within the 3% target in this batch. Small deltas are not an
+optimization claim. The earlier `1a688389` macOS regression and its unisolated
+cause remain documented below.
+Nightly differences include earlier fork features. These measurements do not
+establish UI latency, recovery latency, idle CPU, process RSS or live Discord
+synchronization. Native macOS profiling remains unavailable in this Linux workspace.
+
+The downloaded [Linux](https://github.com/MCShotty/Serein/actions/runs/40608770724/artifacts/12781773601),
+[Windows](https://github.com/MCShotty/Serein/actions/runs/40608770724/artifacts/12781349440)
+and [macOS](https://github.com/MCShotty/Serein/actions/runs/40608770724/artifacts/12781128341)
+artifacts match GitHub's SHA-256 digests and record the full source revisions,
+host information, binary hashes and individual samples.
+
+Normal packages use the unchanged repository release profile (fat LTO, one codegen
+unit, stripped symbols and line-table debug information), including voice and
+excluding demo/developer features. The verified baseline artifacts at `f47ac7dc`
+match the application source of `dff256ff`; only three evidence files differ.
+All downloaded archives match their GitHub SHA-256 digests.
+
+| Package metric / method | Frozen application baseline | Implementation | Delta |
+| --- | ---: | ---: | ---: |
+| Linux executable | 98,385,816 B | 98,518,296 B | +132,480 B (+0.13%) |
+| Linux staged payload, excluding DEB | 226,971,764 B | 227,104,244 B | +132,480 B (+0.06%) |
+| Linux DEB installed size, control metadata | 222,246 KiB | 222,376 KiB | +130 KiB (+0.06%) |
+| Linux DEB | 141,754,980 B | 141,844,556 B | +89,576 B (+0.06%) |
+| Windows executable | 100,094,464 B | 100,318,720 B | +224,256 B (+0.22%) |
+| Windows installed source payload | 227,824,915 B | 228,049,171 B | +224,256 B (+0.10%) |
+| Windows NSIS, normal packager | 136,993,389 B | 137,048,329 B | +54,940 B (+0.04%) |
+| macOS executable | 78,867,184 B | 79,015,120 B | +147,936 B (+0.19%) |
+| macOS app bundle | 202,311,296 B | 202,459,232 B | +147,936 B (+0.07%) |
+| macOS artifact ZIP | 136,493,891 B | 136,561,623 B | +67,732 B (+0.05%) |
+
+Linux retains 289 staged files and 304 installed regular files. Windows retains
+289 installed source files, excluding setup scripts and the generated uninstaller.
+macOS retains 281 app-bundle files; its artifact ZIP includes four top-level
+license/README files. Compressed sizes include archive metadata. The separately
+verified Windows installer is linked in the connection evidence; its compression
+output is distinct from the normal-packager size above.
+
+The current Linux lifecycle soak completed 3,778 passes, 120,896 channel visits,
+72,537,600 live inserts and 15 logout cycles in 120.017 seconds, with the shipping
+row/byte assertions passing. The native Windows and macOS 120-second soaks also
+pass. This is bounded synthetic core pressure, not process RSS or live networking.
+See [connection evidence](pr-evidence/connection-reliability/README.md) for current
+checks and package provenance.
+
+## Connection recovery and queue pressure
+
+Compared frozen #30 `dff256ff` and implementation `1a688389` with published
+nightly `v1.0.0-nightly.20261027.67` (`2d0165bf`) in
+[native CI](https://github.com/MCShotty/Serein/actions/runs/40591903694).
+Rust 1.98.1, committed locks, release optimization 3, thin LTO, one codegen unit,
+line-table debug information, stripped symbols and panic abort. Each revision used
+a separate source/target directory, one warmup and five alternating measured runs.
+Linux 6.17 x64/glibc 2.39 and Windows Server 2025 x64 have four logical CPUs and
+single-CPU affinity; macOS 26.6.2 ARM64 has three and uses the platform scheduler.
+Times are median milliseconds from the existing replay workloads' monotonic timer.
+
+| Runner / workload | Nightly | Frozen baseline | Implementation | Baseline delta |
+| --- | ---: | ---: | ---: | ---: |
+| Linux / reducer | 63.069 | 61.498 | 61.817 | +0.5% |
+| Linux / wide channels | 73.919 | 6.725 | 6.544 | -2.7% |
+| Windows / reducer | 106.675 | 110.075 | 110.282 | +0.2% |
+| Windows / wide channels | 224.446 | 11.482 | 11.740 | +2.2% |
+| macOS / reducer | 100.630 | 87.103 | 89.398 | +2.6% |
+| macOS / wide channels | 139.161 | 7.714 | 8.007 | **+3.8%** |
+
+A second macOS batch at the same source, baseline, nightly, compiler and release
+settings used one warmup and five alternating samples on another hosted runner.
+It rebuilt byte-identical benchmark executables. Its own paired comparison is:
+
+| macOS repeat / workload | Nightly | Frozen baseline | Implementation | Baseline delta |
+| --- | ---: | ---: | ---: | ---: |
+| Reducer | 90.348 | 80.547 | 83.136 | **+3.2%** |
+| Wide channels | 140.430 | 7.516 | 7.829 | **+4.2%** |
+
+The macOS wide-channel cost exceeds the 3% target in both current-source batches;
+the repeat reducer also misses it. This remains an unresolved regression, with no
+performance pass claimed. Overlapping ranges do not establish equivalence. The
+earlier `02f5b468` batch was +35.1% on a different hosted run; its absolute
+timings cannot establish an improvement. The benchmark workloads are unchanged;
+code inspection has not isolated the cause. Further local profiling was blocked
+when the execution service disconnected. No speculative optimization was applied.
+[Repeat artifact](https://github.com/MCShotty/Serein/actions/runs/40591903694/artifacts/12778266987)
+retains the independent samples; the original batch remains separately archived.
+
+Nightly deltas include prior fork features. These core workloads do not measure
+Gateway/HTTP recovery latency, idle CPU, process RSS, presented frames or media.
+Those measurements and owner-controlled network/sleep acceptance remain unavailable.
+
+Package baselines were inspected from immutable native artifacts at `f47ac7dc`,
+whose application source matches `dff256ff` (only three evidence files differ).
+ZIP digests matched GitHub artifact metadata. Normal package outputs include voice
+and use the repository release profile, separate from replay settings.
+
+| Package metric / method | Frozen application baseline | Implementation | Delta |
+| --- | ---: | ---: | ---: |
+| Linux executable | 98,385,816 B | 98,458,264 B | +72,448 B (+0.07%) |
+| Linux staged payload, excluding DEB | 226,971,764 B | 227,044,212 B | +72,448 B (+0.03%) |
+| Linux DEB installed size, control metadata | 222,246 KiB | 222,317 KiB | +71 KiB (+0.03%) |
+| Linux DEB | 141,754,980 B | 141,805,240 B | +50,260 B (+0.04%) |
+| Windows executable | 100,094,464 B | 100,254,720 B | +160,256 B (+0.16%) |
+| Windows installed source payload | 227,824,915 B | 227,985,171 B | +160,256 B (+0.07%) |
+| Windows NSIS, normal packager | 136,993,389 B | 137,020,063 B | +26,674 B (+0.02%) |
+| macOS executable | 78,867,184 B | 78,949,360 B | +82,176 B (+0.10%) |
+| macOS app bundle | 202,311,296 B | 202,393,472 B | +82,176 B (+0.04%) |
+| macOS artifact ZIP | 136,493,891 B | 136,534,737 B | +40,846 B (+0.03%) |
+
+Linux retains 289 staged files and 304 installed files. Windows source-payload
+counts exclude setup scripts and the generated uninstaller. The macOS artifact ZIP
+also includes four top-level license/README files. Small compressed-size deltas
+include archive metadata and do not establish a runtime improvement.
+The current Linux 120-second lifecycle soak completed 4,056 passes, 129,792 channel
+visits, 77,875,200 live inserts and 16 logout cycles in 120.019 seconds; the shipping
+row/byte assertions passed. This is bounded core pressure, not process RSS.
+See [connection evidence](pr-evidence/connection-reliability/README.md) for coverage,
+installer provenance and remaining limitations. Historical measurements below retain
+their original scope.
+
 ## Server folder mark-as-read — October 15, 2026 (PR #672)
 
 Compared base `104b1aa5` with folder mark-as-read `2b02b49e`. Standard unsigned Windows x64

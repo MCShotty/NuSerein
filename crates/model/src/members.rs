@@ -1,7 +1,74 @@
 //! Bounded member-list records.
 use super::{
-	ClientPlatforms, Freshness, Id, MAX_RICH_ACTIVITIES, RichActivity, User, valid_presence_text,
+	ClientPlatforms, Freshness, Id, MAX_RICH_ACTIVITIES, Patch, RichActivity, User,
+	valid_presence_text,
 };
+
+/// Partial guild identity for display only. Never grants permissions. Missing fields leave
+/// previous observations intact; a null nickname or an empty role list explicitly clears it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct MemberIdentity {
+	pub guild: Id,
+	pub user: Id,
+	pub profile: Option<User>,
+	pub nick: Patch<String>,
+	pub roles: Patch<Vec<Id>>,
+	pub departed: bool,
+}
+impl MemberIdentity {
+	pub fn valid(&self) -> bool {
+		self.guild.0 != 0
+			&& self.user.0 != 0
+			&& self.profile.as_ref().is_none_or(|user| {
+				user.id == self.user && !user.webhook && user.heap_bytes() <= 16 * 1024
+			}) && match &self.nick {
+			Patch::Value(nick) => {
+				nick.len() <= 512
+					&& nick.chars().count() <= 128
+					&& !nick.chars().any(char::is_control)
+			}
+			_ => true,
+		} && match &self.roles {
+			Patch::Value(roles) => {
+				roles.len() <= super::permissions::MAX_MEMBER_ROLES
+					&& roles.iter().all(|id| id.0 != 0)
+					&& roles.windows(2).all(|ids| ids[0] < ids[1])
+			}
+			Patch::Absent => true,
+			Patch::Null => false,
+		}
+	}
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>()
+			+ self.profile.as_ref().map_or(0, User::heap_bytes)
+			+ match &self.nick {
+				Patch::Value(nick) => nick.capacity(),
+				_ => 0,
+			} + match &self.roles {
+			Patch::Value(roles) => roles.capacity() * size_of::<Id>(),
+			_ => 0,
+		}
+	}
+	pub fn apply(&self, member: &mut Member) {
+		if member.user.id != self.user || self.departed {
+			return;
+		}
+		if let Some(profile) = &self.profile {
+			// Member updates can carry only part of the user object. Profile cosmetics and
+			// avatars remain owned by full snapshots; this path refreshes account names.
+			member.user.name.clone_from(&profile.name);
+			member.user.username.clone_from(&profile.username);
+		}
+		match &self.nick {
+			Patch::Value(nick) => member.nick = (!nick.is_empty()).then(|| nick.clone()),
+			Patch::Null => member.nick = None,
+			Patch::Absent => {}
+		}
+		if let Patch::Value(roles) = &self.roles {
+			member.roles.clone_from(roles);
+		}
+	}
+}
 
 /// Only the active member pane is retained; group rows and unloaded slots remain None.
 #[derive(Clone)]

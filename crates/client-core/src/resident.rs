@@ -136,6 +136,7 @@ impl State {
 		self.timeline.retained_bytes()
 			+ self.history_navigation.bytes()
 			+ self.reply_previews.bytes()
+			+ self.member_labels.bytes()
 			+ size_of::<Windows>()
 			+ self.resident.entries.capacity() * size_of::<Window>()
 			+ self

@@ -388,6 +388,28 @@ pub fn passive(bytes: &[u8]) -> Result<PassiveEnvelope<'_>, DecodeError> {
 	serde_json::from_slice(bytes).map_err(|_| DecodeError)
 }
 impl PassiveEnvelope<'_> {
+	/// Only supplied, bounded identities; no member directory lookup.
+	pub fn member_identities(&self) -> Vec<model::MemberIdentity> {
+		let Some(guild) = self.guild_id else {
+			return vec![];
+		};
+		let Ok(rows) = serde_json::from_str::<presence::Friends<'_>>(self.updated_members.get())
+		else {
+			return vec![];
+		};
+		rows.0
+			.into_iter()
+			.take(128)
+			.filter_map(|raw| {
+				#[derive(Deserialize)]
+				struct Identity {
+					user: crate::UserIdentity,
+				}
+				let user: Identity = crate::decode(raw.get().as_bytes()).ok()?;
+				crate::member_identity::embedded(raw.get().as_bytes(), guild, user.user.id).ok()
+			})
+			.collect()
+	}
 	pub fn permissions(
 		&self,
 		user: model::Id,
