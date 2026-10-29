@@ -17,6 +17,7 @@ const VISIBLE_ROWS: f32 = 8.5;
 
 #[derive(Default)]
 pub struct Menu {
+	cooldown_seconds: Option<u64>,
 	catalog_revision: u64,
 	game_status: client_core::game_mentions::Status,
 	pub retry_games: bool,
@@ -683,6 +684,17 @@ impl Menu {
 		self.range = range;
 		self.query = query.into();
 		self.kind = Some(kind);
+		self.cooldown_seconds = (kind == Kind::User)
+			.then(|| {
+				let view = &state.member_search[0];
+				view.request.as_ref().filter(|r| r.channel == channel)?;
+				let remaining = view
+					.cooldown_until?
+					.saturating_duration_since(std::time::Instant::now());
+				(!remaining.is_zero())
+					.then_some(remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0))
+			})
+			.flatten();
 		let query = query.to_lowercase();
 		let guild = state
 			.channels
@@ -921,6 +933,13 @@ impl Menu {
 			return None;
 		}
 		if self.candidates.is_empty() {
+			if self.cooldown_seconds.is_some() {
+				ctx.input_mut(|input| {
+					if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+						self.dismissed = true;
+					}
+				});
+			}
 			if self.kind == Some(Kind::Game) {
 				ctx.input_mut(|i| {
 					if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
@@ -965,7 +984,11 @@ impl Menu {
 		avatars: &mut Avatars,
 		demo: bool,
 	) -> Option<Pick> {
-		if self.dismissed || (self.candidates.is_empty() && self.kind != Some(Kind::Game)) {
+		if self.dismissed
+			|| (self.candidates.is_empty()
+				&& self.kind != Some(Kind::Game)
+				&& self.cooldown_seconds.is_none())
+		{
 			return None;
 		}
 		let colors = crate::design::palette(ui);
@@ -984,9 +1007,11 @@ impl Menu {
 		} else {
 			0
 		};
-		let rows = (self.candidates.len().max(1) as f32 + section_count as f32 * 24.0 / ROW)
-			.min(VISIBLE_ROWS)
-			.min(((bounds.height() - HEADER - PADDING) / ROW).max(1.0));
+		let rows = (self.candidates.len().max(1) as f32
+			+ section_count as f32 * 24.0 / ROW
+			+ f32::from(self.cooldown_seconds.is_some()))
+		.min(VISIBLE_ROWS)
+		.min(((bounds.height() - HEADER - PADDING) / ROW).max(1.0));
 		let height = (HEADER + rows * ROW + PADDING).min(bounds.height());
 		let x = anchor
 			.left()
@@ -1060,7 +1085,13 @@ impl Menu {
 							.auto_shrink([false, false])
 							.show(ui, |ui| {
 								ui.set_width(width - 2.0);
-								if self.candidates.is_empty() {
+								if let Some(seconds) = self.cooldown_seconds {
+									ui.label(crate::i18n::translate_args(
+										"mentions-member-cooldown",
+										&[("seconds", &seconds.to_string())],
+									));
+								}
+								if self.candidates.is_empty() && self.kind == Some(Kind::Game) {
 									ui.horizontal_wrapped(|ui| {
 										ui.add_space(12.0);
 										let key = match self.game_status {
@@ -1370,6 +1401,42 @@ fn row(
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn queued_member_search_has_feedback_without_consuming_selection() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let client_core::Command::MemberSearch(request) = state
+			.search_members(channel, "NobodyMatchesThis", 0)
+			.unwrap()
+		else {
+			panic!("member query");
+		};
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberSearchCooldown {
+				request,
+				seconds: 30,
+			},
+		});
+		let mut menu = super::Menu::default();
+		menu.refresh(
+			&state,
+			channel,
+			"@NobodyMatchesThis",
+			Some(18),
+			&super::known_users(&state, channel),
+		);
+		assert!(menu.cooldown_seconds.is_some_and(|n| n > 0 && n <= 30));
+		assert!(menu.candidates.is_empty());
+		assert!(!state.member_search[0].finished);
+		assert!(state.member_search[0].error.is_none());
+		assert!(menu.pick(0).is_none());
+		menu.refresh(&state, channel, "ordinary text", Some(13), &[]);
+		assert!(menu.cooldown_seconds.is_none());
+	}
 	use super::*;
 
 	#[test]
@@ -1622,10 +1689,24 @@ mod tests {
 		state.member_search[0].rows[0].nick = None;
 		assert_eq!(label(&state), "@Account90001");
 		state.member_search[0].request.as_mut().unwrap().guild = Id(99999);
-		assert!(state.display_member(channel, target).is_none());
+		let mut injected = state.member_search[0].rows[0].clone();
+		injected.user.id = Id(999900);
+		state.member_search[0].rows.push(injected);
+		assert!(state.display_member(channel, Id(999900)).is_none());
+		assert_eq!(
+			state
+				.display_member(channel, target)
+				.unwrap()
+				.nick
+				.as_deref(),
+			Some("Shared nickname")
+		);
 		state.member_search[0].request.as_mut().unwrap().guild =
 			state.channel(channel).unwrap().guild.unwrap();
 		state.member_search[0].request.as_mut().unwrap().channel = Id(99999);
+		assert!(state.display_member(channel, Id(999900)).is_none());
+		assert!(state.display_member(channel, target).is_some());
+		state.channels.retain(|row| row.id != channel);
 		assert!(state.display_member(channel, target).is_none());
 	}
 
@@ -1824,6 +1905,19 @@ mod tests {
 			"@Server nickname"
 		);
 		state.member_search = Default::default();
+		assert_eq!(
+			state
+				.display_member(channel, Id(90003))
+				.unwrap()
+				.nick
+				.as_deref(),
+			Some("Server nickname")
+		);
+		assert!(state.request_author_members(&[Id(90003)]).is_none());
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Unavailable(channel),
+		});
 		assert!(state.display_member(channel, Id(90003)).is_none());
 	}
 

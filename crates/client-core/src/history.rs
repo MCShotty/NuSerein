@@ -16,7 +16,9 @@ impl State {
 			return None;
 		}
 		let after = Id(message.0 - 1);
-		self.timeline.clear_window_preserving_deletions();
+		if self.timeline.get(message).is_none() {
+			self.timeline.clear_window_preserving_deletions();
+		}
 		self.newer_cursor = None;
 		self.newer_may_have_more = false;
 		self.revision += 1;

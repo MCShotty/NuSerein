@@ -4,6 +4,102 @@ Recent synthetic/offline measurements are workload-specific. They do not establi
 performance, universal device results or application-wide memory bounds. The older upstream PR screenshot,
 log and per-run evidence archive has been removed; the summaries below retain the useful results.
 
+## Member cache follow-up
+
+The follow-up compares `65e69baf` with the member-cache and resident-history changes in
+this PR. On Linux x86_64 (Xeon Platinum 8573C), Rust 1.98.1 release builds used opt-level
+3, fat LTO, one codegen unit and CPU 0 affinity. Results are medians; neither workload
+measures GUI latency, live Discord traffic or cold disk I/O.
+
+| Synthetic workload | Before | After | Method |
+| --- | ---: | ---: | --- |
+| 100 in-memory SQLite saves, 512 members, one nickname changed per save | 403.883 ms | 80.576 ms | One warmup, five alternating runs; actual `LocalStore` calls |
+| 2,048 unchanged observations across 128 members | 58.595 ms; 2,048 snapshots | 1.321 ms; zero snapshots | One warmup, 15 alternating runs; assumes the worker finishes between observations |
+| Reducer, 100,000 messages | 83.103 ms | 80.073 ms | Same 15-run batch; 500 retained records |
+| Wide channels, 10,000 messages | 9.835 ms | 8.689 ms | Same 15-run batch; 500 retained records |
+
+The unchanged-observation workload models a worst case for repeated snapshot construction;
+real bursts may already coalesce. A preceding five-run batch showed the wide-channel median
+increase by 6.43%, while the 15-run batch above moved in the other direction. The samples
+were variable, so neither establishes a general reducer improvement or regression. The
+SQLite workload uses an in-memory database; persistent storage and end-to-end impact remain
+unmeasured. The measured source files have SHA-256 prefixes `8c8d24a5` (member identity),
+`48efe02f` (resident history), and `96135681` (SQLite member storage).
+
+The `65e69baf` native release baselines are 100,638,720 / 228,369,171 / 137,111,298 bytes
+for the Windows executable, installed payload and installer; 98,777,240 / 227,363,188 /
+141,899,312 bytes for the Linux executable, payload and DEB; and 79,212,416 / 202,656,528 /
+136,670,762 bytes for the macOS executable, app bundle and ZIP. Updated package sizes and
+native display, idle CPU, RSS and live synchronization measurements require native CI or
+owner-controlled testing.
+
+## Conversation and member loading
+
+The October 29 follow-up compares frozen `af865308` with application source `d854f5fe`.
+Desktop-only recovery follow-ups leave the measured core/model code unchanged.
+The same loading harness was compiled against each revision's pinned Rust 1.98.1 release
+libraries using optimization 3 and one codegen unit. Each batch uses one warmup pair and
+five alternating measured pairs on Linux x86_64, pinned to CPU 0. It includes 1,000
+busy 50-row channel switches and 100 member-sidebar cycles. Service responses are withheld
+until after availability observations; their delay is not included in CPU timings.
+
+| Loading fixture | Baseline | After |
+| --- | ---: | ---: |
+| Immediate busy-chat previews | 0 / 1,000 | 1,000 / 1,000 |
+| Known nickname hits | 0 / 1,000 | 1,000 / 1,000 |
+| Author lookup commands | 1,001 | 1 |
+| Cached sidebar-page nickname hits | 0 / 100 | 100 / 100 |
+| Sidebar reopen cache hits | 0 / 100 | 100 / 100 |
+| Authoritative history requests | 1,000 | 1,000 |
+| Live sidebar subscription commands | 300 | 300 |
+| Estimated retained core bytes | 226,463 | 227,784 (+1,321) |
+| Initial median core workload | 36.240 ms | 37.875 ms (+4.51%) |
+| Same-binary repeat median | 35.606 ms | 36.028 ms (+1.19%) |
+| Final-source median core workload | 38.809 ms | 39.204 ms (+1.02%) |
+
+Both timing batches are retained. The initial difference exceeds 3%; it did not reproduce
+above that threshold in the second batch. This is not evidence of unchanged native frame
+latency. The after fixture also retains useful identity/range data which the baseline drops.
+CPU-clock samples of separate, symbolized diagnostic builds show the existing timeline,
+permission and message-accounting paths; they do not isolate a cause for timing differences.
+Shared-library samples remain unresolved. The measured request counts are commands from
+the core, not observed live Discord request counts.
+
+The final source's [native comparison](https://github.com/MCShotty/Serein/actions/runs/40838872889)
+uses Rust 1.98.1, optimization 3, thin LTO, one codegen unit, stripped symbols and
+panic abort, with one warmup and five order-rotated samples. The current published nightly
+is pinned to `v1.0.0-nightly.20261028.68` (`1b2f8942`). Linux x64 and Windows Server
+2025 x64 use one-CPU affinity; macOS 26.6.2 ARM64 uses its platform scheduler.
+
+| Runner / median milliseconds | Nightly | Frozen baseline | Implementation | Baseline delta |
+| --- | ---: | ---: | ---: | ---: |
+| Linux / reducer | 68.469 | 68.766 | 77.642 | +12.9% |
+| Linux / wide channels | 217.717 | 8.295 | 8.475 | +2.2% |
+| Windows / reducer | 107.118 | 110.497 | 110.389 | -0.1% |
+| Windows / wide channels | 171.348 | 11.685 | 11.727 | +0.4% |
+| macOS / reducer | 65.947 | 60.707 | 63.542 | +4.7% |
+| macOS / wide channels | 92.461 | 6.320 | 6.406 | +1.4% |
+
+The Linux and macOS reducer increases exceed 3% in this batch; the cause is not
+established. A matched local diagnostic build measured -2.2% for reducer and +4.3%
+for wide channels after a prior +8.3% / +0.6% batch. Diagnostic binaries retain
+symbols and are labelled separately from CI and packages. Earlier `d22ad5d7` / `9089b23d`
+macOS wide-channel results were +40.4% / -8.7% with byte-identical benchmark binaries.
+Neither overlap nor a favorable repeat alone establishes a speedup or resolves every
+platform regression. Subsequent same-code CI outcomes are tracked in PR #32.
+
+A candidate split of dormant-preview mutation from dispatch was also measured with
+one warmup and five rotated triples: baseline reducer 66.441 ms, `d854f5fe` 67.641 ms,
+candidate 67.721 ms; wide channels 7.101 / 6.912 / 7.294 ms. The candidate did not
+demonstrate a benefit and was removed. This preserves the preload/deletion safety
+paths and avoids retaining a speculative optimization.
+
+The new `cargo replay --loading` runs in native CI alongside the existing replay and
+soak. Normal package sizes are recorded with artifact/source provenance in the
+[loading evidence](pr-evidence/chat-member-loading/README.md) and PR #32. Native preview
+latency, cold Windows storage, idle CPU, process RSS, avatar decoding and live synchronization
+remain unmeasured in this Linux workspace.
+
 ## Live member identity follow-up
 
 Compared final application source `1607575e` against frozen #30 `dff256ff` and

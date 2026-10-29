@@ -4,6 +4,36 @@ use super::{
 	valid_presence_text,
 };
 
+/// A bounded, persisted display observation. It carries no permissions, role assignments,
+/// presence or membership proof; callers must validate current access before displaying it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberDisplay {
+	pub guild: Id,
+	pub user: Id,
+	pub name: String,
+	pub username: Option<Box<str>>,
+	pub nick: Option<String>,
+}
+impl MemberDisplay {
+	pub fn valid(&self) -> bool {
+		let text = |s: &str| {
+			s.len() <= 512 && s.chars().count() <= 128 && !s.chars().any(char::is_control)
+		};
+		self.guild.0 != 0
+			&& self.user.0 != 0
+			&& !self.name.is_empty()
+			&& text(&self.name)
+			&& self.username.as_deref().is_none_or(text)
+			&& self.nick.as_deref().is_none_or(text)
+	}
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>()
+			+ self.name.capacity()
+			+ self.username.as_ref().map_or(0, |s| s.len())
+			+ self.nick.as_ref().map_or(0, String::capacity)
+	}
+}
+
 /// Partial guild identity for display only. Never grants permissions. Missing fields leave
 /// previous observations intact; a null nickname or an empty role list explicitly clears it.
 #[derive(Clone, PartialEq, Eq)]

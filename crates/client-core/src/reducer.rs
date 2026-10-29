@@ -19,6 +19,13 @@ impl State {
 		if envelope.generation != self.generation {
 			return;
 		}
+		if !matches!(envelope.event, Event::Message(_) | Event::Typing(_)) {
+			self.invalidate_expression_event(&envelope.event);
+			self.observe_server_display(&envelope.event);
+			if matches!(envelope.event, Event::GuildDisplayMetadata(_)) {
+				return;
+			}
+		}
 		self.invalidate_reply_previews(&envelope.event);
 		if envelope.event.changes_access()
 			|| matches!(&envelope.event, Event::Disconnected | Event::Resumed)
@@ -68,6 +75,10 @@ impl State {
 				std::time::SystemTime::now(),
 				std::time::Instant::now(),
 			);
+			return;
+		}
+		if let Event::MemberSearchCooldown { request, seconds } = envelope.event {
+			self.member_search_cooldown(request, seconds);
 			return;
 		}
 		if let Event::MemberIdentity(update) = envelope.event {
@@ -319,7 +330,7 @@ impl State {
 				Ok(())
 			}
 			Event::Typing(_) => unreachable!("typing is handled before timeline invalidation"),
-			Event::MemberIdentity(_) => {
+			Event::MemberIdentity(_) | Event::MemberSearchCooldown { .. } => {
 				unreachable!("member identity handled before timeline invalidation")
 			}
 			Event::Permissions(mut event) => {
@@ -681,6 +692,7 @@ impl State {
 				}
 				Ok(())
 			}
+			Event::GuildDisplayMetadata(_) => unreachable!("handled before reduction"),
 			Event::GuildChanged(patch) => {
 				if !matches!(patch.default_message_notifications, Patch::Absent)
 					&& self.server_settings.guild == Some(patch.id)
@@ -1112,6 +1124,7 @@ impl State {
 				self.members = None;
 				self.member_search = Default::default();
 				self.member_labels.clear();
+				self.parked_members = None;
 				self.clear_profile();
 				self.profile_cache.clear();
 				self.read_state.reset();
@@ -1468,6 +1481,7 @@ impl State {
 				);
 				self.member_search = Default::default();
 				self.member_labels.clear();
+				self.parked_members = None;
 				self.cancel_message_actions();
 				self.cancel_user_action();
 				self.cancel_server_action();
@@ -1525,6 +1539,7 @@ impl State {
 				);
 				self.member_search = Default::default();
 				self.member_labels.clear();
+				self.parked_members = None;
 				self.members = None;
 				self.timeline.clear();
 				self.freshness = Freshness::Stale;

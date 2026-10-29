@@ -496,7 +496,16 @@ struct Desktop {
 	download_close_pending: bool,
 	window: Arc<winit::window::Window>,
 	/// The recent-page request whose cached window was already asked for.
-	cached_history_request: Option<(model::Id, u64)>,
+	cached_history_request: cache::HistoryLoad,
+	member_cache_load: cache::HistoryLoad,
+	expression_cache: cache::ExpressionCacheSchedule,
+	sticker_pack_cache_load: cache::HistoryLoad,
+	sticker_pack_cache_save: cache::HistoryLoad,
+	gif_cache: cache::GifCache,
+	member_cache_saved: Option<(u64, model::Id, u64, u64)>,
+	member_cache_cleared: cache::MemberCacheClear,
+	server_cache_load: cache::HistoryLoad,
+	server_cache_failed: bool,
 	/// The saved maximized state still has to be re-applied once the window is shown.
 	maximize_after_show: bool,
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,
@@ -624,7 +633,7 @@ fn access_candidates(state: &State, event: &Event) -> Vec<model::Id> {
 			(None, Some(channel.id))
 		}
 		Event::ChannelChanged(patch) | Event::ThreadChanged { patch, .. } => (None, Some(patch.id)),
-		Event::ThreadRemoved { id, .. } => (None, Some(*id)),
+		Event::Unavailable(id) | Event::ThreadRemoved { id, .. } => (None, Some(*id)),
 		Event::ChannelAction(client_core::channel_actions::Event::Finished {
 			channel,
 			result:
@@ -1087,6 +1096,82 @@ fn plaintext_login_dir() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn unavailable_parent_captures_child_threads_for_scoped_cache_cleanup() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let event = Event::Unavailable(model::Id(20));
+		let mut candidates = access_candidates(&state, &event);
+		assert!(candidates.contains(&model::Id(20)));
+		assert!(
+			candidates.contains(&model::Id(28)),
+			"child thread is part of the removed scope"
+		);
+		assert!(
+			!candidates.contains(&model::Id(21)),
+			"sibling conversations are not invalidated"
+		);
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		candidates.retain(|channel| !state.can_read_history(*channel));
+		assert!(candidates.contains(&model::Id(20)) && candidates.contains(&model::Id(28)));
+		assert!(state.channel(model::Id(20)).is_none() && state.channel(model::Id(28)).is_none());
+		assert!(state.can_read_history(model::Id(21)));
+	}
+	#[test]
+	fn permission_loss_in_another_guild_does_not_purge_selected_guild() {
+		use model::{Id, Patch, permissions as p};
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let mut guild = state.guilds[0].clone();
+		guild.id = Id(11);
+		state.guilds.push(guild);
+		for id in [100, 101] {
+			let mut channel = state.channel(Id(20)).unwrap().clone();
+			channel.id = Id(id);
+			channel.guild = Some(Id(11));
+			channel.parent_id = None;
+			state.channels.push(channel);
+		}
+		state.invalidate_navigation();
+		let snapshot = test_support::permission_snapshot(&state);
+		state.permissions.replace(snapshot).unwrap();
+		assert_eq!(state.selected, Some(Id(20)));
+		let event = Event::Permissions(client_core::permissions::Event::Channel {
+			channel: Id(100),
+			guild: Some(Id(11)),
+			overwrites: Patch::Value(vec![p::Overwrite {
+				id: Id(11),
+				kind: 0,
+				allow: 0,
+				deny: p::READ_MESSAGE_HISTORY,
+			}]),
+		});
+		let mut candidates = access_candidates(&state, &event);
+		let guilds: std::collections::BTreeMap<_, _> = candidates
+			.iter()
+			.filter_map(|id| {
+				state
+					.channel(*id)
+					.and_then(|channel| channel.guild.map(|guild| (*id, guild)))
+			})
+			.collect();
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		candidates.retain(|channel| !state.can_read_history(*channel));
+		assert_eq!(candidates, vec![Id(100)]);
+		let affected: std::collections::BTreeSet<_> = candidates
+			.iter()
+			.filter_map(|id| guilds.get(id).copied())
+			.collect();
+		assert_eq!(affected, [Id(11)].into_iter().collect());
+		assert!(state.can_read_history(Id(20)) && state.can_read_history(Id(101)));
+		assert_eq!(state.selected, Some(Id(20)));
+	}
 	#[cfg(feature = "demo")]
 	#[test]
 	fn demo_group_members_preserve_recipients_and_deduplicate_current_account() {

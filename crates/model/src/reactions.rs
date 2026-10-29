@@ -57,7 +57,7 @@ pub fn valid_reactions(reactions: &[Reaction]) -> bool {
 }
 
 /// Compact guild catalog; unknown role metadata never grants picker eligibility.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomEmoji {
 	pub id: Id,
 	pub name: String,

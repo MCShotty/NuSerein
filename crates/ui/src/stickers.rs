@@ -32,9 +32,8 @@ fn sections(state: &State) -> Vec<Section<'_>> {
 		});
 	}
 	sections.extend(state.guilds.iter().filter_map(|guild| {
-		let stickers = guild
-			.stickers
-			.as_deref()
+		let stickers = state
+			.expression_stickers_for(guild)
 			.filter(|items| !items.is_empty())?;
 		Some(Section {
 			id: Group::Guild(guild.id),
@@ -42,12 +41,20 @@ fn sections(state: &State) -> Vec<Section<'_>> {
 			stickers,
 		})
 	}));
-	sections.extend(state.stickers.packs.iter().map(|pack| Section {
+	sections.extend(state.display_sticker_packs().iter().map(|pack| Section {
 		id: Group::Pack(pack.id),
 		name: &pack.name,
 		stickers: &pack.stickers,
 	}));
 	sections
+}
+
+fn live_section(state: &State, group: Group) -> bool {
+	match group {
+		Group::Guild(guild) => state.guild(guild).is_some_and(|g| g.stickers.is_some()),
+		Group::Pack(_) => !state.stickers.packs.is_empty(),
+		Group::Recent => true,
+	}
 }
 
 fn matches(sticker: &Sticker, source: &str, query: &str) -> bool {
@@ -176,6 +183,7 @@ impl Browser {
 								header.toggle();
 							}
 							let (_, header, _) = header.body(|ui| {
+								let live = live_section(state, section.id);
 								if matching.is_empty() {
 									ui.label(
 										egui::RichText::new(crate::i18n::translate(
@@ -195,12 +203,12 @@ impl Browser {
 									ui.horizontal(|ui| {
 										for sticker in row {
 											ui.push_id(sticker.id, |ui| {
-												let enabled = state.can_send_sticker(sticker)
+												let enabled = live && (state.can_send_sticker(sticker)
 													|| (image_fallback
 														&& sticker.valid() && sticker.available
 														&& state.selected.is_some_and(|channel| {
 															state.can_send(channel)
-														}));
+																})));
 												let response = ui
 													.add_enabled_ui(enabled, |ui| {
 														avatars.sticker_image(
@@ -225,7 +233,9 @@ impl Browser {
 												if !enabled {
 													response.on_disabled_hover_text(
 														crate::i18n::translate_if_key(
-															if !image_fallback
+																					if !live {
+																						"expression-cache-awaiting-server"
+																					} else if !image_fallback
 																&& state
 																	.sticker_requires_nitro(sticker)
 															{
@@ -488,6 +498,35 @@ pub(crate) fn message(
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn cached_standard_pack_is_visible_but_not_selectable() {
+		let mut state = test_support::demo_state();
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		state.stickers.packs.clear();
+		state.stickers.loaded = false;
+		let mut item = sticker(601, 600);
+		item.available = false;
+		let hints = model::StickerPackHints {
+			packs: vec![model::StickerPack {
+				id: model::Id(600),
+				name: "Pack".into(),
+				stickers: vec![item.clone()],
+			}],
+		};
+		assert!(state.hydrate_sticker_pack_hints(state.sticker_pack_cache_revision(), hints));
+		assert!(
+			super::sections(&state)
+				.iter()
+				.any(|s| s.id == super::Group::Pack(model::Id(600)))
+		);
+		assert!(!super::live_section(
+			&state,
+			super::Group::Pack(model::Id(600))
+		));
+		assert!(!state.can_send_sticker(&item));
+		assert!(state.request_sticker_packs().is_some());
+	}
 	use super::*;
 	fn sticker(id: u64, pack: u64) -> Sticker {
 		Sticker {

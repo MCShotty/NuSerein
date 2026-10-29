@@ -47,6 +47,14 @@ impl State {
 		self.filtered_revision(self.navigation_index.view_revisions.rail_skipped)
 	}
 
+	/// Display-only identity updates do not change server/channel membership, labels or badges.
+	pub(super) fn skip_identity_navigation(&mut self) {
+		let revisions = &mut self.navigation_index.view_revisions;
+		revisions.catalog_skipped = revisions.catalog_skipped.wrapping_add(1);
+		revisions.channels_skipped = revisions.channels_skipped.wrapping_add(1);
+		revisions.labels_skipped = revisions.labels_skipped.wrapping_add(1);
+		revisions.rail_skipped = revisions.rail_skipped.wrapping_add(1);
+	}
 	pub(super) fn filter_view_revisions(&mut self, event: &Event) {
 		let guild_message = matches!(event, Event::Message(message)
 		if self.channel(message.channel).is_some_and(|channel| {

@@ -202,6 +202,8 @@ pub enum Event {
 		removed: Vec<Id>,
 	},
 	GuildChanged(GuildPatch),
+	/// Presence of presentation fields in the current authoritative READY snapshot.
+	GuildDisplayMetadata(Vec<GuildPatch>),
 	ServerIncident {
 		guild: Id,
 		incident: Option<model::server_access::Incident>,
@@ -297,6 +299,11 @@ pub enum Event {
 	Permissions(permissions::Event),
 	/// Returns one already-bounded transport command to the existing rejection path.
 	CommandRejected(Box<crate::Command>),
+	/// A queued query remains pending until this service cooldown expires.
+	MemberSearchCooldown {
+		request: member_search::Request,
+		seconds: u32,
+	},
 }
 
 pub struct Envelope {
@@ -358,6 +365,25 @@ impl Event {
 				| Event::ThreadsSync { .. }
 				| Event::RecipientAdded { .. }
 				| Event::RecipientRemoved { .. }
+		)
+	}
+	/// Session or membership changes which retire cached guild expression hints.
+	/// Channel and thread access is checked again when hints are viewed or loaded.
+	pub fn invalidates_expression_catalogs(&self) -> bool {
+		matches!(
+			self,
+			Event::Ready { .. }
+				| Event::Startup(_)
+				| Event::Disconnected
+				| Event::Resync
+				| Event::PermissionsChanged
+				| Event::Permissions(_)
+				| Event::GuildRemoved(_)
+				| Event::ServerAction(server_actions::Event::Written {
+					action: server_actions::Action::Leave(_) | server_actions::Action::Delete(_),
+					result: Ok(None),
+					..
+				})
 		)
 	}
 
@@ -615,6 +641,17 @@ impl Event {
 						_ => 0,
 					})
 					.sum(),
+				Self::GuildDisplayMetadata(patches) => {
+					patches.capacity() * size_of::<GuildPatch>()
+						+ patches
+							.iter()
+							.flat_map(|p| [&p.name, &p.icon])
+							.map(|p| match p {
+								Patch::Value(s) => s.capacity(),
+								_ => 0,
+							})
+							.sum::<usize>()
+				}
 				Self::ChannelCreated(channel) | Self::ChannelRestored(channel) => channel.bytes(),
 				Self::ThreadsSync {
 					parents,
@@ -665,6 +702,9 @@ impl Event {
 				}
 				Self::MemberIdentity(update) => update.bytes(),
 				Self::Typing(signal) => signal.member.as_ref().map_or(0, |member| member.bytes()),
+				Self::MemberSearchCooldown { request, .. } => {
+					request.query.capacity() + request.users.capacity() * size_of::<Id>()
+				}
 				Self::MemberSearch { request, result } => {
 					request.query.capacity()
 						+ request.users.capacity() * size_of::<Id>()

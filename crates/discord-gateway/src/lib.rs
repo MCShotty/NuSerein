@@ -1120,6 +1120,7 @@ pub async fn run_with_activity(
 			receiver: activity.0,
 			own_presence: activity.1,
 			member_queries: activity.2,
+			member_watches: None,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1156,6 +1157,7 @@ pub async fn run_with_activity_recovery(
 			receiver: activity.0,
 			own_presence: activity.1,
 			member_queries: activity.2,
+			member_watches: None,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1166,6 +1168,10 @@ pub async fn run_with_activity_recovery(
 	)
 	.await
 }
+/// Sparse display-identity observations for the current accessible conversation.
+/// IDs are bounded to 128 and never authorize membership or permissions.
+pub type MemberWatch = (Id, Id, Vec<Id>);
+
 /// As recovery, with one account-owned bounded diagnostic history.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub async fn run_with_activity_recovery_diagnostics(
@@ -1185,6 +1191,41 @@ pub async fn run_with_activity_recovery_diagnostics(
 	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
 	emit: impl Fn(Event, u64) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
+	run_with_activity_recovery_diagnostics_members(
+		secret,
+		initial_url,
+		subscriptions,
+		controls,
+		reconnect,
+		activity,
+		None,
+		delivery,
+		diagnostics,
+		observe,
+		emit,
+	)
+	.await
+}
+/// As diagnostics, with independent watches for already-cached member identities.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub async fn run_with_activity_recovery_diagnostics_members(
+	secret: Arc<SessionSecret>,
+	initial_url: String,
+	subscriptions: watch::Receiver<Option<MemberSubscription>>,
+	controls: mpsc::Receiver<client_core::voice::Command>,
+	reconnect: Arc<Notify>,
+	activity: (
+		watch::Receiver<Option<discord_protocol::rpc::Activity>>,
+		watch::Receiver<model::OwnPresence>,
+		watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
+		watch::Receiver<Option<discord_protocol::spotify::Activity>>,
+	),
+	member_watches: Option<watch::Receiver<Option<MemberWatch>>>,
+	delivery: watch::Receiver<DeliveryState>,
+	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
+	emit: impl Fn(Event, u64) -> Result<(), Failure>,
+) -> Result<(), Failure> {
 	run_observed(
 		secret,
 		initial_url,
@@ -1194,6 +1235,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 			receiver: activity.0,
 			own_presence: activity.1,
 			member_queries: activity.2,
+			member_watches,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1210,6 +1252,7 @@ pub async fn run_with_activity_recovery_diagnostics(
 struct ActivityInput<'a> {
 	spotify: watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	member_queries: watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
+	member_watches: Option<watch::Receiver<Option<MemberWatch>>>,
 	receiver: watch::Receiver<Option<discord_protocol::rpc::Activity>>,
 	own_presence: watch::Receiver<model::OwnPresence>,
 	observe: &'a (dyn Fn(ActivityObservation) -> Result<(), Failure> + Sync),
@@ -1406,15 +1449,19 @@ async fn run_observed_inner(
 		receiver: mut activity,
 		mut spotify,
 		mut member_queries,
+		member_watches,
 		mut own_presence,
 		observe,
 	} = activity.unwrap_or_else(|| ActivityInput {
 		receiver: watch::channel(None).1,
 		spotify: watch::channel(None).1,
 		member_queries: watch::channel(Default::default()).1,
+		member_watches: None,
 		own_presence: watch::channel(model::OwnPresence::default()).1,
 		observe: &ignore_observation,
 	});
+	let mut watches_open = member_watches.is_some();
+	let mut member_watches = member_watches.unwrap_or_else(|| watch::channel(None).1);
 	let mut last_observation = None;
 	let mut outgoing_activity = activity::Pending::default();
 	outgoing_activity.update(&activity.borrow_and_update())?;
@@ -1653,6 +1700,10 @@ async fn run_observed_inner(
 		let mut subscriptions_open = true;
 		let mut queries_open = true;
 		queries.reconnect(state.session.is_some());
+		if watches_open {
+			writer.clear_queries(queries.watch(&member_watches.borrow_and_update()));
+		}
+		queries.update(&member_queries.borrow_and_update());
 		let mut member_ticket = 0;
 		outgoing_activity.reconnect();
 		loop {
@@ -1661,6 +1712,9 @@ async fn run_observed_inner(
 				state.blocked || state.generation != delivery_epoch
 			}) {
 				return Err(Failure::Busy);
+			}
+			if watches_open && member_watches.has_changed().unwrap_or(false) {
+				writer.clear_queries(queries.watch(&member_watches.borrow_and_update()));
 			}
 			if !heartbeat.collect(&writer) {
 				record(
@@ -1938,6 +1992,12 @@ async fn run_observed_inner(
 				_=tokio::time::sleep_until(calls.departure_deadline.unwrap_or(ready_deadline)), if calls.departure_deadline.is_some() => {
 					if let Some(event)=calls.departure_expired() {emit(event)?;}
 				}
+				changed = member_watches.changed(), if watches_open && ready_at.is_some() => {
+					watches_open = changed.is_ok();
+					if watches_open { writer.clear_queries(queries.watch(&member_watches.borrow_and_update())); }
+					else { writer.clear_queries(queries.watch(&None)); }
+				}
+
 				changed = member_queries.changed(), if queries_open && ready_at.is_some() => {
 					queries_open = changed.is_ok();
 					let changed_queries=queries.update(&member_queries.borrow_and_update());
@@ -2116,6 +2176,22 @@ async fn run_observed_inner(
 												message_requests.push(channel.id);
 											}
 										}
+										// First occurrence wins, matching READY navigation admission. Rows omitted by
+										// the bounds are unknown and must not hydrate from stale display hints.
+										let mut display_seen = std::collections::BTreeSet::new();
+										let display_capacity = ready.guilds.len().min(4096);
+										let mut display_bytes = display_capacity * std::mem::size_of::<model::GuildPatch>();
+										let mut display_metadata = Vec::with_capacity(display_capacity);
+										for guild in &ready.guilds {
+											if display_metadata.len() >= 4096 { break; }
+											if guild.id.0 == 0 || !display_seen.insert(guild.id) { continue; }
+											let patch = guild.display_patch();
+											let field_bytes = |field: &model::Patch<String>| match field { model::Patch::Value(value) => value.capacity(), _ => 0 };
+									let bytes = field_bytes(&patch.name) + field_bytes(&patch.icon);
+											if display_bytes.saturating_add(bytes) > 2 * 1024 * 1024 { break; }
+											display_bytes += bytes;
+											display_metadata.push(patch);
+										}
 										let incident_now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as i128;
 										let incident_updates:Vec<_>=ready.guilds.iter().filter_map(|guild|match guild.incident_patch(){model::Patch::Value(incident) if incident.active(incident_now)=>Some((guild.id,incident)),_=>None}).take(256).collect();
 										let (guilds, channels) = ready.navigation().map_err(|_| Failure::ProtocolAt("Gateway login: invalid or oversized channel/thread navigation"))?;
@@ -2136,6 +2212,7 @@ async fn run_observed_inner(
 											read_state: client_core::read_state::Event::Snapshot {entries:read_entries,version:read_version,partial},
 											notifications, session_dnd: ready.sessions.as_ref().and_then(|s| s.dnd()), warnings,
 										}.prepare()?)))?;
+										emit(Event::GuildDisplayMetadata(display_metadata))?;
 										for(guild,incident)in incident_updates{emit(Event::ServerIncident{guild,incident:Some(incident)})?;}
 										// A new session does not replay settings changed while disconnected.
 										if was_ready { emit(Event::AccountSettings { status: true, folders: true })?; }
@@ -2419,15 +2496,16 @@ async fn run_observed_inner(
 										member_diagnostics.record("guild refresh received");
 										let permissions=owner_id.map(|owner|permissions::guild(packet.d.get().as_bytes(),owner)).transpose().map_err(|_|Failure::ProtocolAt(PERMISSION_REFRESH))?;
 										let mut guild: GuildDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::ProtocolAt("Gateway guild refresh: unsupported guild payload"))?;
+										let display = guild.display_patch();
 										if guild.channels.len() + calls.allowed.len() > MAX_NAV { return Err(Failure::Capacity); }
 										if !known_guilds.contains(&guild.id) {
 											if known_guilds.len() >= MAX_NAV { return Err(Failure::Capacity); }
 											known_guilds.insert(guild.id);
-											let name = guild.properties.as_ref().and_then(|p| match &p.name { model::Patch::Value(name) => Some(name), _ => None }).unwrap_or(&guild.name).chars().take(128).collect();
-											let icon = guild.properties.as_ref().and_then(|p| match &p.icon { model::Patch::Value(icon) => Some(icon.clone()), _ => None }).or_else(|| guild.icon.clone()).filter(|h| model::valid_avatar_hash(h));
+											let name = match &display.name { model::Patch::Value(name) => name.chars().take(128).collect(), _ => String::new() };
+											let icon = match &display.icon { model::Patch::Value(icon) if model::valid_avatar_hash(icon) => Some(icon.clone()), _ => None };
 											emit(Event::GuildJoined(model::Guild { default_message_notifications: guild.default_notification_level(), id: guild.id, name, icon, stickers: None, emojis: None }))?;
 										}
-									emit(Event::GuildChanged(model::GuildPatch { id: guild.id, name: model::Patch::Absent, icon: model::Patch::Absent, default_message_notifications: guild.default_notification_patch() }))?;
+										emit(Event::GuildChanged(display))?;
 										if let model::Patch::Value(incident)=guild.incident_patch(){emit(Event::ServerIncident{guild:guild.id,incident:Some(incident)})?;}
 
 										if let Some(permissions)=permissions {emit(Event::Permissions(client_core::permissions::Event::Snapshot(permissions)))?;}
@@ -2731,6 +2809,8 @@ mod tests {
 			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
 			let joined = std::sync::Mutex::new(Vec::new());
 			let removed = std::sync::Mutex::new(Vec::new());
+			let changed = std::sync::Mutex::new(Vec::new());
+			let startup_display = std::sync::Mutex::new(Vec::new());
 			let (client_finished, terminal_observed) = tokio::sync::oneshot::channel();
 			let server = async {
 				let (stream, _) = listener.accept().await.unwrap();
@@ -2742,7 +2822,7 @@ mod tests {
 				.await;
 				assert_eq!(packet(&mut socket).await["op"], 2);
 				let mut initial = ready(1, "synthetic-guild-rejoin");
-				initial["d"]["guilds"] = json!([{"id":"2","name":"Original"}]);
+				initial["d"]["guilds"] = json!([{"id":"2","name":"Original"},{"id":"2","name":"Duplicate"},{"id":"0","name":"Invalid"}]);
 				send(&mut socket, initial).await;
 				for (sequence, name, data) in [
 					(2, "GUILD_DELETE", json!({"id":"2","unavailable":true})),
@@ -2752,11 +2832,12 @@ mod tests {
 						json!({"id":"2","name":"Available again"}),
 					),
 					(4, "GUILD_DELETE", json!({"id":"2"})),
-					(5, "GUILD_CREATE", json!({"id":"2","name":"Rejoined"})),
+					(5, "GUILD_CREATE", json!({"id":"2","name":"Rejoined","icon":"0123456789abcdef0123456789abcdef","properties":{"icon":null}})),
+					(6, "GUILD_CREATE", json!({"id":"2"})),
 				] {
 					send(&mut socket, json!({"op":0,"t":name,"s":sequence,"d":data})).await;
 				}
-				acknowledge(&mut socket, 5).await;
+				acknowledge(&mut socket, 6).await;
 				socket
 					.send(Frame::Close(Some(CloseFrame {
 						code: CloseCode::from(4004),
@@ -2775,9 +2856,11 @@ mod tests {
 				|event| {
 					match event {
 						Event::GuildJoined(guild) => {
-							joined.lock().unwrap().push((guild.id, guild.name))
+							joined.lock().unwrap().push((guild.id, guild.name, guild.icon))
 						}
 						Event::GuildRemoved(guild) => removed.lock().unwrap().push(guild),
+						Event::GuildChanged(patch) => changed.lock().unwrap().push((patch.name,patch.icon)),
+						Event::GuildDisplayMetadata(patches) => startup_display.lock().unwrap().extend(patches.into_iter().map(|patch| (patch.id,patch.name,patch.icon))),
 						_ => {}
 					}
 					Ok(())
@@ -2793,9 +2876,15 @@ mod tests {
 			assert_eq!(result, Err(Failure::Expired));
 			assert_eq!(
 				joined.into_inner().unwrap(),
-				vec![(Id(2), "Rejoined".into())]
+				vec![(Id(2), "Rejoined".into(), None)]
 			);
 			assert_eq!(removed.into_inner().unwrap(), vec![Id(2)]);
+			assert_eq!(startup_display.into_inner().unwrap(), vec![(Id(2), model::Patch::Value("Original".into()), model::Patch::Absent)]);
+			assert_eq!(changed.into_inner().unwrap(), vec![
+				(model::Patch::Value("Available again".into()), model::Patch::Absent),
+				(model::Patch::Value("Rejoined".into()), model::Patch::Null),
+				(model::Patch::Absent, model::Patch::Absent),
+			]);
 		})
 		.await
 		.unwrap();
@@ -3081,7 +3170,7 @@ mod tests {
 	                let result = run_inner(
 	                    Arc::new(SessionSecret::from_owner_input("synthetic-owner-session".into()).unwrap()),
 	                    "wss://gateway.discord.gg/".into(), watch::channel(None).1,
-	                    mpsc::channel(1).1, Some(ActivityInput { spotify: watch::channel(None).1, member_queries: watch::channel(Default::default()).1, receiver, own_presence: presence_receiver, observe: &|value| { observations.send_replace(value); Ok(()) } }), |_| Ok(()), Some(&endpoint),
+	                    mpsc::channel(1).1, Some(ActivityInput { member_watches: None, spotify: watch::channel(None).1, member_queries: watch::channel(Default::default()).1, receiver, own_presence: presence_receiver, observe: &|value| { observations.send_replace(value); Ok(()) } }), |_| Ok(()), Some(&endpoint),
 	                ).await;
 	                finished.send(()).unwrap();
 	                result
@@ -3212,12 +3301,16 @@ mod tests {
 
 	#[tokio::test]
 	async fn local_member_identity_dispatches_update_names_roles_and_keep_delivery() {
-		timeout(Duration::from_secs(10), async {
+		for cached_watch in [false, true] {
+			timeout(Duration::from_secs(10), async {
 			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
 			let (finished, observed) = tokio::sync::oneshot::channel();
 			let finished = std::sync::Mutex::new(Some(finished));
+			let (reconnect_consumed, reconnect_observed) = tokio::sync::oneshot::channel();
+			let reconnect_consumed = std::sync::Mutex::new(Some(reconnect_consumed));
 			let (queries, member_queries) = watch::channel(Default::default());
+			let (watch_send, watch_receive) = watch::channel(None);
 			let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 			let server = async {
 				let (stream, _) = listener.accept().await.unwrap();
@@ -3238,7 +3331,7 @@ mod tests {
 						assert_eq!(subscribed["d"]["subscriptions"]["10"]["members"], json!(["7"]));
 						break;
 					}
-					assert!(matches!(subscribed["op"].as_u64(), Some(3 | 8)));
+					assert!(subscribed["op"] == 3 || (!cached_watch && subscribed["op"] == 8));
 				}
 				for (sequence, name, data) in [
 					(2,"MESSAGE_CREATE", json!({"id":"100","channel_id":"20","guild_id":"10","author":{"id":"7","username":"account"},"member":{"nick":"Old nickname","roles":["11"]},"content":"Before change"})),
@@ -3250,12 +3343,36 @@ mod tests {
 					(7,"PASSIVE_UPDATE_V2", json!({"guild_id":"10","updated_members":[{"user":{"id":"7","username":"account"},"nick":"Passive nickname","roles":["11"]}]})),
 					(8,"GUILD_MEMBER_REMOVE", json!({"guild_id":"10","user":{"id":"7"}})),
 				] { send(&mut socket, json!({"op":0,"t":name,"s":sequence,"d":data})).await; }
+				// Prove all changes were admitted before requesting reconnection. A timer
+				// heartbeat or the initial subscriptions can already be queued.
+				send(&mut socket, json!({"op":1,"d":null})).await;
+				let mut admitted = false;
+				for _ in 0..16 {
+					let outgoing = packet(&mut socket).await;
+					match outgoing["op"].as_u64() {
+						Some(1) => {
+							send(&mut socket, json!({"op":11,"d":null})).await;
+							if outgoing["d"] == 8 {
+								admitted = true;
+								break;
+							}
+						}
+						Some(3 | 8 | 37) => {}
+						_ => panic!("unexpected synthetic gateway command"),
+					}
+				}
+				assert!(admitted, "member changes must precede reconnection");
 				send(&mut socket, json!({"op":7,"d":null})).await;
+				// An unread client heartbeat can reset TCP on drop and discard op 7.
+				// Keep the socket alive until the client observes the reconnect.
+				reconnect_observed.await.unwrap();
 				drop(socket);
 				let (stream, _) = listener.accept().await.unwrap();
 				let mut socket = accept_async(stream).await.unwrap();
 				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
-				assert_eq!(packet(&mut socket).await["op"], 6);
+				let resume = packet(&mut socket).await;
+				assert_eq!(resume["op"], 6);
+				assert_eq!(resume["d"]["seq"], 8);
 				// Replayed member changes arrive before RESUMED; the reducer must keep them.
 				send(&mut socket, json!({"op":0,"t":"GUILD_MEMBER_UPDATE","s":9,"d":{"guild_id":"10","user":{"id":"7","username":"account"},"nick":"Resumed nickname","roles":[]}})).await;
 				send(&mut socket, json!({"op":0,"t":"RESUMED","s":10,"d":{}})).await;
@@ -3267,18 +3384,28 @@ mod tests {
 			let client = run_inner(
 				Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_SESSION".into()).unwrap()),
 				"wss://gateway.discord.gg/".into(), watch::channel(None).1, mpsc::channel(1).1,
-				Some(ActivityInput { spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
+				Some(ActivityInput { member_watches: cached_watch.then_some(watch_receive), spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
 				|event| {
 					let startup = matches!(&event, Event::Startup(_) | Event::Ready { .. });
 					let changed = matches!(&event, Event::MemberIdentity(_) | Event::Typing(_));
+					let disconnected = matches!(&event, Event::Disconnected);
 					let last = matches!(&event, Event::Message(message) if message.id == Id(101));
 					let mut state = state.lock().unwrap();
 					let generation = state.generation;
 					state.apply(client_core::Envelope { generation, event });
+					if disconnected && let Some(consumed) = reconnect_consumed.lock().unwrap().take() {
+						consumed.send(()).unwrap();
+					}
 					if startup {
 						let Some(client_core::Command::History { request, .. }) = state.select(Id(20)) else { panic!("synthetic guild accessible") };
 						state.apply(client_core::Envelope { generation, event: Event::History { channel: Id(20), request, older: false, messages: vec![] } });
+						if cached_watch {
+							let revision=state.member_display_revision();
+							state.hydrate_member_displays(Id(10),revision,vec![model::MemberDisplay{guild:Id(10),user:Id(7),name:"Cached account".into(),username:Some("account".into()),nick:Some("Cached nickname".into())}]);
+							watch_send.send_replace(Some((Id(10),Id(20),vec![Id(7)])));
+						} else {
 						queries.send_replace([None, Some(client_core::member_search::Request {guild: Id(10), channel: Id(20), nonce: 1, slot: 1, query: String::new(), users: vec![Id(7)]})]);
+						}
 					}
 					if changed {
 						names.lock().unwrap().push(state.member_nickname(Id(20), Id(7)).flatten().map(str::to_owned));
@@ -3296,6 +3423,7 @@ mod tests {
 			assert_eq!(result, Err(Failure::Expired));
 			assert_eq!(*names.lock().unwrap(), vec![Some("New nickname".into()), None, None, Some("Typing nickname".into()), Some("Passive nickname".into()), None, Some("Resumed nickname".into())]);
 		}).await.expect("member changes interrupted message delivery");
+		}
 	}
 
 	#[test]
@@ -3608,6 +3736,10 @@ mod tests {
 								return Ok(());
 							}
 							Event::Startup(_) => "ready",
+							Event::GuildDisplayMetadata(patches) => {
+								assert!(patches.is_empty());
+								return Ok(());
+							}
 							Event::Onboarding(client_core::onboarding::Event::Gates {
 								snapshot,
 								gates,

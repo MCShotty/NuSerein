@@ -222,9 +222,9 @@ pub struct GuildDto {
 	#[serde(default)]
 	pub properties: Option<GuildProperties>,
 	#[serde(default)]
-	pub icon: Option<String>,
+	pub icon: Patch<String>,
 	#[serde(default)]
-	pub name: String,
+	pub name: Patch<String>,
 	#[serde(default)]
 	pub channels: Vec<ChannelDto>,
 	#[serde(default, deserialize_with = "threads::list")]
@@ -237,6 +237,40 @@ pub struct GuildDto {
 	pub members: Vec<VoiceMemberDto>,
 }
 impl GuildDto {
+	/// Display fields from nested normal-user properties override flat fields only when present.
+	/// Keep explicit null separate from absence so cached values cannot restore removed icons.
+	pub fn display_patch(&self) -> model::GuildPatch {
+		fn choose<'a>(
+			nested: Option<&'a Patch<String>>,
+			flat: &'a Patch<String>,
+		) -> Option<Option<&'a String>> {
+			match nested {
+				Some(Patch::Value(value)) => Some(Some(value)),
+				Some(Patch::Null) => Some(None),
+				_ => match flat {
+					Patch::Value(value) => Some(Some(value)),
+					Patch::Null => Some(None),
+					Patch::Absent => None,
+				},
+			}
+		}
+		let name = match choose(self.properties.as_ref().map(|p| &p.name), &self.name) {
+			Some(Some(value)) => Patch::Value(value.chars().take(128).collect()),
+			Some(None) => Patch::Null,
+			None => Patch::Absent,
+		};
+		let icon = match choose(self.properties.as_ref().map(|p| &p.icon), &self.icon) {
+			Some(Some(value)) if model::valid_avatar_hash(value) => Patch::Value(value.clone()),
+			Some(_) => Patch::Null,
+			None => Patch::Absent,
+		};
+		model::GuildPatch {
+			id: self.id,
+			name,
+			icon,
+			default_message_notifications: self.default_notification_patch(),
+		}
+	}
 	pub fn incident_patch(&self) -> Patch<model::server_access::Incident> {
 		match self.properties.as_ref().map(|v| &v.incidents_data) {
 			Some(Patch::Value(v)) => Patch::Value(*v),
@@ -369,6 +403,7 @@ impl Ready {
 		let guilds = std::mem::take(&mut self.guilds)
 			.into_iter()
 			.map(|mut g| {
+				let display = g.display_patch();
 				// Normal-user READY may wrap guild identity in `properties`; public bot objects
 				// are flat. The nested values override only fields actually present there.
 				if let Some(properties) = g.properties {
@@ -377,16 +412,6 @@ impl Ready {
 							g.default_message_notifications = Patch::Value(level)
 						}
 						Patch::Null => g.default_message_notifications = Patch::Null,
-						Patch::Absent => {}
-					}
-					match properties.name {
-						Patch::Value(name) => g.name = name,
-						Patch::Null => g.name.clear(),
-						Patch::Absent => {}
-					}
-					match properties.icon {
-						Patch::Value(icon) => g.icon = Some(icon),
-						Patch::Null => g.icon = None,
 						Patch::Absent => {}
 					}
 				}
@@ -444,8 +469,14 @@ impl Ready {
 						stickers
 					}),
 					id: g.id,
-					name: g.name.chars().take(128).collect(),
-					icon: g.icon.filter(|hash| model::valid_avatar_hash(hash)),
+					name: match display.name {
+						Patch::Value(name) => name.chars().take(128).collect(),
+						Patch::Absent | Patch::Null => String::new(),
+					},
+					icon: match display.icon {
+						Patch::Value(icon) if model::valid_avatar_hash(&icon) => Some(icon),
+						_ => None,
+					},
 				}
 			})
 			.collect::<Vec<_>>();
@@ -1933,6 +1964,55 @@ mod member_tests {
 				.is_err(),
 				"a position change without a position cannot be applied"
 			);
+		}
+	}
+
+	#[test]
+	fn guild_display_fields_distinguish_missing_and_null_in_flat_and_nested_payloads() {
+		let cases: &[(&[u8], Patch<String>, Patch<String>)] = &[
+			(br#"{"id":"2"}"#, Patch::Absent, Patch::Absent),
+			(
+				br#"{"id":"2","name":null,"icon":null}"#,
+				Patch::Null,
+				Patch::Null,
+			),
+			(
+				br#"{"id":"2","name":"Flat","icon":"0123456789abcdef0123456789abcdef"}"#,
+				Patch::Value("Flat".into()),
+				Patch::Value("0123456789abcdef0123456789abcdef".into()),
+			),
+			(
+				br#"{"id":"2","name":"Flat","icon":"flat","properties":{"icon":null}}"#,
+				Patch::Value("Flat".into()),
+				Patch::Null,
+			),
+			(
+				br#"{"id":"2","name":"Flat","properties":{"name":"Nested"}}"#,
+				Patch::Value("Nested".into()),
+				Patch::Absent,
+			),
+			(
+				br#"{"id":"2","name":"Flat","properties":{"name":null},"icon":"invalid"}"#,
+				Patch::Null,
+				Patch::Null,
+			),
+		];
+		for (wire, name, icon) in cases {
+			let guild: GuildDto = decode(wire).unwrap();
+			let patch = guild.display_patch();
+			assert_eq!(&patch.name, name);
+			assert_eq!(&patch.icon, icon);
+			let envelope = format!(
+				r#"{{"user":{{"id":"1","username":"Synthetic"}},"session_id":"synthetic","resume_gateway_url":"wss://gateway.discord.gg","guilds":[{}],"private_channels":[]}}"#,
+				std::str::from_utf8(wire).unwrap()
+			);
+			let (ready, _) = ready::decode(envelope.as_bytes())
+				.unwrap()
+				.navigation()
+				.unwrap();
+			let patch = ready.guilds[0].display_patch();
+			assert_eq!(&patch.name, name);
+			assert_eq!(&patch.icon, icon);
 		}
 	}
 

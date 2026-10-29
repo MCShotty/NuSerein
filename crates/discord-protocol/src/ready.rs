@@ -1,7 +1,7 @@
 //! Split READY once, borrowing the large arrays for their independent bounded projections.
 use crate::{
 	ChannelDto, DecodeError, MAX_GATEWAY_WIRE, MAX_WIRE, Ready, UserDto,
-	lossy::{Lossy, Slots, null_default},
+	lossy::{Lossy, Slots},
 	permissions, presence, read_state,
 };
 use model::account::MAX_ENTRIES;
@@ -274,9 +274,9 @@ struct Guild<'a> {
 	#[serde(default)]
 	properties: Option<crate::GuildProperties>,
 	#[serde(default)]
-	icon: Option<String>,
-	#[serde(default, deserialize_with = "null_default")]
-	name: String,
+	icon: model::Patch<String>,
+	#[serde(default)]
+	name: model::Patch<String>,
 	#[serde(default)]
 	channels: Lossy<ChannelDto, MAX_ENTRIES>,
 	#[serde(default)]

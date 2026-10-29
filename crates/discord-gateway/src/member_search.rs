@@ -46,6 +46,7 @@ pub(super) struct Search {
 	seen: [Option<u64>; 2],
 	reported: [Option<u64>; 2],
 	following: Option<(Id, Id)>,
+	watching: bool,
 	users: Vec<Id>,
 	announced: Option<(Id, Vec<Id>)>,
 }
@@ -59,6 +60,7 @@ impl Default for Search {
 			seen: [None; 2],
 			reported: [None; 2],
 			following: None,
+			watching: false,
 			users: vec![],
 			announced: None,
 			next_send: Instant::now(),
@@ -79,13 +81,55 @@ impl Search {
 			self.blocked_until = None;
 		}
 	}
+	pub fn watch(&mut self, watch: &Option<crate::MemberWatch>) -> u8 {
+		self.watching = true;
+		let valid = watch.as_ref().filter(|(guild, channel, users)| {
+			guild.0 != 0
+				&& channel.0 != 0
+				&& users.len() <= 128
+				&& users.iter().all(|id| id.0 != 0)
+				&& users.windows(2).all(|ids| ids[0] < ids[1])
+		});
+		let scope = valid.map(|(guild, channel, _)| (*guild, *channel));
+		let mut canceled = 0;
+		if self.following != scope {
+			self.following = scope;
+			self.users.clear();
+			for slot in 0..2 {
+				if self.active[slot]
+					.as_ref()
+					.is_some_and(|(r, _)| Some((r.guild, r.channel)) != scope)
+				{
+					self.active[slot] = None;
+					canceled |= 1 << slot;
+				}
+				if self.queued[slot]
+					.as_ref()
+					.is_some_and(|r| Some((r.guild, r.channel)) != scope)
+				{
+					self.queued[slot] = None;
+					canceled |= 1 << slot;
+				}
+			}
+		}
+		if let Some((_, _, users)) = valid
+			&& self.users != *users
+		{
+			self.users.clone_from(users);
+		}
+		canceled
+	}
 	pub fn update(&mut self, requests: &[Option<Request>; 2]) -> u8 {
-		let scope = requests
-			.iter()
-			.flatten()
-			.filter(|r| r.valid())
-			.max_by_key(|r| r.nonce)
-			.map(|r| (r.guild, r.channel));
+		let scope = if self.watching {
+			self.following
+		} else {
+			requests
+				.iter()
+				.flatten()
+				.filter(|r| r.valid())
+				.max_by_key(|r| r.nonce)
+				.map(|r| (r.guild, r.channel))
+		};
 		if self.following != scope {
 			self.following = scope;
 			self.users.clear();
@@ -170,9 +214,22 @@ impl Search {
 					|| self.blocked_until.is_some_and(|at| at > now))
 			{
 				self.reported[slot] = Some(request.nonce);
-				emit(Event::MemberSearch {
+				let until = self
+					.cooldowns
+					.get(&request.guild)
+					.copied()
+					.into_iter()
+					.chain(self.blocked_until)
+					.max()
+					.unwrap_or(now);
+				let seconds = until
+					.saturating_duration_since(now)
+					.as_millis()
+					.div_ceil(1000)
+					.min(u32::MAX as u128) as u32;
+				emit(Event::MemberSearchCooldown {
 					request: request.clone(),
-					result: Err(Failure::RateLimited),
+					seconds,
 				})?;
 			}
 		}
@@ -183,14 +240,22 @@ impl Search {
 			.iter()
 			.flatten()
 			.filter_map(|(_, deadline)| *deadline)
-			.chain(self.queued.iter().flatten().map(|request| {
-				self.cooldowns
-					.get(&request.guild)
-					.copied()
-					.unwrap_or(self.next_send)
-					.max(self.next_send)
-					.max(self.blocked_until.unwrap_or(self.next_send))
-			}))
+			.chain(
+				self.queued
+					.iter()
+					.flatten()
+					.filter(|request| {
+						!self.watching || self.following == Some((request.guild, request.channel))
+					})
+					.map(|request| {
+						self.cooldowns
+							.get(&request.guild)
+							.copied()
+							.unwrap_or(self.next_send)
+							.max(self.next_send)
+							.max(self.blocked_until.unwrap_or(self.next_send))
+					}),
+			)
 			.min()
 	}
 	pub fn tick(
@@ -222,9 +287,11 @@ impl Search {
 		}
 		let Some(slot) = self.queued.iter().position(|request| {
 			request.as_ref().is_some_and(|request| {
-				self.cooldowns
-					.get(&request.guild)
-					.is_none_or(|at| *at <= now)
+				(!self.watching || self.following == Some((request.guild, request.channel)))
+					&& self
+						.cooldowns
+						.get(&request.guild)
+						.is_none_or(|at| *at <= now)
 			})
 		}) else {
 			return Ok(None);
@@ -422,6 +489,116 @@ mod tests {
 			slot: 0,
 		}
 	}
+	#[test]
+	fn cached_member_watches_subscribe_without_a_query_and_cancel_old_scope() {
+		let mut search = Search::default();
+		search.watch(&Some((Id(1), Id(101), vec![Id(7), Id(8)])));
+		assert!(search.tick(&|_| Ok(())).unwrap().is_none());
+		let (guild, users, frame) = search.pending_subscription().unwrap();
+		assert_eq!((guild, users.clone()), (Id(1), vec![Id(7), Id(8)]));
+		let packet: serde_json::Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+		assert_eq!(packet["op"], 37);
+		assert!(packet["d"]["subscriptions"]["1"].get("channels").is_none());
+		search.subscribed(guild, users);
+		search.watch(&Some((Id(1), Id(102), vec![Id(7), Id(8)])));
+		assert!(search.pending_subscription().is_none());
+		search.reconnect(true);
+		search.watch(&Some((Id(1), Id(102), vec![Id(7), Id(8)])));
+		assert_eq!(search.pending_subscription().unwrap().1, vec![Id(7), Id(8)]);
+		search.subscribed(Id(1), vec![Id(7), Id(8)]);
+		search.watch(&Some((Id(2), Id(202), vec![Id(9)])));
+		let (old, users, _) = search.pending_subscription().unwrap();
+		assert_eq!(old, Id(1));
+		assert!(users.is_empty());
+		search.subscribed(old, users);
+		assert_eq!(search.pending_subscription().unwrap().0, Id(2));
+		search.subscribed(Id(2), vec![Id(9)]);
+		search.watch(&None);
+		assert!(search.pending_subscription().unwrap().1.is_empty());
+	}
+	#[test]
+	fn invalid_watches_cannot_retain_access_or_unbound_subscriptions() {
+		let mut search = Search::default();
+		for users in [
+			vec![Id(0)],
+			vec![Id(8), Id(7)],
+			vec![Id(7), Id(7)],
+			(1..=129).map(Id).collect(),
+		] {
+			search.watch(&Some((Id(1), Id(101), users)));
+			assert!(search.pending_subscription().is_none());
+			assert!(search.following.is_none());
+		}
+	}
+	#[test]
+	fn foreground_query_wins_queued_author_query_and_reports_real_cooldown() {
+		let now = Instant::now();
+		let mut search = Search {
+			next_send: now,
+			..Default::default()
+		};
+		let mut author = request(1, 1);
+		author.slot = 1;
+		author.query.clear();
+		author.users = vec![Id(7)];
+		search.update(&[Some(request(1, 2)), Some(author)]);
+		assert_eq!(
+			search.tick_at(now, &|_| Ok(())).unwrap().unwrap().purpose,
+			Purpose::Composer
+		);
+		assert!(
+			search
+				.tick_at(now + Duration::from_secs(1), &|_| Ok(()))
+				.unwrap()
+				.is_none()
+		);
+		let reports = std::sync::Mutex::new(vec![]);
+		search
+			.report_cooldowns(&|event| {
+				reports.lock().unwrap().push(event);
+				Ok(())
+			})
+			.unwrap();
+		assert!(matches!(
+			reports.lock().unwrap().first(),
+			Some(Event::MemberSearchCooldown {
+				seconds: 1..=30,
+				..
+			})
+		));
+		search.update(&[None, None]);
+		assert!(search.queued.iter().all(Option::is_none));
+		assert!(
+			search
+				.tick_at(now + Duration::from_secs(30), &|_| Ok(()))
+				.unwrap()
+				.is_none()
+		);
+	}
+	#[test]
+	fn retired_watch_discards_query_before_send_without_losing_service_cooldown() {
+		let now = Instant::now();
+		let mut search = Search {
+			next_send: now,
+			..Default::default()
+		};
+		search.watch(&Some((Id(1), Id(101), vec![Id(7)])));
+		search.update(&[Some(request(1, 1)), None]);
+		search.tick_at(now, &|_| Ok(())).unwrap().unwrap();
+		search.sent(Id(1), 1, now);
+		assert_eq!(search.watch(&None), 1 << Purpose::Composer.slot());
+		assert!(search.active.iter().all(Option::is_none));
+		assert!(search.cooldowns.contains_key(&Id(1)));
+		search.update(&[Some(request(1, 2)), None]);
+		assert!(search.deadline().is_none());
+		assert!(
+			search
+				.tick_at(now + Duration::from_secs(31), &|_| Ok(()))
+				.unwrap()
+				.is_none()
+		);
+	}
+
 	#[test]
 	fn resolved_members_receive_bounded_sparse_live_subscriptions() {
 		let mut search = Search::default();

@@ -2,7 +2,7 @@
 mod users;
 pub use users::{AccountKind, SavedAccount, User, valid_avatar_hash};
 mod navigation;
-pub use navigation::{Channel, ChannelPatch, Guild, GuildPatch, InvitePreview};
+pub use navigation::{Channel, ChannelPatch, ExpressionCatalog, Guild, GuildPatch, InvitePreview};
 mod messages;
 pub use messages::{Interaction, Message, MessagePatch, valid_mention_roles};
 mod presence;
@@ -10,7 +10,7 @@ pub use presence::{
 	ActivityImage, ClientPlatforms, MemberPresence, OwnPresence, PresenceStatus, RichActivity,
 };
 mod members;
-pub use members::{Member, MemberIdentity, MemberList, MemberSlot};
+pub use members::{Member, MemberDisplay, MemberIdentity, MemberList, MemberSlot};
 use presence::valid_presence_text;
 pub mod account;
 pub mod account_settings;

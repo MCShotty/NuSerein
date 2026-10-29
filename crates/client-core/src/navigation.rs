@@ -14,6 +14,8 @@ impl State {
 		}
 		let bytes = self.channels.iter().map(Channel::bytes).sum::<usize>()
 			+ self.guilds.iter().map(Guild::bytes).sum::<usize>()
+			+ self.expression_hints.bytes()
+			+ self.server_display.bytes()
 			+ (self.channels.capacity() - self.channels.len()) * size_of::<Channel>()
 			+ (self.guilds.capacity() - self.guilds.len()) * size_of::<Guild>();
 		self.set_navigation_bytes(bytes);
@@ -258,6 +260,7 @@ impl State {
 		}
 		self.retire_archived_thread(Some(channel));
 		self.typing.clear();
+		let target_current = self.resident_target_current(channel);
 		let trusted = self.select_resident(channel);
 		self.history_targeted = false;
 		self.history_navigation.clear();
@@ -265,14 +268,7 @@ impl State {
 			self.members = None;
 		}
 		self.member_search = Default::default();
-		if self
-			.selected
-			.and_then(|old| self.channel(old))
-			.and_then(|old| old.guild)
-			!= self.channel(channel).and_then(|next| next.guild)
-		{
-			self.member_labels.clear();
-		}
+
 		self.selected = Some(channel);
 		self.clear_search();
 		self.reset_thread_starter();
@@ -295,13 +291,14 @@ impl State {
 			self.cancel_history();
 			self.history_before = None;
 			// A restored resident is a session-local, previously fresh window;
-			// live mutations and permission/identity changes already evict it. Only a
+			// live mutations mark it stale and access changes retire it. Only a
 			// window holding the live target is presented as loaded: a deletion-only or
 			// unrelated window stays Stale, and the caller requests the target's page.
-			self.freshness = if self
-				.timeline
-				.get(target)
-				.is_some_and(|message| message.channel == channel)
+			self.freshness = if target_current
+				&& self
+					.timeline
+					.get(target)
+					.is_some_and(|message| message.channel == channel)
 				&& !self.timeline.is_deleted(target)
 			{
 				Freshness::Fresh
@@ -311,7 +308,10 @@ impl State {
 			return Apply::Opened(None);
 		}
 		if let Some(message) = self.reading(channel).and_then(|cursor| cursor.message) {
-			if self.timeline.get(message).is_some() && !self.timeline.is_deleted(message) {
+			if target_current
+				&& self.timeline.get(message).is_some()
+				&& !self.timeline.is_deleted(message)
+			{
 				self.cancel_history();
 				self.history_before = None;
 				self.history_targeted = false;

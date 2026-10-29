@@ -234,7 +234,7 @@ fuzz_target!(|data: &[u8]| {
 	for op in data.as_chunks::<8>().0.iter().take(256) {
 		let channel = Id(20 + u64::from(op[1] % 3));
 		let id = Id(1 + u64::from(u16::from_le_bytes([op[2], op[3]])));
-		match op[0] % 31 {
+		match op[0] % 33 {
 			0 => {
 				state.select(channel);
 			}
@@ -243,7 +243,7 @@ fuzz_target!(|data: &[u8]| {
 				state.history(before);
 			}
 			2 | 3 => {
-				let stale = op[0] % 31 == 3;
+				let stale = op[0] % 33 == 3;
 				let prior = stale.then(|| fingerprint(&state));
 				let request = if stale {
 					state.request.wrapping_sub(1)
@@ -315,7 +315,7 @@ fuzz_target!(|data: &[u8]| {
 				},
 			),
 			8 | 9 => {
-				let revoked = op[0] % 31 == 8;
+				let revoked = op[0] % 33 == 8;
 				apply(
 					&mut state,
 					Event::Permissions(PermissionEvent::Channel {
@@ -578,7 +578,41 @@ fuzz_target!(|data: &[u8]| {
 						departed: op[6] & 4 != 0,
 					})),
 				);
-				assert!(state.member_labels.bytes() <= 128 * 1024);
+				assert!(
+					state.member_labels.bytes() <= 512 * 1024 + 128 * std::mem::size_of::<Id>()
+				);
+			}
+			30 => {
+				let started = state
+					.member_display_revision()
+					.wrapping_sub(u64::from(op[6] & 1));
+				let auth = state.auth;
+				state.hydrate_member_displays(
+					Id(10),
+					started,
+					vec![model::MemberDisplay {
+						guild: Id(10),
+						user: id,
+						name: "Synthetic account".into(),
+						username: Some("synthetic".into()),
+						nick: (op[6] & 2 != 0).then(|| "Cached nickname".into()),
+					}],
+				);
+				assert_eq!(state.auth, auth);
+			}
+			31 => {
+				if let Some(client_core::Command::MemberSearch(request)) =
+					state.search_members(channel, "Synthetic", 0)
+				{
+					apply(
+						&mut state,
+						Event::MemberSearchCooldown {
+							request,
+							seconds: u32::from(op[6]),
+						},
+					);
+					assert!(!state.member_search[0].finished);
+				}
 			}
 
 			_ => {

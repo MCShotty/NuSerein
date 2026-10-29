@@ -1,5 +1,69 @@
 # Local storage policy and audit
 
+## GIF and expression metadata caches (October 29, 2026)
+
+GIF favorite metadata was already stored per account in SQLite. Queue admission now
+retries unsent reads and saves after worker progress, and a delayed first read merges
+early stars and removals before a save can replace the stored list. Ambiguous recovery
+or a failed read leaves the stored list untouched; uncertain writes are not replayed.
+
+Schema 31 adds account-scoped, presentation-only hints for guild emoji and stickers
+and standard sticker packs. Guild catalogs share a 128-row / 8-MiB disk budget;
+standard packs share a 3-MiB disk budget. Cached items cannot authorize sending or
+establish availability, permissions or Nitro eligibility. Current service catalogs,
+including empty results, take precedence. Account changes, lost access, deletion and
+cache clearing fence or remove relevant entries. Individual cached fields are bounded
+and validated before use; malformed cache data does not prevent login.
+
+Actual GIF, emoji and sticker artwork remains in the existing bounded account image
+cache rather than being duplicated in SQLite. Standard-pack and guild previews are
+disabled until current service data confirms them. Sticker recents remain session-only.
+
+Server display hints are also account-scoped: SQLite retains at most 4,096 server
+names and icon identifiers within a 2-MiB budget. Icon artwork remains in the existing
+image cache. Hints fill missing fields only for servers confirmed by the current
+session; live names, icon changes and explicit icon removals take precedence. These
+records do not establish membership or permissions and are removed by account or
+cache cleanup. Discord normally supplies these fields in its initial snapshot, so
+this cache primarily helps when display metadata is missing rather than before login.
+
+## Conversation and member loading (October 29, 2026)
+
+Schema 30 adds account/server/user-scoped display hints: display name, username and
+nickname. They are cached by default, bounded globally to 4,096 entries and 2 MiB of
+charged row/text data within the existing SQLite page ceiling. Presence, permissions,
+role assignments, credentials and private profile fields are not persisted here.
+Current channel access is required before loading hints. Live results and departures
+take precedence over delayed disk reads; hint-only records cannot satisfy role queries
+or authorize an action. Clear cache and logout remove these rows with account history.
+
+The bounded session identity cache reuses observed people across channels. Closing the
+member pane retains one compatible, stale range snapshot, which requires current access
+and the same member-list identity to reopen. Independent bounded Gateway subscriptions
+keep cached visible identities current without requiring an additional member query.
+Discord's query cooldown remains in force for missing results.
+Session recovery resets the disk-load admission marker together with RAM identities;
+completed reads rejected by a newer live revision or navigation retry only after worker progress.
+Disk hints retain older provenance than in-flight live requests, including intervening
+role-only updates, and never acquire authority merely by being restored.
+
+Member-cache writes use a display-data revision separate from the observation ordering
+used to reject stale searches and disk reads. Scoped cleanup fences queued writes; a full
+clear suppresses retained guild hints until a new accepted identity observation for that guild. A partial
+accepted nickname update removes an older disk row when it cannot form a complete
+replacement. Off-server member updates are not retained by this display cache; a cached
+nickname for another server may therefore remain stale until that server refreshes.
+
+Background messages, edits and reactions retain a bounded stale conversation preview.
+It is refreshed before becoming authoritative; existing deletion tombstones, permissions,
+generation checks, row and byte budgets still apply. Cache reads rejected by queue pressure
+retry after storage makes progress. Scoped cleanup invalidates earlier storage epochs and
+executes in FIFO order before later reads; uncertain access scope or cleanup failure keeps
+the existing account-wide invalidation/failure behavior. Unchanged message saves compare
+their persisted projection so session-only metadata cannot force repeated row writes.
+
+Historical session-only username and identity statements below describe earlier revisions.
+
 ## Account channel preferences (October 26, 2026)
 
 Confirmed guild settings and optimistic choices are session state, isolated by account generation.

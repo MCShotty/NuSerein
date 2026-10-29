@@ -29,9 +29,13 @@ use tokio::{
 };
 use voice::*;
 
+type MemberWatchKey = (u64, Option<model::Id>, u64, u64, u64, bool);
+
 pub struct Connection {
 	pub commands: mpsc::Sender<Command>,
 	admin_scopes: watch::Sender<ReadScopes>,
+	member_watches: watch::Sender<Option<discord_gateway::MemberWatch>>,
+	member_watch_key: std::cell::Cell<Option<MemberWatchKey>>,
 	preference_scope: watch::Sender<Option<(u64, model::Id, u64)>>,
 	pub uploads: mpsc::Sender<crate::uploads::UploadRequest>,
 	pub events: ReliableEvents,
@@ -157,6 +161,29 @@ impl Connection {
 		self.typing_channel
 			.store(channel.map_or(0, |id| id.0), Ordering::Relaxed);
 	}
+	pub fn sync_member_watches(&self, state: &client_core::State) {
+		let key = (
+			state.generation,
+			state.selected,
+			state.revision,
+			state.member_display_revision(),
+			state.member_watch_revision(),
+			state.gateway_connected,
+		);
+		if self.member_watch_key.replace(Some(key)) == Some(key) {
+			return;
+		}
+		let latest = state.watched_member_users();
+		self.member_watches.send_if_modified(|current| {
+			if *current == latest {
+				false
+			} else {
+				*current = latest;
+				true
+			}
+		});
+	}
+
 	pub fn sync_admin_reads(&self, state: &client_core::State) {
 		let preference = state.channel_preference_scope();
 		self.preference_scope.send_if_modified(|current| {

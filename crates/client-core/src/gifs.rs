@@ -236,6 +236,10 @@ impl State {
 	pub fn is_gif_favorite(&self, gif: &Gif) -> bool {
 		self.gifs.favorites.iter().any(|known| known.url == gif.url)
 	}
+	/// False when bounded pre-restore removals were insufficient to reconcile safely.
+	pub fn gif_favorites_cache_safe(&self) -> bool {
+		self.gifs.favorites_restored && !self.gifs.sync_restore_ambiguous
+	}
 	/// Call before the host replaces or shuts down its account connection.
 	/// Retain local metadata, but never replay an interrupted server write.
 	pub fn interrupt_gif_favorites(&mut self) {
@@ -333,6 +337,19 @@ impl State {
 			return false;
 		}
 		let favorite = !self.is_gif_favorite(gif);
+		if !self.gifs.favorites_restored {
+			if favorite {
+				self.gifs
+					.sync_removed_before_restore
+					.retain(|url| *url != gif.url);
+			} else if !self.gifs.sync_removed_before_restore.contains(&gif.url) {
+				if self.gifs.sync_removed_before_restore.len() == MAX_GIF_FAVORITES {
+					self.gifs.sync_restore_ambiguous = true;
+				} else {
+					self.gifs.sync_removed_before_restore.push(gif.url.clone());
+				}
+			}
+		}
 		if let Some(index) = self
 			.gifs
 			.favorites
@@ -359,8 +376,7 @@ impl State {
 	/// A late initial cache read merges with synchronized records, but cannot undo a user's star.
 	pub fn restore_gif_favorites(&mut self, favorites: Vec<Gif>) {
 		let removed = std::mem::take(&mut self.gifs.sync_removed_before_restore);
-		if std::mem::replace(&mut self.gifs.favorites_restored, true) || self.gifs.favorites_edited
-		{
+		if std::mem::replace(&mut self.gifs.favorites_restored, true) {
 			return;
 		}
 		if self.gifs.sync_restore_ambiguous {
@@ -378,11 +394,17 @@ impl State {
 			}
 			self.gifs.favorites_changed |= !restored.is_empty();
 			let current = std::mem::take(&mut self.gifs.favorites);
-			self.gifs.favorites = merge_favorites(restored, current, &self.gifs.sync_remote);
+			self.gifs.favorites = if self.gifs.favorites_edited {
+				merge_early_edits(current, restored)
+			} else {
+				merge_favorites(restored, current, &self.gifs.sync_remote)
+			};
 			self.gifs.favorites.shrink_to_fit();
 			return;
 		}
-		if self.gifs.favorites_changed || !self.gifs.favorites.is_empty() {
+		if !self.gifs.favorites_edited
+			&& (self.gifs.favorites_changed || !self.gifs.favorites.is_empty())
+		{
 			return;
 		}
 		let mut restored: Vec<Gif> = Vec::with_capacity(favorites.len().min(MAX_GIF_FAVORITES));
@@ -395,8 +417,27 @@ impl State {
 				restored.push(gif);
 			}
 		}
-		self.gifs.favorites = restored;
+		if self.gifs.favorites_edited {
+			let current = std::mem::take(&mut self.gifs.favorites);
+			self.gifs.favorites = merge_early_edits(current, restored);
+			self.gifs.favorites_changed = true;
+		} else {
+			self.gifs.favorites = restored;
+		}
 	}
+}
+
+/// Explicit early choices take priority over older disk records at the shared capacity.
+fn merge_early_edits(mut current: Vec<Gif>, restored: Vec<Gif>) -> Vec<Gif> {
+	for gif in restored {
+		if current.len() == MAX_GIF_FAVORITES {
+			break;
+		}
+		if !current.iter().any(|known| known.url == gif.url) {
+			current.push(gif);
+		}
+	}
+	current
 }
 
 /// Reserve room for unsynchronized local favorites, but keep shared records in server order.
@@ -423,6 +464,37 @@ fn merge_favorites(local: Vec<Gif>, remote: Vec<Gif>, previous_remote: &[String]
 mod tests {
 	use super::*;
 	use crate::{Envelope, Event};
+
+	#[test]
+	fn late_gif_cache_merges_early_stars_without_reviving_explicit_removals() {
+		let mut state = test_state();
+		let old = gif("old");
+		let added = gif("added");
+		assert!(state.toggle_gif_favorite(&added));
+		state.restore_gif_favorites(vec![old.clone()]);
+		assert_eq!(state.gifs.favorites, vec![added, old]);
+		assert!(state.gifs.favorites_changed && state.gif_favorites_cache_safe());
+
+		let mut state = test_state();
+		let removed = gif("removed");
+		let keep = gif("keep");
+		assert!(state.toggle_gif_favorite(&removed));
+		assert!(state.toggle_gif_favorite(&removed));
+		state.restore_gif_favorites(vec![removed.clone(), keep.clone()]);
+		assert!(!state.is_gif_favorite(&removed));
+		assert!(state.is_gif_favorite(&keep));
+
+		let mut state = test_state();
+		let added = gif("newest");
+		assert!(state.toggle_gif_favorite(&added));
+		state.restore_gif_favorites(
+			(0..MAX_GIF_FAVORITES)
+				.map(|i| gif(&format!("old{i}")))
+				.collect(),
+		);
+		assert_eq!(state.gifs.favorites.len(), MAX_GIF_FAVORITES);
+		assert_eq!(state.gifs.favorites[0], added);
+	}
 
 	#[test]
 	fn synchronized_order_survives_cache_arrival_preview_replacement_and_refresh() {
@@ -602,7 +674,7 @@ mod tests {
 	}
 
 	#[test]
-	fn favorites_are_bounded_deduplicated_and_restored_only_when_untouched() {
+	fn favorites_are_bounded_deduplicated_and_restored_only_once() {
 		let mut state = test_state();
 		state.restore_gif_favorites(vec![gif("saved"), gif("saved"), {
 			let mut bad = gif("bad");
@@ -628,7 +700,10 @@ mod tests {
 		invalid.preview = "https://untrusted.example/x/tenor.mp4".into();
 		assert!(!state.toggle_gif_favorite(&invalid));
 		state.restore_gif_favorites(vec![gif("late")]);
-		assert!(!state.is_gif_favorite(&gif("late")));
+		assert!(
+			!state.is_gif_favorite(&gif("late")),
+			"a second cache result cannot replace later user edits"
+		);
 	}
 
 	fn test_state() -> State {

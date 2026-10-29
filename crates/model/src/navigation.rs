@@ -4,6 +4,35 @@ use super::{
 	valid_avatar_hash,
 };
 
+/// Untrusted presentation hints, never evidence of current membership or permissions.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExpressionCatalog {
+	pub guild: Id,
+	pub emojis: Option<Vec<CustomEmoji>>,
+	pub stickers: Option<Vec<Sticker>>,
+}
+impl ExpressionCatalog {
+	pub fn bytes(&self) -> usize {
+		self.emojis.as_ref().map_or(0, custom_emoji_bytes)
+			+ self.stickers.as_ref().map_or(0, sticker_bytes)
+			+ size_of::<Self>()
+	}
+	pub fn valid(&self) -> bool {
+		self.guild.0 != 0
+			&& self.emojis.as_ref().is_none_or(|emojis| {
+				crate::valid_custom_emojis(emojis)
+					&& emojis
+						.iter()
+						.all(|emoji| !emoji.available && !emoji.managed && emoji.roles.is_none())
+			}) && self.stickers.as_ref().is_none_or(|stickers| {
+			crate::valid_stickers(stickers, crate::MAX_GUILD_STICKERS)
+				&& stickers
+					.iter()
+					.all(|sticker| sticker.guild_id == Some(self.guild) && !sticker.available)
+		}) && self.bytes() <= 768 * 1024
+	}
+}
+
 #[derive(Clone)]
 pub struct InvitePreview {
 	pub guild: Id,

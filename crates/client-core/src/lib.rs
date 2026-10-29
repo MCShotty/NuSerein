@@ -7,6 +7,7 @@ mod messages;
 mod navigation;
 mod outgoing;
 mod reducer;
+pub mod server_display;
 mod startup;
 pub use commands::Command;
 pub use events::{Envelope, Event};
@@ -18,6 +19,7 @@ pub mod auth;
 pub mod captcha;
 pub mod channel_actions;
 pub mod community;
+pub mod expressions;
 pub mod fingerprint;
 pub mod forum;
 pub mod game_mentions;
@@ -222,8 +224,12 @@ pub struct State {
 	pub user: Option<User>,
 	pub members: Option<MemberList>,
 	pub member_chunks: MemberChunks,
+	#[doc(hidden)]
+	pub parked_members: Option<ParkedMembers>,
 	pub member_search: [member_search::View; 2],
 	pub member_labels: member_identity::Labels,
+	#[doc(hidden)]
+	pub expression_hints: expressions::Hints,
 	pub member_search_nonce: u64,
 	pub direct_presences: Vec<MemberPresence>,
 	pub local_game_activity: Option<model::RichActivity>,
@@ -236,6 +242,8 @@ pub struct State {
 	pub direct_presence_lossy: bool,
 	pub member_request: u64,
 	pub guilds: Vec<Guild>,
+	#[doc(hidden)]
+	pub server_display: server_display::Displays,
 	pub channels: Vec<Channel>,
 	#[doc(hidden)]
 	pub navigation_index: NavigationIndex,
@@ -384,6 +392,16 @@ impl MemberChunks {
 	}
 }
 
+/// One closed pane. Moved rather than copied, with the same chunk/slot budgets as the active pane.
+#[doc(hidden)]
+pub struct ParkedMembers {
+	list: MemberList,
+	chunks: MemberChunks,
+	list_id: String,
+	generation: u64,
+	parked: std::time::Instant,
+}
+
 /// Result of a back/forward step that landed. `command` is the optional history fetch.
 pub struct NavStep {
 	pub command: Option<Command>,
@@ -468,8 +486,10 @@ impl Default for State {
 			user: None,
 			members: None,
 			member_chunks: MemberChunks::default(),
+			parked_members: None,
 			member_search: Default::default(),
 			member_labels: Default::default(),
+			expression_hints: Default::default(),
 			member_search_nonce: 0,
 			game_mentions: Default::default(),
 			direct_presences: vec![],
@@ -479,6 +499,7 @@ impl Default for State {
 			direct_presence_lossy: false,
 			member_request: 0,
 			guilds: vec![],
+			server_display: Default::default(),
 			channels: vec![],
 			navigation_index: NavigationIndex::default(),
 			selected: None,

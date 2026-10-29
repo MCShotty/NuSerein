@@ -186,6 +186,7 @@ jobs:
         if: runner.os == 'Linux'
         run: bun tests/xtask-package.cjs
       - run: cargo replay
+      - run: cargo replay --loading
       - run: cargo replay --soak 120
       - name: Rebuild the current packager and remove job-owned package output
         shell: bash

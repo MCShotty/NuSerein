@@ -521,7 +521,14 @@ mod tests {
 		let _ = state.search_members(channel, "another query", 0).unwrap();
 		assert_eq!(member_matches(&state, channel, "unique.account"), expected);
 		state.member_search[0].request.as_mut().unwrap().guild = Id(999_999);
-		assert!(member_matches(&state, channel, "unique.account").is_empty());
+		let mut injected = state.member_search[0].retained[0].clone();
+		injected.user.id = Id(900_002);
+		state.member_search[0].rows.push(injected);
+		assert_eq!(
+			member_matches(&state, channel, "unique.account"),
+			expected,
+			"an invalid new scope cannot remove a valid cached identity or introduce another member"
+		);
 		state.channels.retain(|row| row.id != channel);
 		assert!(member_matches(&state, channel, "unique.account").is_empty());
 	}

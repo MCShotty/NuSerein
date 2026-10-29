@@ -822,6 +822,7 @@ emoji-details-show-source-server-unavailable-in-this-session = Source server una
 
 ## crates/ui/src/emoji_picker.rs
 # Context: gif_body
+expression-cache-awaiting-server = Waiting for the server to confirm this item
 emoji-picker-gif-body-favorites = Favorites
 # Context: gif_body
 emoji-picker-gif-body-gif-search-needs-a-connected-session = GIF search needs a connected session.
@@ -5988,3 +5989,5 @@ voice-stage-synthetic = Synthetic participants · microphone and speakers are of
 voice-stage-server-deafened = Deafened by the server
 voice-stage-server-muted = Muted by the server
 voice-fullscreen-exit-hint = Exit fullscreen (Esc)
+
+mentions-member-cooldown = More members are queued. Discord allows another search in up to { $seconds } seconds.
