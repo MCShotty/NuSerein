@@ -3307,6 +3307,8 @@ mod tests {
 			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
 			let (finished, observed) = tokio::sync::oneshot::channel();
 			let finished = std::sync::Mutex::new(Some(finished));
+			let (reconnect_consumed, reconnect_observed) = tokio::sync::oneshot::channel();
+			let reconnect_consumed = std::sync::Mutex::new(Some(reconnect_consumed));
 			let (queries, member_queries) = watch::channel(Default::default());
 			let (watch_send, watch_receive) = watch::channel(None);
 			let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -3341,12 +3343,36 @@ mod tests {
 					(7,"PASSIVE_UPDATE_V2", json!({"guild_id":"10","updated_members":[{"user":{"id":"7","username":"account"},"nick":"Passive nickname","roles":["11"]}]})),
 					(8,"GUILD_MEMBER_REMOVE", json!({"guild_id":"10","user":{"id":"7"}})),
 				] { send(&mut socket, json!({"op":0,"t":name,"s":sequence,"d":data})).await; }
+				// Prove all changes were admitted before requesting reconnection. A timer
+				// heartbeat or the initial subscriptions can already be queued.
+				send(&mut socket, json!({"op":1,"d":null})).await;
+				let mut admitted = false;
+				for _ in 0..16 {
+					let outgoing = packet(&mut socket).await;
+					match outgoing["op"].as_u64() {
+						Some(1) => {
+							send(&mut socket, json!({"op":11,"d":null})).await;
+							if outgoing["d"] == 8 {
+								admitted = true;
+								break;
+							}
+						}
+						Some(3 | 8 | 37) => {}
+						_ => panic!("unexpected synthetic gateway command"),
+					}
+				}
+				assert!(admitted, "member changes must precede reconnection");
 				send(&mut socket, json!({"op":7,"d":null})).await;
+				// An unread client heartbeat can reset TCP on drop and discard op 7.
+				// Keep the socket alive until the client observes the reconnect.
+				reconnect_observed.await.unwrap();
 				drop(socket);
 				let (stream, _) = listener.accept().await.unwrap();
 				let mut socket = accept_async(stream).await.unwrap();
 				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
-				assert_eq!(packet(&mut socket).await["op"], 6);
+				let resume = packet(&mut socket).await;
+				assert_eq!(resume["op"], 6);
+				assert_eq!(resume["d"]["seq"], 8);
 				// Replayed member changes arrive before RESUMED; the reducer must keep them.
 				send(&mut socket, json!({"op":0,"t":"GUILD_MEMBER_UPDATE","s":9,"d":{"guild_id":"10","user":{"id":"7","username":"account"},"nick":"Resumed nickname","roles":[]}})).await;
 				send(&mut socket, json!({"op":0,"t":"RESUMED","s":10,"d":{}})).await;
@@ -3362,10 +3388,14 @@ mod tests {
 				|event| {
 					let startup = matches!(&event, Event::Startup(_) | Event::Ready { .. });
 					let changed = matches!(&event, Event::MemberIdentity(_) | Event::Typing(_));
+					let disconnected = matches!(&event, Event::Disconnected);
 					let last = matches!(&event, Event::Message(message) if message.id == Id(101));
 					let mut state = state.lock().unwrap();
 					let generation = state.generation;
 					state.apply(client_core::Envelope { generation, event });
+					if disconnected && let Some(consumed) = reconnect_consumed.lock().unwrap().take() {
+						consumed.send(()).unwrap();
+					}
 					if startup {
 						let Some(client_core::Command::History { request, .. }) = state.select(Id(20)) else { panic!("synthetic guild accessible") };
 						state.apply(client_core::Envelope { generation, event: Event::History { channel: Id(20), request, older: false, messages: vec![] } });
