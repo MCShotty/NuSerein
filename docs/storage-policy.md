@@ -16,7 +16,7 @@ and the same member-list identity to reopen. Independent bounded Gateway subscri
 keep cached visible identities current without requiring an additional member query.
 Discord's query cooldown remains in force for missing results.
 Session recovery resets the disk-load admission marker together with RAM identities;
-completed reads rejected by a newer live revision retry only after worker progress.
+completed reads rejected by a newer live revision or navigation retry only after worker progress.
 Disk hints retain older provenance than in-flight live requests, including intervening
 role-only updates, and never acquire authority merely by being restored.
 

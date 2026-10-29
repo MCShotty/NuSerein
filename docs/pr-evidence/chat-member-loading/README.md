@@ -1,8 +1,8 @@
 # Chat and member loading evidence
 
 The baseline is PR #31 `af865308` (application source `1607575e`). This follow-up is
-stacked on #31 as PR #32 and leaves both main branches unchanged. Source `9b1e29c5`
-adds bounded member display persistence, session identity/range reuse, safe stale
+stacked on #31 as PR #32 and leaves both main branches unchanged. It adds
+bounded member display persistence, session identity/range reuse, safe stale
 conversation previews, worker-admission retry and scoped storage cleanup.
 
 ## Behavioral boundaries
@@ -23,7 +23,7 @@ conversation previews, worker-admission retry and scoped storage cleanup.
   an old cached nickname into a newer observation and overwrite the live response.
 - Session recovery resets the member-load/save admission markers with the RAM cache,
   so an accepted earlier read cannot permanently prevent reloading names. A completed
-  read rejected after newer live observations may retry on worker progress, without
+  read rejected after newer live observations or navigation may retry on worker progress, without
   a repaint timer or weakening account, epoch and live-revision guards.
 
 ## Verification status
@@ -39,7 +39,7 @@ Release replay, the new loading workload and the 120-second soak pass: 120.021 s
 core-history estimates peak at 14,364,789 bytes under the existing 16-MiB budget.
 Bounded fuzz runs pass: 173,644 decoder cases and 3,798 state cases, 31 seconds each.
 License-policy fixtures and native license CI pass; locks/dependency versions are unchanged.
-The desktop recovery follow-up adds two SQLite/state/admission regressions and leaves
+The desktop recovery follow-up adds three SQLite/state/admission regressions and leaves
 the measured reducer/model source unchanged. Its final local/native check outcomes,
 normal packages and installer checksum/provenance are recorded in PR #32.
 

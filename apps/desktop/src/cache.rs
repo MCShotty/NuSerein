@@ -200,6 +200,27 @@ impl HistoryLoad {
 			*self = Self::default();
 		}
 	}
+	/// Called only for a nonempty completed read whose account/epoch fence still holds.
+	/// Navigation can make a result ineligible without changing its observation revision.
+	pub fn member_result(
+		&mut self,
+		key: (u64, Id, u64, u64),
+		revision: u64,
+		state: &client_core::State,
+	) {
+		if key.0 == state.generation
+			&& (revision != state.member_display_revision()
+				|| !state.gateway_connected
+				|| state.auth != client_core::auth::AuthState::Authenticated
+				|| !state.selected.is_some_and(|channel| {
+					state.can_view(channel)
+						&& state
+							.channel(channel)
+							.is_some_and(|c| c.guild == Some(key.1))
+				})) {
+			self.retry(key);
+		}
+	}
 	/// RAM identities are retired on these accepted session transitions even when the
 	/// account generation and disk-safety epoch survive a successful RESUME.
 	pub fn observe_session(&mut self, generation: u64, event: &client_core::Envelope) -> bool {
@@ -1085,7 +1106,7 @@ mod tests {
 			"repaint does not retry an accepted read"
 		);
 		// The worker completion is the explicit retry signal; it is not a frame timer.
-		load.retry(key);
+		load.member_result(key, revision, &state);
 		assert!(load.attempt(key));
 		load.accepted(key);
 		let revision = state.member_display_revision();
@@ -1106,6 +1127,57 @@ mod tests {
 			!load.attempt(key),
 			"another guild's completion cannot restart this read"
 		);
+	}
+	#[test]
+	fn member_load_completed_away_from_server_retries_after_return() {
+		for home in [false, true] {
+			let mut state = test_support::demo_state();
+			state.demo = false;
+			let account = state.user.as_ref().unwrap().id;
+			let safety = HistorySafety::default();
+			let mut store = member_hint_store(account);
+			let mut load = HistoryLoad::default();
+			let key = (state.generation, Id(10), 0, safety.epoch());
+			assert!(load.attempt(key));
+			load.accepted(key);
+			let revision = state.member_display_revision();
+			let rows = member_hint_rows(&mut store, &safety, account, revision);
+			if home {
+				state.arrived_home();
+			} else {
+				state.select(Id(22));
+			}
+			assert_eq!(
+				state.member_display_revision(),
+				revision,
+				"ordinary navigation is not a new identity observation"
+			);
+			load.member_result(key, revision, &state);
+			state.hydrate_member_displays(Id(10), revision, rows);
+			assert!(
+				state.member_identity(Id(20), Id(900000)).is_none(),
+				"a completion outside its server remains rejected"
+			);
+			state.select(Id(20));
+			assert!(
+				load.attempt(key),
+				"worker progress released the old server admission marker"
+			);
+			load.accepted(key);
+			let revision = state.member_display_revision();
+			let rows = member_hint_rows(&mut store, &safety, account, revision);
+			load.member_result(key, revision, &state);
+			state.hydrate_member_displays(Id(10), revision, rows);
+			assert_eq!(
+				state.member_nickname(Id(20), Id(900000)),
+				Some(Some("Cached nickname"))
+			);
+			load.capacity_changed();
+			assert!(
+				!load.attempt(key),
+				"successful hydration is not repeated on repaint"
+			);
+		}
 	}
 	#[test]
 	fn scoped_cleanup_fences_old_writes_and_preserves_other_windows() {

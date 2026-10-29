@@ -230,11 +230,12 @@ impl Desktop {
 					{
 						match result {
 							Ok(rows) => {
-								if !rows.is_empty()
-									&& *revision != self.state.member_display_revision()
-								{
-									self.member_cache_load
-										.retry((generation, *guild, 0, *epoch));
+								if !rows.is_empty() {
+									self.member_cache_load.member_result(
+										(generation, *guild, 0, *epoch),
+										*revision,
+										&self.state,
+									);
 								}
 								self.state
 									.hydrate_member_displays(*guild, *revision, rows.clone())

@@ -7,7 +7,7 @@ log and per-run evidence archive has been removed; the summaries below retain th
 ## Conversation and member loading
 
 The October 29 follow-up compares frozen `af865308` with application source `d854f5fe`.
-Desktop-only recovery follow-up `9b1e29c5` leaves the measured core/model code unchanged.
+Desktop-only recovery follow-ups leave the measured core/model code unchanged.
 The same loading harness was compiled against each revision's pinned Rust 1.98.1 release
 libraries using optimization 3 and one codegen unit. Each batch uses one warmup pair and
 five alternating measured pairs on Linux x86_64, pinned to CPU 0. It includes 1,000
