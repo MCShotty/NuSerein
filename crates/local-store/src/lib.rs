@@ -1,6 +1,7 @@
 //! Account-isolated bounded SQLite cache. This is not Discord's authoritative state.
 mod accounts;
 mod history;
+mod member_displays;
 mod preferences;
 mod schema;
 pub use preferences::{AppPreferences, Appearance, WindowGeometry};
@@ -16,8 +17,8 @@ use std::{
 
 const MAX_MEDIA_JSON: usize = 256 * 1024;
 const MAX_WINDOW_BYTES: usize = 4 * 1024 * 1024;
-const NATIVE_SCHEMA: u32 = 29;
-const READABLE_SCHEMA: u32 = 29;
+const NATIVE_SCHEMA: u32 = 30;
+const READABLE_SCHEMA: u32 = 30;
 #[derive(serde::Deserialize)]
 struct CachedMentions(#[serde(deserialize_with = "model::deserialize_mentions")] Vec<User>);
 fn parse_author_roles(raw: &str) -> std::result::Result<Vec<Id>, StoreError> {

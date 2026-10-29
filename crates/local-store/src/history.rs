@@ -117,7 +117,7 @@ impl LocalStore {
 		for message in messages {
 			if previous
 				.get(&message.id)
-				.is_some_and(|old| *old == *message)
+				.is_some_and(|old| same_persisted_message(old, message))
 			{
 				continue;
 			}
@@ -598,9 +598,30 @@ impl LocalStore {
 			"DELETE FROM history_starts WHERE account=?1",
 			[account.to_string()],
 		)?;
+		transaction.execute(
+			"DELETE FROM member_displays WHERE account=?1",
+			[account.to_string()],
+		)?;
 		transaction.commit()?;
 		self.0
 			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(64);")?;
+		Ok(())
+	}
+	/// Remove a known channel's cached window without affecting other channels or drafts.
+	/// The worker must fence older queued saves/loads before calling this method.
+	pub fn clear_channel_history(&mut self, account: Id, channel: Id) -> Result<()> {
+		if account.0 == 0 || channel.0 == 0 {
+			return Err(StoreError::Capacity);
+		}
+		let transaction = self.0.transaction()?;
+		for table in ["messages", "channels", "history_starts"] {
+			transaction.execute(
+				&format!("DELETE FROM {table} WHERE account=?1 AND channel=?2"),
+				params![account.to_string(), channel.to_string()],
+			)?;
+		}
+		transaction.commit()?;
+		self.0.execute_batch("PRAGMA incremental_vacuum(64);")?;
 		Ok(())
 	}
 	pub fn delete_messages(&mut self, account: Id, channel: Id, ids: &[Id]) -> Result<()> {
@@ -623,5 +644,224 @@ impl LocalStore {
 		self.0
 			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(64);")?;
 		Ok(())
+	}
+}
+
+/// Compare exactly the fields written by this store. Service revisions, reply previews,
+/// usernames, presence and cosmetics have no representation in the history table.
+fn same_persisted_user(a: &User, b: &User) -> bool {
+	a.id == b.id
+		&& a.name == b.name
+		&& a.avatar == b.avatar
+		&& a.discriminator == b.discriminator
+		&& a.kind == b.kind
+		&& a.webhook == b.webhook
+}
+fn same_persisted_message(a: &Message, b: &Message) -> bool {
+	a.id == b.id
+		&& a.channel == b.channel
+		&& same_persisted_user(&a.author, &b.author)
+		&& a.content == b.content
+		&& a.edited == b.edited
+		&& a.reply_to == b.reply_to
+		&& a.unsupported == b.unsupported
+		&& a.extra_content == b.extra_content
+		&& a.kind == b.kind
+		&& a.reply_deleted == b.reply_deleted
+		&& a.forwarded == b.forwarded
+		&& a.embeds == b.embeds
+		&& a.embeds_suppressed == b.embeds_suppressed
+		&& a.attachments == b.attachments
+		&& a.author_roles == b.author_roles
+		&& a.author_nick == b.author_nick
+		&& a.components == b.components
+		&& a.application_id == b.application_id
+		&& a.flags == b.flags
+		&& a.sticker_items == b.sticker_items
+		&& a.reactions == b.reactions
+		&& a.mentions.len() == b.mentions.len()
+		&& a.mentions
+			.iter()
+			.zip(&b.mentions)
+			.all(|(a, b)| same_persisted_user(a, b))
+		&& match (&a.interaction, &b.interaction) {
+			(None, None) => true,
+			(Some(a), Some(b)) => a.command == b.command && same_persisted_user(&a.user, &b.user),
+			_ => false,
+		}
+}
+
+#[cfg(test)]
+mod projection_tests {
+	use super::*;
+	use rusqlite::Connection;
+	fn fixture() -> (LocalStore, Message) {
+		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
+		store.0.execute("INSERT INTO messages(account,channel,id,author,name,content,edited,unsupported) VALUES('1','2','30','4','Display','body',0,0)",[]).unwrap();
+		let m = store.load_channel(Id(1), Id(2)).unwrap().remove(0);
+		store.0.execute_batch("CREATE TABLE write_count(n INTEGER); INSERT INTO write_count VALUES(0); CREATE TRIGGER count_messages AFTER INSERT ON messages BEGIN UPDATE write_count SET n=n+1; END;").unwrap();
+		(store, m)
+	}
+	fn writes(store: &LocalStore) -> i64 {
+		store
+			.0
+			.query_row("SELECT n FROM write_count", [], |r| r.get(0))
+			.unwrap()
+	}
+	#[test]
+	fn session_only_metadata_does_not_rewrite_identical_persisted_rows() {
+		let (mut store, mut message) = fixture();
+		message.author.username = Some("actual_username".into());
+		message.nonce = Some("not persisted".into());
+		message.revision = 99;
+		message.edited_at = Some(123);
+		message.mention_roles = vec![Id(9)];
+		message.mention_everyone = true;
+		message.suppress_notifications = true;
+		store
+			.save_channel(Id(1), Id(2), std::slice::from_ref(&message), false)
+			.unwrap();
+		store
+			.save_changes(Id(1), Id(2), &[message], &[Id(30)], false)
+			.unwrap();
+		assert_eq!(writes(&store), 0);
+		let mut message = store.load_channel(Id(1), Id(2)).unwrap().remove(0);
+		message.mentions = vec![message.author.clone()];
+		message.interaction = Some(Box::new(model::Interaction {
+			user: message.author.clone(),
+			command: "command".into(),
+		}));
+		store
+			.save_channel(Id(1), Id(2), std::slice::from_ref(&message), false)
+			.unwrap();
+		assert_eq!(writes(&store), 1);
+		message.mentions[0].username = Some("session name".into());
+		message.interaction.as_mut().unwrap().user.username = Some("session name".into());
+		store
+			.save_channel(Id(1), Id(2), std::slice::from_ref(&message), false)
+			.unwrap();
+		assert_eq!(writes(&store), 1);
+	}
+	#[test]
+	fn each_persisted_field_still_writes_a_changed_row() {
+		for field in 0..29 {
+			let (mut store, original) = fixture();
+			let mut m = original.clone();
+			match field {
+				0 => m.id = Id(31),
+				1 => m.channel = Id(3),
+				2 => m.author.id = Id(5),
+				3 => m.author.name = "changed".into(),
+				4 => m.author.avatar = Some("a".repeat(32)),
+				5 => m.author.discriminator = 1234,
+				6 => m.author.kind = model::AccountKind::VerifiedBot,
+				7 => m.author.webhook = true,
+				8 => m.content = "changed".into(),
+				9 => m.edited = true,
+				10 => m.reply_to = Some(Id(10)),
+				11 => m.unsupported = true,
+				12 => m.extra_content = model::ExtraContent::from_bits(1).unwrap(),
+				13 => m.kind = 19,
+				14 => {
+					m.kind = 19;
+					m.reply_to = Some(Id(10));
+					m.reply_deleted = true;
+				}
+				15 => m.forwarded = true,
+				16 => m.author_roles = vec![Id(10)],
+				17 => m.author_nick = Some("nickname".into()),
+				18 => {
+					m.components = vec![model::Component {
+						kind: 2,
+						label: Some("Press".into()),
+						style: Some(1),
+						custom_id: Some("button".into()),
+						..Default::default()
+					}]
+				}
+				19 => m.application_id = Some(Id(10)),
+				20 => m.flags = 4,
+				21 => {
+					m.sticker_items = vec![model::Sticker {
+						id: Id(10),
+						name: "Wave".into(),
+						description: String::new(),
+						tags: String::new(),
+						format_type: 1,
+						guild_id: None,
+						pack_id: None,
+						available: true,
+					}]
+				}
+				22 => {
+					m.interaction = Some(Box::new(model::Interaction {
+						user: m.author.clone(),
+						command: "changed".into(),
+					}))
+				}
+				23 => {
+					m.reactions = Some(vec![model::Reaction {
+						emoji: model::ReactionEmoji {
+							id: None,
+							name: Some("👍".into()),
+						},
+						count: 1,
+						me: false,
+						me_burst: false,
+					}])
+				}
+				24 => m.mentions = vec![m.author.clone()],
+				25 => {
+					m.embeds = vec![model::Embed {
+						title: Some("title".into()),
+						..Default::default()
+					}]
+				}
+				26 => m.embeds_suppressed = true,
+				27 => {
+					m.attachments = vec![model::Attachment {
+						id: Id(11),
+						filename: "image.png".into(),
+						description: None,
+						content_type: Some("image/png".into()),
+						size: 100,
+						media: Default::default(),
+						spoiler: false,
+						duration_ms: None,
+						waveform: vec![],
+					}]
+				}
+				28 => m.author.kind = model::AccountKind::App,
+				_ => unreachable!(),
+			}
+			assert!(!same_persisted_message(&original, &m), "field {field}");
+			store
+				.save_channel(Id(1), m.channel, std::slice::from_ref(&m), false)
+				.unwrap();
+			assert_eq!(writes(&store), 1, "field {field}");
+			let loaded = store.load_channel(Id(1), m.channel).unwrap();
+			assert!(
+				same_persisted_message(&loaded[0], &m),
+				"field {field} roundtrip"
+			);
+		}
+	}
+	#[test]
+	fn scoped_history_cleanup_keeps_unrelated_channels_and_accounts() {
+		let (mut store, message) = fixture();
+		let mut another = message.clone();
+		another.channel = Id(3);
+		store
+			.save_channel(Id(1), Id(3), std::slice::from_ref(&another), true)
+			.unwrap();
+		store
+			.save_channel(Id(9), Id(2), std::slice::from_ref(&message), true)
+			.unwrap();
+		store.save_draft(Id(1), Id(2), "draft survives").unwrap();
+		store.clear_channel_history(Id(1), Id(2)).unwrap();
+		assert!(store.load_channel(Id(1), Id(2)).unwrap().is_empty());
+		assert_eq!(store.load_channel(Id(1), Id(3)).unwrap().len(), 1);
+		assert_eq!(store.load_channel(Id(9), Id(2)).unwrap().len(), 1);
+		assert_eq!(store.load_drafts(Id(1)).unwrap()[&Id(2)], "draft survives");
 	}
 }

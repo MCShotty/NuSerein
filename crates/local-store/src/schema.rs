@@ -224,6 +224,16 @@ impl LocalStore {
 			// the next switch instead.
 			transaction.execute_batch("ALTER TABLE accounts ADD COLUMN has_token INTEGER NOT NULL DEFAULT 0 CHECK(typeof(has_token)='integer' AND has_token IN (0,1)); UPDATE accounts SET has_token=1;")?;
 		}
+		transaction.execute_batch("CREATE TABLE IF NOT EXISTS member_displays(
+            account TEXT NOT NULL CHECK(length(account) BETWEEN 1 AND 20),
+            guild TEXT NOT NULL CHECK(length(guild) BETWEEN 1 AND 20),
+            user TEXT NOT NULL CHECK(length(user) BETWEEN 1 AND 20),
+            name TEXT NOT NULL CHECK(typeof(name)='text' AND length(CAST(name AS BLOB)) BETWEEN 1 AND 512),
+            username TEXT CHECK(username IS NULL OR (typeof(username)='text' AND length(CAST(username AS BLOB))<=512)),
+            nick TEXT CHECK(nick IS NULL OR (typeof(nick)='text' AND length(CAST(nick AS BLOB))<=512)),
+            touched INTEGER NOT NULL CHECK(typeof(touched)='integer'),
+            PRIMARY KEY(account,guild,user));
+            CREATE INDEX IF NOT EXISTS member_displays_recency ON member_displays(touched,account,guild,user);")?;
 		transaction.pragma_update(None, "user_version", version.max(NATIVE_SCHEMA))?;
 		let has_animate_gifs: bool = transaction.query_row(
 			"SELECT EXISTS(SELECT 1 FROM pragma_table_info('reading_preferences') WHERE name='animate_gifs')",

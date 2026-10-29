@@ -151,6 +151,7 @@ impl LocalStore {
 		let transaction = self.0.transaction()?;
 		for table in [
 			"messages",
+			"member_displays",
 			"channels",
 			"history_starts",
 			"drafts",
