@@ -602,6 +602,14 @@ impl LocalStore {
 			"DELETE FROM member_displays WHERE account=?1",
 			[account.to_string()],
 		)?;
+		transaction.execute(
+			"DELETE FROM expression_catalogs WHERE account=?1",
+			[account.to_string()],
+		)?;
+		transaction.execute(
+			"DELETE FROM sticker_pack_hints WHERE account=?1",
+			[account.to_string()],
+		)?;
 		transaction.commit()?;
 		self.0
 			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(64);")?;

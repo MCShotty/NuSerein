@@ -84,11 +84,41 @@ pub fn valid_stickers(items: &Vec<Sticker>, max: usize) -> bool {
 			.enumerate()
 			.all(|(i, s)| s.valid() && !items[..i].iter().any(|other| other.id == s.id))
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StickerPack {
 	pub id: Id,
 	pub name: String,
 	pub stickers: Vec<Sticker>,
+}
+/// Account-scoped, presentation-only standard-pack metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StickerPackHints {
+	pub packs: Vec<StickerPack>,
+}
+impl StickerPackHints {
+	pub fn bytes(&self) -> usize {
+		self.packs.capacity() * size_of::<StickerPack>()
+			+ self
+				.packs
+				.iter()
+				.map(|p| p.name.capacity() + sticker_bytes(&p.stickers))
+				.sum::<usize>()
+			+ size_of::<Self>()
+	}
+	pub fn valid(&self) -> bool {
+		self.packs.len() <= 128
+			&& self.bytes() <= 1024 * 1024
+			&& self.packs.iter().enumerate().all(|(i, pack)| {
+				pack.id.0 != 0
+					&& pack.name.len() <= 256
+					&& !self.packs[..i].iter().any(|old| old.id == pack.id)
+					&& valid_stickers(&pack.stickers, MAX_GUILD_STICKERS)
+					&& pack
+						.stickers
+						.iter()
+						.all(|s| s.guild_id.is_none() && s.pack_id == Some(pack.id) && !s.available)
+			})
+	}
 }
 /// Bounded catalog and persistent message decoder.
 pub struct StickerList<const MAX: usize>(pub Vec<Sticker>);

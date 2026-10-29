@@ -758,6 +758,230 @@ fn state() -> State {
 	state
 }
 
+fn expression_hints() -> model::ExpressionCatalog {
+	model::ExpressionCatalog {
+		guild: Id(10),
+		emojis: Some(vec![model::CustomEmoji {
+			id: Id(400),
+			name: "party".into(),
+			animated: false,
+			available: false,
+			managed: false,
+			roles: None,
+		}]),
+		stickers: Some(vec![model::Sticker {
+			id: Id(500),
+			name: "Wave".into(),
+			description: String::new(),
+			tags: String::new(),
+			format_type: 1,
+			guild_id: Some(Id(10)),
+			pack_id: None,
+			available: false,
+		}]),
+	}
+}
+
+#[test]
+fn expression_hints_cover_joined_guilds_in_guild_channels_and_dms() {
+	let mut state = state();
+	state.auth = crate::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	let mut other = state.guilds[0].clone();
+	other.id = Id(11);
+	state.guilds.push(other);
+	let first = expression_hints();
+	let mut second = first.clone();
+	second.guild = Id(11);
+	second.stickers.as_mut().unwrap()[0].guild_id = Some(Id(11));
+	let first_revision = state.expression_guild_cache_revision(Id(10));
+	let second_revision = state.expression_guild_cache_revision(Id(11));
+	assert!(state.hydrate_expression_catalog(Id(10), first_revision, first.clone()));
+	assert!(state.hydrate_expression_catalog(Id(11), second_revision, second.clone()));
+	assert_eq!(state.display_guild_emojis(Id(11)).unwrap().len(), 1);
+	assert!(!state.can_send_sticker(&second.stickers.as_ref().unwrap()[0]));
+	let mut dm = channel(99, 1, None);
+	dm.guild = None;
+	state.channels.push(dm);
+	state.selected = Some(Id(99));
+	assert!(state.can_view(Id(99)));
+	assert_eq!(state.display_guild_stickers(Id(10)).unwrap().len(), 1);
+	assert_eq!(state.display_guild_stickers(Id(11)).unwrap().len(), 1);
+	apply(
+		&mut state,
+		Event::GuildEmojis {
+			guild: Id(11),
+			emojis: vec![],
+		},
+	);
+	assert!(state.display_guild_emojis(Id(11)).unwrap().is_empty());
+	assert_eq!(state.display_guild_stickers(Id(11)).unwrap().len(), 1);
+	assert_eq!(state.display_guild_emojis(Id(10)).unwrap().len(), 1);
+	assert_eq!(
+		state.expression_guild_cache_revision(Id(10)),
+		first_revision
+	);
+	assert!(!state.hydrate_expression_catalog(Id(11), second_revision, second));
+	assert!(state.hydrate_expression_catalog(Id(10), first_revision, first));
+	apply(&mut state, Event::GuildRemoved(Id(11)));
+	assert!(state.display_guild_stickers(Id(11)).is_none());
+}
+
+#[test]
+fn expression_hints_survive_unrelated_channel_churn_but_hide_on_access_loss() {
+	let mut state = state();
+	state.auth = crate::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	let revision = state.expression_guild_cache_revision(Id(10));
+	assert!(state.hydrate_expression_catalog(Id(10), revision, expression_hints()));
+	apply(&mut state, Event::Unavailable(Id(21)));
+	assert_eq!(state.expression_guild_cache_revision(Id(10)), revision);
+	assert_eq!(state.display_guild_emojis(Id(10)).unwrap().len(), 1);
+	apply(&mut state, Event::Unavailable(Id(20)));
+	assert!(state.display_guild_emojis(Id(10)).is_none());
+	assert!(!state.hydrate_expression_catalog(Id(10), revision, expression_hints()));
+}
+
+#[test]
+fn expression_revision_table_overflow_fences_old_reads_and_advances_epoch() {
+	let mut state = state();
+	state.auth = crate::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	let before = state.expression_guild_cache_revision(Id(10));
+	let epoch = state.expression_cache_epoch();
+	assert!(state.hydrate_expression_catalog(Id(10), before, expression_hints()));
+	for guild in 1000..=1128 {
+		apply(
+			&mut state,
+			Event::GuildEmojis {
+				guild: Id(guild),
+				emojis: vec![],
+			},
+		);
+	}
+	assert_ne!(state.expression_cache_epoch(), epoch);
+	assert!(state.display_guild_emojis(Id(10)).is_none());
+	assert!(!state.hydrate_expression_catalog(Id(10), before, expression_hints()));
+	let fresh = state.expression_guild_cache_revision(Id(10));
+	assert!(state.hydrate_expression_catalog(Id(10), fresh, expression_hints()));
+}
+
+#[test]
+fn cached_standard_packs_are_display_only_until_live_results_arrive() {
+	let mut state = state();
+	state.auth = crate::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	state.selected = None; // Pack hints are also useful in DMs and outside a guild.
+	let hints = model::StickerPackHints {
+		packs: vec![model::StickerPack {
+			id: Id(600),
+			name: "Pack".into(),
+			stickers: vec![model::Sticker {
+				id: Id(601),
+				name: "Wave".into(),
+				description: String::new(),
+				tags: String::new(),
+				format_type: 1,
+				guild_id: None,
+				pack_id: Some(Id(600)),
+				available: false,
+			}],
+		}],
+	};
+	let started = state.sticker_pack_cache_revision();
+	assert!(state.hydrate_sticker_pack_hints(started, hints.clone()));
+	assert!(!state.stickers.loaded);
+	assert_eq!(state.display_sticker_packs(), hints.packs);
+	assert!(state.prepare_sticker_id_send(Id(601)).is_none());
+	assert!(state.request_sticker_packs().is_some());
+	apply(
+		&mut state,
+		Event::StickerPacks(Err(crate::auth::Failure::Network)),
+	);
+	assert_eq!(state.display_sticker_packs(), hints.packs);
+	assert!(!state.stickers.loaded);
+	assert!(state.request_sticker_packs().is_some());
+	apply(&mut state, Event::StickerPacks(Ok(vec![])));
+	assert!(state.stickers.loaded);
+	assert!(state.display_sticker_packs().is_empty());
+	assert!(!state.hydrate_sticker_pack_hints(started, hints));
+	assert_eq!(state.cached_sticker_pack_hints().unwrap().packs.len(), 0);
+}
+
+#[test]
+fn expression_hints_are_display_only_and_live_empty_updates_win_independently() {
+	let mut state = state();
+	state.auth = crate::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	let hint = expression_hints();
+	let revision = state.expression_guild_cache_revision(Id(10));
+	assert!(state.hydrate_expression_catalog(Id(10), revision, hint.clone()));
+	assert_eq!(state.expression_guild_cache_revision(Id(10)), revision);
+	assert_eq!(state.display_guild_emojis(Id(10)).unwrap()[0].id, Id(400));
+	assert_eq!(state.display_guild_stickers(Id(10)).unwrap()[0].id, Id(500));
+	assert!(state.custom_emoji(Id(400)).is_none());
+	assert!(!state.can_send_sticker(&hint.stickers.as_ref().unwrap()[0]));
+	assert!(state.cached_expression_catalog(Id(10)).is_none());
+	apply(
+		&mut state,
+		Event::GuildEmojis {
+			guild: Id(10),
+			emojis: vec![],
+		},
+	);
+	assert!(state.display_guild_emojis(Id(10)).unwrap().is_empty());
+	assert_eq!(state.display_guild_stickers(Id(10)).unwrap()[0].id, Id(500));
+	assert!(!state.hydrate_expression_catalog(Id(10), revision, hint));
+	apply(
+		&mut state,
+		Event::GuildStickers {
+			guild: Id(10),
+			stickers: vec![],
+		},
+	);
+	assert!(state.display_guild_stickers(Id(10)).unwrap().is_empty());
+}
+
+#[test]
+fn expression_hints_fail_closed_on_access_change_and_cache_clear() {
+	let mut state = state();
+	state.auth = crate::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	let hint = expression_hints();
+	let revision = state.expression_guild_cache_revision(Id(10));
+	assert!(state.hydrate_expression_catalog(Id(10), revision, hint.clone()));
+	deny(&mut state, p::VIEW_CHANNEL);
+	assert!(state.display_guild_emojis(Id(10)).is_none());
+	assert!(!state.hydrate_expression_catalog(Id(10), revision, hint.clone()));
+	let mut other = self::state();
+	other.auth = crate::auth::AuthState::Authenticated;
+	other.gateway_connected = true;
+	let revision = other.expression_guild_cache_revision(Id(10));
+	assert!(other.hydrate_expression_catalog(Id(10), revision, hint));
+	other.clear_cached_history();
+	assert!(other.display_guild_emojis(Id(10)).is_none());
+	assert_ne!(other.expression_guild_cache_revision(Id(10)), revision);
+}
+
+#[test]
+fn expression_snapshot_does_not_persist_permission_or_availability_fields() {
+	let mut state = state();
+	state.auth = crate::auth::AuthState::Authenticated;
+	state.gateway_connected = true;
+	let mut hint = expression_hints();
+	let mut live_emoji = hint.emojis.as_ref().unwrap()[0].clone();
+	live_emoji.available = true;
+	live_emoji.managed = true;
+	live_emoji.roles = Some(vec![Id(11)]);
+	let mut live_sticker = hint.stickers.as_ref().unwrap()[0].clone();
+	live_sticker.available = true;
+	state.guilds[0].emojis = Some(vec![live_emoji]);
+	state.guilds[0].stickers = Some(vec![live_sticker]);
+	assert_eq!(state.cached_expression_catalog(Id(10)), Some(hint.clone()));
+	hint.emojis.as_mut().unwrap()[0].available = true;
+	assert!(!hint.valid());
+}
+
 #[test]
 fn cross_server_emoji_checks_destination_and_known_source_roles() {
 	let mut state = state();

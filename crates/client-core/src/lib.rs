@@ -18,6 +18,7 @@ pub mod auth;
 pub mod captcha;
 pub mod channel_actions;
 pub mod community;
+pub mod expressions;
 pub mod fingerprint;
 pub mod forum;
 pub mod game_mentions;
@@ -226,6 +227,8 @@ pub struct State {
 	pub parked_members: Option<ParkedMembers>,
 	pub member_search: [member_search::View; 2],
 	pub member_labels: member_identity::Labels,
+	#[doc(hidden)]
+	pub expression_hints: expressions::Hints,
 	pub member_search_nonce: u64,
 	pub direct_presences: Vec<MemberPresence>,
 	pub local_game_activity: Option<model::RichActivity>,
@@ -483,6 +486,7 @@ impl Default for State {
 			parked_members: None,
 			member_search: Default::default(),
 			member_labels: Default::default(),
+			expression_hints: Default::default(),
 			member_search_nonce: 0,
 			game_mentions: Default::default(),
 			direct_presences: vec![],

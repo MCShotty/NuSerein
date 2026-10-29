@@ -86,6 +86,20 @@ pub enum Operation {
 		guild: Id,
 		revision: u64,
 	},
+	LoadExpressions {
+		guild: Id,
+		revision: u64,
+	},
+	SaveExpressions(Box<model::ExpressionCatalog>),
+	LoadStickerPackHints {
+		revision: u64,
+	},
+	SaveStickerPackHints(Box<model::StickerPackHints>),
+	ClearExpressions {
+		guild: Id,
+		/// None clears the guild; Some clears only the affected catalog.
+		emoji: Option<bool>,
+	},
 	SaveMembers(Vec<model::MemberDisplay>),
 	RemoveMember {
 		guild: Id,
@@ -158,6 +172,19 @@ pub enum Outcome {
 		epoch: u64,
 		result: Result<Vec<model::MemberDisplay>, StoreError>,
 	},
+	Expressions {
+		account: Id,
+		guild: Id,
+		revision: u64,
+		epoch: u64,
+		result: Result<Option<model::ExpressionCatalog>, StoreError>,
+	},
+	StickerPackHints {
+		account: Id,
+		revision: u64,
+		epoch: u64,
+		result: Result<Option<model::StickerPackHints>, StoreError>,
+	},
 	ScopedCleanupFailed {
 		account: Id,
 	},
@@ -173,6 +200,123 @@ pub struct Cache {
 	pub receive: Receiver<(u64, Outcome, Reservation)>,
 	budget: Arc<Budget>,
 	pub history: Arc<HistorySafety>,
+}
+/// Saves in these lanes remain pending after queue backpressure and retry on progress.
+pub fn coalesced_retry(operation: &Operation) -> bool {
+	matches!(
+		operation,
+		Operation::SaveGifFavorites(_)
+			| Operation::SaveExpressions(_)
+			| Operation::SaveStickerPackHints(_)
+	)
+}
+/// Coalesced work for up to the number of guild catalog rows the store can retain.
+#[derive(Default)]
+pub struct ExpressionCacheSchedule {
+	scope: Option<(u64, Id, u64)>,
+	core_epoch: Option<u64>,
+	selected: Option<Id>,
+	pending: std::collections::VecDeque<(Id, u8)>,
+	waiting: bool,
+}
+impl ExpressionCacheSchedule {
+	const LIMIT: usize = 128;
+	pub const LOAD: u8 = 1;
+	pub const SAVE: u8 = 2;
+	pub fn scope(&mut self, scope: (u64, Id, u64), guilds: impl Iterator<Item = Id>) {
+		if self.scope == Some(scope) {
+			return;
+		}
+		*self = Self::default();
+		self.scope = Some(scope);
+		for guild in guilds.take(Self::LIMIT) {
+			self.enqueue(guild, Self::LOAD | Self::SAVE);
+		}
+	}
+	/// Reload only once when core invalidates all guild hint revisions, including
+	/// rare revision-map overflow. Unchanged authoritative catalogs need no writes.
+	pub fn observe_epoch(&mut self, epoch: u64, guilds: impl Iterator<Item = Id>) {
+		let previous = self.core_epoch.replace(epoch);
+		if previous.is_some_and(|previous| previous != epoch) {
+			self.refresh(guilds);
+		}
+	}
+	pub fn refresh(&mut self, guilds: impl Iterator<Item = Id>) {
+		for guild in guilds.take(Self::LIMIT) {
+			self.enqueue(guild, Self::LOAD);
+		}
+		if let Some(guild) = self.selected {
+			self.prioritize(guild, Self::LOAD);
+		}
+	}
+	pub fn enqueue(&mut self, guild: Id, operations: u8) {
+		if guild.0 == 0 || operations == 0 {
+			return;
+		}
+		if let Some((_, flags)) = self.pending.iter_mut().find(|(id, _)| *id == guild) {
+			*flags |= operations;
+			return;
+		}
+		if self.pending.len() == Self::LIMIT {
+			let victim = self
+				.pending
+				.iter()
+				.position(|(id, _)| Some(*id) != self.selected)
+				.unwrap_or(0);
+			self.pending.remove(victim);
+		}
+		self.pending.push_back((guild, operations));
+	}
+	fn prioritize(&mut self, guild: Id, operations: u8) {
+		self.enqueue(guild, operations);
+		if let Some(index) = self.pending.iter().position(|(id, _)| *id == guild)
+			&& let Some(item) = self.pending.remove(index)
+		{
+			self.pending.push_front(item);
+		}
+	}
+	pub fn selected(&mut self, guild: Option<Id>) {
+		if self.selected != guild {
+			self.selected = guild;
+			if let Some(guild) = guild {
+				self.prioritize(guild, Self::LOAD | Self::SAVE);
+			}
+		}
+	}
+	pub fn next(&self) -> Option<(Id, u8)> {
+		if self.waiting {
+			return None;
+		}
+		self.pending.front().map(|&(guild, flags)| {
+			(
+				guild,
+				if flags & Self::LOAD != 0 {
+					Self::LOAD
+				} else {
+					Self::SAVE
+				},
+			)
+		})
+	}
+	pub fn completed(&mut self, guild: Id, operation: u8) {
+		if let Some((id, flags)) = self.pending.front_mut()
+			&& *id == guild
+		{
+			*flags &= !operation;
+			if *flags == 0 {
+				self.pending.pop_front();
+			}
+		}
+	}
+	pub fn blocked(&mut self) {
+		self.waiting = true;
+	}
+	pub fn capacity_changed(&mut self) {
+		self.waiting = false;
+	}
+	pub fn remove(&mut self, guild: Id) {
+		self.pending.retain(|(id, _)| *id != guild);
+	}
 }
 /// Retry a rejected read only after storage has made progress or its scope changes.
 #[derive(Default)]
@@ -190,6 +334,9 @@ impl HistoryLoad {
 	}
 	pub fn accepted(&mut self, key: (u64, Id, u64, u64)) {
 		self.accepted = Some(key);
+	}
+	pub fn was_accepted(&self, key: (u64, Id, u64, u64)) -> bool {
+		self.accepted == Some(key)
 	}
 	pub fn capacity_changed(&mut self) {
 		self.attempted = None;
@@ -237,6 +384,31 @@ impl HistoryLoad {
 		} else {
 			false
 		}
+	}
+}
+
+/// Admission state only: GIF contents remain in the bounded account-scoped state.
+#[derive(Default)]
+pub struct GifCache {
+	pub load: HistoryLoad,
+	blocked_save: Option<(u64, Id)>,
+	loaded: Option<(u64, Id)>,
+}
+impl GifCache {
+	pub fn loaded(&mut self, scope: (u64, Id)) {
+		if self.load.was_accepted((scope.0, scope.1, 0, 0)) {
+			self.loaded = Some(scope);
+		}
+	}
+	pub fn may_save(&self, scope: (u64, Id)) -> bool {
+		self.loaded == Some(scope) && self.blocked_save != Some(scope)
+	}
+	pub fn reject_save(&mut self, scope: (u64, Id)) {
+		self.blocked_save = Some(scope);
+	}
+	pub fn capacity_changed(&mut self) {
+		self.load.capacity_changed();
+		self.blocked_save = None;
 	}
 }
 #[derive(Default)]
@@ -375,6 +547,22 @@ impl Cache {
 			return false;
 		}
 		let payload = match &operation {
+			// The bounded JSON columns and decoded catalog can coexist during a read.
+			Operation::LoadExpressions { .. } | Operation::LoadStickerPackHints { .. } => {
+				8 * 1024 * 1024
+			}
+			Operation::SaveExpressions(catalog) => {
+				if !catalog.valid() {
+					return false;
+				}
+				catalog.bytes() + 4 * 1024 * 1024
+			}
+			Operation::SaveStickerPackHints(packs) => {
+				if !packs.valid() {
+					return false;
+				}
+				packs.bytes() + 2 * 1024 * 1024
+			}
 			Operation::SaveMembers(rows) => {
 				if rows.len() > 4096
 					|| rows.iter().any(|row| !row.valid())
@@ -461,6 +649,10 @@ impl Cache {
 				| Operation::SaveChanges { .. }
 				| Operation::LoadMembers { .. }
 				| Operation::SaveMembers(_)
+				| Operation::LoadExpressions { .. }
+				| Operation::SaveExpressions(_)
+				| Operation::LoadStickerPackHints { .. }
+				| Operation::SaveStickerPackHints(_)
 		) && !self.history.allows(epoch)
 		{
 			return false;
@@ -481,31 +673,7 @@ impl Cache {
 			while let Ok((generation, account, epoch, operation, reservation)) = commands.recv() {
 				let outcome = execute(&mut store, &worker_history, account, epoch, operation);
 				drop(reservation);
-				let bytes = match &outcome {
-					Outcome::CustomFont(Ok(Some(font))) => {
-						font.bytes().len() + font.name.capacity()
-					}
-					Outcome::Channel { messages, .. } => message_bytes(messages),
-					Outcome::Members { result, .. } => result.as_ref().map_or(0, |rows| {
-						rows.iter().map(model::MemberDisplay::bytes).sum::<usize>()
-							+ rows.capacity().saturating_sub(rows.len())
-								* size_of::<model::MemberDisplay>()
-					}),
-					Outcome::Drafts(drafts) => drafts.values().map(String::capacity).sum(),
-					Outcome::GifFavorites(favorites) => {
-						favorites.iter().map(model::Gif::bytes).sum::<usize>()
-							+ favorites.capacity() * size_of::<model::Gif>()
-					}
-					Outcome::Accounts { roster, pruned } => {
-						roster.as_ref().map_or(0, |accounts| {
-							accounts
-								.iter()
-								.map(model::SavedAccount::heap_bytes)
-								.sum::<usize>() + accounts.capacity() * size_of::<model::SavedAccount>()
-						}) + pruned.capacity() * size_of::<Id>()
-					}
-					_ => 0,
-				};
+				let bytes = outcome_bytes(&outcome);
 				let reservation = results
 					.reserve(bytes + 64 * 1024, true)
 					.expect("bounded storage outcome fits queue");
@@ -521,6 +689,42 @@ impl Cache {
 			budget,
 			history,
 		}
+	}
+}
+
+/// Heap retained by a completed result while the UI has not consumed it.
+fn outcome_bytes(outcome: &Outcome) -> usize {
+	match outcome {
+		Outcome::CustomFont(Ok(Some(font))) => font.bytes().len() + font.name.capacity(),
+		Outcome::Channel { messages, .. } => message_bytes(messages),
+		Outcome::Members { result, .. } => result.as_ref().map_or(0, |rows| {
+			rows.iter().map(model::MemberDisplay::bytes).sum::<usize>()
+				+ rows.capacity().saturating_sub(rows.len()) * size_of::<model::MemberDisplay>()
+		}),
+		Outcome::Expressions { result, .. } => result
+			.as_ref()
+			.ok()
+			.and_then(Option::as_ref)
+			.map_or(0, model::ExpressionCatalog::bytes),
+		Outcome::StickerPackHints { result, .. } => result
+			.as_ref()
+			.ok()
+			.and_then(Option::as_ref)
+			.map_or(0, model::StickerPackHints::bytes),
+		Outcome::Drafts(drafts) => drafts.values().map(String::capacity).sum(),
+		Outcome::GifFavorites(favorites) => {
+			favorites.iter().map(model::Gif::bytes).sum::<usize>()
+				+ favorites.capacity() * size_of::<model::Gif>()
+		}
+		Outcome::Accounts { roster, pruned } => {
+			roster.as_ref().map_or(0, |accounts| {
+				accounts
+					.iter()
+					.map(model::SavedAccount::heap_bytes)
+					.sum::<usize>() + accounts.capacity() * size_of::<model::SavedAccount>()
+			}) + pruned.capacity() * size_of::<Id>()
+		}
+		_ => 0,
 	}
 }
 
@@ -673,12 +877,45 @@ fn execute(
 			},
 		};
 	}
+	if let Operation::LoadExpressions { guild, revision } = operation {
+		return Outcome::Expressions {
+			account,
+			guild,
+			revision,
+			epoch,
+			result: if history.allows(epoch) {
+				match store {
+					Ok(store) => store.load_expression_catalog(account, guild),
+					Err(error) => Err(*error),
+				}
+			} else {
+				Ok(None)
+			},
+		};
+	}
+	if let Operation::LoadStickerPackHints { revision } = operation {
+		return Outcome::StickerPackHints {
+			account,
+			revision,
+			epoch,
+			result: if history.allows(epoch) {
+				match store {
+					Ok(store) => store.load_sticker_pack_hints(account),
+					Err(error) => Err(*error),
+				}
+			} else {
+				Ok(None)
+			},
+		};
+	}
 	if matches!(
 		operation,
 		Operation::LoadChannel { .. }
 			| Operation::SaveChannel { .. }
 			| Operation::SaveChanges { .. }
 			| Operation::SaveMembers(_)
+			| Operation::SaveExpressions(_)
+			| Operation::SaveStickerPackHints(_)
 	) && !history.allows(epoch)
 	{
 		return Outcome::Saved;
@@ -687,7 +924,9 @@ fn execute(
 	let history_cleanup = matches!(operation, Operation::ClearHistory);
 	let scoped_cleanup = matches!(
 		operation,
-		Operation::ClearChannel { .. } | Operation::RemoveMember { .. }
+		Operation::ClearChannel { .. }
+			| Operation::RemoveMember { .. }
+			| Operation::ClearExpressions { .. }
 	);
 	let history_unsafe = matches!(
 		operation,
@@ -696,6 +935,7 @@ fn execute(
 			| Operation::Forget
 			| Operation::ClearChannel { .. }
 			| Operation::RemoveMember { .. }
+			| Operation::ClearExpressions { .. }
 	);
 	let failure_message = match &operation {
 		Operation::LoadAppearance => "Could not load saved appearance; using system theme",
@@ -708,11 +948,19 @@ fn execute(
 		Operation::ClearHistory => {
 			"Could not clear cached history; history cache disabled until restart; messages may remain on disk"
 		}
-		Operation::ClearChannel { .. } | Operation::RemoveMember { .. } => {
+		Operation::ClearChannel { .. }
+		| Operation::RemoveMember { .. }
+		| Operation::ClearExpressions { .. } => {
 			"Could not remove inaccessible cached data; history cache disabled until restart"
 		}
 		Operation::SaveMembers(_) => {
 			"Could not save member names; current names remain available in this session"
+		}
+		Operation::SaveExpressions(_) => {
+			"Could not save cached emoji and stickers; live catalogs remain available"
+		}
+		Operation::SaveStickerPackHints(_) => {
+			"Could not save cached sticker packs; live packs remain available"
 		}
 		Operation::DeleteMessages { .. } => {
 			"Could not remove deleted cached messages; history cache disabled until restart; messages may remain on disk"
@@ -731,6 +979,8 @@ fn execute(
 		Operation::LoadChannel { .. } => "Could not read cached history",
 		Operation::LoadCustomFont
 		| Operation::LoadMembers { .. }
+		| Operation::LoadExpressions { .. }
+		| Operation::LoadStickerPackHints { .. }
 		| Operation::SaveCustomFont(_)
 		| Operation::LoadAccounts
 		| Operation::SaveAccount(_)
@@ -751,6 +1001,8 @@ fn execute(
 		Ok(store) => match operation {
 			Operation::LoadCustomFont
 			| Operation::LoadMembers { .. }
+			| Operation::LoadExpressions { .. }
+			| Operation::LoadStickerPackHints { .. }
 			| Operation::SaveCustomFont(_)
 			| Operation::LoadAccounts
 			| Operation::SaveAccount(_)
@@ -796,9 +1048,22 @@ fn execute(
 			Operation::SaveMembers(rows) => store
 				.save_member_displays(account, &rows)
 				.map(|_| Outcome::Saved),
+			Operation::SaveExpressions(catalog) => store
+				.save_expression_catalog(account, &catalog)
+				.map(|_| Outcome::Saved),
+			Operation::SaveStickerPackHints(packs) => store
+				.save_sticker_pack_hints(account, &packs)
+				.map(|_| Outcome::Saved),
+			Operation::ClearExpressions { guild, emoji } => match emoji {
+				Some(emoji) => store.clear_expression_field(account, guild, emoji),
+				None => store.clear_expression_guild(account, guild),
+			}
+			.map(|_| Outcome::Saved),
 			Operation::RemoveMember { guild, user } => match user {
 				Some(user) => store.remove_member_display(account, guild, user),
-				None => store.clear_member_guild(account, guild),
+				None => store
+					.clear_member_guild(account, guild)
+					.and_then(|()| store.clear_expression_guild(account, guild)),
 			}
 			.map(|_| Outcome::Saved),
 			Operation::ClearChannel { channel } => store
@@ -934,6 +1199,609 @@ pub fn debug_voice_preferences_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	fn expression_hint(guild: Id, user: u64) -> model::ExpressionCatalog {
+		model::ExpressionCatalog {
+			guild,
+			emojis: Some(vec![model::CustomEmoji {
+				id: Id(user),
+				name: "cached_emoji".into(),
+				animated: true,
+				available: false,
+				managed: false,
+				roles: None,
+			}]),
+			stickers: Some(vec![model::Sticker {
+				id: Id(user + 1),
+				name: "Cached sticker".into(),
+				description: String::new(),
+				tags: String::new(),
+				format_type: 1,
+				guild_id: Some(guild),
+				pack_id: None,
+				available: false,
+			}]),
+		}
+	}
+	#[test]
+	fn expression_worker_restores_only_display_hints_and_fences_scoped_cleanup() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let account = state.user.as_ref().unwrap().id;
+		let guild = Id(10);
+		let current = state.guilds.iter_mut().find(|g| g.id == guild).unwrap();
+		current.emojis = None;
+		current.stickers = None;
+		let hint = expression_hint(guild, 90_000);
+		assert!(hint.valid());
+		let other = expression_hint(Id(11), 91_000);
+		let safety = HistorySafety::default();
+		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
+		for (owner, value) in [
+			(account, hint.clone()),
+			(account, other.clone()),
+			(Id(999_999), hint.clone()),
+		] {
+			assert!(matches!(
+				execute(
+					&mut store,
+					&safety,
+					owner,
+					safety.epoch(),
+					Operation::SaveExpressions(Box::new(value))
+				),
+				Outcome::Saved
+			));
+		}
+		let revision = state.expression_guild_cache_revision(guild);
+		let old_epoch = safety.epoch();
+		let Outcome::Expressions {
+			account: owner,
+			result: Ok(Some(restored)),
+			..
+		} = execute(
+			&mut store,
+			&safety,
+			account,
+			old_epoch,
+			Operation::LoadExpressions { guild, revision },
+		)
+		else {
+			panic!("expected cached expression hints")
+		};
+		assert_eq!(owner, account);
+		assert!(state.hydrate_expression_catalog(guild, revision, restored));
+		assert_eq!(
+			state.display_guild_emojis(guild).unwrap()[0].name,
+			"cached_emoji"
+		);
+		assert!(state.guild(guild).unwrap().emojis.is_none());
+		assert!(!state.can_send_sticker(&hint.stickers.as_ref().unwrap()[0]));
+		safety.invalidate();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				old_epoch,
+				Operation::SaveExpressions(Box::new(hint.clone()))
+			),
+			Outcome::Saved
+		));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				safety.epoch(),
+				Operation::ClearExpressions {
+					guild,
+					emoji: Some(true)
+				}
+			),
+			Outcome::Saved
+		));
+		let remaining = store
+			.as_ref()
+			.unwrap()
+			.load_expression_catalog(account, guild)
+			.unwrap()
+			.unwrap();
+		assert!(remaining.emojis.is_none());
+		assert_eq!(remaining.stickers.as_ref(), hint.stickers.as_ref());
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				safety.epoch(),
+				Operation::ClearExpressions { guild, emoji: None }
+			),
+			Outcome::Saved
+		));
+		let db = store.as_ref().unwrap();
+		assert!(
+			db.load_expression_catalog(account, guild)
+				.unwrap()
+				.is_none()
+		);
+		assert_eq!(
+			db.load_expression_catalog(account, Id(11)).unwrap(),
+			Some(other)
+		);
+		assert_eq!(
+			db.load_expression_catalog(Id(999_999), guild).unwrap(),
+			Some(hint)
+		);
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				old_epoch,
+				Operation::LoadExpressions { guild, revision }
+			),
+			Outcome::Expressions {
+				result: Ok(None),
+				..
+			}
+		));
+	}
+	#[test]
+	fn expression_schedule_coalesces_bounds_and_retries_after_progress() {
+		let mut work = ExpressionCacheSchedule::default();
+		work.scope((1, Id(1), 0), (1..=180).map(Id));
+		assert_eq!(work.pending.len(), ExpressionCacheSchedule::LIMIT);
+		work.selected(Some(Id(180)));
+		assert_eq!(work.pending.len(), ExpressionCacheSchedule::LIMIT);
+		assert_eq!(work.next(), Some((Id(180), ExpressionCacheSchedule::LOAD)));
+		work.enqueue(Id(180), ExpressionCacheSchedule::SAVE);
+		assert_eq!(work.pending.len(), ExpressionCacheSchedule::LIMIT);
+		let (send, commands) = mpsc::sync_channel(1);
+		let (_, receive) = mpsc::sync_channel(1);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			history: Arc::new(HistorySafety::default()),
+		};
+		assert!(cache.queue(1, Id(1), Operation::LoadDrafts));
+		assert!(!cache.queue(
+			1,
+			Id(1),
+			Operation::LoadExpressions {
+				guild: Id(180),
+				revision: 0
+			}
+		));
+		work.blocked();
+		assert!(work.next().is_none());
+		drop(commands.try_recv().unwrap());
+		work.capacity_changed();
+		assert!(cache.queue(
+			1,
+			Id(1),
+			Operation::LoadExpressions {
+				guild: Id(180),
+				revision: 0
+			}
+		));
+		work.completed(Id(180), ExpressionCacheSchedule::LOAD);
+		assert_eq!(work.next(), Some((Id(180), ExpressionCacheSchedule::SAVE)));
+		work.remove(Id(180));
+		assert_ne!(work.next().map(|(id, _)| id), Some(Id(180)));
+		work.scope((2, Id(2), 0), std::iter::once(Id(300)));
+		assert_eq!(work.next(), Some((Id(300), ExpressionCacheSchedule::LOAD)));
+		work.completed(Id(300), ExpressionCacheSchedule::LOAD);
+		work.completed(Id(300), ExpressionCacheSchedule::SAVE);
+		work.refresh(std::iter::once(Id(300)));
+		assert_eq!(work.next(), Some((Id(300), ExpressionCacheSchedule::LOAD)));
+		work.completed(Id(300), ExpressionCacheSchedule::LOAD);
+		assert!(
+			work.next().is_none(),
+			"permission refresh must not resave unchanged catalogs"
+		);
+		work.scope((3, Id(1), 0), (1..=128).map(Id));
+		work.selected(Some(Id(1)));
+		work.observe_epoch(7, std::iter::empty());
+		work.observe_epoch(8, (129..=256).map(Id));
+		assert_eq!(work.pending.len(), ExpressionCacheSchedule::LIMIT);
+		assert_eq!(work.next(), Some((Id(1), ExpressionCacheSchedule::LOAD)));
+		assert!(work.pending.iter().any(|(guild, _)| *guild == Id(256)));
+		let snapshot = work.pending.clone();
+		work.observe_epoch(8, std::iter::once(Id(999)));
+		assert_eq!(
+			work.pending, snapshot,
+			"unchanged epoch must not rescan guilds"
+		);
+		assert!(coalesced_retry(&Operation::SaveGifFavorites(Vec::new())));
+		assert!(coalesced_retry(&Operation::SaveExpressions(Box::new(
+			expression_hint(Id(10), 93000)
+		))));
+		assert!(coalesced_retry(&Operation::SaveStickerPackHints(Box::new(
+			model::StickerPackHints { packs: vec![] }
+		))));
+		assert!(!coalesced_retry(&Operation::SaveDraft {
+			channel: Id(20),
+			content: String::new()
+		}));
+	}
+	#[test]
+	fn expression_scheduler_restores_joined_guilds_after_sqlite_restart() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-expressions-restart-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir(&root).unwrap();
+		let path = root.join("cache.sqlite");
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		let account = state.user.as_ref().unwrap().id;
+		let mut second = state.guilds[0].clone();
+		second.id = Id(11);
+		second.emojis = Some(vec![model::CustomEmoji {
+			id: Id(55_001),
+			name: "other_server".into(),
+			animated: false,
+			available: true,
+			managed: false,
+			roles: None,
+		}]);
+		state.guilds.push(second);
+		let safety = HistorySafety::default();
+		{
+			let mut store = Ok(LocalStore::open(&path).unwrap());
+			for guild in [Id(10), Id(11)] {
+				let catalog = state.cached_expression_catalog(guild).unwrap();
+				assert!(matches!(
+					execute(
+						&mut store,
+						&safety,
+						account,
+						safety.epoch(),
+						Operation::SaveExpressions(Box::new(catalog))
+					),
+					Outcome::Saved
+				));
+				let row = state.guilds.iter_mut().find(|g| g.id == guild).unwrap();
+				row.emojis = None;
+				row.stickers = None;
+			}
+		}
+		let mut reopened = Ok(LocalStore::open(&path).unwrap());
+		let mut schedule = ExpressionCacheSchedule::default();
+		schedule.scope(
+			(state.generation, account, safety.epoch()),
+			state.guilds.iter().map(|guild| guild.id),
+		);
+		while let Some((guild, operation)) = schedule.next() {
+			if operation == ExpressionCacheSchedule::LOAD {
+				let revision = state.expression_guild_cache_revision(guild);
+				let Outcome::Expressions {
+					result: Ok(Some(hints)),
+					..
+				} = execute(
+					&mut reopened,
+					&safety,
+					account,
+					safety.epoch(),
+					Operation::LoadExpressions { guild, revision },
+				)
+				else {
+					panic!("missing cached guild")
+				};
+				assert!(state.hydrate_expression_catalog(guild, revision, hints));
+			}
+			schedule.completed(guild, operation);
+		}
+		assert_eq!(
+			state.display_guild_emojis(Id(11)).unwrap()[0].name,
+			"other_server"
+		);
+		assert!(!state.display_guild_emojis(Id(11)).unwrap()[0].available);
+		assert!(state.guild(Id(10)).unwrap().emojis.is_none());
+		assert!(state.guild(Id(11)).unwrap().emojis.is_none());
+		assert!(
+			reopened
+				.as_ref()
+				.unwrap()
+				.load_expression_catalog(Id(2), Id(11))
+				.unwrap()
+				.is_none()
+		);
+		drop(reopened);
+		std::fs::remove_dir_all(root).unwrap();
+	}
+	#[test]
+	fn expression_queue_charges_and_releases_bounded_read_capacity() {
+		let (send, commands) = mpsc::sync_channel(1);
+		let (_, receive) = mpsc::sync_channel(1);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			history: Arc::new(HistorySafety::default()),
+		};
+		assert!(cache.queue(
+			1,
+			Id(1),
+			Operation::LoadExpressions {
+				guild: Id(10),
+				revision: 0
+			}
+		));
+		assert!(*cache.budget.used.lock().unwrap() >= 8 * 1024 * 1024);
+		assert!(!cache.queue(
+			1,
+			Id(1),
+			Operation::LoadExpressions {
+				guild: Id(11),
+				revision: 0
+			}
+		));
+		drop(commands.try_recv().unwrap());
+		assert_eq!(*cache.budget.used.lock().unwrap(), 0);
+		assert!(cache.queue(1, Id(1), Operation::LoadStickerPackHints { revision: 0 }));
+		assert!(*cache.budget.used.lock().unwrap() >= 8 * 1024 * 1024);
+		drop(commands.try_recv().unwrap());
+		assert_eq!(*cache.budget.used.lock().unwrap(), 0);
+	}
+	#[test]
+	fn expression_results_reserve_decoded_memory_until_consumed() {
+		let catalog = expression_hint(Id(10), 93_000);
+		let pack_id = Id(93_100);
+		let packs = model::StickerPackHints {
+			packs: vec![model::StickerPack {
+				id: pack_id,
+				name: "Cached pack".into(),
+				stickers: vec![model::Sticker {
+					id: Id(93_101),
+					name: "Cached sticker".into(),
+					description: String::new(),
+					tags: String::new(),
+					format_type: 1,
+					guild_id: None,
+					pack_id: Some(pack_id),
+					available: false,
+				}],
+			}],
+		};
+		let expression_bytes = catalog.bytes();
+		let pack_bytes = packs.bytes();
+		let outcomes = [
+			(
+				Outcome::Expressions {
+					account: Id(1),
+					guild: Id(10),
+					revision: 0,
+					epoch: 0,
+					result: Ok(Some(catalog)),
+				},
+				expression_bytes,
+			),
+			(
+				Outcome::StickerPackHints {
+					account: Id(1),
+					revision: 0,
+					epoch: 0,
+					result: Ok(Some(packs)),
+				},
+				pack_bytes,
+			),
+		];
+		let budget = Arc::new(Budget::default());
+		for (outcome, expected) in outcomes {
+			assert!(expected > 0);
+			assert_eq!(outcome_bytes(&outcome), expected);
+			let held = budget
+				.reserve(outcome_bytes(&outcome) + 64 * 1024, false)
+				.unwrap();
+			assert!(
+				budget
+					.reserve(QUEUE_BYTES - held.bytes + 1, false)
+					.is_none()
+			);
+			drop(held);
+			assert!(budget.reserve(QUEUE_BYTES, false).is_some());
+		}
+		assert_eq!(
+			outcome_bytes(&Outcome::StickerPackHints {
+				account: Id(1),
+				revision: 0,
+				epoch: 0,
+				result: Ok(None),
+			}),
+			0
+		);
+	}
+	#[test]
+	fn sticker_pack_worker_restores_disabled_hints_and_clears_only_the_account() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.stickers.loaded = false;
+		let account = state.user.as_ref().unwrap().id;
+		let pack_id = Id(92_000);
+		let hints = model::StickerPackHints {
+			packs: vec![model::StickerPack {
+				id: pack_id,
+				name: "Cached pack".into(),
+				stickers: vec![model::Sticker {
+					id: Id(92_001),
+					name: "Cached sticker".into(),
+					description: String::new(),
+					tags: String::new(),
+					format_type: 1,
+					guild_id: None,
+					pack_id: Some(pack_id),
+					available: false,
+				}],
+			}],
+		};
+		assert!(hints.valid());
+		let safety = HistorySafety::default();
+		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
+		for owner in [account, Id(999_999)] {
+			assert!(matches!(
+				execute(
+					&mut store,
+					&safety,
+					owner,
+					safety.epoch(),
+					Operation::SaveStickerPackHints(Box::new(hints.clone()))
+				),
+				Outcome::Saved
+			));
+		}
+		let revision = state.sticker_pack_cache_revision();
+		let epoch = safety.epoch();
+		let Outcome::StickerPackHints {
+			account: owner,
+			result: Ok(Some(restored)),
+			..
+		} = execute(
+			&mut store,
+			&safety,
+			account,
+			epoch,
+			Operation::LoadStickerPackHints { revision },
+		)
+		else {
+			panic!("expected cached sticker pack hints")
+		};
+		assert_eq!(owner, account);
+		assert!(state.hydrate_sticker_pack_hints(revision, restored));
+		assert!(
+			!state.stickers.loaded,
+			"a disk hint cannot suppress live refresh"
+		);
+		assert!(!state.can_send_sticker(&hints.packs[0].stickers[0]));
+		safety.invalidate();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				epoch,
+				Operation::SaveStickerPackHints(Box::new(hints.clone()))
+			),
+			Outcome::Saved
+		));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				safety.epoch(),
+				Operation::ClearHistory
+			),
+			Outcome::HistoryCleared
+		));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_sticker_pack_hints(account)
+				.unwrap()
+				.is_none()
+		);
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_sticker_pack_hints(Id(999_999))
+				.unwrap(),
+			Some(hints)
+		);
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				epoch,
+				Operation::LoadStickerPackHints { revision }
+			),
+			Outcome::StickerPackHints {
+				result: Ok(None),
+				..
+			}
+		));
+	}
+	#[test]
+	fn gif_cache_retries_only_unsent_work_after_worker_progress_and_scopes_accounts() {
+		let (send, commands) = mpsc::sync_channel(1);
+		let (_, receive) = mpsc::sync_channel(1);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			history: Arc::new(HistorySafety::default()),
+		};
+		let mut state = GifCache::default();
+		let scope = (7, Id(1));
+		let key = (scope.0, scope.1, 0, 0);
+		assert!(cache.queue(7, Id(1), Operation::LoadDrafts));
+		assert!(state.load.attempt(key));
+		assert!(!cache.queue(7, Id(1), Operation::LoadGifFavorites));
+		assert!(
+			!state.load.attempt(key),
+			"repaint cannot busy-loop on a full queue"
+		);
+		drop(commands.try_recv().unwrap());
+		state.capacity_changed();
+		assert!(state.load.attempt(key));
+		assert!(cache.queue(7, Id(1), Operation::LoadGifFavorites));
+		state.load.accepted(key);
+		assert!(state.load.was_accepted(key));
+		assert!(!state.may_save(scope), "accepted load is not yet applied");
+		assert!(!state.load.attempt(key));
+		let gif = model::Gif {
+			id: "cached".into(),
+			title: "cached".into(),
+			url: "https://tenor.com/view/cached".into(),
+			preview: "https://media.tenor.com/cached/tenor.gif".into(),
+			width: 100,
+			height: 100,
+		};
+		assert!(!cache.queue(7, Id(1), Operation::SaveGifFavorites(vec![gif.clone()])));
+		state.reject_save(scope);
+		assert!(!state.may_save(scope));
+		assert!(
+			!state.may_save((8, Id(2))),
+			"another account must load its own cache"
+		);
+		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
+		let (_, account, epoch, operation, reservation) = commands.try_recv().unwrap();
+		assert!(matches!(
+			execute(&mut store, &cache.history, account, epoch, operation),
+			Outcome::GifFavorites(_)
+		));
+		drop(reservation);
+		state.loaded(scope);
+		state.capacity_changed();
+		assert!(!state.load.attempt(key), "an accepted read is not repeated");
+		assert!(state.may_save(scope));
+		assert!(cache.queue(7, Id(1), Operation::SaveGifFavorites(vec![gif.clone()])));
+		let (_, account, epoch, operation, _reservation) = commands.try_recv().unwrap();
+		assert!(matches!(
+			execute(&mut store, &cache.history, account, epoch, operation),
+			Outcome::Saved
+		));
+		assert_eq!(
+			store.as_ref().unwrap().gif_favorites(Id(1)).unwrap(),
+			vec![gif]
+		);
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.gif_favorites(Id(2))
+				.unwrap()
+				.is_empty()
+		);
+	}
 	#[test]
 	fn rejected_history_read_waits_for_capacity_then_retries_once() {
 		let (send, commands) = mpsc::sync_channel(1);

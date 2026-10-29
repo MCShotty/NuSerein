@@ -184,7 +184,7 @@ mod tests {
 				.0
 				.pragma_query_value::<u32, _>(None, "user_version", |r| r.get(0))
 				.unwrap(),
-			30
+			crate::NATIVE_SCHEMA
 		);
 		let one = entry(10, 20);
 		let other = entry(10, 21);

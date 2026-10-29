@@ -282,9 +282,7 @@ fn server_rail_index(row: usize, current: Option<usize>) -> usize {
 fn default_server(state: &State, channel: Option<Id>) -> Option<Id> {
 	let guild = state.channel(channel?)?.guild?;
 	state
-		.guild(guild)?
-		.emojis
-		.as_ref()
+		.display_guild_emojis(guild)
 		.filter(|emojis| !emojis.is_empty())
 		.map(|_| guild)
 }
@@ -322,9 +320,9 @@ fn custom_matches(state: &State, server: Option<Id>, query: &str) -> Vec<(usize,
 		.flat_map(|(guild_index, guild)| {
 			let query = &query;
 			let source_matches = !query.is_empty() && contains_ignore_case(&guild.name, query);
-			guild
-				.emojis
-				.iter()
+			state
+				.expression_emojis_for(guild)
+				.into_iter()
 				.flatten()
 				.enumerate()
 				.filter_map(move |(emoji_index, emoji)| {
@@ -339,7 +337,7 @@ fn custom_matches(state: &State, server: Option<Id>, query: &str) -> Vec<(usize,
 		(
 			Some(guild.id) != current,
 			guild.id,
-			guild.emojis.as_ref().expect("matched catalog")[emoji].id,
+			state.expression_emojis_for(guild).expect("matched catalog")[emoji].id,
 		)
 	});
 	matching
@@ -400,7 +398,7 @@ impl CustomMatches {
 	) -> Option<(&'a model::Guild, &'a model::CustomEmoji)> {
 		let &(guild, emoji) = self.entries.get(index)?;
 		let guild = state.guilds.get(guild)?;
-		Some((guild, guild.emojis.as_ref()?.get(emoji)?))
+		Some((guild, state.expression_emojis_for(guild)?.get(emoji)?))
 	}
 }
 
@@ -974,6 +972,9 @@ impl Picker {
 		emoji: &model::ReactionEmoji,
 		custom: Option<(&model::Guild, &model::CustomEmoji)>,
 	) -> bool {
+		if custom.is_some_and(|(guild, _)| guild.emojis.is_none()) {
+			return false;
+		}
 		if let Some((Target::React(message), _, _)) = self.reaction {
 			return !state.reactions.busy() && state.can_react(message, Some(emoji), true);
 		}
@@ -1624,7 +1625,9 @@ impl Picker {
 									if count == 0 {
 										let text = crate::i18n::translate_if_key(if searching {
 											"emoji-picker-popup-no-matching-emoji"
-										} else if guild.is_some_and(|g| g.emojis.is_none()) {
+										} else if guild.is_some_and(|g| {
+											state.display_guild_emojis(g.id).is_none()
+										}) {
 											"emoji-picker-popup-this-server-s-emoji-list-is-not-loaded-yet"
 										} else {
 											"emoji-picker-popup-this-server-has-no-custom-emoji"
@@ -1706,26 +1709,32 @@ impl Picker {
 																	text.to_owned(),
 																)
 															};
-															let unavailable = custom_emoji
-																.and_then(|(guild, custom)| {
-																	state
-																		.custom_emoji_unavailable_reason(
-																			channel, guild.id,
-																			custom,
+															let unavailable =
+																custom_emoji
+																	.and_then(|(guild, custom)| {
+																		if guild.emojis.is_none() {
+																			return Some(crate::i18n::translate("expression-cache-awaiting-server"));
+																		}
+																		state
+																			.custom_emoji_unavailable_reason(
+																				channel, guild.id,
+																				custom,
+																			)
+																			.map(str::to_owned)
+																	})
+																	.or_else(|| {
+																		self.nitro_locked(
+																			state,
+																			custom_emoji,
 																		)
-																		.map(str::to_owned)
-																})
-																.or_else(|| {
-																	self.nitro_locked(
-																		state,
-																		custom_emoji,
-																	)
-																	.then(|| {
-																		crate::i18n::translate(
+																		.then(
+																			|| {
+																				crate::i18n::translate(
 																			"emoji-picker-popup-requires-nitro",
 																		)
-																	})
-																});
+																			},
+																		)
+																	});
 															let enabled = self.can_pick(
 																state,
 																&emoji,
@@ -2646,6 +2655,57 @@ fn cell(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn cached_emoji_is_visible_but_not_pickable_until_confirmed() {
+		let mut state = test_support::demo_state();
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.guilds[0].id;
+		let mut live = state.guilds[0].emojis.take().unwrap().remove(0);
+		live.animated = false;
+		live.available = true;
+		live.managed = false;
+		live.roles = Some(vec![]);
+		let mut hint = live.clone();
+		hint.available = false;
+		hint.roles = None;
+		let revision = state.expression_guild_cache_revision(guild);
+		assert!(state.hydrate_expression_catalog(
+			guild,
+			revision,
+			model::ExpressionCatalog {
+				guild,
+				emojis: Some(vec![hint.clone()]),
+				stickers: None,
+			}
+		));
+		assert_eq!(custom_matches(&state, Some(guild), "").len(), 1);
+		let reaction = model::ReactionEmoji {
+			id: Some(hint.id),
+			name: Some(hint.name.clone()),
+		};
+		let mut picker = Picker {
+			channel: Some(channel),
+			..Default::default()
+		};
+		assert!(!picker.can_pick(&state, &reaction, Some((&state.guilds[0], &hint))));
+		picker.reaction = Some((
+			Target::React(Id(100)),
+			egui::Rect::NOTHING,
+			egui::Id::unique("test"),
+		));
+		assert!(!picker.can_pick(&state, &reaction, Some((&state.guilds[0], &hint))));
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::GuildEmojis {
+				guild,
+				emojis: vec![live],
+			},
+		});
+		assert!(state.custom_emoji(hint.id).is_some());
+	}
 
 	#[test]
 	fn current_server_search_wins_before_the_result_cap_and_scope_changes() {

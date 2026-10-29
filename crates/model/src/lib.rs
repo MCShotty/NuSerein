@@ -2,7 +2,7 @@
 mod users;
 pub use users::{AccountKind, SavedAccount, User, valid_avatar_hash};
 mod navigation;
-pub use navigation::{Channel, ChannelPatch, Guild, GuildPatch, InvitePreview};
+pub use navigation::{Channel, ChannelPatch, ExpressionCatalog, Guild, GuildPatch, InvitePreview};
 mod messages;
 pub use messages::{Interaction, Message, MessagePatch, valid_mention_roles};
 mod presence;

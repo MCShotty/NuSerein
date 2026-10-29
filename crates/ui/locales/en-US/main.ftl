@@ -822,6 +822,7 @@ emoji-details-show-source-server-unavailable-in-this-session = Source server una
 
 ## crates/ui/src/emoji_picker.rs
 # Context: gif_body
+expression-cache-awaiting-server = Waiting for the server to confirm this item
 emoji-picker-gif-body-favorites = Favorites
 # Context: gif_body
 emoji-picker-gif-body-gif-search-needs-a-connected-session = GIF search needs a connected session.

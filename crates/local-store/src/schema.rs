@@ -234,6 +234,18 @@ impl LocalStore {
             touched INTEGER NOT NULL CHECK(typeof(touched)='integer'),
             PRIMARY KEY(account,guild,user));
             CREATE INDEX IF NOT EXISTS member_displays_recency ON member_displays(touched,account,guild,user);")?;
+		transaction.execute_batch("CREATE TABLE IF NOT EXISTS expression_catalogs(
+            account TEXT NOT NULL CHECK(length(account) BETWEEN 1 AND 20),
+            guild TEXT NOT NULL CHECK(length(guild) BETWEEN 1 AND 20),
+            emojis TEXT CHECK(emojis IS NULL OR (typeof(emojis)='text' AND length(CAST(emojis AS BLOB))<=2097152)),
+            stickers TEXT CHECK(stickers IS NULL OR (typeof(stickers)='text' AND length(CAST(stickers AS BLOB))<=2097152)),
+            touched INTEGER NOT NULL CHECK(typeof(touched)='integer'),
+            PRIMARY KEY(account,guild));
+            CREATE INDEX IF NOT EXISTS expression_catalogs_recency ON expression_catalogs(touched,account,guild);")?;
+		transaction.execute_batch("CREATE TABLE IF NOT EXISTS sticker_pack_hints(
+            account TEXT PRIMARY KEY NOT NULL CHECK(length(account) BETWEEN 1 AND 20),
+            packs TEXT NOT NULL CHECK(typeof(packs)='text' AND length(CAST(packs AS BLOB))<=2097152),
+            touched INTEGER NOT NULL CHECK(typeof(touched)='integer'));")?;
 		transaction.pragma_update(None, "user_version", version.max(NATIVE_SCHEMA))?;
 		let has_animate_gifs: bool = transaction.query_row(
 			"SELECT EXISTS(SELECT 1 FROM pragma_table_info('reading_preferences') WHERE name='animate_gifs')",

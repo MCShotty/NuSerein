@@ -498,6 +498,10 @@ struct Desktop {
 	/// The recent-page request whose cached window was already asked for.
 	cached_history_request: cache::HistoryLoad,
 	member_cache_load: cache::HistoryLoad,
+	expression_cache: cache::ExpressionCacheSchedule,
+	sticker_pack_cache_load: cache::HistoryLoad,
+	sticker_pack_cache_save: cache::HistoryLoad,
+	gif_cache: cache::GifCache,
 	member_cache_saved: Option<(u64, model::Id, u64)>,
 	/// The saved maximized state still has to be re-applied once the window is shown.
 	maximize_after_show: bool,

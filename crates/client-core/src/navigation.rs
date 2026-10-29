@@ -14,6 +14,7 @@ impl State {
 		}
 		let bytes = self.channels.iter().map(Channel::bytes).sum::<usize>()
 			+ self.guilds.iter().map(Guild::bytes).sum::<usize>()
+			+ self.expression_hints.bytes()
 			+ (self.channels.capacity() - self.channels.len()) * size_of::<Channel>()
 			+ (self.guilds.capacity() - self.guilds.len()) * size_of::<Guild>();
 		self.set_navigation_bytes(bytes);

@@ -1,5 +1,24 @@
 # Local storage policy and audit
 
+## GIF and expression metadata caches (October 29, 2026)
+
+GIF favorite metadata was already stored per account in SQLite. Queue admission now
+retries unsent reads and saves after worker progress, and a delayed first read merges
+early stars and removals before a save can replace the stored list. Ambiguous recovery
+or a failed read leaves the stored list untouched; uncertain writes are not replayed.
+
+Schema 31 adds account-scoped, presentation-only hints for guild emoji and stickers
+and standard sticker packs. Guild catalogs share a 128-row / 8-MiB disk budget;
+standard packs share a 3-MiB disk budget. Cached items cannot authorize sending or
+establish availability, permissions or Nitro eligibility. Current service catalogs,
+including empty results, take precedence. Account changes, lost access, deletion and
+cache clearing fence or remove relevant entries. Individual cached fields are bounded
+and validated before use; malformed cache data does not prevent login.
+
+Actual GIF, emoji and sticker artwork remains in the existing bounded account image
+cache rather than being duplicated in SQLite. Standard-pack and guild previews are
+disabled until current service data confirms them. Sticker recents remain session-only.
+
 ## Conversation and member loading (October 29, 2026)
 
 Schema 30 adds account/server/user-scoped display hints: display name, username and

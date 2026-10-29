@@ -208,6 +208,10 @@ impl Desktop {
 			self.cache_pending = self.cache_pending.saturating_sub(1);
 			self.cached_history_request.capacity_changed();
 			self.member_cache_load.capacity_changed();
+			self.expression_cache.capacity_changed();
+			self.sticker_pack_cache_load.capacity_changed();
+			self.sticker_pack_cache_save.capacity_changed();
+			self.gif_cache.capacity_changed();
 			// Settings are global; account removal/write failures still matter after logout.
 			match &outcome {
 				cache::Outcome::ScopedCleanupFailed { account } => {
@@ -245,6 +249,100 @@ impl Desktop {
 								self.cache_status = "Could not restore cached member names; live lookups remain available";
 							}
 						}
+					}
+					continue;
+				}
+				cache::Outcome::Expressions {
+					account,
+					guild,
+					revision,
+					epoch,
+					result,
+				} => {
+					if generation == self.state.generation
+						&& self
+							.state
+							.user
+							.as_ref()
+							.is_some_and(|user| user.id == *account)
+						&& self
+							.cache
+							.as_ref()
+							.is_some_and(|cache| cache.history.allows(*epoch))
+					{
+						match result {
+							Ok(Some(catalog)) => {
+								if !self.state.hydrate_expression_catalog(
+									*guild,
+									*revision,
+									catalog.clone(),
+								) {
+									self.expression_cache
+										.enqueue(*guild, cache::ExpressionCacheSchedule::LOAD);
+								}
+							}
+							Ok(None) => {}
+							Err(_) => {
+								if !self.cache_error {
+									self.cache_status = "Cached emoji and stickers unavailable; live catalogs remain available";
+								}
+							}
+						}
+					} else if generation == self.state.generation
+						&& self
+							.state
+							.user
+							.as_ref()
+							.is_some_and(|user| user.id == *account)
+					{
+						self.expression_cache
+							.enqueue(*guild, cache::ExpressionCacheSchedule::LOAD);
+					}
+					continue;
+				}
+				cache::Outcome::StickerPackHints {
+					account,
+					revision,
+					epoch,
+					result,
+				} => {
+					if generation == self.state.generation
+						&& self
+							.state
+							.user
+							.as_ref()
+							.is_some_and(|user| user.id == *account)
+						&& self
+							.cache
+							.as_ref()
+							.is_some_and(|cache| cache.history.allows(*epoch))
+					{
+						match result {
+							Ok(Some(packs)) => {
+								if !self
+									.state
+									.hydrate_sticker_pack_hints(*revision, packs.clone())
+								{
+									self.sticker_pack_cache_load
+										.retry((generation, *account, *revision, *epoch));
+								}
+							}
+							Ok(None) => {}
+							Err(_) => {
+								if !self.cache_error {
+									self.cache_status = "Cached sticker packs unavailable; live packs remain available";
+								}
+							}
+						}
+					} else if generation == self.state.generation
+						&& self
+							.state
+							.user
+							.as_ref()
+							.is_some_and(|user| user.id == *account)
+					{
+						self.sticker_pack_cache_load
+							.retry((generation, *account, *revision, *epoch));
 					}
 					continue;
 				}
@@ -425,6 +523,14 @@ impl Desktop {
 				}
 				cache::Outcome::GifFavorites(favorites) => {
 					self.state.restore_gif_favorites(favorites);
+					if self.state.gif_favorites_cache_safe()
+						&& let Some(account) = self.state.user.as_ref().map(|user| user.id)
+					{
+						self.gif_cache.loaded((generation, account));
+					} else if !self.state.gif_favorites_cache_safe() {
+						self.cache_error = true;
+						self.cache_status = "GIF cache could not be safely reconciled; changes remain in this session";
+					}
 				}
 				cache::Outcome::Drafts(drafts) => {
 					for (channel, content) in drafts {
@@ -466,6 +572,8 @@ impl Desktop {
 				| cache::Outcome::HistoryCleared
 				| cache::Outcome::ScopedCleanupFailed { .. }
 				| cache::Outcome::Members { .. }
+				| cache::Outcome::Expressions { .. }
+				| cache::Outcome::StickerPackHints { .. }
 				| cache::Outcome::Failed { .. }
 				| cache::Outcome::AccountPresences(_)
 				| cache::Outcome::AccountPresenceSaved(_) => unreachable!(),
@@ -696,6 +804,16 @@ impl Desktop {
 					.soundboard(&self.runtime, &self.state, &self.messaging, ctx, effect);
 			}
 			let ready = event.event.ready_navigation().is_some();
+			let expression_joined = match &event.event {
+				Event::GuildJoined(guild) => Some(guild.id),
+				_ => None,
+			};
+			let expression_changed = match &event.event {
+				Event::GuildRemoved(guild) => Some((*guild, None)),
+				Event::GuildEmojis { guild, .. } => Some((*guild, Some(true))),
+				Event::GuildStickers { guild, .. } => Some((*guild, Some(false))),
+				_ => None,
+			};
 			let resumed = matches!(event.event, Event::Resumed);
 			if (ready || resumed)
 				&& let Some(connection) = &self.connection
@@ -835,7 +953,52 @@ impl Desktop {
 			{
 				self.member_cache_saved = None;
 			}
+			let reset_expression = event.event.invalidates_expression_catalogs();
+			let reset_session = event.event.ready_navigation().is_some()
+				|| matches!(
+					event.event,
+					Event::Disconnected | Event::Resumed | Event::Resync
+				);
+			if reset_expression {
+				self.sticker_pack_cache_load = Default::default();
+				self.sticker_pack_cache_save = Default::default();
+			} else {
+				self.sticker_pack_cache_load
+					.observe_session(self.state.generation, &event);
+				self.sticker_pack_cache_save
+					.observe_session(self.state.generation, &event);
+			}
 			self.state.apply(event);
+			if reset_session {
+				self.expression_cache = Default::default();
+			}
+			if let Some(guild) = expression_joined {
+				self.expression_cache.enqueue(
+					guild,
+					cache::ExpressionCacheSchedule::LOAD | cache::ExpressionCacheSchedule::SAVE,
+				);
+			}
+			if let Some((guild, kind)) = expression_changed {
+				if kind.is_some() {
+					self.expression_cache.enqueue(
+						guild,
+						cache::ExpressionCacheSchedule::LOAD | cache::ExpressionCacheSchedule::SAVE,
+					);
+				} else {
+					self.expression_cache.remove(guild);
+				}
+			}
+			let clear_expression = expression_changed.and_then(|(guild, kind)| {
+				let Some(current) = self.state.guild(guild) else {
+					return Some((guild, None));
+				};
+				match kind {
+					None => Some((guild, None)),
+					Some(true) if current.emojis.is_none() => Some((guild, Some(true))),
+					Some(false) if current.stickers.is_none() => Some((guild, Some(false))),
+					_ => None,
+				}
+			});
 			if let Some(message) = takeover_notice {
 				self.messaging
 					.toasts
@@ -894,6 +1057,12 @@ impl Desktop {
 						user: None,
 					});
 				}
+				if let Some((guild, emoji)) = clear_expression {
+					self.invalidate_cache_scope(cache::Operation::ClearExpressions {
+						guild,
+						emoji,
+					});
+				}
 				if let Some((guild, user)) = removed_member {
 					self.invalidate_cache_scope(cache::Operation::RemoveMember {
 						guild,
@@ -911,7 +1080,6 @@ impl Desktop {
 				if !self.messaging.draft_restore_pending {
 					self.messaging.draft_restore_pending =
 						self.queue_cache(cache::Operation::LoadDrafts);
-					self.queue_cache(cache::Operation::LoadGifFavorites);
 				}
 				if !self.messaging.channel_preferences_loaded
 					&& !self.messaging.channel_preferences_load_pending

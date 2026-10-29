@@ -1351,6 +1351,8 @@ impl Desktop {
 			// A click that adopted a hover preload sends no request of its own.
 			self.load_cached_history();
 			self.sync_member_cache();
+			self.sync_expression_cache();
+			self.sync_sticker_pack_cache();
 			if self.messaging.logout_requested {
 				self.messaging.logout_requested = false;
 				self.request_session_end(&ctx, SessionEnd::Logout);
@@ -1419,10 +1421,7 @@ impl Desktop {
 			};
 			self.queue_cache_for(model::Id(0), cache::Operation::SaveAppearance(preference));
 		}
-		if std::mem::take(&mut self.state.gifs.favorites_changed) {
-			let favorites = self.state.gifs.favorites.clone();
-			self.queue_cache(cache::Operation::SaveGifFavorites(favorites));
-		}
+		self.sync_gif_cache();
 		if !self.fixture_only
 			&& !self.state.demo
 			&& let Some(user) = &self.state.user

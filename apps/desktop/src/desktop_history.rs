@@ -2,6 +2,130 @@
 use super::{Desktop, Event, cache, wants_cached_history};
 
 impl Desktop {
+	/// Standard sticker packs are account scoped and available in DMs as well as servers.
+	pub(super) fn sync_sticker_pack_cache(&mut self) {
+		if self.state.demo
+			|| self.fixture_only
+			|| !self.state.gateway_connected
+			|| self.state.auth != client_core::auth::AuthState::Authenticated
+		{
+			return;
+		}
+		let Some(account) = self.state.user.as_ref().map(|user| user.id) else {
+			return;
+		};
+		let Some(cache) = &self.cache else { return };
+		let epoch = cache.history.epoch();
+		if !cache.history.allows(epoch) {
+			return;
+		}
+		let revision = self.state.sticker_pack_cache_revision();
+		let key = (self.state.generation, account, revision, epoch);
+		if !self.state.stickers.loaded
+			&& self.sticker_pack_cache_load.attempt(key)
+			&& self.queue_cache(cache::Operation::LoadStickerPackHints { revision })
+		{
+			self.sticker_pack_cache_load.accepted(key);
+		}
+		if self.cache_pending == 0 && self.sticker_pack_cache_save.attempt(key) {
+			if let Some(packs) = self.state.cached_sticker_pack_hints() {
+				if !packs.valid()
+					|| self.queue_cache(cache::Operation::SaveStickerPackHints(Box::new(packs)))
+				{
+					self.sticker_pack_cache_save.accepted(key);
+				}
+			} else {
+				self.sticker_pack_cache_save.accepted(key);
+			}
+		}
+	}
+	/// Seed once per account/cache epoch, then process coalesced guild updates.
+	pub(super) fn sync_expression_cache(&mut self) {
+		if self.state.demo
+			|| self.fixture_only
+			|| !self.state.gateway_connected
+			|| self.state.auth != client_core::auth::AuthState::Authenticated
+		{
+			return;
+		}
+		let Some(account) = self.state.user.as_ref().map(|user| user.id) else {
+			return;
+		};
+		let Some(cache) = &self.cache else { return };
+		let epoch = cache.history.epoch();
+		if !cache.history.allows(epoch) {
+			return;
+		}
+		let Some(channel) = self.state.selected.filter(|id| self.state.can_view(*id)) else {
+			return;
+		};
+		self.expression_cache.scope(
+			(self.state.generation, account, epoch),
+			self.state.guilds.iter().map(|guild| guild.id),
+		);
+		self.expression_cache.observe_epoch(
+			self.state.expression_cache_epoch(),
+			self.state.guilds.iter().map(|guild| guild.id),
+		);
+		self.expression_cache
+			.selected(self.state.channel(channel).and_then(|c| c.guild));
+		while let Some((guild, operation)) = self.expression_cache.next() {
+			let Some(current) = self.state.guild(guild) else {
+				self.expression_cache.remove(guild);
+				continue;
+			};
+			let revision = self.state.expression_guild_cache_revision(guild);
+			let work = if operation == cache::ExpressionCacheSchedule::LOAD {
+				if current.emojis.is_some() && current.stickers.is_some() {
+					None
+				} else {
+					Some(cache::Operation::LoadExpressions { guild, revision })
+				}
+			} else {
+				self.state
+					.cached_expression_catalog(guild)
+					.filter(model::ExpressionCatalog::valid)
+					.map(|catalog| cache::Operation::SaveExpressions(Box::new(catalog)))
+			};
+			if let Some(work) = work {
+				if !self.queue_cache(work) {
+					self.expression_cache.blocked();
+					return;
+				}
+				self.expression_cache.completed(guild, operation);
+				// Each worker completion wakes the next job; avoid flooding the shared queue.
+				return;
+			}
+			self.expression_cache.completed(guild, operation);
+		}
+	}
+	/// Restore once per account and retry unsent work only after storage makes progress.
+	pub(super) fn sync_gif_cache(&mut self) {
+		if self.state.demo || self.fixture_only {
+			self.state.gifs.favorites_changed = false;
+			return;
+		}
+		if self.cache.is_none() || self.state.auth != client_core::auth::AuthState::Authenticated {
+			return;
+		}
+		let Some(account) = self.state.user.as_ref().map(|user| user.id) else {
+			return;
+		};
+		let scope = (self.state.generation, account);
+		let key = (scope.0, scope.1, 0, 0);
+		if self.gif_cache.load.attempt(key) && self.queue_cache(cache::Operation::LoadGifFavorites)
+		{
+			self.gif_cache.load.accepted(key);
+		}
+		if self.state.gifs.favorites_changed && self.gif_cache.may_save(scope) {
+			let favorites = self.state.gifs.favorites.clone();
+			if self.queue_cache(cache::Operation::SaveGifFavorites(favorites)) {
+				self.state.gifs.favorites_changed = false;
+			} else {
+				self.gif_cache.reject_save(scope);
+			}
+		}
+	}
 	/// Shows the selected conversation's cached window while its recent page loads.
 	pub(super) fn load_cached_history(&mut self) {
 		let (state, request) = (&self.state, self.state.request);
@@ -98,9 +222,14 @@ impl Desktop {
 			return false;
 		}
 		if let Some(cache) = &self.cache {
+			let retryable = cache::coalesced_retry(&operation);
 			let read = matches!(
 				&operation,
-				cache::Operation::LoadChannel { .. } | cache::Operation::LoadMembers { .. }
+				cache::Operation::LoadChannel { .. }
+					| cache::Operation::LoadMembers { .. }
+					| cache::Operation::LoadExpressions { .. }
+					| cache::Operation::LoadStickerPackHints { .. }
+					| cache::Operation::LoadGifFavorites
 			);
 			if matches!(
 				operation,
@@ -118,7 +247,7 @@ impl Desktop {
 				}
 				return true;
 			} else {
-				if !read {
+				if !read && !retryable {
 					self.cache_error = true;
 					self.cache_status = "Local storage queue full; some changes are not saved";
 				}

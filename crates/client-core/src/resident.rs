@@ -98,6 +98,7 @@ impl State {
 
 	/// Drop dormant previews when disk history is cleared; preserve the visible conversation.
 	pub fn clear_cached_history(&mut self) {
+		self.clear_expression_hints();
 		self.resident = Windows::default();
 		self.reply_previews.clear();
 		self.history_navigation.clear_back();

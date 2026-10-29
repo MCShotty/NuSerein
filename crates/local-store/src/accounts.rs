@@ -152,6 +152,8 @@ impl LocalStore {
 		for table in [
 			"messages",
 			"member_displays",
+			"expression_catalogs",
+			"sticker_pack_hints",
 			"channels",
 			"history_starts",
 			"drafts",

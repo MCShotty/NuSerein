@@ -19,6 +19,9 @@ impl State {
 		if envelope.generation != self.generation {
 			return;
 		}
+		if !matches!(envelope.event, Event::Message(_) | Event::Typing(_)) {
+			self.invalidate_expression_event(&envelope.event);
+		}
 		self.invalidate_reply_previews(&envelope.event);
 		if envelope.event.changes_access()
 			|| matches!(&envelope.event, Event::Disconnected | Event::Resumed)

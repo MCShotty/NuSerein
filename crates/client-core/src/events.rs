@@ -365,6 +365,25 @@ impl Event {
 				| Event::RecipientRemoved { .. }
 		)
 	}
+	/// Session or membership changes which retire cached guild expression hints.
+	/// Channel and thread access is checked again when hints are viewed or loaded.
+	pub fn invalidates_expression_catalogs(&self) -> bool {
+		matches!(
+			self,
+			Event::Ready { .. }
+				| Event::Startup(_)
+				| Event::Disconnected
+				| Event::Resync
+				| Event::PermissionsChanged
+				| Event::Permissions(_)
+				| Event::GuildRemoved(_)
+				| Event::ServerAction(server_actions::Event::Written {
+					action: server_actions::Action::Leave(_) | server_actions::Action::Delete(_),
+					result: Ok(None),
+					..
+				})
+		)
+	}
 
 	/// Admission estimate for heap-owned fields; rejects oversized items before entering the UI queue.
 	pub fn bytes(&self) -> usize {
