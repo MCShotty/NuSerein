@@ -19,6 +19,14 @@ Actual GIF, emoji and sticker artwork remains in the existing bounded account im
 cache rather than being duplicated in SQLite. Standard-pack and guild previews are
 disabled until current service data confirms them. Sticker recents remain session-only.
 
+Server display hints are also account-scoped: SQLite retains at most 4,096 server
+names and icon identifiers within a 2-MiB budget. Icon artwork remains in the existing
+image cache. Hints fill missing fields only for servers confirmed by the current
+session; live names, icon changes and explicit icon removals take precedence. These
+records do not establish membership or permissions and are removed by account or
+cache cleanup. Discord normally supplies these fields in its initial snapshot, so
+this cache primarily helps when display metadata is missing rather than before login.
+
 ## Conversation and member loading (October 29, 2026)
 
 Schema 30 adds account/server/user-scoped display hints: display name, username and
