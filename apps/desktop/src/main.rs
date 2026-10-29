@@ -498,7 +498,7 @@ struct Desktop {
 	/// The recent-page request whose cached window was already asked for.
 	cached_history_request: cache::HistoryLoad,
 	member_cache_load: cache::HistoryLoad,
-	member_cache_saved: Option<(u64, u64)>,
+	member_cache_saved: Option<(u64, model::Id, u64)>,
 	/// The saved maximized state still has to be re-applied once the window is shown.
 	maximize_after_show: bool,
 	monitor_geometry: Option<(Option<egui::Rect>, Option<f32>, Option<egui::Vec2>)>,

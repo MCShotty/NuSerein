@@ -45,7 +45,11 @@ impl Desktop {
 		{
 			self.member_cache_load.accepted(key);
 		}
-		let changed = (self.state.generation, self.state.member_display_revision());
+		let changed = (
+			self.state.generation,
+			guild,
+			self.state.member_display_revision(),
+		);
 		// Coalesce identity snapshots behind existing storage work, keeping at most one
 		// pending copy. Worker completion wakes the next pass without an idle timer.
 		if self.member_cache_saved != Some(changed) && self.cache_pending == 0 {
