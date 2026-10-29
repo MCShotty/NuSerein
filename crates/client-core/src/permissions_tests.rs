@@ -2387,3 +2387,113 @@ fn viewport_member_watch_prioritizes_old_visible_authors_without_repeated_change
 	state.request_author_members(&[Id(90002)]);
 	assert_ne!(state.member_watch_revision(), revision);
 }
+
+fn member_reply_after_disk_hint(role_update: bool) {
+	for slot in 0..=1 {
+		let mut state = state();
+		if slot == 1 {
+			apply(
+				&mut state,
+				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					guild: Id(10),
+					user: Id(8),
+					profile: None,
+					nick: Patch::Value("Other live member".into()),
+					roles: Patch::Absent,
+					departed: false,
+				})),
+			);
+		}
+		let permissions = state.can_send(Id(20));
+		let disk_started = state.member_display_revision();
+		let command = if slot == 0 {
+			state.search_members(Id(20), "Current", slot)
+		} else {
+			state.request_author_members(&[Id(7)])
+		};
+		let Some(Command::MemberSearch(request)) = command else {
+			panic!("synthetic member query must start");
+		};
+		state.hydrate_member_displays(
+			Id(10),
+			disk_started,
+			vec![model::MemberDisplay {
+				guild: Id(10),
+				user: Id(7),
+				name: "Old display name".into(),
+				username: Some("old_username".into()),
+				nick: Some("Old cached nickname".into()),
+			}],
+		);
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Old cached nickname"))
+		);
+		assert_eq!(state.member_display_revision(), disk_started);
+		if role_update {
+			apply(
+				&mut state,
+				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					guild: Id(10),
+					user: Id(7),
+					profile: None,
+					nick: Patch::Absent,
+					roles: Patch::Value(vec![]),
+					departed: false,
+				})),
+			);
+		}
+		let mut fresh = cached_person(7, "Current nickname");
+		fresh.user.name = "Current display name".into();
+		fresh.user.username = Some("current_username".into());
+		apply(
+			&mut state,
+			Event::MemberSearch {
+				request,
+				result: Ok(vec![fresh]),
+			},
+		);
+		let row = &state.member_search[slot].rows[0];
+		assert_eq!(
+			row.nick.as_deref(),
+			Some("Current nickname"),
+			"an older disk hint must not acquire a newer observation revision"
+		);
+		assert_eq!(row.user.name, "Current display name");
+		assert_eq!(row.user.username.as_deref(), Some("current_username"));
+		assert_eq!(row.roles, if role_update { vec![] } else { vec![Id(11)] });
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Current nickname"))
+		);
+		// Once the query validates the hint, a later partial update may preserve its fields.
+		apply(
+			&mut state,
+			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				guild: Id(10),
+				user: Id(7),
+				profile: None,
+				nick: Patch::Absent,
+				roles: Patch::Value(vec![Id(11)]),
+				departed: false,
+			})),
+		);
+		let identity = state.display_member(Id(20), Id(7)).unwrap();
+		assert_eq!(identity.user.name, "Current display name");
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Current nickname"))
+		);
+		assert_eq!(state.can_send(Id(20)), permissions);
+	}
+}
+
+#[test]
+fn inflight_member_reply_overrides_older_disk_hint() {
+	member_reply_after_disk_hint(false);
+}
+
+#[test]
+fn inflight_member_reply_keeps_new_roles_without_promoting_disk_names() {
+	member_reply_after_disk_hint(true);
+}

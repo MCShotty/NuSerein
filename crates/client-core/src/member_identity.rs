@@ -106,6 +106,14 @@ impl Labels {
 		if changed {
 			self.revision = self.revision.wrapping_add(1);
 		}
+		for (revision, entry) in &mut self.entries {
+			if *revision == 0
+				&& entry.guild == guild
+				&& rows.iter().any(|row| row.user.id == entry.user)
+			{
+				*revision = self.revision;
+			}
+		}
 		self.trim_members();
 	}
 
@@ -127,15 +135,21 @@ impl Labels {
 			.find(|(_, row)| row.guild == guild && row.user == user)
 			.map(|(_, row)| row)
 	}
+	/// Disk hints predate every live observation, including queries already in flight.
+	fn insert_hint(&mut self, update: MemberIdentity) {
+		self.bytes += update.bytes();
+		self.entries.push_back((0, update));
+	}
 	fn insert(&mut self, mut update: MemberIdentity) {
 		if let Some(index) = self
 			.entries
 			.iter()
 			.position(|(_, old)| old.guild == update.guild && old.user == update.user)
 		{
-			let (_, old) = self.entries.remove(index).unwrap();
+			let (revision, old) = self.entries.remove(index).unwrap();
 			self.bytes -= old.bytes();
-			if !update.departed && !old.departed {
+			// A partial live update must not promote missing fields from an older disk hint.
+			if revision != 0 && !update.departed && !old.departed {
 				if update.profile.is_none() {
 					update.profile = old.profile;
 				}
@@ -390,7 +404,7 @@ impl State {
 			if self.member_labels.overlay_bytes() + reserve + update.bytes() > MAX_BYTES {
 				break;
 			}
-			self.member_labels.insert(update);
+			self.member_labels.insert_hint(update);
 			changed = true;
 		}
 		if !changed {
