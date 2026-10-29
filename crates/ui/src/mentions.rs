@@ -1689,10 +1689,24 @@ mod tests {
 		state.member_search[0].rows[0].nick = None;
 		assert_eq!(label(&state), "@Account90001");
 		state.member_search[0].request.as_mut().unwrap().guild = Id(99999);
-		assert!(state.display_member(channel, target).is_none());
+		let mut injected = state.member_search[0].rows[0].clone();
+		injected.user.id = Id(999900);
+		state.member_search[0].rows.push(injected);
+		assert!(state.display_member(channel, Id(999900)).is_none());
+		assert_eq!(
+			state
+				.display_member(channel, target)
+				.unwrap()
+				.nick
+				.as_deref(),
+			Some("Shared nickname")
+		);
 		state.member_search[0].request.as_mut().unwrap().guild =
 			state.channel(channel).unwrap().guild.unwrap();
 		state.member_search[0].request.as_mut().unwrap().channel = Id(99999);
+		assert!(state.display_member(channel, Id(999900)).is_none());
+		assert!(state.display_member(channel, target).is_some());
+		state.channels.retain(|row| row.id != channel);
 		assert!(state.display_member(channel, target).is_none());
 	}
 
@@ -1891,6 +1905,19 @@ mod tests {
 			"@Server nickname"
 		);
 		state.member_search = Default::default();
+		assert_eq!(
+			state
+				.display_member(channel, Id(90003))
+				.unwrap()
+				.nick
+				.as_deref(),
+			Some("Server nickname")
+		);
+		assert!(state.request_author_members(&[Id(90003)]).is_none());
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Unavailable(channel),
+		});
 		assert!(state.display_member(channel, Id(90003)).is_none());
 	}
 
