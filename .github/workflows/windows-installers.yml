@@ -15,7 +15,7 @@ jobs:
   installer:
     if: github.repository == 'MCShotty/Serein'
     runs-on: windows-latest
-    timeout-minutes: 80
+    timeout-minutes: 100
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -23,30 +23,12 @@ jobs:
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       PACKAGE_ARCH: X64
     steps:
-    - name: Verify the exact source and reuse its completed Windows gates
+    - name: Verify source identity before building
       shell: pwsh
       run: |
         if ($env:SOURCE_RUN -notmatch '^\d+$' -or $env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source run or commit' }
         $run = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SOURCE_COMMIT -or $run.name -ne 'native-client') { throw 'Source run does not match the requested commit' }
-        $jobs = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN/jobs?per_page=100" | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot verify source jobs' }
-        $nativeJobs = @($jobs.jobs | Where-Object { $_.name -eq 'native (windows-latest)' })
-        if ($nativeJobs.Count -ne 1) { throw 'Expected one native Windows x64 source job' }
-        $native = $nativeJobs[0]
-        $package = @($native.steps | Where-Object { $_.name -eq 'Package app without demo or developer features' })
-        if ($package.Count -ne 1) { throw 'Missing canonical source packaging stage' }
-        $package = $package[0]
-        $failed = @($native.steps | Where-Object { $_.conclusion -eq 'failure' })
-        if ($native.conclusion -ne 'success' -and ($native.conclusion -ne 'failure' -or $failed.Count -ne 1 -or $failed[0].name -ne $package.name)) { throw 'Source job failed outside packaging' }
-        $before = @($native.steps | Where-Object { $_.number -lt $package.number })
-        if (@($before | Where-Object { $_.conclusion -notin @('success', 'skipped') }).Count -ne 0) { throw 'A preceding native source gate did not pass' }
-        $required = @('Check production build without development fixtures', 'Run cargo xtask check', 'Windows capture surfaces and retirement (synthetic, no screen capture)', 'Run cargo replay', 'Run cargo replay --loading', 'Run cargo replay --soak 120')
-        foreach ($name in $required) {
-          $step = @($before | Where-Object { $_.name -eq $name })
-          if ($step.Count -ne 1 -or $step[0].conclusion -ne 'success') { throw "Required source gate did not pass: $name" }
-        }
-        @{source=$env:SOURCE_COMMIT; sourceRun=$env:SOURCE_RUN; sourceJob=$native.id; gates=@($before | Select-Object name,conclusion)} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:RUNNER_TEMP 'reused-source-gates.json')
     - uses: actions/checkout@v7.0.1
       with:
         ref: ${{ env.SOURCE_COMMIT }}
@@ -179,6 +161,36 @@ jobs:
           if ($speech.ExitCode -ne 0) { throw "Cached speech worker failed: $($speech.ExitCode)" }
           @{revision=$env:SOURCE_COMMIT; run='cached'; launchExit=$probe.ExitCode; bytes=(Get-Item $archive).Length; sha256=(Get-FileHash $archive -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content "$checkDir/result.json"
         } finally { $env:PATH = $buildPath }
+    - name: Verify the exact source and reuse its completed Windows gates
+      shell: pwsh
+      run: |
+        if ($env:SOURCE_RUN -notmatch '^\d+$' -or $env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source run or commit' }
+        $run = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SOURCE_COMMIT -or $run.name -ne 'native-client') { throw 'Source run does not match the requested commit' }
+        $native = $null
+        for ($attempt = 0; $attempt -lt 150; $attempt++) {
+          $jobs = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN/jobs?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify source jobs' }
+          $nativeJobs = @($jobs.jobs | Where-Object { $_.name -eq 'native (windows-latest)' })
+          if ($nativeJobs.Count -ne 1) { throw 'Expected one native Windows x64 source job' }
+          $native = $nativeJobs[0]
+          if ($native.status -eq 'completed') { break }
+          if ($attempt -eq 149) { throw 'Timed out waiting for the native Windows source gates' }
+          Start-Sleep -Seconds 20
+        }
+        $package = @($native.steps | Where-Object { $_.name -eq 'Package app without demo or developer features' })
+        if ($package.Count -ne 1) { throw 'Missing canonical source packaging stage' }
+        $package = $package[0]
+        $failed = @($native.steps | Where-Object { $_.conclusion -eq 'failure' })
+        if ($native.conclusion -ne 'success' -and ($native.conclusion -ne 'failure' -or $failed.Count -ne 1 -or $failed[0].name -ne $package.name)) { throw 'Source job failed outside packaging' }
+        $before = @($native.steps | Where-Object { $_.number -lt $package.number })
+        if (@($before | Where-Object { $_.conclusion -notin @('success', 'skipped') }).Count -ne 0) { throw 'A preceding native source gate did not pass' }
+        $required = @('Check production build without development fixtures', 'Run cargo xtask check', 'Windows capture surfaces and retirement (synthetic, no screen capture)', 'Run cargo replay', 'Run cargo replay --loading', 'Run cargo replay --soak 120')
+        foreach ($name in $required) {
+          $step = @($before | Where-Object { $_.name -eq $name })
+          if ($step.Count -ne 1 -or $step[0].conclusion -ne 'success') { throw "Required source gate did not pass: $name" }
+        }
+        @{source=$env:SOURCE_COMMIT; sourceRun=$env:SOURCE_RUN; sourceJob=$native.id; gates=@($before | Select-Object name,conclusion)} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:RUNNER_TEMP 'reused-source-gates.json')
     - name: Compile the installer from the matching source
       shell: pwsh
       run: |
