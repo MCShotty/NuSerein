@@ -42,12 +42,27 @@ pub struct View {
 	pub rows: Vec<Member>,
 	/// Recently resolved labels for the same conversation, bounded like one search page.
 	pub retained: Vec<Member>,
+	/// Fields the service omitted from the retained search rows, rather than cleared.
+	pub(crate) missing_identity: Vec<model::MissingMemberFields>,
 	pub finished: bool,
 	pub error: Option<&'static str>,
 	pub cooldown_until: Option<std::time::Instant>,
 	/// Avoid repaint-driven retries while still allowing an incomplete batch to recover.
 	pub retry_after: Option<std::time::Instant>,
 	pub identity_revision: u64,
+}
+impl View {
+	pub(crate) fn trim_missing_identity(&mut self) {
+		self.missing_identity.retain(|fields| {
+			(fields.nick || fields.roles)
+				&& self
+					.rows
+					.iter()
+					.chain(&self.retained)
+					.any(|member| member.user.id == fields.user)
+		});
+		self.missing_identity.shrink_to(2 * LIMIT);
+	}
 }
 impl State {
 	pub(crate) fn refresh_member_labels(&mut self, list: &model::MemberList) {
@@ -77,7 +92,18 @@ impl State {
 			for rows in [&mut view.rows, &mut view.retained] {
 				for member in rows.iter_mut() {
 					if let Some(updated) = updates.get(&member.user.id) {
-						*member = (*updated).clone();
+						let fields = list
+							.missing_identity
+							.iter()
+							.find(|fields| fields.user == member.user.id);
+						let mut updated = (*updated).clone();
+						if fields.is_some_and(|fields| fields.nick) {
+							updated.nick.clone_from(&member.nick);
+						}
+						if fields.is_some_and(|fields| fields.roles) {
+							updated.roles.clone_from(&member.roles);
+						}
+						*member = updated;
 					}
 				}
 				let mut bytes = rows.iter().map(Member::bytes).sum::<usize>();
@@ -86,7 +112,60 @@ impl State {
 				}
 				rows.shrink_to(LIMIT);
 			}
+			for fields in &mut view.missing_identity {
+				if updates.contains_key(&fields.user) {
+					let missing = list
+						.missing_identity
+						.iter()
+						.find(|row| row.user == fields.user);
+					fields.nick &= missing.is_some_and(|row| row.nick);
+					fields.roles &= missing.is_some_and(|row| row.roles);
+				}
+			}
+			view.trim_missing_identity();
 		}
+	}
+
+	/// Search results are presentation hints; absent fields must not clear known values.
+	fn known_searched_member(
+		&self,
+		channel: Id,
+		user: Id,
+		missing: impl Fn(&model::MissingMemberFields) -> bool,
+	) -> Option<&Member> {
+		let guild = self.channel(channel)?.guild?;
+		if !self.can_view(channel) {
+			return None;
+		}
+		for retained in [false, true] {
+			for view in &self.member_search {
+				if view
+					.request
+					.as_ref()
+					.is_none_or(|request| request.channel != channel || request.guild != guild)
+				{
+					continue;
+				}
+				let rows = if retained { &view.retained } else { &view.rows };
+				if let Some(member) = rows.iter().find(|member| member.user.id == user)
+					&& !view
+						.missing_identity
+						.iter()
+						.any(|fields| fields.user == user && missing(fields))
+				{
+					return Some(member);
+				}
+			}
+		}
+		None
+	}
+	pub(crate) fn searched_member_nickname(&self, channel: Id, user: Id) -> Option<Option<&str>> {
+		self.known_searched_member(channel, user, |fields| fields.nick)
+			.map(|member| member.nick.as_deref())
+	}
+	pub(crate) fn searched_member_roles(&self, channel: Id, user: Id) -> Option<&[Id]> {
+		self.known_searched_member(channel, user, |fields| fields.roles)
+			.map(|member| member.roles.as_slice())
 	}
 
 	/// Presentation metadata only; callers must use the permission state to authorize actions.
@@ -171,11 +250,11 @@ impl State {
 			return None;
 		}
 		let previous = &mut self.member_search[slot];
-		let retained = if previous
+		let same_scope = previous
 			.request
 			.as_ref()
-			.is_some_and(|old| old.channel == channel && old.guild == guild)
-		{
+			.is_some_and(|old| old.channel == channel && old.guild == guild);
+		let retained = if same_scope {
 			let mut retained = std::mem::take(&mut previous.retained);
 			for member in std::mem::take(&mut previous.rows) {
 				retained.retain(|old| old.user.id != member.user.id);
@@ -191,8 +270,16 @@ impl State {
 		} else {
 			vec![]
 		};
+		let mut missing_identity = if same_scope {
+			std::mem::take(&mut previous.missing_identity)
+		} else {
+			vec![]
+		};
+		missing_identity
+			.retain(|fields| retained.iter().any(|member| member.user.id == fields.user));
 		self.member_search[slot] = View {
 			retained,
+			missing_identity,
 			identity_revision: self.member_labels.revision(),
 			request: Some(request.clone()),
 			..Default::default()
@@ -242,7 +329,7 @@ impl State {
 			nonce: self.member_search_nonce,
 			slot: 1,
 		};
-		let (rows, retained) = if view
+		let (rows, retained, missing_identity) = if view
 			.request
 			.as_ref()
 			.is_some_and(|old| old.channel == channel && old.guild == guild)
@@ -250,13 +337,15 @@ impl State {
 			(
 				std::mem::take(&mut self.member_search[1].rows),
 				std::mem::take(&mut self.member_search[1].retained),
+				std::mem::take(&mut self.member_search[1].missing_identity),
 			)
 		} else {
-			(vec![], vec![])
+			(vec![], vec![], vec![])
 		};
 		self.member_search[1] = View {
 			rows,
 			retained,
+			missing_identity,
 			identity_revision: self.member_labels.revision(),
 			request: Some(request.clone()),
 			..Default::default()
@@ -424,10 +513,20 @@ impl State {
 					view.retained.retain(|old| old.user.id != member.user.id);
 					view.retained.push(member);
 				}
+				view.retained
+					.retain(|old| !view.rows.iter().any(|member| member.user.id == old.user.id));
+				view.missing_identity
+					.retain(|fields| !view.rows.iter().any(|member| member.user.id == fields.user));
+				view.missing_identity.extend(
+					missing.into_iter().filter(|fields| {
+						view.rows.iter().any(|member| member.user.id == fields.user)
+					}),
+				);
 				let mut bytes = view.retained.iter().map(Member::bytes).sum::<usize>();
 				while view.retained.len() > LIMIT || bytes > MAX_BYTES {
 					bytes -= view.retained.remove(0).bytes();
 				}
+				view.trim_missing_identity();
 			}
 			Ok(_) => {
 				self.member_search[request.slot].error =

@@ -2783,9 +2783,83 @@ fn partial_query_keeps_a_verified_nickname_when_other_fields_change() {
 	);
 	assert!(state.member_search[0].rows[0].roles.is_empty());
 	assert_eq!(
+		state.presentation_member_roles(Id(20), Id(7)),
+		Some(&[][..])
+	);
+	assert_eq!(
 		state.cached_member_displays(Id(10))[0].nick.as_deref(),
 		Some("Known nickname")
 	);
+}
+
+#[test]
+fn partial_search_fields_remain_unknown_until_a_live_update_fills_them() {
+	let mut state = state();
+	let identity = model::MemberIdentity {
+		guild: Id(10),
+		user: Id(7),
+		profile: None,
+		avatar: Patch::Absent,
+		nick: Patch::Value("Known nickname".into()),
+		roles: Patch::Value(vec![Id(11)]),
+		departed: false,
+	};
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(identity.clone())),
+	);
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "Known", 0) else {
+		panic!("search")
+	};
+	let mut partial = cached_person(7, "unused");
+	partial.nick = None;
+	partial.roles.clear();
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![partial],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				nick: true,
+				roles: true,
+			}],
+		},
+	);
+	assert_eq!(state.searched_member_nickname(Id(20), Id(7)), None);
+	assert_eq!(state.searched_member_roles(Id(20), Id(7)), None);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Known nickname"))
+	);
+	assert_eq!(state.presentation_member_roles(Id(20), Id(7)), None);
+
+	let _ = state.search_members(Id(20), "Different", 0).unwrap();
+	assert_eq!(state.searched_member_nickname(Id(20), Id(7)), None);
+	apply(&mut state, Event::MemberIdentity(Box::new(identity)));
+	assert_eq!(
+		state.searched_member_nickname(Id(20), Id(7)),
+		Some(Some("Known nickname"))
+	);
+	assert_eq!(
+		state.searched_member_roles(Id(20), Id(7)),
+		Some(&[Id(11)][..])
+	);
+
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			avatar: Patch::Absent,
+			nick: Patch::Null,
+			roles: Patch::Value(vec![]),
+			departed: false,
+		})),
+	);
+	assert_eq!(state.searched_member_nickname(Id(20), Id(7)), Some(None));
+	assert_eq!(state.searched_member_roles(Id(20), Id(7)), Some(&[][..]));
 }
 
 #[test]

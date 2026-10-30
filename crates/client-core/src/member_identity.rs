@@ -747,9 +747,12 @@ impl State {
 			}) {
 			return Some(member.nick.as_deref());
 		}
-		self.member_labels
-			.verified_member(guild, user)
-			.map(|member| member.nick.as_deref())
+		self.searched_member_nickname(channel, user)
+			.or_else(|| {
+				self.member_labels
+					.verified_member(guild, user)
+					.map(|member| member.nick.as_deref())
+			})
 			.or_else(|| {
 				self.timeline
 					.iter()
@@ -782,9 +785,11 @@ impl State {
 			}) {
 			return Some(member.roles.as_slice());
 		}
-		self.member_labels
-			.verified_member(guild, user)
-			.map(|member| member.roles.as_slice())
+		self.searched_member_roles(channel, user).or_else(|| {
+			self.member_labels
+				.verified_member(guild, user)
+				.map(|member| member.roles.as_slice())
+		})
 	}
 	pub fn observed_member_users(
 		&self,
@@ -1012,38 +1017,67 @@ impl State {
 		}
 		// A later live observation can fill fields omitted by the current sidebar
 		// snapshot, even when the value itself is unchanged.
-		fn resolve_list_fields(list: &mut model::MemberList, update: &MemberIdentity) {
+		fn resolve_list_fields(list: &mut model::MemberList, update: &MemberIdentity) -> bool {
 			if list.guild != Some(update.guild) {
-				return;
+				return false;
 			}
+			let mut resolved = false;
 			list.missing_identity.retain_mut(|fields| {
 				if fields.user != update.user {
 					return true;
 				}
 				if update.departed {
+					resolved = true;
 					return false;
 				}
+				let previous = (fields.nick, fields.roles);
 				fields.nick &= matches!(update.nick, Patch::Absent);
 				fields.roles &= matches!(update.roles, Patch::Absent);
+				resolved |= previous != (fields.nick, fields.roles);
 				fields.nick || fields.roles
 			});
+			resolved
 		}
+		let mut resolved_fields = false;
 		if let Some(list) = &mut self.members {
-			resolve_list_fields(list, &update);
+			resolved_fields |= resolve_list_fields(list, &update);
 		}
 		if let Some(parked) = &mut self.parked_members {
-			resolve_list_fields(&mut parked.list, &update);
+			resolved_fields |= resolve_list_fields(&mut parked.list, &update);
 		}
-		if self
-			.member_labels
-			.get(update.guild, update.user)
-			.is_some_and(|old| {
-				old.departed == update.departed
-					&& (update.profile.is_none() || update.profile == old.profile)
-					&& (matches!(update.nick, Patch::Absent) || update.nick == old.nick)
-					&& (matches!(update.roles, Patch::Absent) || update.roles == old.roles)
-					&& (matches!(update.avatar, Patch::Absent) || update.avatar == old.avatar)
-			}) {
+		for view in &mut self.member_search {
+			if view
+				.request
+				.as_ref()
+				.is_some_and(|request| request.guild == update.guild)
+			{
+				view.missing_identity.retain_mut(|fields| {
+					if fields.user != update.user {
+						return true;
+					}
+					if update.departed {
+						resolved_fields = true;
+						return false;
+					}
+					let previous = (fields.nick, fields.roles);
+					fields.nick &= matches!(update.nick, Patch::Absent);
+					fields.roles &= matches!(update.roles, Patch::Absent);
+					resolved_fields |= previous != (fields.nick, fields.roles);
+					fields.nick || fields.roles
+				});
+			}
+		}
+		if !resolved_fields
+			&& self
+				.member_labels
+				.get(update.guild, update.user)
+				.is_some_and(|old| {
+					old.departed == update.departed
+						&& (update.profile.is_none() || update.profile == old.profile)
+						&& (matches!(update.nick, Patch::Absent) || update.nick == old.nick)
+						&& (matches!(update.roles, Patch::Absent) || update.roles == old.roles)
+						&& (matches!(update.avatar, Patch::Absent) || update.avatar == old.avatar)
+				}) {
 			// Still advance observation ordering to fence in-flight search replies, without
 			// relaying unchanged typing metadata through every cached row and layout.
 			self.member_labels.insert(update, false);
@@ -1148,6 +1182,7 @@ impl State {
 						bytes -= rows.remove(0).bytes();
 					}
 				}
+				view.trim_missing_identity();
 			}
 		}
 		if selected_scope {
