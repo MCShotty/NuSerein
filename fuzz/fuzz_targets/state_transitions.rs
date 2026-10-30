@@ -643,6 +643,12 @@ fuzz_target!(|data: &[u8]| {
 						clients: Default::default(),
 					}],
 					missing: vec![],
+					nick_unknown: match op[6] & 3 {
+						0 => vec![],
+						1 => vec![id],
+						2 => vec![Id(0)],
+						_ => vec![id, id],
+					},
 				});
 				assert_eq!(state.selected, selected);
 				assert_eq!(state.request, request);
