@@ -100,10 +100,15 @@ jobs:
       shell: pwsh
       run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
     - name: Rebuild the current packager and remove job-owned package output
-      shell: bash
+      shell: pwsh
       run: |
+        $linker = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64/link.exe'
+        if (-not (Test-Path $linker)) { throw 'MSVC linker is unavailable' }
+        $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $linker
+        "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
         cargo build --locked -p xtask
-        rm -rf dist dist-installer
+        if ($LASTEXITCODE -ne 0) { throw 'Packager build failed' }
+        Remove-Item dist,dist-installer -Recurse -Force -ErrorAction SilentlyContinue
     - name: Package app without demo or developer features
       run: cargo xtask package
     - name: Packaged LavaSRv2 microphone worker (synthetic, no devices)
