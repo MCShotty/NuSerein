@@ -682,15 +682,114 @@ impl State {
 					}),
 			)
 	}
-	pub(crate) fn apply_member_identity(&mut self, mut update: MemberIdentity) {
-		let Some(channel) = self.selected.filter(|channel| self.can_view(*channel)) else {
-			return;
+	/// Bounded live/presentation identities retained for one server, without changing selection.
+	pub(crate) fn force_sync_known_member_ids(&self, guild: Id) -> Vec<Id> {
+		let mut ids: std::collections::BTreeSet<_> = self
+			.member_labels
+			.members
+			.iter()
+			.filter(|(scope, _, _)| *scope == guild)
+			.map(|(_, member, _)| member.user.id)
+			.chain(
+				self.member_labels
+					.entries
+					.iter()
+					.filter(|(_, entry)| entry.guild == guild && !entry.departed)
+					.map(|(_, entry)| entry.user),
+			)
+			.collect();
+		let people = |slots: &[Option<MemberSlot>]| {
+			slots
+				.iter()
+				.filter_map(|slot| match slot {
+					Some(MemberSlot::Person(member)) => Some(member.user.id),
+					_ => None,
+				})
+				.collect::<Vec<_>>()
 		};
+		if let Some(list) = &self.members
+			&& list.guild == Some(guild)
+		{
+			ids.extend(people(&list.slots));
+			for chunk in self.member_chunks.chunks.values() {
+				ids.extend(people(chunk));
+			}
+		}
+		if let Some(parked) = &self.parked_members
+			&& parked.list.guild == Some(guild)
+		{
+			ids.extend(people(&parked.list.slots));
+			for chunk in parked.chunks.chunks.values() {
+				ids.extend(people(chunk));
+			}
+		}
+		for view in &self.member_search {
+			if view
+				.request
+				.as_ref()
+				.is_some_and(|request| request.guild == guild)
+			{
+				ids.extend(
+					view.rows
+						.iter()
+						.chain(&view.retained)
+						.map(|member| member.user.id),
+				);
+			}
+		}
+		if self
+			.selected
+			.and_then(|channel| self.channel(channel))
+			.and_then(|channel| channel.guild)
+			== Some(guild)
+		{
+			ids.extend(
+				self.timeline
+					.iter()
+					.filter(|message| !message.author.webhook)
+					.map(|message| message.author.id),
+			);
+		}
+		if let Some(profile) = &self.profile
+			&& profile.guild == Some(guild)
+		{
+			ids.insert(profile.user);
+		}
+		ids.into_iter().collect()
+	}
+	/// Confirmed service absence retires only this server's identity and scoped consumers.
+	pub(crate) fn retire_force_sync_member(&mut self, guild: Id, user: Id) -> bool {
+		if self.auth != crate::auth::AuthState::Authenticated
+			|| !self.gateway_connected
+			|| self.guild(guild).is_none()
+			|| user.0 == 0
+			|| self.user.as_ref().is_none_or(|own| own.id == user)
+		{
+			return false;
+		}
+		self.apply_member_identity(MemberIdentity {
+			guild,
+			user,
+			profile: None,
+			avatar: Patch::Null,
+			nick: Patch::Null,
+			roles: Patch::Value(vec![]),
+			departed: true,
+		});
+		true
+	}
+	pub(crate) fn apply_member_identity(&mut self, mut update: MemberIdentity) {
+		let channel = self.selected.filter(|channel| self.can_view(*channel));
+		let selected_scope = channel
+			.and_then(|channel| self.channel(channel))
+			.and_then(|channel| channel.guild)
+			== Some(update.guild);
 		// A valid RESUME replays dispatches before its terminal RESUMED event. Account
 		// generation and permission scope still gate these observations while reconnecting.
 		if self.auth != crate::auth::AuthState::Authenticated
 			|| !update.valid()
-			|| self.channel(channel).and_then(|c| c.guild) != Some(update.guild)
+			|| self.guild(update.guild).is_none()
+			|| (!selected_scope && !update.departed)
 		{
 			return;
 		}
@@ -704,7 +803,9 @@ impl State {
 		{
 			update.avatar = avatar.hash.clone().map_or(Patch::Null, Patch::Value);
 		}
-		if let Some(profile) = &mut update.profile {
+		if let Some(channel) = channel.filter(|_| selected_scope)
+			&& let Some(profile) = &mut update.profile
+		{
 			let known = self
 				.display_member(channel, update.user)
 				.map(|member| &member.user)
@@ -861,10 +962,22 @@ impl State {
 				}
 			}
 		}
-		self.timeline.apply_author_identity(&update);
+		if selected_scope {
+			self.timeline.apply_author_identity(&update);
+		}
 		// Only guild-scoped profiles may inherit a member avatar; global profile views
 		// keep the account artwork. Cached cards are updated alongside the open card.
 		let refresh_profile = |profile: &mut model::UserProfile| {
+			if update.departed {
+				if profile
+					.guild
+					.as_ref()
+					.is_some_and(|guild| guild.guild == update.guild)
+				{
+					profile.guild = None;
+				}
+				return;
+			}
 			let Some(guild) = &mut profile.guild else {
 				return;
 			};
@@ -893,7 +1006,7 @@ impl State {
 			refresh_profile(data);
 		}
 		self.profile_cache.update(update.user, refresh_profile);
-		if update.departed {
+		if update.departed && selected_scope {
 			self.typing.remove(update.user);
 		}
 		self.member_labels.insert(update, display_changed);

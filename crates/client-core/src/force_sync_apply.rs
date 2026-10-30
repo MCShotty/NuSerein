@@ -288,8 +288,30 @@ impl State {
 					apply(self, Event::ChannelCreated(thread));
 				}
 			}
-			ReadResult::Members { guild, items, .. } => {
-				self.apply_force_sync_members(guild, &items)
+			ReadResult::Members {
+				guild,
+				items,
+				missing,
+			} => {
+				let returned: std::collections::BTreeSet<_> =
+					items.iter().map(|member| member.user.id).collect();
+				if self.guild(guild).is_none()
+					|| items.len().saturating_add(missing.len())
+						> crate::force_sync_read::MAX_MEMBER_IDS
+					|| returned.len() != items.len()
+					|| items.iter().any(|member| !member.valid())
+					|| missing.iter().any(|id| {
+						id.0 == 0
+							|| returned.contains(id)
+							|| self.user.as_ref().is_some_and(|own| own.id == *id)
+					}) || !missing.windows(2).all(|ids| ids[0] < ids[1])
+				{
+					return false;
+				}
+				self.apply_force_sync_members(guild, &items);
+				for user in missing {
+					self.retire_force_sync_member(guild, user);
+				}
 			}
 			ReadResult::History(_) | ReadResult::Archives(_) => return false,
 		}
@@ -321,6 +343,27 @@ impl State {
 			.into_iter()
 			.any(|bits| self.guild_permission(guild, bits))
 			.then_some(RosterPermit { guild })
+	}
+	/// Only a complete, current, authorized service roster may prove a member's absence.
+	/// The caller fences the account/job and intervening live observations before this step.
+	pub fn reconcile_force_sync_roster(&mut self, guild: Id, users: &[Id]) -> bool {
+		if self.force_sync_roster_permit(guild).is_none()
+			|| users.len() > 250_000
+			|| users.iter().any(|user| user.0 == 0)
+			|| !users.windows(2).all(|pair| pair[0] < pair[1])
+			|| self
+				.user
+				.as_ref()
+				.is_none_or(|own| users.binary_search(&own.id).is_err())
+		{
+			return false;
+		}
+		for user in self.force_sync_known_member_ids(guild) {
+			if users.binary_search(&user).is_err() {
+				self.retire_force_sync_member(guild, user);
+			}
+		}
+		true
 	}
 	/// Applies only live member observations. Authorization remains with the account permission mirror.
 	pub fn apply_force_sync_members(&mut self, guild: Id, members: &[Member]) {
@@ -807,6 +850,190 @@ mod tests {
 		assert!(!state.can_read_history(Id(20)));
 		assert!(state.force_sync_roster_permit(Id(10)).is_none());
 		assert_eq!(state.auth, AuthState::Authenticated);
+	}
+
+	fn cached_person(id: u64, nick: &str) -> Member {
+		Member {
+			user: user(id),
+			nick: Some(nick.into()),
+			roles: vec![Id(11)],
+			status: None,
+			custom_status: None,
+			activities: vec![],
+			clients: Default::default(),
+		}
+	}
+	#[test]
+	fn confirmed_missing_member_clears_nickname_roles_and_suggestions_without_revoking_self() {
+		let mut state = fixture(0);
+		state.freshness = model::Freshness::Fresh;
+		state.history_pending = false;
+		let member = cached_person(7, "Departed nickname");
+		state.apply_force_sync_members(Id(10), std::slice::from_ref(&member));
+		state.request_members().unwrap();
+		let mut list = state.members.clone().unwrap();
+		list.slots = vec![Some(model::MemberSlot::Person(member.clone()))];
+		list.total = 1;
+		list.freshness = model::Freshness::Fresh;
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Members(list),
+		});
+		let Some(crate::Command::MemberSearch(request)) =
+			state.search_members(Id(20), "Departed", 0)
+		else {
+			panic!()
+		};
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberSearch {
+				request,
+				result: Ok(vec![member]),
+			},
+		});
+		let now = std::time::Instant::now();
+		state.observe_typing_at(
+			crate::typing::Signal {
+				channel: Id(20),
+				user: Id(7),
+				timestamp: 100,
+				member: None,
+			},
+			std::time::UNIX_EPOCH + std::time::Duration::from_secs(100),
+			now,
+		);
+		let mirror = state.permissions.guilds[&Id(10)].clone();
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![],
+			missing: vec![Id(7)]
+		}));
+		assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
+		let identity = state.member_identity(Id(20), Id(7)).unwrap();
+		assert!(identity.departed);
+		assert!(matches!(&identity.roles,Patch::Value(roles) if roles.is_empty()));
+		assert!(state.member_search[0].rows.is_empty());
+		assert!(state.member_slot(0).is_none());
+		assert!(state.display_member(Id(20), Id(7)).is_none());
+		assert!(state.typing_users(now).next().is_none());
+		assert_eq!(state.permissions.guilds[&Id(10)], mirror);
+		assert!(state.can_read_history(Id(20)));
+		assert_eq!(state.selected, Some(Id(20)));
+	}
+	#[test]
+	fn incomplete_member_results_never_prove_departures_and_invalid_missing_ids_are_atomic() {
+		let mut state = fixture(0);
+		let member = cached_person(7, "Still a member");
+		state.apply_force_sync_members(Id(10), std::slice::from_ref(&member));
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![],
+			missing: vec![]
+		}));
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Still a member"))
+		);
+		for missing in [
+			vec![Id(7), Id(7)],
+			vec![Id(0)],
+			vec![Id(2)],
+			vec![Id(8), Id(7)],
+		] {
+			assert!(!state.apply_force_sync_result(ReadResult::Members {
+				guild: Id(10),
+				items: vec![],
+				missing
+			}));
+			assert_eq!(
+				state.member_nickname(Id(20), Id(7)),
+				Some(Some("Still a member"))
+			);
+		}
+		assert!(!state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![Member {
+				nick: Some("Conflicting update".into()),
+				..member
+			}],
+			missing: vec![Id(7)]
+		}));
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Still a member"))
+		);
+	}
+	#[test]
+	fn complete_roster_removes_absent_identities_and_requires_own_presence_and_current_permission()
+	{
+		let mut state = fixture(p::KICK_MEMBERS);
+		state.apply_force_sync_members(
+			Id(10),
+			&[cached_person(7, "Departing"), cached_person(8, "Remaining")],
+		);
+		let mirror = state.permissions.guilds[&Id(10)].clone();
+		assert!(!state.reconcile_force_sync_roster(Id(10), &[Id(7), Id(8)]));
+		assert!(!state.reconcile_force_sync_roster(Id(10), &[Id(2), Id(8), Id(8)]));
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Departing"))
+		);
+		assert!(state.reconcile_force_sync_roster(Id(10), &[Id(2), Id(8)]));
+		assert!(state.display_member(Id(20), Id(7)).is_none());
+		assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
+		assert_eq!(
+			state.member_nickname(Id(20), Id(8)),
+			Some(Some("Remaining"))
+		);
+		assert_eq!(state.permissions.guilds[&Id(10)], mirror);
+		assert_eq!(state.selected, Some(Id(20)));
+		let mut ordinary = fixture(0);
+		ordinary.apply_force_sync_members(Id(10), &[cached_person(7, "Ordinary member")]);
+		assert!(!ordinary.reconcile_force_sync_roster(Id(10), &[Id(2)]));
+		assert_eq!(
+			ordinary.member_nickname(Id(20), Id(7)),
+			Some(Some("Ordinary member"))
+		);
+	}
+	#[test]
+	fn off_server_roster_departure_preserves_current_server_identity_and_selection() {
+		let mut state = fixture(p::KICK_MEMBERS);
+		let mut other = state.guilds[0].clone();
+		other.id = Id(11);
+		state.guilds.push(other);
+		let mut permissions = state.permissions.guilds[&Id(10)].clone();
+		permissions.id = Id(11);
+		permissions.roles.as_mut().unwrap()[0].id = Id(11);
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Permissions(crate::permissions::Event::Guild(permissions)),
+		});
+		let mut other_channel = channel(30, None, 0);
+		other_channel.guild = Some(Id(11));
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Permissions(crate::permissions::Event::Channel {
+				channel: Id(30),
+				guild: Some(Id(11)),
+				overwrites: Patch::Value(vec![]),
+			}),
+		});
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::ChannelCreated(other_channel),
+		});
+		state.apply_force_sync_members(Id(10), &[cached_person(7, "Current server nickname")]);
+		state.apply_force_sync_members(Id(11), &[cached_person(7, "Other server nickname")]);
+		assert!(state.display_member(Id(30), Id(7)).is_some());
+		let mirror = state.permissions.guilds[&Id(10)].clone();
+		assert!(state.reconcile_force_sync_roster(Id(11), &[Id(2)]));
+		assert!(state.display_member(Id(30), Id(7)).is_none());
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Current server nickname"))
+		);
+		assert_eq!(state.selected, Some(Id(20)));
+		assert_eq!(state.permissions.guilds[&Id(10)], mirror);
 	}
 
 	#[test]

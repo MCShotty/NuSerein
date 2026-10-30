@@ -469,6 +469,8 @@ pub(super) struct Sync {
 	roster_changed: std::collections::BTreeSet<Id>,
 	roster_write: Option<(u64, Id)>,
 	roster_finished: bool,
+	roster_users: Option<Vec<Id>>,
+	roster_reconcile: Option<u64>,
 	roster_attempt: Option<u64>,
 	roster_sequence: u64,
 }
@@ -1070,6 +1072,7 @@ impl Desktop {
 				items,
 				missing,
 			} => {
+				let missing_on_disk = missing.clone();
 				let completed_members = items.clone();
 				let rows = items
 					.iter()
@@ -1096,6 +1099,7 @@ impl Desktop {
 					request: job.request,
 					guild,
 					rows,
+					missing: missing_on_disk,
 				}) {
 					self.force_sync.roster_write = Some((job.request, guild));
 					let count = completed_members.len();
@@ -1188,6 +1192,46 @@ impl Desktop {
 			cache::Outcome::SyncCheckpoint { epoch, result } => {
 				if self.force_sync_epoch_valid(generation, *epoch) {
 					self.force_sync.restore = result.as_ref().ok().and_then(Clone::clone);
+				}
+				true
+			}
+			cache::Outcome::SyncMembersReconciled {
+				job,
+				request,
+				guild,
+				epoch,
+				result,
+			} => {
+				if generation == self.state.generation
+					&& self.force_sync.roster_reconcile == Some(*request)
+					&& self
+						.force_sync
+						.job
+						.as_ref()
+						.is_some_and(|j| j.id == *job && j.guild() == Some(*guild) && j.step == 7)
+				{
+					self.force_sync.roster_reconcile = None;
+					let mut current = self.force_sync.job.take().expect("job checked");
+					let failure = match result {
+						_ if !self.force_sync_epoch_valid(generation, *epoch) => {
+							Some(Failure::Busy)
+						}
+						Ok(_)
+							if self.force_sync.roster_changed.is_empty()
+								&& self.force_sync.roster_users.as_ref().is_some_and(|users| {
+									self.state.reconcile_force_sync_roster(*guild, users)
+								}) =>
+						{
+							None
+						}
+						Ok(_) => Some(Failure::Busy),
+						Err(error) => {
+							current.record_storage_failure(Stage::Members, *error);
+							Some(Failure::Busy)
+						}
+					};
+					self.finish_force_sync_roster(&mut current, failure);
+					self.force_sync.job = Some(current);
 				}
 				true
 			}
@@ -1477,8 +1521,8 @@ impl Desktop {
 		}
 		// If a complete disk batch was already queued, retire its epoch before a newer
 		// nickname can be overwritten. A completed write is followed by scoped cleanup.
-		let changed_disk =
-			self.force_sync.roster_write.is_some()
+		let changed_disk = self.force_sync.roster_reconcile.is_some()
+			|| self.force_sync.roster_write.is_some()
 				&& self.force_sync.roster_chunk.as_ref().is_some_and(
 					|(_, members, _)| match event {
 						Event::MemberIdentity(update) => members
@@ -1561,6 +1605,8 @@ impl Desktop {
 		self.force_sync.roster_changed.clear();
 		self.force_sync.roster_write = None;
 		self.force_sync.roster_finished = false;
+		self.force_sync.roster_users = None;
+		self.force_sync.roster_reconcile = None;
 		self.force_sync.roster_attempt = None;
 		if let Some(job) = &mut self.force_sync.job {
 			job.roster_started = false;
@@ -1605,6 +1651,9 @@ impl Desktop {
 		if self.force_sync.roster_write.is_some() {
 			return;
 		}
+		if self.force_sync.roster_reconcile.is_some() {
+			return;
+		}
 		if let Some((chunk_guild, members, index)) = self.force_sync.roster_chunk.take() {
 			if chunk_guild != guild {
 				self.finish_force_sync_roster(job, Some(Failure::Protocol));
@@ -1638,6 +1687,7 @@ impl Desktop {
 				request: job.request,
 				guild,
 				rows,
+				missing: Vec::new(),
 			}) {
 				self.force_sync.roster_write = Some((job.request, guild));
 				self.force_sync.roster_chunk = Some((guild, members, end));
@@ -1647,7 +1697,29 @@ impl Desktop {
 			return;
 		}
 		if self.force_sync.roster_finished {
-			self.finish_force_sync_roster(job, None);
+			if !self.force_sync.roster_changed.is_empty() {
+				self.finish_force_sync_roster(job, None);
+				return;
+			}
+			let Some(users) = self.force_sync.roster_users.as_ref() else {
+				self.finish_force_sync_roster(job, Some(Failure::Protocol));
+				return;
+			};
+			if users.len() > 250_000 || users.binary_search(&job.account).is_err() {
+				self.finish_force_sync_roster(job, Some(Failure::Protocol));
+				return;
+			}
+			job.request = job.request.wrapping_add(1);
+			if self.queue_cache(cache::Operation::SyncReconcileMembers {
+				job: job.id,
+				request: job.request,
+				guild,
+				users: users.clone(),
+			}) {
+				self.force_sync.roster_reconcile = Some(job.request);
+			} else {
+				self.finish_force_sync_roster(job, Some(Failure::Busy));
+			}
 			return;
 		}
 		if !job.roster_started {
@@ -1678,7 +1750,7 @@ impl Desktop {
 		use discord_gateway::roster::Event as R;
 		let request = match &event {
 			R::Chunk { request, .. } | R::Failed { request, .. } => *request,
-			R::Finished(request) => *request,
+			R::Finished { request, .. } => *request,
 		};
 		if request.guild != guild || Some(request.job) != self.force_sync.roster_attempt {
 			return;
@@ -1687,8 +1759,9 @@ impl Desktop {
 			R::Chunk { members, .. } => {
 				self.force_sync.roster_chunk = Some((guild, members, 0));
 			}
-			R::Finished(_) => {
+			R::Finished { users, .. } => {
 				self.force_sync.roster_finished = true;
+				self.force_sync.roster_users = Some(users);
 			}
 			R::Failed { failure, .. } => self.finish_force_sync_roster(job, Some(failure)),
 		}

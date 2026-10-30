@@ -7,8 +7,8 @@ const LIMIT: usize = 4096;
 const DISK_LIMIT: usize = 250_000;
 const DISK_BYTES: usize = 256 * 1024 * 1024;
 const MAX_BYTES: usize = 2 * 1024 * 1024;
-// Includes IDs, the DTO, per-row bookkeeping and field allocations; SQLite pages retain
-// their existing independent 64-MiB ceiling.
+// Includes IDs, the DTO, per-row bookkeeping and field allocations. Allocated SQLite
+// pages and journals also share the application-wide cache budget.
 const CHARGE: usize = 256;
 const ROW_CHARGE: &str = "256+length(CAST(name AS BLOB))+coalesce(length(CAST(username AS BLOB)),0)+coalesce(length(CAST(nick AS BLOB)),0)+length(CAST(search_key AS BLOB))";
 
@@ -237,14 +237,143 @@ impl LocalStore {
 		Ok(entries)
 	}
 	pub fn remove_member_display(&mut self, account: Id, guild: Id, user: Id) -> Result<()> {
-		if [account, guild, user].iter().any(|id| id.0 == 0) {
+		self.remove_member_displays(account, guild, &[user])
+	}
+	/// Confirmed departures/404s only; omission from a partial lookup is not a departure.
+	pub fn remove_member_displays(&mut self, account: Id, guild: Id, users: &[Id]) -> Result<()> {
+		if account.0 == 0 || guild.0 == 0 || users.len() > 100 || users.iter().any(|id| id.0 == 0) {
 			return Err(StoreError::Capacity);
 		}
-		self.0.execute(
-			"DELETE FROM member_displays WHERE account=?1 AND guild=?2 AND user=?3",
-			params![account.to_string(), guild.to_string(), user.to_string()],
-		)?;
+		let mut seen = BTreeSet::new();
+		let mut query = self.0.prepare_cached(&format!(
+			"SELECT {ROW_CHARGE} FROM member_displays WHERE account=?1 AND guild=?2 AND user=?3"
+		))?;
+		let mut bytes = 0i64;
+		for user in users {
+			if !seen.insert(*user) {
+				continue;
+			}
+			let charge: Option<i64> = query
+				.query_row(
+					params![account.to_string(), guild.to_string(), user.to_string()],
+					|row| row.get(0),
+				)
+				.optional()?;
+			let charge = charge.unwrap_or(0);
+			if charge < 0 {
+				return Err(StoreError::Incompatible);
+			}
+			bytes = bytes.saturating_add(charge);
+			if bytes > crate::cache_cleanup::CLEANUP_BYTES {
+				return Err(StoreError::Capacity);
+			}
+		}
+		drop(query);
+		self.delete_member_display_batch(account, guild, &seen.into_iter().collect::<Vec<_>>())?;
 		Ok(())
+	}
+	/// Reconcile a completed authoritative roster. Callers must never invoke this
+	/// after cancellation, a missing chunk or a partial/limited directory result.
+	pub fn reconcile_member_displays(
+		&mut self,
+		account: Id,
+		guild: Id,
+		users: &[Id],
+	) -> Result<usize> {
+		if account.0 == 0
+			|| guild.0 == 0
+			|| users.len() > DISK_LIMIT
+			|| users.iter().any(|id| id.0 == 0)
+			|| users.windows(2).any(|ids| ids[0] >= ids[1])
+		{
+			return Err(StoreError::Capacity);
+		}
+		let account_text = account.to_string();
+		let guild_text = guild.to_string();
+		let mut cursor = None::<String>;
+		let mut removed = 0;
+		loop {
+			// `user` is stored as decimal TEXT. Seek by the primary key's exact
+			// lexical order; numeric membership lookup uses the sorted typed roster.
+			let mut values = vec![account_text.clone(), guild_text.clone()];
+			let suffix = if let Some(cursor) = &cursor {
+				values.push(cursor.clone());
+				" AND user>?3"
+			} else {
+				""
+			};
+			let mut query = self.0.prepare_cached(&format!("SELECT user,{ROW_CHARGE} FROM member_displays WHERE account=?1 AND guild=?2{suffix} ORDER BY user LIMIT 128"))?;
+			let mut rows = query.query(rusqlite::params_from_iter(values))?;
+			let mut victims = Vec::new();
+			let mut bytes = 0i64;
+			let mut seen = 0;
+			while let Some(row) = rows.next()? {
+				let text = row
+					.get_ref(0)?
+					.as_str()
+					.map_err(|_| StoreError::Incompatible)?;
+				if text.is_empty() || text.len() > 20 {
+					return Err(StoreError::Incompatible);
+				}
+				let user = text.parse::<Id>().map_err(|_| StoreError::Incompatible)?;
+				if user.0 == 0 {
+					return Err(StoreError::Incompatible);
+				}
+				if users.binary_search(&user).is_err() {
+					let charge: i64 = row.get(1)?;
+					if charge < 0 {
+						return Err(StoreError::Incompatible);
+					}
+					if charge > crate::cache_cleanup::CLEANUP_BYTES {
+						return Err(StoreError::Capacity);
+					}
+					if !victims.is_empty()
+						&& bytes.saturating_add(charge) > crate::cache_cleanup::CLEANUP_BYTES
+					{
+						break;
+					}
+					bytes = bytes.saturating_add(charge);
+					victims.push(user);
+				}
+				cursor = Some(text.to_owned());
+				seen += 1;
+			}
+			drop(rows);
+			drop(query);
+			if seen == 0 {
+				return Ok(removed);
+			}
+			removed += self.delete_member_display_batch(account, guild, &victims)?;
+		}
+	}
+	fn delete_member_display_batch(
+		&mut self,
+		account: Id,
+		guild: Id,
+		users: &[Id],
+	) -> Result<usize> {
+		if users.is_empty() {
+			return Ok(0);
+		}
+		let transaction = self.0.transaction()?;
+		let mut removed = 0;
+		{
+			let mut delete = transaction.prepare_cached(
+				"DELETE FROM member_displays WHERE account=?1 AND guild=?2 AND user=?3",
+			)?;
+			for user in users {
+				removed += delete.execute(params![
+					account.to_string(),
+					guild.to_string(),
+					user.to_string()
+				])?;
+			}
+		}
+		transaction.commit()?;
+		if removed > 0 {
+			self.reclaim_history_space()?;
+		}
+		Ok(removed)
 	}
 	pub fn clear_member_guild(&mut self, account: Id, guild: Id) -> Result<()> {
 		if account.0 == 0 || guild.0 == 0 {
@@ -595,6 +724,136 @@ mod tests {
 		assert_eq!((count, bytes), actual);
 	}
 
+	#[test]
+	fn complete_roster_reconciliation_pages_over_removed_keys_and_preserves_other_scopes() {
+		let mut store = store();
+		let entries: Vec<_> = (1..=300).map(|user| entry(10, user)).collect();
+		store.save_member_displays(Id(1), &entries).unwrap();
+		store.save_member_displays(Id(1), &[entry(11, 1)]).unwrap();
+		store.save_member_displays(Id(2), &[entry(10, 1)]).unwrap();
+		let users: Vec<_> = std::iter::once(Id(2))
+			.chain(std::iter::once(Id(10)))
+			.chain((100..=150).map(Id))
+			.collect();
+		assert_eq!(
+			store
+				.reconcile_member_displays(Id(1), Id(10), &users)
+				.unwrap(),
+			300 - users.len()
+		);
+		let retained = store.load_member_displays(Id(1), Id(10)).unwrap();
+		assert_eq!(retained.len(), users.len());
+		assert!(
+			retained
+				.iter()
+				.all(|entry| users.binary_search(&entry.user).is_ok())
+		);
+		assert_eq!(
+			store.load_member_displays(Id(1), Id(11)).unwrap(),
+			vec![entry(11, 1)]
+		);
+		assert_eq!(
+			store.load_member_displays(Id(2), Id(10)).unwrap(),
+			vec![entry(10, 1)]
+		);
+		assert_eq!(
+			store
+				.reconcile_member_displays(Id(1), Id(10), &users)
+				.unwrap(),
+			0
+		);
+		assert_eq!(
+			store.reconcile_member_displays(Id(1), Id(10), &[]).unwrap(),
+			users.len()
+		);
+		assert!(
+			store
+				.load_member_displays(Id(1), Id(10))
+				.unwrap()
+				.is_empty()
+		);
+		let totals: (i64, i64) = store
+			.0
+			.query_row(
+				"SELECT count,bytes FROM member_cache_totals WHERE singleton=1",
+				[],
+				|row| Ok((row.get(0)?, row.get(1)?)),
+			)
+			.unwrap();
+		let actual: (i64, i64) = store
+			.0
+			.query_row(
+				&format!("SELECT count(*),sum({ROW_CHARGE}) FROM member_displays"),
+				[],
+				|row| Ok((row.get(0)?, row.get(1)?)),
+			)
+			.unwrap();
+		assert_eq!(totals, actual);
+	}
+	#[test]
+	fn invalid_or_incomplete_roster_input_does_not_prune_hints() {
+		let mut store = store();
+		let entries = vec![entry(10, 1), entry(10, 2)];
+		store.save_member_displays(Id(1), &entries).unwrap();
+		let before = store.load_member_displays(Id(1), Id(10)).unwrap();
+		for users in [
+			vec![Id(0)],
+			vec![Id(2), Id(1)],
+			vec![Id(1), Id(1)],
+			vec![Id(1); DISK_LIMIT + 1],
+		] {
+			assert_eq!(
+				store.reconcile_member_displays(Id(1), Id(10), &users),
+				Err(StoreError::Capacity)
+			);
+			assert_eq!(store.load_member_displays(Id(1), Id(10)).unwrap(), before);
+		}
+		// A partial successful page only upserts supplied identities. It never calls
+		// complete-roster reconciliation and must retain omitted peers.
+		store.save_member_displays(Id(1), &[entry(10, 1)]).unwrap();
+		assert_eq!(store.load_member_displays(Id(1), Id(10)).unwrap(), before);
+	}
+	#[test]
+	fn confirmed_missing_member_batch_is_scoped_deduplicated_and_atomic() {
+		let mut store = store();
+		store
+			.save_member_displays(Id(1), &[entry(10, 10), entry(10, 20), entry(11, 10)])
+			.unwrap();
+		store.save_member_displays(Id(2), &[entry(10, 10)]).unwrap();
+		store.0.execute_batch("CREATE TRIGGER reject_member_removal BEFORE DELETE ON member_displays WHEN old.user='20' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
+		assert_eq!(
+			store.remove_member_displays(Id(1), Id(10), &[Id(10), Id(20)]),
+			Err(StoreError::Unavailable)
+		);
+		assert_eq!(store.load_member_displays(Id(1), Id(10)).unwrap().len(), 2);
+		store
+			.0
+			.execute_batch("DROP TRIGGER reject_member_removal;")
+			.unwrap();
+		store
+			.remove_member_displays(Id(1), Id(10), &[Id(10), Id(10), Id(999)])
+			.unwrap();
+		assert_eq!(
+			store.load_member_displays(Id(1), Id(10)).unwrap(),
+			vec![entry(10, 20)]
+		);
+		assert_eq!(
+			store.load_member_displays(Id(1), Id(11)).unwrap(),
+			vec![entry(11, 10)]
+		);
+		assert_eq!(
+			store.load_member_displays(Id(2), Id(10)).unwrap(),
+			vec![entry(10, 10)]
+		);
+		assert_eq!(
+			store.remove_member_displays(Id(1), Id(10), &[Id(20); 101]),
+			Err(StoreError::Capacity)
+		);
+		assert_eq!(
+			store.remove_member_displays(Id(1), Id(10), &[Id(0)]),
+			Err(StoreError::Capacity)
+		);
+	}
 	#[test]
 	fn display_cache_survives_file_reopen() {
 		let root = std::env::temp_dir().join(format!(

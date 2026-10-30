@@ -591,6 +591,7 @@ impl Desktop {
 				| cache::Outcome::SyncCheckpoint { .. }
 				| cache::Outcome::SyncCheckpointSaved { .. }
 				| cache::Outcome::SyncMembersSaved { .. }
+				| cache::Outcome::SyncMembersReconciled { .. }
 				| cache::Outcome::CacheUsage(_) => {}
 				cache::Outcome::ChannelPreferences(result) => {
 					self.messaging.channel_preferences_load_pending = false;

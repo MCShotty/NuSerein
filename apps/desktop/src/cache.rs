@@ -103,6 +103,13 @@ pub enum Operation {
 		request: u64,
 		guild: Id,
 		rows: Vec<model::MemberDisplay>,
+		missing: Vec<Id>,
+	},
+	SyncReconcileMembers {
+		job: u64,
+		request: u64,
+		guild: Id,
+		users: Vec<Id>,
 	},
 	SyncReadRevision {
 		job: u64,
@@ -192,6 +199,13 @@ pub enum Operation {
 }
 #[allow(clippy::large_enum_variant)]
 pub enum Outcome {
+	SyncMembersReconciled {
+		job: u64,
+		request: u64,
+		guild: Id,
+		epoch: u64,
+		result: Result<usize, StoreError>,
+	},
 	MemberDisplaysFound {
 		request: client_core::member_search::Request,
 		revision: u64,
@@ -785,7 +799,8 @@ impl Cache {
 			return false;
 		}
 		if matches!(&operation, Operation::SyncSavePage {job,request,coverage,..} if coverage.job != *job || coverage.request != *request)
-			|| matches!(&operation, Operation::SyncSaveMembers {guild,rows,..} if rows.iter().any(|row|row.guild != *guild))
+			|| matches!(&operation, Operation::SyncSaveMembers {job,request,guild,rows,missing} if *job==0 || *request==0 || !valid_sync_members(*guild,rows,missing))
+			|| matches!(&operation, Operation::SyncReconcileMembers {job,request,guild,users} if *job==0 || *request==0 || *guild==Id(0) || !valid_member_roster(users))
 		{
 			return false;
 		}
@@ -903,6 +918,8 @@ impl Cache {
 			_ => 0,
 		};
 		let ids = match &operation {
+			Operation::SyncSaveMembers { missing, .. } => missing.capacity() * size_of::<Id>(),
+			Operation::SyncReconcileMembers { users, .. } => users.capacity() * size_of::<Id>(),
 			Operation::LoadServers { guilds, .. } => {
 				if guilds.len() > 4096 {
 					return false;
@@ -1169,6 +1186,13 @@ fn cache_write_reservation(operation: &Operation) -> Option<u64> {
 		Operation::SyncSavePage { messages, .. }
 		| Operation::SaveChannel { messages, .. }
 		| Operation::SaveChanges { messages, .. } => message_bytes(messages),
+		Operation::SyncSaveMembers { rows, missing, .. } if !missing.is_empty() => {
+			return Some(
+				(rows.iter().map(model::MemberDisplay::bytes).sum::<usize>() as u64)
+					.saturating_mul(16)
+					.saturating_add(64 * 1024 * 1024),
+			);
+		}
 		Operation::SyncSaveMembers { rows, .. } | Operation::SaveMembers(rows) => {
 			rows.iter().map(model::MemberDisplay::bytes).sum()
 		}
@@ -1188,7 +1212,8 @@ fn cache_write_reservation(operation: &Operation) -> Option<u64> {
 					.saturating_add(64 * 1024 * 1024),
 			);
 		}
-		Operation::DeleteMessages { .. }
+		Operation::SyncReconcileMembers { .. }
+		| Operation::DeleteMessages { .. }
 		| Operation::ClearHistory
 		| Operation::ClearChannel { .. }
 		| Operation::RemoveServer { .. }
@@ -1409,11 +1434,54 @@ fn is_sync_operation(operation: &Operation) -> bool {
 		operation,
 		Operation::SyncReadRevision { .. }
 			| Operation::SyncSaveMembers { .. }
+			| Operation::SyncReconcileMembers { .. }
 			| Operation::SyncSavePage { .. }
 			| Operation::LoadSyncCheckpoint
 			| Operation::SaveSyncCheckpoint(_)
 			| Operation::ClearSyncCheckpoint
 	)
+}
+
+fn valid_member_roster(users: &[Id]) -> bool {
+	users.len() <= 250_000
+		&& users.iter().all(|user| user.0 != 0)
+		&& users.windows(2).all(|pair| pair[0] < pair[1])
+}
+fn valid_sync_members(guild: Id, rows: &[model::MemberDisplay], missing: &[Id]) -> bool {
+	if guild.0 == 0
+		|| rows.len() > 4096
+		|| rows.iter().map(model::MemberDisplay::bytes).sum::<usize>() > 2 * 1024 * 1024
+		|| missing.len() > 100
+		|| missing.iter().any(|user| user.0 == 0)
+		|| missing.windows(2).any(|pair| pair[0] >= pair[1])
+	{
+		return false;
+	}
+	let mut seen = BTreeSet::new();
+	rows.iter().all(|row| {
+		row.guild == guild
+			&& row.valid()
+			&& missing.binary_search(&row.user).is_err()
+			&& seen.insert(row.user)
+	})
+}
+fn sync_member_store<'a>(
+	store: &'a mut Result<LocalStore, StoreError>,
+	history: &HistorySafety,
+	account: Id,
+	epoch: u64,
+	job: u64,
+	guild: Id,
+) -> Result<&'a mut LocalStore, StoreError> {
+	let store = sync_store(store, history, epoch)?;
+	let checkpoint = store
+		.load_sync_checkpoint(account)?
+		.ok_or(StoreError::Unavailable)?;
+	if guild.0 == 0 || checkpoint.job != job || checkpoint.scope.is_some_and(|scope| scope != guild)
+	{
+		return Err(StoreError::Unavailable);
+	}
+	Ok(store)
 }
 
 fn sync_store<'a>(
@@ -1466,17 +1534,37 @@ fn execute_sync(
 			request,
 			guild,
 			rows,
+			missing,
 		} => Outcome::SyncMembersSaved {
 			job,
 			request,
 			guild,
 			epoch,
-			result: sync_store(store, history, epoch).and_then(|store| {
-				if rows.iter().any(|row| row.guild != guild) {
-					return Err(StoreError::Capacity);
-				}
-				store.save_member_displays(account, &rows)
-			}),
+			result: if request == 0 || !valid_sync_members(guild, &rows, &missing) {
+				Err(StoreError::Capacity)
+			} else {
+				sync_member_store(store, history, account, epoch, job, guild).and_then(|store| {
+					store.remove_member_displays(account, guild, &missing)?;
+					store.save_member_displays(account, &rows)
+				})
+			},
+		},
+		Operation::SyncReconcileMembers {
+			job,
+			request,
+			guild,
+			users,
+		} => Outcome::SyncMembersReconciled {
+			job,
+			request,
+			guild,
+			epoch,
+			result: if request == 0 || !valid_member_roster(&users) {
+				Err(StoreError::Capacity)
+			} else {
+				sync_member_store(store, history, account, epoch, job, guild)
+					.and_then(|store| store.reconcile_member_displays(account, guild, &users))
+			},
 		},
 		Operation::SyncReadRevision {
 			job,
@@ -1851,6 +1939,7 @@ fn execute(
 		Operation::SyncReadRevision { .. }
 		| Operation::FindMemberDisplays { .. }
 		| Operation::SyncSaveMembers { .. }
+		| Operation::SyncReconcileMembers { .. }
 		| Operation::SyncSavePage { .. }
 		| Operation::LoadSyncCheckpoint
 		| Operation::SaveSyncCheckpoint(_)
@@ -1885,6 +1974,7 @@ fn execute(
 			Operation::SyncReadRevision { .. }
 			| Operation::FindMemberDisplays { .. }
 			| Operation::SyncSaveMembers { .. }
+			| Operation::SyncReconcileMembers { .. }
 			| Operation::SyncSavePage { .. }
 			| Operation::LoadSyncCheckpoint
 			| Operation::SaveSyncCheckpoint(_)
@@ -2102,6 +2192,398 @@ pub fn debug_voice_preferences_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn confirmed_missing_members_remove_only_the_current_job_account_and_server_hints() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		let row = |guild, user| model::MemberDisplay {
+			guild: Id(guild),
+			user: Id(user),
+			name: format!("Member {user}"),
+			username: Some(format!("user{user}").into_boxed_str()),
+			nick: None,
+		};
+		for (account, rows) in [
+			(Id(1), vec![row(10, 1), row(10, 2), row(10, 3), row(11, 2)]),
+			(Id(2), vec![row(10, 2)]),
+		] {
+			store
+				.as_mut()
+				.unwrap()
+				.save_member_displays(account, &rows)
+				.unwrap();
+		}
+		let checkpoint = local_store::SyncCheckpoint {
+			job: 7,
+			scope: Some(Id(10)),
+			started_ms: 1_420_070_400_000,
+			cutoff_ms: 1_420_070_400_000,
+			payload: vec![],
+		};
+		store
+			.as_mut()
+			.unwrap()
+			.save_sync_checkpoint(Id(1), &checkpoint)
+			.unwrap();
+		let safety = HistorySafety::default();
+		let epoch = safety.epoch();
+		let mut fresh = row(10, 1);
+		fresh.nick = Some("New nickname".into());
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				epoch,
+				Operation::SyncSaveMembers {
+					job: 7,
+					request: 1,
+					guild: Id(10),
+					rows: vec![fresh],
+					missing: vec![Id(2)]
+				}
+			),
+			Outcome::SyncMembersSaved {
+				job: 7,
+				request: 1,
+				result: Ok(()),
+				..
+			}
+		));
+		let current = store
+			.as_ref()
+			.unwrap()
+			.load_member_displays(Id(1), Id(10))
+			.unwrap();
+		assert_eq!(current.len(), 2);
+		assert!(!current.iter().any(|row| row.user == Id(2)));
+		assert!(
+			current
+				.iter()
+				.any(|row| row.user == Id(1) && row.nick.as_deref() == Some("New nickname"))
+		);
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(1), Id(11))
+				.unwrap(),
+			vec![row(11, 2)]
+		);
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(2), Id(10))
+				.unwrap(),
+			vec![row(10, 2)]
+		);
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(2),
+				epoch,
+				Operation::SyncSaveMembers {
+					job: 7,
+					request: 2,
+					guild: Id(10),
+					rows: vec![],
+					missing: vec![Id(2)]
+				}
+			),
+			Outcome::SyncMembersSaved {
+				result: Err(StoreError::Unavailable),
+				..
+			}
+		));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				epoch,
+				Operation::SyncSaveMembers {
+					job: 7,
+					request: 2,
+					guild: Id(11),
+					rows: vec![],
+					missing: vec![Id(2)]
+				}
+			),
+			Outcome::SyncMembersSaved {
+				result: Err(StoreError::Unavailable),
+				..
+			}
+		));
+		// A cancelled/replaced job cannot apply a queued confirmed-missing result.
+		store
+			.as_mut()
+			.unwrap()
+			.save_sync_checkpoint(
+				Id(1),
+				&local_store::SyncCheckpoint {
+					job: 8,
+					..checkpoint
+				},
+			)
+			.unwrap();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				epoch,
+				Operation::SyncSaveMembers {
+					job: 7,
+					request: 2,
+					guild: Id(10),
+					rows: vec![],
+					missing: vec![Id(3)]
+				}
+			),
+			Outcome::SyncMembersSaved {
+				result: Err(StoreError::Unavailable),
+				..
+			}
+		));
+		safety.invalidate();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				epoch,
+				Operation::SyncSaveMembers {
+					job: 8,
+					request: 3,
+					guild: Id(10),
+					rows: vec![],
+					missing: vec![Id(3)]
+				}
+			),
+			Outcome::SyncMembersSaved {
+				result: Err(StoreError::Unavailable),
+				..
+			}
+		));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(1), Id(10))
+				.unwrap()
+				.iter()
+				.any(|row| row.user == Id(3))
+		);
+	}
+
+	#[test]
+	fn complete_member_snapshot_reconciliation_is_scoped_and_retired_epochs_cannot_prune() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		let row = |guild, user| model::MemberDisplay {
+			guild: Id(guild),
+			user: Id(user),
+			name: format!("Member {user}"),
+			username: None,
+			nick: None,
+		};
+		store
+			.as_mut()
+			.unwrap()
+			.save_member_displays(Id(1), &[row(10, 1), row(10, 2), row(10, 3), row(11, 2)])
+			.unwrap();
+		store
+			.as_mut()
+			.unwrap()
+			.save_member_displays(Id(2), &[row(10, 2)])
+			.unwrap();
+		store
+			.as_mut()
+			.unwrap()
+			.save_sync_checkpoint(
+				Id(1),
+				&local_store::SyncCheckpoint {
+					job: 4,
+					scope: None,
+					started_ms: 1_420_070_400_000,
+					cutoff_ms: 1_420_070_400_000,
+					payload: vec![],
+				},
+			)
+			.unwrap();
+		let safety = HistorySafety::default();
+		let epoch = safety.epoch();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				epoch,
+				Operation::SyncReconcileMembers {
+					job: 4,
+					request: 1,
+					guild: Id(10),
+					users: vec![Id(1), Id(3)]
+				}
+			),
+			Outcome::SyncMembersReconciled {
+				job: 4,
+				request: 1,
+				result: Ok(1),
+				..
+			}
+		));
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(1), Id(10))
+				.unwrap()
+				.len(),
+			2
+		);
+		safety.invalidate();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				epoch,
+				Operation::SyncReconcileMembers {
+					job: 4,
+					request: 2,
+					guild: Id(10),
+					users: vec![]
+				}
+			),
+			Outcome::SyncMembersReconciled {
+				result: Err(StoreError::Unavailable),
+				..
+			}
+		));
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(1), Id(10))
+				.unwrap()
+				.len(),
+			2
+		);
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::SyncReconcileMembers {
+					job: 4,
+					request: 3,
+					guild: Id(10),
+					users: vec![]
+				}
+			),
+			Outcome::SyncMembersReconciled { result: Ok(2), .. }
+		));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(1), Id(10))
+				.unwrap()
+				.is_empty()
+		);
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(1), Id(11))
+				.unwrap(),
+			vec![row(11, 2)]
+		);
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_member_displays(Id(2), Id(10))
+				.unwrap(),
+			vec![row(10, 2)]
+		);
+	}
+
+	#[test]
+	fn sync_member_queue_rejects_incomplete_or_conflicting_prune_shapes() {
+		let (send, _commands) = mpsc::sync_channel(16);
+		let (_, receive) = mpsc::sync_channel(16);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
+			history: Arc::new(HistorySafety::default()),
+		};
+		for users in [
+			vec![Id(2), Id(1)],
+			vec![Id(1), Id(1)],
+			vec![Id(0)],
+			vec![Id(1); 250_001],
+		] {
+			assert!(!cache.queue(
+				1,
+				Id(1),
+				Operation::SyncReconcileMembers {
+					job: 1,
+					request: 1,
+					guild: Id(10),
+					users
+				}
+			));
+		}
+		let row = model::MemberDisplay {
+			guild: Id(10),
+			user: Id(2),
+			name: "Member".into(),
+			username: None,
+			nick: None,
+		};
+		assert!(!cache.queue(
+			1,
+			Id(1),
+			Operation::SyncSaveMembers {
+				job: 1,
+				request: 1,
+				guild: Id(10),
+				rows: vec![row],
+				missing: vec![Id(2)]
+			}
+		));
+		assert!(!cache.queue(
+			1,
+			Id(1),
+			Operation::SyncSaveMembers {
+				job: 1,
+				request: 1,
+				guild: Id(10),
+				rows: vec![],
+				missing: vec![Id(1); 101]
+			}
+		));
+		assert!(cache.queue(
+			1,
+			Id(1),
+			Operation::SyncReconcileMembers {
+				job: 1,
+				request: 1,
+				guild: Id(10),
+				users: vec![Id(1), Id(2)]
+			}
+		));
+	}
 
 	#[test]
 	fn item_pressure_evicts_inactive_history_and_keeps_current_pages_and_edits() {

@@ -41,7 +41,10 @@ pub enum Event {
 		total: usize,
 		members: Vec<Member>,
 	},
-	Finished(Request),
+	Finished {
+		request: Request,
+		users: Vec<Id>,
+	},
 	Failed {
 		request: Request,
 		failure: Failure,
@@ -58,6 +61,7 @@ impl Event {
 							.map(|m| m.bytes().saturating_sub(size_of::<Member>()))
 							.sum::<usize>()
 				}
+				Self::Finished { users, .. } => users.capacity() * size_of::<Id>(),
 				_ => 0,
 			}
 	}
@@ -127,7 +131,8 @@ impl RosterHandle {
 			return Some(event);
 		}
 		let terminal = queue.terminal.take();
-		if terminal.is_some() {
+		if let Some(terminal) = &terminal {
+			queue.bytes = queue.bytes.saturating_sub(terminal.bytes());
 			queue.request = None;
 		}
 		terminal
@@ -147,26 +152,44 @@ impl RosterInput {
 			return false;
 		}
 		let bytes = event.bytes();
-		if queue.rows.len() == QUEUE_ITEMS || queue.bytes.saturating_add(bytes) > QUEUE_BYTES {
-			queue.terminal = Some(Event::Failed {
+		if queue.rows.len() == QUEUE_ITEMS
+			|| queue
+				.bytes
+				.saturating_add(bytes)
+				.saturating_add(size_of::<Event>())
+				> QUEUE_BYTES
+		{
+			let terminal = Event::Failed {
 				request,
 				failure: Failure::Busy,
-			});
+			};
+			queue.bytes = queue.bytes.saturating_add(terminal.bytes());
+			queue.terminal = Some(terminal);
 			return false;
 		}
 		queue.bytes += bytes;
 		queue.rows.push_back(event);
 		true
 	}
-	fn finish(&self, request: Request, failure: Option<Failure>) {
+	fn finish(&self, request: Request, result: Result<Vec<Id>, Failure>) {
 		if let Ok(mut queue) = self.queue.lock()
 			&& queue.request == Some(request)
 			&& queue.terminal.is_none()
 		{
-			queue.terminal = Some(match failure {
-				Some(failure) => Event::Failed { request, failure },
-				None => Event::Finished(request),
-			});
+			let event = match result {
+				Err(failure) => Event::Failed { request, failure },
+				Ok(users) => Event::Finished { request, users },
+			};
+			let terminal = if queue.bytes.saturating_add(event.bytes()) > QUEUE_BYTES {
+				Event::Failed {
+					request,
+					failure: Failure::Busy,
+				}
+			} else {
+				event
+			};
+			queue.bytes = queue.bytes.saturating_add(terminal.bytes());
+			queue.terminal = Some(terminal);
 		}
 	}
 }
@@ -274,7 +297,7 @@ impl Worker {
 		if let Some(active) = self.active.take()
 			&& let Some(input) = &self.input
 		{
-			input.finish(active.request, Some(failure));
+			input.finish(active.request, Err(failure));
 		}
 	}
 	pub fn limited(&mut self, guild: Option<Id>, nonce: Option<&str>) {
@@ -375,8 +398,12 @@ impl Worker {
 				return true;
 			}
 			if complete {
-				input.finish(request, None);
-				self.active = None;
+				let users = self
+					.active
+					.take()
+					.expect("completed roster is active")
+					.users;
+				input.finish(request, Ok(users));
 			}
 		}
 		true
@@ -430,7 +457,16 @@ mod tests {
 			assert_eq!(members.len(), 1000);
 			assert_eq!(members[0].nick.as_deref(), Some("Current nickname"));
 		}
-		assert!(matches!(handle.try_recv(), Some(Event::Finished(done)) if done == request));
+		let Some(Event::Finished {
+			request: done,
+			users,
+		}) = handle.try_recv()
+		else {
+			panic!()
+		};
+		assert_eq!(done, request);
+		assert_eq!(users, (1..=2000).map(Id).collect::<Vec<_>>());
+		assert_eq!(handle.queue.lock().unwrap().bytes, 0);
 		assert!(handle.try_recv().is_none());
 	}
 	#[test]
@@ -504,6 +540,41 @@ mod tests {
 		assert!(worker.chunk(&chunk(request, 1, 3, 1)));
 		assert!(matches!(handle.try_recv(), Some(Event::Chunk { .. })));
 		assert!(matches!(handle.try_recv(), Some(Event::Failed { .. })));
+	}
+
+	#[test]
+	fn terminal_roster_ids_are_moved_and_charged_and_cannot_exceed_queue_bytes() {
+		let (handle, input) = channel();
+		let request = Request {
+			guild: Id(9),
+			job: 7,
+		};
+		handle.queue.lock().unwrap().request = Some(request);
+		let users = vec![Id(1), Id(2), Id(3)];
+		let pointer = users.as_ptr();
+		let expected = size_of::<Event>() + users.capacity() * size_of::<Id>();
+		input.finish(request, Ok(users));
+		assert_eq!(handle.queue.lock().unwrap().bytes, expected);
+		let Some(Event::Finished { users, .. }) = handle.try_recv() else {
+			panic!()
+		};
+		assert_eq!(users.as_ptr(), pointer);
+		assert_eq!(handle.queue.lock().unwrap().bytes, 0);
+		let (handle, input) = channel();
+		{
+			let mut queue = handle.queue.lock().unwrap();
+			queue.request = Some(request);
+			queue.bytes = QUEUE_BYTES - size_of::<Event>();
+		}
+		input.finish(request, Ok(vec![Id(1); 100]));
+		assert!(handle.queue.lock().unwrap().bytes <= QUEUE_BYTES);
+		assert!(matches!(
+			handle.try_recv(),
+			Some(Event::Failed {
+				failure: Failure::Busy,
+				..
+			})
+		));
 	}
 
 	#[tokio::test]
@@ -584,8 +655,12 @@ mod tests {
 					if let Some(event) = handle.try_recv() {
 						match event {
 							Event::Chunk { members, .. } => assert_eq!(members.len(), 200),
-							Event::Finished(done) => {
+							Event::Finished {
+								request: done,
+								users,
+							} => {
 								assert_eq!(done, request);
+								assert_eq!(users, (1..=200).map(Id).collect::<Vec<_>>());
 								break;
 							}
 							Event::Failed { failure, .. } => panic!("roster failed: {failure}"),
