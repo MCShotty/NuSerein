@@ -148,29 +148,6 @@ impl LocalStore {
 		Ok(pruned)
 	}
 	pub fn forget_account(&mut self, account: Id) -> Result<()> {
-		let transaction = self.0.transaction()?;
-		for table in [
-			"messages",
-			"member_displays",
-			"expression_catalogs",
-			"sticker_pack_hints",
-			"server_displays",
-			"channels",
-			"history_starts",
-			"drafts",
-			"gif_favorites",
-			"channel_preferences",
-			"account_presence",
-			"accounts",
-		] {
-			transaction.execute(
-				&format!("DELETE FROM {table} WHERE account=?1"),
-				[account.to_string()],
-			)?;
-		}
-		transaction.commit()?;
-		self.0
-			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(64);")?;
-		Ok(())
+		self.cleanup_cache_scope(account, None, true)
 	}
 }

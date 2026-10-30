@@ -1,5 +1,53 @@
 # Local storage policy and audit
 
+## Force Sync and the shared disk ceiling (October 30, 2026)
+
+Force Sync freezes a 21-day message interval when the owner starts a server or account
+job. Account scope uses the joined servers and existing DMs/group DMs admitted by the
+current authenticated session. Messages and supported metadata are cached; attachments,
+video and audio files are not bulk-downloaded. Hidden and muted accessible channels are
+eligible without changing their preferences or acknowledging their messages.
+
+Schema 32 replaces the previous 500-message / 20-channel **disk retention** limits with
+indexed, bounded page reads and independently retained history. The visible timeline
+keeps its existing RAM limits. There are at most one million cached messages and 250,000
+member display hints across saved accounts. Coverage/cursors, storage revisions and
+bounded deletion markers prevent failed, stale or interrupted pages from certifying a
+complete interval or restoring deleted messages. Eviction retires affected coverage.
+
+One process-wide budget for the application data root accounts for all saved accounts:
+the whole SQLite file, WAL/SHM/rollback journals, cached media/artwork, temporary cache
+files and outstanding write reservations. The hard ceiling is **3,000,000,000 bytes**;
+cleanup starts at 2,700,000,000 and aims for 2,400,000,000. The whole database allocation
+is charged conservatively even though some rows are protected preferences. Cache admission
+also keeps 64 MiB of cleanup headroom, and existing image partition limits remain
+subordinate to the shared ceiling.
+
+Worker-side cleanup removes expired/abandoned cache files and history older than 21 days,
+then inactive/older media, older recent history, artwork and presentation hints. Active
+file readers and the selected history window are protected. Bounded delete batches and
+incremental SQLite reclamation run on the serialized storage worker. If reclamation cannot
+make room, new cache writes fail explicitly; synchronization reports partial coverage.
+Drafts, settings, credentials, bookmark definitions and favorite definitions are not
+eviction candidates. Their downloaded artwork may be discarded.
+
+Each account may retain one versioned sync checkpoint of at most 1 MiB, with at most
+16 checkpoints / 16 MiB across accounts. After restarting, a valid interrupted checkpoint
+is offered paused; Resume revalidates the live account and access. Cancel discards the
+checkpoint while retaining accepted cached pages. Cache clearing and account cleanup fence
+pending work through the existing storage epoch; account/generation changes reject late
+results. No message bodies, service-response payloads or credentials are stored in the checkpoint.
+
+Persistent member hints remain names, usernames and nicknames, not membership or permission
+proof. Fresh role definitions and member assignments are session-authoritative service
+observations. Server-avatar context is display-only session data; it is deliberately
+omitted from generic user/history serialization and must be refreshed after restart.
+The server banner hash is retained separately in a bounded, generation-scoped presentation
+map; it never replaces a member's server-profile banner or establishes access.
+
+Earlier dated sections below retain their original revision's limits and behavior; the
+shared ceiling and paged history rules above supersede their old cache-size descriptions.
+
 ## GIF and expression metadata caches (October 29, 2026)
 
 GIF favorite metadata was already stored per account in SQLite. Queue admission now

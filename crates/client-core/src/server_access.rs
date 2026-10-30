@@ -625,6 +625,7 @@ mod tests {
 		let request = dispatch(&mut state, Action::Settings);
 		apply(&mut state, request, Outcome::Settings(settings.clone()));
 		let user = model::User {
+			member_avatar: None,
 			id: Id(3),
 			name: "Recipient".into(),
 			username: None,

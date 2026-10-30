@@ -66,6 +66,11 @@ use attachments::AttachmentList;
 use embeds::EmbedList;
 use model::{Channel, Guild, Id, Message, MessagePatch, Patch, User};
 pub use reactions::account_frecency as reaction_preferences;
+
+/// The ordinary member-readable guild emoji catalog, with the same bounds as Gateway updates.
+pub fn guild_emojis(bytes: &[u8]) -> Result<Vec<model::CustomEmoji>, DecodeError> {
+	decode::<reactions::CustomEmojiList>(bytes).map(|items| items.0)
+}
 pub use reactions::{GuildEmojisUpdate, ReactionDelta, ReactionEmojiTarget, ReactionTarget};
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -523,6 +528,8 @@ pub struct RecentMentions(
 #[derive(Deserialize)]
 pub struct MessageDto {
 	#[serde(default)]
+	pub guild_id: Option<Id>,
+	#[serde(default)]
 	pub application_id: Option<Id>,
 	#[serde(default)]
 	pub webhook_id: Option<Id>,
@@ -575,6 +582,8 @@ pub struct MessageDto {
 }
 #[derive(Deserialize)]
 pub struct MessageMemberDto {
+	#[serde(default, deserialize_with = "member_identity::avatar_patch")]
+	pub avatar: Patch<String>,
 	#[serde(default)]
 	pub avatar_decoration_data: collectibles::DecorationField,
 	#[serde(default)]
@@ -872,6 +881,16 @@ impl MessageDto {
 				member.collectibles.take(),
 			);
 			collectibles::apply_member_style(&mut author, member.display_name_styles.take());
+			if let Some(guild) = self.guild_id.filter(|guild| guild.0 != 0) {
+				author.member_avatar = match &member.avatar {
+					Patch::Absent => None,
+					Patch::Null => Some(Box::new(model::GuildAvatar { guild, hash: None })),
+					Patch::Value(hash) => Some(Box::new(model::GuildAvatar {
+						guild,
+						hash: Some(hash.clone()),
+					})),
+				};
+			}
 		}
 		author.webhook = self.webhook_id.is_some();
 		if self.application_id.is_some()
@@ -1577,6 +1596,8 @@ fn member_list_id(everyone: u128, overwrites: &[Overwrite]) -> Option<String> {
 }
 #[derive(Deserialize)]
 pub struct MemberDto {
+	#[serde(default, deserialize_with = "member_identity::avatar_patch")]
+	pub avatar: Patch<String>,
 	#[serde(default, deserialize_with = "permissions::member_role_patch")]
 	pub roles: Patch<Vec<Id>>,
 	pub user: UserDto,
@@ -1595,6 +1616,8 @@ pub struct MemberDto {
 /// fail the row, only be dropped.
 #[derive(Deserialize)]
 struct LenientMemberDto {
+	#[serde(default, deserialize_with = "member_identity::avatar_patch")]
+	avatar: Patch<String>,
 	#[serde(default, deserialize_with = "permissions::member_role_patch")]
 	roles: Patch<Vec<Id>>,
 	user: UserDto,
@@ -1705,6 +1728,7 @@ impl<'de> Deserialize<'de> for MemberItem {
 			return Ok(Self::Unreadable);
 		};
 		let member = Box::new(MemberDto {
+			avatar: member.avatar,
 			roles: member.roles,
 			user: member.user,
 			nick: member.nick,
@@ -1716,11 +1740,54 @@ impl<'de> Deserialize<'de> for MemberItem {
 		Ok(Self::Member { member, presence })
 	}
 }
+
+impl MemberDto {
+	/// Bind a server avatar to its approved containing guild, never to the global user record.
+	pub fn into_guild_member(self, guild: Id) -> Option<model::Member> {
+		if guild.0 == 0 {
+			return None;
+		}
+		let avatar = self.avatar.clone();
+		let mut member = MemberItem::Member {
+			member: Box::new(self),
+			presence: Patch::Absent,
+		}
+		.into_model()?;
+		member.user.member_avatar = match avatar {
+			Patch::Absent => None,
+			Patch::Null => Some(Box::new(model::GuildAvatar { guild, hash: None })),
+			Patch::Value(hash) if model::valid_avatar_hash(&hash) => {
+				Some(Box::new(model::GuildAvatar {
+					guild,
+					hash: Some(hash),
+				}))
+			}
+			Patch::Value(_) => return None,
+		};
+		member.valid().then_some(member)
+	}
+}
 #[derive(Deserialize)]
 pub struct MemberGroup {
 	pub id: String,
 }
 impl MemberItem {
+	pub fn into_guild_slot(self, guild: Id) -> Option<model::MemberSlot> {
+		match self {
+			Self::Member {
+				mut member,
+				presence,
+			} => {
+				if !matches!(presence, Patch::Absent) {
+					member.presence = presence;
+				}
+				member
+					.into_guild_member(guild)
+					.map(model::MemberSlot::Person)
+			}
+			other => other.into_slot(),
+		}
+	}
 	pub fn preserve_missing(&mut self, previous: &model::Member) {
 		if let Self::Member { member, .. } = self
 			&& member.user.id == previous.user.id
@@ -1730,6 +1797,11 @@ impl MemberItem {
 			}
 			if matches!(member.roles, Patch::Absent) {
 				member.roles = Patch::Value(previous.roles.clone());
+			}
+			if matches!(member.avatar, Patch::Absent)
+				&& let Some(avatar) = &previous.user.member_avatar
+			{
+				member.avatar = avatar.hash.clone().map_or(Patch::Null, Patch::Value);
 			}
 		}
 		if let Self::Member { member, presence } = self

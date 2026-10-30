@@ -8,7 +8,7 @@ impl LocalStore {
 		if version > READABLE_SCHEMA {
 			return Err(StoreError::Incompatible);
 		}
-		connection.execute_batch("PRAGMA page_size=4096; PRAGMA max_page_count=16384; PRAGMA cache_size=-2048; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=256; PRAGMA journal_size_limit=8388608; PRAGMA secure_delete=ON; PRAGMA auto_vacuum=INCREMENTAL;
+		connection.execute_batch("PRAGMA page_size=4096; PRAGMA max_page_count=732421; PRAGMA cache_size=-2048; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=256; PRAGMA journal_size_limit=8388608; PRAGMA secure_delete=ON; PRAGMA auto_vacuum=INCREMENTAL;
             CREATE TABLE IF NOT EXISTS messages(account TEXT NOT NULL,channel TEXT NOT NULL,id TEXT NOT NULL,author TEXT NOT NULL,name TEXT NOT NULL,content TEXT NOT NULL,edited INTEGER NOT NULL,reply TEXT,unsupported INTEGER NOT NULL,PRIMARY KEY(account,channel,id));
             CREATE INDEX IF NOT EXISTS messages_channel_order ON messages(account,channel,length(id),id);
             CREATE TABLE IF NOT EXISTS channels(account TEXT NOT NULL,channel TEXT NOT NULL,touched INTEGER NOT NULL,PRIMARY KEY(account,channel));
@@ -350,7 +350,63 @@ impl LocalStore {
 		if !has_author_nick {
 			transaction.execute_batch("ALTER TABLE messages ADD COLUMN author_nick TEXT;")?;
 		}
+		let has_member_search: bool = transaction.query_row(
+			"SELECT EXISTS(SELECT 1 FROM pragma_table_info('member_displays') WHERE name='search_key')",
+			[],
+			|row| row.get(0),
+		)?;
+		if !has_member_search {
+			transaction.execute_batch("ALTER TABLE member_displays ADD COLUMN search_key TEXT NOT NULL DEFAULT '' CHECK(length(CAST(search_key AS BLOB))<=4096);")?;
+			let mut query =
+				transaction.prepare("SELECT rowid,name,username,nick FROM member_displays")?;
+			let mut rows = query.query([])?;
+			let mut update =
+				transaction.prepare("UPDATE member_displays SET search_key=?1 WHERE rowid=?2")?;
+			while let Some(row) = rows.next()? {
+				for column in 1..=3 {
+					let value = row.get_ref(column)?;
+					if !matches!(value, rusqlite::types::ValueRef::Null)
+						&& value.as_str().map_err(|_| StoreError::Incompatible)?.len() > 512
+					{
+						return Err(StoreError::Capacity);
+					}
+				}
+				let name: String = row.get(1)?;
+				let username: Option<String> = row.get(2)?;
+				let nick: Option<String> = row.get(3)?;
+				let key = format!(
+					"{}\n{}\n{}",
+					name.to_lowercase(),
+					username.unwrap_or_default().to_lowercase(),
+					nick.unwrap_or_default().to_lowercase()
+				);
+				update.execute(rusqlite::params![key, row.get::<_, i64>(0)?])?;
+			}
+		}
+		transaction.execute_batch("CREATE TABLE IF NOT EXISTS cache_cleanup(account TEXT PRIMARY KEY CHECK(length(account) BETWEEN 1 AND 20),channel TEXT CHECK(channel IS NULL OR length(channel) BETWEEN 1 AND 20),forget INTEGER NOT NULL CHECK(forget IN(0,1)));
+CREATE TABLE IF NOT EXISTS history_channels(account TEXT NOT NULL,channel TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0),PRIMARY KEY(account,channel));
+CREATE TABLE IF NOT EXISTS history_tombstones(account TEXT NOT NULL,channel TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=0),PRIMARY KEY(account,channel,id));
+CREATE INDEX IF NOT EXISTS history_tombstones_age ON history_tombstones(length(id),id);
+CREATE TABLE IF NOT EXISTS history_sync(account TEXT NOT NULL,channel TEXT NOT NULL,job TEXT NOT NULL,request TEXT NOT NULL,cutoff TEXT NOT NULL,upper_id TEXT NOT NULL,next_before TEXT,complete INTEGER NOT NULL CHECK(complete IN(0,1)),evicted INTEGER NOT NULL DEFAULT 0 CHECK(evicted IN(0,1)),PRIMARY KEY(account,channel));
+CREATE TABLE IF NOT EXISTS sync_checkpoints(account TEXT PRIMARY KEY,job TEXT NOT NULL,scope TEXT,started_ms INTEGER NOT NULL,cutoff_ms INTEGER NOT NULL,payload BLOB NOT NULL CHECK(length(payload)<=1048576));
+CREATE TABLE IF NOT EXISTS tombstone_totals(singleton INTEGER PRIMARY KEY CHECK(singleton=1),count INTEGER NOT NULL CHECK(count>=0));
+INSERT OR IGNORE INTO tombstone_totals SELECT 1,(SELECT count(*) FROM history_tombstones) WHERE NOT EXISTS(SELECT 1 FROM tombstone_totals WHERE singleton=1);
+CREATE TRIGGER IF NOT EXISTS history_tombstone_insert AFTER INSERT ON history_tombstones BEGIN UPDATE tombstone_totals SET count=count+1 WHERE singleton=1; END;
+CREATE TRIGGER IF NOT EXISTS history_tombstone_delete AFTER DELETE ON history_tombstones BEGIN UPDATE tombstone_totals SET count=count-1 WHERE singleton=1; END;
+CREATE TABLE IF NOT EXISTS history_totals(singleton INTEGER PRIMARY KEY CHECK(singleton=1),count INTEGER NOT NULL CHECK(count>=0));
+INSERT OR IGNORE INTO history_totals SELECT 1,(SELECT count(*) FROM messages) WHERE NOT EXISTS(SELECT 1 FROM history_totals WHERE singleton=1);
+CREATE TRIGGER IF NOT EXISTS history_count_insert BEFORE INSERT ON messages WHEN NOT EXISTS(SELECT 1 FROM messages WHERE account=new.account AND channel=new.channel AND id=new.id) BEGIN UPDATE history_totals SET count=count+1 WHERE singleton=1; END;
+CREATE TRIGGER IF NOT EXISTS history_count_delete AFTER DELETE ON messages BEGIN UPDATE history_totals SET count=count-1 WHERE singleton=1; END;
+CREATE TABLE IF NOT EXISTS member_cache_totals(singleton INTEGER PRIMARY KEY CHECK(singleton=1),count INTEGER NOT NULL CHECK(count>=0),bytes INTEGER NOT NULL CHECK(bytes>=0));
+INSERT OR IGNORE INTO member_cache_totals SELECT 1,(SELECT count(*) FROM member_displays),(SELECT coalesce(sum(256+length(CAST(name AS BLOB))+coalesce(length(CAST(username AS BLOB)),0)+coalesce(length(CAST(nick AS BLOB)),0)+length(CAST(search_key AS BLOB))),0) FROM member_displays) WHERE NOT EXISTS(SELECT 1 FROM member_cache_totals WHERE singleton=1);
+CREATE TRIGGER IF NOT EXISTS member_cache_insert AFTER INSERT ON member_displays BEGIN UPDATE member_cache_totals SET count=count+1,bytes=bytes+256+length(CAST(new.name AS BLOB))+coalesce(length(CAST(new.username AS BLOB)),0)+coalesce(length(CAST(new.nick AS BLOB)),0)+length(CAST(new.search_key AS BLOB)) WHERE singleton=1; END;
+CREATE TRIGGER IF NOT EXISTS member_cache_delete AFTER DELETE ON member_displays BEGIN UPDATE member_cache_totals SET count=count-1,bytes=bytes-(256+length(CAST(old.name AS BLOB))+coalesce(length(CAST(old.username AS BLOB)),0)+coalesce(length(CAST(old.nick AS BLOB)),0)+length(CAST(old.search_key AS BLOB))) WHERE singleton=1; END;
+CREATE TRIGGER IF NOT EXISTS member_cache_update AFTER UPDATE OF name,username,nick,search_key ON member_displays BEGIN UPDATE member_cache_totals SET bytes=bytes+256+length(CAST(new.name AS BLOB))+coalesce(length(CAST(new.username AS BLOB)),0)+coalesce(length(CAST(new.nick AS BLOB)),0)+length(CAST(new.search_key AS BLOB))-(256+length(CAST(old.name AS BLOB))+coalesce(length(CAST(old.username AS BLOB)),0)+coalesce(length(CAST(old.nick AS BLOB)),0)+length(CAST(old.search_key AS BLOB))) WHERE singleton=1; END;
+")?;
+
 		transaction.commit()?;
-		Ok(Self(connection))
+		let mut store = Self(connection);
+		store.finish_cache_cleanups()?;
+		Ok(store)
 	}
 }

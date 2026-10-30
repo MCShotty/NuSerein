@@ -487,6 +487,7 @@ mod tests {
 				request,
 				result: Ok(vec![model::Member {
 					user: model::User {
+						member_avatar: None,
 						id: target,
 						name: "Global display".into(),
 						username: Some("unique.account".into()),

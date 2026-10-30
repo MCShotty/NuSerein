@@ -1,4 +1,5 @@
 //! Single UI-thread state owner. Adapters deliver generation-tagged typed events.
+mod cached_history;
 mod commands;
 mod events;
 mod history;
@@ -21,6 +22,8 @@ pub mod channel_actions;
 pub mod community;
 pub mod expressions;
 pub mod fingerprint;
+pub mod force_sync_apply;
+pub mod force_sync_read;
 pub mod forum;
 pub mod game_mentions;
 pub mod gifs;
@@ -244,6 +247,9 @@ pub struct State {
 	pub guilds: Vec<Guild>,
 	#[doc(hidden)]
 	pub server_display: server_display::Displays,
+	/// Generation-scoped presentation data from an explicit server refresh, never permissions.
+	#[doc(hidden)]
+	pub force_sync_banners: force_sync_apply::ServerBanners,
 	pub channels: Vec<Channel>,
 	#[doc(hidden)]
 	pub navigation_index: NavigationIndex,
@@ -500,6 +506,7 @@ impl Default for State {
 			member_request: 0,
 			guilds: vec![],
 			server_display: Default::default(),
+			force_sync_banners: Default::default(),
 			channels: vec![],
 			navigation_index: NavigationIndex::default(),
 			selected: None,
@@ -1841,6 +1848,7 @@ mod tests {
 				Event::Ready {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
+						member_avatar: None,
 						username: None,
 						primary_guild: None,
 						cosmetics: None,
@@ -2260,6 +2268,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(1),
 			author: User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -2339,6 +2348,7 @@ mod tests {
 			Event::RecipientAdded {
 				channel: Id(1),
 				user: User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2554,6 +2564,7 @@ mod tests {
 				message_count: None,
 			};
 			let user = || User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -2686,6 +2697,7 @@ mod tests {
 				Event::Ready {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
+						member_avatar: None,
 						username: None,
 						primary_guild: None,
 						cosmetics: None,

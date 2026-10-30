@@ -1860,6 +1860,7 @@ mod invite_tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -2076,6 +2077,7 @@ mod sticker_tests {
 
 	fn user(id: u64, name: &str) -> model::User {
 		model::User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,
@@ -2230,6 +2232,7 @@ mod sound_tests {
 
 	fn user(id: u64) -> model::User {
 		model::User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,

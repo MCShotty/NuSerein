@@ -11,6 +11,7 @@ mod archives;
 mod audio;
 mod badges;
 mod composer;
+pub mod force_sync;
 mod forwarding;
 mod owned_cosmetics;
 mod panels;
@@ -260,6 +261,11 @@ struct SubmittedEdit {
 
 #[derive(Default)]
 pub struct MessagingUi {
+	/// Explicit requests; the desktop owns synchronization and persistence.
+	pub force_sync_action: Option<force_sync::Action>,
+	pub force_sync_progress: Option<force_sync::Progress>,
+	pub force_sync_cache: Option<force_sync::CacheSummary>,
+	pub force_sync_open: bool,
 	message_speech: Option<message_menu::MessageSpeech>,
 	message_speech_error: Option<&'static str>,
 	poll_creator: polls::Creator,
@@ -2363,6 +2369,7 @@ mod composer_tests {
 
 	fn edit_state() -> State {
 		let user = model::User {
+			member_avatar: None,
 			username: None,
 			id: Id(1),
 			name: "Alex".into(),
@@ -4497,6 +4504,7 @@ mod composer_tests {
 					.map(|id| {
 						Some(model::MemberSlot::Person(model::Member {
 							user: model::User {
+								member_avatar: None,
 								username: None,
 								id: Id(id),
 								name: format!("Synthetic {id}"),
@@ -5250,6 +5258,7 @@ mod composer_tests {
 	fn profile_uses_open_conversation_not_browsed_sidebar_server() {
 		for guild in [None, Some(Id(10))] {
 			let user = model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(2),
 				name: "Synthetic".into(),

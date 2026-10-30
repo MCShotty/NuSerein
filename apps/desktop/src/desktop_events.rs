@@ -206,6 +206,10 @@ impl Desktop {
 		}
 		for (generation, outcome, _reservation) in cached {
 			self.cache_pending = self.cache_pending.saturating_sub(1);
+			self.member_cache_search_capacity_changed();
+			if self.force_sync_cache_result(generation, &outcome) {
+				continue;
+			}
 			self.cached_history_request.capacity_changed();
 			self.member_cache_load.capacity_changed();
 			self.expression_cache.capacity_changed();
@@ -566,6 +570,28 @@ impl Desktop {
 				continue;
 			}
 			match outcome {
+				cache::Outcome::MemberDisplaysFound {
+					request,
+					revision,
+					epoch,
+					result,
+				} => {
+					self.accept_member_cache_search(generation, request, revision, epoch, result);
+				}
+				cache::Outcome::HistoryPage {
+					channel,
+					request,
+					epoch,
+					result,
+				} => {
+					self.accept_cached_history_page(generation, channel, request, epoch, result);
+				}
+				cache::Outcome::SyncRevision { .. }
+				| cache::Outcome::SyncPageSaved { .. }
+				| cache::Outcome::SyncCheckpoint { .. }
+				| cache::Outcome::SyncCheckpointSaved { .. }
+				| cache::Outcome::SyncMembersSaved { .. }
+				| cache::Outcome::CacheUsage(_) => {}
 				cache::Outcome::ChannelPreferences(result) => {
 					self.messaging.channel_preferences_load_pending = false;
 					self.messaging.channel_preferences_reload = false;
@@ -855,6 +881,7 @@ impl Desktop {
 				self.invalidate_cache_scope(cache::Operation::RemoveServer { guild: *guild });
 			}
 			let user_action_notice = user_action_notice(&event.event);
+			self.observe_force_sync_event(&event.event);
 			let user_action_was_pending =
 				user_action_notice.is_some() && self.state.user_action_pending();
 			self.delete_cached_messages(&event.event);

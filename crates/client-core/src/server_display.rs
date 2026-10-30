@@ -61,6 +61,7 @@ impl State {
 	pub(crate) fn observe_server_display(&mut self, event: &Event) {
 		match event {
 			Event::Ready { .. } | Event::Resync => {
+				self.force_sync_banners.clear();
 				self.server_display.fields.clear();
 				self.server_display.missing = 0;
 				self.server_display.dirty = 0;
@@ -69,6 +70,7 @@ impl State {
 				self.server_display.revision = self.server_display.revision.wrapping_add(1);
 			}
 			Event::GuildRemoved(id) => {
+				self.force_sync_banners.remove(id);
 				if let Some((name, icon, dirty)) = self.server_display.fields.remove(id) {
 					self.server_display.missing -= usize::from(!name || !icon);
 					self.server_display.dirty -= usize::from(dirty);

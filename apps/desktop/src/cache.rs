@@ -12,23 +12,34 @@ use std::{
 // One full CJK font plus the existing 16 MiB of storage work and metadata.
 const QUEUE_BYTES: usize = 48 * 1024 * 1024;
 const WINDOW_BYTES: usize = 4 * 1024 * 1024;
+const SYNC_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Default)]
 struct Budget {
+	limit: usize,
 	used: Mutex<usize>,
 	available: Condvar,
+}
+impl Default for Budget {
+	fn default() -> Self {
+		Self {
+			limit: QUEUE_BYTES,
+			used: Mutex::new(0),
+			available: Condvar::new(),
+		}
+	}
 }
 pub struct Reservation {
 	budget: Arc<Budget>,
 	bytes: usize,
+	_sync: Option<Box<Reservation>>,
 }
 impl Budget {
 	fn reserve(self: &Arc<Self>, bytes: usize, wait: bool) -> Option<Reservation> {
-		if bytes > QUEUE_BYTES {
+		if bytes > self.limit {
 			return None;
 		}
 		let mut used = self.used.lock().unwrap_or_else(|e| e.into_inner());
-		while *used + bytes > QUEUE_BYTES {
+		while *used + bytes > self.limit {
 			if !wait {
 				return None;
 			}
@@ -38,6 +49,7 @@ impl Budget {
 		Some(Reservation {
 			budget: self.clone(),
 			bytes,
+			_sync: None,
 		})
 	}
 }
@@ -82,6 +94,42 @@ pub enum Operation {
 		channel: Id,
 		request: u64,
 	},
+	FindMemberDisplays {
+		request: client_core::member_search::Request,
+		revision: u64,
+	},
+	SyncSaveMembers {
+		job: u64,
+		request: u64,
+		guild: Id,
+		rows: Vec<model::MemberDisplay>,
+	},
+	SyncReadRevision {
+		job: u64,
+		request: u64,
+		channel: Id,
+	},
+	SyncSavePage {
+		job: u64,
+		request: u64,
+		channel: Id,
+		messages: Vec<Message>,
+		coverage: local_store::HistoryCoverage,
+	},
+	LoadSyncCheckpoint,
+	SaveSyncCheckpoint(local_store::SyncCheckpoint),
+	ClearSyncCheckpoint,
+	LoadHistoryPage {
+		channel: Id,
+		request: u64,
+		page: local_store::HistoryPageQuery,
+	},
+	CacheUsage,
+	ObserveHistoryChange {
+		channel: Id,
+		message: Id,
+	},
+
 	LoadMembers {
 		guild: Id,
 		revision: u64,
@@ -144,6 +192,48 @@ pub enum Operation {
 }
 #[allow(clippy::large_enum_variant)]
 pub enum Outcome {
+	MemberDisplaysFound {
+		request: client_core::member_search::Request,
+		revision: u64,
+		epoch: u64,
+		result: Result<Vec<model::MemberDisplay>, StoreError>,
+	},
+	SyncMembersSaved {
+		job: u64,
+		request: u64,
+		guild: Id,
+		epoch: u64,
+		result: Result<(), StoreError>,
+	},
+	SyncRevision {
+		job: u64,
+		request: u64,
+		channel: Id,
+		epoch: u64,
+		result: Result<u64, StoreError>,
+	},
+	SyncPageSaved {
+		job: u64,
+		request: u64,
+		channel: Id,
+		epoch: u64,
+		result: Result<local_store::SyncPageResult, StoreError>,
+	},
+	SyncCheckpoint {
+		epoch: u64,
+		result: Result<Option<local_store::SyncCheckpoint>, StoreError>,
+	},
+	SyncCheckpointSaved {
+		epoch: u64,
+		result: Result<(), StoreError>,
+	},
+	HistoryPage {
+		channel: Id,
+		request: u64,
+		epoch: u64,
+		result: Result<Vec<Message>, StoreError>,
+	},
+	CacheUsage(Result<local_store::cache_budget::CacheUsage, StoreError>),
 	CustomFont(Result<Option<ui::fonts::CustomFont>, &'static str>),
 	AppPreferencesSaved(Result<(), StoreError>),
 	/// Saved appearance plus the saved theme preset key, if any.
@@ -217,10 +307,20 @@ pub enum Outcome {
 		history_cleanup: bool,
 	},
 }
+#[derive(Clone, Copy, Default)]
+struct HistoryPins {
+	channel: Option<(Id, Id)>,
+	writing: Option<(Id, Id)>,
+	sync: [Option<(Id, Id)>; 2],
+	guild: Option<(Id, Id)>,
+}
+
 pub struct Cache {
 	send: SyncSender<(u64, Id, u64, Operation, Reservation)>,
 	pub receive: Receiver<(u64, Outcome, Reservation)>,
 	budget: Arc<Budget>,
+	sync_budget: Arc<Budget>,
+	protected_history: Arc<Mutex<HistoryPins>>,
 	pub history: Arc<HistorySafety>,
 }
 /// Saves in these lanes remain pending after queue backpressure and retry on progress.
@@ -622,6 +722,37 @@ impl AccountForgets {
 	}
 }
 impl Cache {
+	/// Update a fixed-size reading pin. Filesystem work stays on the storage worker.
+	pub fn protect_history(&self, account: Id, channel: Option<Id>) {
+		let mut pins = self
+			.protected_history
+			.lock()
+			.unwrap_or_else(|error| error.into_inner());
+		pins.channel = channel.map(|channel| (account, channel));
+		if channel.is_none() || pins.guild.is_some_and(|(old, _)| old != account) {
+			pins.guild = None;
+		}
+	}
+	pub fn protect_guild(&self, account: Id, guild: Option<Id>) {
+		self.protected_history
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.guild = guild.map(|guild| (account, guild));
+	}
+	pub fn protect_sync_history(&self, account: Id, channels: &[Id]) {
+		let mut pins = self
+			.protected_history
+			.lock()
+			.unwrap_or_else(|error| error.into_inner());
+		pins.sync = [None; 2];
+		for (slot, channel) in pins
+			.sync
+			.iter_mut()
+			.zip(channels.iter().copied().filter(|channel| channel.0 != 0))
+		{
+			*slot = Some((account, channel));
+		}
+	}
 	/// FIFO cleanup plus the epoch fence prevents earlier reads/writes restoring removed data.
 	pub fn invalidate_scope(&self, generation: u64, account: Id, operation: Operation) -> bool {
 		let blocked = !self.history.allows(self.history.epoch());
@@ -653,7 +784,38 @@ impl Cache {
 		if matches!(&operation, Operation::SaveChannelPreferences(value) if !value.is_valid()) {
 			return false;
 		}
+		if matches!(&operation, Operation::SyncSavePage {job,request,coverage,..} if coverage.job != *job || coverage.request != *request)
+			|| matches!(&operation, Operation::SyncSaveMembers {guild,rows,..} if rows.iter().any(|row|row.guild != *guild))
+		{
+			return false;
+		}
 		let payload = match &operation {
+			Operation::FindMemberDisplays { request, .. } => {
+				if !request.valid() {
+					return false;
+				}
+				request.query.capacity() + request.users.capacity() * size_of::<Id>() + 1024 * 1024
+			}
+			Operation::SyncSavePage { messages, .. } => {
+				if messages.len() > 50 || message_bytes(messages) > WINDOW_BYTES {
+					return false;
+				}
+				message_bytes(messages)
+			}
+			Operation::SaveSyncCheckpoint(checkpoint) => {
+				if checkpoint.payload.len() > 1024 * 1024 {
+					return false;
+				}
+				checkpoint.payload.capacity()
+			}
+			Operation::LoadHistoryPage { page, .. }
+				if page.limit == 0
+					|| page.limit > 500
+					|| (page.before.is_some() && page.around.is_some()) =>
+			{
+				return false;
+			}
+
 			// The bounded JSON columns and decoded catalog can coexist during a read.
 			Operation::LoadExpressions { .. } | Operation::LoadStickerPackHints { .. } => {
 				8 * 1024 * 1024
@@ -684,7 +846,7 @@ impl Cache {
 					.map(local_store::ServerDisplay::bytes)
 					.sum::<usize>() + rows.capacity() * size_of::<local_store::ServerDisplay>()
 			}
-			Operation::SaveMembers(rows) => {
+			Operation::SaveMembers(rows) | Operation::SyncSaveMembers { rows, .. } => {
 				if rows.len() > 4096
 					|| rows.iter().any(|row| !row.valid())
 					|| rows.iter().map(model::MemberDisplay::bytes).sum::<usize>() > 2 * 1024 * 1024
@@ -762,16 +924,31 @@ impl Cache {
 			_ => 0,
 		};
 		// Small metadata and channel preferences fit in the reserved 8 KiB overhead.
-		let Some(reservation) = self
+		let Some(mut reservation) = self
 			.budget
 			.reserve(payload.saturating_add(ids).saturating_add(8192), false)
 		else {
 			return false;
 		};
+		if is_sync_operation(&operation) {
+			let Some(sync) = self
+				.sync_budget
+				.reserve(payload.saturating_add(ids).saturating_add(8192), false)
+			else {
+				return false;
+			};
+			reservation._sync = Some(Box::new(sync));
+		}
 		let epoch = self.history.epoch();
+		if is_sync_operation(&operation) && !self.history.allows(epoch) {
+			return false;
+		}
 		if matches!(
 			operation,
 			Operation::LoadChannel { .. }
+				| Operation::ObserveHistoryChange { .. }
+				| Operation::FindMemberDisplays { .. }
+				| Operation::LoadHistoryPage { .. }
 				| Operation::SaveChannel { .. }
 				| Operation::SaveChanges { .. }
 				| Operation::LoadMembers { .. }
@@ -796,11 +973,57 @@ impl Cache {
 		let budget = Arc::new(Budget::default());
 		let history = Arc::new(HistorySafety::default());
 		let worker_history = history.clone();
+		let protected_history = Arc::new(Mutex::new(HistoryPins::default()));
+		let worker_protected = protected_history.clone();
 		std::thread::spawn(move || {
 			let mut store = LocalStore::open_default();
+			let disk_budget = local_store::data_dir()
+				.ok()
+				.map(|root| local_store::cache_budget::CacheBudget::for_root(&root));
+			if let (Some(budget), Ok(store)) = (&disk_budget, &mut store) {
+				let _ = maintain_disk_cache(store, budget, &HistoryPins::default());
+			}
 			let results = Arc::new(Budget::default());
-			while let Ok((generation, account, epoch, operation, reservation)) = commands.recv() {
-				let outcome = execute(&mut store, &worker_history, account, epoch, operation);
+			loop {
+				let (generation, account, epoch, operation, reservation) =
+					match commands.recv_timeout(std::time::Duration::from_secs(5)) {
+						Ok(command) => command,
+						Err(mpsc::RecvTimeoutError::Disconnected) => break,
+						Err(mpsc::RecvTimeoutError::Timeout) => {
+							let protected = *worker_protected
+								.lock()
+								.unwrap_or_else(|error| error.into_inner());
+							if let (Some(budget), Ok(store)) = (&disk_budget, &mut store)
+								&& budget.needs_maintenance()
+							{
+								let _ = maintain_disk_cache(store, budget, &protected);
+							}
+							continue;
+						}
+					};
+				let mut protected = *worker_protected
+					.lock()
+					.unwrap_or_else(|error| error.into_inner());
+				protected.writing =
+					history_write(&operation).map(|(channel, _)| (account, channel));
+				if let Some(budget) = &disk_budget {
+					budget.set_active_account(protected.channel.map(|scope| scope.0));
+				}
+
+				let outcome = execute_with_disk_budget(
+					&mut store,
+					&worker_history,
+					account,
+					epoch,
+					operation,
+					disk_budget.as_ref(),
+					&protected,
+				);
+				if let (Some(budget), Ok(store)) = (&disk_budget, &mut store)
+					&& budget.needs_maintenance()
+				{
+					let _ = maintain_disk_cache(store, budget, &protected);
+				}
 				drop(reservation);
 				let bytes = outcome_bytes(&outcome);
 				let reservation = results
@@ -816,6 +1039,11 @@ impl Cache {
 			send,
 			receive,
 			budget,
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history,
 			history,
 		}
 	}
@@ -824,8 +1052,27 @@ impl Cache {
 /// Heap retained by a completed result while the UI has not consumed it.
 fn outcome_bytes(outcome: &Outcome) -> usize {
 	match outcome {
+		Outcome::HistoryPage {
+			result: Ok(messages),
+			..
+		} => message_bytes(messages),
+		Outcome::SyncCheckpoint {
+			result: Ok(Some(checkpoint)),
+			..
+		} => checkpoint.payload.capacity(),
 		Outcome::CustomFont(Ok(Some(font))) => font.bytes().len() + font.name.capacity(),
 		Outcome::Channel { messages, .. } => message_bytes(messages),
+		Outcome::MemberDisplaysFound {
+			request, result, ..
+		} => {
+			request.query.capacity()
+				+ request.users.capacity() * size_of::<Id>()
+				+ result.as_ref().map_or(0, |rows| {
+					rows.iter().map(model::MemberDisplay::bytes).sum::<usize>()
+						+ rows.capacity().saturating_sub(rows.len())
+							* size_of::<model::MemberDisplay>()
+				})
+		}
 		Outcome::Members { result, .. } => result.as_ref().map_or(0, |rows| {
 			rows.iter().map(model::MemberDisplay::bytes).sum::<usize>()
 				+ rows.capacity().saturating_sub(rows.len()) * size_of::<model::MemberDisplay>()
@@ -864,6 +1111,457 @@ fn outcome_bytes(outcome: &Outcome) -> usize {
 	}
 }
 
+fn maintain_disk_cache(
+	store: &mut LocalStore,
+	budget: &Arc<local_store::cache_budget::CacheBudget>,
+	protected: &HistoryPins,
+) -> std::io::Result<local_store::cache_budget::CacheUsage> {
+	budget.maintain(|stage, wanted| reclaim_disk_cache(store, stage, wanted, protected))
+}
+
+fn reclaim_disk_cache(
+	store: &mut LocalStore,
+	stage: local_store::cache_budget::ReclaimStage,
+	wanted: u64,
+	protected: &HistoryPins,
+) -> std::io::Result<()> {
+	use local_store::cache_budget::ReclaimStage;
+	if wanted == 0 {
+		return Ok(());
+	}
+	let limit = ((wanted / 256).max(1) as usize).min(4096);
+	let cutoff = history_cutoff();
+	let pins = history_pins(protected);
+	let before = store
+		.history_cache_stats()
+		.map_err(|_| std::io::Error::other("Cache cleanup could not measure database pages"))?
+		.database_bytes;
+	for _ in 0..32 {
+		let reclaimed = match stage {
+			ReclaimStage::ExpiredHistory => {
+				store.evict_history_before_protected(cutoff, limit, &pins)
+			}
+			ReclaimStage::RecentHistory => store.evict_oldest_history(limit, &pins),
+			ReclaimStage::PresentationHints => store
+				.evict_presentation_hints(limit, &protected.guild.into_iter().collect::<Vec<_>>()),
+		}
+		.map_err(|_| std::io::Error::other("Cache cleanup could not remove old records"))?;
+		if reclaimed == 0 {
+			break;
+		}
+		store
+			.reclaim_history_space()
+			.map_err(|_| std::io::Error::other("Cache cleanup could not reclaim database pages"))?;
+		let remaining = store
+			.history_cache_stats()
+			.map_err(|_| std::io::Error::other("Cache cleanup could not measure database pages"))?
+			.database_bytes;
+		if before.saturating_sub(remaining) >= wanted {
+			break;
+		}
+	}
+	Ok(())
+}
+
+/// Reserve pessimistic database and journal growth before optional cache writes.
+fn cache_write_reservation(operation: &Operation) -> Option<u64> {
+	let bytes = match operation {
+		Operation::SyncSavePage { messages, .. }
+		| Operation::SaveChannel { messages, .. }
+		| Operation::SaveChanges { messages, .. } => message_bytes(messages),
+		Operation::SyncSaveMembers { rows, .. } | Operation::SaveMembers(rows) => {
+			rows.iter().map(model::MemberDisplay::bytes).sum()
+		}
+		Operation::SaveExpressions(rows) => rows.bytes(),
+		Operation::SaveStickerPackHints(rows) => rows.bytes(),
+		Operation::SaveServers { rows, .. } => {
+			rows.iter().map(local_store::ServerDisplay::bytes).sum()
+		}
+		Operation::SaveSyncCheckpoint(checkpoint) => checkpoint.payload.len(),
+		Operation::SaveDraft { content, .. } => content.len(),
+		Operation::SaveGifFavorites(rows) => rows.iter().map(model::Gif::bytes).sum(),
+		Operation::SaveCustomFont(font) => {
+			return Some(
+				font.as_ref()
+					.map_or(0, |font| font.bytes().len() as u64)
+					.saturating_mul(4)
+					.saturating_add(64 * 1024 * 1024),
+			);
+		}
+		Operation::DeleteMessages { .. }
+		| Operation::ClearHistory
+		| Operation::ClearChannel { .. }
+		| Operation::RemoveServer { .. }
+		| Operation::RemoveMember { .. }
+		| Operation::ClearExpressions { .. }
+		| Operation::Forget => return Some(64 * 1024 * 1024),
+		Operation::SaveAppPreferences(_)
+		| Operation::SaveAppearance(_)
+		| Operation::SaveThemeVariant(_)
+		| Operation::SaveReadingPreferences(_)
+		| Operation::SaveGameActivity(_)
+		| Operation::SaveMinimizeToTray(_)
+		| Operation::SaveChannelPreferences(_)
+		| Operation::SaveAccountPresence(_)
+		| Operation::SaveAccount(_)
+		| Operation::SetAccountToken { .. }
+		| Operation::ObserveHistoryChange { .. }
+		| Operation::ClearSyncCheckpoint => 64 * 1024,
+		_ => return None,
+	};
+	// JSON escaping, indexes and WAL may coexist with final SQLite pages. Personal
+	// records receive admission too; they remain intact if only their write must wait.
+	Some(
+		(bytes as u64)
+			.saturating_mul(16)
+			.saturating_add(1024 * 1024),
+	)
+}
+
+fn history_cutoff() -> Id {
+	let now = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap_or_default()
+		.as_millis();
+	let relative = now
+		.saturating_sub(21 * 86_400_000)
+		.saturating_sub(1_420_070_400_000);
+	Id((relative.min((u64::MAX >> 22) as u128) as u64) << 22)
+}
+fn history_pins(protected: &HistoryPins) -> Vec<(Id, Id)> {
+	let mut pins: Vec<_> = [protected.channel, protected.writing]
+		.into_iter()
+		.chain(protected.sync)
+		.flatten()
+		.collect();
+	pins.sort_unstable();
+	pins.dedup();
+	pins
+}
+fn history_write(operation: &Operation) -> Option<(Id, &[Message])> {
+	match operation {
+		Operation::SyncSavePage {
+			channel, messages, ..
+		}
+		| Operation::SaveChannel {
+			channel, messages, ..
+		}
+		| Operation::SaveChanges {
+			channel, messages, ..
+		} => Some((*channel, messages)),
+		_ => None,
+	}
+}
+/// At the item ceiling, real growth evicts old pages even when byte usage is low.
+/// Exact-ID checks keep foreground edits and unchanged pages writable at capacity.
+fn history_growth(
+	store: &LocalStore,
+	account: Id,
+	channel: Id,
+	messages: &[Message],
+	limit: u64,
+) -> Result<usize, StoreError> {
+	let count = store.history_cache_stats()?.messages;
+	if count.saturating_add(messages.len() as u64) <= limit {
+		return Ok(0);
+	}
+	let ids: Vec<_> = messages.iter().map(|message| message.id).collect();
+	let missing = store.missing_history_messages(account, channel, &ids)?;
+	Ok(if count.saturating_add(missing as u64) > limit {
+		missing
+	} else {
+		0
+	})
+}
+fn ensure_history_items(
+	store: &mut LocalStore,
+	account: Id,
+	channel: Id,
+	messages: &[Message],
+	limit: u64,
+	protected: &HistoryPins,
+) -> Result<(), StoreError> {
+	let incoming = history_growth(store, account, channel, messages, limit)?;
+	if incoming == 0 {
+		return Ok(());
+	}
+	let cutoff = history_cutoff();
+	let pins = history_pins(protected);
+	let slack = (limit / 1000).clamp(1, 1000);
+	let target = limit.saturating_sub(incoming as u64).saturating_sub(slack);
+	for expired in [true, false] {
+		for _ in 0..32 {
+			let count = store.history_cache_stats()?.messages;
+			if count <= target {
+				return Ok(());
+			}
+			let victims = (count - target).min(4096) as usize;
+			let removed = if expired {
+				store.evict_history_before_protected(cutoff, victims, &pins)?
+			} else {
+				store.evict_oldest_history(victims, &pins)?
+			};
+			if removed == 0 {
+				break;
+			}
+			store.reclaim_history_space()?;
+		}
+	}
+	if store
+		.history_cache_stats()?
+		.messages
+		.saturating_add(incoming as u64)
+		<= limit
+	{
+		Ok(())
+	} else {
+		Err(StoreError::Capacity)
+	}
+}
+
+fn execute_with_disk_budget(
+	store: &mut Result<LocalStore, StoreError>,
+	history: &HistorySafety,
+	account: Id,
+	epoch: u64,
+	operation: Operation,
+	budget: Option<&Arc<local_store::cache_budget::CacheBudget>>,
+	protected: &HistoryPins,
+) -> Outcome {
+	if !history.allows(epoch)
+		&& (is_sync_operation(&operation)
+			|| matches!(
+				&operation,
+				Operation::SaveChannel { .. }
+					| Operation::SaveChanges { .. }
+					| Operation::SaveMembers(_)
+					| Operation::SaveExpressions(_)
+					| Operation::SaveStickerPackHints(_)
+					| Operation::SaveServers { .. }
+					| Operation::ObserveHistoryChange { .. }
+			)) {
+		return execute(store, history, account, epoch, operation);
+	}
+
+	let mut protected = *protected;
+	protected.writing = history_write(&operation).map(|(channel, _)| (account, channel));
+	let item_pressure = match (history_write(&operation), store.as_ref()) {
+		(Some((channel, messages)), Ok(store)) => match history_growth(
+			store,
+			account,
+			channel,
+			messages,
+			local_store::MAX_CACHED_MESSAGES as u64,
+		) {
+			Ok(growth) => growth > 0,
+			Err(error) => return execute(&mut Err(error), history, account, epoch, operation),
+		},
+		_ => false,
+	};
+	let required = cache_write_reservation(&operation).map(|bytes| {
+		if item_pressure {
+			bytes.max(64 * 1024 * 1024)
+		} else {
+			bytes
+		}
+	});
+	let reservation =
+		if let (Some(bytes), Some(budget), Ok(store)) = (required, budget, &mut *store) {
+			match budget.reserve_with_reclaim(bytes, |stage, wanted| {
+				reclaim_disk_cache(store, stage, wanted, &protected)
+			}) {
+				Ok(reservation) => Some(reservation),
+				Err(_) => {
+					return execute(
+						&mut Err(StoreError::Capacity),
+						history,
+						account,
+						epoch,
+						operation,
+					);
+				}
+			}
+		} else {
+			None
+		};
+	if item_pressure
+		&& let (Some((channel, messages)), Ok(store)) = (history_write(&operation), &mut *store)
+		&& let Err(error) = ensure_history_items(
+			store,
+			account,
+			channel,
+			messages,
+			local_store::MAX_CACHED_MESSAGES as u64,
+			&protected,
+		) {
+		return execute(&mut Err(error), history, account, epoch, operation);
+	}
+	let outcome = execute(store, history, account, epoch, operation);
+	drop(reservation);
+	if let Some(budget) = budget {
+		let _ = budget.refresh_database();
+	}
+	outcome
+}
+
+fn is_sync_operation(operation: &Operation) -> bool {
+	matches!(
+		operation,
+		Operation::SyncReadRevision { .. }
+			| Operation::SyncSaveMembers { .. }
+			| Operation::SyncSavePage { .. }
+			| Operation::LoadSyncCheckpoint
+			| Operation::SaveSyncCheckpoint(_)
+			| Operation::ClearSyncCheckpoint
+	)
+}
+
+fn sync_store<'a>(
+	store: &'a mut Result<LocalStore, StoreError>,
+	history: &HistorySafety,
+	epoch: u64,
+) -> Result<&'a mut LocalStore, StoreError> {
+	if history.allows(epoch) {
+		store.as_mut().map_err(|error| *error)
+	} else {
+		Err(StoreError::Unavailable)
+	}
+}
+
+/// Background results retain their own correlation and failures; they never become timeline events.
+fn execute_sync(
+	store: &mut Result<LocalStore, StoreError>,
+	history: &HistorySafety,
+	account: Id,
+	epoch: u64,
+	operation: Operation,
+) -> Result<Operation, Outcome> {
+	let outcome = match operation {
+		Operation::FindMemberDisplays { request, revision } => {
+			let result = sync_store(store, history, epoch).and_then(|store| {
+				if !request.valid() {
+					return Err(StoreError::Capacity);
+				}
+				if request.slot == 1 {
+					return store.load_member_displays_for_users(
+						account,
+						request.guild,
+						&request.users,
+					);
+				}
+				if let Ok(user) = request.query.parse::<Id>() {
+					return store.load_member_displays_for_users(account, request.guild, &[user]);
+				}
+				store.search_member_displays(account, request.guild, &request.query, 100)
+			});
+			Outcome::MemberDisplaysFound {
+				request,
+				revision,
+				epoch,
+				result,
+			}
+		}
+		Operation::SyncSaveMembers {
+			job,
+			request,
+			guild,
+			rows,
+		} => Outcome::SyncMembersSaved {
+			job,
+			request,
+			guild,
+			epoch,
+			result: sync_store(store, history, epoch).and_then(|store| {
+				if rows.iter().any(|row| row.guild != guild) {
+					return Err(StoreError::Capacity);
+				}
+				store.save_member_displays(account, &rows)
+			}),
+		},
+		Operation::SyncReadRevision {
+			job,
+			request,
+			channel,
+		} => Outcome::SyncRevision {
+			job,
+			request,
+			channel,
+			epoch,
+			result: sync_store(store, history, epoch)
+				.and_then(|store| store.history_revision(account, channel)),
+		},
+		Operation::SyncSavePage {
+			job,
+			request,
+			channel,
+			messages,
+			coverage,
+		} => Outcome::SyncPageSaved {
+			job,
+			request,
+			channel,
+			epoch,
+			result: sync_store(store, history, epoch).and_then(|store| {
+				if coverage.job != job || coverage.request != request {
+					return Err(StoreError::Capacity);
+				}
+				store.save_sync_page(account, channel, &messages, &coverage)
+			}),
+		},
+		Operation::LoadSyncCheckpoint => Outcome::SyncCheckpoint {
+			epoch,
+			result: sync_store(store, history, epoch)
+				.and_then(|store| store.load_sync_checkpoint(account)),
+		},
+		Operation::SaveSyncCheckpoint(checkpoint) => Outcome::SyncCheckpointSaved {
+			epoch,
+			result: sync_store(store, history, epoch)
+				.and_then(|store| store.save_sync_checkpoint(account, &checkpoint)),
+		},
+		Operation::ClearSyncCheckpoint => Outcome::SyncCheckpointSaved {
+			epoch,
+			result: store
+				.as_mut()
+				.map_err(|error| *error)
+				.and_then(|store| store.clear_sync_checkpoint(account)),
+		},
+		Operation::LoadHistoryPage {
+			channel,
+			request,
+			page,
+		} => Outcome::HistoryPage {
+			channel,
+			request,
+			epoch,
+			result: sync_store(store, history, epoch)
+				.and_then(|store| store.load_history_page(account, channel, page)),
+		},
+		Operation::ObserveHistoryChange { channel, message } => {
+			match sync_store(store, history, epoch)
+				.and_then(|store| store.observe_history_change(account, channel, message, false))
+			{
+				Ok(_) => Outcome::Saved,
+				Err(error) => {
+					history.fail();
+					Outcome::Failed {
+						error,
+						message: "Could not invalidate changed cached messages; history cache disabled until restart",
+						draft_restore: false,
+						history_cleanup: true,
+					}
+				}
+			}
+		}
+		Operation::CacheUsage => Outcome::CacheUsage(local_store::data_dir().and_then(|root| {
+			local_store::cache_budget::CacheBudget::for_root(&root)
+				.refresh_database()
+				.map_err(|_| StoreError::Unavailable)
+		})),
+		operation => return Ok(operation),
+	};
+	Err(outcome)
+}
+
 fn execute(
 	store: &mut Result<LocalStore, StoreError>,
 	history: &HistorySafety,
@@ -871,6 +1569,10 @@ fn execute(
 	epoch: u64,
 	operation: Operation,
 ) -> Outcome {
+	let operation = match execute_sync(store, history, account, epoch, operation) {
+		Ok(operation) => operation,
+		Err(outcome) => return outcome,
+	};
 	// Settings completions have their own pending/error state, independent of history.
 	match &operation {
 		Operation::LoadCustomFont => {
@@ -1146,7 +1848,17 @@ fn execute(
 			"Could not save GIF favorites; the change exists only in this session"
 		}
 		Operation::LoadChannel { .. } => "Could not read cached history",
-		Operation::LoadCustomFont
+		Operation::SyncReadRevision { .. }
+		| Operation::FindMemberDisplays { .. }
+		| Operation::SyncSaveMembers { .. }
+		| Operation::SyncSavePage { .. }
+		| Operation::LoadSyncCheckpoint
+		| Operation::SaveSyncCheckpoint(_)
+		| Operation::ClearSyncCheckpoint
+		| Operation::LoadHistoryPage { .. }
+		| Operation::CacheUsage
+		| Operation::ObserveHistoryChange { .. }
+		| Operation::LoadCustomFont
 		| Operation::LoadMembers { .. }
 		| Operation::LoadExpressions { .. }
 		| Operation::LoadStickerPackHints { .. }
@@ -1170,7 +1882,17 @@ fn execute(
 	};
 	let result = match store {
 		Ok(store) => match operation {
-			Operation::LoadCustomFont
+			Operation::SyncReadRevision { .. }
+			| Operation::FindMemberDisplays { .. }
+			| Operation::SyncSaveMembers { .. }
+			| Operation::SyncSavePage { .. }
+			| Operation::LoadSyncCheckpoint
+			| Operation::SaveSyncCheckpoint(_)
+			| Operation::ClearSyncCheckpoint
+			| Operation::LoadHistoryPage { .. }
+			| Operation::CacheUsage
+			| Operation::ObserveHistoryChange { .. }
+			| Operation::LoadCustomFont
 			| Operation::LoadMembers { .. }
 			| Operation::LoadExpressions { .. }
 			| Operation::LoadStickerPackHints { .. }
@@ -1308,6 +2030,11 @@ pub fn debug_voice_preferences_check() {
 		send,
 		receive,
 		budget: Arc::new(Budget::default()),
+		sync_budget: Arc::new(Budget {
+			limit: SYNC_QUEUE_BYTES,
+			..Budget::default()
+		}),
+		protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 		history: Arc::new(HistorySafety::default()),
 	};
 	let mut settings =
@@ -1375,6 +2102,524 @@ pub fn debug_voice_preferences_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn item_pressure_evicts_inactive_history_and_keeps_current_pages_and_edits() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:")).unwrap();
+		let account = Id(1);
+		let current = Id(2);
+		let inactive = Id(3);
+		store
+			.save_channel(
+				account,
+				current,
+				&[
+					test_support::message(10, current),
+					test_support::message(11, current),
+				],
+				false,
+			)
+			.unwrap();
+		store
+			.save_sync_checkpoint(
+				account,
+				&local_store::SyncCheckpoint {
+					job: 1,
+					scope: None,
+					started_ms: 1_420_070_400_000,
+					cutoff_ms: 1_420_070_400_000,
+					payload: Vec::new(),
+				},
+			)
+			.unwrap();
+		let coverage = local_store::HistoryCoverage {
+			job: 1,
+			request: 1,
+			cutoff: Id(1),
+			upper: Id(100),
+			before: None,
+			next_before: None,
+			complete: true,
+			revision: 0,
+		};
+		store
+			.save_sync_page(
+				account,
+				inactive,
+				&[test_support::message(9, inactive)],
+				&coverage,
+			)
+			.unwrap();
+		let pins = HistoryPins {
+			channel: Some((account, current)),
+			writing: Some((account, current)),
+			..HistoryPins::default()
+		};
+		// Inject a three-item ceiling instead of allocating a million messages.
+		ensure_history_items(
+			&mut store,
+			account,
+			current,
+			&[test_support::message(12, current)],
+			3,
+			&pins,
+		)
+		.unwrap();
+		assert_eq!(store.history_cache_stats().unwrap().messages, 2);
+		assert_eq!(store.load_channel(account, current).unwrap().len(), 2);
+		assert!(store.load_channel(account, inactive).unwrap().is_empty());
+		// Evicted sync coverage cannot silently redownload the same job's old page.
+		assert!(
+			store
+				.save_sync_page(
+					account,
+					inactive,
+					&[test_support::message(9, inactive)],
+					&local_store::HistoryCoverage {
+						request: 2,
+						..coverage
+					}
+				)
+				.unwrap()
+				.stale
+		);
+		store
+			.save_changes(
+				account,
+				current,
+				&[test_support::message(12, current)],
+				&[Id(10), Id(11), Id(12)],
+				false,
+			)
+			.unwrap();
+		assert_eq!(store.history_cache_stats().unwrap().messages, 3);
+		// Existing-row edits remain writable even when every row belongs to the pinned channel.
+		ensure_history_items(
+			&mut store,
+			account,
+			current,
+			&[test_support::message(11, current)],
+			3,
+			&pins,
+		)
+		.unwrap();
+		assert_eq!(store.history_cache_stats().unwrap().messages, 3);
+		assert_eq!(
+			ensure_history_items(
+				&mut store,
+				account,
+				current,
+				&[test_support::message(13, current)],
+				3,
+				&pins
+			),
+			Err(StoreError::Capacity)
+		);
+		assert_eq!(store.load_channel(account, current).unwrap().len(), 3);
+	}
+
+	#[test]
+	fn full_disk_budget_rejects_only_the_new_write_and_preserves_drafts() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-global-cache-write-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir(&root).unwrap();
+		let path = root.join("client.sqlite3");
+		// A sparse synthetic allocation exercises accounting without writing gigabytes.
+		std::fs::File::create(&path)
+			.unwrap()
+			.set_len(model::TOTAL_CACHE_BYTES)
+			.unwrap();
+		let budget = local_store::cache_budget::CacheBudget::for_root(&root);
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		store
+			.as_mut()
+			.unwrap()
+			.save_draft(Id(1), Id(2), "Previous saved draft")
+			.unwrap();
+		let safety = HistorySafety::default();
+		let result = execute_with_disk_budget(
+			&mut store,
+			&safety,
+			Id(1),
+			safety.epoch(),
+			Operation::SaveDraft {
+				channel: Id(2),
+				content: "Latest draft remains in memory".into(),
+			},
+			Some(&budget),
+			&HistoryPins::default(),
+		);
+		assert!(matches!(
+			result,
+			Outcome::Failed {
+				error: StoreError::Capacity,
+				history_cleanup: false,
+				..
+			}
+		));
+		assert!(safety.allows(safety.epoch()));
+		assert_eq!(
+			store.as_ref().unwrap().load_drafts(Id(1)).unwrap()[&Id(2)],
+			"Previous saved draft"
+		);
+		assert!(matches!(
+			execute_with_disk_budget(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::SaveCustomFont(None),
+				Some(&budget),
+				&HistoryPins::default()
+			),
+			Outcome::CustomFont(Err(_))
+		));
+		drop(budget);
+		std::fs::remove_file(path).unwrap();
+		std::fs::remove_dir(root).unwrap();
+	}
+
+	#[test]
+	fn cached_older_page_remains_pending_and_service_reconciles_its_covered_rows() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		state.timeline.clear();
+		state
+			.timeline
+			.insert(test_support::message(100, channel), false, false)
+			.unwrap();
+		state.history_pending = false;
+		state.freshness = model::Freshness::Fresh;
+		let Some(client_core::Command::History { request, .. }) = state.older_history() else {
+			panic!("older request")
+		};
+		assert!(state.hydrate_cached_history_page(
+			channel,
+			request,
+			vec![
+				test_support::message(90, channel),
+				test_support::message(91, channel)
+			]
+		));
+		assert!(state.history_pending);
+		assert!(state.timeline.get(Id(100)).is_some());
+		assert!(state.timeline.get(Id(90)).is_some());
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::History {
+				channel,
+				request,
+				older: true,
+				messages: vec![
+					test_support::message(89, channel),
+					test_support::message(91, channel),
+				],
+			},
+		});
+		assert!(!state.history_pending);
+		assert!(state.timeline.get(Id(100)).is_some());
+		assert!(state.timeline.get(Id(90)).is_none());
+		assert!(state.timeline.get(Id(89)).is_some());
+	}
+
+	#[test]
+	fn cached_reply_jump_requires_exact_target_and_preserves_back_navigation() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		state.timeline.clear();
+		state
+			.timeline
+			.insert(test_support::message(100, channel), false, false)
+			.unwrap();
+		state.history_pending = false;
+		state.freshness = model::Freshness::Fresh;
+		state.reply = Some(client_core::Reply::to(Id(50)));
+		let Some(client_core::Command::HistoryAround { request, .. }) =
+			state.open_reply_target(Id(50))
+		else {
+			panic!("around request")
+		};
+		assert_eq!(state.pending_cached_history_target(), Some(Id(50)));
+		assert!(!state.hydrate_cached_history_page(
+			channel,
+			request,
+			vec![test_support::message(49, channel)]
+		));
+		assert!(state.timeline.get(Id(100)).is_some());
+		assert!(!state.hydrate_cached_history_page(
+			channel,
+			request.wrapping_sub(1),
+			vec![test_support::message(50, channel)]
+		));
+		assert!(state.hydrate_cached_history_page(
+			channel,
+			request,
+			vec![test_support::message(50, channel)]
+		));
+		assert!(state.timeline.get(Id(50)).is_some());
+		assert!(state.timeline.get(Id(100)).is_none());
+		assert!(state.history_pending);
+		assert!(state.can_return_from_reply());
+		// A service page without the original must retire the provisional target.
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::History {
+				channel,
+				request,
+				older: false,
+				messages: vec![test_support::message(49, channel)],
+			},
+		});
+		assert!(state.timeline.get(Id(50)).is_none());
+		assert!(state.status.contains("not returned"));
+		assert!(state.return_from_reply().is_none());
+		assert!(state.timeline.get(Id(100)).is_some());
+	}
+
+	#[test]
+	fn background_sync_pages_keep_correlation_and_reject_live_edit_races() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		let safety = HistorySafety::default();
+		let account = Id(1);
+		let channel = Id(2);
+		store
+			.as_mut()
+			.unwrap()
+			.save_sync_checkpoint(
+				account,
+				&local_store::SyncCheckpoint {
+					job: 7,
+					scope: None,
+					started_ms: 1_420_070_400_000,
+					cutoff_ms: 1_420_070_400_000,
+					payload: Vec::new(),
+				},
+			)
+			.unwrap();
+		let coverage = local_store::HistoryCoverage {
+			job: 7,
+			request: 8,
+			cutoff: Id(1),
+			upper: Id(100),
+			before: None,
+			next_before: None,
+			complete: true,
+			revision: 0,
+		};
+		let message = test_support::message(10, channel);
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				safety.epoch(),
+				Operation::SyncSavePage {
+					job: 7,
+					request: 8,
+					channel,
+					messages: vec![message.clone()],
+					coverage
+				}
+			),
+			Outcome::SyncPageSaved {
+				job: 7,
+				request: 8,
+				result: Ok(local_store::SyncPageResult {
+					saved: 1,
+					stale: false
+				}),
+				..
+			}
+		));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				safety.epoch(),
+				Operation::ObserveHistoryChange {
+					channel,
+					message: Id(10)
+				}
+			),
+			Outcome::Saved
+		));
+		let mut edited = message.clone();
+		edited.content = "Current live body".into();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				safety.epoch(),
+				Operation::SaveChanges {
+					channel,
+					messages: vec![edited],
+					retained: vec![Id(10)],
+					start: false
+				}
+			),
+			Outcome::Saved
+		));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				safety.epoch(),
+				Operation::SyncSavePage {
+					job: 7,
+					request: 9,
+					channel,
+					messages: vec![message],
+					coverage: local_store::HistoryCoverage {
+						request: 9,
+						..coverage
+					}
+				}
+			),
+			Outcome::SyncPageSaved {
+				result: Ok(local_store::SyncPageResult {
+					saved: 0,
+					stale: true
+				}),
+				..
+			}
+		));
+		assert_eq!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_channel(account, channel)
+				.unwrap()[0]
+				.content,
+			"Current live body"
+		);
+		let epoch = safety.epoch();
+		safety.invalidate();
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				account,
+				epoch,
+				Operation::SyncReadRevision {
+					job: 7,
+					request: 10,
+					channel
+				}
+			),
+			Outcome::SyncRevision {
+				job: 7,
+				request: 10,
+				result: Err(StoreError::Unavailable),
+				..
+			}
+		));
+	}
+
+	#[test]
+	fn background_sync_has_an_independent_eight_mebibyte_queue_budget() {
+		let (send, commands) = mpsc::sync_channel(16);
+		let (_, receive) = mpsc::sync_channel(16);
+		let cache = Cache {
+			send,
+			receive,
+			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
+			history: Arc::new(HistorySafety::default()),
+		};
+		let checkpoint = local_store::SyncCheckpoint {
+			job: 1,
+			scope: Some(Id(2)),
+			started_ms: 100,
+			cutoff_ms: 0,
+			payload: vec![0; 1024 * 1024],
+		};
+		for _ in 0..7 {
+			assert!(cache.queue(1, Id(1), Operation::SaveSyncCheckpoint(checkpoint.clone())));
+		}
+		assert!(!cache.queue(1, Id(1), Operation::SaveSyncCheckpoint(checkpoint)));
+		assert!(cache.queue(
+			1,
+			Id(1),
+			Operation::SaveDraft {
+				channel: Id(2),
+				content: "Foreground draft remains admitted".into()
+			}
+		));
+		assert!(*cache.sync_budget.used.lock().unwrap() <= SYNC_QUEUE_BYTES);
+		drop(commands);
+		assert_eq!(*cache.sync_budget.used.lock().unwrap(), 0);
+	}
+
+	#[test]
+	fn sync_checkpoints_remain_account_scoped_and_cleanup_removes_them() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		let safety = HistorySafety::default();
+		let checkpoint = local_store::SyncCheckpoint {
+			job: 4,
+			scope: None,
+			started_ms: 100,
+			cutoff_ms: 0,
+			payload: vec![1, 2, 3],
+		};
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::SaveSyncCheckpoint(checkpoint.clone())
+			),
+			Outcome::SyncCheckpointSaved { result: Ok(()), .. }
+		));
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(2),
+				safety.epoch(),
+				Operation::LoadSyncCheckpoint
+			),
+			Outcome::SyncCheckpoint {
+				result: Ok(None),
+				..
+			}
+		));
+		assert!(
+			matches!(execute(&mut store,&safety,Id(1),safety.epoch(),Operation::LoadSyncCheckpoint),Outcome::SyncCheckpoint {result:Ok(Some(value)),..} if value==checkpoint)
+		);
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::ClearHistory
+			),
+			Outcome::HistoryCleared
+		));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_sync_checkpoint(Id(1))
+				.unwrap()
+				.is_none()
+		);
+	}
+
 	fn expression_hint(guild: Id, user: u64) -> model::ExpressionCatalog {
 		model::ExpressionCatalog {
 			guild,
@@ -1538,6 +2783,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		assert!(cache.queue(1, Id(1), Operation::LoadDrafts));
@@ -1699,6 +2949,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		assert!(cache.queue(
@@ -1913,6 +3168,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let mut state = GifCache::default();
@@ -2101,6 +3361,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let mut load = HistoryLoad::default();
@@ -2246,6 +3511,7 @@ mod tests {
 		state.apply(client_core::Envelope {
 			generation: state.generation,
 			event: client_core::Event::MemberIdentity(Box::new(model::MemberIdentity {
+				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(900001),
 				profile: None,
@@ -2346,6 +3612,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let mut store = Ok(LocalStore::open(std::path::Path::new(":memory:")).unwrap());
@@ -2479,6 +3750,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let mut state = test_support::demo_state();
@@ -2546,6 +3822,7 @@ mod tests {
 		// fresh observation in one guild must not restore another guild's old rows.
 		state.hydrate_member_displays(Id(10), state.member_display_revision(), vec![row]);
 		let identity = model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(900001),
 			profile: None,
@@ -2619,6 +3896,7 @@ mod tests {
 			);
 			state.hydrate_member_displays(Id(10), state.member_display_revision(), rows);
 			let identity = model::MemberIdentity {
+				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(900000),
 				profile: None,
@@ -2642,6 +3920,7 @@ mod tests {
 				}
 			};
 			let departed = model::MemberIdentity {
+				avatar: model::Patch::Absent,
 				departed: true,
 				..identity.clone()
 			};
@@ -2729,6 +4008,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let active = Id(1);
@@ -2826,6 +4110,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let draft = format!("@silent\u{2003}{}", "🦀".repeat(MAX_PREMIUM_CONTENT));
@@ -2868,6 +4157,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let mut view = ui::MessagingUi::default();
@@ -2962,6 +4256,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let initial = LocalStore::open(&path)
@@ -3338,6 +4637,11 @@ mod tests {
 			send,
 			receive,
 			budget: Arc::new(Budget::default()),
+			sync_budget: Arc::new(Budget {
+				limit: SYNC_QUEUE_BYTES,
+				..Budget::default()
+			}),
+			protected_history: Arc::new(Mutex::new(HistoryPins::default())),
 			history: Arc::new(HistorySafety::default()),
 		};
 		let account = Id(1);

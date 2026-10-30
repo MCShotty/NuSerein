@@ -3,7 +3,11 @@ use std::time::Duration;
 
 const MIB: u64 = 1024 * 1024;
 /// Selectable budgets for avatars, previews, stickers and other conversation artwork.
-pub const MEDIA_CACHE_MIB: [u32; 5] = [256, 512, 1024, 2048, 4096];
+pub const MEDIA_CACHE_MIB: [u32; 4] = [256, 512, 1024, 2048];
+/// One device-wide ceiling, including every saved account and cache partition.
+pub const TOTAL_CACHE_BYTES: u64 = 3_000_000_000;
+pub const CACHE_CLEANUP_START_BYTES: u64 = 2_700_000_000;
+pub const CACHE_CLEANUP_TARGET_BYTES: u64 = 2_400_000_000;
 /// Selectable budgets for small artwork reused across conversations.
 pub const ARTWORK_CACHE_MIB: [u32; 4] = [64, 128, 256, 512];
 /// Selectable retention for cached images that are not shown again.
@@ -34,12 +38,18 @@ pub struct DiskLimit {
 #[serde(default)]
 pub struct CachePreferences {
 	/// Avatars, banners, previews, stickers and other conversation artwork.
+	#[serde(deserialize_with = "read_media_limit")]
 	pub media_mib: u32,
 	/// Emoji, badges, server tags, role icons, avatar decorations and nameplates. Kept apart
 	/// so large media cannot evict artwork that appears in almost every conversation.
 	pub artwork_mib: u32,
 	/// Cached images unused for this many days are removed.
 	pub retention_days: u16,
+}
+fn read_media_limit<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+	let value = <u32 as serde::Deserialize>::deserialize(d)?;
+	// Retire the old 4-GiB choice without resetting unrelated saved preferences.
+	Ok(if value == 4096 { 2048 } else { value })
 }
 impl Default for CachePreferences {
 	fn default() -> Self {
@@ -95,12 +105,12 @@ mod tests {
 		assert_eq!(defaults.artwork_limit().files, 4096);
 		assert_eq!(defaults.retention(), Duration::from_secs(90 * 86_400));
 		let largest = CachePreferences {
-			media_mib: 4096,
+			media_mib: 2048,
 			artwork_mib: 512,
 			retention_days: 365,
 		};
 		assert!(largest.is_valid());
-		assert_eq!(largest.media_limit().files, 16_384);
+		assert_eq!(largest.media_limit().files, 8192);
 		assert_eq!(largest.artwork_limit().files, 16_384);
 		for invalid in [
 			CachePreferences {
@@ -118,5 +128,25 @@ mod tests {
 		] {
 			assert!(!invalid.is_valid(), "{invalid:?}");
 		}
+	}
+
+	#[test]
+	fn legacy_media_limit_keeps_artwork_and_retention() {
+		let fields = [
+			("media_mib", 4096u32),
+			("artwork_mib", 256),
+			("retention_days", 180),
+		];
+		let saved: CachePreferences =
+			serde::Deserialize::deserialize(serde::de::value::MapDeserializer::<
+				_,
+				serde::de::value::Error,
+			>::new(fields.into_iter()))
+			.unwrap();
+		assert_eq!(saved.media_mib, 2048);
+		assert_eq!(saved.artwork_mib, 256);
+		assert_eq!(saved.retention_days, 180);
+		assert!(saved.is_valid());
+		assert!(!MEDIA_CACHE_MIB.contains(&4096));
 	}
 }

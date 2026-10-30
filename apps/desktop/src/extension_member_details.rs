@@ -164,6 +164,7 @@ mod tests {
 				.map(|id| {
 					Some(MemberSlot::Person(model::Member {
 						user: model::User {
+							member_avatar: None,
 							id: model::Id(id + 9000),
 							..user.clone()
 						},

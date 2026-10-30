@@ -1095,7 +1095,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
-		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|server-applications|server-access|server-bans|server-mfa|mod-view|channels|screen-share|emoji|gif-favorites] [--screen-audio-controls] [--video-backend=ffmpeg] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--voice-channel-status] [--lavasr] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--conversation-qol] [--reaction-history] [--metrics=PATH.json] [--timeline-churn] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
+		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|server-applications|server-access|server-bans|server-mfa|mod-view|force-sync|channels|screen-share|emoji|gif-favorites] [--screen-audio-controls] [--video-backend=ffmpeg] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--voice-channel-status] [--lavasr] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--conversation-qol] [--reaction-history] [--metrics=PATH.json] [--timeline-churn] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -1153,6 +1153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "server-bans"
 			| "server-mfa"
 			| "mod-view"
+			| "force-sync"
 			| "forum" | "forum-post"
 			| "forum-gallery"
 			| "forum-settings"
@@ -1160,7 +1161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			| "screen-share"
 			| "emoji" | "gif-favorites"
 	) {
-		return Err("Page must be events, event-detail, event-edit, stage, profile, conversation, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation, server-applications, server-access, server-bans, server-mfa, mod-view, screen-share, emoji or gif-favorites".into());
+		return Err("Page must be events, event-detail, event-edit, stage, profile, conversation, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation, server-applications, server-access, server-bans, server-mfa, mod-view, force-sync, screen-share, emoji or gif-favorites".into());
 	}
 	let slash_command = value("--command=").unwrap_or("help").to_owned();
 	if !matches!(slash_command.as_str(), "help" | "weather") {
@@ -1678,6 +1679,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					),
 				});
 				messaging.preview_browse_channels(&mut state, model::Id(10));
+			} else if page == "force-sync" {
+				messaging.preview_force_sync();
 			} else if page == "mod-view" {
 				prime_mod_view(&mut state, &mut messaging);
 			} else if page.starts_with("server") {
@@ -1769,6 +1772,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				);
 				if page == "storage" {
 					// Synthetic measurements; the demo image worker keeps no disk cache.
+					let media = 318 * 1024 * 1024;
+					let artwork = 9 * 1024 * 1024 + 300 * 1024;
+					let history = 120 * 1024 * 1024;
+					let metadata = 4 * 1024 * 1024;
+					messaging.force_sync_cache = Some(ui::force_sync::CacheSummary {
+						total_bytes: media + artwork + history + metadata,
+						history_bytes: Some(history),
+						metadata_bytes: Some(metadata),
+						media_bytes: Some(media),
+						artwork_bytes: Some(artwork),
+						last_cleanup: Some("force-sync-cache-cleaned"),
+					});
 					messaging.image_cache_usage = Some([
 						model::CacheUsage {
 							bytes: 318 * 1024 * 1024,

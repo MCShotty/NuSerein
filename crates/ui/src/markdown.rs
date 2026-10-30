@@ -1892,6 +1892,7 @@ impl Formatted {
 						});
 						if response.clicked() || response.contains_pointer() {
 							let opened = user.cloned().unwrap_or(model::User {
+								member_avatar: None,
 								username: None,
 								id,
 								name: format!("User {id}"),
@@ -6287,6 +6288,7 @@ mod tests {
 	fn mention_highlights_include_unknown_users_in_both_themes() {
 		let ctx = egui::Context::default();
 		let users = vec![model::User {
+			member_avatar: None,
 			username: None,
 			id: Id(42),
 			name: "Synthetic Robin".into(),
@@ -6362,6 +6364,7 @@ mod tests {
 		let mut profile = crate::profiles::ProfileSession::default();
 		let mut opening = None;
 		let users = vec![model::User {
+			member_avatar: None,
 			username: None,
 			id: Id(42),
 			name: "Synthetic Robin".into(),

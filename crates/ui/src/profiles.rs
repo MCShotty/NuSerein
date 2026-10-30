@@ -4336,6 +4336,7 @@ pub fn synthetic(user: &User, guild: Option<Id>) -> model::UserProfile {
 		mutual_friends: guild
 			.map(|_| {
 				vec![User {
+					member_avatar: None,
 					username: None,
 					id: Id(42),
 					name: "Mutual friend".into(),
@@ -5218,6 +5219,7 @@ mod tests {
 	#[test]
 	fn popout_shows_selected_data_beside_anchor_and_closes_with_escape() {
 		let user = User {
+			member_avatar: None,
 			username: None,
 			id: Id(2),
 			name: "Synthetic person".into(),
@@ -5405,6 +5407,7 @@ mod tests {
 	#[test]
 	fn clicking_outside_closes_but_clicking_inside_keeps_the_popout() {
 		let user = User {
+			member_avatar: None,
 			username: None,
 			id: Id(2),
 			name: "Synthetic person".into(),

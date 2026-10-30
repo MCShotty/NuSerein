@@ -423,6 +423,7 @@ mod tests {
 
 	fn state() -> State {
 		let user = User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,
@@ -632,6 +633,7 @@ mod tests {
 			Event::Ready {
 				permissions: model::permissions::Snapshot::default(),
 				user: User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -1119,6 +1121,7 @@ mod tests {
 		state.direct_presence_lossy = false;
 		state.channels[0].recipients = (0..=MAX_DIRECT_PRESENCES as u64)
 			.map(|id| model::User {
+				member_avatar: None,
 				id: Id(recipient.id.0 + id),
 				..recipient.clone()
 			})

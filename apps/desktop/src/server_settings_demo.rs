@@ -206,6 +206,7 @@ pub fn execute_admin(
 						.cloned()
 						.unwrap_or_else(|| Member {
 							user: model::User {
+								member_avatar: None,
 								id: user,
 								name: "Synthetic member".into(),
 								..owner.clone()

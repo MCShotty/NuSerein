@@ -327,6 +327,7 @@ pub(crate) mod tests {
 			demo: true,
 			gateway_connected: true,
 			user: Some(model::User {
+				member_avatar: None,
 				id: Id(1),
 				name: "Owner of this session".into(),
 				username: None,

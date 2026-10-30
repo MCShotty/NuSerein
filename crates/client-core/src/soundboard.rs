@@ -487,6 +487,7 @@ mod tests {
 	fn connected(bits: u128) -> State {
 		let mut state = State {
 			user: Some(model::User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,

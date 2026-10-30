@@ -348,6 +348,7 @@ pub(crate) mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),

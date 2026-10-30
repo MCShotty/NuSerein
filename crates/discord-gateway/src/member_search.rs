@@ -4,7 +4,7 @@ use client_core::{
 	auth::Failure,
 	member_search::{LIMIT, MAX_BYTES, Request},
 };
-use discord_protocol::{MemberDto, MemberItem};
+use discord_protocol::MemberDto;
 use model::Id;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -409,13 +409,7 @@ impl Search {
 			let rows: Vec<_> = chunk
 				.members
 				.into_iter()
-				.filter_map(|member| {
-					MemberItem::Member {
-						presence: model::Patch::Absent,
-						member: Box::new(member),
-					}
-					.into_model()
-				})
+				.filter_map(|member| member.into_guild_member(request.guild))
 				.collect();
 			if rows.iter().any(|m| !m.valid())
 				|| rows.iter().map(model::Member::bytes).sum::<usize>() > MAX_BYTES

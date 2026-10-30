@@ -41,6 +41,8 @@ pub struct MemberIdentity {
 	pub guild: Id,
 	pub user: Id,
 	pub profile: Option<User>,
+	/// Server-specific avatar patch; this never changes the account's global avatar.
+	pub avatar: Patch<String>,
 	pub nick: Patch<String>,
 	pub roles: Patch<Vec<Id>>,
 	pub departed: bool,
@@ -50,8 +52,17 @@ impl MemberIdentity {
 		self.guild.0 != 0
 			&& self.user.0 != 0
 			&& self.profile.as_ref().is_none_or(|user| {
-				user.id == self.user && !user.webhook && user.heap_bytes() <= 16 * 1024
-			}) && match &self.nick {
+				user.id == self.user
+					&& !user.webhook
+					&& user.heap_bytes() <= 16 * 1024
+					&& user
+						.member_avatar
+						.as_ref()
+						.is_none_or(|avatar| avatar.guild == self.guild && avatar.valid())
+			}) && match &self.avatar {
+			Patch::Value(hash) => super::valid_avatar_hash(hash),
+			_ => true,
+		} && match &self.nick {
 			Patch::Value(nick) => {
 				nick.len() <= 512
 					&& nick.chars().count() <= 128
@@ -71,10 +82,13 @@ impl MemberIdentity {
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ self.profile.as_ref().map_or(0, User::heap_bytes)
-			+ match &self.nick {
-				Patch::Value(nick) => nick.capacity(),
+			+ match &self.avatar {
+				Patch::Value(hash) => hash.capacity(),
 				_ => 0,
-			} + match &self.roles {
+			} + match &self.nick {
+			Patch::Value(nick) => nick.capacity(),
+			_ => 0,
+		} + match &self.roles {
 			Patch::Value(roles) => roles.capacity() * size_of::<Id>(),
 			_ => 0,
 		}
@@ -88,6 +102,27 @@ impl MemberIdentity {
 			// avatars remain owned by full snapshots; this path refreshes account names.
 			member.user.name.clone_from(&profile.name);
 			member.user.username.clone_from(&profile.username);
+			if let Some(avatar) = &profile.member_avatar
+				&& avatar.guild == self.guild
+				&& avatar.valid()
+			{
+				member.user.member_avatar = Some(avatar.clone());
+			}
+		}
+		match &self.avatar {
+			Patch::Absent => {}
+			Patch::Null => {
+				member.user.member_avatar = Some(Box::new(super::GuildAvatar {
+					guild: self.guild,
+					hash: None,
+				}))
+			}
+			Patch::Value(hash) => {
+				member.user.member_avatar = Some(Box::new(super::GuildAvatar {
+					guild: self.guild,
+					hash: Some(hash.clone()),
+				}))
+			}
 		}
 		match &self.nick {
 			Patch::Value(nick) => member.nick = (!nick.is_empty()).then(|| nick.clone()),
@@ -163,6 +198,9 @@ impl Member {
 }
 
 #[derive(Clone)]
+// The bounded list stores people inline; boxing every loaded person adds an allocation
+// per row. MemberList byte accounting includes this larger inline representation.
+#[allow(clippy::large_enum_variant)]
 pub enum MemberSlot {
 	Person(Member),
 	/// Gateway group id: role snowflake, "online", or "offline".

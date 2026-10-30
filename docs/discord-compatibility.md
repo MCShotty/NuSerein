@@ -1,5 +1,55 @@
 # Discord compatibility — checked 2026-09-10
 
+## Explicit Force Sync (October 30, 2026)
+
+**Force Sync This Server** refreshes the selected server. **Settings → Storage & Sync →
+Sync Entire Account** covers joined servers and existing DMs/group DMs in the current
+authenticated navigation snapshot. Both fetch a fixed 21-day history interval and preserve
+the selected conversation, drafts, reading position and unread/mention acknowledgements.
+Closing progress leaves the job active; Pause, Resume and Cancel are explicit controls.
+Restarted jobs are offered paused rather than automatically starting heavy network work.
+
+Read adapters reuse the ordinary member-readable guild, channel, role, expression,
+soundboard, active-thread, archive and message routes. Results pass through the existing
+typed decoders and reconciliation rather than privileged editor authorization. Complete
+catalogs may remove absent entries; partial fields preserve absent/null/value semantics.
+Only successful, correlated history pages establish coverage. An old thread creation ID
+does not exclude recent messages, and joined-private archive pagination is not stopped
+using a creation timestamp. Signed media links remain refreshable metadata; the job does
+not download every media file.
+
+Full roster requests use nonce-matched Gateway member chunks only when current permission
+state allows `MANAGE_ROLES`, `KICK_MEMBERS`, `BAN_MEMBERS` or administrator/owner access.
+The [normal-account request restrictions](https://docs.discord.food/gateway/gateway-events#request-guild-members)
+are unofficial protocol evidence, not an interoperability guarantee. Without full roster
+access, synchronization refreshes available/known members and recent participants, and
+reports partial coverage. Exact-ID member reads are bounded to 100 requested identities;
+the HTTP fallback permits at most two concurrent reads. Bot-only directory endpoints and
+username-prefix enumeration are not used.
+
+The job uses spare HTTP capacity and the existing REST/Gateway cooldowns, keeps only one
+active job, and bounds its navigation/participant targets and checkpoints. Correlation,
+resource-specific observation revisions, storage epochs and current permission checks
+reject obsolete results. Recoverable failures stay with their stage and do not revoke
+account authentication. Progress distinguishes updated, partial, unavailable and failed
+sections; storage pressure cannot certify complete history.
+
+An incomplete own-member refresh does not combine new role permission bits with older
+assignments. Transient failures preserve the existing validated live permission mirror
+and report partial role/member coverage; explicit denial revokes that scope. History
+targets that lose access are counted as unavailable rather than silently skipped.
+
+Fresh member names, nicknames, roles and server-avatar context feed the shared display
+state used by the conversation, member list, typing indicator and mention picker. Avatar
+patches preserve missing versus explicit removal and use the existing restricted server
+avatar CDN path. Persisted display hints grant no access or expression eligibility. Guild
+banner hashes have a separate session-only, access-checked presentation record; Serein
+does not introduce a new server-banner layout as part of this refresh.
+
+Offline adapters and fixtures exercise these paths. Cross-client synchronization, large
+live rosters and account-wide acceptance remain owner-controlled checks; successful
+synthetic tests do not establish live Discord interoperability.
+
 ## Connection recovery and delivery pressure
 
 Gateway operation cooldowns now belong to the account connection rather than a socket;

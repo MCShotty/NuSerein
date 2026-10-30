@@ -1154,6 +1154,7 @@ mod navigation_tests {
 			id: Id(id),
 			channel: Id(1),
 			author: User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,

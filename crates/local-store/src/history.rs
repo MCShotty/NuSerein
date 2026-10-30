@@ -6,7 +6,7 @@ use super::{
 };
 
 impl LocalStore {
-	/// Apply a bounded changed-row batch while retaining exactly the current window IDs.
+	/// Apply a bounded changed-row batch. `retained` describes the display window, not disk retention.
 	/// `start`: the saved window reaches the channel's first message.
 	pub fn save_changes(
 		&mut self,
@@ -71,225 +71,12 @@ impl LocalStore {
 		existing: &[Message],
 		start: bool,
 	) -> Result<()> {
-		if messages.len() > 500
-			|| messages
-				.iter()
-				.map(|message| message.bytes())
-				.sum::<usize>()
-				> MAX_WINDOW_BYTES
-			|| messages.iter().any(|m| {
-				m.channel != channel
-					|| (m.reply_deleted
-						&& (!matches!(m.kind, 19 | 23)
-							|| !m.reply_to.is_some_and(|id| id.0 > 0 && id < m.id)))
-					|| !model::valid_mentions(&m.mentions)
-					|| m.ephemeral || m.flags & 64 != 0
-					|| m.application_id.is_some_and(|id| id.0 == 0)
-					|| !model::valid_stickers(&m.sticker_items, model::MAX_MESSAGE_STICKERS)
-					|| !model::valid_components(&m.components)
-					|| !model::valid_embeds(&m.embeds)
-					|| !model::valid_attachments(&m.attachments)
-					|| m.reactions
-						.as_ref()
-						.is_some_and(|reactions| !model::valid_reactions(reactions))
-			}) {
-			return Err(StoreError::Capacity);
-		}
-		// Compare on the storage worker; unchanged rows need no serialization or write.
 		let transaction = self.0.transaction()?;
-		let account = account.to_string();
-		let channel = channel.to_string();
-		let retained: std::collections::BTreeSet<_> = messages.iter().map(|m| m.id).collect();
-		let previous: BTreeMap<_, _> = existing.iter().map(|m| (m.id, m)).collect();
-		let mut deleted = false;
-		{
-			let mut delete = transaction
-				.prepare_cached("DELETE FROM messages WHERE account=?1 AND channel=?2 AND id=?3")?;
-			for message in existing {
-				if !retained.contains(&message.id) {
-					deleted |=
-						delete.execute(params![account, channel, message.id.to_string()])? > 0;
-				}
-			}
-		}
-		let mut insert = transaction.prepare_cached(
-            "INSERT OR REPLACE INTO messages(account,channel,id,author,name,content,edited,reply,unsupported,avatar,discriminator,embeds,embeds_suppressed,attachments,mentions,extra_content,message_kind,reply_deleted,webhook,account_kind,forwarded,author_roles,author_nick,components,application_id,original_flags,sticker_items,interaction,reactions,verified_bot) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)")?;
-		for message in messages {
-			if previous
-				.get(&message.id)
-				.is_some_and(|old| same_persisted_message(old, message))
-			{
-				continue;
-			}
-			let mentions =
-				serde_json::to_string(&message.mentions).map_err(|_| StoreError::Incompatible)?;
-			if mentions.len() > 128 * 1024 {
-				return Err(StoreError::Capacity);
-			}
-			if message.author_roles.len() > model::permissions::MAX_MEMBER_ROLES
-				|| message.author_roles.iter().any(|role| role.0 == 0)
-			{
-				return Err(StoreError::Capacity);
-			}
-			{
-				let mut seen = BTreeSet::new();
-				if message.author_roles.iter().any(|role| !seen.insert(*role)) {
-					return Err(StoreError::Capacity);
-				}
-			}
-			let author_roles = serde_json::to_string(
-				&message
-					.author_roles
-					.iter()
-					.map(|role| role.to_string())
-					.collect::<Vec<_>>(),
-			)
-			.map_err(|_| StoreError::Incompatible)?;
-			if author_roles.len() > 16 * 1024 {
-				return Err(StoreError::Capacity);
-			}
-			if message
-				.author_nick
-				.as_ref()
-				.is_some_and(|nick| nick.len() > 512)
-			{
-				return Err(StoreError::Capacity);
-			}
-			let sticker_items = serde_json::to_string(&message.sticker_items)
-				.map_err(|_| StoreError::Incompatible)?;
-			if sticker_items.len() > 32768 {
-				return Err(StoreError::Capacity);
-			}
-			let interaction = message
-				.interaction
-				.as_deref()
-				.map(serde_json::to_string)
-				.transpose()
-				.map_err(|_| StoreError::Incompatible)?;
-			if interaction.as_ref().is_some_and(|json| json.len() > 4096) {
-				return Err(StoreError::Capacity);
-			}
-			let reactions = message
-				.reactions
-				.as_ref()
-				.map(serde_json::to_string)
-				.transpose()
-				.map_err(|_| StoreError::Incompatible)?;
-			if reactions.as_ref().is_some_and(|json| json.len() > 16384) {
-				return Err(StoreError::Capacity);
-			}
-			let components =
-				serde_json::to_string(&message.components).map_err(|_| StoreError::Incompatible)?;
-			if components.len() > MAX_MEDIA_JSON {
-				return Err(StoreError::Capacity);
-			}
-			let embeds =
-				serde_json::to_string(&message.embeds).map_err(|_| StoreError::Incompatible)?;
-			let attachments = serde_json::to_string(&message.attachments)
-				.map_err(|_| StoreError::Incompatible)?;
-			if embeds.len() > MAX_MEDIA_JSON || attachments.len() > MAX_MEDIA_JSON {
-				return Err(StoreError::Capacity);
-			}
-			let verified_bot = message.author.kind == model::AccountKind::VerifiedBot;
-			let account_kind = if verified_bot {
-				model::AccountKind::Bot
-			} else {
-				message.author.kind
-			};
-			insert.execute(params![
-				account,
-				channel,
-				message.id.to_string(),
-				message.author.id.to_string(),
-				message.author.name,
-				message.content,
-				message.edited,
-				message.reply_to.map(|id| id.to_string()),
-				message.unsupported,
-				message.author.avatar,
-				message.author.discriminator,
-				embeds,
-				message.embeds_suppressed,
-				attachments,
-				mentions,
-				message.extra_content.bits(),
-				message.kind,
-				message.reply_deleted,
-				message.author.webhook,
-				account_kind as u8,
-				message.forwarded,
-				author_roles,
-				message.author_nick.as_deref(),
-				components,
-				message.application_id.map(|id| id.to_string()),
-				message.flags.to_string(),
-				sticker_items,
-				interaction,
-				reactions,
-				verified_bot,
-			])?;
-		}
-		drop(insert);
-		transaction.execute("INSERT INTO channels VALUES(?1,?2,unixepoch('subsec')*1000) ON CONFLICT(account,channel) DO UPDATE SET touched=excluded.touched",params![account,channel])?;
-		// The start holds only while the window still begins at the same first message.
-		match messages
-			.iter()
-			.map(|message| message.id)
-			.min()
-			.filter(|_| start)
-		{
-			Some(first) => transaction.execute(
-				"INSERT OR REPLACE INTO history_starts VALUES(?1,?2,?3)",
-				params![account, channel, first.to_string()],
-			)?,
-			None => transaction.execute(
-				"DELETE FROM history_starts WHERE account=?1 AND channel=?2",
-				params![account, channel],
-			)?,
-		};
-		// Global limit: 20 channel windows, 10000 messages AND 48 MiB content, below the 64 MiB database page ceiling.
-		loop {
-			let channels: i64 =
-				transaction.query_row("SELECT count(*) FROM channels", [], |row| row.get(0))?;
-			let page_count: i64 =
-				transaction.pragma_query_value(None, "page_count", |row| row.get(0))?;
-			let free_pages: i64 =
-				transaction.pragma_query_value(None, "freelist_count", |row| row.get(0))?;
-			let page_size: i64 =
-				transaction.pragma_query_value(None, "page_size", |row| row.get(0))?;
-			let bytes = if (page_count - free_pages) * page_size <= 48 * 1024 * 1024 {
-				0
-			} else {
-				transaction.query_row("SELECT coalesce(sum(length(CAST(content AS BLOB))+length(CAST(name AS BLOB))+length(CAST(original_flags AS BLOB))+length(CAST(components AS BLOB))+length(CAST(sticker_items AS BLOB))+coalesce(length(CAST(application_id AS BLOB)),0)+length(CAST(embeds AS BLOB))+length(CAST(attachments AS BLOB))+length(CAST(mentions AS BLOB))+length(CAST(author_roles AS BLOB))+coalesce(length(CAST(author_nick AS BLOB)),0)+coalesce(length(CAST(interaction AS BLOB)),0)+coalesce(length(CAST(reactions AS BLOB)),0)+256),0) FROM messages",[],|row|row.get(0))?
-			};
-			if channels <= 20 && bytes <= 48 * 1024 * 1024 {
-				break;
-			}
-			let (a, c): (String, String) = transaction.query_row(
-				"SELECT account,channel FROM channels ORDER BY touched,account,channel LIMIT 1",
-				[],
-				|r| Ok((r.get(0)?, r.get(1)?)),
-			)?;
-			transaction.execute(
-				"DELETE FROM messages WHERE account=?1 AND channel=?2",
-				params![a, c],
-			)?;
-			transaction.execute(
-				"DELETE FROM channels WHERE account=?1 AND channel=?2",
-				params![a, c],
-			)?;
-			transaction.execute(
-				"DELETE FROM history_starts WHERE account=?1 AND channel=?2",
-				params![a, c],
-			)?;
-			deleted = true;
-		}
+		write_messages(&transaction, account, channel, messages, existing, start)?;
 		transaction.commit()?;
-		if deleted {
-			self.0.execute_batch("PRAGMA incremental_vacuum(64);")?;
-		}
 		Ok(())
 	}
+
 	/// Whether a cached window that begins with `messages` reaches the channel's first message.
 	pub fn history_start(&self, account: Id, channel: Id, messages: &[Message]) -> Result<bool> {
 		let Some(first) = messages.iter().map(|message| message.id).min() else {
@@ -305,9 +92,56 @@ impl LocalStore {
 			.optional()?;
 		Ok(saved.is_some_and(|saved| saved == first.to_string()))
 	}
+	/// Latest bounded view, in chronological order. Older synchronized pages stay on disk.
 	pub fn load_channel(&self, account: Id, channel: Id) -> Result<Vec<Message>> {
-		let mut query = self.0.prepare_cached("SELECT id,author,name,content,edited,reply,unsupported,avatar,discriminator,embeds,embeds_suppressed,attachments,mentions,extra_content,message_kind,reply_deleted,webhook,account_kind,forwarded,author_roles,author_nick,components,application_id,original_flags,sticker_items,interaction,reactions,verified_bot FROM messages WHERE account=?1 AND channel=?2 ORDER BY length(id),id LIMIT 500")?;
-		let mut rows = query.query(params![account.to_string(), channel.to_string()])?;
+		self.load_history_page(account, channel, crate::HistoryPageQuery::default())
+	}
+	/// Indexed, bounded history read; supplying `around` centers on that target when available.
+	pub fn load_history_page(
+		&self,
+		account: Id,
+		channel: Id,
+		page: crate::HistoryPageQuery,
+	) -> Result<Vec<Message>> {
+		if account.0 == 0
+			|| channel.0 == 0
+			|| page.limit == 0
+			|| page.limit > 500
+			|| (page.before.is_some() && page.around.is_some())
+			|| page.before.or(page.around).is_some_and(|id| id.0 == 0)
+		{
+			return Err(StoreError::Capacity);
+		}
+		use rusqlite::types::Value;
+		let columns = "SELECT id,author,name,content,edited,reply,unsupported,avatar,discriminator,embeds,embeds_suppressed,attachments,mentions,extra_content,message_kind,reply_deleted,webhook,account_kind,forwarded,author_roles,author_nick,components,application_id,original_flags,sticker_items,interaction,reactions,verified_bot FROM messages WHERE account=?1 AND channel=?2";
+		let mut values = vec![
+			Value::Text(account.to_string()),
+			Value::Text(channel.to_string()),
+		];
+		let sql = if let Some(around) = page.around {
+			values.extend([
+				Value::Text(around.to_string()),
+				Value::Integer(page.limit.div_ceil(2) as i64),
+				Value::Integer((page.limit / 2) as i64),
+				Value::Integer(page.limit as i64),
+			]);
+			format!(
+				"{columns} AND id IN (SELECT id FROM (SELECT id FROM messages WHERE account=?1 AND channel=?2 AND (length(id),id)<=(length(?3),?3) ORDER BY length(id) DESC,id DESC LIMIT ?4) UNION ALL SELECT id FROM (SELECT id FROM messages WHERE account=?1 AND channel=?2 AND (length(id),id)>(length(?3),?3) ORDER BY length(id),id LIMIT ?5)) ORDER BY length(id) DESC,id DESC LIMIT ?6"
+			)
+		} else if let Some(before) = page.before {
+			values.extend([
+				Value::Text(before.to_string()),
+				Value::Integer(page.limit as i64),
+			]);
+			format!(
+				"{columns} AND (length(id),id)<(length(?3),?3) ORDER BY length(id) DESC,id DESC LIMIT ?4"
+			)
+		} else {
+			values.push(Value::Integer(page.limit as i64));
+			format!("{columns} ORDER BY length(id) DESC,id DESC LIMIT ?3")
+		};
+		let mut query = self.0.prepare_cached(&sql)?;
+		let mut rows = query.query(rusqlite::params_from_iter(values))?;
 		let mut messages = Vec::new();
 		let mut bytes = 0;
 		while let Some(row) = rows.next()? {
@@ -489,6 +323,7 @@ impl LocalStore {
 				id: parse(row.get(0)?)?,
 				channel,
 				author: User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -531,10 +366,14 @@ impl LocalStore {
 			}
 			bytes += message.bytes();
 			if bytes > MAX_WINDOW_BYTES {
-				return Err(StoreError::Capacity);
+				if messages.is_empty() {
+					return Err(StoreError::Capacity);
+				}
+				break;
 			}
 			messages.push(message);
 		}
+		messages.reverse();
 		Ok(messages)
 	}
 	pub fn save_draft(&mut self, account: Id, channel: Id, content: &str) -> Result<()> {
@@ -585,78 +424,248 @@ impl LocalStore {
 		Ok(drafts)
 	}
 	pub fn clear_history(&mut self, account: Id) -> Result<()> {
-		let transaction = self.0.transaction()?;
-		transaction.execute(
-			"DELETE FROM messages WHERE account=?1",
-			[account.to_string()],
-		)?;
-		transaction.execute(
-			"DELETE FROM channels WHERE account=?1",
-			[account.to_string()],
-		)?;
-		transaction.execute(
-			"DELETE FROM history_starts WHERE account=?1",
-			[account.to_string()],
-		)?;
-		transaction.execute(
-			"DELETE FROM member_displays WHERE account=?1",
-			[account.to_string()],
-		)?;
-		transaction.execute(
-			"DELETE FROM expression_catalogs WHERE account=?1",
-			[account.to_string()],
-		)?;
-		transaction.execute(
-			"DELETE FROM sticker_pack_hints WHERE account=?1",
-			[account.to_string()],
-		)?;
-		transaction.execute(
-			"DELETE FROM server_displays WHERE account=?1",
-			[account.to_string()],
-		)?;
-		transaction.commit()?;
-		self.0
-			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(64);")?;
-		Ok(())
+		self.cleanup_cache_scope(account, None, false)
 	}
-	/// Remove a known channel's cached window without affecting other channels or drafts.
-	/// The worker must fence older queued saves/loads before calling this method.
+	/// Remove only this channel's cached data. Drafts and other channels survive.
 	pub fn clear_channel_history(&mut self, account: Id, channel: Id) -> Result<()> {
-		if account.0 == 0 || channel.0 == 0 {
-			return Err(StoreError::Capacity);
-		}
-		let transaction = self.0.transaction()?;
-		for table in ["messages", "channels", "history_starts"] {
-			transaction.execute(
-				&format!("DELETE FROM {table} WHERE account=?1 AND channel=?2"),
-				params![account.to_string(), channel.to_string()],
-			)?;
-		}
-		transaction.commit()?;
-		self.0.execute_batch("PRAGMA incremental_vacuum(64);")?;
-		Ok(())
+		self.cleanup_cache_scope(account, Some(channel), false)
 	}
+
 	pub fn delete_messages(&mut self, account: Id, channel: Id, ids: &[Id]) -> Result<()> {
 		if ids.len() > 100 || account.0 == 0 || channel.0 == 0 || ids.iter().any(|id| id.0 == 0) {
 			return Err(StoreError::Capacity);
 		}
-		let transaction = self.0.transaction()?;
-		{
-			let mut statement = transaction
-				.prepare("DELETE FROM messages WHERE account=?1 AND channel=?2 AND id=?3")?;
-			for id in ids {
-				statement.execute(params![
-					account.to_string(),
-					channel.to_string(),
-					id.to_string()
-				])?;
+		let charge = self.cache_row_charge("messages", None)?;
+		let mut statement = self.0.prepare_cached(&format!(
+			"SELECT {charge} FROM messages WHERE account=?1 AND channel=?2 AND id=?3"
+		))?;
+		let mut chunks = Vec::new();
+		let mut chunk = Vec::new();
+		let mut bytes = 0i64;
+		for id in ids {
+			let charge: Option<i64> = statement
+				.query_row(
+					params![account.to_string(), channel.to_string(), id.to_string()],
+					|row| row.get(0),
+				)
+				.optional()?;
+			let charge = charge.unwrap_or(256);
+			if charge < 0 {
+				return Err(StoreError::Incompatible);
 			}
+			if !chunk.is_empty()
+				&& bytes.saturating_add(charge) > crate::cache_cleanup::CLEANUP_BYTES
+			{
+				chunks.push(std::mem::take(&mut chunk));
+				bytes = 0;
+			}
+			chunk.push(*id);
+			bytes = bytes.saturating_add(charge);
 		}
-		transaction.commit()?;
-		self.0
-			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(64);")?;
+		drop(statement);
+		if !chunk.is_empty() {
+			chunks.push(chunk);
+		}
+		for chunk in chunks {
+			let transaction = self.0.transaction()?;
+			for id in chunk {
+				crate::sync_history::observe_change(&transaction, account, channel, id, true)?;
+			}
+			transaction.commit()?;
+			self.reclaim_history_space()?;
+		}
 		Ok(())
 	}
+}
+
+/// Shared transaction writer for ordinary windows and Force Sync pages. Absence from a
+/// small display window is not deletion evidence; only verified ranges or live deletes prune.
+pub(super) fn write_messages(
+	transaction: &rusqlite::Transaction<'_>,
+	account: Id,
+	channel: Id,
+	messages: &[&Message],
+	existing: &[Message],
+	start: bool,
+) -> Result<usize> {
+	if messages.len() > 500
+		|| messages
+			.iter()
+			.map(|message| message.bytes())
+			.sum::<usize>()
+			> MAX_WINDOW_BYTES
+		|| messages.iter().any(|m| {
+			m.channel != channel
+				|| (m.reply_deleted
+					&& (!matches!(m.kind, 19 | 23)
+						|| !m.reply_to.is_some_and(|id| id.0 > 0 && id < m.id)))
+				|| !model::valid_mentions(&m.mentions)
+				|| m.ephemeral
+				|| m.flags & 64 != 0
+				|| m.application_id.is_some_and(|id| id.0 == 0)
+				|| !model::valid_stickers(&m.sticker_items, model::MAX_MESSAGE_STICKERS)
+				|| !model::valid_components(&m.components)
+				|| !model::valid_embeds(&m.embeds)
+				|| !model::valid_attachments(&m.attachments)
+				|| m.reactions
+					.as_ref()
+					.is_some_and(|reactions| !model::valid_reactions(reactions))
+		}) {
+		return Err(StoreError::Capacity);
+	}
+	let account = account.to_string();
+	let channel = channel.to_string();
+	let previous: BTreeMap<_, _> = existing.iter().map(|m| (m.id, m)).collect();
+	let mut written = 0;
+	let mut insert = transaction.prepare_cached(
+            "INSERT INTO messages(account,channel,id,author,name,content,edited,reply,unsupported,avatar,discriminator,embeds,embeds_suppressed,attachments,mentions,extra_content,message_kind,reply_deleted,webhook,account_kind,forwarded,author_roles,author_nick,components,application_id,original_flags,sticker_items,interaction,reactions,verified_bot) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30) ON CONFLICT(account,channel,id) DO UPDATE SET author=excluded.author,name=excluded.name,content=excluded.content,edited=excluded.edited,reply=excluded.reply,unsupported=excluded.unsupported,avatar=excluded.avatar,discriminator=excluded.discriminator,embeds=excluded.embeds,embeds_suppressed=excluded.embeds_suppressed,attachments=excluded.attachments,mentions=excluded.mentions,extra_content=excluded.extra_content,message_kind=excluded.message_kind,reply_deleted=excluded.reply_deleted,webhook=excluded.webhook,account_kind=excluded.account_kind,forwarded=excluded.forwarded,author_roles=excluded.author_roles,author_nick=excluded.author_nick,components=excluded.components,application_id=excluded.application_id,original_flags=excluded.original_flags,sticker_items=excluded.sticker_items,interaction=excluded.interaction,reactions=excluded.reactions,verified_bot=excluded.verified_bot")?;
+	for message in messages {
+		let tombstone: bool = transaction.query_row(
+			"SELECT EXISTS(SELECT 1 FROM history_tombstones WHERE account=?1 AND channel=?2 AND id=?3)",
+			params![account, channel, message.id.to_string()],
+			|row| row.get(0),
+		)?;
+		if tombstone {
+			continue;
+		}
+		if previous
+			.get(&message.id)
+			.is_some_and(|old| same_persisted_message(old, message))
+		{
+			continue;
+		}
+		let mentions =
+			serde_json::to_string(&message.mentions).map_err(|_| StoreError::Incompatible)?;
+		if mentions.len() > 128 * 1024 {
+			return Err(StoreError::Capacity);
+		}
+		if message.author_roles.len() > model::permissions::MAX_MEMBER_ROLES
+			|| message.author_roles.iter().any(|role| role.0 == 0)
+		{
+			return Err(StoreError::Capacity);
+		}
+		{
+			let mut seen = BTreeSet::new();
+			if message.author_roles.iter().any(|role| !seen.insert(*role)) {
+				return Err(StoreError::Capacity);
+			}
+		}
+		let author_roles = serde_json::to_string(
+			&message
+				.author_roles
+				.iter()
+				.map(|role| role.to_string())
+				.collect::<Vec<_>>(),
+		)
+		.map_err(|_| StoreError::Incompatible)?;
+		if author_roles.len() > 16 * 1024 {
+			return Err(StoreError::Capacity);
+		}
+		if message
+			.author_nick
+			.as_ref()
+			.is_some_and(|nick| nick.len() > 512)
+		{
+			return Err(StoreError::Capacity);
+		}
+		let sticker_items =
+			serde_json::to_string(&message.sticker_items).map_err(|_| StoreError::Incompatible)?;
+		if sticker_items.len() > 32768 {
+			return Err(StoreError::Capacity);
+		}
+		let interaction = message
+			.interaction
+			.as_deref()
+			.map(serde_json::to_string)
+			.transpose()
+			.map_err(|_| StoreError::Incompatible)?;
+		if interaction.as_ref().is_some_and(|json| json.len() > 4096) {
+			return Err(StoreError::Capacity);
+		}
+		let reactions = message
+			.reactions
+			.as_ref()
+			.map(serde_json::to_string)
+			.transpose()
+			.map_err(|_| StoreError::Incompatible)?;
+		if reactions.as_ref().is_some_and(|json| json.len() > 16384) {
+			return Err(StoreError::Capacity);
+		}
+		let components =
+			serde_json::to_string(&message.components).map_err(|_| StoreError::Incompatible)?;
+		if components.len() > MAX_MEDIA_JSON {
+			return Err(StoreError::Capacity);
+		}
+		let embeds =
+			serde_json::to_string(&message.embeds).map_err(|_| StoreError::Incompatible)?;
+		let attachments =
+			serde_json::to_string(&message.attachments).map_err(|_| StoreError::Incompatible)?;
+		if embeds.len() > MAX_MEDIA_JSON || attachments.len() > MAX_MEDIA_JSON {
+			return Err(StoreError::Capacity);
+		}
+		let verified_bot = message.author.kind == model::AccountKind::VerifiedBot;
+		let account_kind = if verified_bot {
+			model::AccountKind::Bot
+		} else {
+			message.author.kind
+		};
+		written += insert.execute(params![
+			account,
+			channel,
+			message.id.to_string(),
+			message.author.id.to_string(),
+			message.author.name,
+			message.content,
+			message.edited,
+			message.reply_to.map(|id| id.to_string()),
+			message.unsupported,
+			message.author.avatar,
+			message.author.discriminator,
+			embeds,
+			message.embeds_suppressed,
+			attachments,
+			mentions,
+			message.extra_content.bits(),
+			message.kind,
+			message.reply_deleted,
+			message.author.webhook,
+			account_kind as u8,
+			message.forwarded,
+			author_roles,
+			message.author_nick.as_deref(),
+			components,
+			message.application_id.map(|id| id.to_string()),
+			message.flags.to_string(),
+			sticker_items,
+			interaction,
+			reactions,
+			verified_bot,
+		])?;
+	}
+	drop(insert);
+	transaction.execute("INSERT INTO channels VALUES(?1,?2,unixepoch('subsec')*1000) ON CONFLICT(account,channel) DO UPDATE SET touched=excluded.touched",params![account,channel])?;
+	// The start holds only while the window still begins at the same first message.
+	match messages
+		.iter()
+		.map(|message| message.id)
+		.min()
+		.filter(|_| start)
+	{
+		Some(first) => transaction.execute(
+			"INSERT OR REPLACE INTO history_starts VALUES(?1,?2,?3)",
+			params![account, channel, first.to_string()],
+		)?,
+		None => 0,
+	};
+	let count: i64 = transaction.query_row(
+		"SELECT count FROM history_totals WHERE singleton=1",
+		[],
+		|row| row.get(0),
+	)?;
+	if count > crate::sync_history::MAX_CACHED_MESSAGES as i64 {
+		return Err(StoreError::Capacity);
+	}
+	Ok(written)
 }
 
 /// Compare exactly the fields written by this store. Service revisions, reply previews,
@@ -711,7 +720,7 @@ mod projection_tests {
 		let store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
 		store.0.execute("INSERT INTO messages(account,channel,id,author,name,content,edited,unsupported) VALUES('1','2','30','4','Display','body',0,0)",[]).unwrap();
 		let m = store.load_channel(Id(1), Id(2)).unwrap().remove(0);
-		store.0.execute_batch("CREATE TABLE write_count(n INTEGER); INSERT INTO write_count VALUES(0); CREATE TRIGGER count_messages AFTER INSERT ON messages BEGIN UPDATE write_count SET n=n+1; END;").unwrap();
+		store.0.execute_batch("CREATE TABLE write_count(n INTEGER); INSERT INTO write_count VALUES(0); CREATE TRIGGER count_messages AFTER INSERT ON messages BEGIN UPDATE write_count SET n=n+1; END; CREATE TRIGGER count_message_updates AFTER UPDATE ON messages BEGIN UPDATE write_count SET n=n+1; END;").unwrap();
 		(store, m)
 	}
 	fn writes(store: &LocalStore) -> i64 {
@@ -853,7 +862,7 @@ mod projection_tests {
 			assert_eq!(writes(&store), 1, "field {field}");
 			let loaded = store.load_channel(Id(1), m.channel).unwrap();
 			assert!(
-				same_persisted_message(&loaded[0], &m),
+				same_persisted_message(loaded.iter().find(|row| row.id == m.id).unwrap(), &m),
 				"field {field} roundtrip"
 			);
 		}

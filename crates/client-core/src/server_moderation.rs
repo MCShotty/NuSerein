@@ -210,6 +210,7 @@ mod tests {
 	use model::server_admin::{Action, Member, Result as Outcome};
 	fn user(id: u64) -> model::User {
 		model::User {
+			member_avatar: None,
 			username: None,
 			id: Id(id),
 			name: "Synthetic".into(),

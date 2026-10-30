@@ -13,6 +13,7 @@ mod member_search;
 mod presence;
 #[cfg(test)]
 mod recovery_tests;
+pub mod roster;
 mod thread_events;
 mod voice;
 #[cfg(debug_assertions)]
@@ -745,7 +746,7 @@ impl ActiveMembers {
 	/// Unreadable rows become holes at their position, keeping later indices aligned.
 	fn write_slot(&mut self, absolute: usize, item: discord_protocol::MemberItem) {
 		if absolute >= self.start && absolute <= self.span_end() {
-			self.slots[absolute - self.start] = item.into_slot();
+			self.slots[absolute - self.start] = item.into_guild_slot(self.subscription.guild);
 		}
 	}
 	fn snapshot(&self, freshness: Freshness) -> MemberList {
@@ -887,7 +888,8 @@ impl ActiveMembers {
 						continue;
 					}
 					let relative = index - span_start;
-					self.slots.insert(relative, item.into_slot());
+					self.slots
+						.insert(relative, item.into_guild_slot(self.subscription.guild));
 					if self.slots.len() > span_end - span_start + 1 {
 						self.slots.pop();
 					}
@@ -1121,6 +1123,7 @@ pub async fn run_with_activity(
 			own_presence: activity.1,
 			member_queries: activity.2,
 			member_watches: None,
+			roster: None,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1158,6 +1161,7 @@ pub async fn run_with_activity_recovery(
 			own_presence: activity.1,
 			member_queries: activity.2,
 			member_watches: None,
+			roster: None,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1226,6 +1230,43 @@ pub async fn run_with_activity_recovery_diagnostics_members(
 	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
 	emit: impl Fn(Event, u64) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
+	run_with_activity_recovery_diagnostics_sync(
+		secret,
+		initial_url,
+		subscriptions,
+		controls,
+		reconnect,
+		activity,
+		member_watches,
+		None,
+		delivery,
+		diagnostics,
+		observe,
+		emit,
+	)
+	.await
+}
+/// As member diagnostics, with a separate bounded, explicitly authorized roster refresh lane.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub async fn run_with_activity_recovery_diagnostics_sync(
+	secret: Arc<SessionSecret>,
+	initial_url: String,
+	subscriptions: watch::Receiver<Option<MemberSubscription>>,
+	controls: mpsc::Receiver<client_core::voice::Command>,
+	reconnect: Arc<Notify>,
+	activity: (
+		watch::Receiver<Option<discord_protocol::rpc::Activity>>,
+		watch::Receiver<model::OwnPresence>,
+		watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
+		watch::Receiver<Option<discord_protocol::spotify::Activity>>,
+	),
+	member_watches: Option<watch::Receiver<Option<MemberWatch>>>,
+	roster: Option<roster::RosterInput>,
+	delivery: watch::Receiver<DeliveryState>,
+	diagnostics: Arc<Mutex<ConnectionDiagnostics>>,
+	observe: impl Fn(ActivityObservation) -> Result<(), Failure> + Sync,
+	emit: impl Fn(Event, u64) -> Result<(), Failure>,
+) -> Result<(), Failure> {
 	run_observed(
 		secret,
 		initial_url,
@@ -1236,6 +1277,7 @@ pub async fn run_with_activity_recovery_diagnostics_members(
 			own_presence: activity.1,
 			member_queries: activity.2,
 			member_watches,
+			roster,
 			spotify: activity.3,
 			observe: &observe,
 		}),
@@ -1253,6 +1295,7 @@ struct ActivityInput<'a> {
 	spotify: watch::Receiver<Option<discord_protocol::spotify::Activity>>,
 	member_queries: watch::Receiver<[Option<client_core::member_search::Request>; 2]>,
 	member_watches: Option<watch::Receiver<Option<MemberWatch>>>,
+	roster: Option<roster::RosterInput>,
 	receiver: watch::Receiver<Option<discord_protocol::rpc::Activity>>,
 	own_presence: watch::Receiver<model::OwnPresence>,
 	observe: &'a (dyn Fn(ActivityObservation) -> Result<(), Failure> + Sync),
@@ -1450,6 +1493,7 @@ async fn run_observed_inner(
 		mut spotify,
 		mut member_queries,
 		member_watches,
+		roster,
 		mut own_presence,
 		observe,
 	} = activity.unwrap_or_else(|| ActivityInput {
@@ -1457,9 +1501,13 @@ async fn run_observed_inner(
 		spotify: watch::channel(None).1,
 		member_queries: watch::channel(Default::default()).1,
 		member_watches: None,
+		roster: None,
 		own_presence: watch::channel(model::OwnPresence::default()).1,
 		observe: &ignore_observation,
 	});
+	let mut roster_open = roster.is_some();
+	let mut roster_input = roster.clone();
+	let mut roster_worker = roster::Worker::new(roster);
 	let mut watches_open = member_watches.is_some();
 	let mut member_watches = member_watches.unwrap_or_else(|| watch::channel(None).1);
 	let mut last_observation = None;
@@ -1502,6 +1550,7 @@ async fn run_observed_inner(
 			}
 		}
 		if attempt > 0 {
+			roster_worker.fail(Failure::Network);
 			calls.disconnected();
 			while voice_controls.try_recv().is_ok() {}
 			emit(Event::Disconnected)?;
@@ -1903,6 +1952,7 @@ async fn run_observed_inner(
 						if let (Some((ticket,sent)),Some(active))=(progress.subscription,active_members.as_ref()) && ticket==member_ticket && active.awaiting_sync {members_deadline=Some(sent+active.retry_delay());}
 					}
 					for (guild,nonce,sent) in progress.query.into_iter().flatten() {queries.sent(guild,nonce,sent);}
+					if let Some((guild,job,sent))=progress.roster {roster_worker.sent(guild,job,sent);}
 				}
 				() = recovery_signal(reconnect), if was_ready => {
 					// READY/RESUMED can reach the transport before the UI drains its events.
@@ -1992,6 +2042,24 @@ async fn run_observed_inner(
 				_=tokio::time::sleep_until(calls.departure_deadline.unwrap_or(ready_deadline)), if calls.departure_deadline.is_some() => {
 					if let Some(event)=calls.departure_expired() {emit(event)?;}
 				}
+				changed = async { match roster_input.as_mut() { Some(input) => input.receive.changed().await, None => std::future::pending().await } }, if roster_open && ready_at.is_some() => {
+					roster_open = changed.is_ok();
+					writer.clear_roster();
+					let request = if roster_open { roster_input.as_mut().and_then(|input| *input.receive.borrow_and_update()) } else { None };
+					roster_worker.update(request);
+				}
+				_ = async {}, if roster_worker.pending() && ready_at.is_some() && writer.optional_capacity(1) => {
+					if let Some(frame) = roster_worker.frame()
+						&& let Some(job)=roster_input.as_ref().and_then(|input| input.receive.borrow().as_ref().map(|request| request.job)) {
+							match writer.send_roster(frame,job).await {
+								Ok(()) => roster_worker.queued(),
+								Err(Failure::Busy) => {},
+								Err(failure) => roster_worker.fail(failure),
+							}
+						}
+				}
+				_ = tokio::time::sleep_until(roster_worker.deadline().unwrap_or(ready_deadline)), if roster_worker.deadline().is_some() => { roster_worker.expire(); }
+
 				changed = member_watches.changed(), if watches_open && ready_at.is_some() => {
 					watches_open = changed.is_ok();
 					if watches_open { writer.clear_queries(queries.watch(&member_watches.borrow_and_update())); }
@@ -2248,12 +2316,12 @@ async fn run_observed_inner(
 										if packet.d.get().len()<=4096 && let Ok(limited)=decode::<Limited>(packet.d.get().as_bytes()) && limited.retry_after.is_finite() && (0.0..=86400.0).contains(&limited.retry_after) {
 											let delay=Duration::from_secs_f64(limited.retry_after);
 											writer.cooldown(limited.opcode,limited.meta.guild_id,delay);
-											if limited.opcode==8 {queries.limited(limited.meta.guild_id,limited.meta.nonce.as_deref(),delay,&emit)?;}
+											if limited.opcode==8 {queries.limited(limited.meta.guild_id,limited.meta.nonce.as_deref(),delay,&emit)?;roster_worker.limited(limited.meta.guild_id,limited.meta.nonce.as_deref());}
 											record(ConnectionReason::RateLimited,None,attempt,writer.occupancy());
 										}
 									}
 									"GUILD_MEMBERS_CHUNK" => {
-										if let Some(event) = queries.chunk(packet.d.get().as_bytes()) { emit(event)?; }
+										if !roster_worker.chunk(packet.d.get().as_bytes()) && let Some(event) = queries.chunk(packet.d.get().as_bytes()) { emit(event)?; }
 									}
 									"READY_SUPPLEMENTAL" => {
 										let (mut extra, warnings) = ready::supplemental(packet.d.get().as_bytes()).map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid supplemental guild or voice metadata"), ready::diagnose_supplemental(packet.d.get().as_bytes())))?;
@@ -3170,7 +3238,7 @@ mod tests {
 	                let result = run_inner(
 	                    Arc::new(SessionSecret::from_owner_input("synthetic-owner-session".into()).unwrap()),
 	                    "wss://gateway.discord.gg/".into(), watch::channel(None).1,
-	                    mpsc::channel(1).1, Some(ActivityInput { member_watches: None, spotify: watch::channel(None).1, member_queries: watch::channel(Default::default()).1, receiver, own_presence: presence_receiver, observe: &|value| { observations.send_replace(value); Ok(()) } }), |_| Ok(()), Some(&endpoint),
+	                    mpsc::channel(1).1, Some(ActivityInput { member_watches: None, roster: None, spotify: watch::channel(None).1, member_queries: watch::channel(Default::default()).1, receiver, own_presence: presence_receiver, observe: &|value| { observations.send_replace(value); Ok(()) } }), |_| Ok(()), Some(&endpoint),
 	                ).await;
 	                finished.send(()).unwrap();
 	                result
@@ -3384,7 +3452,7 @@ mod tests {
 			let client = run_inner(
 				Arc::new(SessionSecret::from_owner_input("SYNTHETIC_MEMBER_SESSION".into()).unwrap()),
 				"wss://gateway.discord.gg/".into(), watch::channel(None).1, mpsc::channel(1).1,
-				Some(ActivityInput { member_watches: cached_watch.then_some(watch_receive), spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
+				Some(ActivityInput { member_watches: cached_watch.then_some(watch_receive), roster: None, spotify: watch::channel(None).1, member_queries, receiver: watch::channel(None).1, own_presence: watch::channel(Default::default()).1, observe: &|_| Ok(()) }),
 				|event| {
 					let startup = matches!(&event, Event::Startup(_) | Event::Ready { .. });
 					let changed = matches!(&event, Event::MemberIdentity(_) | Event::Typing(_));

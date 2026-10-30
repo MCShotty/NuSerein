@@ -26,6 +26,7 @@ enum Key {
 	CancelSubscription(Id),
 	MemberIdentities(Id),
 	Query(crate::member_search::Purpose),
+	Roster(u64),
 }
 #[derive(Clone, Copy, Debug)]
 struct Meta {
@@ -140,6 +141,7 @@ impl Default for State {
 pub(super) struct Progress {
 	pub heartbeat: Option<(u64, Instant)>,
 	pub query: [Option<(Id, u64, Instant)>; 2],
+	pub roster: Option<(Id, u64, Instant)>,
 	pub subscription: Option<(u64, Instant)>,
 	pub failed: bool,
 	pub capacity: bool,
@@ -265,7 +267,13 @@ impl Outgoing {
 								at = at.max(until);
 							}
 						}
-						if at <= now && (next.is_none() || packet.meta.heartbeat) {
+						let foreground_ahead = next.is_some_and(|selected: usize| {
+							matches!(state.queue[selected].meta.key, Some(Key::Roster(_)))
+								&& !matches!(packet.meta.key, Some(Key::Roster(_)))
+						});
+						if at <= now
+							&& (next.is_none() || packet.meta.heartbeat || foreground_ahead)
+						{
 							next = Some(index);
 							if packet.meta.heartbeat {
 								break;
@@ -350,6 +358,11 @@ impl Outgoing {
 						// One purpose must not erase the other purpose's send receipt.
 						p.query[purpose.slot()] = Some((guild, nonce, sent));
 					}
+					if let (Some(Key::Roster(job)), Some(guild)) =
+						(packet.meta.key, packet.meta.guild)
+					{
+						p.roster = Some((guild, job, sent));
+					}
 				});
 			}
 		});
@@ -429,6 +442,24 @@ impl Outgoing {
 	}
 	pub async fn send_query(&self, query: crate::member_search::Query) -> Result<(), Failure> {
 		self.enqueue(query.frame, Some(Key::Query(query.purpose)))
+	}
+	pub async fn send_roster(&self, frame: Frame, job: u64) -> Result<(), Failure> {
+		self.enqueue(frame, Some(Key::Roster(job)))
+	}
+	pub fn clear_roster(&self) {
+		if let Ok(mut state) = self.state.lock() {
+			let mut removed = 0;
+			state.queue.retain(|packet| {
+				if matches!(packet.meta.key, Some(Key::Roster(_))) {
+					removed += packet.bytes;
+					false
+				} else {
+					true
+				}
+			});
+			state.bytes = state.bytes.saturating_sub(removed);
+		}
+		self.wake.notify_one();
 	}
 	fn enqueue(&self, frame: Frame, key: Option<Key>) -> Result<(), Failure> {
 		if self.progress.borrow().failed {
@@ -571,6 +602,84 @@ mod tests {
 	fn frame(value: serde_json::Value) -> Frame {
 		Frame::Text(value.to_string().into())
 	}
+	#[tokio::test]
+	async fn roster_reads_yield_to_foreground_and_have_independent_send_receipts() {
+		let (sink, ready, wake, frames) = fixture();
+		let mut writer = Outgoing::start(sink, Duration::from_secs(45));
+		writer
+			.send_roster(
+				frame(
+					serde_json::json!({"op":8,"d":{"guild_id":"9","query":"","limit":0,"nonce":"serein-sync-42"}}),
+				),
+				42,
+			)
+			.await
+			.unwrap();
+		writer
+			.send(frame(serde_json::json!({"op":3,"d":{"status":"online"}})))
+			.await
+			.unwrap();
+		ready.store(true, Ordering::Release);
+		if let Some(wake) = wake.lock().unwrap().take() {
+			wake.wake();
+		}
+		timeout(Duration::from_secs(1), async {
+			loop {
+				writer.progress.changed().await.unwrap();
+				if writer.progress.borrow().roster.is_some() {
+					break;
+				}
+			}
+		})
+		.await
+		.unwrap();
+		let frames = frames.lock().unwrap();
+		let Frame::Text(first) = &frames[0] else {
+			panic!()
+		};
+		assert_eq!(
+			serde_json::from_str::<serde_json::Value>(first).unwrap()["op"],
+			3
+		);
+		assert_eq!(writer.progress.borrow().roster.unwrap().1, 42);
+		assert!(writer.progress.borrow().query.iter().all(Option::is_none));
+	}
+	#[tokio::test]
+	async fn cancelling_queued_roster_preserves_foreground_and_heartbeat() {
+		let (sink, ready, wake, frames) = fixture();
+		let mut writer = Outgoing::start(sink, Duration::from_secs(45));
+		writer
+			.send_roster(
+				frame(
+					serde_json::json!({"op":8,"d":{"guild_id":"9","query":"","limit":0,"nonce":"serein-sync-42"}}),
+				),
+				42,
+			)
+			.await
+			.unwrap();
+		writer.clear_roster();
+		writer
+			.send(frame(serde_json::json!({"op":1,"d":2})))
+			.await
+			.unwrap();
+		ready.store(true, Ordering::Release);
+		if let Some(wake) = wake.lock().unwrap().take() {
+			wake.wake();
+		}
+		timeout(Duration::from_secs(1), async {
+			loop {
+				writer.progress.changed().await.unwrap();
+				if writer.progress.borrow().heartbeat.is_some() {
+					break;
+				}
+			}
+		})
+		.await
+		.unwrap();
+		assert!(writer.progress.borrow().roster.is_none());
+		assert_eq!(frames.lock().unwrap().len(), 1);
+	}
+
 	#[test]
 	fn rolling_budget_reserves_heartbeat_and_control_headroom() {
 		let now = Instant::now();

@@ -51,6 +51,7 @@ fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
 		panic!()
 	};
 	let update = |nick, roles| model::MemberIdentity {
+		avatar: model::Patch::Absent,
 		guild: Id(10),
 		user: Id(7),
 		profile: None,
@@ -154,6 +155,7 @@ fn live_identity_growth_reports_a_scoped_member_search_limit() {
 		apply(
 			&mut state,
 			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(id),
 				profile: None,
@@ -186,6 +188,7 @@ fn live_identity_growth_reports_a_scoped_member_search_limit() {
 fn member_identity_is_scoped_bounded_and_retired_on_recovery() {
 	let mut state = state();
 	let update = |guild, user| model::MemberIdentity {
+		avatar: model::Patch::Absent,
 		guild: Id(guild),
 		user: Id(user),
 		profile: None,
@@ -564,6 +567,7 @@ fn large_startup_retains_permissions_read_state_and_subsequent_channel_threads()
 
 fn user() -> User {
 	User {
+		member_avatar: None,
 		username: None,
 		primary_guild: None,
 		cosmetics: None,
@@ -2392,6 +2396,7 @@ fn repeated_typing_and_role_updates_fence_lookups_without_resaving_names() {
 	let mut state = state();
 	let person = cached_person(7, "Current nickname");
 	let identity = model::MemberIdentity {
+		avatar: model::Patch::Absent,
 		guild: Id(10),
 		user: Id(7),
 		profile: Some(person.user.clone()),
@@ -2430,6 +2435,7 @@ fn repeated_typing_and_role_updates_fence_lookups_without_resaving_names() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			profile: None,
 			nick: Patch::Absent,
 			roles: Patch::Value(vec![]),
@@ -2459,6 +2465,7 @@ fn repeated_typing_and_role_updates_fence_lookups_without_resaving_names() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			profile: None,
 			nick: Patch::Value("Changed nickname".into()),
 			roles: Patch::Absent,
@@ -2474,6 +2481,7 @@ fn repeated_typing_and_role_updates_fence_lookups_without_resaving_names() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			profile: None,
 			nick: Patch::Absent,
 			roles: Patch::Absent,
@@ -2517,6 +2525,7 @@ fn member_chunk_identity_and_closed_pane_remain_available_and_live() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
 			profile: None,
@@ -2568,6 +2577,7 @@ fn persisted_member_names_are_display_only_and_do_not_override_live_updates() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
 			profile: None,
@@ -2582,6 +2592,7 @@ fn persisted_member_names_are_display_only_and_do_not_override_live_updates() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
 			profile: None,
@@ -2612,6 +2623,7 @@ fn nickname_updates_preserve_navigation_caches_and_cooldown_stays_pending() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
 			profile: None,
@@ -2662,6 +2674,7 @@ fn disk_hydration_preserves_live_departures_and_most_recent_bounded_rows() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
 			profile: None,
@@ -2721,6 +2734,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 			apply(
 				&mut state,
 				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					avatar: model::Patch::Absent,
 					guild: Id(10),
 					user: Id(8),
 					profile: None,
@@ -2760,6 +2774,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 			apply(
 				&mut state,
 				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					avatar: model::Patch::Absent,
 					guild: Id(10),
 					user: Id(7),
 					profile: None,
@@ -2796,6 +2811,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 		apply(
 			&mut state,
 			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(7),
 				profile: None,

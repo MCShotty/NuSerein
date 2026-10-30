@@ -24,6 +24,7 @@ pub struct Labels {
 	display_revision: u64,
 	bytes: usize,
 }
+
 impl Labels {
 	pub(crate) fn clear(&mut self) {
 		let display_revision = self.display_revision.wrapping_add(1);
@@ -171,6 +172,9 @@ impl Labels {
 				if matches!(update.roles, Patch::Absent) {
 					update.roles = old.roles;
 				}
+				if matches!(update.avatar, Patch::Absent) {
+					update.avatar = old.avatar;
+				}
 			}
 		}
 		if let Some(index) = self
@@ -238,6 +242,14 @@ impl Labels {
 					update.profile = Some(member.user.clone());
 					update.nick = member.nick.clone().map_or(Patch::Null, Patch::Value);
 					update.roles = Patch::Value(member.roles.clone());
+					update.avatar = member
+						.user
+						.member_avatar
+						.as_ref()
+						.filter(|avatar| avatar.guild == guild)
+						.map_or(Patch::Absent, |avatar| {
+							avatar.hash.clone().map_or(Patch::Null, Patch::Value)
+						});
 					update.departed = false;
 					self.bytes += update.bytes();
 				}
@@ -429,6 +441,91 @@ impl State {
 			.member(guild, user)
 			.is_some_and(|member| valid(&member.user, member.nick.as_deref()))
 	}
+	/// Targeted local suggestions remain older than every live query or observation.
+	/// They fill presentation hints without completing a Gateway request or inventing roles.
+	pub fn hydrate_member_search_displays(
+		&mut self,
+		request: &member_search::Request,
+		started_revision: u64,
+		rows: Vec<MemberDisplay>,
+	) -> bool {
+		if !request.valid()
+			|| self.selected != Some(request.channel)
+			|| self
+				.channel(request.channel)
+				.and_then(|channel| channel.guild)
+				!= Some(request.guild)
+			|| !self.can_view(request.channel)
+			|| !self.gateway_connected
+			|| self.auth != crate::auth::AuthState::Authenticated
+			|| self.member_labels.revision() != started_revision
+			|| self.member_search[request.slot].request.as_ref() != Some(request)
+			|| (self.member_search[request.slot].finished
+				&& self.member_search[request.slot].error.is_none())
+			|| rows.len() > member_search::LIMIT
+			|| rows.iter().map(MemberDisplay::bytes).sum::<usize>() > member_search::MAX_BYTES
+		{
+			return false;
+		}
+		let query = request.query.to_lowercase();
+		let exact = request.query.parse::<Id>().ok();
+		if rows.iter().any(|row| {
+			row.guild != request.guild
+				|| !row.valid()
+				|| if request.slot == 1 {
+					!request.users.contains(&row.user)
+				} else if let Some(exact) = exact {
+					row.user != exact
+				} else {
+					![
+						Some(row.name.as_str()),
+						row.username.as_deref(),
+						row.nick.as_deref(),
+					]
+					.into_iter()
+					.flatten()
+					.any(|name| name.to_lowercase().contains(&query))
+				}
+		}) {
+			return false;
+		}
+		let needed = rows
+			.iter()
+			.filter(|row| {
+				self.member_labels.get(request.guild, row.user).is_none()
+					&& self.member_labels.member(request.guild, row.user).is_none()
+			})
+			.count();
+		let mut removed = false;
+		while self.member_labels.entries.len().saturating_add(needed) > LIMIT {
+			let Some(index) = self
+				.member_labels
+				.entries
+				.iter()
+				.position(|(revision, entry)| {
+					*revision == 0
+						&& !rows
+							.iter()
+							.any(|row| row.guild == entry.guild && row.user == entry.user)
+				})
+			else {
+				break;
+			};
+			let (_, old) = self
+				.member_labels
+				.entries
+				.remove(index)
+				.expect("hint index checked");
+			self.member_labels.bytes -= old.bytes();
+			removed = true;
+		}
+		if removed {
+			self.revision = self.revision.wrapping_add(1);
+			self.skip_identity_navigation();
+		}
+		self.hydrate_member_displays(request.guild, started_revision, rows);
+		true
+	}
 	/// Older disk observations never override a live result, removal or account transition.
 	pub fn hydrate_member_displays(
 		&mut self,
@@ -464,6 +561,7 @@ impl State {
 				guild,
 				user: row.user,
 				profile: Some(User {
+					member_avatar: None,
 					id: row.user,
 					name: row.name,
 					username: row.username,
@@ -474,6 +572,7 @@ impl State {
 					webhook: false,
 					kind: Default::default(),
 				}),
+				avatar: Patch::Absent,
 				nick: row.nick.map_or(Patch::Null, Patch::Value),
 				roles: Patch::Absent,
 				departed: false,
@@ -556,6 +655,7 @@ impl State {
 					return None;
 				}
 				Some(std::borrow::Cow::Owned(User {
+					member_avatar: None,
 					id: update.user,
 					name: nick.clone(),
 					username: None,
@@ -594,6 +694,16 @@ impl State {
 		{
 			return;
 		}
+		if matches!(update.avatar, Patch::Absent)
+			&& let Some(avatar) = update
+				.profile
+				.as_ref()
+				.and_then(|user| user.member_avatar.as_ref())
+			&& avatar.guild == update.guild
+			&& avatar.valid()
+		{
+			update.avatar = avatar.hash.clone().map_or(Patch::Null, Patch::Value);
+		}
 		if let Some(profile) = &mut update.profile {
 			let known = self
 				.display_member(channel, update.user)
@@ -618,6 +728,12 @@ impl State {
 				let mut merged = known.clone();
 				merged.name.clone_from(&profile.name);
 				merged.username.clone_from(&profile.username);
+				if let Some(avatar) = &profile.member_avatar
+					&& avatar.guild == update.guild
+					&& avatar.valid()
+				{
+					merged.member_avatar = Some(avatar.clone());
+				}
 				*profile = merged;
 			}
 		}
@@ -625,6 +741,7 @@ impl State {
 			&& update.profile.is_none()
 			&& matches!(update.nick, Patch::Absent)
 			&& matches!(update.roles, Patch::Absent)
+			&& matches!(update.avatar, Patch::Absent)
 		{
 			return;
 		}
@@ -636,6 +753,7 @@ impl State {
 					&& (update.profile.is_none() || update.profile == old.profile)
 					&& (matches!(update.nick, Patch::Absent) || update.nick == old.nick)
 					&& (matches!(update.roles, Patch::Absent) || update.roles == old.roles)
+					&& (matches!(update.avatar, Patch::Absent) || update.avatar == old.avatar)
 			}) {
 			// Still advance observation ordering to fence in-flight search replies, without
 			// relaying unchanged typing metadata through every cached row and layout.
@@ -744,6 +862,37 @@ impl State {
 			}
 		}
 		self.timeline.apply_author_identity(&update);
+		// Only guild-scoped profiles may inherit a member avatar; global profile views
+		// keep the account artwork. Cached cards are updated alongside the open card.
+		let refresh_profile = |profile: &mut model::UserProfile| {
+			let Some(guild) = &mut profile.guild else {
+				return;
+			};
+			if guild.guild != update.guild || profile.user.id != update.user {
+				return;
+			}
+			let avatar = match &update.avatar {
+				Patch::Value(hash) => Some(Some(hash.clone())),
+				Patch::Null => Some(None),
+				Patch::Absent => update
+					.profile
+					.as_ref()
+					.and_then(|user| user.member_avatar.as_ref())
+					.filter(|avatar| avatar.guild == update.guild)
+					.map(|avatar| avatar.hash.clone()),
+			};
+			if let Some(avatar) = avatar {
+				guild.avatar = avatar;
+			}
+		};
+		if let Some(profile) = &mut self.profile
+			&& profile.user == update.user
+			&& profile.guild == Some(update.guild)
+			&& let Some(data) = &mut profile.data
+		{
+			refresh_profile(data);
+		}
+		self.profile_cache.update(update.user, refresh_profile);
 		if update.departed {
 			self.typing.remove(update.user);
 		}
@@ -751,5 +900,153 @@ impl State {
 		self.revision = self.revision.wrapping_add(1);
 		self.skip_identity_navigation();
 		self.enforce_resident_budget();
+	}
+}
+
+#[cfg(test)]
+mod cache_search_tests {
+	use super::*;
+
+	fn state() -> State {
+		let mut state = State {
+			auth: crate::auth::AuthState::Authenticated,
+			gateway_connected: true,
+			user: Some(crate::tests::message(1).author),
+			selected: Some(Id(1)),
+			guilds: vec![model::Guild {
+				default_message_notifications: None,
+				stickers: None,
+				emojis: None,
+				id: Id(2),
+				name: "Synthetic server".into(),
+				icon: None,
+			}],
+			channels: vec![model::Channel {
+				icon: None,
+				last_message: None,
+				id: Id(1),
+				guild: Some(Id(2)),
+				parent_id: None,
+				position: 0,
+				name: "synthetic".into(),
+				kind: 0,
+				recipients: vec![],
+				member_list_id: None,
+				message_count: None,
+				tags: None,
+			}],
+			..State::default()
+		};
+		crate::tests::grant_permissions(&mut state);
+		state
+	}
+
+	fn row(user: u64, nick: &str) -> MemberDisplay {
+		MemberDisplay {
+			guild: Id(2),
+			user: Id(user),
+			name: "Synthetic person".into(),
+			username: Some("synthetic_account".into()),
+			nick: Some(nick.into()),
+		}
+	}
+
+	#[test]
+	fn targeted_disk_search_supplies_nickname_without_completing_the_live_query() {
+		let mut state = state();
+		let Some(crate::Command::MemberSearch(request)) =
+			state.search_members(Id(1), "FarAwayNick", 0)
+		else {
+			panic!("member query");
+		};
+		let revision = state.member_display_revision();
+		assert!(state.hydrate_member_search_displays(
+			&request,
+			revision,
+			vec![row(9000, "FarAwayNick")]
+		));
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9000)),
+			Some(Some("FarAwayNick"))
+		);
+		assert!(!state.member_search[0].finished);
+		assert!(state.member_search[0].rows.is_empty());
+		assert!(matches!(
+			state.member_identity(Id(1), Id(9000)).unwrap().roles,
+			Patch::Absent
+		));
+		assert!(matches!(
+			state.member_identity(Id(1), Id(9000)).unwrap().avatar,
+			Patch::Absent
+		));
+	}
+
+	#[test]
+	fn live_results_and_changed_queries_fence_delayed_disk_searches() {
+		let mut state = state();
+		let Some(crate::Command::MemberSearch(old)) = state.search_members(Id(1), "OldNick", 0)
+		else {
+			panic!("old query");
+		};
+		let revision = state.member_display_revision();
+		let Some(crate::Command::MemberSearch(current)) = state.search_members(Id(1), "NewNick", 0)
+		else {
+			panic!("new query");
+		};
+		assert!(!state.hydrate_member_search_displays(&old, revision, vec![row(9000, "OldNick")]));
+		let mut user = crate::tests::message(1).author;
+		user.id = Id(9000);
+		state.searched_members(
+			current.clone(),
+			Ok(vec![Member {
+				roles: vec![],
+				user,
+				nick: Some("NewNick".into()),
+				status: None,
+				custom_status: None,
+				activities: vec![],
+				clients: Default::default(),
+			}]),
+		);
+		assert!(!state.hydrate_member_search_displays(
+			&current,
+			revision,
+			vec![row(9000, "NewNickFromDisk")]
+		));
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9000)),
+			Some(Some("NewNick"))
+		);
+	}
+
+	#[test]
+	fn targeted_search_replaces_old_hints_within_existing_limits() {
+		let mut state = state();
+		let revision = state.member_display_revision();
+		state.hydrate_member_displays(
+			Id(2),
+			revision,
+			(1000..1000 + LIMIT as u64)
+				.map(|user| row(user, "Old cached nickname"))
+				.collect(),
+		);
+		assert_eq!(state.member_labels.entries.len(), LIMIT);
+		let Some(crate::Command::MemberSearch(request)) =
+			state.search_members(Id(1), "TargetNickname", 0)
+		else {
+			panic!("target query");
+		};
+		assert!(state.hydrate_member_search_displays(
+			&request,
+			state.member_display_revision(),
+			vec![row(9000, "TargetNickname")]
+		));
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9000)),
+			Some(Some("TargetNickname"))
+		);
+		assert!(state.member_labels.entries.len() <= LIMIT);
+		assert!(state.member_labels.overlay_bytes() <= MAX_BYTES);
+		assert!(!state.member_search[0].finished);
 	}
 }

@@ -1,6 +1,6 @@
 //! UI-neutral session entities. No filesystem or network dependencies.
 mod users;
-pub use users::{AccountKind, SavedAccount, User, valid_avatar_hash};
+pub use users::{AccountKind, GuildAvatar, SavedAccount, User, valid_avatar_hash};
 mod navigation;
 pub use navigation::{Channel, ChannelPatch, ExpressionCatalog, Guild, GuildPatch, InvitePreview};
 mod messages;

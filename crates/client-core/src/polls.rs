@@ -253,6 +253,7 @@ mod tests {
 			selected: Some(Id(10)),
 			freshness: Freshness::Fresh,
 			user: Some(model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),

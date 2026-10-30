@@ -1944,6 +1944,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(4),
 				name: "Synthetic".into(),
