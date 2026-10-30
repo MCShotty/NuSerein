@@ -997,8 +997,13 @@ impl Cache {
 			let disk_budget = local_store::data_dir()
 				.ok()
 				.map(|root| local_store::cache_budget::CacheBudget::for_root(&root));
-			if let (Some(budget), Ok(store)) = (&disk_budget, &mut store) {
-				let _ = maintain_disk_cache(store, budget, &HistoryPins::default());
+			if let Ok(store) = &mut store {
+				// Schema initialization preserves legacy layouts. Reserve the bounded
+				// one-time rebuild here, on the worker, before admitting cache growth.
+				let _ = prepare_cache_layout(store, disk_budget.as_ref(), &HistoryPins::default());
+				if let Some(budget) = &disk_budget {
+					let _ = maintain_disk_cache(store, budget, &HistoryPins::default());
+				}
 			}
 			let results = Arc::new(Budget::default());
 			loop {
@@ -1014,6 +1019,7 @@ impl Cache {
 								&& budget.needs_maintenance()
 							{
 								let _ = maintain_disk_cache(store, budget, &protected);
+								let _ = prepare_cache_layout(store, Some(budget), &protected);
 							}
 							continue;
 						}
@@ -1344,6 +1350,46 @@ fn ensure_history_items(
 	}
 }
 
+/// Existing personal data remains readable if the optional cache layout rebuild
+/// cannot reserve its temporary files. Cleanup never calls this helper recursively.
+fn prepare_cache_layout(
+	store: &mut LocalStore,
+	budget: Option<&Arc<local_store::cache_budget::CacheBudget>>,
+	protected: &HistoryPins,
+) -> Result<(), StoreError> {
+	let Some(bytes) = store.cache_layout_migration_bytes()? else {
+		return Ok(());
+	};
+	let budget = budget.ok_or(StoreError::Capacity)?;
+	let reservation = budget
+		.reserve_with_reclaim(bytes, |stage, wanted| {
+			reclaim_disk_cache(store, stage, wanted, protected)
+		})
+		.map_err(|_| StoreError::Capacity)?;
+	let result = store.migrate_cache_layout();
+	drop(reservation);
+	let refreshed = budget
+		.refresh_database()
+		.map_err(|_| StoreError::Unavailable);
+	result?;
+	refreshed?;
+	Ok(())
+}
+fn cache_growth_needs_layout(operation: &Operation) -> bool {
+	matches!(
+		operation,
+		Operation::SyncSavePage { .. }
+			| Operation::SaveChannel { .. }
+			| Operation::SaveChanges { .. }
+			| Operation::SyncSaveMembers { .. }
+			| Operation::SaveMembers(_)
+			| Operation::SaveExpressions(_)
+			| Operation::SaveStickerPackHints(_)
+			| Operation::SaveServers { .. }
+			| Operation::SaveSyncCheckpoint(_)
+	)
+}
+
 fn execute_with_disk_budget(
 	store: &mut Result<LocalStore, StoreError>,
 	history: &HistorySafety,
@@ -1370,6 +1416,12 @@ fn execute_with_disk_budget(
 
 	let mut protected = *protected;
 	protected.writing = history_write(&operation).map(|(channel, _)| (account, channel));
+	if cache_growth_needs_layout(&operation)
+		&& let Ok(store) = &mut *store
+		&& let Err(error) = prepare_cache_layout(store, budget, &protected)
+	{
+		return execute(&mut Err(error), history, account, epoch, operation);
+	}
 	let item_pressure = match (history_write(&operation), store.as_ref()) {
 		(Some((channel, messages)), Ok(store)) => match history_growth(
 			store,
@@ -2192,6 +2244,130 @@ pub fn debug_voice_preferences_check() {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// A valid two-page SQLite file with one empty table and auto_vacuum=NONE.
+	/// Keeping the table prevents the fresh-database pragma from upgrading its layout.
+	fn legacy_cache_file(root: &std::path::Path) -> LocalStore {
+		let mut bytes = vec![0u8; 8192];
+		bytes[..16].copy_from_slice(b"SQLite format 3\0");
+		bytes[16..18].copy_from_slice(&4096u16.to_be_bytes());
+		bytes[18..24].copy_from_slice(&[1, 1, 0, 64, 32, 32]);
+		for (offset, value) in [
+			(24, 1u32),
+			(28, 2),
+			(40, 1),
+			(44, 4),
+			(56, 1),
+			(60, 1),
+			(92, 1),
+			(96, 3_046_001),
+		] {
+			bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+		}
+		let values: [&[u8]; 4] = [
+			b"table",
+			b"legacy_marker",
+			b"legacy_marker",
+			b"CREATE TABLE legacy_marker(value)",
+		];
+		let mut record = vec![
+			6,
+			13 + 2 * values[0].len() as u8,
+			13 + 2 * values[1].len() as u8,
+			13 + 2 * values[2].len() as u8,
+			1,
+			13 + 2 * values[3].len() as u8,
+		];
+		for value in &values[..3] {
+			record.extend_from_slice(value);
+		}
+		record.push(2);
+		record.extend_from_slice(values[3]);
+		assert!(record.len() < 128);
+		let mut cell = vec![record.len() as u8, 1];
+		cell.extend(record);
+		let start = 4096 - cell.len();
+		bytes[100] = 13;
+		bytes[103..105].copy_from_slice(&1u16.to_be_bytes());
+		bytes[105..107].copy_from_slice(&(start as u16).to_be_bytes());
+		bytes[108..110].copy_from_slice(&(start as u16).to_be_bytes());
+		bytes[start..4096].copy_from_slice(&cell);
+		bytes[4096] = 13;
+		bytes[4101..4103].copy_from_slice(&4096u16.to_be_bytes());
+		let path = root.join("client.sqlite3");
+		std::fs::write(&path, bytes).unwrap();
+		let store = LocalStore::open(&path).unwrap();
+		assert!(store.cache_layout_migration_bytes().unwrap().is_some());
+		store
+	}
+
+	#[test]
+	fn cache_layout_migration_requires_reserved_space_and_preserves_personal_data() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-cache-layout-worker-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir(&root).unwrap();
+		let mut store = legacy_cache_file(&root);
+		store
+			.save_draft(Id(1), Id(2), "Preserved legacy draft")
+			.unwrap();
+		store.save_game_activity_enabled(false).unwrap();
+		let budget = local_store::cache_budget::CacheBudget::for_root(&root);
+		let journal = root.join("client.sqlite3-journal");
+		std::fs::File::create(&journal)
+			.unwrap()
+			.set_len(model::TOTAL_CACHE_BYTES)
+			.unwrap();
+		assert_eq!(
+			prepare_cache_layout(&mut store, Some(&budget), &HistoryPins::default()),
+			Err(StoreError::Capacity)
+		);
+		assert!(store.cache_layout_migration_bytes().unwrap().is_some());
+		assert_eq!(
+			store.load_drafts(Id(1)).unwrap()[&Id(2)],
+			"Preserved legacy draft"
+		);
+		assert!(!store.game_activity_enabled().unwrap());
+		assert_eq!(budget.usage().reserved, 0);
+		std::fs::remove_file(journal).unwrap();
+		budget.refresh_database().unwrap();
+		prepare_cache_layout(&mut store, Some(&budget), &HistoryPins::default()).unwrap();
+		assert_eq!(store.cache_layout_migration_bytes().unwrap(), None);
+		assert_eq!(
+			store.load_drafts(Id(1)).unwrap()[&Id(2)],
+			"Preserved legacy draft"
+		);
+		assert!(!store.game_activity_enabled().unwrap());
+		assert_eq!(budget.usage().reserved, 0);
+		assert!(budget.usage().total <= model::TOTAL_CACHE_BYTES);
+		drop(store);
+		drop(budget);
+		std::fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn fresh_incremental_cache_needs_no_layout_rebuild_or_reservation() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-cache-layout-fresh-{}-{}",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		std::fs::create_dir(&root).unwrap();
+		let mut store = LocalStore::open(&root.join("client.sqlite3")).unwrap();
+		assert_eq!(store.cache_layout_migration_bytes().unwrap(), None);
+		prepare_cache_layout(&mut store, None, &HistoryPins::default()).unwrap();
+		assert_eq!(store.cache_layout_migration_bytes().unwrap(), None);
+		drop(store);
+		std::fs::remove_dir_all(root).unwrap();
+	}
 
 	#[test]
 	fn confirmed_missing_members_remove_only_the_current_job_account_and_server_hints() {

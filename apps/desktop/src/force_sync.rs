@@ -701,6 +701,8 @@ impl Desktop {
 					return;
 				}
 				if let Some(job) = Job::new(&self.state, scope) {
+					// Explicit sync retries presentation writes after storage pressure clears.
+					self.server_cache_failed = false;
 					self.cancel_force_sync_roster();
 					self.force_sync.active = None;
 					self.force_sync.pending_page = None;
@@ -726,6 +728,7 @@ impl Desktop {
 			Action::Resume => {
 				if let Some(mut job) = self.force_sync.job.take() {
 					if job.status < 3 {
+						self.server_cache_failed = false;
 						job.status = 0;
 						if self.force_sync.needs_revalidate {
 							self.force_sync.resume = Some(Box::new(job.clone()));

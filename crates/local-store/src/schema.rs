@@ -8,7 +8,11 @@ impl LocalStore {
 		if version > READABLE_SCHEMA {
 			return Err(StoreError::Incompatible);
 		}
-		connection.execute_batch("PRAGMA page_size=4096; PRAGMA max_page_count=732421; PRAGMA cache_size=-2048; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=256; PRAGMA journal_size_limit=8388608; PRAGMA secure_delete=ON; PRAGMA auto_vacuum=INCREMENTAL;
+		let fresh: bool = connection
+			.pragma_query_value(None, "page_count", |row| Ok(row.get::<_, i64>(0)? == 0))?;
+		// WAL initialization writes the database header. Incremental vacuum must be
+		// selected first for a fresh file; legacy layouts require a reserved VACUUM.
+		connection.execute_batch("PRAGMA page_size=4096; PRAGMA auto_vacuum=INCREMENTAL; PRAGMA max_page_count=732421; PRAGMA cache_size=-2048; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=256; PRAGMA journal_size_limit=8388608; PRAGMA secure_delete=ON;
             CREATE TABLE IF NOT EXISTS messages(account TEXT NOT NULL,channel TEXT NOT NULL,id TEXT NOT NULL,author TEXT NOT NULL,name TEXT NOT NULL,content TEXT NOT NULL,edited INTEGER NOT NULL,reply TEXT,unsupported INTEGER NOT NULL,PRIMARY KEY(account,channel,id));
             CREATE INDEX IF NOT EXISTS messages_channel_order ON messages(account,channel,length(id),id);
             CREATE TABLE IF NOT EXISTS channels(account TEXT NOT NULL,channel TEXT NOT NULL,touched INTEGER NOT NULL,PRIMARY KEY(account,channel));
@@ -405,6 +409,11 @@ CREATE TRIGGER IF NOT EXISTS member_cache_update AFTER UPDATE OF name,username,n
 ")?;
 
 		transaction.commit()?;
+		if fresh
+			&& connection.pragma_query_value(None, "auto_vacuum", |row| row.get::<_, i64>(0))? != 2
+		{
+			return Err(StoreError::Incompatible);
+		}
 		let mut store = Self(connection);
 		store.finish_cache_cleanups()?;
 		Ok(store)

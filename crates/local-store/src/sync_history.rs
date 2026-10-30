@@ -6,6 +6,9 @@ use rusqlite::Transaction;
 pub const MAX_CACHED_MESSAGES: usize = 1_000_000;
 const MAX_TOMBSTONES: usize = 100_000;
 const MAX_CHECKPOINT_BYTES: usize = 1024 * 1024;
+// A production schema31 file was capped at64MiB. Opening it can add bounded
+// schema32 tables/indexes before the worker reserves its layout conversion.
+const MAX_LEGACY_LAYOUT_BYTES: u64 = 96 * 1024 * 1024;
 type StoredCoverage = (String, String, String, String, Option<String>, bool, bool);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -590,6 +593,67 @@ impl LocalStore {
 		Ok(victims.len())
 	}
 
+	/// Required additional reservation before converting an old non-reclaimable
+	/// cache layout. The 96-MiB envelope includes the 64-MiB legacy ceiling plus
+	/// 32 MiB for bounded schema growth before conversion admission.
+	pub fn cache_layout_migration_bytes(&self) -> Result<Option<u64>> {
+		let mode: i64 = self
+			.0
+			.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
+		if mode == 2 {
+			return Ok(None);
+		}
+		if mode != 0 {
+			return Err(StoreError::Incompatible);
+		}
+		let pages: i64 = self
+			.0
+			.pragma_query_value(None, "page_count", |row| row.get(0))?;
+		let page_size: i64 = self
+			.0
+			.pragma_query_value(None, "page_size", |row| row.get(0))?;
+		let logical = u64::try_from(pages.checked_mul(page_size).ok_or(StoreError::Capacity)?)
+			.map_err(|_| StoreError::Incompatible)?;
+		let physical = match self
+			.0
+			.path()
+			.filter(|path| !path.is_empty() && *path != ":memory:")
+		{
+			Some(path) => std::fs::metadata(path)
+				.map_err(|_| StoreError::Unavailable)?
+				.len(),
+			None => 0,
+		};
+		let bytes = logical.max(physical);
+		if bytes > MAX_LEGACY_LAYOUT_BYTES {
+			return Err(StoreError::Capacity);
+		}
+		Ok(Some(
+			bytes
+				.checked_mul(3)
+				.and_then(|bytes| bytes.checked_add(8 * 1024 * 1024))
+				.ok_or(StoreError::Capacity)?,
+		))
+	}
+	/// Storage-worker operation. The caller must hold the additional reservation
+	/// returned above; this method never performs an unbounded layout conversion.
+	pub fn migrate_cache_layout(&mut self) -> Result<()> {
+		if self.cache_layout_migration_bytes()?.is_none() {
+			return Ok(());
+		}
+		if !self.0.is_autocommit() {
+			return Err(StoreError::Unavailable);
+		}
+		self.0.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA auto_vacuum=INCREMENTAL; VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
+		if self
+			.0
+			.pragma_query_value(None, "auto_vacuum", |row| row.get::<_, i64>(0))?
+			!= 2
+		{
+			return Err(StoreError::Incompatible);
+		}
+		Ok(())
+	}
 	pub fn reclaim_history_space(&mut self) -> Result<()> {
 		self.0
 			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum(1024); PRAGMA wal_checkpoint(TRUNCATE);")?;
@@ -1132,5 +1196,205 @@ mod tests {
 				.unwrap()
 				.stale
 		);
+	}
+	fn physical_store(label: &str) -> (LocalStore, std::path::PathBuf) {
+		let path = std::env::temp_dir().join(format!(
+			"serein-vacuum-{label}-{}-{}.sqlite3",
+			std::process::id(),
+			std::time::SystemTime::now()
+				.duration_since(std::time::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		(LocalStore::open(&path).unwrap(), path)
+	}
+	fn fill_physical_history(store: &mut LocalStore) {
+		let transaction = store.0.transaction().unwrap();
+		{
+			let mut insert=transaction.prepare("INSERT INTO messages(account,channel,id,author,name,content,edited,unsupported) VALUES('1','2',?1,'3','synthetic',?2,0,0)").unwrap();
+			for id in 1..=1000 {
+				insert
+					.execute(params![id.to_string(), "x".repeat(4096)])
+					.unwrap();
+			}
+		}
+		transaction.commit().unwrap();
+		store
+			.0
+			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+			.unwrap();
+	}
+	#[test]
+	fn fresh_file_enables_incremental_vacuum_and_releases_physical_pages() {
+		let (mut store, path) = physical_store("fresh");
+		assert_eq!(
+			store
+				.0
+				.pragma_query_value::<i64, _>(None, "auto_vacuum", |row| row.get(0))
+				.unwrap(),
+			2
+		);
+		assert_eq!(store.cache_layout_migration_bytes().unwrap(), None);
+		fill_physical_history(&mut store);
+		store.save_draft(Id(1), Id(2), "preserved draft").unwrap();
+		store
+			.0
+			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+			.unwrap();
+		let before = std::fs::metadata(&path).unwrap().len();
+		store.clear_channel_history(Id(1), Id(2)).unwrap();
+		store.reclaim_history_space().unwrap();
+		let after = std::fs::metadata(&path).unwrap().len();
+		assert!(
+			after < before,
+			"physical cache must shrink: {before} -> {after}"
+		);
+		assert!(store.load_channel(Id(1), Id(2)).unwrap().is_empty());
+		assert_eq!(store.load_drafts(Id(1)).unwrap()[&Id(2)], "preserved draft");
+		drop(store);
+		std::fs::remove_file(path).unwrap();
+	}
+	#[test]
+	fn legacy_layout_conversion_preserves_records_and_enables_physical_reclamation() {
+		let (mut store, path) = physical_store("legacy");
+		fill_physical_history(&mut store);
+		store.save_draft(Id(1), Id(2), "legacy draft").unwrap();
+		store.save_appearance(crate::Appearance::Dark).unwrap();
+		store.0.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA auto_vacuum=NONE; VACUUM; PRAGMA user_version=31; PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+		drop(store);
+		let mut store = LocalStore::open(&path).unwrap();
+		assert_eq!(
+			store
+				.0
+				.pragma_query_value::<i64, _>(None, "auto_vacuum", |row| row.get(0))
+				.unwrap(),
+			0
+		);
+		let required = store.cache_layout_migration_bytes().unwrap().unwrap();
+		assert!(required >= std::fs::metadata(&path).unwrap().len() * 3 + 8 * 1024 * 1024);
+		let version = store
+			.0
+			.pragma_query_value::<u32, _>(None, "user_version", |row| row.get(0))
+			.unwrap();
+		store.migrate_cache_layout().unwrap();
+		assert_eq!(store.cache_layout_migration_bytes().unwrap(), None);
+		assert_eq!(store.load_channel(Id(1), Id(2)).unwrap().len(), 500);
+		assert_eq!(store.load_drafts(Id(1)).unwrap()[&Id(2)], "legacy draft");
+		assert_eq!(store.appearance().unwrap(), crate::Appearance::Dark);
+		assert_eq!(
+			store
+				.0
+				.pragma_query_value::<u32, _>(None, "user_version", |row| row.get(0))
+				.unwrap(),
+			version
+		);
+		let before = std::fs::metadata(&path).unwrap().len();
+		store.clear_history(Id(1)).unwrap();
+		assert!(std::fs::metadata(&path).unwrap().len() < before);
+		assert_eq!(store.load_drafts(Id(1)).unwrap()[&Id(2)], "legacy draft");
+		drop(store);
+		std::fs::remove_file(path).unwrap();
+	}
+	#[test]
+	fn oversized_legacy_layout_refuses_conversion_without_losing_records() {
+		let (store, path) = physical_store("oversized");
+		drop(store);
+		let connection = Connection::open(&path).unwrap();
+		connection.execute_batch("PRAGMA auto_vacuum=NONE; VACUUM; CREATE TABLE synthetic_layout_marker(value TEXT NOT NULL,payload BLOB); INSERT INTO synthetic_layout_marker VALUES('preserved',zeroblob(101711872)); PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+		drop(connection);
+		let mut store = LocalStore::open(&path).unwrap();
+		store
+			.0
+			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+			.unwrap();
+		let before = std::fs::metadata(&path).unwrap().len();
+		assert!(before > MAX_LEGACY_LAYOUT_BYTES);
+		assert_eq!(
+			store.cache_layout_migration_bytes(),
+			Err(StoreError::Capacity)
+		);
+		assert_eq!(store.migrate_cache_layout(), Err(StoreError::Capacity));
+		assert_eq!(std::fs::metadata(&path).unwrap().len(), before);
+		assert_eq!(
+			store
+				.0
+				.pragma_query_value::<i64, _>(None, "auto_vacuum", |row| row.get(0))
+				.unwrap(),
+			0
+		);
+		assert_eq!(
+			store
+				.0
+				.query_row::<String, _, _>("SELECT value FROM synthetic_layout_marker", [], |row| {
+					row.get(0)
+				})
+				.unwrap(),
+			"preserved"
+		);
+		drop(store);
+		std::fs::remove_file(path).unwrap();
+	}
+	#[test]
+	fn near_ceiling_schema31_file_survives_schema_growth_before_layout_conversion() {
+		let (mut store, path) = physical_store("legacy-ceiling");
+		let row = message(&store, 100, 2);
+		store.save_channel(Id(1), Id(2), &[row], false).unwrap();
+		store
+			.save_draft(Id(1), Id(2), "preserved near-ceiling draft")
+			.unwrap();
+		store.save_appearance(crate::Appearance::Dark).unwrap();
+		store.0.execute_batch("DROP TRIGGER history_count_insert; DROP TRIGGER history_count_delete; DROP TRIGGER member_cache_insert; DROP TRIGGER member_cache_delete; DROP TRIGGER member_cache_update; DROP TABLE cache_cleanup; DROP TABLE history_channels; DROP TABLE history_tombstones; DROP TABLE history_sync; DROP TABLE sync_checkpoints; DROP TABLE tombstone_totals; DROP TABLE history_totals; DROP TABLE member_cache_totals; ALTER TABLE member_displays DROP COLUMN search_key; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; PRAGMA auto_vacuum=NONE; VACUUM; PRAGMA user_version=31; PRAGMA max_page_count=16384; CREATE TABLE synthetic_legacy_padding(marker TEXT,payload BLOB); INSERT INTO synthetic_legacy_padding VALUES('preserved',zeroblob(66060288));").unwrap();
+		for _ in 0..1024 {
+			let pages: i64 = store
+				.0
+				.pragma_query_value(None, "page_count", |row| row.get(0))
+				.unwrap();
+			if pages >= 16380 {
+				break;
+			}
+			store
+				.0
+				.execute(
+					"INSERT INTO synthetic_legacy_padding VALUES('padding',zeroblob(4096))",
+					[],
+				)
+				.unwrap();
+		}
+		let before = std::fs::metadata(&path).unwrap().len();
+		assert!((16380 * 4096..=64 * 1024 * 1024).contains(&before));
+		drop(store);
+		let mut store = LocalStore::open(&path).unwrap();
+		store
+			.0
+			.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+			.unwrap();
+		let after_schema = std::fs::metadata(&path).unwrap().len();
+		assert!(
+			after_schema > 64 * 1024 * 1024,
+			"schema growth must exercise the old boundary: {before} -> {after_schema}"
+		);
+		assert!(after_schema <= MAX_LEGACY_LAYOUT_BYTES);
+		assert!(store.cache_layout_migration_bytes().unwrap().is_some());
+		store.migrate_cache_layout().unwrap();
+		assert_eq!(store.cache_layout_migration_bytes().unwrap(), None);
+		assert_eq!(store.load_channel(Id(1), Id(2)).unwrap()[0].id, Id(100));
+		assert_eq!(
+			store.load_drafts(Id(1)).unwrap()[&Id(2)],
+			"preserved near-ceiling draft"
+		);
+		assert_eq!(store.appearance().unwrap(), crate::Appearance::Dark);
+		assert_eq!(
+			store
+				.0
+				.query_row::<String, _, _>(
+					"SELECT marker FROM synthetic_legacy_padding WHERE marker='preserved'",
+					[],
+					|row| row.get(0)
+				)
+				.unwrap(),
+			"preserved"
+		);
+		drop(store);
+		std::fs::remove_file(path).unwrap();
 	}
 }

@@ -15,6 +15,11 @@ member display hints across saved accounts. Coverage/cursors, storage revisions 
 bounded deletion markers prevent failed, stale or interrupted pages from certifying a
 complete interval or restoring deleted messages. Eviction retires affected coverage.
 
+Complete, currently authorized member rosters reconcile absent display records only after
+their correlated completion; partial rosters cannot prove absence. Confirmed exact-member
+404 responses remove stale nickname hints. Live observations and storage epochs fence
+late cleanup across account changes and replacement jobs.
+
 One process-wide budget for the application data root accounts for all saved accounts:
 the whole SQLite file, WAL/SHM/rollback journals, cached media/artwork, temporary cache
 files and outstanding write reservations. The hard ceiling is **3,000,000,000 bytes**;
@@ -30,6 +35,16 @@ incremental SQLite reclamation run on the serialized storage worker. If reclamat
 make room, new cache writes fail explicitly; synchronization reports partial coverage.
 Drafts, settings, credentials, bookmark definitions and favorite definitions are not
 eviction candidates. Their downloaded artwork may be discarded.
+
+Fresh databases verify incremental-vacuum mode before WAL initialization. Existing
+non-reclaimable layouts need one worker-side SQLite conversion, admitted only while
+holding a reservation for three times the measured main-file size plus 8 MiB. The
+conversion is bounded to 96 MiB: the old 64-MiB database ceiling plus schema-growth
+headroom. Actual-file regressions verify that conversion preserves personal records and
+subsequent incremental cleanup shrinks the file. Lack of space preserves readable
+personal data and pauses background cache growth; maintenance retries after reclamation.
+Unexpected larger non-reclaimable layouts are rejected for conversion instead of running
+an unbounded VACUUM. Routine cleanup remains incremental.
 
 Each account may retain one versioned sync checkpoint of at most 1 MiB, with at most
 16 checkpoints / 16 MiB across accounts. After restarting, a valid interrupted checkpoint
