@@ -120,6 +120,8 @@ pub enum Operation {
 		job: u64,
 		request: u64,
 		channel: Id,
+		guild: Option<Id>,
+		parent: Option<Id>,
 		messages: Vec<Message>,
 		coverage: local_store::HistoryCoverage,
 	},
@@ -798,7 +800,7 @@ impl Cache {
 		if matches!(&operation, Operation::SaveChannelPreferences(value) if !value.is_valid()) {
 			return false;
 		}
-		if matches!(&operation, Operation::SyncSavePage {job,request,coverage,..} if coverage.job != *job || coverage.request != *request)
+		if matches!(&operation, Operation::SyncSavePage {job,request,channel,guild,parent,coverage,..} if coverage.job != *job || coverage.request != *request || !valid_history_scope(*channel,*guild,*parent))
 			|| matches!(&operation, Operation::SyncSaveMembers {job,request,guild,rows,missing} if *job==0 || *request==0 || !valid_sync_members(*guild,rows,missing))
 			|| matches!(&operation, Operation::SyncReconcileMembers {job,request,guild,users} if *job==0 || *request==0 || *guild==Id(0) || !valid_member_roster(users))
 		{
@@ -1481,6 +1483,12 @@ fn execute_with_disk_budget(
 	outcome
 }
 
+fn valid_history_scope(channel: Id, guild: Option<Id>, parent: Option<Id>) -> bool {
+	channel.0 != 0
+		&& guild.is_none_or(|guild| guild.0 != 0)
+		&& parent.is_none_or(|parent| parent.0 != 0 && parent != channel && guild.is_some())
+}
+
 fn is_sync_operation(operation: &Operation) -> bool {
 	matches!(
 		operation,
@@ -1634,6 +1642,8 @@ fn execute_sync(
 			job,
 			request,
 			channel,
+			guild,
+			parent,
 			messages,
 			coverage,
 		} => Outcome::SyncPageSaved {
@@ -1642,10 +1652,13 @@ fn execute_sync(
 			channel,
 			epoch,
 			result: sync_store(store, history, epoch).and_then(|store| {
-				if coverage.job != job || coverage.request != request {
+				if coverage.job != job
+					|| coverage.request != request
+					|| !valid_history_scope(channel, guild, parent)
+				{
 					return Err(StoreError::Capacity);
 				}
-				store.save_sync_page(account, channel, &messages, &coverage)
+				store.save_sync_page_scoped(account, channel, &messages, &coverage, guild, parent)
 			}),
 		},
 		Operation::LoadSyncCheckpoint => Outcome::SyncCheckpoint {
@@ -3041,6 +3054,206 @@ mod tests {
 	}
 
 	#[test]
+	fn scoped_sync_pages_follow_parent_cleanup_and_preserve_other_scopes() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		for account in [Id(1), Id(2)] {
+			store
+				.as_mut()
+				.unwrap()
+				.save_sync_checkpoint(
+					account,
+					&local_store::SyncCheckpoint {
+						job: 9,
+						scope: None,
+						started_ms: 1_420_070_400_000,
+						cutoff_ms: 1_420_070_400_000,
+						payload: vec![],
+					},
+				)
+				.unwrap();
+		}
+		let safety = HistorySafety::default();
+		let coverage = local_store::HistoryCoverage {
+			job: 9,
+			request: 1,
+			cutoff: Id(1),
+			upper: Id(100),
+			before: None,
+			next_before: None,
+			complete: true,
+			revision: 0,
+		};
+		for (account, channel, guild, parent, request) in [
+			(Id(1), Id(30), Id(10), Id(20), 1),
+			(Id(1), Id(31), Id(10), Id(21), 2),
+			(Id(1), Id(32), Id(11), Id(40), 3),
+			(Id(2), Id(30), Id(10), Id(20), 1),
+		] {
+			assert!(matches!(
+				execute(
+					&mut store,
+					&safety,
+					account,
+					safety.epoch(),
+					Operation::SyncSavePage {
+						job: 9,
+						request,
+						channel,
+						guild: Some(guild),
+						parent: Some(parent),
+						messages: vec![test_support::message(10, channel)],
+						coverage: local_store::HistoryCoverage {
+							request,
+							..coverage
+						}
+					}
+				),
+				Outcome::SyncPageSaved {
+					result: Ok(local_store::SyncPageResult {
+						saved: 1,
+						stale: false
+					}),
+					..
+				}
+			));
+		}
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::ClearChannel { channel: Id(20) }
+			),
+			Outcome::Saved
+		));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_channel(Id(1), Id(30))
+				.unwrap()
+				.is_empty()
+		);
+		for (account, channel) in [(Id(1), Id(31)), (Id(1), Id(32)), (Id(2), Id(30))] {
+			assert_eq!(
+				store
+					.as_ref()
+					.unwrap()
+					.load_channel(account, channel)
+					.unwrap()
+					.len(),
+				1
+			);
+		}
+		// A reply already in flight before revocation cannot recreate the removed child.
+		assert!(matches!(
+			execute(
+				&mut store,
+				&safety,
+				Id(1),
+				safety.epoch(),
+				Operation::SyncSavePage {
+					job: 9,
+					request: 4,
+					channel: Id(30),
+					guild: Some(Id(10)),
+					parent: Some(Id(20)),
+					messages: vec![test_support::message(10, Id(30))],
+					coverage: local_store::HistoryCoverage {
+						request: 4,
+						..coverage
+					}
+				}
+			),
+			Outcome::SyncPageSaved {
+				result: Ok(local_store::SyncPageResult {
+					saved: 0,
+					stale: true
+				}),
+				..
+			}
+		));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_channel(Id(1), Id(30))
+				.unwrap()
+				.is_empty()
+		);
+	}
+
+	#[test]
+	fn invalid_sync_parent_scopes_fail_before_cache_mutation() {
+		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
+		store
+			.as_mut()
+			.unwrap()
+			.save_sync_checkpoint(
+				Id(1),
+				&local_store::SyncCheckpoint {
+					job: 9,
+					scope: None,
+					started_ms: 1_420_070_400_000,
+					cutoff_ms: 1_420_070_400_000,
+					payload: vec![],
+				},
+			)
+			.unwrap();
+		let safety = HistorySafety::default();
+		let coverage = local_store::HistoryCoverage {
+			job: 9,
+			request: 1,
+			cutoff: Id(1),
+			upper: Id(100),
+			before: None,
+			next_before: None,
+			complete: true,
+			revision: 0,
+		};
+		for (guild, parent) in [
+			(None, Some(Id(20))),
+			(Some(Id(0)), None),
+			(Some(Id(10)), Some(Id(0))),
+			(Some(Id(10)), Some(Id(30))),
+		] {
+			assert!(!valid_history_scope(Id(30), guild, parent));
+			assert!(matches!(
+				execute(
+					&mut store,
+					&safety,
+					Id(1),
+					safety.epoch(),
+					Operation::SyncSavePage {
+						job: 9,
+						request: 1,
+						channel: Id(30),
+						guild,
+						parent,
+						messages: vec![test_support::message(10, Id(30))],
+						coverage
+					}
+				),
+				Outcome::SyncPageSaved {
+					result: Err(StoreError::Capacity),
+					..
+				}
+			));
+		}
+		assert!(valid_history_scope(Id(30), None, None));
+		assert!(valid_history_scope(Id(30), Some(Id(10)), Some(Id(20))));
+		assert!(
+			store
+				.as_ref()
+				.unwrap()
+				.load_channel(Id(1), Id(30))
+				.unwrap()
+				.is_empty()
+		);
+	}
+
+	#[test]
 	fn background_sync_pages_keep_correlation_and_reject_live_edit_races() {
 		let mut store = LocalStore::open(std::path::Path::new(":memory:"));
 		let safety = HistorySafety::default();
@@ -3081,6 +3294,8 @@ mod tests {
 					job: 7,
 					request: 8,
 					channel,
+					guild: None,
+					parent: None,
 					messages: vec![message.clone()],
 					coverage
 				}
@@ -3135,6 +3350,8 @@ mod tests {
 					job: 7,
 					request: 9,
 					channel,
+					guild: None,
+					parent: None,
 					messages: vec![message],
 					coverage: local_store::HistoryCoverage {
 						request: 9,

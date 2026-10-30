@@ -15,6 +15,13 @@ member display hints across saved accounts. Coverage/cursors, storage revisions 
 bounded deletion markers prevent failed, stale or interrupted pages from certifying a
 complete interval or restoring deleted messages. Eviction retires affected coverage.
 
+Accepted sync pages transactionally retain their server/parent cleanup scope. Removing
+a channel or revoking a parent also retires cached archived descendants that were never
+installed in navigation. Cleanup retains revision fences, resumes interrupted cascades
+and preserves unrelated account/parent scopes. Confirmed server removal conservatively
+retires that account's message-history cache because legacy records can lack server
+mapping; personal definitions and drafts remain intact.
+
 Complete, currently authorized member rosters reconcile absent display records only after
 their correlated completion; partial rosters cannot prove absence. Confirmed exact-member
 404 responses remove stale nickname hints. Live observations and storage epochs fence

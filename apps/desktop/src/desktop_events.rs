@@ -880,6 +880,9 @@ impl Desktop {
 			}
 			if let Event::GuildRemoved(guild) = &event.event {
 				self.invalidate_cache_scope(cache::Operation::RemoveServer { guild: *guild });
+				// Legacy history has no guild mapping. On confirmed removal, retire
+				// account history too so archived channels cannot remain orphaned.
+				self.invalidate_cache_scope(cache::Operation::ClearHistory);
 			}
 			let user_action_notice = user_action_notice(&event.event);
 			self.observe_force_sync_event(&event.event);
@@ -936,7 +939,9 @@ impl Desktop {
 			removed_channels.retain(|id| self.state.can_read_history(*id));
 			let invalidate = matches!(event.event, Event::Resync | Event::PermissionsChanged);
 			let scoped_loss = match &event.event {
-				Event::Unavailable(channel) => Some(*channel),
+				Event::Unavailable(channel) | Event::ThreadRemoved { id: channel, .. } => {
+					Some(*channel)
+				}
 				Event::RecipientRemoved { channel, user }
 					if self
 						.state

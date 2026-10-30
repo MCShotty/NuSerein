@@ -1041,6 +1041,8 @@ impl Desktop {
 					job: job.id,
 					request: job.request,
 					channel: page.channel,
+					guild: job.guild(),
+					parent: job.targets[job.channel_index].parent,
 					messages: page.messages,
 					coverage,
 				}) {
@@ -1419,7 +1421,7 @@ impl Desktop {
 			.then(|| job.targets.get(job.channel_index).map(|t| t.id))
 			.flatten();
 		if let Some(active) = &self.force_sync.active
-			&& sync_event_affects_read(&active.read, event, &self.state, account)
+			&& sync_event_affects_read(&active.read, event, &self.state, account, job.guild())
 		{
 			if matches!(active.read, Read::History { .. }) {
 				self.force_sync.history_revision = self.force_sync.history_revision.wrapping_add(1);
@@ -1845,16 +1847,24 @@ fn sync_event_affects_read(
 	event: &Event,
 	state: &client_core::State,
 	account: Id,
+	guild_hint: Option<Id>,
 ) -> bool {
 	let channel = match read {
 		Read::History { channel, .. } => Some(*channel),
 		_ => None,
 	};
-	let guild = read.guild().or_else(|| {
-		channel
-			.and_then(|id| state.channel(id))
-			.and_then(|channel| channel.guild)
-	});
+	let guild = read
+		.guild()
+		.or_else(|| {
+			channel
+				.and_then(|id| state.channel(id))
+				.and_then(|channel| channel.guild)
+		})
+		.or_else(|| {
+			matches!(read, Read::History { .. })
+				.then_some(guild_hint)
+				.flatten()
+		});
 	match event {
 		Event::Message(message) => channel == Some(message.channel),
 		Event::Edited {
@@ -1946,11 +1956,27 @@ fn sync_event_affects_read(
 					.channel(changed.id)
 					.is_some_and(|c| guild.is_some() && c.guild == guild))
 		}
-		Event::ThreadChanged { guild: changed, .. }
-		| Event::ThreadRemoved { guild: changed, .. }
-		| Event::ThreadsSync { guild: changed, .. } => {
-			matches!(read, Read::ActiveThreads { .. } | Read::Archives { .. })
-				&& guild == Some(*changed)
+		Event::ThreadChanged {
+			guild: changed,
+			patch,
+		} => {
+			channel == Some(patch.id)
+				|| matches!(read, Read::ActiveThreads { .. } | Read::Archives { .. })
+					&& guild == Some(*changed)
+		}
+		Event::ThreadRemoved { guild: changed, id } => {
+			channel == Some(*id)
+				|| matches!(read, Read::ActiveThreads { .. } | Read::Archives { .. })
+					&& guild == Some(*changed)
+		}
+		Event::ThreadsSync {
+			guild: changed,
+			removed,
+			..
+		} => {
+			channel.is_some_and(|id| removed.contains(&id))
+				|| matches!(read, Read::ActiveThreads { .. } | Read::Archives { .. })
+					&& guild == Some(*changed)
 		}
 		Event::Unavailable(changed) => {
 			channel == Some(*changed)
@@ -2053,13 +2079,15 @@ mod tests {
 			&read,
 			&Event::Message(test_support::message(5, Id(987654321))),
 			&state,
-			own
+			own,
+			None
 		));
 		assert!(sync_event_affects_read(
 			&read,
 			&Event::Message(test_support::message(5, channel)),
 			&state,
-			own
+			own,
+			None
 		));
 		let update = Event::MemberIdentity(Box::new(model::MemberIdentity {
 			avatar: model::Patch::Absent,
@@ -2074,13 +2102,15 @@ mod tests {
 			&Read::Emojis { guild },
 			&update,
 			&state,
-			own
+			own,
+			None
 		));
 		assert!(!sync_event_affects_read(
 			&Read::Guild { guild, user: own },
 			&update,
 			&state,
-			own
+			own,
+			None
 		));
 		assert!(sync_event_affects_read(
 			&Read::Members {
@@ -2089,7 +2119,8 @@ mod tests {
 			},
 			&update,
 			&state,
-			own
+			own,
+			None
 		));
 	}
 	#[test]
@@ -2174,5 +2205,46 @@ mod tests {
 		assert_eq!(job.outcomes[Job::stage_index(Stage::History)], 3);
 		assert_eq!(job.details[Job::stage_index(Stage::History)], 1);
 		assert!(job.valid());
+	}
+	#[test]
+	fn unloaded_archived_history_observes_thread_removal_and_its_guild_permissions() {
+		let state = client_core::State::default();
+		let guild = Id(10);
+		let own = Id(2);
+		let thread = Id(7654321);
+		assert!(state.channel(thread).is_none());
+		let read = Read::History {
+			channel: thread,
+			before: None,
+			cutoff_ms: client_core::force_sync_read::DISCORD_EPOCH_MS,
+			end_ms: client_core::force_sync_read::DISCORD_EPOCH_MS + HISTORY_MILLIS,
+		};
+		assert!(sync_event_affects_read(
+			&read,
+			&Event::ThreadRemoved { guild, id: thread },
+			&state,
+			own,
+			Some(guild)
+		));
+		let permission = |guild| {
+			Event::Permissions(client_core::permissions::Event::RoleRemoved {
+				guild,
+				id: Id(9000),
+			})
+		};
+		assert!(sync_event_affects_read(
+			&read,
+			&permission(guild),
+			&state,
+			own,
+			Some(guild)
+		));
+		assert!(!sync_event_affects_read(
+			&read,
+			&permission(Id(987654321)),
+			&state,
+			own,
+			Some(guild)
+		));
 	}
 }

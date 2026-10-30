@@ -6,6 +6,7 @@ use rusqlite::Transaction;
 pub const MAX_CACHED_MESSAGES: usize = 1_000_000;
 const MAX_TOMBSTONES: usize = 100_000;
 const MAX_CHECKPOINT_BYTES: usize = 1024 * 1024;
+const MAX_HISTORY_SCOPES: i64 = 1_000_000;
 // A production schema31 file was capped at64MiB. Opening it can add bounded
 // schema32 tables/indexes before the worker reserves its layout conversion.
 const MAX_LEGACY_LAYOUT_BYTES: u64 = 96 * 1024 * 1024;
@@ -99,8 +100,23 @@ impl LocalStore {
 		messages: &[Message],
 		coverage: &HistoryCoverage,
 	) -> Result<SyncPageResult> {
+		self.save_sync_page_scoped(account, channel, messages, coverage, None, None)
+	}
+	/// A history page retains its server/parent cleanup scope even when an archived
+	/// thread was never installed in the active navigation snapshot.
+	pub fn save_sync_page_scoped(
+		&mut self,
+		account: Id,
+		channel: Id,
+		messages: &[Message],
+		coverage: &HistoryCoverage,
+		guild: Option<Id>,
+		parent: Option<Id>,
+	) -> Result<SyncPageResult> {
 		if account.0 == 0
 			|| channel.0 == 0
+			|| guild.is_some_and(|id| id.0 == 0)
+			|| parent.is_some_and(|id| id.0 == 0 || id == channel || guild.is_none())
 			|| coverage.job == 0
 			|| coverage.request == 0
 			|| coverage.cutoff.0 == 0
@@ -135,7 +151,7 @@ impl LocalStore {
 		const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 		let cutoff_ms = (coverage.cutoff.0 >> 22) as i64 + DISCORD_EPOCH_MS;
 		let end_ms = (coverage.upper.0.saturating_sub(1) >> 22) as i64 + DISCORD_EPOCH_MS;
-		let active:bool=self.0.query_row("SELECT EXISTS(SELECT 1 FROM sync_checkpoints WHERE account=?1 AND job=?2 AND started_ms=?3 AND cutoff_ms=?4)",params![account.to_string(),coverage.job.to_string(),end_ms,cutoff_ms],|row|row.get(0))?;
+		let active:bool=self.0.query_row("SELECT EXISTS(SELECT 1 FROM sync_checkpoints WHERE account=?1 AND job=?2 AND started_ms=?3 AND cutoff_ms=?4 AND (?5 IS NULL OR scope IS NULL OR scope=?5))",params![account.to_string(),coverage.job.to_string(),end_ms,cutoff_ms,guild.map(|id|id.to_string())],|row|row.get(0))?;
 		if !active {
 			return Ok(SyncPageResult {
 				saved: 0,
@@ -251,6 +267,16 @@ impl LocalStore {
 			&existing,
 			false,
 		)?;
+		// Unscoped legacy callers cannot erase a known archived-parent relationship.
+		transaction.execute("INSERT INTO history_scopes(account,channel,guild,parent) VALUES(?1,?2,?3,?4) ON CONFLICT(account,channel) DO UPDATE SET guild=CASE WHEN excluded.guild IS NULL THEN history_scopes.guild ELSE excluded.guild END,parent=CASE WHEN excluded.guild IS NULL THEN history_scopes.parent ELSE excluded.parent END",params![account.to_string(),channel.to_string(),guild.map(|id|id.to_string()),parent.map(|id|id.to_string())])?;
+		let scopes: i64 = transaction.query_row(
+			"SELECT count FROM history_scope_totals WHERE singleton=1",
+			[],
+			|row| row.get(0),
+		)?;
+		if scopes > MAX_HISTORY_SCOPES {
+			return Err(StoreError::Capacity);
+		}
 		transaction.execute("INSERT INTO history_sync(account,channel,job,request,cutoff,upper_id,next_before,complete,evicted) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,0) ON CONFLICT(account,channel) DO UPDATE SET job=excluded.job,request=excluded.request,cutoff=excluded.cutoff,upper_id=excluded.upper_id,next_before=excluded.next_before,complete=excluded.complete,evicted=0", params![account.to_string(),channel.to_string(),coverage.job.to_string(),coverage.request.to_string(),coverage.cutoff.to_string(),coverage.upper.to_string(),coverage.next_before.map(|id|id.to_string()),coverage.complete])?;
 		transaction.commit()?;
 		Ok(SyncPageResult {
@@ -1396,5 +1422,166 @@ mod tests {
 		);
 		drop(store);
 		std::fs::remove_file(path).unwrap();
+	}
+	fn save_scoped_fixture(
+		store: &mut LocalStore,
+		account: Id,
+		channel: Id,
+		guild: Id,
+		parent: Option<Id>,
+	) {
+		store
+			.save_sync_checkpoint(
+				account,
+				&SyncCheckpoint {
+					job: 1,
+					scope: Some(guild),
+					started_ms: 1_420_070_400_000,
+					cutoff_ms: 1_420_070_400_000,
+					payload: Vec::new(),
+				},
+			)
+			.unwrap();
+		let row = message(store, 100, channel.0);
+		let page = HistoryCoverage {
+			revision: store.history_revision(account, channel).unwrap(),
+			..coverage(1, None, None, true)
+		};
+		assert!(
+			!store
+				.save_sync_page_scoped(account, channel, &[row], &page, Some(guild), parent)
+				.unwrap()
+				.stale
+		);
+	}
+	#[test]
+	fn archived_scope_cleanup_handles_uninstalled_parents_and_preserves_other_accounts_guilds() {
+		let mut store = store();
+		save_scoped_fixture(&mut store, Id(1), Id(5), Id(2), Some(Id(4)));
+		save_scoped_fixture(&mut store, Id(1), Id(6), Id(2), Some(Id(4)));
+		save_scoped_fixture(&mut store, Id(1), Id(9), Id(8), Some(Id(10)));
+		save_scoped_fixture(&mut store, Id(7), Id(5), Id(2), Some(Id(4)));
+		// The parent has never had a saved history window or navigation row here.
+		assert!(store.load_channel(Id(1), Id(4)).unwrap().is_empty());
+		store.clear_channel_history(Id(1), Id(5)).unwrap();
+		assert!(store.load_channel(Id(1), Id(5)).unwrap().is_empty());
+		assert_eq!(store.load_channel(Id(1), Id(6)).unwrap().len(), 1);
+		store.clear_channel_history(Id(1), Id(4)).unwrap();
+		assert!(store.load_channel(Id(1), Id(6)).unwrap().is_empty());
+		assert_eq!(store.load_channel(Id(1), Id(9)).unwrap().len(), 1);
+		assert_eq!(store.load_channel(Id(7), Id(5)).unwrap().len(), 1);
+		assert_eq!(store.history_cache_stats().unwrap().messages, 2);
+		let scopes: i64 = store
+			.0
+			.query_row(
+				"SELECT count FROM history_scope_totals WHERE singleton=1",
+				[],
+				|row| row.get(0),
+			)
+			.unwrap();
+		assert_eq!(scopes, 2);
+		let stale = store
+			.save_sync_page_scoped(
+				Id(1),
+				Id(6),
+				&[message(&store, 100, 6)],
+				&coverage(1, None, None, true),
+				Some(Id(2)),
+				Some(Id(4)),
+			)
+			.unwrap();
+		assert!(stale.stale);
+		assert!(store.load_channel(Id(1), Id(6)).unwrap().is_empty());
+	}
+	#[test]
+	fn interrupted_parent_cleanup_keeps_scope_links_until_descendants_are_retired() {
+		let mut store = store();
+		// A category may have a text/forum parent with archived child history.
+		save_scoped_fixture(&mut store, Id(1), Id(4), Id(2), Some(Id(3)));
+		save_scoped_fixture(&mut store, Id(1), Id(5), Id(2), Some(Id(4)));
+		store.0.execute_batch("CREATE TRIGGER reject_archived_delete BEFORE DELETE ON messages WHEN old.channel='5' BEGIN SELECT RAISE(ABORT,'synthetic interruption'); END;").unwrap();
+		assert_eq!(
+			store.clear_channel_history(Id(1), Id(3)),
+			Err(StoreError::Unavailable)
+		);
+		let links: i64 = store
+			.0
+			.query_row(
+				"SELECT count(*) FROM history_scopes WHERE account='1'",
+				[],
+				|row| row.get(0),
+			)
+			.unwrap();
+		assert_eq!(links, 2);
+		store
+			.0
+			.execute_batch("DROP TRIGGER reject_archived_delete;")
+			.unwrap();
+		store = LocalStore::initialize(store.0).unwrap();
+		assert!(store.load_channel(Id(1), Id(4)).unwrap().is_empty());
+		assert!(store.load_channel(Id(1), Id(5)).unwrap().is_empty());
+		assert_eq!(store.history_cache_stats().unwrap().messages, 0);
+		let links: i64 = store
+			.0
+			.query_row(
+				"SELECT count FROM history_scope_totals WHERE singleton=1",
+				[],
+				|row| row.get(0),
+			)
+			.unwrap();
+		assert_eq!(links, 0);
+		assert!(store.history_revision(Id(1), Id(5)).unwrap() > 0);
+		assert!(
+			store
+				.save_sync_page_scoped(
+					Id(1),
+					Id(5),
+					&[message(&store, 100, 5)],
+					&coverage(1, None, None, true),
+					Some(Id(2)),
+					Some(Id(4))
+				)
+				.unwrap()
+				.stale
+		);
+	}
+	#[test]
+	fn history_scope_validation_and_failed_commit_do_not_leave_orphan_scope_rows() {
+		let mut store = store();
+		let row = message(&store, 100, 5);
+		let page = coverage(1, None, None, true);
+		for (guild, parent) in [
+			(None, Some(Id(4))),
+			(Some(Id(0)), None),
+			(Some(Id(2)), Some(Id(0))),
+			(Some(Id(2)), Some(Id(5))),
+		] {
+			assert_eq!(
+				store.save_sync_page_scoped(
+					Id(1),
+					Id(5),
+					std::slice::from_ref(&row),
+					&page,
+					guild,
+					parent
+				),
+				Err(StoreError::Capacity)
+			);
+		}
+		store.0.execute_batch("CREATE TRIGGER reject_scoped_coverage BEFORE INSERT ON history_sync BEGIN SELECT RAISE(ABORT,'synthetic commit failure'); END;").unwrap();
+		assert_eq!(
+			store.save_sync_page_scoped(Id(1), Id(5), &[row], &page, Some(Id(2)), Some(Id(4))),
+			Err(StoreError::Unavailable)
+		);
+		assert!(store.load_channel(Id(1), Id(5)).unwrap().is_empty());
+		let count: i64 = store
+			.0
+			.query_row(
+				"SELECT count FROM history_scope_totals WHERE singleton=1",
+				[],
+				|row| row.get(0),
+			)
+			.unwrap();
+		assert_eq!(count, 0);
 	}
 }

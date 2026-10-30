@@ -15,6 +15,8 @@ const CACHE_TABLES: &[&str] = &[
 	"history_tombstones",
 	"history_sync",
 	"sync_checkpoints",
+	// Parent links remain available until every corresponding data/coverage row is gone.
+	"history_scopes",
 ];
 const ACCOUNT_TABLES: &[&str] = &[
 	"drafts",
@@ -67,19 +69,12 @@ impl LocalStore {
 				.map(|id| id.parse::<Id>())
 				.transpose()
 				.map_err(|_| StoreError::Incompatible)?;
-			for table in CACHE_TABLES {
-				let scope = channel.map(|channel| ("channel", channel));
-				if channel.is_some()
-					&& !matches!(
-						*table,
-						"messages"
-							| "channels" | "history_starts"
-							| "history_channels" | "history_tombstones"
-							| "history_sync"
-					) {
-					continue;
+			if let Some(channel) = channel {
+				self.cleanup_channel_descendants(account, channel)?;
+			} else {
+				for table in CACHE_TABLES {
+					self.delete_cache_rows(table, account, None)?;
 				}
-				self.delete_cache_rows(table, account, scope)?;
 			}
 			if forget {
 				for table in ACCOUNT_TABLES {
@@ -92,6 +87,55 @@ impl LocalStore {
 			)?;
 			self.reclaim_history_space()?;
 		}
+	}
+	/// Indexed depth-first cleanup needs at most eight retained IDs. A child's
+	/// parent link is removed last, so the durable root intent survives interruption.
+	fn cleanup_channel_descendants(&mut self, account: Id, root: Id) -> Result<()> {
+		let mut path = vec![root];
+		self.advance_cleanup_revision(account, root)?;
+		while let Some(channel) = path.last().copied() {
+			let child: Option<String> = self
+				.0
+				.query_row(
+					"SELECT channel FROM history_scopes WHERE account=?1 AND parent=?2 ORDER BY channel LIMIT 1",
+					params![account.to_string(), channel.to_string()],
+					|row| {
+						let text = row.get_ref(0)?.as_str()?;
+						if text.is_empty() || text.len() > 20 {
+							return Err(rusqlite::Error::InvalidQuery);
+						}
+						Ok(text.to_owned())
+					},
+				)
+				.optional()?;
+			if let Some(child) = child {
+				let child = child.parse::<Id>().map_err(|_| StoreError::Incompatible)?;
+				if child.0 == 0 || path.contains(&child) || path.len() >= 8 {
+					return Err(StoreError::Incompatible);
+				}
+				self.advance_cleanup_revision(account, child)?;
+				path.push(child);
+				continue;
+			}
+			for table in [
+				"messages",
+				"channels",
+				"history_starts",
+				"history_tombstones",
+				"history_sync",
+			] {
+				self.delete_cache_rows(table, account, Some(("channel", channel)))?;
+			}
+			// Keep the advanced revision as a tombstone for already admitted pages.
+			// Account-wide cache cleanup retires it together with the active checkpoint.
+			self.delete_cache_rows("history_scopes", account, Some(("channel", channel)))?;
+			path.pop();
+		}
+		Ok(())
+	}
+	fn advance_cleanup_revision(&self, account: Id, channel: Id) -> Result<()> {
+		self.0.execute("INSERT INTO history_channels(account,channel,revision) VALUES(?1,?2,1) ON CONFLICT(account,channel) DO UPDATE SET revision=revision+1",params![account.to_string(),channel.to_string()])?;
+		Ok(())
 	}
 	/// The caller owns its access/epoch fence. All dynamic identifiers come from
 	/// the fixed table/column lists here, never from persisted or remote text.

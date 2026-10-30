@@ -388,6 +388,13 @@ impl LocalStore {
 			}
 		}
 		transaction.execute_batch("CREATE TABLE IF NOT EXISTS cache_cleanup(account TEXT PRIMARY KEY CHECK(length(account) BETWEEN 1 AND 20),channel TEXT CHECK(channel IS NULL OR length(channel) BETWEEN 1 AND 20),forget INTEGER NOT NULL CHECK(forget IN(0,1)));
+CREATE TABLE IF NOT EXISTS history_scopes(account TEXT NOT NULL CHECK(length(account) BETWEEN 1 AND 20),channel TEXT NOT NULL CHECK(length(channel) BETWEEN 1 AND 20),guild TEXT CHECK(guild IS NULL OR length(guild) BETWEEN 1 AND 20),parent TEXT CHECK(parent IS NULL OR (guild IS NOT NULL AND parent!=channel AND length(parent) BETWEEN 1 AND 20)),PRIMARY KEY(account,channel));
+CREATE INDEX IF NOT EXISTS history_scope_parent ON history_scopes(account,parent,channel);
+CREATE INDEX IF NOT EXISTS history_scope_guild ON history_scopes(account,guild,channel);
+CREATE TABLE IF NOT EXISTS history_scope_totals(singleton INTEGER PRIMARY KEY CHECK(singleton=1),count INTEGER NOT NULL CHECK(count>=0));
+INSERT OR IGNORE INTO history_scope_totals SELECT 1,(SELECT count(*) FROM history_scopes) WHERE NOT EXISTS(SELECT 1 FROM history_scope_totals WHERE singleton=1);
+CREATE TRIGGER IF NOT EXISTS history_scope_insert BEFORE INSERT ON history_scopes WHEN NOT EXISTS(SELECT 1 FROM history_scopes WHERE account=new.account AND channel=new.channel) BEGIN UPDATE history_scope_totals SET count=count+1 WHERE singleton=1; END;
+CREATE TRIGGER IF NOT EXISTS history_scope_delete AFTER DELETE ON history_scopes BEGIN UPDATE history_scope_totals SET count=count-1 WHERE singleton=1; END;
 CREATE TABLE IF NOT EXISTS history_channels(account TEXT NOT NULL,channel TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0),PRIMARY KEY(account,channel));
 CREATE TABLE IF NOT EXISTS history_tombstones(account TEXT NOT NULL,channel TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=0),PRIMARY KEY(account,channel,id));
 CREATE INDEX IF NOT EXISTS history_tombstones_age ON history_tombstones(length(id),id);

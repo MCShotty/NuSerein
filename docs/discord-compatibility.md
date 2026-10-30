@@ -34,6 +34,11 @@ reject obsolete results. Recoverable failures stay with their stage and do not r
 account authentication. Progress distinguishes updated, partial, unavailable and failed
 sections; storage pressure cannot certify complete history.
 
+Archived history carries its approved server/parent cleanup scope even when the thread
+is absent from sidebar navigation. Thread removal and scoped permission changes fence
+pending reads, while parent cleanup removes retained descendants without restoring them
+from a late response. This cleanup metadata never grants access.
+
 An incomplete own-member refresh does not combine new role permission bits with older
 assignments. Transient failures preserve the existing validated live permission mirror
 and report partial role/member coverage; explicit denial revokes that scope. History

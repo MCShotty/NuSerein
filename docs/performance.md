@@ -4296,8 +4296,8 @@ Matched native [Storage screenshots](pr-evidence/force-sync/after.png),
 progress values. They show controls and layout, not real synchronization or a
 3-GB-pressure run. Baseline images were captured from the frozen fork build.
 
-The 120-second core lifecycle soak completed 3,676 passes, 117,632 channel visits,
-70,579,200 live inserts and 15 logout cycles in 120.005 seconds with the shipping
+The final-core 120-second lifecycle soak completed 3,831 passes, 122,592 channel visits,
+73,555,200 live inserts and 15 logout cycles in 120.023 seconds with the shipping
 row/byte bounds intact. It excludes storage, media, networking and process RSS.
 Live server/account synchronization, permission changes during a real roster,
 Windows/macOS physical display and assistive-technology behavior remain
@@ -4318,11 +4318,11 @@ OS file caches are warm, so this is **not disk-cold startup**.
 
 | Release store metric | `39060d31` | Final layout | Delta |
 | --- | ---: | ---: | ---: |
-| Open SQLite connection | 1.757 ms | 2.523 ms | +0.766 ms (+43.59%) |
-| First 500-message read | 1.269 ms | 1.264 ms | −0.005 ms (−0.42%) |
-| Warm 500-message read | 1.028 ms | 1.107 ms | +0.079 ms (+7.68%) |
-| Eight nickname matches | 4.816 ms | 0.559 ms | −4.257 ms (−88.40%) |
-| Seeded SQLite file | 2,564,096 B | 2,768,896 B | +204,800 B (+7.99%) |
+| Open SQLite connection | 1.596 ms | 2.308 ms | +0.712 ms (+44.63%) |
+| First 500-message read | 1.288 ms | 1.267 ms | −0.021 ms (−1.63%) |
+| Warm 500-message read | 1.042 ms | 1.116 ms | +0.074 ms (+7.11%) |
+| Eight nickname matches | 4.828 ms | 0.559 ms | −4.269 ms (−88.42%) |
+| Seeded SQLite file | 2,564,096 B | 2,789,376 B | +225,280 B (+8.79%) |
 
 Opening cost is paid by the storage worker when it opens its connection, not on
 every channel change. Warm-read and open ranges were disjoint; these measured
@@ -4334,7 +4334,7 @@ No visual quality, safety bound or media setting was reduced.
 The physical-file probe exposed that the former pragma order left SQLite in
 non-reclaimable mode 0. The corrected final fixture verifies mode 2. After deleting
 1,000 synthetic rows, the bounded 1,024-page cleanup pass reduced the file from
-4,878,336 to 679,936 bytes; remaining free pages are reclaimed by later bounded
+4,898,816 to 700,416 bytes; remaining free pages are reclaimed by later bounded
 passes. Actual-file regressions cover preserved personal data, reserved legacy
 conversion, low space and the original 64-MiB upgrade boundary.
 
