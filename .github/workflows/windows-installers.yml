@@ -1,12 +1,12 @@
-name: Windows installers from verified binaries
-on:
+name: Windows installer from checked source
+'on':
   workflow_dispatch:
     inputs:
       run_id:
-        description: Native CI run containing successful Windows package jobs
+        description: Native CI run whose Windows source checks passed
         required: true
       source_commit:
-        description: Exact source commit of those packages
+        description: Exact checked source commit to compile and package
         required: true
 permissions:
   contents: read
@@ -15,93 +15,248 @@ jobs:
   installer:
     if: github.repository == 'MCShotty/Serein'
     runs-on: windows-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [X64, ARM64]
+    timeout-minutes: 80
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       SOURCE_RUN: ${{ inputs.run_id }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
-      PACKAGE_ARCH: ${{ matrix.arch }}
+      PACKAGE_ARCH: X64
     steps:
-      - name: Verify package provenance and native job success
-        shell: pwsh
-        run: |
-          if ($env:SOURCE_RUN -notmatch '^\d+$' -or $env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source run or commit' }
-          $run = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SOURCE_COMMIT -or $run.name -ne 'native-client') { throw 'Source run does not match the requested commit' }
-          $jobs = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN/jobs?per_page=100" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify native build jobs' }
-          $wanted = if ($env:PACKAGE_ARCH -eq 'X64') { 'native (windows-latest)' } else { 'native (windows-11-arm)' }
-          $native = @($jobs.jobs | Where-Object { $_.name -eq $wanted })
-          if ($native.Count -ne 1 -or $native[0].conclusion -ne 'success') { throw 'The matching native Windows build must have passed' }
-      - uses: actions/checkout@v7.0.1
-        with:
-          ref: ${{ env.SOURCE_COMMIT }}
-          persist-credentials: false
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ env.SOURCE_RUN }}
-          name: serein-Windows-${{ matrix.arch }}-unsigned
-          # The native artifact contains dist/ and dist-installer/ at its root.
-          path: .
-      - name: Install NSIS
-        run: choco install nsis --no-progress -y
-      - name: Compile the installer from the matching source
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path dist-installer -Force | Out-Null
-          $compiler = 'C:\Program Files (x86)\NSIS\makensis.exe'
-          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
-          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^\d+\.\d+\.\d+([+-][A-Za-z0-9.-]+)?$') { throw 'Invalid package version' }
-          & $compiler -V2 -NOCD "-DVERSION=$version" '-DDIST_DIR=dist' '-DOUTPUT_DIR=dist-installer' packaging/windows/installer.nsi
-          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-          $name = "serein-$version-$($env:SOURCE_COMMIT.Substring(0,7))-Windows-${env:PACKAGE_ARCH}-Setup.exe"
-          Move-Item "dist-installer/serein-$version-setup.exe" "dist-installer/$name"
-          Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
-      - name: Install the real payload silently and compare every packaged file
-        shell: pwsh
-        run: |
-          $install = Join-Path $env:RUNNER_TEMP "Serein installer smoke $env:PACKAGE_ARCH"
-          $setup = Get-ChildItem dist-installer/*-Setup.exe
-          $process = Start-Process -FilePath $setup.FullName -ArgumentList "/S /D=$install" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { throw "Silent installation failed: $($process.ExitCode)" }
-          $env:INSTALLED_PAYLOAD = $install
-          @'
-          import hashlib, os, struct
-          from pathlib import Path
-          source, installed = Path('dist'), Path(os.environ['INSTALLED_PAYLOAD'])
-          expected = 0x8664 if os.environ['PACKAGE_ARCH'] == 'X64' else 0xaa64
-          assert (source / 'serein.exe').is_file()
-          binaries = [source / 'serein.exe', *sorted(source.rglob('*.dll'))]
-          for binary in binaries:
-              name = binary.relative_to(source).as_posix()
-              data = binary.read_bytes()
-              offset = struct.unpack_from('<I', data, 0x3c)[0]
-              assert data[:2] == b'MZ' and data[offset:offset+4] == b'PE\0\0'
-              machine = struct.unpack_from('<H', data, offset+4)[0]
-              allowed = {expected}
-              if expected == 0xaa64 and binary.name.lower() in {'msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'}:
-                  allowed.add(0xa64e)  # ARM64X CRTs contain the native ARM64 implementation too.
-              assert machine in allowed, name
-          count = 0
-          for path in source.rglob('*'):
-              if path.is_file() and path.name not in ('setup.ps1', 'install-notifications.ps1'):
-                  actual = installed / path.relative_to(source)
-                  assert actual.is_file(), str(actual)
-                  assert hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(actual.read_bytes()).digest(), str(actual)
-                  count += 1
-          assert (installed / 'uninstall.exe').is_file()
-          print(f'Native installer smoke passed: {count} matching payload files, correct PE architecture; application never launched')
-          '@ | python -
-          if ($LASTEXITCODE -ne 0) { throw 'Installed payload validation failed' }
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: serein-Windows-${{ matrix.arch }}-installer
-          path: dist-installer/
-          if-no-files-found: error
-          retention-days: 30
+    - name: Verify the exact source and reuse its completed Windows gates
+      shell: pwsh
+      run: |
+        if ($env:SOURCE_RUN -notmatch '^\d+$' -or $env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source run or commit' }
+        $run = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SOURCE_COMMIT -or $run.name -ne 'native-client') { throw 'Source run does not match the requested commit' }
+        $jobs = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN/jobs?per_page=100" | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot verify source jobs' }
+        $nativeJobs = @($jobs.jobs | Where-Object { $_.name -eq 'native (windows-latest)' })
+        if ($nativeJobs.Count -ne 1) { throw 'Expected one native Windows x64 source job' }
+        $native = $nativeJobs[0]
+        $package = @($native.steps | Where-Object { $_.name -eq 'Package app without demo or developer features' })
+        if ($package.Count -ne 1) { throw 'Missing canonical source packaging stage' }
+        $package = $package[0]
+        $failed = @($native.steps | Where-Object { $_.conclusion -eq 'failure' })
+        if ($native.conclusion -ne 'success' -and ($native.conclusion -ne 'failure' -or $failed.Count -ne 1 -or $failed[0].name -ne $package.name)) { throw 'Source job failed outside packaging' }
+        $before = @($native.steps | Where-Object { $_.number -lt $package.number })
+        if (@($before | Where-Object { $_.conclusion -notin @('success', 'skipped') }).Count -ne 0) { throw 'A preceding native source gate did not pass' }
+        $required = @('Check production build without development fixtures', 'Run cargo xtask check', 'Windows capture surfaces and retirement (synthetic, no screen capture)', 'Run cargo replay', 'Run cargo replay --loading', 'Run cargo replay --soak 120')
+        foreach ($name in $required) {
+          $step = @($before | Where-Object { $_.name -eq $name })
+          if ($step.Count -ne 1 -or $step[0].conclusion -ne 'success') { throw "Required source gate did not pass: $name" }
+        }
+        @{source=$env:SOURCE_COMMIT; sourceRun=$env:SOURCE_RUN; sourceJob=$native.id; gates=@($before | Select-Object name,conclusion)} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:RUNNER_TEMP 'reused-source-gates.json')
+    - uses: actions/checkout@v7.0.1
+      with:
+        ref: ${{ env.SOURCE_COMMIT }}
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@1.98.1
+    - uses: ilammy/msvc-dev-cmd@v1.13.0
+      with:
+        arch: x64
+    - uses: msys2/setup-msys2@v2
+      with:
+        msystem: MSYS
+        path-type: inherit
+        install: make pkgconf nasm diffutils
+    - name: Install NSIS
+      run: choco install nsis --no-progress -y
+    - name: FFmpeg decoder build tools
+      run: python -m pip install meson==1.9.2 ninja==1.13.0
+    - uses: Swatinem/rust-cache@v2.9.2
+      with:
+        cache-on-failure: true
+        save-if: 'true'
+    - name: Verify pinned speech assets before compilation
+      shell: pwsh
+      run: |
+        $actual = (git rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0 -or $actual -ne $env:SOURCE_COMMIT) { throw 'Checkout does not match source commit' }
+        $cache = Join-Path $env:RUNNER_TEMP 'serein-lavasr-assets'
+        $prefetch = Join-Path $env:RUNNER_TEMP 'serein-lavasr-prefetch'
+        "SEREIN_LAVASR_CACHE=$cache" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+        $passed = $false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+          python packaging/lavasr/bundle.py $prefetch --cache-dir $cache
+          if ($LASTEXITCODE -eq 0) { $passed = $true; break }
+          if ($attempt -lt 3) { Start-Sleep -Seconds (2 * $attempt) }
+        }
+        if (-not $passed) { throw 'Pinned speech assets could not be verified before compilation' }
+        "SEREIN_LAVASR_OFFLINE=1" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+    - name: Prepare native build paths
+      shell: bash
+      run: |
+        # Cargo cache restoration prunes native headers/build trees under target.
+        # Keep the native build entirely in fresh job-owned scratch paths.
+        ffmpeg_root="${{ runner.temp }}/serein-ffmpeg"
+        echo "FFMPEG_DIR=$ffmpeg_root/prefix" >> "$GITHUB_ENV"
+        echo "FFMPEG_WORK=$ffmpeg_root/build" >> "$GITHUB_ENV"
+        echo "FFMPEG_CACHE=$ffmpeg_root/sources" >> "$GITHUB_ENV"
+    - name: Build LGPL-only FFmpeg media libraries (MSVC)
+      shell: msys2 {0}
+      run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
+    - name: Make encoder DLLs available to offline tests
+      shell: pwsh
+      run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
+    - name: Rebuild the current packager and remove job-owned package output
+      shell: bash
+      run: |
+        cargo build --locked -p xtask
+        rm -rf dist dist-installer
+    - name: Package app without demo or developer features
+      run: cargo xtask package
+    - name: Packaged LavaSRv2 microphone worker (synthetic, no devices)
+      shell: bash
+      run: |
+        if [[ "$RUNNER_OS" == 'Windows' ]]; then
+          dist/serein.exe --self-test-lavasr
+        elif [[ "$RUNNER_OS" == 'macOS' ]]; then
+          dist/Serein.app/Contents/MacOS/serein --self-test-lavasr
+        else
+          dist/serein --self-test-lavasr
+        fi
+    - name: Validate and launch the clean Windows package without development DLL paths
+      shell: pwsh
+      run: |
+        $checkDir = Join-Path $env:RUNNER_TEMP 'serein-package-clean'
+        New-Item -ItemType Directory -Path $checkDir -Force | Out-Null
+        $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v5.zip"
+        Compress-Archive -Path "dist/*" -DestinationPath $archive
+        python packaging/windows/check_update_archive.py $archive
+        if ($LASTEXITCODE -ne 0) { throw "Windows media update archive validation failed" }
+        Expand-Archive $archive -DestinationPath "$checkDir/extracted"
+        $buildPath = $env:PATH
+        try {
+          $nativeRoot = [IO.Path]::GetFullPath($env:FFMPEG_DIR).TrimEnd('\', '/')
+          $env:PATH = ($buildPath -split ';' | Where-Object {
+            try {
+              $entry = [IO.Path]::GetFullPath($_).TrimEnd('\', '/')
+              -not ($entry.Equals($nativeRoot, [StringComparison]::OrdinalIgnoreCase) -or $entry.StartsWith("$nativeRoot\", [StringComparison]::OrdinalIgnoreCase))
+            } catch { $true }
+          }) -join ';'
+          # This bounded driver query exits before UI/login/capture/audio initialization.
+          $probe = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--query-video-codec','nvenc','h264' -PassThru -Wait -RedirectStandardError "$checkDir/launch.log"
+          if ($probe.ExitCode -notin 0,1,2,5,9) { throw "Packaged executable failed to load: $($probe.ExitCode)" }
+          $speech = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--self-test-lavasr' -PassThru -Wait -RedirectStandardError "$checkDir/speech.log"
+          if ($speech.ExitCode -ne 0) { throw "Packaged speech worker failed: $($speech.ExitCode)" }
+          @{revision=$env:SOURCE_COMMIT; run='clean'; launchExit=$probe.ExitCode; bytes=(Get-Item $archive).Length; sha256=(Get-FileHash $archive -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content "$checkDir/result.json"
+        } finally { $env:PATH = $buildPath }
+    - name: Recheck the cached native build (MSVC)
+      shell: msys2 {0}
+      run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE" --offline
+    - name: Package again with caches and an empty output directory
+      shell: pwsh
+      run: |
+        Remove-Item dist,dist-installer -Recurse -Force
+        $env:SEREIN_LAVASR_OFFLINE = '1'
+        cargo xtask package
+        if ($LASTEXITCODE -ne 0) { throw 'Cached packaging failed' }
+        $checkDir = Join-Path $env:RUNNER_TEMP 'serein-package-cached'
+        New-Item -ItemType Directory -Path $checkDir -Force | Out-Null
+        $archive = Join-Path $checkDir "serein-v0.0.0-Windows-${env:RUNNER_ARCH}-media-v5.zip"
+        Compress-Archive -Path "dist/*" -DestinationPath $archive
+        python packaging/windows/check_update_archive.py $archive
+        if ($LASTEXITCODE -ne 0) { throw 'Cached archive validation failed' }
+        Expand-Archive $archive -DestinationPath "$checkDir/extracted"
+        $buildPath = $env:PATH
+        try {
+          $nativeRoot = [IO.Path]::GetFullPath($env:FFMPEG_DIR).TrimEnd('\', '/')
+          $env:PATH = ($buildPath -split ';' | Where-Object {
+            try {
+              $entry = [IO.Path]::GetFullPath($_).TrimEnd('\', '/')
+              -not ($entry.Equals($nativeRoot, [StringComparison]::OrdinalIgnoreCase) -or $entry.StartsWith("$nativeRoot\", [StringComparison]::OrdinalIgnoreCase))
+            } catch { $true }
+          }) -join ';'
+          $probe = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--query-video-codec','nvenc','h264' -PassThru -Wait -RedirectStandardError "$checkDir/launch.log"
+          if ($probe.ExitCode -notin 0,1,2,5,9) { throw "Cached executable failed to load: $($probe.ExitCode)" }
+          $speech = Start-Process "$checkDir/extracted/serein.exe" -ArgumentList '--self-test-lavasr' -PassThru -Wait -RedirectStandardError "$checkDir/speech.log"
+          if ($speech.ExitCode -ne 0) { throw "Cached speech worker failed: $($speech.ExitCode)" }
+          @{revision=$env:SOURCE_COMMIT; run='cached'; launchExit=$probe.ExitCode; bytes=(Get-Item $archive).Length; sha256=(Get-FileHash $archive -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content "$checkDir/result.json"
+        } finally { $env:PATH = $buildPath }
+    - name: Compile the installer from the matching source
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path dist-installer -Force | Out-Null
+        $compiler = 'C:\Program Files (x86)\NSIS\makensis.exe'
+        $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch '^\d+\.\d+\.\d+([+-][A-Za-z0-9.-]+)?$') { throw 'Invalid package version' }
+        & $compiler -V2 -NOCD "-DVERSION=$version" '-DDIST_DIR=dist' '-DOUTPUT_DIR=dist-installer' packaging/windows/installer.nsi
+        if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+        $name = "serein-$version-$($env:SOURCE_COMMIT.Substring(0,7))-Windows-${env:PACKAGE_ARCH}-Setup.exe"
+        Move-Item "dist-installer/serein-$version-setup.exe" "dist-installer/$name"
+        Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
+    - name: Install the real payload silently and compare every packaged file
+      shell: pwsh
+      run: |
+        $install = Join-Path $env:RUNNER_TEMP "Serein installer smoke $env:PACKAGE_ARCH"
+        $setup = Get-ChildItem dist-installer/*-Setup.exe
+        $process = Start-Process -FilePath $setup.FullName -ArgumentList "/S /D=$install" -Wait -PassThru
+        if ($process.ExitCode -ne 0) { throw "Silent installation failed: $($process.ExitCode)" }
+        $env:INSTALLED_PAYLOAD = $install
+        @'
+        import hashlib, os, struct
+        from pathlib import Path
+        source, installed = Path('dist'), Path(os.environ['INSTALLED_PAYLOAD'])
+        expected = 0x8664 if os.environ['PACKAGE_ARCH'] == 'X64' else 0xaa64
+        assert (source / 'serein.exe').is_file()
+        binaries = [source / 'serein.exe', *sorted(source.rglob('*.dll'))]
+        for binary in binaries:
+            name = binary.relative_to(source).as_posix()
+            data = binary.read_bytes()
+            offset = struct.unpack_from('<I', data, 0x3c)[0]
+            assert data[:2] == b'MZ' and data[offset:offset+4] == b'PE\0\0'
+            machine = struct.unpack_from('<H', data, offset+4)[0]
+            allowed = {expected}
+            if expected == 0xaa64 and binary.name.lower() in {'msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'}:
+                allowed.add(0xa64e)  # ARM64X CRTs contain the native ARM64 implementation too.
+            assert machine in allowed, name
+        count = 0
+        for path in source.rglob('*'):
+            if path.is_file() and path.name not in ('setup.ps1', 'install-notifications.ps1'):
+                actual = installed / path.relative_to(source)
+                assert actual.is_file(), str(actual)
+                assert hashlib.sha256(path.read_bytes()).digest() == hashlib.sha256(actual.read_bytes()).digest(), str(actual)
+                count += 1
+        assert (installed / 'uninstall.exe').is_file()
+        print(f'Native installer smoke passed: {count} matching payload files, correct PE architecture; application never launched')
+        '@ | python -
+        if ($LASTEXITCODE -ne 0) { throw 'Installed payload validation failed' }
+    - name: Record source, payload and installer provenance
+      shell: pwsh
+      run: |
+        git diff --exit-code
+        if ($LASTEXITCODE -ne 0) { throw 'Source checkout was modified during packaging' }
+        $proof = Get-Content (Join-Path $env:RUNNER_TEMP 'reused-source-gates.json') -Raw | ConvertFrom-Json
+        $setup = Get-ChildItem dist-installer/*-Setup.exe
+        $payload = @(Get-ChildItem dist -Recurse -File | Where-Object { $_.Name -notin @('setup.ps1','install-notifications.ps1') })
+        @{source=$env:SOURCE_COMMIT; sourceRun=$env:SOURCE_RUN; sourceJob=$proof.sourceJob; workflowCommit=$env:GITHUB_SHA; architecture='X64'; payloadFiles=$payload.Count; payloadBytes=($payload | Measure-Object Length -Sum).Sum; executableSha256=(Get-FileHash dist/serein.exe -Algorithm SHA256).Hash.ToLower(); installerSha256=(Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower(); installerBytes=$setup.Length; nativeInstallerSmoke='passed'; sourceGates=$proof.gates} | ConvertTo-Json -Depth 5 | Set-Content dist-installer/build.json
+    - uses: actions/upload-artifact@v7.0.1
+      with:
+        name: serein-Windows-X64-installer
+        path: dist-installer/
+        if-no-files-found: error
+        retention-days: 30
+    - uses: actions/upload-artifact@v7.0.1
+      with:
+        name: serein-Windows-X64-unsigned
+        path: |-
+          dist/
+          dist-installer/
+        if-no-files-found: error
+        retention-days: 30
+    - name: Preserve clean and cached package evidence
+      if: always()
+      uses: actions/upload-artifact@v7.0.1
+      with:
+        name: windows-package-evidence-X64
+        path: |-
+          ${{ runner.temp }}/serein-package-clean/result.json
+          ${{ runner.temp }}/serein-package-clean/launch.log
+          ${{ runner.temp }}/serein-package-clean/speech.log
+          ${{ runner.temp }}/serein-package-cached/result.json
+          ${{ runner.temp }}/serein-package-cached/launch.log
+          ${{ runner.temp }}/serein-package-cached/speech.log
+          ${{ runner.temp }}/reused-source-gates.json
+        if-no-files-found: ignore
+        retention-days: 30
