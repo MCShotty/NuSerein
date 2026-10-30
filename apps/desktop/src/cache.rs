@@ -567,7 +567,8 @@ pub fn member_observation_guild(event: &client_core::Event) -> Option<Id> {
 	match event {
 		client_core::Event::MemberIdentity(update) => Some(update.guild),
 		client_core::Event::Typing(signal) => signal.member.as_ref().map(|member| member.guild),
-		client_core::Event::MemberSearch { request, .. } => Some(request.guild),
+		client_core::Event::MemberSearch { request, .. }
+		| client_core::Event::MemberSearchPartial { request, .. } => Some(request.guild),
 		client_core::Event::Members(list) => list.guild,
 		_ => None,
 	}

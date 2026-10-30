@@ -2112,6 +2112,7 @@ mod tests {
 		let mut member = state.user.clone().unwrap();
 		member.id = Id(7);
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(2)),
 			channel: Id(4),
 			request: 1,
@@ -2282,6 +2283,7 @@ mod tests {
 		state.selected = Some(Id(4));
 		state.drafts.insert(Id(4), "Keep private draft".into());
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(2)),
 			channel: Id(4),
 			request: 1,

@@ -13,6 +13,13 @@ Read adapters reuse the ordinary member-readable guild, channel, role, expressio
 soundboard, active-thread, archive and message routes. Results pass through the existing
 typed decoders and reconciliation rather than privileged editor authorization. Complete
 catalogs may remove absent entries; partial fields preserve absent/null/value semantics.
+Active threads use the unofficial normal-account [per-channel thread-search route](https://docs.discord.food/resources/channel#search-threads),
+with bounded, creation-ordered pagination. The [guild-wide active-thread route](https://docs.discord.food/resources/channel#list-guild-active-threads) is bot-only.
+Search indexing delays are retried within the job's limits; a still-unavailable page is
+reported as partial. Archive requests are limited to eligible parent types and current
+history permissions. Successful channel refreshes are not labelled unavailable solely
+because one thread or archive request fails. The regular forum browser also respects
+indexing cooldowns and offers retry instead of falling back to the bot-only route.
 Only successful, correlated history pages establish coverage. An old thread creation ID
 does not exclude recent messages, and joined-private archive pagination is not stopped
 using a creation timestamp. Signed media links remain refreshable metadata; the job does
@@ -50,6 +57,14 @@ patches preserve missing versus explicit removal and use the existing restricted
 avatar CDN path. Persisted display hints grant no access or expression eligibility. Guild
 banner hashes have a separate session-only, access-checked presentation record; Serein
 does not introduce a new server-banner layout as part of this refresh.
+
+Partial member-list snapshots retain the distinction between omitted nicknames or roles
+and explicit removals, including across channel subscriptions. Ordinary-member sync
+also refreshes known session identities, not only authors found in recent history. An
+exact-ID response with no nickname field can refresh its role assignments without clearing
+a known nickname; the job reports incomplete nickname coverage instead of replacing the
+stored display hint with an unverified removal. Complete roster chunks carry the same
+nickname-presence information while retaining their independently verified member IDs.
 
 Offline adapters and fixtures exercise these paths. Cross-client synchronization, large
 live rosters and account-wide acceptance remain owner-controlled checks; successful

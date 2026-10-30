@@ -438,6 +438,7 @@ struct ActiveMembers {
 	subscription: MemberSubscription,
 	start: usize,
 	slots: Vec<Option<model::MemberSlot>>,
+	missing_identity: BTreeMap<Id, model::MissingMemberFields>,
 	lazy: bool,
 	synced: bool,
 	awaiting_sync: bool,
@@ -612,6 +613,7 @@ impl ActiveMembers {
 			subscription,
 			start,
 			slots,
+			missing_identity: BTreeMap::new(),
 			lazy,
 			synced: false,
 			awaiting_sync: true,
@@ -683,6 +685,27 @@ impl ActiveMembers {
 			}
 		}
 	}
+	fn note_identity_fields(&mut self, item: &discord_protocol::MemberItem) {
+		if let discord_protocol::MemberItem::Member { member, .. } = item {
+			let user = member.user.id;
+			let fields = model::MissingMemberFields {
+				user,
+				nick: matches!(member.nick, model::Patch::Absent),
+				roles: matches!(member.roles, model::Patch::Absent),
+			};
+			if fields.nick || fields.roles {
+				self.missing_identity.insert(user, fields);
+			} else {
+				self.missing_identity.remove(&user);
+			}
+		}
+	}
+	fn prune_identity_fields(&mut self) {
+		let visible: std::collections::BTreeSet<_> =
+			self.people().map(|member| member.user.id).collect();
+		self.missing_identity
+			.retain(|user, _| visible.contains(user));
+	}
 	fn span_end(&self) -> usize {
 		self.start
 			.saturating_add(self.slots.len().saturating_sub(1))
@@ -692,7 +715,9 @@ impl ActiveMembers {
 			.iter()
 			.flatten()
 			.map(model::MemberSlot::bytes)
-			.sum()
+			.sum::<usize>()
+			+ self.missing_identity.len()
+				* (size_of::<Id>() + size_of::<model::MissingMemberFields>() + 48)
 	}
 	fn people(&self) -> impl Iterator<Item = &Member> {
 		self.slots.iter().filter_map(|slot| match slot {
@@ -722,6 +747,7 @@ impl ActiveMembers {
 			.any(|slot| matches!(slot, Some(model::MemberSlot::Person(_))));
 		self.start = new_start;
 		self.slots = next;
+		self.prune_identity_fields();
 		self.subscription.ranges = ranges;
 		if !has_people {
 			self.synced = false;
@@ -751,6 +777,7 @@ impl ActiveMembers {
 	}
 	fn snapshot(&self, freshness: Freshness) -> MemberList {
 		MemberList {
+			missing_identity: self.missing_identity.values().copied().collect(),
 			guild: Some(self.subscription.guild),
 			channel: self.subscription.channel,
 			request: self.subscription.request,
@@ -780,8 +807,16 @@ impl ActiveMembers {
 		}
 		if update.departed {
 			self.pending_presence.remove(&update.user);
+			self.missing_identity.remove(&update.user);
+		} else if let Some(fields) = self.missing_identity.get_mut(&update.user) {
+			fields.nick &= matches!(update.nick, model::Patch::Absent);
+			fields.roles &= matches!(update.roles, model::Patch::Absent);
+			if !fields.nick && !fields.roles {
+				self.missing_identity.remove(&update.user);
+			}
 		}
 		self.fit_budget();
+		self.prune_identity_fields();
 	}
 	fn update(&mut self, update: MemberUpdate) -> Result<bool, Failure> {
 		if self.subscription.thread
@@ -818,7 +853,7 @@ impl ActiveMembers {
 			match op {
 				MemberOp::Sync {
 					range: [start, end],
-					items,
+					mut items,
 				} => {
 					if start > end
 						|| items.len() > end.saturating_sub(start).saturating_add(1)
@@ -834,6 +869,22 @@ impl ActiveMembers {
 					}
 					if !items.is_empty() {
 						self.total = self.total.max(start.saturating_add(items.len()) as u64);
+					}
+					for item in &items {
+						self.note_identity_fields(item);
+					}
+					// SYNC may reorder rows and omit unchanged member fields. Match by
+					// identity before clearing the range, not by the old list position.
+					let previous: BTreeMap<_, _> = self
+						.people()
+						.map(|member| (member.user.id, member))
+						.collect();
+					for item in &mut items {
+						if let discord_protocol::MemberItem::Member { member, .. } = item
+							&& let Some(known) = previous.get(&member.user.id)
+						{
+							item.preserve_missing(known);
+						}
 					}
 					let clear_from = start.max(span_start);
 					let clear_to = end.min(span_end);
@@ -867,6 +918,7 @@ impl ActiveMembers {
 				| MemberOp::Unknown => {}
 				MemberOp::Update { index, mut item } => {
 					if self.synced && index >= span_start && index <= span_end {
+						self.note_identity_fields(&item);
 						if let Some(model::MemberSlot::Person(previous)) =
 							&self.slots[index - span_start]
 						{
@@ -888,6 +940,7 @@ impl ActiveMembers {
 						continue;
 					}
 					let relative = index - span_start;
+					self.note_identity_fields(&item);
 					self.slots
 						.insert(relative, item.into_guild_slot(self.subscription.guild));
 					if self.slots.len() > span_end - span_start + 1 {
@@ -916,6 +969,7 @@ impl ActiveMembers {
 			return Err(Failure::Capacity);
 		}
 		self.fit_budget();
+		self.prune_identity_fields();
 		Ok(())
 	}
 	fn thread_update(&mut self, bytes: &[u8]) -> Result<bool, Failure> {
@@ -941,6 +995,11 @@ impl ActiveMembers {
 		.map_err(|_| Failure::Protocol)?;
 		self.clear_presence();
 		self.start = 0;
+		self.missing_identity = list
+			.missing_identity
+			.iter()
+			.map(|fields| (fields.user, *fields))
+			.collect();
 		self.slots = list.slots;
 		self.lazy = false;
 		self.groups = vec![];
@@ -4390,6 +4449,71 @@ mod member_tests {
 			assert!(person(&list, 99).activities.is_empty());
 			assert_eq!(person(&list, 99).status.as_deref(), Some("online"));
 		}
+	}
+	#[test]
+	fn member_sync_preserves_omitted_identity_by_user_across_reordering() {
+		let mut list = ActiveMembers::new(MemberSubscription {
+			thread: false,
+			guild: Id(1),
+			channel: Id(2),
+			request: 7,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99]],
+		});
+		let send = |list: &mut ActiveMembers, items: serde_json::Value| {
+			let wire = json!({"guild_id":"1","id":"everyone","member_count":2,"ops":[{"op":"SYNC","range":[0,99],"items":items}]});
+			list.update(decode::<MemberUpdate>(&serde_json::to_vec(&wire).unwrap()).unwrap())
+				.unwrap();
+		};
+		send(
+			&mut list,
+			json!([
+				{"member":{"user":{"id":"3","username":"one"},"nick":"First nickname","roles":["11"]}},
+				{"member":{"user":{"id":"4","username":"two"},"nick":"Second nickname","roles":["12"]}}
+			]),
+		);
+		send(
+			&mut list,
+			json!([
+				{"member":{"user":{"id":"4","username":"two"}}},
+				{"member":{"user":{"id":"3","username":"one"}}}
+			]),
+		);
+		assert_eq!(person(&list, 0).user.id, Id(4));
+		assert_eq!(person(&list, 0).nick.as_deref(), Some("Second nickname"));
+		assert_eq!(person(&list, 0).roles, vec![Id(12)]);
+		assert_eq!(person(&list, 1).user.id, Id(3));
+		assert_eq!(person(&list, 1).nick.as_deref(), Some("First nickname"));
+		assert_eq!(person(&list, 1).roles, vec![Id(11)]);
+		let fields = list.snapshot(Freshness::Fresh).missing_identity;
+		assert!(
+			fields
+				.iter()
+				.any(|fields| fields.user == Id(3) && fields.nick && fields.roles)
+		);
+		assert!(
+			fields
+				.iter()
+				.any(|fields| fields.user == Id(4) && fields.nick && fields.roles)
+		);
+		send(
+			&mut list,
+			json!([
+				{"member":{"user":{"id":"4","username":"two"},"nick":null,"roles":[]}},
+				{"member":{"user":{"id":"3","username":"one"}}}
+			]),
+		);
+		assert_eq!(person(&list, 0).nick, None);
+		assert!(person(&list, 0).roles.is_empty());
+		assert!(
+			!list
+				.snapshot(Freshness::Fresh)
+				.missing_identity
+				.iter()
+				.any(|fields| fields.user == Id(4))
+		);
+		assert_eq!(person(&list, 1).nick.as_deref(), Some("First nickname"));
+		assert_eq!(person(&list, 1).roles, vec![Id(11)]);
 	}
 
 	#[test]

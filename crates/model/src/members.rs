@@ -216,6 +216,14 @@ impl MemberSlot {
 	}
 }
 
+/// Fields omitted by one member-list snapshot; explicit null/empty values are not missing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MissingMemberFields {
+	pub user: Id,
+	pub nick: bool,
+	pub roles: bool,
+}
+
 #[derive(Clone)]
 pub struct MemberList {
 	pub guild: Option<Id>,
@@ -225,6 +233,8 @@ pub struct MemberList {
 	pub start: usize,
 	/// Contiguous window. None is a hole. At most 200 entries.
 	pub slots: Vec<Option<MemberSlot>>,
+	/// Presence information for partial rows, bounded by the current slot count.
+	pub missing_identity: Vec<MissingMemberFields>,
 	pub total: u64,
 	/// Guild channel lazy list. Scrollbar length is `total`. DMs and threads are false and scroll `slots.len()`.
 	pub lazy: bool,
@@ -237,6 +247,11 @@ pub struct MemberList {
 
 impl MemberList {
 	pub fn slot_bytes(&self) -> usize {
-		self.slots.iter().flatten().map(MemberSlot::bytes).sum()
+		self.slots
+			.iter()
+			.flatten()
+			.map(MemberSlot::bytes)
+			.sum::<usize>()
+			+ self.missing_identity.capacity() * size_of::<MissingMemberFields>()
 	}
 }

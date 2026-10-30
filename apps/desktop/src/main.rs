@@ -952,6 +952,7 @@ fn demo_members(
 		}
 	}
 	model::MemberList {
+		missing_identity: vec![],
 		guild,
 		channel,
 		request,

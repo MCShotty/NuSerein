@@ -4487,6 +4487,7 @@ mod composer_tests {
 				icon: None,
 			}],
 			members: Some(model::MemberList {
+				missing_identity: vec![],
 				channel: Id(1),
 				guild: Some(Id(2)),
 				request: 1,
@@ -4769,6 +4770,7 @@ mod composer_tests {
 			channel.last_message = None;
 		}
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			channel,
 			guild: Some(guild),
 			request: 7,
@@ -4927,6 +4929,7 @@ mod composer_tests {
 				.guild;
 			let _ = state.request_members();
 			state.members = Some(model::MemberList {
+				missing_identity: vec![],
 				guild,
 				channel,
 				request: 7,
@@ -5580,6 +5583,7 @@ pub fn debug_member_voice_status_check(mut state: State, mut private: State) {
 	state.selected = Some(text_channel);
 	state.gateway_connected = true;
 	state.members = Some(model::MemberList {
+		missing_identity: vec![],
 		guild: Some(entry.guild),
 		channel: text_channel,
 		request: 0,
@@ -5655,6 +5659,7 @@ pub fn debug_member_voice_status_check(mut state: State, mut private: State) {
 	let user = private.channel(channel).unwrap().recipients[0].clone();
 	private.gateway_connected = true;
 	private.members = Some(model::MemberList {
+		missing_identity: vec![],
 		guild: None,
 		channel,
 		request: 0,

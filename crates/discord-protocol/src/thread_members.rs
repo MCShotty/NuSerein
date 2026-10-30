@@ -27,6 +27,7 @@ struct Snapshot {
 
 struct Rows {
 	slots: Vec<Option<MemberSlot>>,
+	missing_identity: Vec<model::MissingMemberFields>,
 	total: u64,
 }
 
@@ -40,6 +41,7 @@ impl<'de> Deserialize<'de> for Rows {
 			}
 			fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Rows, A::Error> {
 				let mut slots = Vec::with_capacity(100);
+				let mut missing_identity = Vec::new();
 				let mut seen = BTreeSet::new();
 				let mut retained = slots.capacity() * size_of::<Option<MemberSlot>>();
 				while slots.len() < 100 {
@@ -48,6 +50,14 @@ impl<'de> Deserialize<'de> for Rows {
 					};
 					if entry.user_id != entry.member.user.id || !seen.insert(entry.user_id) {
 						return Err(serde::de::Error::custom("Invalid thread member identity"));
+					}
+					let fields = model::MissingMemberFields {
+						user: entry.user_id,
+						nick: matches!(entry.member.nick, model::Patch::Absent),
+						roles: matches!(entry.member.roles, model::Patch::Absent),
+					};
+					if fields.nick || fields.roles {
+						missing_identity.push(fields);
 					}
 					let member = MemberItem::Member {
 						presence: entry.presence,
@@ -65,7 +75,11 @@ impl<'de> Deserialize<'de> for Rows {
 				while seq.next_element::<IgnoredAny>()?.is_some() {
 					total += 1;
 				}
-				Ok(Rows { slots, total })
+				Ok(Rows {
+					slots,
+					missing_identity,
+					total,
+				})
 			}
 		}
 		d.deserialize_seq(Bounded)
@@ -86,6 +100,7 @@ pub fn members(
 		return Err(DecodeError);
 	}
 	Ok(MemberList {
+		missing_identity: snapshot.members.missing_identity,
 		guild: Some(guild),
 		channel,
 		request,

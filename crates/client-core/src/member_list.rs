@@ -112,6 +112,7 @@ impl State {
 			Freshness::Loading
 		};
 		self.members = Some(MemberList {
+			missing_identity: vec![],
 			guild: channel.guild,
 			channel: channel.id,
 			request: self.member_request,

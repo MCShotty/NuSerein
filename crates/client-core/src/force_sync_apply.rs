@@ -155,7 +155,16 @@ impl State {
 					);
 				}
 				if let Ok(member) = value.self_member {
-					self.apply_force_sync_members(guild, &[member]);
+					let unknown = [member.user.id];
+					self.apply_force_sync_members_with_unknown_nicks(
+						guild,
+						&[member],
+						if value.self_member_nick_known {
+							&[]
+						} else {
+							&unknown
+						},
+					);
 				}
 				if self.server_admin.guild == Some(guild) && self.server_admin.roles.is_some() {
 					self.server_admin.roles = Some(value.roles);
@@ -276,10 +285,42 @@ impl State {
 					self.revision = self.revision.wrapping_add(1);
 				}
 			}
-			ReadResult::ActiveThreads { guild, threads } => {
-				if threads.iter().any(|thread| {
-					thread.guild != Some(guild) || !self.force_sync_thread_read_allowed(thread)
-				}) {
+			ReadResult::ActiveThreads {
+				guild,
+				parent,
+				threads,
+				next,
+			} => {
+				let new_threads = threads
+					.iter()
+					.filter(|thread| self.channel(thread.id).is_none())
+					.count();
+				if self.guild(guild).is_none()
+					|| self
+						.channel(parent)
+						.is_none_or(|channel| channel.guild != Some(guild))
+					|| !self.can_archive(parent, model::archives::Kind::Public)
+					|| threads.len() > crate::force_sync_read::THREAD_PAGE_SIZE
+					|| next.is_some_and(|id| id.0 == 0)
+					|| self
+						.channels
+						.len()
+						.saturating_add(self.guilds.len())
+						.saturating_add(new_threads)
+						> crate::MAX_NAV
+					|| threads.iter().enumerate().any(|(index, thread)| {
+						thread.id.0 == 0
+							|| thread.id == parent
+							|| thread.guild != Some(guild)
+							|| thread.parent_id != Some(parent)
+							|| !self.force_sync_thread_read_allowed(thread)
+							|| threads[..index].iter().any(|other| other.id == thread.id)
+							|| self.channel(thread.id).is_some_and(|old| {
+								old.guild != Some(guild)
+									|| old.parent_id != Some(parent)
+									|| !matches!(old.kind, 10..=12)
+							})
+					}) {
 					return false;
 				}
 				// A thread absent from the active endpoint may have been archived, not deleted.
@@ -292,10 +333,15 @@ impl State {
 				guild,
 				items,
 				missing,
+				nick_unknown,
 			} => {
 				let returned: std::collections::BTreeSet<_> =
 					items.iter().map(|member| member.user.id).collect();
 				if self.guild(guild).is_none()
+					|| !self
+						.channels
+						.iter()
+						.any(|channel| channel.guild == Some(guild) && self.can_view(channel.id))
 					|| items.len().saturating_add(missing.len())
 						> crate::force_sync_read::MAX_MEMBER_IDS
 					|| returned.len() != items.len()
@@ -305,15 +351,19 @@ impl State {
 							|| returned.contains(id)
 							|| self.user.as_ref().is_some_and(|own| own.id == *id)
 					}) || !missing.windows(2).all(|ids| ids[0] < ids[1])
+					|| !nick_unknown.windows(2).all(|ids| ids[0] < ids[1])
+					|| nick_unknown.iter().any(|id| !returned.contains(id))
 				{
 					return false;
 				}
-				self.apply_force_sync_members(guild, &items);
+				self.apply_force_sync_members_with_unknown_nicks(guild, &items, &nick_unknown);
 				for user in missing {
 					self.retire_force_sync_member(guild, user);
 				}
 			}
-			ReadResult::History(_) | ReadResult::Archives(_) => return false,
+			ReadResult::History(_)
+			| ReadResult::Archives(_)
+			| ReadResult::ActiveThreadsIndexing { .. } => return false,
 		}
 		self.auth == AuthState::Authenticated
 	}
@@ -367,11 +417,28 @@ impl State {
 	}
 	/// Applies only live member observations. Authorization remains with the account permission mirror.
 	pub fn apply_force_sync_members(&mut self, guild: Id, members: &[Member]) {
+		self.apply_force_sync_members_with_unknown_nicks(guild, members, &[]);
+	}
+	/// Applies current roles while leaving omitted nickname fields unchanged.
+	pub fn apply_force_sync_members_with_unknown_nicks(
+		&mut self,
+		guild: Id,
+		members: &[Member],
+		nick_unknown: &[Id],
+	) {
 		if self.auth != AuthState::Authenticated
 			|| !self.gateway_connected
 			|| self.guild(guild).is_none()
+			|| !self
+				.channels
+				.iter()
+				.any(|channel| channel.guild == Some(guild) && self.can_view(channel.id))
 			|| members.len() > 1000
 			|| members.iter().any(|member| !member.valid())
+			|| !nick_unknown.windows(2).all(|ids| ids[0] < ids[1])
+			|| nick_unknown
+				.iter()
+				.any(|id| !members.iter().any(|member| member.user.id == *id))
 			|| members.iter().map(Member::bytes).sum::<usize>() > 4 * 1024 * 1024
 		{
 			return;
@@ -380,17 +447,30 @@ impl State {
 			let mut roles = member.roles.clone();
 			roles.sort_unstable();
 			roles.dedup();
-			self.apply_member_identity(MemberIdentity {
+			self.apply_force_sync_identity(MemberIdentity {
 				avatar: model::Patch::Absent,
 				guild,
 				user: member.user.id,
 				profile: Some(member.user.clone()),
-				nick: member.nick.clone().map_or(Patch::Null, Patch::Value),
+				nick: if nick_unknown.binary_search(&member.user.id).is_ok() {
+					Patch::Absent
+				} else {
+					member.nick.clone().map_or(Patch::Null, Patch::Value)
+				},
 				roles: Patch::Value(roles),
 				departed: false,
 			});
 		}
-		self.member_labels.remember(guild, members);
+		if nick_unknown.is_empty() {
+			self.member_labels.remember(guild, members);
+		} else {
+			let complete: Vec<_> = members
+				.iter()
+				.filter(|member| nick_unknown.binary_search(&member.user.id).is_err())
+				.cloned()
+				.collect();
+			self.member_labels.remember(guild, &complete);
+		}
 	}
 }
 
@@ -542,11 +622,33 @@ mod tests {
 		assert!(state.channel(archived.id).is_none());
 		assert!(state.apply_force_sync_result(ReadResult::ActiveThreads {
 			guild: Id(10),
-			threads: vec![archived]
+			parent: Id(20),
+			threads: vec![archived],
+			next: None,
 		}));
 		assert!(state.can_read_history(Id(30)));
 		assert_eq!(state.selected, Some(Id(20)));
 		assert!(!state.force_sync_thread_read_allowed(&channel(31, Some(Id(999)), 11)));
+	}
+	#[test]
+	fn active_thread_results_preserve_navigation_and_require_current_parent_access() {
+		let mut state = fixture(0);
+		let make_page = |thread| ReadResult::ActiveThreads {
+			guild: Id(10),
+			parent: Id(20),
+			threads: vec![thread],
+			next: None,
+		};
+		assert!(!state.apply_force_sync_result(make_page(channel(31, Some(Id(999)), 11))));
+		assert!(state.apply_force_sync_result(make_page(channel(32, Some(Id(20)), 12))));
+		assert_eq!(state.selected, Some(Id(20)));
+		assert_eq!(
+			state.drafts.get(&Id(20)).map(String::as_str),
+			Some("Retained draft")
+		);
+		state.gateway_connected = false;
+		assert!(!state.apply_force_sync_result(make_page(channel(33, Some(Id(20)), 11))));
+		assert!(state.channel(Id(33)).is_none());
 	}
 	#[test]
 	fn ordinary_member_refresh_updates_sidebar_composer_and_typing_names() {
@@ -679,6 +781,7 @@ mod tests {
 				},
 				roles,
 				self_member: Err(crate::auth::Failure::Forbidden),
+				self_member_nick_known: false,
 				banner: Patch::Value("0123456789abcdef0123456789abcdef".into()),
 				member_count: None
 			}
@@ -765,9 +868,30 @@ mod tests {
 				features: vec![],
 			},
 			self_member: Err(failure),
+			self_member_nick_known: false,
 			banner: Patch::Absent,
 			member_count: None,
 		}))
+	}
+	#[test]
+	fn own_member_refresh_with_omitted_nickname_keeps_current_name() {
+		let mut state = fixture(0);
+		let original = cached_person(2, "Own nickname");
+		state.apply_force_sync_members(Id(10), std::slice::from_ref(&original));
+		let mut response = guild_with_incomplete_own_member(crate::auth::Failure::Network);
+		let ReadResult::Guild(value) = &mut response else {
+			panic!("guild response")
+		};
+		value.self_member = Ok(Member {
+			nick: None,
+			..original
+		});
+		value.self_member_nick_known = false;
+		assert!(state.apply_force_sync_result(response));
+		assert_eq!(
+			state.member_nickname(Id(20), Id(2)),
+			Some(Some("Own nickname"))
+		);
 	}
 	#[test]
 	fn transient_own_member_failures_preserve_live_permission_mirror_and_call_as_a_unit() {
@@ -906,7 +1030,8 @@ mod tests {
 		assert!(state.apply_force_sync_result(ReadResult::Members {
 			guild: Id(10),
 			items: vec![],
-			missing: vec![Id(7)]
+			missing: vec![Id(7)],
+			nick_unknown: vec![]
 		}));
 		assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
 		let identity = state.member_identity(Id(20), Id(7)).unwrap();
@@ -928,7 +1053,8 @@ mod tests {
 		assert!(state.apply_force_sync_result(ReadResult::Members {
 			guild: Id(10),
 			items: vec![],
-			missing: vec![]
+			missing: vec![],
+			nick_unknown: vec![]
 		}));
 		assert_eq!(
 			state.member_nickname(Id(20), Id(7)),
@@ -943,7 +1069,8 @@ mod tests {
 			assert!(!state.apply_force_sync_result(ReadResult::Members {
 				guild: Id(10),
 				items: vec![],
-				missing
+				missing,
+				nick_unknown: vec![]
 			}));
 			assert_eq!(
 				state.member_nickname(Id(20), Id(7)),
@@ -956,12 +1083,42 @@ mod tests {
 				nick: Some("Conflicting update".into()),
 				..member
 			}],
-			missing: vec![Id(7)]
+			missing: vec![Id(7)],
+			nick_unknown: vec![]
 		}));
 		assert_eq!(
 			state.member_nickname(Id(20), Id(7)),
 			Some(Some("Still a member"))
 		);
+	}
+	#[test]
+	fn member_read_with_omitted_nickname_keeps_it_while_refreshing_roles() {
+		let mut state = fixture(0);
+		let original = cached_person(7, "Existing nickname");
+		state.apply_force_sync_members(Id(10), std::slice::from_ref(&original));
+		let mut updated = original.clone();
+		updated.nick = None;
+		updated.roles = vec![Id(42)];
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![updated.clone()],
+			missing: vec![],
+			nick_unknown: vec![Id(7)],
+		}));
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Existing nickname"))
+		);
+		assert!(
+			matches!(&state.member_identity(Id(20), Id(7)).unwrap().roles, Patch::Value(roles) if roles == &[Id(42)])
+		);
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![updated],
+			missing: vec![],
+			nick_unknown: vec![],
+		}));
+		assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
 	}
 	#[test]
 	fn complete_roster_removes_absent_identities_and_requires_own_presence_and_current_permission()
@@ -1024,6 +1181,16 @@ mod tests {
 		});
 		state.apply_force_sync_members(Id(10), &[cached_person(7, "Current server nickname")]);
 		state.apply_force_sync_members(Id(11), &[cached_person(7, "Other server nickname")]);
+		state
+			.apply_force_sync_members(Id(11), &[cached_person(7, "Updated other server nickname")]);
+		assert_eq!(
+			state.member_nickname(Id(30), Id(7)),
+			Some(Some("Updated other server nickname"))
+		);
+		assert_eq!(
+			state.member_nickname(Id(20), Id(7)),
+			Some(Some("Current server nickname"))
+		);
 		assert!(state.display_member(Id(30), Id(7)).is_some());
 		let mirror = state.permissions.guilds[&Id(10)].clone();
 		assert!(state.reconcile_force_sync_roster(Id(11), &[Id(2)]));

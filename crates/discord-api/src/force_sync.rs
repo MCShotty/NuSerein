@@ -5,7 +5,7 @@ use discord_protocol::{ChannelDto, MemberDto, MessageDto, decode};
 use futures_util::{StreamExt, stream};
 use model::{Id, Member, Patch};
 use reqwest::Method;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::SeqAccess};
 use serde_json::value::RawValue;
 use std::collections::BTreeSet;
 
@@ -44,7 +44,11 @@ impl DiscordApi {
 				}
 			})
 	}
-	async fn force_sync_member(&self, guild: Id, user: Id) -> Result<(Member, Vec<u8>), Failure> {
+	async fn force_sync_member(
+		&self,
+		guild: Id,
+		user: Id,
+	) -> Result<(Member, Vec<u8>, bool), Failure> {
 		let bytes = self
 			.force_sync_get(&format!("/guilds/{guild}/members/{user}"), 64 * 1024)
 			.await?;
@@ -52,11 +56,12 @@ impl DiscordApi {
 		if dto.user.id != user || !matches!(&dto.roles, Patch::Value(_)) {
 			return Err(Failure::Protocol);
 		}
+		let nick_known = !matches!(&dto.nick, Patch::Absent);
 		let member = dto.into_guild_member(guild).ok_or(Failure::Protocol)?;
 		if !member.valid() || member.bytes() > 64 * 1024 {
 			return Err(Failure::ResponseLimit);
 		}
-		Ok((member, bytes))
+		Ok((member, bytes, nick_known))
 	}
 	async fn force_sync_read_inner(&self, read: Read) -> Result<ReadResult, Failure> {
 		match read {
@@ -88,8 +93,10 @@ impl DiscordApi {
 				{
 					return Err(Failure::Protocol);
 				}
+				let mut self_member_nick_known = false;
 				let self_member = match self.force_sync_member(guild, user).await {
-					Ok((member, own_bytes)) => {
+					Ok((member, own_bytes, nick_known)) => {
+						self_member_nick_known = nick_known;
 						// Reuse the existing strict timeout/own-member permission projection.
 						let mut value: serde_json::Value =
 							decode(&bytes).map_err(|_| Failure::Protocol)?;
@@ -109,6 +116,7 @@ impl DiscordApi {
 					permissions,
 					roles,
 					self_member,
+					self_member_nick_known,
 					banner: metadata.banner,
 					member_count: metadata.member_count.or(metadata.approximate_member_count),
 				})))
@@ -215,43 +223,51 @@ impl DiscordApi {
 				.archives(parent, guild, kind, before)
 				.await
 				.map(ReadResult::Archives),
-			Read::ActiveThreads { guild } => {
+			Read::ActiveThreads {
+				guild,
+				parent,
+				before,
+			} => {
+				// The guild-wide active endpoint is bot-only. This per-channel search is
+				// the normal-account route and also covers private threads when visible.
+				let mut path = format!(
+					"/channels/{parent}/threads/search?archived=false&sort_by=creation_time&sort_order=desc&limit={}",
+					sync::THREAD_PAGE_SIZE
+				);
+				if let Some(before) = before {
+					path.push_str(&format!("&max_id={before}"));
+				}
 				let bytes = self
-					.force_sync_get(
-						&format!("/guilds/{guild}/threads/active"),
-						sync::MAX_READ_BYTES,
-					)
+					.force_sync_get(&path, discord_protocol::forum::MAX_WIRE)
 					.await?;
-				#[derive(Deserialize)]
-				struct Active {
-					threads: Vec<ChannelDto>,
+				let status: discord_protocol::search::Reply =
+					decode(&bytes).map_err(|_| Failure::Protocol)?;
+				if status
+					.code
+					.is_some_and(|code| (110_000..120_000).contains(&code))
+				{
+					let retry_after = crate::safe_delay(status.retry_after)?;
+					self.cooldown.lock().await.observe(
+						&crate::rate_limits::Route::new(&Method::GET, &path),
+						None,
+						Some(retry_after),
+						false,
+					)?;
+					return Ok(ReadResult::ActiveThreadsIndexing {
+						guild,
+						parent,
+						retry_after,
+					});
 				}
-				let rows: Active = decode(&bytes).map_err(|_| Failure::Protocol)?;
-				if rows.threads.len() > model::account::MAX_ENTRIES {
-					return Err(Failure::ResponseLimit);
+				if status.code.is_some() {
+					return Err(Failure::Protocol);
 				}
-				let mut seen = BTreeSet::new();
-				let mut threads = Vec::new();
-				for row in rows.threads {
-					if row.id.0 == 0
-						|| row.guild_id.is_some_and(|id| id != guild)
-						|| !seen.insert(row.id)
-					{
-						return Err(Failure::Protocol);
-					}
-					if row.is_obfuscated() {
-						continue;
-					}
-					threads.push(
-						discord_protocol::threads::into_thread(row, guild)
-							.map_err(|_| Failure::Protocol)?,
-					);
-				}
-				Ok(ReadResult::ActiveThreads { guild, threads })
+				active_thread_page(&bytes, guild, parent, before)
 			}
 			Read::Members { guild, users } => {
 				let mut items = Vec::new();
 				let mut missing = Vec::new();
+				let mut nick_unknown = Vec::new();
 				let mut pending = stream::iter(users)
 					.map(|user| async move {
 						let path = format!("/guilds/{guild}/members/{user}");
@@ -264,17 +280,23 @@ impl DiscordApi {
 						if dto.user.id != user || !matches!(&dto.roles, Patch::Value(_)) {
 							return Err(Failure::Protocol);
 						}
+						let nick_known = !matches!(&dto.nick, Patch::Absent);
 						let member = dto.into_guild_member(guild).ok_or(Failure::Protocol)?;
 						if !member.valid() {
 							return Err(Failure::Protocol);
 						}
-						Ok((user, Some(member)))
+						Ok((user, Some((member, nick_known))))
 					})
 					.buffered(2);
 				while let Some(result) = pending.next().await {
 					match result? {
 						(user, None) => missing.push(user),
-						(_, Some(member)) => items.push(member),
+						(user, Some((member, nick_known))) => {
+							if !nick_known {
+								nick_unknown.push(user);
+							}
+							items.push(member);
+						}
 					}
 					if items.iter().map(Member::bytes).sum::<usize>() > sync::MAX_READ_BYTES {
 						return Err(Failure::ResponseLimit);
@@ -284,10 +306,112 @@ impl DiscordApi {
 					guild,
 					items,
 					missing,
+					nick_unknown,
 				})
 			}
 		}
 	}
+}
+
+#[derive(Deserialize)]
+struct ActiveThreadRow {
+	#[serde(flatten)]
+	channel: ChannelDto,
+	#[serde(default)]
+	thread_metadata: Option<ActiveThreadMetadata>,
+}
+
+#[derive(Deserialize)]
+struct ActiveThreadMetadata {
+	#[serde(default)]
+	archived: bool,
+}
+
+#[derive(Deserialize)]
+struct ActiveThreadReply {
+	#[serde(deserialize_with = "active_thread_rows")]
+	threads: Vec<ActiveThreadRow>,
+	has_more: bool,
+}
+
+fn active_thread_rows<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ActiveThreadRow>, D::Error> {
+	struct Bounded;
+	impl<'de> serde::de::Visitor<'de> for Bounded {
+		type Value = Vec<ActiveThreadRow>;
+		fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+			formatter.write_str("at most 25 active threads")
+		}
+		fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+			let mut rows = Vec::new();
+			while rows.len() < sync::THREAD_PAGE_SIZE {
+				match seq.next_element()? {
+					Some(row) => rows.push(row),
+					None => return Ok(rows),
+				}
+			}
+			if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+				return Err(serde::de::Error::custom("active thread page exceeds limit"));
+			}
+			Ok(rows)
+		}
+	}
+	d.deserialize_seq(Bounded)
+}
+
+fn active_thread_page(
+	bytes: &[u8],
+	guild: Id,
+	parent: Id,
+	before: Option<Id>,
+) -> Result<ReadResult, Failure> {
+	let rows: ActiveThreadReply = decode(bytes).map_err(|_| Failure::Protocol)?;
+	let mut cursor = before;
+	let mut last = None;
+	let mut retained = 0usize;
+	let mut threads = Vec::with_capacity(rows.threads.len());
+	for row in rows.threads {
+		let mut channel = row.channel;
+		if channel.id.0 == 0
+			|| channel.parent_id != Some(parent)
+			|| channel.guild_id.is_some_and(|id| id != guild)
+			|| !matches!(channel.kind, 10..=12)
+			|| cursor.is_some_and(|id| channel.id >= id)
+			|| row
+				.thread_metadata
+				.is_some_and(|metadata| metadata.archived)
+		{
+			return Err(Failure::Protocol);
+		}
+		cursor = Some(channel.id);
+		last = cursor;
+		let hidden = channel.is_obfuscated();
+		// Validate hidden rows too, and advance past them to avoid a stuck cursor.
+		channel.flags &= !(1 << 17);
+		let channel = discord_protocol::threads::into_thread(channel, guild)
+			.map_err(|_| Failure::Protocol)?;
+		retained = retained.saturating_add(channel.bytes());
+		if retained > model::forum::MAX_BYTES {
+			return Err(Failure::ResponseLimit);
+		}
+		if !hidden {
+			threads.push(channel);
+		}
+	}
+	let next = if rows.has_more {
+		Some(last.ok_or(Failure::Protocol)?)
+	} else {
+		None
+	};
+	let page = ReadResult::ActiveThreads {
+		guild,
+		parent,
+		threads,
+		next,
+	};
+	if page.bytes() > model::forum::MAX_BYTES {
+		return Err(Failure::ResponseLimit);
+	}
+	Ok(page)
 }
 
 fn history_page(
@@ -408,7 +532,7 @@ mod tests {
 				("/guilds/2/emojis".into(), "200 OK", json!([])),
 				("/guilds/2/stickers".into(), "200 OK", json!([])),
 				("/guilds/2/soundboard-sounds".into(), "200 OK", json!({"items":[]})),
-				("/guilds/2/threads/active".into(), "200 OK", json!({"threads":[{"id":"8","guild_id":"2","parent_id":"4","name":"Old post still active","type":11}]})),
+				("/channels/4/threads/search?archived=false&sort_by=creation_time&sort_order=desc&limit=25".into(), "200 OK", json!({"threads":[{"id":"8","guild_id":"2","parent_id":"4","name":"Old post still active","type":11}],"has_more":false})),
 			]).await;
 			let ReadResult::Guild(value) = api.force_sync_read(Read::Guild { guild: Id(2), user: Id(1) }).await.unwrap() else { panic!("guild result") };
 			assert_eq!(value.self_member.as_ref().unwrap().nick.as_deref(), Some("Server nickname"));
@@ -424,9 +548,253 @@ mod tests {
 			assert!(matches!(api.force_sync_read(Read::Emojis { guild: Id(2) }).await.unwrap(), ReadResult::Emojis { items, .. } if items.is_empty()));
 			assert!(matches!(api.force_sync_read(Read::Stickers { guild: Id(2) }).await.unwrap(), ReadResult::Stickers { items, .. } if items.is_empty()));
 			assert!(matches!(api.force_sync_read(Read::Sounds { guild: Id(2) }).await.unwrap(), ReadResult::Sounds { items, .. } if items.is_empty()));
-			assert!(matches!(api.force_sync_read(Read::ActiveThreads { guild: Id(2) }).await.unwrap(), ReadResult::ActiveThreads { threads, .. } if threads[0].id == Id(8)));
+			assert!(matches!(api.force_sync_read(Read::ActiveThreads { guild: Id(2), parent: Id(4), before: None }).await.unwrap(), ReadResult::ActiveThreads { threads, next: None, .. } if threads[0].id == Id(8)));
 			server.await.unwrap(); assert!(!api.stopped());
 		}).await.unwrap();
+	}
+	const THREAD_ROUTE: &str =
+		"/channels/4/threads/search?archived=false&sort_by=creation_time&sort_order=desc&limit=25";
+	fn thread(id: u64, kind: u8) -> Value {
+		json!({
+			"id": id.to_string(), "guild_id": "2", "parent_id": "4",
+			"type": kind, "name": "Synthetic thread", "thread_metadata": {"archived": false}
+		})
+	}
+	fn thread_read(before: Option<Id>) -> Read {
+		Read::ActiveThreads {
+			guild: Id(2),
+			parent: Id(4),
+			before,
+		}
+	}
+	#[tokio::test]
+	async fn member_refresh_preserves_missing_nickname_presence() {
+		tokio::time::timeout(Duration::from_secs(5), async {
+			let (api, server) = fixture(vec![(
+				"/guilds/2/members/3".into(),
+				"200 OK",
+				json!({"user":{"id":"3","username":"synthetic"},"roles":["9"]}),
+			)])
+			.await;
+			let ReadResult::Members {
+				items,
+				missing,
+				nick_unknown,
+				..
+			} = api.force_sync_read(Read::Members {
+				guild: Id(2),
+				users: vec![Id(3)],
+			})
+			.await
+			.unwrap()
+			else {
+				panic!("member result")
+			};
+			assert!(missing.is_empty());
+			assert_eq!(nick_unknown, vec![Id(3)]);
+			assert_eq!(items[0].roles, vec![Id(9)]);
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn active_threads_page_through_private_and_obfuscated_rows() {
+		tokio::time::timeout(Duration::from_secs(5), async {
+			let mut hidden = thread(20, 11);
+			hidden["flags"] = json!(1 << 17);
+			let (api, server) = fixture(vec![
+				(
+					THREAD_ROUTE.into(),
+					"200 OK",
+					json!({"threads": [thread(30, 11), thread(25, 12), hidden], "has_more": true}),
+				),
+				(
+					format!("{THREAD_ROUTE}&max_id=20"),
+					"200 OK",
+					json!({"threads": [thread(19, 10)], "has_more": false}),
+				),
+			])
+			.await;
+			let ReadResult::ActiveThreads {
+				guild,
+				parent,
+				threads,
+				next,
+			} = api.force_sync_read(thread_read(None)).await.unwrap()
+			else {
+				panic!("active thread page")
+			};
+			assert_eq!((guild, parent, next), (Id(2), Id(4), Some(Id(20))));
+			assert_eq!(
+				threads.iter().map(|row| row.id).collect::<Vec<_>>(),
+				vec![Id(30), Id(25)]
+			);
+			assert_eq!(threads[1].kind, 12, "private threads stay visible");
+			let ReadResult::ActiveThreads { threads, next, .. } =
+				api.force_sync_read(thread_read(next)).await.unwrap()
+			else {
+				panic!("second active thread page")
+			};
+			assert_eq!(threads[0].id, Id(19));
+			assert_eq!(next, None);
+			server.await.unwrap();
+			assert!(!api.stopped());
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn active_threads_indexing_defers_and_enforces_the_route_cooldown() {
+		tokio::time::timeout(Duration::from_secs(5), async {
+			let (api, server) = fixture(vec![(
+				THREAD_ROUTE.into(),
+				"202 Accepted",
+				json!({"code":110000,"retry_after":1.5}),
+			)])
+			.await;
+			let ReadResult::ActiveThreadsIndexing {
+				guild,
+				parent,
+				retry_after,
+			} = api.force_sync_read(thread_read(None)).await.unwrap()
+			else {
+				panic!("indexing outcome")
+			};
+			assert_eq!((guild, parent), (Id(2), Id(4)));
+			assert_eq!(retry_after, Duration::from_millis(1500));
+			let route = crate::rate_limits::Route::new(&Method::GET, THREAD_ROUTE);
+			assert!(
+				api.cooldown.lock().await.deadline(&route).unwrap() > tokio::time::Instant::now()
+			);
+			assert!(matches!(
+				api.force_sync_read(thread_read(None)).await,
+				Err(Failure::Busy)
+			));
+			assert!(!api.stopped());
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn active_thread_http_errors_and_oversized_pages_are_scoped() {
+		tokio::time::timeout(Duration::from_secs(5), async {
+			let too_many: Vec<_> = (10..36).rev().map(|id| thread(id, 11)).collect();
+			let mut wrong_guild = thread(30, 11);
+			wrong_guild["guild_id"] = json!("3");
+			let mut wrong_parent = thread(30, 11);
+			wrong_parent["parent_id"] = json!("5");
+			let (api, server) = fixture(vec![
+				(THREAD_ROUTE.into(), "403 Forbidden", json!({"code":50001})),
+				(
+					THREAD_ROUTE.into(),
+					"200 OK",
+					json!({"threads":[wrong_guild],"has_more":false}),
+				),
+				(
+					THREAD_ROUTE.into(),
+					"200 OK",
+					json!({"threads":[wrong_parent],"has_more":false}),
+				),
+				(
+					THREAD_ROUTE.into(),
+					"200 OK",
+					json!({"threads":{},"has_more":false}),
+				),
+				(
+					THREAD_ROUTE.into(),
+					"200 OK",
+					json!({"threads":too_many,"has_more":false}),
+				),
+				(
+					THREAD_ROUTE.into(),
+					"202 Accepted",
+					json!({"code":110000,"retry_after":-1}),
+				),
+			])
+			.await;
+			assert!(matches!(
+				api.force_sync_read(thread_read(None)).await,
+				Err(Failure::Forbidden)
+			));
+			for _ in 0..5 {
+				assert!(matches!(
+					api.force_sync_read(thread_read(None)).await,
+					Err(Failure::Protocol)
+				));
+			}
+			assert!(!api.stopped());
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
+	}
+	#[test]
+	fn active_thread_pages_reject_wrong_scope_order_archived_rows_and_stalled_cursors() {
+		let parse = |value: Value, before: Option<Id>| {
+			active_thread_page(&serde_json::to_vec(&value).unwrap(), Id(2), Id(4), before)
+		};
+		let mut wrong_guild = thread(30, 11);
+		wrong_guild["guild_id"] = json!("3");
+		let mut wrong_parent = thread(30, 11);
+		wrong_parent["parent_id"] = json!("5");
+		let mut archived = thread(30, 11);
+		archived["thread_metadata"]["archived"] = json!(true);
+		let mut hidden_wrong_parent = wrong_parent.clone();
+		hidden_wrong_parent["flags"] = json!(1 << 17);
+		for rows in [
+			vec![wrong_guild],
+			vec![wrong_parent],
+			vec![hidden_wrong_parent],
+			vec![thread(0, 11)],
+			vec![thread(4, 11)],
+			vec![thread(30, 0)],
+			vec![archived],
+			vec![thread(30, 11), thread(30, 12)],
+			vec![thread(29, 11), thread(30, 12)],
+		] {
+			assert!(matches!(
+				parse(json!({"threads":rows,"has_more":false}), None),
+				Err(Failure::Protocol)
+			));
+		}
+		assert!(matches!(
+			parse(
+				json!({"threads":[thread(30, 11)],"has_more":false}),
+				Some(Id(30))
+			),
+			Err(Failure::Protocol)
+		));
+		assert!(matches!(
+			parse(json!({"threads":[],"has_more":true}), None),
+			Err(Failure::Protocol)
+		));
+		assert!(matches!(
+			parse(json!({"threads":[]}), None),
+			Err(Failure::Protocol)
+		));
+		assert!(matches!(
+			parse(json!({"threads":"invalid","has_more":false}), None),
+			Err(Failure::Protocol)
+		));
+		let mut hidden = thread(20, 12);
+		hidden["flags"] = json!(1 << 17);
+		let ReadResult::ActiveThreads { threads, next, .. } =
+			parse(json!({"threads":[hidden],"has_more":true}), None).unwrap()
+		else {
+			panic!("hidden-only page")
+		};
+		assert!(threads.is_empty());
+		assert_eq!(next, Some(Id(20)));
+		let full: Vec<_> = (10..35).rev().map(|id| thread(id, 11)).collect();
+		let ReadResult::ActiveThreads { threads, next, .. } =
+			parse(json!({"threads":full,"has_more":true}), None).unwrap()
+		else {
+			panic!("full thread page")
+		};
+		assert_eq!(threads.len(), sync::THREAD_PAGE_SIZE);
+		assert_eq!(next, Some(Id(10)));
 	}
 	fn message(id: Id, channel: Id) -> Value {
 		json!({"id":id.to_string(),"channel_id":channel.to_string(),"content":"Cached body","author":{"id":"9","username":"author"}})

@@ -463,6 +463,7 @@ mod tests {
 				last_message: None,
 			}],
 			members: Some(MemberList {
+				missing_identity: vec![],
 				guild: Some(Id(10)),
 				channel: Id(1),
 				request: 7,

@@ -40,6 +40,7 @@ pub enum Event {
 		index: usize,
 		total: usize,
 		members: Vec<Member>,
+		nick_unknown: Vec<Id>,
 	},
 	Finished {
 		request: Request,
@@ -54,8 +55,13 @@ impl Event {
 	fn bytes(&self) -> usize {
 		size_of::<Self>()
 			+ match self {
-				Self::Chunk { members, .. } => {
+				Self::Chunk {
+					members,
+					nick_unknown,
+					..
+				} => {
 					members.capacity() * size_of::<Member>()
+						+ nick_unknown.capacity() * size_of::<Id>()
 						+ members
 							.iter()
 							.map(|m| m.bytes().saturating_sub(size_of::<Member>()))
@@ -352,9 +358,19 @@ impl Worker {
 			return true;
 		}
 		let mut members = Vec::with_capacity(chunk.members.len());
+		let mut nick_unknown = Vec::new();
 		let mut bytes = 0_usize;
 		let mut seen = std::collections::BTreeSet::new();
 		for member in chunk.members {
+			// Roles are required for a complete roster. A nickname may be omitted;
+			// retain its presence separately so it cannot clear a known nickname.
+			if !matches!(member.roles, model::Patch::Value(_)) {
+				self.fail(Failure::ProtocolAt(
+					"Member roster details incomplete; retry later",
+				));
+				return true;
+			}
+			let nick_known = !matches!(&member.nick, model::Patch::Absent);
 			let Some(member) = member.into_guild_member(active.request.guild) else {
 				self.fail(Failure::Protocol);
 				return true;
@@ -368,7 +384,15 @@ impl Worker {
 				self.fail(Failure::ResponseLimit);
 				return true;
 			}
+			if !nick_known {
+				nick_unknown.push(member.user.id);
+			}
 			members.push(member);
+		}
+		nick_unknown.sort_unstable();
+		if bytes.saturating_add(nick_unknown.capacity() * size_of::<Id>()) > CHUNK_BYTES {
+			self.fail(Failure::ResponseLimit);
+			return true;
 		}
 		if active.members.saturating_add(members.len()) > MAX_MEMBERS {
 			self.fail(Failure::ResponseLimit);
@@ -392,6 +416,7 @@ impl Worker {
 					index: chunk.chunk_index,
 					total: chunk.chunk_count,
 					members,
+					nick_unknown,
 				},
 			) {
 				self.active = None;
@@ -428,6 +453,35 @@ mod tests {
 	fn chunk(request: Request, index: usize, total: usize, count: usize) -> Vec<u8> {
 		json!({"guild_id":request.guild,"nonce":request.nonce(),"chunk_index":index,"chunk_count":total,
 			"members":(0..count).map(|i|json!({"user":{"id":(index*1000+i+1).to_string(),"username":"Synthetic"},"nick":"Current nickname","roles":[]})).collect::<Vec<_>>()}).to_string().into_bytes()
+	}
+	#[test]
+	fn roster_retains_missing_nickname_and_rejects_missing_roles() {
+		let (handle, mut worker, request) = fixture();
+		let member = json!({"user":{"id":"1","username":"Synthetic"},"nick":"Nickname"});
+		let wire = json!({"guild_id":request.guild,"nonce":request.nonce(),"chunk_index":0,"chunk_count":1,"members":[member]});
+		assert!(worker.chunk(&serde_json::to_vec(&wire).unwrap()));
+		assert!(matches!(
+			handle.try_recv(),
+			Some(Event::Failed {
+				failure: Failure::ProtocolAt("Member roster details incomplete; retry later"),
+				..
+			})
+		));
+		assert!(!worker.pending());
+		let (handle, mut worker, request) = fixture();
+		let wire = json!({"guild_id":request.guild,"nonce":request.nonce(),"chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"1","username":"Synthetic"},"roles":[]}]});
+		assert!(worker.chunk(&serde_json::to_vec(&wire).unwrap()));
+		assert!(
+			matches!(handle.try_recv(), Some(Event::Chunk { nick_unknown, .. }) if nick_unknown == vec![Id(1)])
+		);
+		assert!(matches!(handle.try_recv(), Some(Event::Finished { .. })));
+		let (handle, mut worker, request) = fixture();
+		let wire = json!({"guild_id":request.guild,"nonce":request.nonce(),"chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"1","username":"Synthetic"},"nick":null,"roles":[]}]});
+		assert!(worker.chunk(&serde_json::to_vec(&wire).unwrap()));
+		assert!(
+			matches!(handle.try_recv(), Some(Event::Chunk { nick_unknown, .. }) if nick_unknown.is_empty())
+		);
+		assert!(matches!(handle.try_recv(), Some(Event::Finished { .. })));
 	}
 	#[test]
 	fn thousand_member_chunks_stream_out_of_order_without_account_events() {

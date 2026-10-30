@@ -406,24 +406,51 @@ impl Search {
 			if chunk.chunk_index != 0 || chunk.chunk_count != 1 || chunk.members.len() > LIMIT {
 				return Err(Failure::Protocol);
 			}
-			let rows: Vec<_> = chunk
-				.members
-				.into_iter()
-				.filter_map(|member| member.into_guild_member(request.guild))
-				.collect();
+			let mut rows = Vec::with_capacity(chunk.members.len());
+			let mut missing = Vec::new();
+			for member in chunk.members {
+				let fields = model::MissingMemberFields {
+					user: member.user.id,
+					nick: matches!(member.nick, model::Patch::Absent),
+					roles: matches!(member.roles, model::Patch::Absent),
+				};
+				let Some(member) = member.into_guild_member(request.guild) else {
+					continue;
+				};
+				if fields.nick || fields.roles {
+					missing.push(fields);
+				}
+				rows.push(member);
+			}
 			if rows.iter().any(|m| !m.valid())
-				|| rows.iter().map(model::Member::bytes).sum::<usize>() > MAX_BYTES
+				|| rows.iter().map(model::Member::bytes).sum::<usize>()
+					+ missing.capacity() * size_of::<model::MissingMemberFields>()
+					> MAX_BYTES
 			{
 				return Err(Failure::Capacity);
 			}
-			Ok(rows)
+			Ok((rows, missing))
 		})();
 		if self.following == Some((request.guild, request.channel))
-			&& let Ok(rows) = &result
+			&& let Ok((rows, _)) = &result
 		{
 			self.follow_users(rows.iter().map(|member| member.user.id));
 		}
-		Some(Event::MemberSearch { request, result })
+		Some(match result {
+			Ok((rows, missing)) if !missing.is_empty() => Event::MemberSearchPartial {
+				request,
+				rows,
+				missing,
+			},
+			Ok((rows, _)) => Event::MemberSearch {
+				request,
+				result: Ok(rows),
+			},
+			Err(error) => Event::MemberSearch {
+				request,
+				result: Err(error),
+			},
+		})
 	}
 }
 
@@ -482,6 +509,156 @@ mod tests {
 			nonce,
 			slot: 0,
 		}
+	}
+	#[test]
+	fn member_queries_do_not_turn_omitted_fields_into_removals() {
+		for (member, missing_nick, missing_roles) in [
+			(
+				serde_json::json!({"user":{"id":"7","username":"account"},"roles":[]}),
+				true,
+				false,
+			),
+			(
+				serde_json::json!({"user":{"id":"7","username":"account"},"nick":"Nickname"}),
+				false,
+				true,
+			),
+			(
+				serde_json::json!({"user":{"id":"7","username":"account"},"nick":null,"roles":[]}),
+				false,
+				false,
+			),
+		] {
+			let mut search = Search::default();
+			search.update(&[Some(request(1, 1)), None]);
+			search.tick(&|_| Ok(())).unwrap().unwrap();
+			let wire = serde_json::json!({"guild_id":"1","nonce":"1","chunk_index":0,"chunk_count":1,"members":[member]});
+			match search.chunk(&serde_json::to_vec(&wire).unwrap()).unwrap() {
+				Event::MemberSearch {
+					result: Ok(rows), ..
+				} if !missing_nick && !missing_roles => {
+					assert_eq!(rows.len(), 1);
+					assert!(rows[0].nick.is_none() && rows[0].roles.is_empty());
+				}
+				Event::MemberSearchPartial { rows, missing, .. } => {
+					assert_eq!(rows.len(), 1);
+					assert_eq!(
+						missing,
+						vec![model::MissingMemberFields {
+							user: Id(7),
+							nick: missing_nick,
+							roles: missing_roles
+						}]
+					);
+				}
+				_ => panic!("member result"),
+			}
+		}
+	}
+	#[test]
+	fn mixed_wire_query_results_reach_core_with_live_updates_preserved() {
+		use client_core::{Command, Envelope, State};
+		use model::Patch;
+		let mut state = State::default();
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Ready {
+				user: model::SavedAccount {
+					id: Id(1),
+					name: "Owner".into(),
+					display: None,
+					avatar: None,
+					discriminator: 0,
+					has_token: false,
+				}
+				.user(),
+				guilds: vec![model::Guild {
+					id: Id(10),
+					name: "Server".into(),
+					icon: None,
+					emojis: None,
+					stickers: None,
+					default_message_notifications: None,
+				}],
+				channels: vec![model::Channel {
+					id: Id(101),
+					guild: Some(Id(10)),
+					parent_id: None,
+					position: 0,
+					name: "chat".into(),
+					kind: 0,
+					recipients: vec![],
+					member_list_id: None,
+					message_count: None,
+					tags: None,
+					icon: None,
+					last_message: None,
+				}],
+				permissions: model::permissions::Snapshot {
+					guilds: vec![model::permissions::Guild {
+						id: Id(10),
+						owner: Some(Id(1)),
+						roles: None,
+						member: None,
+					}],
+					channels: vec![],
+				},
+			},
+		});
+		state.select(Id(101));
+		let identity = |user, nick, roles| model::MemberIdentity {
+			guild: Id(10),
+			user: Id(user),
+			profile: None,
+			avatar: Patch::Absent,
+			nick,
+			roles,
+			departed: false,
+		};
+		for user in [7, 8, 9] {
+			state.apply(Envelope {
+				generation: state.generation,
+				event: Event::MemberIdentity(Box::new(identity(
+					user,
+					Patch::Value("Before".into()),
+					Patch::Value(vec![Id(11)]),
+				))),
+			});
+		}
+		let Some(Command::MemberSearch(request)) =
+			state.request_author_members(&[Id(7), Id(8), Id(9)])
+		else {
+			panic!("author request")
+		};
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberIdentity(Box::new(identity(
+				7,
+				Patch::Value("Live".into()),
+				Patch::Value(vec![]),
+			))),
+		});
+		let mut search = Search::default();
+		search.update(&[None, Some(request.clone())]);
+		search.tick(&|_| Ok(())).unwrap().unwrap();
+		let wire = serde_json::json!({"guild_id":"10","nonce":request.nonce.to_string(),"chunk_index":0,"chunk_count":1,"members":[
+			{"user":{"id":"7","username":"one"},"roles":["11"]},
+			{"user":{"id":"8","username":"two"},"nick":"Current"},
+			{"user":{"id":"9","username":"three"},"nick":null,"roles":[]}
+		]});
+		let event = search.chunk(&serde_json::to_vec(&wire).unwrap()).unwrap();
+		assert!(matches!(event, Event::MemberSearchPartial { .. }));
+		state.apply(Envelope {
+			generation: state.generation,
+			event,
+		});
+		let rows = &state.member_search[1].rows;
+		assert_eq!(rows.len(), 3);
+		assert_eq!(rows[0].nick.as_deref(), Some("Live"));
+		assert!(rows[0].roles.is_empty());
+		assert_eq!(rows[1].nick.as_deref(), Some("Current"));
+		assert_eq!(rows[1].roles, vec![Id(11)]);
+		assert!(rows[2].nick.is_none() && rows[2].roles.is_empty());
 	}
 	#[test]
 	fn cached_member_watches_subscribe_without_a_query_and_cancel_old_scope() {

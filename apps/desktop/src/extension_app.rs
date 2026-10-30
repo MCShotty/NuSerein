@@ -1999,6 +1999,7 @@ mod tests {
 			activities: Vec::new(),
 		};
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
 			request: state.member_request,

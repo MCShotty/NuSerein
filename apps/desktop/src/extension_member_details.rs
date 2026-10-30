@@ -156,6 +156,7 @@ mod tests {
 		let guild = state.channel(channel).unwrap().guild.unwrap();
 		let user = state.user.clone().unwrap();
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild: Some(guild),
 			channel,
 			request: state.member_request,

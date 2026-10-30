@@ -5167,6 +5167,7 @@ mod tests {
 		let mut state = test_support::demo_state();
 		let user = test_support::message(1, Id(22)).author;
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
 			request: 1,
@@ -5572,6 +5573,7 @@ mod tests {
 				};
 				state.selected = Some(Id(20));
 				state.members = Some(model::MemberList {
+					missing_identity: vec![],
 					guild: Some(Id(10)),
 					channel: Id(20),
 					request: 1,

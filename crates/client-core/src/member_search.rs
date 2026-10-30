@@ -45,6 +45,8 @@ pub struct View {
 	pub finished: bool,
 	pub error: Option<&'static str>,
 	pub cooldown_until: Option<std::time::Instant>,
+	/// Avoid repaint-driven retries while still allowing an incomplete batch to recover.
+	pub retry_after: Option<std::time::Instant>,
 	pub identity_revision: u64,
 }
 impl State {
@@ -208,16 +210,11 @@ impl State {
 			.iter()
 			.copied()
 			.filter(|id| id.0 != 0)
+			.filter(|id| !self.member_labels.member_fresh(guild, *id))
 			.filter(|id| {
-				self.current_display_member(channel, *id).is_none()
-					&& !self.member_labels.member_fresh(guild, *id)
-			})
-			.filter(|id| {
-				!self.member_identity(channel, *id).is_some_and(|update| {
-					update.departed
-						|| (!matches!(update.nick, model::Patch::Absent)
-							&& matches!(update.roles, model::Patch::Value(_)))
-				})
+				!self
+					.member_identity(channel, *id)
+					.is_some_and(|update| update.departed)
 			})
 			.take(LIMIT)
 			.collect();
@@ -228,7 +225,11 @@ impl State {
 			|| view.request.as_ref().is_some_and(|request| {
 				request.channel == channel
 					&& request.guild == guild
-					&& (!view.finished || users.iter().all(|user| request.users.contains(user)))
+					&& (!view.finished
+						|| (users.iter().all(|user| request.users.contains(user))
+							&& view
+								.retry_after
+								.is_some_and(|at| std::time::Instant::now() < at)))
 			}) {
 			return None;
 		}
@@ -286,6 +287,14 @@ impl State {
 		request: Request,
 		result: Result<Vec<Member>, Failure>,
 	) {
+		self.searched_members_with_missing(request, result, vec![]);
+	}
+	pub(crate) fn searched_members_with_missing(
+		&mut self,
+		request: Request,
+		result: Result<Vec<Member>, Failure>,
+		missing: Vec<model::MissingMemberFields>,
+	) {
 		if !request.valid()
 			|| self.selected != Some(request.channel)
 			|| !self.gateway_connected
@@ -295,8 +304,31 @@ impl State {
 		{
 			return;
 		}
+		let mut seen = std::collections::BTreeSet::new();
+		let invalid_missing = missing.len() > LIMIT
+			|| missing.iter().any(|fields| {
+				fields.user.0 == 0
+					|| (!fields.nick && !fields.roles)
+					|| !seen.insert(fields.user)
+					|| result
+						.as_ref()
+						.ok()
+						.is_none_or(|rows| !rows.iter().any(|member| member.user.id == fields.user))
+			});
+		let result = if invalid_missing {
+			Err(Failure::Protocol)
+		} else {
+			result
+		};
+		let retry_seconds = match &result {
+			Ok(rows) if rows.is_empty() => 300,
+			Ok(_) if !missing.is_empty() => 300,
+			_ => 30,
+		};
 		self.member_search[request.slot].finished = true;
 		self.member_search[request.slot].cooldown_until = None;
+		self.member_search[request.slot].retry_after =
+			Some(std::time::Instant::now() + std::time::Duration::from_secs(retry_seconds));
 		match result {
 			Ok(mut rows)
 				if rows.len() <= LIMIT
@@ -307,26 +339,86 @@ impl State {
 							.all(|member| request.users.contains(&member.user.id)))
 					&& rows.iter().map(Member::bytes).sum::<usize>() <= MAX_BYTES =>
 			{
-				self.member_labels.reconcile(
+				self.member_labels.reconcile_with_missing(
 					request.guild,
 					&mut rows,
 					self.member_search[request.slot].identity_revision,
+					&missing,
 				);
 				if rows.iter().map(Member::bytes).sum::<usize>() > MAX_BYTES {
 					self.member_search[request.slot].error =
 						Some("Member search exceeded its safety limit");
 					return;
 				}
-				if request.slot == 1 {
-					for member in &rows {
-						self.timeline.apply_author_membership(
-							member.user.id,
-							&member.roles,
-							member.nick.as_deref(),
-						);
+				// The sidebar takes precedence when rendering. Refresh matching stale rows
+				// too, while retaining their presence and honoring newer live updates
+				// already merged by `reconcile` above.
+				for member in &rows {
+					let fields = missing.iter().find(|fields| fields.user == member.user.id);
+					let stale = self
+						.current_display_member(request.channel, member.user.id)
+						.is_some_and(|old| {
+							old.nick != member.nick
+								|| old.roles != member.roles
+								|| old.user.name != member.user.name
+								|| old.user.username != member.user.username
+						});
+					if stale || fields.is_some() {
+						let mut roles = member.roles.clone();
+						roles.sort_unstable();
+						roles.dedup();
+						self.apply_member_identity(model::MemberIdentity {
+							guild: request.guild,
+							user: member.user.id,
+							profile: Some(member.user.clone()),
+							avatar: model::Patch::Absent,
+							nick: if fields.is_some_and(|fields| fields.nick) {
+								model::Patch::Absent
+							} else {
+								member
+									.nick
+									.clone()
+									.map_or(model::Patch::Null, model::Patch::Value)
+							},
+							roles: if fields.is_some_and(|fields| fields.roles) {
+								model::Patch::Absent
+							} else {
+								model::Patch::Value(roles)
+							},
+							departed: false,
+						});
 					}
 				}
-				self.member_labels.remember(request.guild, &rows);
+				if request.slot == 1 {
+					for member in &rows {
+						if !missing.iter().any(|fields| fields.user == member.user.id) {
+							self.timeline.apply_author_membership(
+								member.user.id,
+								&member.roles,
+								member.nick.as_deref(),
+							);
+						}
+					}
+				}
+				if missing.is_empty() {
+					self.member_labels.remember(request.guild, &rows);
+				} else {
+					let complete: Vec<_> = rows
+						.iter()
+						.filter(|member| {
+							!missing.iter().any(|fields| fields.user == member.user.id)
+						})
+						.cloned()
+						.collect();
+					let partial: Vec<_> = rows
+						.iter()
+						.filter(|member| missing.iter().any(|fields| fields.user == member.user.id))
+						.cloned()
+						.collect();
+					self.member_labels.remember(request.guild, &complete);
+					self.member_labels
+						.remember_with_source(request.guild, &partial, false);
+				}
 				let view = &mut self.member_search[request.slot];
 				for member in std::mem::replace(&mut view.rows, rows) {
 					view.retained.retain(|old| old.user.id != member.user.id);

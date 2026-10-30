@@ -2016,6 +2016,7 @@ mod tests {
 		let envelope = client_core::Envelope {
 			generation: state.generation,
 			event: client_core::Event::Members(model::MemberList {
+				missing_identity: vec![],
 				guild: Some(model::Id(10)),
 				channel: state.selected.unwrap(),
 				request: state.member_request,

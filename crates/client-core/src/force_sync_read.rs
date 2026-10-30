@@ -3,6 +3,7 @@ use crate::auth::Failure;
 use model::{Channel, CustomEmoji, GuildPatch, Id, Member, Message, Patch, Sticker};
 
 pub const PAGE_MESSAGES: usize = 50;
+pub const THREAD_PAGE_SIZE: usize = 25;
 pub const MAX_READ_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MEMBER_IDS: usize = 100;
 pub const HISTORY_DAYS: i64 = 21;
@@ -42,6 +43,8 @@ pub enum Read {
 	},
 	ActiveThreads {
 		guild: Id,
+		parent: Id,
+		before: Option<Id>,
 	},
 	Members {
 		guild: Id,
@@ -57,7 +60,7 @@ impl Read {
 			| Self::Stickers { guild }
 			| Self::Sounds { guild }
 			| Self::Archives { guild, .. }
-			| Self::ActiveThreads { guild }
+			| Self::ActiveThreads { guild, .. }
 			| Self::Members { guild, .. } => Some(*guild),
 			Self::History { .. } => None,
 		}
@@ -82,6 +85,9 @@ impl Read {
 					&& last_before(*end_ms).is_some()
 			}
 			Self::Archives { parent, .. } => parent.0 != 0,
+			Self::ActiveThreads { parent, before, .. } => {
+				parent.0 != 0 && before.is_none_or(|id| id.0 != 0)
+			}
 			Self::Members { users, .. } => {
 				!users.is_empty()
 					&& users.len() <= MAX_MEMBER_IDS
@@ -123,6 +129,8 @@ pub struct GuildRead {
 	pub roles: model::server_roles::Catalog,
 	/// A failed own-member read leaves previous membership unknown; it must never clear roles.
 	pub self_member: Result<Member, Failure>,
+	/// A missing nickname field is not an explicit removal.
+	pub self_member_nick_known: bool,
 	pub banner: Patch<String>,
 	pub member_count: Option<u64>,
 }
@@ -158,12 +166,21 @@ pub enum ReadResult {
 	Archives(model::archives::Page),
 	ActiveThreads {
 		guild: Id,
+		parent: Id,
 		threads: Vec<Channel>,
+		next: Option<Id>,
+	},
+	ActiveThreadsIndexing {
+		guild: Id,
+		parent: Id,
+		retry_after: std::time::Duration,
 	},
 	Members {
 		guild: Id,
 		items: Vec<Member>,
 		missing: Vec<Id>,
+		/// Returned identities for which Discord omitted the nickname field.
+		nick_unknown: Vec<Id>,
 	},
 }
 impl ReadResult {
@@ -213,10 +230,16 @@ impl ReadResult {
 					threads.iter().map(Channel::bytes).sum::<usize>()
 						+ threads.capacity().saturating_sub(threads.len()) * size_of::<Channel>()
 				}
-				Self::Members { items, missing, .. } => {
+				Self::ActiveThreadsIndexing { .. } => 0,
+				Self::Members {
+					items,
+					missing,
+					nick_unknown,
+					..
+				} => {
 					items.iter().map(Member::bytes).sum::<usize>()
 						+ items.capacity().saturating_sub(items.len()) * size_of::<Member>()
-						+ missing.capacity() * size_of::<Id>()
+						+ (missing.capacity() + nick_unknown.capacity()) * size_of::<Id>()
 				}
 			}
 	}
@@ -251,5 +274,18 @@ mod tests {
 			}
 			.valid()
 		);
+	}
+	#[test]
+	fn active_thread_reads_require_a_valid_scope_and_cursor() {
+		let read = |guild: u64, parent: u64, before: Option<u64>| Read::ActiveThreads {
+			guild: Id(guild),
+			parent: Id(parent),
+			before: before.map(Id),
+		};
+		assert!(read(1, 2, None).valid());
+		assert!(read(1, 2, Some(3)).valid());
+		assert!(!read(0, 2, None).valid());
+		assert!(!read(1, 0, None).valid());
+		assert!(!read(1, 2, Some(0)).valid());
 	}
 }

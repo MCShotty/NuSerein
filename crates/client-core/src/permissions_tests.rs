@@ -1880,6 +1880,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 		apply(&mut state, Event::ChannelCreated(channel(20, 0, None)));
 		assert_eq!(state.members.as_ref().unwrap().request, first);
 		let mut loaded = model::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
 			request: first,
@@ -2022,6 +2023,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 		assert_eq!(state.message_author_color(&chat), None);
 		chat.author.webhook = false;
 		state.members = Some(crate::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
 			request: 1,
@@ -2042,6 +2044,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 			"current empty roles remove historical color; omitted wire fields are preserved before projection"
 		);
 		state.members = Some(crate::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
 			request: 1,
@@ -2388,6 +2391,401 @@ fn resolved_member_cache_survives_channel_switch_and_reuses_names() {
 	);
 	let watches = state.watched_member_users().unwrap();
 	assert!(watches.2.contains(&Id(7)));
+}
+
+#[test]
+fn sidebar_only_member_is_refreshed_and_success_updates_every_consumer() {
+	let mut state = state();
+	let mut colored = state.guild_roles(Id(10)).unwrap()[1].clone();
+	colored.color = 0x112233;
+	permission(
+		&mut state,
+		PermissionEvent::Role {
+			guild: Id(10),
+			role: colored,
+		},
+	);
+	let mut chat = message(101, Id(20));
+	chat.author.id = Id(7);
+	apply(&mut state, Event::Message(chat.clone()));
+	state.request_members().unwrap();
+	let mut list = state.members.clone().unwrap();
+	let mut incomplete = cached_person(7, "Unused");
+	incomplete.nick = None;
+	incomplete.roles.clear();
+	list.slots = vec![Some(model::MemberSlot::Person(incomplete))];
+	list.missing_identity = vec![model::MissingMemberFields {
+		user: Id(7),
+		nick: true,
+		roles: true,
+	}];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list));
+	let Some(Command::MemberSearch(request)) = state.request_author_members(&[Id(7)]) else {
+		panic!("a sidebar-only row must not suppress its first identity lookup");
+	};
+	let current_generation = state.generation;
+	state.apply(Envelope {
+		generation: current_generation.wrapping_add(1),
+		event: Event::MemberSearch {
+			request: request.clone(),
+			result: Ok(vec![cached_person(7, "Stale generation")]),
+		},
+	});
+	assert!(!state.member_search[1].finished);
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request,
+			result: Ok(vec![cached_person(7, "Current nickname")]),
+		},
+	);
+	let Some(model::MemberSlot::Person(sidebar)) = state.member_slot(0) else {
+		panic!("sidebar row retained");
+	};
+	assert_eq!(sidebar.nick.as_deref(), Some("Current nickname"));
+	assert_eq!(sidebar.roles, vec![Id(11)]);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Current nickname"))
+	);
+	assert_eq!(state.message_author_name(&chat), "Current nickname");
+	assert_eq!(state.message_author_color(&chat), Some(0x112233));
+	assert!(state.request_author_members(&[Id(7)]).is_none());
+}
+
+#[test]
+fn partial_member_snapshot_across_subscriptions_preserves_labels_but_explicit_clear_wins() {
+	let mut state = state();
+	let mut colored = state.guild_roles(Id(10)).unwrap()[1].clone();
+	colored.color = 0x112233;
+	permission(
+		&mut state,
+		PermissionEvent::Role {
+			guild: Id(10),
+			role: colored,
+		},
+	);
+	state.request_members().unwrap();
+	let mut first = state.members.clone().unwrap();
+	first.slots = vec![Some(model::MemberSlot::Person(cached_person(
+		7,
+		"Earlier nickname",
+	)))];
+	first.freshness = Freshness::Fresh;
+	first.total = 1;
+	apply(&mut state, Event::Members(first));
+	state.close_members();
+	permission(
+		&mut state,
+		PermissionEvent::Channel {
+			channel: Id(21),
+			guild: Some(Id(10)),
+			overwrites: Patch::Value(vec![]),
+		},
+	);
+	let Some(Command::History { request, .. }) = state.select(Id(21)) else {
+		panic!("next channel")
+	};
+	history(&mut state, Id(21), request, 101);
+	let mut chat = message(102, Id(21));
+	chat.author.id = Id(7);
+	chat.author_nick = Some("Earlier nickname".into());
+	chat.author_roles = vec![Id(11)];
+	apply(&mut state, Event::Message(chat.clone()));
+	state.request_members().unwrap();
+	let mut partial = state.members.clone().unwrap();
+	let mut row = cached_person(7, "unused");
+	row.nick = None;
+	row.roles.clear();
+	partial.slots = vec![Some(model::MemberSlot::Person(row))];
+	partial.freshness = Freshness::Fresh;
+	partial.total = 1;
+	partial.missing_identity = vec![model::MissingMemberFields {
+		user: Id(7),
+		nick: true,
+		roles: true,
+	}];
+	apply(&mut state, Event::Members(partial.clone()));
+	assert_eq!(
+		state.member_nickname(Id(21), Id(7)),
+		Some(Some("Earlier nickname"))
+	);
+	assert_eq!(state.message_author_name(&chat), "Earlier nickname");
+	assert_eq!(state.message_author_color(&chat), Some(0x112233));
+	let Some(model::MemberSlot::Person(sidebar)) = state.member_slot(0) else {
+		panic!("member")
+	};
+	assert_eq!(sidebar.nick.as_deref(), Some("Earlier nickname"));
+	assert_eq!(sidebar.roles, vec![Id(11)]);
+	let mut renamed = partial.clone();
+	renamed.missing_identity[0].nick = false;
+	let Some(model::MemberSlot::Person(member)) = renamed.slots[0].as_mut() else {
+		panic!("member")
+	};
+	member.nick = Some("New nickname".into());
+	apply(&mut state, Event::Members(renamed));
+	assert_eq!(
+		state.member_nickname(Id(21), Id(7)),
+		Some(Some("New nickname"))
+	);
+	assert_eq!(state.message_author_color(&chat), Some(0x112233));
+	partial.missing_identity.clear();
+	apply(&mut state, Event::Members(partial));
+	assert_eq!(state.member_nickname(Id(21), Id(7)), Some(None));
+	assert_eq!(state.message_author_color(&chat), None);
+	let Some(model::MemberSlot::Person(sidebar)) = state.member_slot(0) else {
+		panic!("member")
+	};
+	assert!(sidebar.nick.is_none() && sidebar.roles.is_empty());
+}
+
+#[test]
+fn an_unknown_sidebar_row_does_not_mask_the_message_identity() {
+	let mut state = state();
+	let mut colored = state.guild_roles(Id(10)).unwrap()[1].clone();
+	colored.color = 0x112233;
+	permission(
+		&mut state,
+		PermissionEvent::Role {
+			guild: Id(10),
+			role: colored,
+		},
+	);
+	state.request_members().unwrap();
+	let mut list = state.members.clone().unwrap();
+	let mut incomplete = cached_person(7, "unused");
+	incomplete.nick = None;
+	incomplete.roles.clear();
+	list.slots = vec![Some(model::MemberSlot::Person(incomplete))];
+	list.missing_identity = vec![model::MissingMemberFields {
+		user: Id(7),
+		nick: true,
+		roles: true,
+	}];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list.clone()));
+	let mut chat = message(102, Id(20));
+	chat.author.id = Id(7);
+	chat.author_nick = Some("Message nickname".into());
+	chat.author_roles = vec![Id(11)];
+	apply(&mut state, Event::Message(chat.clone()));
+	assert_eq!(state.message_author_name(&chat), "Message nickname");
+	assert_eq!(state.message_author_color(&chat), Some(0x112233));
+	apply(&mut state, Event::Members(list));
+	let Some(model::MemberSlot::Person(sidebar)) = state.member_slot(0) else {
+		panic!("member")
+	};
+	assert_eq!(sidebar.nick.as_deref(), Some("Message nickname"));
+	assert_eq!(sidebar.roles, vec![Id(11)]);
+}
+
+#[test]
+fn incomplete_author_lookup_retries_after_a_bounded_delay() {
+	let mut state = state();
+	let Some(Command::MemberSearch(request)) = state.request_author_members(&[Id(7)]) else {
+		panic!("initial lookup");
+	};
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request,
+			result: Ok(vec![]),
+		},
+	);
+	assert!(state.request_author_members(&[Id(7)]).is_none());
+	state.member_search[1].retry_after = Some(std::time::Instant::now());
+	assert!(matches!(
+		state.request_author_members(&[Id(7)]),
+		Some(Command::MemberSearch(_))
+	));
+}
+
+#[test]
+fn mixed_partial_member_search_keeps_absent_fields_and_newer_live_updates() {
+	let mut state = state();
+	let identity = |user, nick: Patch<String>, roles: Patch<Vec<Id>>| model::MemberIdentity {
+		guild: Id(10),
+		user: Id(user),
+		profile: None,
+		avatar: Patch::Absent,
+		nick,
+		roles,
+		departed: false,
+	};
+	for user in [7, 8, 9] {
+		apply(
+			&mut state,
+			Event::MemberIdentity(Box::new(identity(
+				user,
+				Patch::Value("Old nickname".into()),
+				Patch::Value(vec![Id(11)]),
+			))),
+		);
+	}
+	let Some(Command::MemberSearch(request)) = state.request_author_members(&[Id(7), Id(8), Id(9)])
+	else {
+		panic!("lookup")
+	};
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(identity(
+			7,
+			Patch::Value("New live nickname".into()),
+			Patch::Value(vec![]),
+		))),
+	);
+	let mut first = cached_person(7, "ignored");
+	first.nick = None;
+	let second = cached_person(8, "Current partial nickname");
+	let mut third = cached_person(9, "ignored");
+	third.nick = None;
+	third.roles.clear();
+	let rows = vec![first, second, third];
+	let missing = vec![
+		model::MissingMemberFields {
+			user: Id(7),
+			nick: true,
+			roles: false,
+		},
+		model::MissingMemberFields {
+			user: Id(8),
+			nick: false,
+			roles: true,
+		},
+	];
+	state.apply(Envelope {
+		generation: state.generation.wrapping_add(1),
+		event: Event::MemberSearchPartial {
+			request: request.clone(),
+			rows: rows.clone(),
+			missing: missing.clone(),
+		},
+	});
+	assert!(!state.member_search[1].finished);
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows,
+			missing,
+		},
+	);
+	let view = &state.member_search[1];
+	assert_eq!(view.rows.len(), 3);
+	assert_eq!(view.rows[0].nick.as_deref(), Some("New live nickname"));
+	assert!(view.rows[0].roles.is_empty());
+	assert_eq!(
+		view.rows[1].nick.as_deref(),
+		Some("Current partial nickname")
+	);
+	assert_eq!(view.rows[1].roles, vec![Id(11)]);
+	assert!(view.rows[2].nick.is_none() && view.rows[2].roles.is_empty());
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("New live nickname"))
+	);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(8)),
+		Some(Some("Current partial nickname"))
+	);
+	assert_eq!(state.member_nickname(Id(20), Id(9)), Some(None));
+	assert!(
+		state
+			.request_author_members(&[Id(7), Id(8), Id(9)])
+			.is_none()
+	);
+	state.member_search[1].retry_after = Some(std::time::Instant::now());
+	let Some(Command::MemberSearch(retry)) = state.request_author_members(&[Id(7), Id(8), Id(9)])
+	else {
+		panic!("partial retry")
+	};
+	assert_eq!(retry.users, vec![Id(7), Id(8)]);
+}
+
+#[test]
+fn malformed_partial_member_search_is_rejected_without_mutating_identity() {
+	for missing in [
+		vec![model::MissingMemberFields {
+			user: Id(99),
+			nick: true,
+			roles: false,
+		}],
+		vec![
+			model::MissingMemberFields {
+				user: Id(7),
+				nick: true,
+				roles: false
+			};
+			2
+		],
+		vec![model::MissingMemberFields {
+			user: Id(7),
+			nick: false,
+			roles: false,
+		}],
+	] {
+		let mut state = state();
+		let Some(Command::MemberSearch(request)) = state.request_author_members(&[Id(7)]) else {
+			panic!("lookup")
+		};
+		apply(
+			&mut state,
+			Event::MemberSearchPartial {
+				request,
+				rows: vec![cached_person(7, "Untrusted")],
+				missing,
+			},
+		);
+		assert!(state.member_search[1].rows.is_empty());
+		assert!(state.member_search[1].error.is_some());
+		assert!(state.member_identity(Id(20), Id(7)).is_none());
+	}
+}
+
+#[test]
+fn partial_query_keeps_a_verified_nickname_when_other_fields_change() {
+	let mut state = state();
+	let Some(Command::MemberSearch(first)) = state.search_members(Id(20), "Known", 0) else {
+		panic!("initial search")
+	};
+	apply(
+		&mut state,
+		Event::MemberSearch {
+			request: first,
+			result: Ok(vec![cached_person(7, "Known nickname")]),
+		},
+	);
+	let Some(Command::MemberSearch(second)) = state.search_members(Id(20), "Updated", 0) else {
+		panic!("partial search")
+	};
+	let mut partial = cached_person(7, "unused");
+	partial.nick = None;
+	partial.roles.clear();
+	partial.user.name = "Updated".into();
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request: second,
+			rows: vec![partial],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				nick: true,
+				roles: false,
+			}],
+		},
+	);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Known nickname"))
+	);
+	assert!(state.member_search[0].rows[0].roles.is_empty());
+	assert_eq!(
+		state.cached_member_displays(Id(10))[0].nick.as_deref(),
+		Some("Known nickname")
+	);
 }
 
 #[test]

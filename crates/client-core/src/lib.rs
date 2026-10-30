@@ -2378,6 +2378,7 @@ mod tests {
 			})
 			.unwrap();
 		let kept = MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(1),
 			request: 7,
@@ -2400,6 +2401,7 @@ mod tests {
 		state.members = Some(kept.clone());
 		state.member_chunks.merge(&kept);
 		let holes = MemberList {
+			missing_identity: vec![],
 			start: 100,
 			slots: vec![None; 100],
 			ranges: vec![[100, 199]],
@@ -2425,6 +2427,7 @@ mod tests {
 		apply(
 			&mut state,
 			Event::Members(MemberList {
+				missing_identity: vec![],
 				start: 100,
 				slots: later_slots,
 				ranges: vec![[100, 199]],
@@ -2440,6 +2443,7 @@ mod tests {
 		apply(
 			&mut state,
 			Event::Members(MemberList {
+				missing_identity: vec![],
 				start: 0,
 				slots: vec![None; 100],
 				ranges: vec![[0, 99]],

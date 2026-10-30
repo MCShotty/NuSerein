@@ -14,6 +14,7 @@ const MAX_CHECKPOINT: usize = 1024 * 1024;
 const LAST_STEP: u8 = 11;
 const MAX_STALE_RETRIES: u8 = 3;
 const MAX_READ_RETRIES: u8 = 2;
+const MAX_ACTIVE_PAGES: usize = 400;
 static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn next_job_id(now: u64) -> Option<u64> {
 	use std::sync::atomic::Ordering::Relaxed;
@@ -21,6 +22,15 @@ fn next_job_id(now: u64) -> Option<u64> {
 		.fetch_update(Relaxed, Relaxed, |old| old.max(now).checked_add(1))
 		.ok()?;
 	previous.max(now).checked_add(1)
+}
+fn combine_outcomes(existing: u8, incoming: u8) -> u8 {
+	match (existing, incoming) {
+		(0, value) | (value, 0) => value,
+		(1, 1) => 1,
+		(3, 3) => 3,
+		(3 | 4, 3 | 4) => 4,
+		_ => 2,
+	}
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -67,6 +77,12 @@ struct Job {
 	archive_kind: u8,
 	archive_time: Option<i128>,
 	archive_id: Option<Id>,
+	#[serde(default)]
+	active_index: usize,
+	#[serde(default)]
+	active_before: Option<Id>,
+	#[serde(default)]
+	active_pages: usize,
 	members: Vec<Id>,
 	member_index: usize,
 	before: Option<Id>,
@@ -111,7 +127,7 @@ impl Job {
 			Vec::new()
 		};
 		let mut job = Self {
-			version: 1,
+			version: 2,
 			id: next_job_id(now as u64)?,
 			account,
 			generation: state.generation,
@@ -131,6 +147,9 @@ impl Job {
 			archive_kind: 0,
 			archive_time: None,
 			archive_id: None,
+			active_index: 0,
+			active_before: None,
+			active_pages: 0,
 			members: Vec::new(),
 			member_index: 0,
 			before: None,
@@ -176,7 +195,14 @@ impl Job {
 			Outcome::Failed => 4,
 		};
 		let slot = &mut self.outcomes[Self::stage_index(stage)];
-		*slot = (*slot).max(value);
+		*slot = combine_outcomes(*slot, value);
+	}
+	fn migrate_checkpoint(&mut self) {
+		if self.version == 1 {
+			// The older format has no per-parent thread cursor. Revalidation will
+			// combine its outcome with current results before resuming history.
+			self.version = 2;
+		}
 	}
 
 	fn record_failure(&mut self, stage: Stage, failure: Failure) {
@@ -209,7 +235,7 @@ impl Job {
 			ids.iter().all(|id| id.0 != 0)
 				&& ids.iter().collect::<std::collections::BTreeSet<_>>().len() == ids.len()
 		};
-		self.version == 1
+		self.version == 2
 			&& self.account.0 != 0
 			&& self.id != 0
 			&& self.guilds.len() <= 4096
@@ -220,6 +246,9 @@ impl Job {
 			&& self.channel_index <= self.targets.len()
 			&& self.member_index <= self.members.len()
 			&& self.archive_index <= self.targets.len()
+			&& self.active_index <= self.targets.len()
+			&& self.active_pages <= MAX_ACTIVE_PAGES
+			&& self.active_before.is_none_or(|id| id.0 != 0)
 			&& self.step <= LAST_STEP
 			&& self.status <= 4
 			&& self.archive_kind <= 1
@@ -258,11 +287,17 @@ impl Job {
 		match read {
 			Read::History { .. } => self.next_channel(),
 			Read::Archives { .. } => self.advance_archive(),
+			Read::ActiveThreads { .. } => self.advance_active(),
 			Read::Members { .. } => {
 				self.member_index = (self.member_index + 100).min(self.members.len())
 			}
 			_ => self.advance(),
 		}
+	}
+	fn advance_active(&mut self) {
+		self.active_index = self.active_index.saturating_add(1);
+		self.active_before = None;
+		self.active_pages = 0;
 	}
 	fn advance_archive(&mut self) {
 		self.archive_time = None;
@@ -274,22 +309,84 @@ impl Job {
 			self.archive_index += 1;
 		}
 	}
+	fn next_active_read(&mut self, state: &client_core::State, guild: Id) -> Option<Read> {
+		while let Some(target) = self.targets.get(self.active_index) {
+			let (parent, kind) = (target.id, target.kind);
+			if matches!(kind, 0 | 5 | 15 | 16) {
+				if state
+					.channel(parent)
+					.is_some_and(|channel| channel.guild == Some(guild))
+					&& state.can_archive(parent, model::archives::Kind::Public)
+				{
+					return Some(Read::ActiveThreads {
+						guild,
+						parent,
+						before: self.active_before,
+					});
+				}
+				self.record_failure(Stage::Channels, Failure::Forbidden);
+			}
+			self.advance_active();
+		}
+		None
+	}
+	fn next_archive_read(&mut self, state: &client_core::State, guild: Id) -> Option<Read> {
+		while let Some(target) = self.targets.get(self.archive_index) {
+			let (parent, channel_kind) = (target.id, target.kind);
+			if !matches!(channel_kind, 0 | 5 | 15 | 16) {
+				self.archive_kind = 0;
+				self.archive_index += 1;
+				continue;
+			}
+			let kind = if self.archive_kind == 0 {
+				model::archives::Kind::Public
+			} else {
+				model::archives::Kind::JoinedPrivate
+			};
+			if kind == model::archives::Kind::JoinedPrivate && channel_kind != 0 {
+				self.advance_archive();
+				continue;
+			}
+			if state
+				.channel(parent)
+				.is_some_and(|channel| channel.guild == Some(guild))
+				&& state.can_archive(parent, kind)
+			{
+				return Some(Read::Archives {
+					guild,
+					parent,
+					kind,
+					before: if self.archive_kind == 0 {
+						self.archive_time.map(model::archives::Cursor::Time)
+					} else {
+						self.archive_id.map(model::archives::Cursor::Id)
+					},
+				});
+			}
+			self.record_failure(Stage::Channels, Failure::Forbidden);
+			self.advance_archive();
+		}
+		None
+	}
 
-	fn add_targets(&mut self, rows: impl IntoIterator<Item = Target>) {
+	fn add_targets(&mut self, rows: impl IntoIterator<Item = Target>) -> bool {
+		let mut seen: std::collections::BTreeSet<_> =
+			self.targets.iter().map(|target| target.id).collect();
 		for row in rows {
-			if self.targets.iter().any(|t| t.id == row.id) {
+			if !seen.insert(row.id) {
 				continue;
 			}
 			if self.targets.len() == MAX_TARGETS {
 				self.record(Stage::History, Outcome::Partial);
-				break;
+				return false;
 			}
 			self.targets.push(row);
 		}
+		true
 	}
 	fn discover(&mut self, state: &client_core::State) {
 		let guild = self.guild();
-		self.add_targets(
+		if !self.add_targets(
 			state
 				.channels
 				.iter()
@@ -299,11 +396,14 @@ impl Job {
 					kind: c.kind,
 					parent: c.parent_id,
 				}),
-		);
+		) {
+			self.record_failure(Stage::Channels, Failure::Capacity);
+		}
 	}
 	fn add_members(&mut self, rows: impl IntoIterator<Item = Id>) {
+		let mut seen: std::collections::BTreeSet<_> = self.members.iter().copied().collect();
 		for id in rows {
-			if !self.members.contains(&id) {
+			if id.0 != 0 && seen.insert(id) {
 				if self.members.len() == MAX_TARGETS {
 					self.record(Stage::Members, Outcome::Partial);
 					break;
@@ -311,6 +411,9 @@ impl Job {
 				self.members.push(id);
 			}
 		}
+	}
+	fn add_known_members(&mut self, state: &client_core::State, guild: Id) {
+		self.add_members(state.force_sync_known_member_ids(guild));
 	}
 	fn begin_dms(&mut self) {
 		self.targets = self
@@ -337,6 +440,9 @@ impl Job {
 		self.archive_kind = 0;
 		self.archive_time = None;
 		self.archive_id = None;
+		self.active_index = 0;
+		self.active_before = None;
+		self.active_pages = 0;
 		self.before = None;
 		self.roster_started = false;
 		self.roster_complete = false;
@@ -441,6 +547,12 @@ struct PageCommit {
 	next: Option<Id>,
 	done: bool,
 }
+struct RosterChunk {
+	guild: Id,
+	members: Vec<model::Member>,
+	nick_unknown: Vec<Id>,
+	index: usize,
+}
 
 #[derive(Default)]
 pub(super) struct Sync {
@@ -465,7 +577,7 @@ pub(super) struct Sync {
 	restore: Option<local_store::SyncCheckpoint>,
 	resume: Option<Box<Job>>,
 	needs_revalidate: bool,
-	roster_chunk: Option<(Id, Vec<model::Member>, usize)>,
+	roster_chunk: Option<RosterChunk>,
 	roster_changed: std::collections::BTreeSet<Id>,
 	roster_write: Option<(u64, Id)>,
 	roster_finished: bool,
@@ -509,6 +621,14 @@ impl Sync {
 			1
 		};
 		self.next_read = Some(now + Duration::from_secs(base * u64::from(self.read_retries)));
+		true
+	}
+	fn defer_indexing(&mut self, delay: Duration, now: Instant) -> bool {
+		if delay > Duration::from_secs(30) || self.read_retries >= MAX_READ_RETRIES {
+			return false;
+		}
+		self.read_retries += 1;
+		self.next_read = Some(now + delay.max(Duration::from_millis(50)));
 		true
 	}
 	fn should_measure_usage(&self, visible: bool) -> bool {
@@ -570,8 +690,10 @@ impl Desktop {
 			&& self.force_sync.job.is_none()
 			&& checkpoint.payload.len() <= MAX_CHECKPOINT
 			&& let Ok(mut job) = serde_json::from_slice::<Job>(&checkpoint.payload)
-			&& job.valid()
-			&& job.account == account
+			&& {
+				job.migrate_checkpoint();
+				job.valid()
+			} && job.account == account
 			&& checkpoint.job == job.id
 			&& checkpoint.scope == job.scope
 			&& checkpoint.started_ms == job.end_ms
@@ -737,6 +859,9 @@ impl Desktop {
 								job.step = 0;
 								job.targets.clear();
 								job.channel_index = 0;
+								job.active_index = 0;
+								job.active_before = None;
+								job.active_pages = 0;
 							} else {
 								self.restore_force_sync_continuation(&mut job);
 							}
@@ -780,6 +905,7 @@ impl Desktop {
 			&& self.state.guilds.iter().all(|g| g.id != guild)
 		{
 			job.record(job.stage(), Outcome::Unavailable);
+			self.force_sync.resume = None;
 			job.next_guild();
 			self.force_sync.dirty = true;
 			return;
@@ -794,7 +920,24 @@ impl Desktop {
 				guild,
 				user: job.account,
 			}),
-			2 => guild.map(|guild| Read::ActiveThreads { guild }),
+			2 => {
+				if job.active_index == 0 && job.targets.is_empty() {
+					// A failed or repeatedly stale channel refresh must not discard the
+					// currently authorized Gateway navigation snapshot.
+					job.discover(&self.state);
+				}
+				let read = guild.and_then(|guild| job.next_active_read(&self.state, guild));
+				if read.is_none() {
+					job.active_index = 0;
+					job.active_before = None;
+					job.active_pages = 0;
+					job.advance();
+					self.restore_force_sync_continuation(job);
+					self.force_sync.dirty = true;
+					return;
+				}
+				read
+			}
 			3 => guild.map(|guild| Read::Emojis { guild }),
 			4 => guild.map(|guild| Read::Stickers { guild }),
 			5 => guild.map(|guild| Read::Sounds { guild }),
@@ -827,31 +970,13 @@ impl Desktop {
 				return;
 			}
 			8 => {
-				while job.archive_index < job.targets.len()
-					&& !matches!(job.targets[job.archive_index].kind, 0 | 5 | 15 | 16)
-				{
-					job.archive_index += 1;
-				}
-				if let Some(target) = job.targets.get(job.archive_index) {
-					guild.map(|guild| Read::Archives {
-						guild,
-						parent: target.id,
-						kind: if job.archive_kind == 0 {
-							model::archives::Kind::Public
-						} else {
-							model::archives::Kind::JoinedPrivate
-						},
-						before: if job.archive_kind == 0 {
-							job.archive_time.map(model::archives::Cursor::Time)
-						} else {
-							job.archive_id.map(model::archives::Cursor::Id)
-						},
-					})
-				} else {
+				let read = guild.and_then(|guild| job.next_archive_read(&self.state, guild));
+				if read.is_none() {
 					job.advance();
 					self.force_sync.dirty = true;
 					return;
 				}
+				read
 			}
 			9 => {
 				job.skip_unreadable_targets(&self.state);
@@ -953,6 +1078,22 @@ impl Desktop {
 		self.force_sync.dirty = true;
 		let stage = job.stage();
 		let result = match result {
+			Ok(ReadResult::ActiveThreadsIndexing {
+				guild,
+				parent,
+				retry_after,
+			}) => {
+				if !active_read_is_current(job, &self.state, &read, guild, parent) {
+					job.record_failure(Stage::Channels, Failure::Protocol);
+					job.skip_read(&read);
+				} else if !self.force_sync.defer_indexing(retry_after, Instant::now()) {
+					job.record_failure(Stage::Channels, Failure::RateLimited);
+					job.advance_active();
+					self.force_sync.retry_read = None;
+					self.force_sync.next_read = None;
+				}
+				return;
+			}
 			Ok(result) => {
 				self.force_sync.read_retries = 0;
 				self.force_sync.next_read = None;
@@ -979,6 +1120,12 @@ impl Desktop {
 				if self.force_sync.defer_read(failure, Instant::now()) {
 					return;
 				}
+				if matches!(read, Read::Channels { .. }) {
+					job.discover(&self.state);
+					if !job.targets.is_empty() {
+						job.record(stage, Outcome::Updated);
+					}
+				}
 				job.record_failure(stage, failure);
 				job.skip_read(&read);
 				self.force_sync.revision = None;
@@ -994,6 +1141,60 @@ impl Desktop {
 			return;
 		}
 		match result {
+			ReadResult::ActiveThreads {
+				guild,
+				parent,
+				threads,
+				next,
+			} => {
+				if !active_read_is_current(job, &self.state, &read, guild, parent)
+					|| next.is_some_and(|id| {
+						id.0 == 0 || job.active_before.is_some_and(|before| id >= before)
+					}) {
+					job.record_failure(Stage::Channels, Failure::Protocol);
+					job.skip_read(&read);
+					return;
+				}
+				let targets: Vec<_> = threads
+					.iter()
+					.map(|thread| Target {
+						id: thread.id,
+						kind: thread.kind,
+						parent: thread.parent_id,
+					})
+					.collect();
+				if !self
+					.state
+					.apply_force_sync_result(ReadResult::ActiveThreads {
+						guild,
+						parent,
+						threads,
+						next,
+					}) {
+					job.record_failure(Stage::Channels, Failure::Protocol);
+					job.advance_active();
+					return;
+				}
+				job.record(Stage::Channels, Outcome::Updated);
+				if !job.add_targets(targets) {
+					job.record_failure(Stage::Channels, Failure::Capacity);
+				}
+				job.active_pages += 1;
+				if let Some(next) = next {
+					if job.active_pages < MAX_ACTIVE_PAGES {
+						job.active_before = Some(next);
+					} else {
+						job.record_failure(Stage::Channels, Failure::Capacity);
+						job.advance_active();
+					}
+				} else {
+					job.advance_active();
+				}
+			}
+			ReadResult::ActiveThreadsIndexing { .. } => {
+				job.record_failure(Stage::Channels, Failure::Protocol);
+				job.skip_read(&read);
+			}
 			ReadResult::History(page) => {
 				if page.channel != job.targets[job.channel_index].id
 					|| !job.targets[job.channel_index].readable(&self.state, job.guild())
@@ -1055,12 +1256,41 @@ impl Desktop {
 				self.force_sync.revision_requested = false;
 			}
 			ReadResult::Archives(page) => {
+				let Read::Archives {
+					guild,
+					parent,
+					kind,
+					before,
+				} = read
+				else {
+					job.record_failure(Stage::Channels, Failure::Protocol);
+					return;
+				};
+				if job.guild() != Some(guild)
+					|| job
+						.targets
+						.get(job.archive_index)
+						.is_none_or(|target| target.id != parent)
+					|| !page.valid(parent, guild, kind, before)
+				{
+					job.record_failure(Stage::Channels, Failure::Protocol);
+					job.advance_archive();
+					return;
+				}
+				if !self.state.can_archive(parent, kind) {
+					job.record_failure(Stage::Channels, Failure::Forbidden);
+					job.advance_archive();
+					return;
+				}
 				let next = page.next;
-				job.add_targets(page.threads.iter().map(|c| Target {
+				if !job.add_targets(page.threads.iter().map(|c| Target {
 					id: c.id,
 					kind: c.kind,
 					parent: c.parent_id,
-				}));
+				})) {
+					job.record_failure(Stage::Channels, Failure::Capacity);
+				}
+				job.record(Stage::Channels, Outcome::Updated);
 
 				match next {
 					Some(model::archives::Cursor::Time(at))
@@ -1076,11 +1306,14 @@ impl Desktop {
 				guild,
 				items,
 				missing,
+				nick_unknown,
 			} => {
 				let missing_on_disk = missing.clone();
+				let unknown_on_disk = nick_unknown.clone();
 				let completed_members = items.clone();
 				let rows = items
 					.iter()
+					.filter(|member| nick_unknown.binary_search(&member.user.id).is_err())
 					.map(|member| model::MemberDisplay {
 						guild,
 						user: member.user.id,
@@ -1089,13 +1322,14 @@ impl Desktop {
 						nick: member.nick.clone(),
 					})
 					.collect();
-				if !missing.is_empty() {
+				if !missing.is_empty() || !nick_unknown.is_empty() {
 					job.record(Stage::Members, Outcome::Partial);
 				}
 				if !self.state.apply_force_sync_result(ReadResult::Members {
 					guild,
 					items,
 					missing,
+					nick_unknown,
 				}) {
 					job.record(Stage::Members, Outcome::Partial);
 				}
@@ -1108,7 +1342,12 @@ impl Desktop {
 				}) {
 					self.force_sync.roster_write = Some((job.request, guild));
 					let count = completed_members.len();
-					self.force_sync.roster_chunk = Some((guild, completed_members, count));
+					self.force_sync.roster_chunk = Some(RosterChunk {
+						guild,
+						members: completed_members,
+						nick_unknown: unknown_on_disk,
+						index: count,
+					});
 				} else {
 					job.record_failure(Stage::Members, Failure::Busy);
 					job.member_index = (job.member_index + 100).min(job.members.len());
@@ -1136,6 +1375,12 @@ impl Desktop {
 					&& let Err(failure) = value.self_member.as_ref()
 				{
 					job.record_failure(Stage::Members, *failure);
+				}
+				if let ReadResult::Guild(value) = &other
+					&& value.self_member.is_ok()
+					&& !value.self_member_nick_known
+				{
+					job.record(Stage::Members, Outcome::Partial);
 				}
 				let applied = self.state.apply_force_sync_result(other);
 				for channel in previously_readable {
@@ -1170,7 +1415,7 @@ impl Desktop {
 						},
 					);
 				}
-				if applied && matches!(read, Read::Channels { .. } | Read::ActiveThreads { .. }) {
+				if applied && matches!(read, Read::Channels { .. }) {
 					job.discover(&self.state);
 				}
 				job.record(stage, outcome);
@@ -1178,9 +1423,6 @@ impl Desktop {
 					job.details[Job::stage_index(stage)] = 5;
 				}
 				job.advance();
-				if matches!(read, Read::ActiveThreads { .. }) {
-					self.restore_force_sync_continuation(job);
-				}
 			}
 		}
 	}
@@ -1506,6 +1748,11 @@ impl Desktop {
 			Event::MemberSearch {
 				request,
 				result: Ok(members),
+			}
+			| Event::MemberSearchPartial {
+				request,
+				rows: members,
+				..
 			} if request.guild == guild => members
 				.iter()
 				.map(|member| member.user.id)
@@ -1529,10 +1776,17 @@ impl Desktop {
 		let changed_disk = self.force_sync.roster_reconcile.is_some()
 			|| self.force_sync.roster_write.is_some()
 				&& self.force_sync.roster_chunk.as_ref().is_some_and(
-					|(_, members, _)| match event {
+					|RosterChunk {
+					     members,
+					     nick_unknown,
+					     ..
+					 }| match event {
 						Event::MemberIdentity(update) => members
 							.iter()
-							.find(|member| member.user.id == update.user)
+							.find(|member| {
+								member.user.id == update.user
+									&& nick_unknown.binary_search(&member.user.id).is_err()
+							})
 							.is_some_and(|member| {
 								let nick = match &update.nick {
 									model::Patch::Value(nick) => {
@@ -1550,11 +1804,19 @@ impl Desktop {
 						Event::Members(list) => list.slots.iter().any(|slot| match slot {
 							Some(model::MemberSlot::Person(current)) => members
 								.iter()
-								.find(|member| member.user.id == current.user.id)
+								.find(|member| {
+									member.user.id == current.user.id
+										&& nick_unknown.binary_search(&member.user.id).is_err()
+								})
 								.is_some_and(|old| {
-									old.nick != current.nick
-										|| old.user.name != current.user.name
-										|| old.user.username != current.user.username
+									(list
+										.missing_identity
+										.iter()
+										.find(|fields| fields.user == current.user.id)
+										.is_none_or(|fields| !fields.nick)
+										&& old.nick != current.nick) || old.user.name
+										!= current.user.name || old.user.username
+										!= current.user.username
 								}),
 							_ => false,
 						}),
@@ -1564,13 +1826,35 @@ impl Desktop {
 						} => current.iter().any(|current| {
 							members
 								.iter()
-								.find(|member| member.user.id == current.user.id)
+								.find(|member| {
+									member.user.id == current.user.id
+										&& nick_unknown.binary_search(&member.user.id).is_err()
+								})
 								.is_some_and(|old| {
 									old.nick != current.nick
 										|| old.user.name != current.user.name
 										|| old.user.username != current.user.username
 								})
 						}),
+						Event::MemberSearchPartial { rows, missing, .. } => {
+							rows.iter().any(|current| {
+								members
+									.iter()
+									.find(|member| {
+										member.user.id == current.user.id
+											&& nick_unknown.binary_search(&member.user.id).is_err()
+									})
+									.is_some_and(|old| {
+										(missing
+											.iter()
+											.find(|fields| fields.user == current.user.id)
+											.is_none_or(|fields| !fields.nick)
+											&& old.nick != current.nick) || old.user.name
+											!= current.user.name || old.user.username
+											!= current.user.username
+									})
+							})
+						}
 						_ => false,
 					},
 				);
@@ -1634,6 +1918,11 @@ impl Desktop {
 			);
 		}
 		job.add_members(self.force_sync.roster_changed.iter().copied());
+		if !job.roster_complete
+			&& let Some(guild) = job.guild()
+		{
+			job.add_known_members(&self.state, guild);
+		}
 		self.cancel_force_sync_roster();
 		job.roster_started = false;
 		job.advance();
@@ -1648,6 +1937,7 @@ impl Desktop {
 			self.cancel_force_sync_roster();
 			job.roster_started = false;
 			job.roster_complete = false;
+			job.add_known_members(&self.state, guild);
 			job.record(Stage::Members, Outcome::Partial);
 			job.advance();
 			self.force_sync.dirty = true;
@@ -1659,7 +1949,13 @@ impl Desktop {
 		if self.force_sync.roster_reconcile.is_some() {
 			return;
 		}
-		if let Some((chunk_guild, members, index)) = self.force_sync.roster_chunk.take() {
+		if let Some(RosterChunk {
+			guild: chunk_guild,
+			members,
+			nick_unknown,
+			index,
+		}) = self.force_sync.roster_chunk.take()
+		{
 			if chunk_guild != guild {
 				self.finish_force_sync_roster(job, Some(Failure::Protocol));
 				return;
@@ -1670,14 +1966,29 @@ impl Desktop {
 				.filter(|member| !self.force_sync.roster_changed.contains(&member.user.id))
 				.cloned()
 				.collect();
-			self.state.apply_force_sync_members(guild, &accepted);
+			let accepted_unknown: Vec<_> = nick_unknown
+				.iter()
+				.copied()
+				.filter(|id| accepted.iter().any(|member| member.user.id == *id))
+				.collect();
+			self.state.apply_force_sync_members_with_unknown_nicks(
+				guild,
+				&accepted,
+				&accepted_unknown,
+			);
 			if end < members.len() {
-				self.force_sync.roster_chunk = Some((guild, members, end));
+				self.force_sync.roster_chunk = Some(RosterChunk {
+					guild,
+					members,
+					nick_unknown,
+					index: end,
+				});
 				return;
 			}
 			let rows = members
 				.iter()
 				.filter(|member| !self.force_sync.roster_changed.contains(&member.user.id))
+				.filter(|member| nick_unknown.binary_search(&member.user.id).is_err())
 				.map(|member| model::MemberDisplay {
 					guild,
 					user: member.user.id,
@@ -1695,7 +2006,12 @@ impl Desktop {
 				missing: Vec::new(),
 			}) {
 				self.force_sync.roster_write = Some((job.request, guild));
-				self.force_sync.roster_chunk = Some((guild, members, end));
+				self.force_sync.roster_chunk = Some(RosterChunk {
+					guild,
+					members,
+					nick_unknown,
+					index: end,
+				});
 			} else {
 				self.finish_force_sync_roster(job, Some(Failure::Busy));
 			}
@@ -1761,8 +2077,28 @@ impl Desktop {
 			return;
 		}
 		match event {
-			R::Chunk { members, .. } => {
-				self.force_sync.roster_chunk = Some((guild, members, 0));
+			R::Chunk {
+				members,
+				nick_unknown,
+				..
+			} => {
+				let users: std::collections::BTreeSet<_> =
+					members.iter().map(|member| member.user.id).collect();
+				if !nick_unknown.windows(2).all(|ids| ids[0] < ids[1])
+					|| nick_unknown.iter().any(|id| !users.contains(id))
+				{
+					self.finish_force_sync_roster(job, Some(Failure::Protocol));
+					return;
+				}
+				if !nick_unknown.is_empty() {
+					job.record(Stage::Members, Outcome::Partial);
+				}
+				self.force_sync.roster_chunk = Some(RosterChunk {
+					guild,
+					members,
+					nick_unknown,
+					index: 0,
+				});
 			}
 			R::Finished { users, .. } => {
 				self.force_sync.roster_finished = true;
@@ -1827,17 +2163,76 @@ impl Desktop {
 				saved.archive_kind = 0;
 				saved.archive_index.min(saved.targets.len())
 			});
+		let prior_len = saved.targets.len();
+		let previous_history = saved
+			.targets
+			.iter()
+			.filter(|target| target.has_history())
+			.count();
+		let mut added_parent = false;
+		for target in &job.targets {
+			if target.readable(&self.state, guild)
+				&& !saved.targets.iter().any(|old| old.id == target.id)
+			{
+				added_parent |= matches!(target.kind, 0 | 5 | 15 | 16);
+				if !saved.add_targets(std::iter::once(target.clone())) {
+					saved.record_failure(Stage::Channels, Failure::Capacity);
+					break;
+				}
+			}
+		}
+		if saved.step >= 9 {
+			let new_history = saved
+				.targets
+				.iter()
+				.filter(|target| target.has_history())
+				.count()
+				.saturating_sub(previous_history);
+			saved.channels_total = saved.channels_total.saturating_add(new_history as u64);
+			if saved.step > 9 && new_history > 0 {
+				saved.step = 9;
+				saved.channel_index = prior_len;
+				saved.before = last_before(saved.end_ms);
+			}
+			if added_parent {
+				// The resumed job already passed archive discovery for this new parent.
+				saved.record(Stage::Channels, Outcome::Partial);
+			}
+		}
 		saved.roster_started = false;
 		saved.request = saved.request.max(job.request);
 		for index in 0..3 {
-			if job.outcomes[index] > saved.outcomes[index] {
-				saved.outcomes[index] = job.outcomes[index];
+			let previous = saved.outcomes[index];
+			saved.outcomes[index] = combine_outcomes(previous, job.outcomes[index]);
+			if job.outcomes[index] > 1 {
 				saved.details[index] = job.details[index];
 			}
 		}
 		*job = saved;
 		self.force_sync.dirty = true;
 	}
+}
+
+fn active_read_is_current(
+	job: &Job,
+	state: &client_core::State,
+	read: &Read,
+	guild: Id,
+	parent: Id,
+) -> bool {
+	job.step == 2
+		&& job.guild() == Some(guild)
+		&& job
+			.targets
+			.get(job.active_index)
+			.is_some_and(|target| target.id == parent)
+		&& state
+			.channel(parent)
+			.is_some_and(|channel| channel.guild == Some(guild))
+		&& state.can_archive(parent, model::archives::Kind::Public)
+		&& matches!(read, Read::ActiveThreads {
+			guild: requested_guild, parent: requested_parent, before
+		} if *requested_guild == guild && *requested_parent == parent && *before == job.active_before)
 }
 
 /// Only changes to the resource being read can invalidate its response. Continuous
@@ -1851,6 +2246,10 @@ fn sync_event_affects_read(
 ) -> bool {
 	let channel = match read {
 		Read::History { channel, .. } => Some(*channel),
+		_ => None,
+	};
+	let parent = match read {
+		Read::ActiveThreads { parent, .. } | Read::Archives { parent, .. } => Some(*parent),
 		_ => None,
 	};
 	let guild = read
@@ -1898,25 +2297,62 @@ fn sync_event_affects_read(
 					_ => false,
 				}
 		}
-		Event::Members(list) => matches!(read, Read::Members { .. }) && guild == list.guild,
+		Event::MemberSearch {
+			request,
+			result: Ok(rows),
+		}
+		| Event::MemberSearchPartial { request, rows, .. } => {
+			guild == Some(request.guild)
+				&& match read {
+					Read::Guild { user, .. } => rows.iter().any(|row| row.user.id == *user),
+					Read::Members { users, .. } => {
+						rows.iter().any(|row| users.contains(&row.user.id))
+					}
+					_ => false,
+				}
+		}
+		Event::Members(list) => {
+			guild == list.guild
+				&& list.slots.iter().flatten().any(|slot| {
+					let model::MemberSlot::Person(member) = slot else {
+						return false;
+					};
+					match read {
+						Read::Guild { user, .. } => member.user.id == *user,
+						Read::Members { users, .. } => users.contains(&member.user.id),
+						_ => false,
+					}
+				})
+		}
 		Event::PermissionsChanged => matches!(
 			read,
-			Read::Guild { .. } | Read::Channels { .. } | Read::History { .. }
+			Read::Guild { .. }
+				| Read::Channels { .. }
+				| Read::History { .. }
+				| Read::ActiveThreads { .. }
+				| Read::Archives { .. }
 		),
 		Event::Permissions(update)
 			if matches!(
 				read,
-				Read::Guild { .. } | Read::Channels { .. } | Read::History { .. }
+				Read::Guild { .. }
+					| Read::Channels { .. }
+					| Read::History { .. }
+					| Read::ActiveThreads { .. }
+					| Read::Archives { .. }
 			) =>
 		{
 			use client_core::permissions::Event as P;
 			match update {
 				P::Snapshot(snapshot) => {
 					snapshot.guilds.iter().any(|g| Some(g.id) == guild)
-						|| snapshot
-							.channels
-							.iter()
-							.any(|c| Some(c.id) == channel || Some(c.guild) == guild)
+						|| snapshot.channels.iter().any(|c| {
+							if let Some(scoped) = channel.or(parent) {
+								c.id == scoped
+							} else {
+								Some(c.guild) == guild
+							}
+						})
 				}
 				P::Guild(value) => guild == Some(value.id),
 				P::Role { guild: changed, .. }
@@ -1932,8 +2368,8 @@ fn sync_event_affects_read(
 					guild: changed_guild,
 					..
 				} => {
-					if channel.is_some() {
-						channel == Some(*changed)
+					if let Some(scoped) = channel.or(parent) {
+						scoped == *changed
 					} else {
 						guild.is_some() && guild == *changed_guild
 					}
@@ -1941,49 +2377,70 @@ fn sync_event_affects_read(
 			}
 		}
 		Event::ChannelCreated(changed) | Event::ChannelRestored(changed) => {
-			matches!(
-				read,
-				Read::Channels { .. } | Read::ActiveThreads { .. } | Read::Archives { .. }
-			) && guild.is_some()
+			guild.is_some()
 				&& guild == changed.guild
+				&& (matches!(read, Read::Channels { .. })
+					|| parent.is_some_and(|id| changed.id == id || changed.parent_id == Some(id)))
 		}
 		Event::ChannelChanged(changed) => {
 			channel == Some(changed.id)
-				|| (matches!(
-					read,
-					Read::Channels { .. } | Read::ActiveThreads { .. } | Read::Archives { .. }
-				) && state
-					.channel(changed.id)
-					.is_some_and(|c| guild.is_some() && c.guild == guild))
+				|| (matches!(read, Read::Channels { .. })
+					&& state
+						.channel(changed.id)
+						.is_some_and(|c| guild.is_some() && c.guild == guild))
+				|| parent.is_some_and(|id| {
+					changed.id == id
+						|| state
+							.channel(changed.id)
+							.is_some_and(|c| c.parent_id == Some(id))
+						|| matches!(&changed.parent_id, model::Patch::Value(value) if *value == id)
+				})
 		}
 		Event::ThreadChanged {
 			guild: changed,
 			patch,
 		} => {
 			channel == Some(patch.id)
-				|| matches!(read, Read::ActiveThreads { .. } | Read::Archives { .. })
-					&& guild == Some(*changed)
+				|| guild == Some(*changed)
+					&& parent.is_some_and(|id| {
+						state
+							.channel(patch.id)
+							.is_none_or(|c| c.parent_id == Some(id))
+							|| matches!(&patch.parent_id, model::Patch::Value(value) if *value == id)
+					})
 		}
 		Event::ThreadRemoved { guild: changed, id } => {
 			channel == Some(*id)
-				|| matches!(read, Read::ActiveThreads { .. } | Read::Archives { .. })
-					&& guild == Some(*changed)
+				|| guild == Some(*changed)
+					&& parent.is_some_and(|parent| {
+						state
+							.channel(*id)
+							.is_none_or(|c| c.parent_id == Some(parent))
+					})
 		}
 		Event::ThreadsSync {
 			guild: changed,
+			parents,
 			removed,
 			..
 		} => {
 			channel.is_some_and(|id| removed.contains(&id))
-				|| matches!(read, Read::ActiveThreads { .. } | Read::Archives { .. })
-					&& guild == Some(*changed)
+				|| guild == Some(*changed)
+					&& parent.is_some_and(|id| {
+						parents.as_ref().is_none_or(|parents| parents.contains(&id))
+					})
 		}
 		Event::Unavailable(changed) => {
 			channel == Some(*changed)
-				|| (matches!(read, Read::Channels { .. })
-					&& state
-						.channel(*changed)
-						.is_some_and(|c| guild.is_some() && c.guild == guild))
+				|| parent.is_some_and(|id| {
+					*changed == id
+						|| state
+							.channel(*changed)
+							.is_some_and(|c| c.parent_id == Some(id))
+				}) || (matches!(read, Read::Channels { .. })
+				&& state
+					.channel(*changed)
+					.is_some_and(|c| guild.is_some() && c.guild == guild))
 		}
 		_ => false,
 	}
@@ -2018,6 +2475,246 @@ mod tests {
 		assert_eq!(job.outcomes[Job::stage_index(Stage::Members)], 2);
 	}
 	#[test]
+	fn successful_channels_and_failed_thread_reads_are_partial_in_either_order() {
+		for (first, second) in [
+			(Outcome::Updated, Outcome::Unavailable),
+			(Outcome::Unavailable, Outcome::Updated),
+			(Outcome::Failed, Outcome::Updated),
+		] {
+			let mut job = Job::new(&test_support::demo_state(), Scope::Account).unwrap();
+			job.record(Stage::Channels, first);
+			job.record(Stage::Channels, second);
+			assert_eq!(job.outcomes[Job::stage_index(Stage::Channels)], 2);
+		}
+		assert_eq!(combine_outcomes(3, 3), 3);
+		assert_eq!(combine_outcomes(4, 4), 4);
+	}
+	#[test]
+	fn old_checkpoints_keep_their_history_cursor_and_channel_outcome() {
+		let mut job = Job::new(&test_support::demo_state(), Scope::Account).unwrap();
+		job.step = 9;
+		job.before = Some(Id(123));
+		job.record(Stage::Channels, Outcome::Unavailable);
+		let mut value = serde_json::to_value(&job).unwrap();
+		value["version"] = 1.into();
+		let object = value.as_object_mut().unwrap();
+		object.remove("active_index");
+		object.remove("active_before");
+		object.remove("active_pages");
+		let mut restored: Job = serde_json::from_value(value).unwrap();
+		restored.migrate_checkpoint();
+		assert!(restored.valid());
+		assert_eq!(restored.before, Some(Id(123)));
+		assert_eq!(restored.step, 9);
+		assert_eq!(restored.outcomes[Job::stage_index(Stage::Channels)], 3);
+	}
+	#[test]
+	fn active_threads_are_scoped_to_accessible_parents_and_paginated() {
+		let state = test_support::demo_state();
+		let parent = state.selected.unwrap();
+		let channel = state.channel(parent).unwrap();
+		let guild = channel.guild.unwrap();
+		let mut job = Job::new(&state, Scope::Server(guild)).unwrap();
+		job.targets = vec![Target {
+			id: parent,
+			kind: channel.kind,
+			parent: channel.parent_id,
+		}];
+		job.step = 2;
+		let first = job.next_active_read(&state, guild).unwrap();
+		assert!(
+			matches!(first, Read::ActiveThreads { guild: g, parent: p, before: None } if g == guild && p == parent)
+		);
+		assert!(active_read_is_current(&job, &state, &first, guild, parent));
+		job.active_before = Some(Id(123));
+		assert!(!active_read_is_current(&job, &state, &first, guild, parent));
+		assert!(matches!(
+			job.next_active_read(&state, guild),
+			Some(Read::ActiveThreads {
+				before: Some(Id(123)),
+				..
+			})
+		));
+		job.skip_read(&first);
+		assert!(job.next_active_read(&state, guild).is_none());
+		assert_eq!(job.active_before, None);
+	}
+	#[test]
+	fn indexing_retry_is_bounded_and_waits_for_the_supplied_delay() {
+		let mut sync = Sync::default();
+		let now = Instant::now();
+		assert!(sync.defer_indexing(Duration::from_millis(1500), now));
+		assert_eq!(sync.next_read, Some(now + Duration::from_millis(1500)));
+		assert!(sync.defer_indexing(Duration::ZERO, now));
+		assert_eq!(sync.next_read, Some(now + Duration::from_millis(50)));
+		assert!(!sync.defer_indexing(Duration::from_secs(1), now));
+		sync.read_retries = 0;
+		assert!(!sync.defer_indexing(Duration::from_secs(31), now));
+	}
+	#[test]
+	fn archived_thread_requests_follow_parent_type_and_permission() {
+		let mut state = test_support::demo_state();
+		let parent = state.selected.unwrap();
+		let guild = state.channel(parent).unwrap().guild.unwrap();
+		let mut job = Job::new(&state, Scope::Server(guild)).unwrap();
+		job.targets = vec![Target {
+			id: parent,
+			kind: 0,
+			parent: None,
+		}];
+		assert!(matches!(
+			job.next_archive_read(&state, guild),
+			Some(Read::Archives {
+				kind: model::archives::Kind::Public,
+				..
+			})
+		));
+		job.advance_archive();
+		assert!(matches!(
+			job.next_archive_read(&state, guild),
+			Some(Read::Archives {
+				kind: model::archives::Kind::JoinedPrivate,
+				..
+			})
+		));
+		job.advance_archive();
+		assert!(job.next_archive_read(&state, guild).is_none());
+		state
+			.channels
+			.iter_mut()
+			.find(|channel| channel.id == parent)
+			.unwrap()
+			.kind = 15;
+		job.targets[0].kind = 15;
+		job.archive_index = 0;
+		assert!(matches!(
+			job.next_archive_read(&state, guild),
+			Some(Read::Archives {
+				kind: model::archives::Kind::Public,
+				..
+			})
+		));
+		job.advance_archive();
+		assert!(job.next_archive_read(&state, guild).is_none());
+	}
+	#[test]
+	fn thread_discovery_is_invalidated_by_its_permissions_without_other_channel_noise() {
+		let state = test_support::demo_state();
+		let parent = state.selected.unwrap();
+		let guild = state.channel(parent).unwrap().guild.unwrap();
+		let account = state.user.as_ref().unwrap().id;
+		for read in [
+			Read::ActiveThreads {
+				guild,
+				parent,
+				before: None,
+			},
+			Read::Archives {
+				guild,
+				parent,
+				kind: model::archives::Kind::Public,
+				before: None,
+			},
+		] {
+			let event = |channel| {
+				Event::Permissions(client_core::permissions::Event::Channel {
+					channel,
+					guild: Some(guild),
+					overwrites: model::Patch::Absent,
+				})
+			};
+			assert!(sync_event_affects_read(
+				&read,
+				&event(parent),
+				&state,
+				account,
+				None
+			));
+			assert!(!sync_event_affects_read(
+				&read,
+				&event(Id(u64::MAX)),
+				&state,
+				account,
+				None
+			));
+			assert!(sync_event_affects_read(
+				&read,
+				&Event::PermissionsChanged,
+				&state,
+				account,
+				None
+			));
+		}
+	}
+	#[test]
+	fn member_query_results_fence_matching_force_sync_reads() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let account = state.user.as_ref().unwrap().id;
+		let Some(client_core::Command::MemberSearch(request)) =
+			state.search_members(channel, "person", 0)
+		else {
+			panic!("member query");
+		};
+		let mut user = test_support::message(3, channel).author;
+		user.id = Id(7);
+		let row = model::Member {
+			user,
+			nick: None,
+			roles: vec![],
+			status: None,
+			custom_status: None,
+			activities: vec![],
+			clients: Default::default(),
+		};
+		let event = Event::MemberSearchPartial {
+			request,
+			rows: vec![row.clone()],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				nick: true,
+				roles: false,
+			}],
+		};
+		let read = |id| Read::Members {
+			guild,
+			users: vec![Id(id)],
+		};
+		assert!(sync_event_affects_read(
+			&read(7),
+			&event,
+			&state,
+			account,
+			None
+		));
+		assert!(!sync_event_affects_read(
+			&read(8),
+			&event,
+			&state,
+			account,
+			None
+		));
+		state.request_members();
+		let mut list = state.members.clone().expect("member list");
+		list.slots = vec![Some(model::MemberSlot::Person(row))];
+		let event = Event::Members(list);
+		assert!(sync_event_affects_read(
+			&read(7),
+			&event,
+			&state,
+			account,
+			None
+		));
+		assert!(!sync_event_affects_read(
+			&read(8),
+			&event,
+			&state,
+			account,
+			None
+		));
+	}
+	#[test]
 	fn targets_are_deduplicated_without_replacing_the_time_range() {
 		let state = test_support::demo_state();
 		let mut job = Job::new(&state, Scope::Account).unwrap();
@@ -2036,6 +2733,33 @@ mod tests {
 		]);
 		assert_eq!(job.targets.iter().filter(|t| t.id == Id(5)).count(), 1);
 		assert_eq!(job.end_ms - cutoff, HISTORY_MILLIS);
+	}
+	#[test]
+	fn ordinary_member_sync_includes_known_people_without_recent_messages() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let mut person = test_support::message(7, channel).author;
+		person.id = Id(987654);
+		state.apply_force_sync_members(
+			guild,
+			&[model::Member {
+				user: person,
+				nick: Some("Known nickname".into()),
+				roles: vec![],
+				status: None,
+				custom_status: None,
+				activities: vec![],
+				clients: Default::default(),
+			}],
+		);
+		let mut job = Job::new(&state, Scope::Server(guild)).unwrap();
+		job.add_known_members(&state, guild);
+		job.add_known_members(&state, guild);
+		assert_eq!(
+			job.members.iter().filter(|id| **id == Id(987654)).count(),
+			1
+		);
 	}
 	#[test]
 	fn checkpoint_rejects_scope_cursor_duplicates_and_invalid_archive_position() {

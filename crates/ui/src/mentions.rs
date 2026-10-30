@@ -2320,6 +2320,7 @@ mod tests {
 		};
 		let target = Id(20199);
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild,
 			channel,
 			request: 1,
