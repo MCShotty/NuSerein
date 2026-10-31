@@ -1,4 +1,5 @@
 //! Single UI-thread state owner. Adapters deliver generation-tagged typed events.
+mod cached_history;
 mod commands;
 mod events;
 mod history;
@@ -21,6 +22,8 @@ pub mod channel_actions;
 pub mod community;
 pub mod expressions;
 pub mod fingerprint;
+pub mod force_sync_apply;
+pub mod force_sync_read;
 pub mod forum;
 pub mod game_mentions;
 pub mod gifs;
@@ -244,6 +247,9 @@ pub struct State {
 	pub guilds: Vec<Guild>,
 	#[doc(hidden)]
 	pub server_display: server_display::Displays,
+	/// Generation-scoped presentation data from an explicit server refresh, never permissions.
+	#[doc(hidden)]
+	pub force_sync_banners: force_sync_apply::ServerBanners,
 	pub channels: Vec<Channel>,
 	#[doc(hidden)]
 	pub navigation_index: NavigationIndex,
@@ -500,6 +506,7 @@ impl Default for State {
 			member_request: 0,
 			guilds: vec![],
 			server_display: Default::default(),
+			force_sync_banners: Default::default(),
 			channels: vec![],
 			navigation_index: NavigationIndex::default(),
 			selected: None,
@@ -1841,6 +1848,7 @@ mod tests {
 				Event::Ready {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
+						member_avatar: None,
 						username: None,
 						primary_guild: None,
 						cosmetics: None,
@@ -2260,6 +2268,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(1),
 			author: User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -2339,6 +2348,7 @@ mod tests {
 			Event::RecipientAdded {
 				channel: Id(1),
 				user: User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2368,6 +2378,7 @@ mod tests {
 			})
 			.unwrap();
 		let kept = MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(1),
 			request: 7,
@@ -2390,6 +2401,7 @@ mod tests {
 		state.members = Some(kept.clone());
 		state.member_chunks.merge(&kept);
 		let holes = MemberList {
+			missing_identity: vec![],
 			start: 100,
 			slots: vec![None; 100],
 			ranges: vec![[100, 199]],
@@ -2415,6 +2427,7 @@ mod tests {
 		apply(
 			&mut state,
 			Event::Members(MemberList {
+				missing_identity: vec![],
 				start: 100,
 				slots: later_slots,
 				ranges: vec![[100, 199]],
@@ -2430,6 +2443,7 @@ mod tests {
 		apply(
 			&mut state,
 			Event::Members(MemberList {
+				missing_identity: vec![],
 				start: 0,
 				slots: vec![None; 100],
 				ranges: vec![[0, 99]],
@@ -2554,6 +2568,7 @@ mod tests {
 				message_count: None,
 			};
 			let user = || User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -2686,6 +2701,7 @@ mod tests {
 				Event::Ready {
 					permissions: model::permissions::Snapshot::default(),
 					user: User {
+						member_avatar: None,
 						username: None,
 						primary_guild: None,
 						cosmetics: None,

@@ -142,6 +142,7 @@ mod tests {
 	fn state() -> State {
 		State {
 			user: Some(User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -192,6 +193,7 @@ mod tests {
 			id: Id(100),
 			channel: Id(channel),
 			author: User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,

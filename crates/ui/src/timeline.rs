@@ -4861,6 +4861,7 @@ mod tests {
 				message.content =
 					"Received body with enough words to wrap in the narrow viewport".into();
 				state.user = Some(model::User {
+					member_avatar: None,
 					name: "Pending author".into(),
 					..message.author.clone()
 				});
@@ -5527,6 +5528,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(20),
 			author: model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(2),
 				name: "Robin".into(),
@@ -7850,6 +7852,7 @@ mod tests {
 			auth: client_core::auth::AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(999),
 				name: "Synthetic".into(),
@@ -9783,6 +9786,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(3),
 				name: "Synthetic".into(),
@@ -9846,6 +9850,7 @@ mod tests {
 		});
 		// Channel names are shown only with view and read permission.
 		state.user = Some(model::User {
+			member_avatar: None,
 			username: None,
 			id: Id(9),
 			name: "Synthetic viewer".into(),
@@ -9962,6 +9967,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(3),
 				name: "Synthetic".into(),
@@ -10066,6 +10072,7 @@ mod tests {
 			id: Id(1),
 			channel: Id(2),
 			author: model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(3),
 				name: "Synthetic".into(),

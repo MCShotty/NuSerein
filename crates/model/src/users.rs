@@ -15,6 +15,9 @@ pub struct User {
 	#[serde(default, skip)]
 	pub username: Option<Box<str>>,
 	pub avatar: Option<String>,
+	/// Display-only server override. A known null hash explicitly restores the global avatar.
+	#[serde(default, skip)]
+	pub member_avatar: Option<Box<GuildAvatar>>,
 	pub discriminator: u16,
 	/// Service-supplied server identity displayed beside this user's name.
 	#[serde(default, skip_serializing)]
@@ -22,6 +25,20 @@ pub struct User {
 	/// Service-supplied avatar decoration and nameplate; display-only, never persisted.
 	#[serde(default, skip)]
 	pub cosmetics: Option<Box<Cosmetics>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuildAvatar {
+	pub guild: Id,
+	pub hash: Option<String>,
+}
+impl GuildAvatar {
+	pub fn valid(&self) -> bool {
+		self.guild.0 != 0 && self.hash.as_deref().is_none_or(valid_avatar_hash)
+	}
+	pub fn bytes(&self) -> usize {
+		size_of::<Self>() + self.hash.as_ref().map_or(0, String::capacity)
+	}
 }
 
 impl User {
@@ -38,6 +55,10 @@ impl User {
 		self.name.capacity()
 			+ self.username.as_deref().map_or(0, str::len)
 			+ self.avatar.as_ref().map_or(0, String::capacity)
+			+ self
+				.member_avatar
+				.as_ref()
+				.map_or(0, |avatar| avatar.bytes())
 			+ self.primary_guild.as_ref().map_or(0, |guild| {
 				std::mem::size_of::<ClanTag>()
 					+ guild.tag.capacity()
@@ -47,6 +68,12 @@ impl User {
 		})
 	}
 	pub fn avatar_key(&self) -> String {
+		if let Some(avatar) = &self.member_avatar
+			&& avatar.valid()
+			&& let Some(hash) = &avatar.hash
+		{
+			return format!("member-avatar-{}-{}-{hash}", avatar.guild, self.id);
+		}
 		if let Some(hash) = self
 			.avatar
 			.as_deref()
@@ -63,6 +90,16 @@ impl User {
 		}
 	}
 	pub fn avatar_url(&self) -> String {
+		if let Some(avatar) = &self.member_avatar
+			&& avatar.valid()
+			&& let Some(hash) = &avatar.hash
+		{
+			let ext = if hash.starts_with("a_") { "gif" } else { "png" };
+			return format!(
+				"https://cdn.discordapp.com/guilds/{}/users/{}/avatars/{hash}.{ext}?size=128",
+				avatar.guild, self.id
+			);
+		}
 		let key = self.avatar_key();
 		if let Some(index) = key.strip_prefix("default-") {
 			format!("https://cdn.discordapp.com/embed/avatars/{index}.png")
@@ -136,6 +173,7 @@ impl SavedAccount {
 	/// Avatar lookups and name rows reuse the ordinary user widgets.
 	pub fn user(&self) -> User {
 		User {
+			member_avatar: None,
 			username: None,
 			kind: AccountKind::Human,
 			webhook: false,
@@ -157,4 +195,42 @@ impl SavedAccount {
 pub fn valid_avatar_hash(hash: &str) -> bool {
 	let hash = hash.strip_prefix("a_").unwrap_or(hash);
 	hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod member_avatar_tests {
+	use super::*;
+	#[test]
+	fn server_avatar_keys_are_scoped_and_explicit_clear_restores_global_artwork() {
+		let mut user = SavedAccount {
+			id: Id(7),
+			name: "Synthetic".into(),
+			display: None,
+			avatar: Some("0123456789abcdef0123456789abcdef".into()),
+			discriminator: 0,
+			has_token: false,
+		}
+		.user();
+		let original = user.avatar_key();
+		user.member_avatar = Some(Box::new(GuildAvatar {
+			guild: Id(2),
+			hash: Some("a_abcdef0123456789abcdef0123456789".into()),
+		}));
+		assert_eq!(
+			user.avatar_key(),
+			"member-avatar-2-7-a_abcdef0123456789abcdef0123456789"
+		);
+		assert_eq!(
+			user.avatar_url(),
+			"https://cdn.discordapp.com/guilds/2/users/7/avatars/a_abcdef0123456789abcdef0123456789.gif?size=128"
+		);
+		user.member_avatar.as_mut().unwrap().guild = Id(3);
+		assert!(user.avatar_key().starts_with("member-avatar-3-7-"));
+		user.member_avatar.as_mut().unwrap().hash = None;
+		assert_eq!(user.avatar_key(), original);
+		assert_eq!(
+			user.avatar.as_deref(),
+			Some("0123456789abcdef0123456789abcdef")
+		);
+	}
 }

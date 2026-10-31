@@ -1212,6 +1212,7 @@ impl State {
 						(!self.user_actions.requests.contains_key(&user)).then(|| {
 							(
 								model::User {
+									member_avatar: None,
 									username: None,
 									id: user,
 									name: "Unknown user".into(),
@@ -1861,11 +1862,13 @@ mod tests {
 		let (mut state, user, _) = stranger_dm();
 		for invalid in [
 			model::User {
+				member_avatar: None,
 				id: Id(0),
 				..user.clone()
 			},
 			state.user.clone().unwrap(),
 			model::User {
+				member_avatar: None,
 				webhook: true,
 				..user.clone()
 			},
@@ -2622,6 +2625,7 @@ mod tests {
 	/// Synthetic authenticated state for user-action tests.
 	fn state() -> State {
 		let user = |id| model::User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,

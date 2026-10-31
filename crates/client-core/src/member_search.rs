@@ -42,10 +42,27 @@ pub struct View {
 	pub rows: Vec<Member>,
 	/// Recently resolved labels for the same conversation, bounded like one search page.
 	pub retained: Vec<Member>,
+	/// Fields the service omitted from the retained search rows, rather than cleared.
+	pub(crate) missing_identity: Vec<model::MissingMemberFields>,
 	pub finished: bool,
 	pub error: Option<&'static str>,
 	pub cooldown_until: Option<std::time::Instant>,
+	/// Avoid repaint-driven retries while still allowing an incomplete batch to recover.
+	pub retry_after: Option<std::time::Instant>,
 	pub identity_revision: u64,
+}
+impl View {
+	pub(crate) fn trim_missing_identity(&mut self) {
+		self.missing_identity.retain(|fields| {
+			(fields.nick || fields.roles)
+				&& self
+					.rows
+					.iter()
+					.chain(&self.retained)
+					.any(|member| member.user.id == fields.user)
+		});
+		self.missing_identity.shrink_to(2 * LIMIT);
+	}
 }
 impl State {
 	pub(crate) fn refresh_member_labels(&mut self, list: &model::MemberList) {
@@ -75,7 +92,18 @@ impl State {
 			for rows in [&mut view.rows, &mut view.retained] {
 				for member in rows.iter_mut() {
 					if let Some(updated) = updates.get(&member.user.id) {
-						*member = (*updated).clone();
+						let fields = list
+							.missing_identity
+							.iter()
+							.find(|fields| fields.user == member.user.id);
+						let mut updated = (*updated).clone();
+						if fields.is_some_and(|fields| fields.nick) {
+							updated.nick.clone_from(&member.nick);
+						}
+						if fields.is_some_and(|fields| fields.roles) {
+							updated.roles.clone_from(&member.roles);
+						}
+						*member = updated;
 					}
 				}
 				let mut bytes = rows.iter().map(Member::bytes).sum::<usize>();
@@ -84,7 +112,60 @@ impl State {
 				}
 				rows.shrink_to(LIMIT);
 			}
+			for fields in &mut view.missing_identity {
+				if updates.contains_key(&fields.user) {
+					let missing = list
+						.missing_identity
+						.iter()
+						.find(|row| row.user == fields.user);
+					fields.nick &= missing.is_some_and(|row| row.nick);
+					fields.roles &= missing.is_some_and(|row| row.roles);
+				}
+			}
+			view.trim_missing_identity();
 		}
+	}
+
+	/// Search results are presentation hints; absent fields must not clear known values.
+	fn known_searched_member(
+		&self,
+		channel: Id,
+		user: Id,
+		missing: impl Fn(&model::MissingMemberFields) -> bool,
+	) -> Option<&Member> {
+		let guild = self.channel(channel)?.guild?;
+		if !self.can_view(channel) {
+			return None;
+		}
+		for retained in [false, true] {
+			for view in &self.member_search {
+				if view
+					.request
+					.as_ref()
+					.is_none_or(|request| request.channel != channel || request.guild != guild)
+				{
+					continue;
+				}
+				let rows = if retained { &view.retained } else { &view.rows };
+				if let Some(member) = rows.iter().find(|member| member.user.id == user)
+					&& !view
+						.missing_identity
+						.iter()
+						.any(|fields| fields.user == user && missing(fields))
+				{
+					return Some(member);
+				}
+			}
+		}
+		None
+	}
+	pub(crate) fn searched_member_nickname(&self, channel: Id, user: Id) -> Option<Option<&str>> {
+		self.known_searched_member(channel, user, |fields| fields.nick)
+			.map(|member| member.nick.as_deref())
+	}
+	pub(crate) fn searched_member_roles(&self, channel: Id, user: Id) -> Option<&[Id]> {
+		self.known_searched_member(channel, user, |fields| fields.roles)
+			.map(|member| member.roles.as_slice())
 	}
 
 	/// Presentation metadata only; callers must use the permission state to authorize actions.
@@ -169,11 +250,11 @@ impl State {
 			return None;
 		}
 		let previous = &mut self.member_search[slot];
-		let retained = if previous
+		let same_scope = previous
 			.request
 			.as_ref()
-			.is_some_and(|old| old.channel == channel && old.guild == guild)
-		{
+			.is_some_and(|old| old.channel == channel && old.guild == guild);
+		let retained = if same_scope {
 			let mut retained = std::mem::take(&mut previous.retained);
 			for member in std::mem::take(&mut previous.rows) {
 				retained.retain(|old| old.user.id != member.user.id);
@@ -189,8 +270,16 @@ impl State {
 		} else {
 			vec![]
 		};
+		let mut missing_identity = if same_scope {
+			std::mem::take(&mut previous.missing_identity)
+		} else {
+			vec![]
+		};
+		missing_identity
+			.retain(|fields| retained.iter().any(|member| member.user.id == fields.user));
 		self.member_search[slot] = View {
 			retained,
+			missing_identity,
 			identity_revision: self.member_labels.revision(),
 			request: Some(request.clone()),
 			..Default::default()
@@ -208,16 +297,11 @@ impl State {
 			.iter()
 			.copied()
 			.filter(|id| id.0 != 0)
+			.filter(|id| !self.member_labels.member_fresh(guild, *id))
 			.filter(|id| {
-				self.current_display_member(channel, *id).is_none()
-					&& !self.member_labels.member_fresh(guild, *id)
-			})
-			.filter(|id| {
-				!self.member_identity(channel, *id).is_some_and(|update| {
-					update.departed
-						|| (!matches!(update.nick, model::Patch::Absent)
-							&& matches!(update.roles, model::Patch::Value(_)))
-				})
+				!self
+					.member_identity(channel, *id)
+					.is_some_and(|update| update.departed)
 			})
 			.take(LIMIT)
 			.collect();
@@ -228,7 +312,11 @@ impl State {
 			|| view.request.as_ref().is_some_and(|request| {
 				request.channel == channel
 					&& request.guild == guild
-					&& (!view.finished || users.iter().all(|user| request.users.contains(user)))
+					&& (!view.finished
+						|| (users.iter().all(|user| request.users.contains(user))
+							&& view
+								.retry_after
+								.is_some_and(|at| std::time::Instant::now() < at)))
 			}) {
 			return None;
 		}
@@ -241,7 +329,7 @@ impl State {
 			nonce: self.member_search_nonce,
 			slot: 1,
 		};
-		let (rows, retained) = if view
+		let (rows, retained, missing_identity) = if view
 			.request
 			.as_ref()
 			.is_some_and(|old| old.channel == channel && old.guild == guild)
@@ -249,13 +337,15 @@ impl State {
 			(
 				std::mem::take(&mut self.member_search[1].rows),
 				std::mem::take(&mut self.member_search[1].retained),
+				std::mem::take(&mut self.member_search[1].missing_identity),
 			)
 		} else {
-			(vec![], vec![])
+			(vec![], vec![], vec![])
 		};
 		self.member_search[1] = View {
 			rows,
 			retained,
+			missing_identity,
 			identity_revision: self.member_labels.revision(),
 			request: Some(request.clone()),
 			..Default::default()
@@ -286,6 +376,14 @@ impl State {
 		request: Request,
 		result: Result<Vec<Member>, Failure>,
 	) {
+		self.searched_members_with_missing(request, result, vec![]);
+	}
+	pub(crate) fn searched_members_with_missing(
+		&mut self,
+		request: Request,
+		result: Result<Vec<Member>, Failure>,
+		missing: Vec<model::MissingMemberFields>,
+	) {
 		if !request.valid()
 			|| self.selected != Some(request.channel)
 			|| !self.gateway_connected
@@ -295,8 +393,31 @@ impl State {
 		{
 			return;
 		}
+		let mut seen = std::collections::BTreeSet::new();
+		let invalid_missing = missing.len() > LIMIT
+			|| missing.iter().any(|fields| {
+				fields.user.0 == 0
+					|| (!fields.nick && !fields.roles)
+					|| !seen.insert(fields.user)
+					|| result
+						.as_ref()
+						.ok()
+						.is_none_or(|rows| !rows.iter().any(|member| member.user.id == fields.user))
+			});
+		let result = if invalid_missing {
+			Err(Failure::Protocol)
+		} else {
+			result
+		};
+		let retry_seconds = match &result {
+			Ok(rows) if rows.is_empty() => 300,
+			Ok(_) if !missing.is_empty() => 300,
+			_ => 30,
+		};
 		self.member_search[request.slot].finished = true;
 		self.member_search[request.slot].cooldown_until = None;
+		self.member_search[request.slot].retry_after =
+			Some(std::time::Instant::now() + std::time::Duration::from_secs(retry_seconds));
 		match result {
 			Ok(mut rows)
 				if rows.len() <= LIMIT
@@ -307,35 +428,105 @@ impl State {
 							.all(|member| request.users.contains(&member.user.id)))
 					&& rows.iter().map(Member::bytes).sum::<usize>() <= MAX_BYTES =>
 			{
-				self.member_labels.reconcile(
+				self.member_labels.reconcile_with_missing(
 					request.guild,
 					&mut rows,
 					self.member_search[request.slot].identity_revision,
+					&missing,
 				);
 				if rows.iter().map(Member::bytes).sum::<usize>() > MAX_BYTES {
 					self.member_search[request.slot].error =
 						Some("Member search exceeded its safety limit");
 					return;
 				}
-				if request.slot == 1 {
-					for member in &rows {
-						self.timeline.apply_author_membership(
-							member.user.id,
-							&member.roles,
-							member.nick.as_deref(),
-						);
+				// The sidebar takes precedence when rendering. Refresh matching stale rows
+				// too, while retaining their presence and honoring newer live updates
+				// already merged by `reconcile` above.
+				for member in &rows {
+					let fields = missing.iter().find(|fields| fields.user == member.user.id);
+					let stale = self
+						.current_display_member(request.channel, member.user.id)
+						.is_some_and(|old| {
+							old.nick != member.nick
+								|| old.roles != member.roles
+								|| old.user.name != member.user.name
+								|| old.user.username != member.user.username
+						});
+					if stale || fields.is_some() {
+						let mut roles = member.roles.clone();
+						roles.sort_unstable();
+						roles.dedup();
+						self.apply_member_identity(model::MemberIdentity {
+							guild: request.guild,
+							user: member.user.id,
+							profile: Some(member.user.clone()),
+							avatar: model::Patch::Absent,
+							nick: if fields.is_some_and(|fields| fields.nick) {
+								model::Patch::Absent
+							} else {
+								member
+									.nick
+									.clone()
+									.map_or(model::Patch::Null, model::Patch::Value)
+							},
+							roles: if fields.is_some_and(|fields| fields.roles) {
+								model::Patch::Absent
+							} else {
+								model::Patch::Value(roles)
+							},
+							departed: false,
+						});
 					}
 				}
-				self.member_labels.remember(request.guild, &rows);
+				if request.slot == 1 {
+					for member in &rows {
+						if !missing.iter().any(|fields| fields.user == member.user.id) {
+							self.timeline.apply_author_membership(
+								member.user.id,
+								&member.roles,
+								member.nick.as_deref(),
+							);
+						}
+					}
+				}
+				if missing.is_empty() {
+					self.member_labels.remember(request.guild, &rows);
+				} else {
+					let complete: Vec<_> = rows
+						.iter()
+						.filter(|member| {
+							!missing.iter().any(|fields| fields.user == member.user.id)
+						})
+						.cloned()
+						.collect();
+					let partial: Vec<_> = rows
+						.iter()
+						.filter(|member| missing.iter().any(|fields| fields.user == member.user.id))
+						.cloned()
+						.collect();
+					self.member_labels.remember(request.guild, &complete);
+					self.member_labels
+						.remember_with_source(request.guild, &partial, false);
+				}
 				let view = &mut self.member_search[request.slot];
 				for member in std::mem::replace(&mut view.rows, rows) {
 					view.retained.retain(|old| old.user.id != member.user.id);
 					view.retained.push(member);
 				}
+				view.retained
+					.retain(|old| !view.rows.iter().any(|member| member.user.id == old.user.id));
+				view.missing_identity
+					.retain(|fields| !view.rows.iter().any(|member| member.user.id == fields.user));
+				view.missing_identity.extend(
+					missing.into_iter().filter(|fields| {
+						view.rows.iter().any(|member| member.user.id == fields.user)
+					}),
+				);
 				let mut bytes = view.retained.iter().map(Member::bytes).sum::<usize>();
 				while view.retained.len() > LIMIT || bytes > MAX_BYTES {
 					bytes -= view.retained.remove(0).bytes();
 				}
+				view.trim_missing_identity();
 			}
 			Ok(_) => {
 				self.member_search[request.slot].error =

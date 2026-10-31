@@ -293,6 +293,7 @@ mod tests {
 			id: Id(id),
 			channel,
 			author: model::User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -333,6 +334,7 @@ mod tests {
 			freshness: Freshness::Fresh,
 			selected: Some(Id(10)),
 			user: Some(model::User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,

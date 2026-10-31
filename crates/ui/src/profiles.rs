@@ -4336,6 +4336,7 @@ pub fn synthetic(user: &User, guild: Option<Id>) -> model::UserProfile {
 		mutual_friends: guild
 			.map(|_| {
 				vec![User {
+					member_avatar: None,
 					username: None,
 					id: Id(42),
 					name: "Mutual friend".into(),
@@ -5166,6 +5167,7 @@ mod tests {
 		let mut state = test_support::demo_state();
 		let user = test_support::message(1, Id(22)).author;
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
 			request: 1,
@@ -5218,6 +5220,7 @@ mod tests {
 	#[test]
 	fn popout_shows_selected_data_beside_anchor_and_closes_with_escape() {
 		let user = User {
+			member_avatar: None,
 			username: None,
 			id: Id(2),
 			name: "Synthetic person".into(),
@@ -5405,6 +5408,7 @@ mod tests {
 	#[test]
 	fn clicking_outside_closes_but_clicking_inside_keeps_the_popout() {
 		let user = User {
+			member_avatar: None,
 			username: None,
 			id: Id(2),
 			name: "Synthetic person".into(),
@@ -5569,6 +5573,7 @@ mod tests {
 				};
 				state.selected = Some(Id(20));
 				state.members = Some(model::MemberList {
+					missing_identity: vec![],
 					guild: Some(Id(10)),
 					channel: Id(20),
 					request: 1,

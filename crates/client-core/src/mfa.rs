@@ -730,6 +730,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(model::User {
+				member_avatar: None,
 				kind: model::AccountKind::Human,
 				webhook: false,
 				id: Id(1),

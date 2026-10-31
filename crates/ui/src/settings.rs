@@ -13,6 +13,12 @@ mod search_tests {
 	fn translated_control_labels_find_their_real_page_and_target() {
 		for (language, query, key, page) in [
 			(
+				Language::French,
+				"synchroniser tout le compte",
+				"force-sync-account",
+				Page::Storage,
+			),
+			(
 				Language::English,
 				"start minimized",
 				"general-start-minimized",
@@ -808,7 +814,9 @@ impl Page {
 			Self::LanguageTime => {
 				"language time clock 12 hour 24 hour am pm format locale translation timezone time zone utc daylight saving region offset"
 			}
-			Self::Storage => "data privacy local storage clear cache drafts credentials",
+			Self::Storage => {
+				"data privacy local storage clear cache drafts credentials force sync synchronization server account roles members history"
+			}
 			Self::Updates => {
 				"updates auto update release channel production stable nightly download restart version check diagnostics issue bug system info debug"
 			}
@@ -951,6 +959,7 @@ const SEARCH_TARGETS: &[SearchTarget] = &[
 		Page::Accessibility,
 		"reading-chat-reading-settings-scrolling-speed",
 	),
+	target(Page::Storage, "force-sync-account"),
 	target(Page::Storage, "settings-storage-page-clear-cache"),
 	target(Page::Storage, "settings-storage-page-plaintext-login"),
 	target(Page::Storage, "settings-image-cache-media"),
@@ -2537,7 +2546,13 @@ impl MessagingUi {
 		self.registered_games_settings(ui, state.demo);
 	}
 
+	/// Background workers can refresh usage only while its controls or progress are visible.
+	pub fn force_sync_usage_visible(&self) -> bool {
+		self.force_sync_open || (self.settings.open && self.settings.page == Page::Storage)
+	}
+
 	fn storage_page(&mut self, ui: &mut egui::Ui, state: &State) {
+		self.force_sync_settings(ui, state);
 		design::group(
 			ui,
 			&crate::i18n::translate("settings-storage-page-local-storage"),
@@ -2611,7 +2626,10 @@ impl MessagingUi {
 					&[
 						(
 							"used",
-							&crate::attachments::format_size(usage[partition as usize].bytes),
+							&format!(
+								"{:.2} MiB",
+								usage[partition as usize].bytes as f64 / 1_048_576.0
+							),
 						),
 						("limit", &cache_size_label(limit)),
 					],
@@ -2720,9 +2738,9 @@ fn preset_combo<T: Copy + PartialEq>(
 
 fn cache_size_label(mib: u32) -> String {
 	if mib >= 1024 && mib.is_multiple_of(1024) {
-		format!("{} GB", mib / 1024)
+		format!("{} GiB", mib / 1024)
 	} else {
-		format!("{mib} MB")
+		format!("{mib} MiB")
 	}
 }
 

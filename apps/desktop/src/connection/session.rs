@@ -173,6 +173,8 @@ impl Connection {
 		ctx: egui::Context,
 	) -> Self {
 		let (commands, mut receive) = mpsc::channel(COMMAND_SLOTS);
+		let (sync_api_send, sync_api) = watch::channel(None);
+		let (sync_roster, sync_roster_input) = discord_gateway::roster::channel();
 		let (member_watches, member_watch_receive) = watch::channel(None);
 		let (admin_scopes, mut admin_scope) = watch::channel(ReadScopes::default());
 		let (preference_scope, mut preference_updates) = watch::channel(None);
@@ -180,6 +182,7 @@ impl Connection {
 		let (send, events) = reliable_events(ctx.clone());
 		let (typing_send, typing) = mpsc::channel(8);
 		let (finished, terminal) = watch::channel(None);
+		let sync_failure = finished.clone();
 		let (confirmation_report, confirmation_failure) = watch::channel(None);
 		let (share_activity, share_receive) = watch::channel(false);
 		let (custom_rich_presence, custom_receive) = watch::channel(None);
@@ -234,6 +237,7 @@ impl Connection {
                 let (user,gateway)=api.bootstrap().await?;
                 if expected_user.is_some_and(|id|id!=user.id){return Err(Failure::InvalidCredential);}
                 let api=Arc::new(api);
+				let _ = sync_api_send.send_replace(Some(api.clone()));
 				let cached = cached_presence.get(&user.id).cloned().filter(|presence| presence.valid());
 				let account_presence_send = Arc::new(account_presence_send);
 				let _presence_edits = AbortTask(tokio::spawn(run_presence_sync(PresenceSync {
@@ -278,7 +282,7 @@ impl Connection {
                 let activity_wake=wake.clone();
                 let gateway_delivery_gate=delivery_gate.clone();
                 let mut gateway_task=AbortTask(tokio::spawn(async move {
-                    let error=discord_gateway::run_with_activity_recovery_diagnostics_members(secret,gateway,member_receive,voice_receive,gateway_reconnect,(activity_receive,presence_receive,member_query_receive,spotify_receive),Some(member_watch_receive),gateway_delivery_gate,gateway_diagnostics,move |observation| {
+					let error=discord_gateway::run_with_activity_recovery_diagnostics_sync(secret,gateway,member_receive,voice_receive,gateway_reconnect,(activity_receive,presence_receive,member_query_receive,spotify_receive),Some(member_watch_receive),Some(sync_roster_input),gateway_delivery_gate,gateway_diagnostics,move |observation| {
                         if activity_observed.send_if_modified(|current| { if *current == observation { false } else { *current = observation; true } }) { activity_wake.request_repaint(); }
                         Ok(())
                     },|event,epoch|{
@@ -1041,6 +1045,9 @@ impl Connection {
             if let Err(f)=result {let _=finished.send(Some(f));wake.request_repaint();}
         });
 		Self {
+			sync_api,
+			sync_roster,
+			sync_failure,
 			commands,
 			admin_scopes,
 			member_watches,

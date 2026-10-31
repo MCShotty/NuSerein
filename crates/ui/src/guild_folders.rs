@@ -627,6 +627,7 @@ impl MessagingUi {
 							self.server_menu.read_item(ui, state, id);
 							ui.separator();
 							let settings = self.server_menu.settings_item(ui, state, id);
+							self.server_menu.force_sync_item(ui, state, id);
 							let notifications = self.server_menu.notifications_item(ui, state, id);
 							self.server_menu.mute_item(ui, state, id);
 							let leave = self.server_menu.leave_item(ui, state, id);

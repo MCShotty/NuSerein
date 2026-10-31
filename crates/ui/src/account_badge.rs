@@ -108,6 +108,7 @@ mod tests {
 		let context = egui::Context::default();
 		crate::design::apply(&context);
 		let user = User {
+			member_avatar: None,
 			username: None,
 			kind,
 			webhook: false,
@@ -150,6 +151,7 @@ mod tests {
 		let context = egui::Context::default();
 		crate::design::apply(&context);
 		let user = User {
+			member_avatar: None,
 			username: None,
 			kind: model::AccountKind::VerifiedBot,
 			webhook: false,

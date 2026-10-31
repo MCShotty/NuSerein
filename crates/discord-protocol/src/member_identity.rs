@@ -6,6 +6,20 @@ use serde_json::value::RawValue;
 
 pub const MAX_WIRE: usize = 32 * 1024;
 
+/// Invalid optional artwork does not discard a usable member identity.
+pub fn avatar_patch<'de, D: serde::Deserializer<'de>>(
+	deserializer: D,
+) -> Result<Patch<String>, D::Error> {
+	let raw = Box::<RawValue>::deserialize(deserializer)?;
+	if raw.get() == "null" {
+		return Ok(Patch::Null);
+	}
+	Ok(serde_json::from_str::<String>(raw.get())
+		.ok()
+		.filter(|hash| model::valid_avatar_hash(hash))
+		.map_or(Patch::Absent, Patch::Value))
+}
+
 #[derive(Deserialize)]
 struct Fields<'a> {
 	#[serde(default, borrow)]
@@ -16,6 +30,8 @@ struct Fields<'a> {
 	nick: Patch<&'a RawValue>,
 	#[serde(default, borrow)]
 	roles: Option<&'a RawValue>,
+	#[serde(default, borrow)]
+	avatar: Patch<&'a RawValue>,
 }
 
 /// `user` is optional in embedded members; the enclosing typing/message identity is authoritative.
@@ -58,7 +74,16 @@ pub fn embedded(bytes: &[u8], guild: Id, user: Id) -> Result<MemberIdentity, Dec
 		.roles
 		.and_then(|raw| decode::<Roles>(raw.get().as_bytes()).ok())
 		.map_or(Patch::Absent, |roles| Patch::Value(roles.0));
+	let avatar = match fields.avatar {
+		Patch::Value(raw) => decode::<String>(raw.get().as_bytes())
+			.ok()
+			.filter(|hash| model::valid_avatar_hash(hash))
+			.map_or(Patch::Absent, Patch::Value),
+		Patch::Null => Patch::Null,
+		Patch::Absent => Patch::Absent,
+	};
 	let update = MemberIdentity {
+		avatar,
 		guild,
 		user,
 		profile,
@@ -91,12 +116,31 @@ pub fn removed(bytes: &[u8]) -> Result<MemberIdentity, DecodeError> {
 	update.profile = None;
 	update.nick = Patch::Null;
 	update.roles = Patch::Value(vec![]);
+	update.avatar = Patch::Null;
 	Ok(update)
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn member_avatar_updates_keep_absent_null_and_scoped_value_distinct() {
+		let value = update(br#"{"guild_id":"1","user":{"id":"2","username":"account"},"avatar":"0123456789abcdef0123456789abcdef"}"#).unwrap();
+		assert_eq!(
+			value.avatar,
+			Patch::Value("0123456789abcdef0123456789abcdef".into())
+		);
+		let cleared = update(br#"{"guild_id":"1","user":{"id":"2"},"avatar":null}"#).unwrap();
+		assert_eq!(cleared.avatar, Patch::Null);
+		let invalid = update(br#"{"guild_id":"1","user":{"id":"2"},"avatar":"../wrong"}"#).unwrap();
+		assert_eq!(invalid.avatar, Patch::Absent);
+		assert_eq!(
+			update(br#"{"guild_id":"1","user":{"id":"2"}}"#)
+				.unwrap()
+				.avatar,
+			Patch::Absent
+		);
+	}
 	#[test]
 	fn identity_preserves_partial_and_explicit_clear_semantics() {
 		let partial =

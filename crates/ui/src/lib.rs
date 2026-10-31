@@ -11,6 +11,7 @@ mod archives;
 mod audio;
 mod badges;
 mod composer;
+pub mod force_sync;
 mod forwarding;
 mod owned_cosmetics;
 mod panels;
@@ -260,6 +261,11 @@ struct SubmittedEdit {
 
 #[derive(Default)]
 pub struct MessagingUi {
+	/// Explicit requests; the desktop owns synchronization and persistence.
+	pub force_sync_action: Option<force_sync::Action>,
+	pub force_sync_progress: Option<force_sync::Progress>,
+	pub force_sync_cache: Option<force_sync::CacheSummary>,
+	pub force_sync_open: bool,
 	message_speech: Option<message_menu::MessageSpeech>,
 	message_speech_error: Option<&'static str>,
 	poll_creator: polls::Creator,
@@ -2363,6 +2369,7 @@ mod composer_tests {
 
 	fn edit_state() -> State {
 		let user = model::User {
+			member_avatar: None,
 			username: None,
 			id: Id(1),
 			name: "Alex".into(),
@@ -4480,6 +4487,7 @@ mod composer_tests {
 				icon: None,
 			}],
 			members: Some(model::MemberList {
+				missing_identity: vec![],
 				channel: Id(1),
 				guild: Some(Id(2)),
 				request: 1,
@@ -4497,6 +4505,7 @@ mod composer_tests {
 					.map(|id| {
 						Some(model::MemberSlot::Person(model::Member {
 							user: model::User {
+								member_avatar: None,
 								username: None,
 								id: Id(id),
 								name: format!("Synthetic {id}"),
@@ -4761,6 +4770,7 @@ mod composer_tests {
 			channel.last_message = None;
 		}
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			channel,
 			guild: Some(guild),
 			request: 7,
@@ -4919,6 +4929,7 @@ mod composer_tests {
 				.guild;
 			let _ = state.request_members();
 			state.members = Some(model::MemberList {
+				missing_identity: vec![],
 				guild,
 				channel,
 				request: 7,
@@ -5250,6 +5261,7 @@ mod composer_tests {
 	fn profile_uses_open_conversation_not_browsed_sidebar_server() {
 		for guild in [None, Some(Id(10))] {
 			let user = model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(2),
 				name: "Synthetic".into(),
@@ -5571,6 +5583,7 @@ pub fn debug_member_voice_status_check(mut state: State, mut private: State) {
 	state.selected = Some(text_channel);
 	state.gateway_connected = true;
 	state.members = Some(model::MemberList {
+		missing_identity: vec![],
 		guild: Some(entry.guild),
 		channel: text_channel,
 		request: 0,
@@ -5646,6 +5659,7 @@ pub fn debug_member_voice_status_check(mut state: State, mut private: State) {
 	let user = private.channel(channel).unwrap().recipients[0].clone();
 	private.gateway_connected = true;
 	private.members = Some(model::MemberList {
+		missing_identity: vec![],
 		guild: None,
 		channel,
 		request: 0,

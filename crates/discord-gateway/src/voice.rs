@@ -180,6 +180,26 @@ impl Calls {
 		})
 	}
 	pub(super) fn snapshot(&self, guild: &mut GuildDto, partial: bool) -> Result<Event, Failure> {
+		if guild
+			.voice_states
+			.iter()
+			.filter(|state| {
+				state
+					.channel_id
+					.is_some_and(|channel| self.allowed.get(&channel) == Some(&Some(guild.id)))
+			})
+			.take(voice::MAX_ROSTER + 1)
+			.count() > voice::MAX_ROSTER
+		{
+			for state in &mut guild.voice_states {
+				if let Some(session) = state.session_id.take() {
+					drop(Zeroizing::new(session));
+				}
+			}
+			return Err(Failure::CapacityAt(
+				"Voice roster participant limit exceeded",
+			));
+		}
 		let members = self.members(std::mem::take(&mut guild.members));
 		let mut participants = Vec::new();
 		let mut bytes = 0;

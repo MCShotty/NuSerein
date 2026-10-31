@@ -141,6 +141,11 @@ impl Desktop {
 		self.switching = None;
 		self.roster_pending = false;
 		self.state.logout();
+		self.force_sync = Default::default();
+		self.messaging.force_sync_progress = None;
+		self.messaging.force_sync_cache = None;
+		self.messaging.force_sync_action = None;
+		self.messaging.force_sync_open = false;
 		if !was_demo && intent.forgets() {
 			self.forgetting = self.store.as_ref().is_some_and(|store| {
 				store

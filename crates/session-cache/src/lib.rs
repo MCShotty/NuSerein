@@ -24,6 +24,7 @@ pub struct Timeline {
 	payload_count: usize,
 	bytes: usize,
 	changed: BTreeSet<Id>,
+	provisional: BTreeSet<Id>,
 	patches: BTreeMap<Id, MessagePatch>,
 	patch_bytes: usize,
 	deleted: BTreeSet<Id>,
@@ -109,6 +110,21 @@ impl Timeline {
 			let before = message.bytes();
 			if let Some(user) = &update.profile {
 				message.author.clone_from(user);
+			}
+			match &update.avatar {
+				Patch::Absent => {}
+				Patch::Null => {
+					message.author.member_avatar = Some(Box::new(model::GuildAvatar {
+						guild: update.guild,
+						hash: None,
+					}))
+				}
+				Patch::Value(hash) => {
+					message.author.member_avatar = Some(Box::new(model::GuildAvatar {
+						guild: update.guild,
+						hash: Some(hash.clone()),
+					}))
+				}
 			}
 			match &update.nick {
 				Patch::Value(nick) => {
@@ -235,6 +251,7 @@ impl Timeline {
 		size_of::<Self>() + self.bytes - self.payload_count * size_of::<Message>()
 			+ tree_bytes::<(Id, Option<Message>)>(self.messages.len())
 			+ tree_bytes::<Id>(self.changed.len())
+			+ tree_bytes::<Id>(self.provisional.len())
 			+ tree_bytes::<Id>(self.deleted.len())
 			+ tree_bytes::<(Id, MessagePatch)>(self.patches.len())
 			+ self.patch_bytes
@@ -246,6 +263,7 @@ impl Timeline {
 		self.replace = !older;
 		self.loading = true;
 		self.changed.clear();
+		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
 	}
@@ -254,6 +272,7 @@ impl Timeline {
 		self.replace = false;
 		self.loading = true;
 		self.changed.clear();
+		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
 	}
@@ -262,6 +281,7 @@ impl Timeline {
 		// Starting a recent-page request restores newest-first retention.
 		self.loading = false;
 		self.changed.clear();
+		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
 	}
@@ -406,12 +426,53 @@ impl Timeline {
 		}
 		Ok(())
 	}
+	/// Show one disk page while preserving the in-flight request's live mutation fences.
+	/// Cached rows remain provisional until the corresponding service page arrives.
+	pub fn seed_cached_page(
+		&mut self,
+		items: Vec<Message>,
+		replace: bool,
+	) -> Result<(), &'static str> {
+		if !self.loading
+			|| items.len() > 50
+			|| items.iter().any(|item| !Self::valid_message(item))
+			|| items.iter().map(Message::bytes).sum::<usize>() > MAX_BYTES
+		{
+			return Err("Invalid cached history page");
+		}
+		self.replace |= replace;
+		self.provisional.clear();
+		for item in items {
+			self.provisional.insert(item.id);
+			self.insert(item, false, self.retain_older)?;
+		}
+		Ok(())
+	}
 	pub fn finish_page(
 		&mut self,
 		mut items: Vec<Message>,
 		older: bool,
 	) -> Result<(), &'static str> {
 		self.retain_older = older;
+		// An ordinary older-page response proves only its covered interval. Rows
+		// changed by live events remain authoritative over a delayed cache/read.
+		if !self.provisional.is_empty() {
+			let returned: BTreeSet<_> = items.iter().map(|item| item.id).collect();
+			let oldest = returned.first().copied();
+			for id in std::mem::take(&mut self.provisional) {
+				let covered = self.replace
+					|| older && (items.len() < 50 || oldest.is_some_and(|oldest| id >= oldest));
+				if covered
+					&& !returned.contains(&id)
+					&& !self.changed.contains(&id)
+					&& !self.deleted.contains(&id)
+					&& let Some(Some(message)) = self.messages.remove(&id)
+				{
+					self.bytes -= message.bytes();
+					self.payload_count -= 1;
+				}
+			}
+		}
 		// Inherit only requested rows, before replacement or eviction removes their metadata.
 		for item in &mut items {
 			if let Some(previous) = self.get_display(item.id) {
@@ -438,6 +499,7 @@ impl Timeline {
 		}
 		self.loading = false;
 		self.changed.clear();
+		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
 		Ok(())
@@ -1522,6 +1584,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(1),
 			author: model::User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,

@@ -4237,3 +4237,115 @@ can still change machine code and layout. The macOS runner was not pinned, and
 the overlapping samples do not establish whether the increase is repeatable.
 Its cause remains unresolved. See the [CI run](https://github.com/MCShotty/Serein/actions/runs/40442719612)
 and the [surface audit](pr-evidence/desktop-ui-polish/README.md).
+
+
+## Force Sync and paged local history — October 30, 2026
+
+Core measurements use `31f9daf2b833bce8d8bb177131d86d4857bf1243`, based on frozen
+fork main `39060d31760b0889a44ca53163a8815de8b52455`. The current published upstream
+reference is nightly `v1.0.0-nightly.20261028.68`, pinned to
+`1b2f8942910436f9a488a0cf0f806776f02a074f`. Native CI compares the final PR head,
+frozen fork base and published nightly separately on Linux, Windows and macOS;
+its results and normal package outcomes are recorded in the PR.
+
+Local core comparisons use Rust 1.98.1 and the committed lockfile, the canonical
+opt3/fat-LTO/codegen1/stripped release profile with line tables, separate build
+directories, Linux x86_64/glibc 2.41 and Xeon Platinum 8573C. Measurements were
+pinned to one admitted logical CPU after compilation stopped: one warmup and
+five alternating pairs. Reducer/wide samples average ten identical process runs
+per repetition to reduce short-run noise. Loading runs use the workload's own
+warmup and five samples, repeated in five alternating pairs.
+
+| Release core metric / median | `39060d31` | `31f9daf2` | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000-message reducer | 77.119 ms | 77.726 ms | +0.79% |
+| 10,000-message / 20,001-channel reducer | 8.398 ms | 8.467 ms | +0.82% |
+| Loading workload | 36.377 ms | 35.861 ms | −1.42% |
+| Retained 500-row timeline estimate | 409,492–409,977 B | 417,492–417,977 B | +8,000 B |
+
+The added per-user server-avatar context is included in the retained-byte estimate.
+These are core timings, not SQLite latency, native frame/input latency, RSS or
+Discord throughput. Loading still reports every synthetic immediate preview and
+known-member lookup available. Earlier exploratory runs measured +3.58% reducer
+and, in a different run, +3.30% wide-channel time. A repeated banner-map scan was
+replaced with maintained byte accounting; host/build variability and changed
+binary layout prevent attributing all variation to that change. Final repetition
+means ranged 76.434–77.488 ms before / 76.938–78.464 ms after for the reducer and
+8.206–8.421 / 8.342–8.637 ms for wide channels. The final local medians are within
+3%; no speedup is claimed, and native CI remains a separate check. The previously
+documented macOS timing concern is not declared resolved by these Linux samples.
+
+Release replay SHA-256 values: baseline
+`41a41deba92f635447c1a2af4db306b1c4d014edd16dccdae61b9dc57558cf97`,
+implementation `597f216fe5042d33f2015c8a4074dbea0a3bbc3b7d13cb0a9918482d15216620`.
+
+Supplementary native Storage-page samples used matched **development builds**
+(debug=0, `demo`), isolated synthetic data, native Wgpu/software rendering in
+Xvfb, dark 1120 × 850 at scale 1, three-second warmup and ten seconds sampled at
+0.5-second intervals. There was one discarded warmup and five alternating pairs;
+production release compilation ran concurrently. Both median process CPU samples
+were below the 0.10%-of-one-core accounting resolution. Median sampled peak/settled
+RSS was 199,987,200 → 203,018,240 B (+1.52%). No helper children were observed;
+Xvfb was measured separately at 47,726,592 → 47,742,976 B. These samples characterize
+the idle settings fixture, not release acceptance or a connected synchronization
+job. The UI fixture predates the final nonvisual member-removal corrections.
+
+Matched native [Storage screenshots](pr-evidence/force-sync/after.png),
+[light/narrow 200% view](pr-evidence/force-sync/after-light-narrow.png) and
+[progress dialog](pr-evidence/force-sync/progress.png) use synthetic cache and
+progress values. They show controls and layout, not real synchronization or a
+3-GB-pressure run. Baseline images were captured from the frozen fork build.
+
+The final-core 120-second lifecycle soak completed 3,831 passes, 122,592 channel visits,
+73,555,200 live inserts and 15 logout cycles in 120.023 seconds with the shipping
+row/byte bounds intact. It excludes storage, media, networking and process RSS.
+Live server/account synchronization, permission changes during a real roster,
+Windows/macOS physical display and assistive-technology behavior remain
+owner-controlled and unverified. Release connected-job CPU, presented-frame
+latency and actual service transfer time are unmeasured. The PR records packaging
+results, additional store measurements and platform CI without substituting these
+synthetic samples for those checks.
+
+
+The final SQLite-layout correction has separate release store measurements. Two
+standalone harnesses link matching baseline/final `local-store` and `model`
+artifacts (Rust 1.98.1, opt3/fat LTO/codegen1); neither uses the desktop. Both seed
+the same 5,000 messages across ten channels and 4,096 display hints. Each measured
+sample uses twenty fresh connections, 200 warm 500-row reads and forty nickname
+queries. Results below are medians of one warmup and five alternating pairs on
+CPU 0 after compilers/fuzzing stopped. “Fresh” means a new SQLite connection;
+OS file caches are warm, so this is **not disk-cold startup**.
+
+| Release store metric | `39060d31` | Final layout | Delta |
+| --- | ---: | ---: | ---: |
+| Open SQLite connection | 1.596 ms | 2.308 ms | +0.712 ms (+44.63%) |
+| First 500-message read | 1.288 ms | 1.267 ms | −0.021 ms (−1.63%) |
+| Warm 500-message read | 1.042 ms | 1.116 ms | +0.074 ms (+7.11%) |
+| Eight nickname matches | 4.828 ms | 0.559 ms | −4.269 ms (−88.42%) |
+| Seeded SQLite file | 2,564,096 B | 2,789,376 B | +225,280 B (+8.79%) |
+
+Opening cost is paid by the storage worker when it opens its connection, not on
+every channel change. Warm-read and open ranges were disjoint; these measured
+costs remain visible and are not called noise. First-read ranges overlapped. The
+nickname comparison changes the method from loading/filtering all 4,096 hints to
+a bounded eight-result SQL query; its improvement is not a UI-latency claim.
+No visual quality, safety bound or media setting was reduced.
+
+The physical-file probe exposed that the former pragma order left SQLite in
+non-reclaimable mode 0. The corrected final fixture verifies mode 2. After deleting
+1,000 synthetic rows, the bounded 1,024-page cleanup pass reduced the file from
+4,898,816 to 700,416 bytes; remaining free pages are reclaimed by later bounded
+passes. Actual-file regressions cover preserved personal data, reserved legacy
+conversion, low space and the original 64-MiB upgrade boundary.
+
+Normal local `cargo xtask package --format dir` reached the canonical fat-LTO
+application link, but the 17-GiB execution environment killed it for memory even
+after completed test caches were retired. No replacement compiler profile or
+old executable is presented as a successful current package. Packaging fixtures
+passed; current-head native package outcomes and executable/installed/compressed
+size comparisons belong to CI and are reported in the PR. Verified baseline
+Linux CI run [40944896907](https://github.com/MCShotty/Serein/actions/runs/40944896907)
+at `39060d31` has 98,785,944 executable bytes, 227,730,212 installed bytes and a
+141,894,460-byte Debian distribution; these are reference values, not a measured
+final delta. Windows/macOS release app CPU/RSS and actual synchronization workload
+latency remain unmeasured.

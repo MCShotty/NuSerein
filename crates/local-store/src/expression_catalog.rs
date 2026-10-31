@@ -625,7 +625,7 @@ mod tests {
 		assert_eq!(
 			db.0.pragma_query_value::<u32, _>(None, "user_version", |r| r.get(0))
 				.unwrap(),
-			31
+			crate::NATIVE_SCHEMA
 		);
 		let original = catalog(10);
 		db.save_expression_catalog(Id(1), &original).unwrap();

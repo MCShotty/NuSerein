@@ -46,6 +46,12 @@ pub enum Event {
 		request: member_search::Request,
 		result: Result<Vec<Member>, auth::Failure>,
 	},
+	/// Successful OP-8 results with fields Discord omitted from individual members.
+	MemberSearchPartial {
+		request: member_search::Request,
+		rows: Vec<Member>,
+		missing: Vec<model::MissingMemberFields>,
+	},
 	MemberIdentity(Box<model::MemberIdentity>),
 	Startup(Box<PreparedStartup>),
 	StartupWarnings(model::account::Warnings),
@@ -712,6 +718,17 @@ impl Event {
 							rows.capacity() * size_of::<Member>()
 								+ rows.iter().map(Member::bytes).sum::<usize>()
 						})
+				}
+				Self::MemberSearchPartial {
+					request,
+					rows,
+					missing,
+				} => {
+					request.query.capacity()
+						+ request.users.capacity() * size_of::<Id>()
+						+ rows.capacity() * size_of::<Member>()
+						+ rows.iter().map(Member::bytes).sum::<usize>()
+						+ missing.capacity() * size_of::<model::MissingMemberFields>()
 				}
 				Self::Members(list) => {
 					list.slots.capacity() * size_of::<Option<MemberSlot>>()

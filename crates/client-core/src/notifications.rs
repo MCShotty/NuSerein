@@ -1488,6 +1488,7 @@ mod tests {
 	}
 	fn notification_state() -> State {
 		let owner = User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,
@@ -2455,6 +2456,7 @@ mod tests {
 
 	fn message(id: u64, channel: u64) -> Message {
 		let owner = User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,
@@ -2473,6 +2475,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(channel),
 			author: User {
+				member_avatar: None,
 				id: Id(3),
 				..owner.clone()
 			},

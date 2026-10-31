@@ -124,6 +124,44 @@ fuzz_target!(|data: &[u8]| {
 		}
 		return;
 	}
+	if selector == 19 {
+		use client_core::force_sync_read::{DISCORD_EPOCH_MS, HISTORY_MILLIS, Read};
+		if let Ok(member) = discord_protocol::decode::<discord_protocol::MemberDto>(payload)
+			&& let Some(member) = member.into_guild_member(model::Id(9))
+		{
+			assert!(member.valid());
+			if let Some(avatar) = member.user.member_avatar {
+				assert_eq!(avatar.guild, model::Id(9));
+				assert!(avatar.valid());
+			}
+		}
+		if let Ok(items) = discord_protocol::guild_emojis(payload) {
+			assert!(model::valid_custom_emojis(&items));
+		}
+		let number = |at: usize| {
+			payload
+				.get(at..at + 8)
+				.map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
+				.unwrap_or(0)
+		};
+		let end_ms = if payload.first().is_some_and(|value| value & 1 == 0) {
+			DISCORD_EPOCH_MS + HISTORY_MILLIS + (number(0) % (10 * 365 * 86_400_000)) as i64
+		} else {
+			number(0) as i64
+		};
+		let request = Read::History {
+			channel: model::Id(number(8)),
+			before: (number(16) != 0).then_some(model::Id(number(16))),
+			cutoff_ms: end_ms.saturating_sub(HISTORY_MILLIS),
+			end_ms,
+		};
+		if request.valid() {
+			assert!(end_ms >= DISCORD_EPOCH_MS + HISTORY_MILLIS);
+			assert!(client_core::force_sync_read::last_before(end_ms).is_some());
+			assert!(request.bytes() <= 256);
+		}
+		return;
+	}
 	match selector % 8 {
 		0 => {
 			if let Ok(message) = discord_protocol::decode::<MessageDto>(payload) {

@@ -225,6 +225,7 @@ mod tests {
 		let user = profile.id;
 		assert_ne!(Some(user), state.user.as_ref().map(|owner| owner.id));
 		let identity = MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild,
 			user,
 			profile: Some(profile.clone()),
@@ -253,6 +254,7 @@ mod tests {
 			state.apply(client_core::Envelope {
 				generation: state.generation,
 				event: client_core::Event::MemberIdentity(Box::new(MemberIdentity {
+					avatar: model::Patch::Absent,
 					nick,
 					..identity.clone()
 				})),
@@ -294,6 +296,7 @@ mod tests {
 			freshness: Freshness::Fresh,
 			selected: Some(Id(10)),
 			user: Some(User {
+				member_avatar: None,
 				username: None,
 				id: Id(99),
 				name: "You".into(),
@@ -318,6 +321,7 @@ mod tests {
 				icon: None,
 				recipients: vec![
 					User {
+						member_avatar: None,
 						username: None,
 						id: Id(1),
 						name: "Alex".into(),
@@ -329,6 +333,7 @@ mod tests {
 						cosmetics: None,
 					},
 					User {
+						member_avatar: None,
 						username: None,
 						id: Id(2),
 						name: "Robin".into(),
@@ -340,6 +345,7 @@ mod tests {
 						cosmetics: None,
 					},
 					User {
+						member_avatar: None,
 						username: None,
 						id: Id(3),
 						name: "Long name\n".repeat(100),

@@ -1,6 +1,6 @@
 //! UI-neutral session entities. No filesystem or network dependencies.
 mod users;
-pub use users::{AccountKind, SavedAccount, User, valid_avatar_hash};
+pub use users::{AccountKind, GuildAvatar, SavedAccount, User, valid_avatar_hash};
 mod navigation;
 pub use navigation::{Channel, ChannelPatch, ExpressionCatalog, Guild, GuildPatch, InvitePreview};
 mod messages;
@@ -10,7 +10,9 @@ pub use presence::{
 	ActivityImage, ClientPlatforms, MemberPresence, OwnPresence, PresenceStatus, RichActivity,
 };
 mod members;
-pub use members::{Member, MemberDisplay, MemberIdentity, MemberList, MemberSlot};
+pub use members::{
+	Member, MemberDisplay, MemberIdentity, MemberList, MemberSlot, MissingMemberFields,
+};
 use presence::valid_presence_text;
 pub mod account;
 pub mod account_settings;

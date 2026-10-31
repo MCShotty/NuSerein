@@ -1398,6 +1398,7 @@ mod tests {
 		message.reply_to = Some(Id(8999));
 		message.mentions = (1..=40)
 			.map(|id| model::User {
+				member_avatar: None,
 				id: Id(id),
 				..state.user.clone().unwrap()
 			})
@@ -1477,6 +1478,7 @@ mod tests {
 			},
 		});
 		let person = |id| model::User {
+			member_avatar: None,
 			id: Id(id),
 			..state.user.clone().unwrap()
 		};
@@ -1577,6 +1579,7 @@ mod tests {
 			.map(|id| {
 				(
 					model::User {
+						member_avatar: None,
 						id: Id(id),
 						..current.clone()
 					},
@@ -1603,6 +1606,7 @@ mod tests {
 			.unwrap()
 			.recipients = (1..=50)
 			.map(|id| model::User {
+				member_avatar: None,
 				id: Id(20000 + id),
 				name: "Synthetic recipient ".repeat(20),
 				..current.clone()
@@ -1995,6 +1999,7 @@ mod tests {
 			activities: Vec::new(),
 		};
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
 			request: state.member_request,

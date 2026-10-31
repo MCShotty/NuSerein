@@ -982,6 +982,7 @@ mod tests {
 
 	fn user() -> User {
 		User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,

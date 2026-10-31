@@ -30,8 +30,7 @@ impl DiscordApi {
 
 	/// Active posts of one forum. The gateway only syncs joined threads, so the list is fetched.
 	///
-	/// The per-forum search route is unofficial client behavior; a service that rejects it falls
-	/// back to the documented guild-wide active list for the first page.
+	/// The per-forum search route is unofficial normal-account client behavior.
 	pub(super) async fn forum_posts(
 		&self,
 		parent: Id,
@@ -42,13 +41,7 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 
-		let result = self.searched_posts(parent, guild, offset).await;
-
-		if offset == 0 && matches!(result, Err(Failure::Protocol)) {
-			return self.active_guild_posts(parent, guild).await;
-		}
-
-		result
+		self.searched_posts(parent, guild, offset).await
 	}
 
 	async fn searched_posts(&self, parent: Id, guild: Id, offset: usize) -> Result<Page, Failure> {
@@ -60,29 +53,29 @@ impl DiscordApi {
 		let bytes = self
 			.request_limited(Method::GET, &path, None, discord_protocol::forum::MAX_WIRE)
 			.await?;
+		let status: discord_protocol::search::Reply =
+			discord_protocol::decode(&bytes).map_err(|_| Failure::Protocol)?;
+		if status
+			.code
+			.is_some_and(|code| (110_000..120_000).contains(&code))
+		{
+			let delay = crate::safe_delay(status.retry_after)?;
+			self.cooldown.lock().await.observe(
+				&crate::rate_limits::Route::new(&Method::GET, &path),
+				None,
+				Some(delay),
+				false,
+			)?;
+			return Err(Failure::RateLimited);
+		}
+		if status.code.is_some() {
+			return Err(Failure::Protocol);
+		}
 
 		let reply = discord_protocol::decode::<discord_protocol::forum::Reply>(&bytes)
 			.map_err(|_| Failure::Protocol)?;
 
 		reply
-			.into_page(parent, guild)
-			.map_err(|_| Failure::Protocol)
-	}
-
-	async fn active_guild_posts(&self, parent: Id, guild: Id) -> Result<Page, Failure> {
-		let bytes = self
-			.request_limited(
-				Method::GET,
-				&format!("/guilds/{guild}/threads/active"),
-				None,
-				discord_protocol::forum::GUILD_MAX_WIRE,
-			)
-			.await?;
-
-		let active = discord_protocol::decode::<discord_protocol::forum::GuildActive>(&bytes)
-			.map_err(|_| Failure::Protocol)?;
-
-		active
 			.into_page(parent, guild)
 			.map_err(|_| Failure::Protocol)
 	}
@@ -212,13 +205,40 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn forum_posts_fallback_to_guild_active() {
+	async fn forum_posts_report_indexing_without_calling_bot_only_endpoints() {
 		tokio::time::timeout(Duration::from_secs(10), async {
 			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 			let api = create_api(&listener).await;
 
-			let body = format!(r#"{{"threads":[{}],"members":[]}}"#, thread_row("1"));
+			let server = tokio::spawn(async move {
+				respond(
+					&listener,
+					&search_route(0),
+					"202 Accepted",
+					r#"{"code":110000,"retry_after":1.5}"#,
+				)
+				.await;
+			});
 
+			assert!(matches!(
+				api.forum_posts(Id(2), Id(1), 0).await,
+				Err(Failure::RateLimited)
+			));
+			let route = crate::rate_limits::Route::new(&Method::GET, &search_route(0));
+			assert!(
+				api.cooldown.lock().await.deadline(&route).unwrap() > tokio::time::Instant::now()
+			);
+
+			server.await.unwrap();
+		})
+		.await
+		.unwrap();
+	}
+	#[tokio::test]
+	async fn forum_search_protocol_error_does_not_try_a_bot_only_route() {
+		tokio::time::timeout(Duration::from_secs(5), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let api = create_api(&listener).await;
 			let server = tokio::spawn(async move {
 				respond(
 					&listener,
@@ -227,15 +247,11 @@ mod tests {
 					r#"{"code":0}"#,
 				)
 				.await;
-
-				respond(&listener, "/guilds/1/threads/active", "200 OK", &body).await;
 			});
-
-			let page = api.forum_posts(Id(2), Id(1), 0).await.unwrap();
-
-			assert_eq!(page.threads[0].id, Id(9));
-			assert!(!page.more);
-
+			assert!(matches!(
+				api.forum_posts(Id(2), Id(1), 0).await,
+				Err(Failure::Protocol)
+			));
 			server.await.unwrap();
 		})
 		.await

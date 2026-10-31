@@ -315,6 +315,7 @@ mod tests {
 	fn state() -> State {
 		State {
 			user: Some(User {
+				member_avatar: None,
 				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),

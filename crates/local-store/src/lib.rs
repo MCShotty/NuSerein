@@ -1,7 +1,14 @@
 //! Account-isolated bounded SQLite cache. This is not Discord's authoritative state.
 mod accounts;
+mod cache_cleanup;
 mod expression_catalog;
 mod history;
+mod sync_history;
+pub use sync_history::{
+	HistoryCacheStats, HistoryCoverage, HistoryPageQuery, MAX_CACHED_MESSAGES, SyncCheckpoint,
+	SyncPageResult,
+};
+pub mod cache_budget;
 mod member_displays;
 mod server_displays;
 pub use server_displays::ServerDisplay;
@@ -20,8 +27,8 @@ use std::{
 
 const MAX_MEDIA_JSON: usize = 256 * 1024;
 const MAX_WINDOW_BYTES: usize = 4 * 1024 * 1024;
-const NATIVE_SCHEMA: u32 = 31;
-const READABLE_SCHEMA: u32 = 31;
+const NATIVE_SCHEMA: u32 = 32;
+const READABLE_SCHEMA: u32 = 32;
 #[derive(serde::Deserialize)]
 struct CachedMentions(#[serde(deserialize_with = "model::deserialize_mentions")] Vec<User>);
 fn parse_author_roles(raw: &str) -> std::result::Result<Vec<Id>, StoreError> {
@@ -243,7 +250,12 @@ mod tests {
 				false,
 			)
 			.unwrap();
-		let expected = vec![original[0].clone(), edited.clone(), added];
+		let expected = vec![
+			original[0].clone(),
+			edited.clone(),
+			original[2].clone(),
+			added,
+		];
 		assert!(store.load_channel(Id(1), Id(2)).unwrap() == expected);
 		assert_eq!(
 			store.load_channel(Id(9), Id(2)).unwrap()[0].content,
@@ -304,7 +316,7 @@ mod tests {
 		);
 		assert!(store.load_channel(Id(1), Id(2)).unwrap() == expected);
 		store.save_changes(Id(1), Id(2), &[], &[], false).unwrap();
-		assert!(store.load_channel(Id(1), Id(2)).unwrap().is_empty());
+		assert!(store.load_channel(Id(1), Id(2)).unwrap() == expected);
 	}
 
 	#[test]
@@ -2046,8 +2058,10 @@ mod tests {
 		drop(store);
 		let store = LocalStore::open(&path).unwrap();
 		let reopened = store.load_channel(Id(1), Id(2)).unwrap();
-		assert_eq!(reopened.len(), 32);
-		for (actual, expected) in reopened.iter().zip(&messages) {
+		assert_eq!(reopened.len(), 33);
+		assert_eq!(reopened[0].id, legacy[0].id);
+		assert_eq!(reopened[0].content, "preserved body");
+		for (actual, expected) in reopened[1..].iter().zip(&messages) {
 			assert_eq!(actual.id, expected.id);
 			assert_eq!(actual.extra_content, expected.extra_content);
 			assert_eq!(actual.content, "preserved body");
@@ -2115,6 +2129,7 @@ mod tests {
 		assert!(messages[0].mentions.is_empty());
 		assert_eq!(store.load_drafts(Id(1)).unwrap()[&Id(2)], "kept draft");
 		messages[0].mentions = vec![User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,
@@ -2367,6 +2382,7 @@ mod tests {
 				id: Id(100),
 				channel: Id(channel),
 				author: User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2414,7 +2430,7 @@ mod tests {
 			.0
 			.query_row("SELECT count(*) FROM channels", [], |r| r.get(0))
 			.unwrap();
-		assert_eq!(count, 20);
+		assert_eq!(count, 30);
 		assert!(store.load_channel(Id(2), Id(30)).unwrap().is_empty());
 		drop(store);
 		let mut store = LocalStore::open(&path).unwrap();
@@ -2433,11 +2449,21 @@ mod tests {
 			Some("0123456789abcdef0123456789abcdef")
 		);
 		assert_eq!(cached_author.discriminator, 1234);
-		// A failed logout must leave the whole account transaction intact.
+		// Large cache cleanup commits bounded batches. A failed personal-data step
+		// retains a durable forget intent; startup must finish it before exposing data.
 		store.0.execute_batch("CREATE TRIGGER reject_draft_delete BEFORE DELETE ON drafts BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;").unwrap();
 		assert_eq!(store.forget_account(Id(1)), Err(StoreError::Unavailable));
-		assert!(!store.load_channel(Id(1), Id(30)).unwrap().is_empty());
+		assert!(store.load_channel(Id(1), Id(30)).unwrap().is_empty());
 		assert!(!store.load_drafts(Id(1)).unwrap().is_empty());
+		let pending: i64 = store
+			.0
+			.query_row(
+				"SELECT count(*) FROM cache_cleanup WHERE account='1' AND forget=1",
+				[],
+				|row| row.get(0),
+			)
+			.unwrap();
+		assert_eq!(pending, 1);
 		store
 			.0
 			.execute_batch("DROP TRIGGER reject_draft_delete;")

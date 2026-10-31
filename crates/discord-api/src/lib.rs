@@ -1,4 +1,5 @@
 mod commands;
+mod force_sync;
 mod history;
 mod http;
 mod messages;
