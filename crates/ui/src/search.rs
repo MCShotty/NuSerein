@@ -447,6 +447,9 @@ impl SearchUi {
 						.inner_margin(10)
 						.show(ui, |ui| {
 							ui.set_width((width - 20.0).max(1.0));
+							// An Area initially offers only 400 points. Expand that layout
+							// allowance so the popup can use available viewport space.
+							ui.set_max_height((bounds.height() - 32.0).max(1.0));
 							egui::ScrollArea::vertical()
 								.id_salt((
 									"search-suggestions",
@@ -2974,7 +2977,11 @@ mod tests {
 				},
 			);
 			for shape in &output.shapes {
-				if let egui::Shape::Text(text) = &shape.shape {
+				if let egui::Shape::Text(text) = &shape.shape
+					&& shape
+						.clip_rect
+						.intersects(egui::Rect::from_min_size(text.pos, text.galley.size()))
+				{
 					painted.push(text.galley.job.text.clone());
 				}
 			}
@@ -3029,6 +3036,10 @@ mod tests {
 			"visible labels: {painted:?}"
 		);
 		assert!(painted.iter().any(|text| text == "five"));
+		assert!(
+			painted.iter().any(|text| text == "More filters"),
+			"visible labels: {painted:?}"
+		);
 		// Oldest is sent to Discord with the search, not applied to one page.
 		state.search_oldest = true;
 		let command = state.request_search("synthetic".into(), None).unwrap();

@@ -400,18 +400,6 @@ impl State {
 			.find(|h| h.id == message)?
 			.channel;
 		if Some(channel) == self.selected {
-			if self.freshness == Freshness::Fresh
-				&& !self.history_pending
-				&& !self.timeline.is_deleted(message)
-				&& self
-					.timeline
-					.get(message)
-					.is_some_and(|entry| entry.channel == channel)
-			{
-				self.search_target = Some(message);
-				self.revision = self.revision.wrapping_add(1);
-				return None;
-			}
 			return self.open_target_window(message);
 		}
 		let guild = view.guild?;
@@ -611,33 +599,22 @@ mod tests {
 	}
 
 	#[test]
-	fn loaded_search_hits_jump_without_an_unnecessary_history_request() {
-		let mut state = state();
-		let mut message = crate::tests::message(100);
-		message.channel = Id(1);
-		state.timeline.insert(message, false, false).unwrap();
-		start(&mut state, true, Id(1));
-		assert!(state.open_search_hit(Id(100)).is_none());
-		assert_eq!(state.search_target, Some(Id(100)));
-		assert!(!state.history_pending);
-		assert!(state.search.as_ref().unwrap().page.is_some());
-	}
-
-	#[test]
-	fn stale_cached_search_hits_are_revalidated_before_opening() {
-		let mut state = state();
-		let mut message = crate::tests::message(100);
-		message.channel = Id(1);
-		state.timeline.insert(message, false, false).unwrap();
-		start(&mut state, true, Id(1));
-		state.freshness = Freshness::Stale;
-		assert!(matches!(
-			state.open_search_hit(Id(100)),
-			Some(Command::HistoryAround {
-				target: Id(100),
-				..
-			})
-		));
+	fn search_hits_revalidate_fresh_and_stale_cached_messages_before_opening() {
+		for freshness in [Freshness::Fresh, Freshness::Stale] {
+			let mut state = state();
+			let mut message = crate::tests::message(100);
+			message.channel = Id(1);
+			state.timeline.insert(message, false, false).unwrap();
+			start(&mut state, true, Id(1));
+			state.freshness = freshness;
+			assert!(matches!(
+				state.open_search_hit(Id(100)),
+				Some(Command::HistoryAround {
+					target: Id(100),
+					..
+				})
+			));
+		}
 	}
 
 	#[test]
