@@ -4426,3 +4426,36 @@ The changed release also completed a 120-second synthetic lifecycle soak: 3,269
 passes, 104,608 channel visits and 13 logout cycles. Its retained-history bounds
 held. It used no network, storage, renderer or audio devices. Current native
 Windows/macOS behavior and live Discord synchronization were not tested here.
+
+### Conversation search and scrolling
+
+The starting revision is `0c670e2f`; the implementation is `5a296b60`. The
+starting revision differs from the earlier `ea18da1e` replay executable only
+in documentation. On Linux x86-64 (Xeon Platinum 8573C, four-core quota,
+Rust 1.98.1), release replay binaries were pinned to CPU 0. Each received one
+warmup and five alternating measurements with no other task-owned builds.
+
+| Workload | Starting median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 81.12 ms (77.74–85.55) | 80.29 ms (78.96–87.79) | −1.02% |
+
+Both retained 500 rows and 417,492–417,977 estimated bytes. The ranges overlap;
+this synthetic reducer test does not measure search responsiveness, rendering or
+live Discord behavior. The changed release replay also completed a 120-second
+synthetic lifecycle soak: 3,252 passes, 104,064 channel visits and 13 logout
+cycles, with its retained-history bounds intact.
+
+The synthetic desktop was sampled separately in **debug** builds, using Xvfb,
+the Vulkan llvmpipe renderer, a 1280 × 800 window and the same search results.
+After a three-second warmup, five consecutive one-second process samples gave
+median idle CPU of 13.99% and 13.96% of one core, respectively. Median RSS was
+279,344 KiB and 279,460 KiB; sampled peak RSS was 284,572 KiB and 284,392 KiB.
+These short, non-alternating samples include synthetic animations and are not
+release-build or presented-frame measurements. No frame-latency claim follows.
+
+The debug executables were 339,267,264 and 339,489,976 bytes. Comparable release
+application and package sizes were unavailable locally: the preceding release
+packaging attempt approached the environment's 16 GiB memory limit. Native
+Windows/macOS input, live Discord searches and physical-device scrolling remain
+unverified. The checked-in before/after images are synthetic Linux light-theme captures; dark
+and narrow layouts were exercised by UI tests rather than native captures.
