@@ -2873,31 +2873,21 @@ impl MessagingUi {
 			.wrap(),
 		);
 		ui.add_space(8.0);
-		ui.label(crate::i18n::translate("voice-video-camera-denoising"));
-		ui.horizontal_wrapped(|ui| {
-			for (mode, label) in [
-				(CameraDenoising::Off, "voice-video-camera-denoising-off"),
-				(CameraDenoising::On, "voice-video-camera-denoising-on"),
-			] {
-				ui.selectable_value(
-					&mut self.video_settings.camera_denoising,
-					mode,
-					crate::i18n::translate(label),
-				);
-			}
-		});
-		let description = match self.video_settings.camera_denoising {
-			CameraDenoising::Off => "voice-video-camera-denoising-off-description",
-			CameraDenoising::On => "voice-video-camera-denoising-on-description",
-		};
-		ui.add(
-			egui::Label::new(
-				RichText::new(crate::i18n::translate(description))
-					.size(12.0)
-					.color(colors.muted),
-			)
-			.wrap(),
-		);
+		let mut denoising = self.video_settings.camera_denoising == CameraDenoising::On;
+		if design::switch(
+			ui,
+			"voice-video-camera-denoising",
+			Some("voice-video-camera-denoising-description"),
+			&mut denoising,
+		)
+		.changed()
+		{
+			self.video_settings.camera_denoising = if denoising {
+				CameraDenoising::On
+			} else {
+				CameraDenoising::Off
+			};
+		}
 		if let Some(status) = self
 			.preview_camera_denoising_status
 			.or(self.call_camera_denoising_status)
@@ -6308,36 +6298,25 @@ mod tests {
 		assert_eq!(
 			controls
 				.iter()
-				.map(|(text, _)| text.as_str())
-				.filter(|text| matches!(*text, "Off" | "ATADenoise" | "Auto" | "On" | "BSVD"))
-				.collect::<Vec<_>>(),
-			["Off", "ATADenoise"]
+				.filter(|(text, _)| text == "Camera denoising")
+				.count(),
+			1
 		);
-		for (label, mode, explanation) in [
-			(
-				"Off",
-				CameraDenoising::Off,
-				"Serein does not add camera denoising.",
-			),
-			(
-				"ATADenoise",
-				CameraDenoising::On,
-				"Serein will try ATADenoise. If it is unavailable, the camera continues without added denoising.",
-			),
-		] {
-			video_controls_click(&ctx, &mut messaging, 320.0, label);
+		assert!(!controls.iter().any(|(text, _)| text == "ATADenoise"));
+		assert!(
+			controls
+				.iter()
+				.any(|(text, _)| text.contains("Reduces camera noise"))
+		);
+		for mode in [CameraDenoising::On, CameraDenoising::Off] {
+			video_controls_click(&ctx, &mut messaging, 320.0, "Camera denoising");
 			assert_eq!(messaging.video_settings.camera_denoising, mode);
-			assert!(
-				video_controls_frame(&ctx, &mut messaging, 320.0, vec![])
-					.iter()
-					.any(|(text, _)| text == explanation)
-			);
 		}
-		for (label, mode, key) in [
-			("Off", CameraDenoising::Off, egui::Key::Enter),
-			("ATADenoise", CameraDenoising::On, egui::Key::Space),
+		for (mode, key) in [
+			(CameraDenoising::On, egui::Key::Space),
+			(CameraDenoising::Off, egui::Key::Enter),
 		] {
-			video_controls_focus(&ctx, &mut messaging, label);
+			video_controls_focus(&ctx, &mut messaging, "Camera denoising");
 			video_controls_key(&ctx, &mut messaging, key);
 			assert_eq!(messaging.video_settings.camera_denoising, mode);
 		}

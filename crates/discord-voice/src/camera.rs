@@ -1223,6 +1223,62 @@ mod tests {
 	}
 
 	#[test]
+	fn filtered_camera_preview_and_encoded_video_use_the_same_picture() {
+		let mut encoder = CameraEncoder::new_on_adapter(
+			VideoSettings {
+				camera_denoising: model::voice_settings::CameraDenoising::On,
+				..VideoSettings::default()
+			},
+			Some(model::VideoAdapter::default()),
+			Arc::new(AtomicBool::new(false)),
+			Arc::new(AtomicU64::new(0)),
+		)
+		.unwrap();
+		encoder.frame_budget = std::time::Duration::from_secs(60);
+		let mut output = None;
+		for input in 0..12 {
+			let mut rgb = vec![0; WIDTH * HEIGHT * 3];
+			for (index, pixel) in rgb.chunks_exact_mut(3).enumerate() {
+				let x = index % WIDTH;
+				pixel.fill(if x < WIDTH / 2 {
+					60 + input % 3
+				} else {
+					160 + input % 3
+				});
+			}
+			if let Some(frame) = encoder.encode(rgb).unwrap()
+				&& !frame.data.is_empty()
+			{
+				output = Some(frame);
+				break;
+			}
+		}
+		let frame = output.expect("filtered camera keyframe");
+		assert!(frame.keyframe);
+		let (expected, width, height) = preview_i420(&encoder.i420, WIDTH, HEIGHT).unwrap();
+		assert_eq!((frame.preview_width, frame.preview_height), (width, height));
+		assert_eq!(frame.rgb, expected);
+		let mut decoder = openh264::decoder::Decoder::new().unwrap();
+		let decoded = decoder.decode(&frame.data).unwrap().unwrap();
+		assert_eq!(decoded.dimensions(), (WIDTH, HEIGHT));
+		let stride = decoded.strides().0;
+		assert!(stride >= WIDTH && decoded.y().len() >= stride * HEIGHT);
+		let error = decoded
+			.y()
+			.chunks_exact(stride)
+			.take(HEIGHT)
+			.zip(encoder.i420[..WIDTH * HEIGHT].chunks_exact(WIDTH))
+			.flat_map(|(actual, expected)| actual[..WIDTH].iter().zip(expected))
+			.map(|(actual, expected)| usize::from(actual.abs_diff(*expected)))
+			.sum::<usize>();
+		assert!(
+			error / (WIDTH * HEIGHT) < 10,
+			"encoder must receive the filtered picture (mean error {})",
+			error / (WIDTH * HEIGHT)
+		);
+	}
+
+	#[test]
 	fn denoised_camera_discards_temporal_history_on_security_reset() {
 		let reset = Arc::new(AtomicU64::new(0));
 		let mut encoder = CameraEncoder::new_on_adapter(

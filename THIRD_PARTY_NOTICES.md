@@ -221,9 +221,9 @@ Exact AMD GPU selection on Linux additionally compiles against pinned
 archive, upstream license summary and both license texts. The Vulkan loader is
 provided by the system. Its DRM-derived Vulkan context binds AMF to the selected
 renderer device; Vulkan video encoders/decoders remain disabled.
-The bundled FFmpeg build is **LGPL-2.1-or-later**;
-GPL, nonfree, Media Foundation and H264/HEVC/AV1 VA-API encoders are disabled
-in this FFmpeg build. Its hardware wrappers support H264, HEVC and AV1 where
+The bundled FFmpeg build is **GPL-2.0-or-later** because the requested webcam
+filter chain includes `hqdn3d`. Nonfree, Media Foundation and H264/HEVC/AV1 VA-API
+encoders are disabled in this FFmpeg build. Its hardware wrappers support H264, HEVC and AV1 where
 the platform/backend supplies them; software encoding remains OpenH264/H264.
 Stable retains original H264 platform encoders, including OS Media Foundation,
 VideoToolbox and distribution-provided GStreamer VA-API/NVENC, with Rust OpenH264
@@ -231,15 +231,14 @@ fallback. These platform frameworks/plugins are not newly bundled codec source.
 NVIDIA headers retain their MIT notices; VideoToolbox is an OS framework. FFmpeg is dynamically
 linked through replaceable shared libraries. Packages retain its complete
 corresponding source archive, exact checksum/source URLs, configure arguments, source patch,
-LGPL text and build recipe under `ffmpeg-source` (Linux:
+GPL and LGPL texts and build recipe under `ffmpeg-source` (Linux:
 `share/doc/serein/ffmpeg-source`). The OpenH264 source subset omits only upstream
 root `res/` test media, preserving all source/build files and nested Android
 resources; its original and subset hashes are recorded separately. oneVPL source and the exact
 AMF public-header subset accompany the recipe for offline rebuilds; the AMF
 subset is identified separately from its original SDK archive. See `packaging/ffmpeg/README.md` and
-`assets/licenses/voice/PROVENANCE.md`. Serein's application code remains
-MIT OR Apache-2.0. No separately installed GPL FFmpeg library is linked into
-official packages.
+`assets/licenses/voice/PROVENANCE.md`. Serein's own application code remains
+MIT OR Apache-2.0; the bundled FFmpeg libraries have the GPL terms stated above.
 
 Software AV1 decoding uses pinned **dav1d 1.5.1** (BSD-2-Clause), built as a PIC
 static library. Packages retain its complete source archive and unmodified

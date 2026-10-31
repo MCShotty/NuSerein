@@ -58,14 +58,14 @@ def stage_payload(root, stage, prefix="usr"):
         raise ValueError("Installation prefix must be usr or app")
     doc = stage / prefix / "share/doc/serein"
     copy(root / "serein", stage / prefix / "bin/serein")
-    # The replaceable LGPL/BSD libraries are independent of host FFmpeg.
+    # The replaceable FFmpeg and OpenH264 libraries are independent of host FFmpeg.
     for name in ("libavcodec-serein.so.61", "libavutil-serein.so.59", "libavformat-serein.so.61", "libavfilter-serein.so.10", "libswscale-serein.so.8", "libswresample-serein.so.5", "libopenh264-serein.so.8"):
         copy(root / "lib" / name, stage / prefix / "lib/serein" / name)
     for name in ("libonnxruntime.so.1.23.2", "backbone.onnx", "spec_head.onnx", "denoiser_core.onnx",
                  "build.json", "ONNXRuntime-LICENSE", "ONNXRuntime-ThirdPartyNotices.txt",
                  "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip"):
         copy(root / "voice-enhancement" / name, stage / prefix / "lib/serein/voice-enhancement" / name)
-    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "serein-openh264.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING"):
+    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "serein-openh264.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2", "OpenH264-LICENSE", "dav1d-COPYING"):
         copy(root / "ffmpeg-source" / name, doc / "ffmpeg-source" / name)
     copy(root / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", doc / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz")
     copy(root / "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2", doc / "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2")
@@ -295,7 +295,7 @@ def rpm_package(temporary, stage, application_version, distro):
         "%global __provides_exclude_from ^/usr/lib/serein/.*$\n"
         "%global __requires_exclude ^(libavcodec-serein\\.so\\.61|libavutil-serein\\.so\\.59|libavformat-serein\\.so\\.61|libavfilter-serein\\.so\\.10|libswscale-serein\\.so\\.8|libswresample-serein\\.so\\.5|libopenh264-serein\\.so\\.8).*\n"
         f"Name: serein\nVersion: {version}\nRelease: {release}\n"
-        "Summary: Unofficial native Discord client\nLicense: (MIT OR Apache-2.0) AND LGPL-2.1-or-later AND BSD-2-Clause AND MPL-2.0\n"
+        "Summary: Unofficial native Discord client\nLicense: (MIT OR Apache-2.0) AND GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-2-Clause AND MPL-2.0\n"
         "URL: https://github.com/ViceVerse-cz/Serein\n"
         + "\n".join(f"Requires: {item}" for item in requires)
         + f"\nRecommends: gnome-keyring, {hardware_plugins}\n"
@@ -362,7 +362,7 @@ def arch_package(temporary, stage, application_version, libraries):
         f"pkgname=serein\npkgver='{version}'\npkgrel=1\n"
         "pkgdesc='Unofficial native Discord client'\n"
         f"arch=('{platform.machine()}')\nurl='https://github.com/ViceVerse-cz/Serein'\n"
-        "license=('MIT' 'Apache-2.0' 'LGPL-2.1-or-later' 'BSD-2-Clause' 'MPL-2.0')\noptions=('!strip' '!debug' '!lto')\n"
+        "license=('MIT' 'Apache-2.0' 'GPL-2.0-or-later' 'LGPL-2.1-or-later' 'BSD-2-Clause' 'MPL-2.0')\noptions=('!strip' '!debug' '!lto')\n"
         + "depends=(" + " ".join(f"'{item}'" for item in sorted(depends)) + ")\n"
         "optdepends=('gnome-keyring: Secret Service credential provider' "
         "'gst-plugins-bad-libs: Stable H264 parser and NVENC plugin' "

@@ -4237,3 +4237,32 @@ can still change machine code and layout. The macOS runner was not pinned, and
 the overlapping samples do not establish whether the increase is repeatable.
 Its cause remains unresolved. See the [CI run](https://github.com/MCShotty/Serein/actions/runs/40442719612)
 and the [surface audit](pr-evidence/desktop-ui-polish/README.md).
+
+## Webcam filter chain — October 31, 2026
+
+The requested chain costs substantially more than the previous single filter.
+The following is a synthetic comparison of the native filter bridge, not an
+end-to-end webcam measurement. The baseline is `39060d31`; the new bridge uses
+`video_denoise.c` SHA-256 `ef48198cfba1b94b07521313a4b974959c1d29283742dceb17eff3516ad9b699`
+and FFmpeg recipe SHA-256
+`24bf9e4ce8ea9d7b65fee7ecf7a726823b1c3759fa157c3ee786a60fd516c916`.
+
+Both use FFmpeg 7.1.5, a two-thread graph and a bridge compiled with `-O2` on
+Linux x64 (Intel Xeon Platinum 8573C, two logical CPUs). The baseline FFmpeg is
+LGPL-only; the new build enables GPL for `hqdn3d`. For each size, one
+60-frame warmup was followed by five 60-frame samples; the table shows the
+median elapsed milliseconds per submitted synthetic I420 frame. Inputs have
+uniform luminance varying over time. Runs were sequential, with comparison order
+reversed for 720p. They include graph processing and buffer copies, but not
+camera capture, encoding, UI rendering, memory usage or actual frame latency.
+
+| Frame size | Previous `atadenoise=s=5` | Requested chain | Change |
+| --- | ---: | ---: | ---: |
+| 640 × 480 | 0.75 ms | 3.94 ms | +423% |
+| 1280 × 720 | 2.21 ms | 11.48 ms | +419% |
+| 1920 × 1080 | 4.82 ms | 26.00 ms | +440% |
+
+The requested default temporal window also starts producing output after five
+input frames, versus three previously. These measurements do not predict other
+hardware. The existing overload fallback disables filtering when it cannot keep
+up and continues the camera without it; native camera behavior remains unverified.

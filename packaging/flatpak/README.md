@@ -7,7 +7,7 @@ no moving Rust SDK extension or compiler is shipped in the application.
 The build first compiles checksum-pinned patchelf 0.18.0 inside the sandbox so
 FFmpeg can set sibling-library RPATHs. This build tool is removed during cleanup;
 it is not shipped in the application. The following FFmpeg module builds
-checksum-pinned LGPL-only avcodec, avutil, avformat, avfilter, swscale and swresample,
+checksum-pinned GPL-2.0-or-later avcodec, avutil, avformat, avfilter, swscale and swresample,
 plus OpenH264 and statically linked dav1d, without network access. The shared
 libraries, build recipe and complete corresponding sources for FFmpeg,
 OpenH264 and dav1d ship with the application. The module also

@@ -945,9 +945,10 @@ FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning for H.264 sof
 fallback, including screens; active desktop text quality and throughput need native
 validation. H.264 software encoding uses the existing FFmpeg/OpenH264 path.
 
-Official builds use the pinned minimal LGPL recipe in
-[`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py), with GPL/nonfree components,
-networking and CLI programs disabled. Explicit decoder/demuxer allowlists cover
+Official builds use the pinned minimal GPL-2.0-or-later recipe in
+[`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py); `hqdn3d` requires GPL.
+Nonfree and version-3-only components, networking and CLI programs remain disabled.
+Explicit decoder/demuxer allowlists cover
 H.264, HEVC, AV1 and supported anonymous video attachments. Replaceable shared
 libraries, license and corresponding source/patch/recipe travel with each package.
 Private library names and ELF symbol versions keep the system GStreamer FFmpeg
@@ -1061,14 +1062,14 @@ ID is session-local. Refresh discovers added/removed devices; a missing selected
 device is reported rather than silently opening another camera. Changing selection
 stops active capture and requires another camera-on click.
 
-Voice & Video offers camera denoising as **Off** (the default) or **ATADenoise**.
-ATADenoise explicitly enables FFmpeg filtering for
-camera output up to 2,073,600 pixels; it requires a five-frame temporal window and adds
-lookahead. If initialization fails or processing repeatedly exceeds the frame interval,
+Voice & Video offers a camera denoising toggle, off by default. When enabled, the camera
+uses the FFmpeg chain `atadenoise,hqdn3d=4,unsharp=7:7:0.5` for output up to
+2,073,600 pixels. ATADenoise's default nine-frame window adds lookahead. If initialization
+fails or processing repeatedly exceeds the frame interval,
 Serein continues without the filter and displays the reason. This processing stays on the
 camera worker and applies to its local preview and outgoing video, not screen sharing.
 Changes apply when the camera or preview next starts. Older saved Auto preferences
-become Off; saved On preferences select ATADenoise. Native camera quality and latency
+become Off; saved On preferences enable the filter chain. Native camera quality and latency
 remain unverified.
 
 Voice & Video also offers an explicit **Preview camera / Stop preview** control outside

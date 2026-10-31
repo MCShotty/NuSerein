@@ -38,7 +38,7 @@ fn main() {
 	if let Some(prefix) = &prefix {
 		assert!(
 			prefix.join("include/libavcodec/avcodec.h").is_file(),
-			"Build the LGPL FFmpeg libraries with python3 scripts/build-ffmpeg.py, then set FFMPEG_DIR to its prefix"
+			"Build the FFmpeg libraries with python3 scripts/build-ffmpeg.py, then set FFMPEG_DIR to its prefix"
 		);
 		native.include(prefix.join("include"));
 		query_dependencies(

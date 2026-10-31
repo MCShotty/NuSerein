@@ -63,6 +63,9 @@ InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRO
 ; UI Pages
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${DIST_DIR}\LICENSE-MIT"
+!define MUI_PAGE_HEADER_TEXT "FFmpeg License"
+!define MUI_PAGE_HEADER_SUBTEXT "Review the license for the bundled FFmpeg libraries."
+!insertmacro MUI_PAGE_LICENSE "${DIST_DIR}\ffmpeg-source\COPYING.GPLv2"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 

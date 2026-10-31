@@ -25,7 +25,7 @@ void serein_denoise_free(SereinDenoise *d) {
 }
 
 SereinDenoise *serein_denoise_new(int width, int height) {
-    /* Five YUV pictures plus input/output and the camera's own buffers. */
+    /* The default nine-picture temporal window is bounded to 1080p. */
     if (width <= 0 || height <= 0 || width > 7680 || height > 4320 || (width & 1) || (height & 1) ||
         (int64_t)width * height > 1920 * 1080) return NULL;
     SereinDenoise *d = calloc(1, sizeof(*d));
@@ -37,16 +37,22 @@ SereinDenoise *serein_denoise_new(int width, int height) {
     d->graph->nb_threads = 2;
     const AVFilter *source = avfilter_get_by_name("buffer");
     const AVFilter *filter = avfilter_get_by_name("atadenoise");
+    const AVFilter *spatial_filter = avfilter_get_by_name("hqdn3d");
+    const AVFilter *sharpen_filter = avfilter_get_by_name("unsharp");
     const AVFilter *sink = avfilter_get_by_name("buffersink");
-    if (!source || !filter || !sink) goto fail;
+    if (!source || !filter || !spatial_filter || !sharpen_filter || !sink) goto fail;
     char args[128];
     snprintf(args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=1/90000:pixel_aspect=1/1", width, height, AV_PIX_FMT_YUV420P);
-    AVFilterContext *temporal = NULL;
+    AVFilterContext *temporal = NULL, *spatial = NULL, *sharpen = NULL;
     if (avfilter_graph_create_filter(&d->source, source, "camera", args, NULL, d->graph) < 0 ||
-        avfilter_graph_create_filter(&temporal, filter, "denoise", "s=5", NULL, d->graph) < 0 ||
+        avfilter_graph_create_filter(&temporal, filter, "denoise", NULL, NULL, d->graph) < 0 ||
+        avfilter_graph_create_filter(&spatial, spatial_filter, "hqdn3d", "4", NULL, d->graph) < 0 ||
+        avfilter_graph_create_filter(&sharpen, sharpen_filter, "unsharp", "7:7:0.5", NULL, d->graph) < 0 ||
         avfilter_graph_create_filter(&d->sink, sink, "output", NULL, NULL, d->graph) < 0 ||
         avfilter_link(d->source, 0, temporal, 0) < 0 ||
-        avfilter_link(temporal, 0, d->sink, 0) < 0 ||
+        avfilter_link(temporal, 0, spatial, 0) < 0 ||
+        avfilter_link(spatial, 0, sharpen, 0) < 0 ||
+        avfilter_link(sharpen, 0, d->sink, 0) < 0 ||
         avfilter_graph_config(d->graph, NULL) < 0) goto fail;
     return d;
 fail:

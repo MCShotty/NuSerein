@@ -97,7 +97,8 @@ def main():
         for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avformat-serein-61.dll", "avfilter-serein-10.dll", "swscale-serein-8.dll", "swresample-serein-5.dll", "openh264.dll"):
             (payload / name).write_bytes(b"synthetic DLL; never loaded")
         (payload / "ffmpeg-source/source").mkdir(parents=True)
-        (payload / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz").write_bytes(b"synthetic LGPL source")
+        (payload / "ffmpeg-source/COPYING.GPLv2").write_text("Synthetic FFmpeg license fixture")
+        (payload / "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz").write_bytes(b"synthetic FFmpeg source")
         (payload / "voice-enhancement").mkdir()
         for name in ("onnxruntime.dll", "backbone.onnx", "spec_head.onnx", "denoiser_core.onnx",
                      "ONNXRuntime-LICENSE", "ONNXRuntime-ThirdPartyNotices.txt", "MSVC-LICENSE.txt"):
@@ -164,7 +165,7 @@ def main():
                 subprocess.run(f'"{setup}" /S /D={installed}', check=True, timeout=30)
                 timings.append(round((time.perf_counter() - start) * 1000, 3))
                 assert (installed / "serein.exe").read_bytes() == (payload / "serein.exe").read_bytes()
-                for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avfilter-serein-10.dll", "openh264.dll", "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll", "msvcp140_1.dll"):
+                for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avfilter-serein-10.dll", "openh264.dll", "ffmpeg-source/COPYING.GPLv2", "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll", "msvcp140_1.dll"):
                     assert (installed / name).read_bytes() == (payload / name).read_bytes()
                 assert uninstaller.is_file()
                 assert unrelated.read_text() == "Owner data must survive install, upgrade and uninstall"

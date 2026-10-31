@@ -100,8 +100,8 @@ The source builder needs Python 3.12+, Make, CMake, Meson, Ninja, a C/C++ compil
 and NASM (x86_64); Linux also needs `patchelf`, libva and libdrm development
 packages for Quick Sync's device interface. Windows uses an MSVC developer shell with
 MSYS2 Bash/Make/pkgconf/NASM and places `FFMPEG_DIR/bin` on PATH for source runs.
-macOS uses Xcode tools and `install_name_tool`. Official packages bundle the five
-replaceable FFmpeg shared libraries and OpenH264, LGPL corresponding source and the AMD/Intel
+macOS uses Xcode tools and `install_name_tool`. Official packages bundle the six
+replaceable FFmpeg shared libraries and OpenH264, corresponding source and the AMD/Intel
 interface/dispatcher source and notices. GPU runtimes remain system provided. Native builds can also
 find the private `libavcodec-serein`/`libavutil-serein` pkg-config files. System
 FFmpeg executables used for attachment playback are independent.

@@ -27,6 +27,7 @@ REQUIRED_FILES = (
     "ffmpeg-source/build-ffmpeg.py",
     "ffmpeg-source/serein-ffmpeg.patch",
     "ffmpeg-source/COPYING.LGPLv2.1",
+    "ffmpeg-source/COPYING.GPLv2",
     "ffmpeg-source/OpenH264-LICENSE",
     "ffmpeg-source/dav1d-COPYING",
     "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz",

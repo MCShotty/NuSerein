@@ -110,10 +110,10 @@ jobs:
           echo "FFMPEG_DIR=$ffmpeg_root/prefix" >> "$GITHUB_ENV"
           echo "FFMPEG_WORK=$ffmpeg_root/build" >> "$GITHUB_ENV"
           echo "FFMPEG_CACHE=$ffmpeg_root/sources" >> "$GITHUB_ENV"
-      - name: Build LGPL-only FFmpeg media libraries
+      - name: Build pinned FFmpeg media libraries
         if: runner.os != 'Windows'
         run: python3 scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
-      - name: Build LGPL-only FFmpeg media libraries (MSVC)
+      - name: Build pinned FFmpeg media libraries (MSVC)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"

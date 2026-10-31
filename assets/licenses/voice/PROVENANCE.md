@@ -1,17 +1,17 @@
 # Voice dependency license provenance
 
-## Shared FFmpeg media libraries — October 11, 2026
+## Shared FFmpeg media libraries — updated October 31, 2026
 
 `scripts/build-ffmpeg.py` builds shared FFmpeg 7.1.5 avcodec, avutil, avformat, avfilter,
-swscale and swresample with GPL,
-nonfree, Media Foundation and VA-API encoders disabled. It enables libopenh264 2.6.0,
+swscale and swresample with GPL enabled for the hqdn3d filter. Nonfree, Media Foundation
+and VA-API encoders are disabled. It enables libopenh264 2.6.0,
 supported NVENC, AMD AMF, Intel Quick Sync and macOS VideoToolbox backends. The Linux
 VA interface remains enabled for Quick Sync and selected-device hardware decoding.
 H.264/HEVC and AV1 decoding are explicitly allowlisted; software AV1 uses
-statically linked dav1d 1.5.1 (BSD-2-Clause). Network protocols stay disabled; the filter allowlist enables atadenoise alongside FFmpeg’s built-in
+statically linked dav1d 1.5.1 (BSD-2-Clause). Network protocols stay disabled; the filter allowlist enables atadenoise, hqdn3d and unsharp alongside FFmpeg’s built-in
 audio/video buffer sources and sinks. The small demux/audio allowlists serve the anonymous bounded
 attachment reader. OpenH264 2.6.0 matches the existing
-openh264-sys2 0.9.8 bundled codec version. The LGPL FFmpeg corresponding source
+openh264-sys2 0.9.8 bundled codec version. The FFmpeg corresponding source
 archive, exact recipe/source metadata, namespace patch and configure arguments are staged from
 the built prefix into every package's `ffmpeg-source` directory. Nix uses the
 same source pins and recipe. No compiler or downloaded Cisco binary is bundled.
@@ -26,6 +26,8 @@ same source pins and recipe. No compiler or downloaded Cisco binary is bundled.
 `ffmpeg-COPYING.LGPLv2.1.txt` is copied unmodified from the FFmpeg archive's
 `COPYING.LGPLv2.1`; SHA-256
 `246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30`.
+`ffmpeg-COPYING.GPLv2.txt` is copied unmodified from `COPYING.GPLv2`; SHA-256
+`8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643`.
 `nv-codec-headers-LICENSE.txt` retains verbatim the MIT notice from
 `include/ffnvcodec/nvEncodeAPI.h`; SHA-256
 `72b60be67644d841bfd54a042875b5846294d357040dd7ac8e38bde20d9e8f97`.
@@ -242,7 +244,7 @@ runtime; their licenses and GPU-driver packaging terms still apply. The exact
 FFmpeg source patch also routes QSV packet requests through the capped native
 allocation callback and selects missing internal HEVC SEI helpers for the
 pinned HEVC-QSV encoder; no decoder is enabled. Its unmodified source archive
-and applied patch ship together. The same LGPL-only hardware wrappers supply
+and applied patch ship together. The same hardware wrappers supply
 HEVC/AV1 when supported; software encoding stays OpenH264/H264. FFmpeg is now
 the sole outgoing encoder engine; native capture and incoming decoder fallback
 remain separate. The retained QSV patch preserves the requested CBR/VBR mode and
@@ -256,7 +258,7 @@ Linux AMF builds additionally use Vulkan-Headers 1.3.290 from
 SHA-256 `f38a653bf93cab7a2a229a53d2d53b1cba9a2819e4c0a7de13c54085bde9bcf5`.
 The complete pristine header archive and upstream `LICENSE.md`/`LICENSES` travel
 with the Linux recipe. The loader and AMD runtime remain system dependencies.
-Its modified LGPL FFmpeg sources retain the original archive and a reproducible
+Its modified FFmpeg sources retain the original archive and a reproducible
 patch enabling external AMF Vulkan-device handles, exact DRM device selection,
 VideoToolbox registry-ID specification and QSV quality-negotiation checks.
 No Vulkan video encoder/decoder or AMD VA-API encoder is enabled.

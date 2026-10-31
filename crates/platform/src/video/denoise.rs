@@ -19,7 +19,7 @@ unsafe extern "C" {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DenoiseError;
 
-/// Five-frame temporal filter. Geometry is bounded before native allocations.
+/// Bounded webcam filter chain with a nine-frame temporal window.
 pub struct CameraDenoiser {
 	filter: NonNull<c_void>,
 	length: usize,
@@ -112,6 +112,73 @@ mod tests {
 			}
 		}
 		assert!(changed, "the actual filter must alter small temporal noise");
+	}
+
+	#[test]
+	fn camera_filter_matches_the_requested_ffmpeg_chain() {
+		let mut filter = CameraDenoiser::new(16, 16).expect("packaged FFmpeg filters");
+		let mut compared = false;
+		for input_pts in 0..24_usize {
+			let mut frame = vec![0; 16 * 16 * 3 / 2];
+			for y in 0..16 {
+				for x in 0..16 {
+					frame[y * 16 + x] = (50
+						+ if x >= 8 { 75 } else { 0 }
+						+ y * 2 + (input_pts * 3 + x * 7 + y * 11) % 7) as u8;
+				}
+			}
+			for plane in 0..2 {
+				for y in 0..8 {
+					for x in 0..8 {
+						frame[256 + plane * 64 + y * 8 + x] = ((if plane == 0 { 90 } else { 150 })
+							+ (x * 3 + y * 2 + input_pts) % 13)
+							as u8;
+					}
+				}
+			}
+			let output_pts = filter.process(&mut frame, input_pts as i64).unwrap();
+			if input_pts < 5 {
+				assert_eq!(
+					output_pts, None,
+					"the default nine-frame filter must warm up"
+				);
+				continue;
+			}
+			assert_eq!(output_pts, Some((input_pts - 5) as i64));
+			if output_pts == Some(8) {
+				// FFmpeg 7.1.5 reference output for atadenoise,hqdn3d=4,unsharp=7:7:0.5.
+				// Samples include both sides of the edge and chroma affected by hqdn3d.
+				for (index, expected) in [
+					(69, 59),
+					(71, 47),
+					(72, 148),
+					(74, 135),
+					(101, 63),
+					(103, 51),
+					(104, 152),
+					(106, 139),
+					(181, 73),
+					(183, 61),
+					(184, 162),
+					(186, 149),
+					(213, 77),
+					(215, 65),
+					(216, 166),
+					(218, 153),
+					(267, 93),
+					(268, 96),
+					(269, 99),
+					(271, 92),
+				] {
+					assert!(frame[index].abs_diff(expected) <= 1, "pixel {index}");
+				}
+				compared = true;
+			}
+		}
+		assert!(
+			compared,
+			"the camera filter must produce the reference frame"
+		);
 	}
 
 	#[test]

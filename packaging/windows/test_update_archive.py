@@ -27,7 +27,7 @@ class UpdateArchiveTests(unittest.TestCase):
                 "THIRD_PARTY_NOTICES.md", "licenses/voice/fixture.txt", "README.md",
                 "ffmpeg-source/build.json", "ffmpeg-source/configure.json",
                 "ffmpeg-source/build-ffmpeg.py", "ffmpeg-source/serein-ffmpeg.patch",
-                "ffmpeg-source/COPYING.LGPLv2.1", "ffmpeg-source/OpenH264-LICENSE",
+                "ffmpeg-source/COPYING.LGPLv2.1", "ffmpeg-source/COPYING.GPLv2", "ffmpeg-source/OpenH264-LICENSE",
                 "ffmpeg-source/dav1d-COPYING", "ffmpeg-source/source/dav1d-1.5.1.tar.xz",
                 "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz",
                 "ffmpeg-source/source/openh264-2.6.0-source.tar.bz2",
@@ -56,7 +56,7 @@ class UpdateArchiveTests(unittest.TestCase):
         for filename in (
             "avcodec-serein-61.dll", "avutil-serein-59.dll", "openh264.dll",
             "avformat-serein-61.dll", "avfilter-serein-10.dll", "swscale-serein-8.dll", "swresample-serein-5.dll",
-            "ffmpeg-source/dav1d-COPYING", "ffmpeg-source/source/dav1d-1.5.1.tar.xz",
+            "ffmpeg-source/COPYING.GPLv2", "ffmpeg-source/dav1d-COPYING", "ffmpeg-source/source/dav1d-1.5.1.tar.xz",
             "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "licenses/voice/fixture.txt",
             "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll",
             "voice-enhancement/backbone.onnx", "voice-enhancement/spec_head.onnx",
