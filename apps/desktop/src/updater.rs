@@ -18,8 +18,7 @@ mod delta;
 #[path = "updater_install.rs"]
 mod install;
 
-// Keep the current fork URL until GitHub redirects it after the repository rename.
-const RELEASES: &str = "https://api.github.com/repos/MCShotty/Serein/releases";
+const RELEASES: &str = "https://api.github.com/repos/MCShotty/NuSerein/releases";
 const MAX_METADATA: usize = 2 * 1024 * 1024;
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -1110,7 +1109,7 @@ mod windows_asset_tests {
 				.map(|name| Asset {
 					name: (*name).into(),
 					browser_download_url: format!(
-						"https://github.com/MCShotty/Serein/releases/download/{tag}/{name}"
+						"https://github.com/MCShotty/NuSerein/releases/download/{tag}/{name}"
 					),
 					size: 1,
 				})

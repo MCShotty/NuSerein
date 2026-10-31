@@ -17,7 +17,7 @@ SetCompressor /SOLID lzma
 ; Keep the existing uninstall key so upgrades reuse the installed location.
 !define PRODUCT_REGISTRY_KEY "Serein"
 !define PRODUCT_PUBLISHER "NuSerein contributors"
-!define PRODUCT_WEB_SITE "https://github.com/MCShotty/Serein"
+!define PRODUCT_WEB_SITE "https://github.com/MCShotty/NuSerein"
 !define APP_EXE "serein.exe"
 !define APP_ID "cz.viceverse.serein"
 

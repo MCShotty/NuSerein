@@ -13,7 +13,7 @@ $appName = 'NuSerein'
 # Preserve the existing install directory, uninstall registration and startup entry.
 $legacyName = 'Serein'
 $publisher = 'NuSerein contributors'
-$website = 'https://github.com/MCShotty/Serein'
+$website = 'https://github.com/MCShotty/NuSerein'
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\$legacyName"
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$legacyName"
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) "$appName.lnk"

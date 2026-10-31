@@ -152,12 +152,12 @@ impl Desktop {
 					None
 				}
 				Command::Website => {
-					ctx.open_url(egui::OpenUrl::new_tab("https://github.com/MCShotty/Serein"));
+					ctx.open_url(egui::OpenUrl::new_tab("https://github.com/MCShotty/NuSerein"));
 					None
 				}
 				Command::ReportIssue => {
 					ctx.open_url(egui::OpenUrl::new_tab(
-						"https://github.com/MCShotty/Serein/issues/new/choose",
+						"https://github.com/MCShotty/NuSerein/issues/new/choose",
 					));
 					None
 				}

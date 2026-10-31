@@ -1,7 +1,7 @@
 # NuSerein
 
 <p align="center">
-  <a href="https://github.com/MCShotty/Serein">
+  <a href="https://github.com/MCShotty/NuSerein">
     <img src="docs/preview.png" alt="NuSerein Native Discord Client" width="900" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);" />
   </a>
 </p>
@@ -28,7 +28,7 @@ NuSerein is MCShotty’s fork of [Serein](https://github.com/ViceVerse-cz/Serein
 
 <p align="center">
   <a href="https://discord.gg/UqTDGCENaN"><img src="https://img.shields.io/badge/Discord-Join%20our%20Discord%20server%20for%20updates-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://github.com/MCShotty/Serein/releases"><img src="https://img.shields.io/github/v/release/MCShotty/Serein?label=NuSerein%20release&color=blue" alt="NuSerein GitHub Release" /></a>
+  <a href="https://github.com/MCShotty/NuSerein/releases"><img src="https://img.shields.io/github/v/release/MCShotty/NuSerein?label=NuSerein%20release&color=blue" alt="NuSerein GitHub Release" /></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/rust-1.98.1_pinned-blue.svg?logo=rust" alt="Rust 1.98.1 Pinned" /></a>
   <a href="crates/ui"><img src="https://img.shields.io/badge/ui-egui%20%2F%20wgpu-orange.svg" alt="UI egui/wgpu" /></a>
   <a href="docs/platform-support.md"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-informational.svg" alt="Platform Support" /></a>
@@ -45,7 +45,7 @@ NuSerein is MCShotty’s fork of [Serein](https://github.com/ViceVerse-cz/Serein
 
 ## Downloads & Installation
 
-NuSerein releases, when published, appear on the [fork’s releases page](https://github.com/MCShotty/Serein/releases).
+NuSerein releases, when published, appear on the [fork’s releases page](https://github.com/MCShotty/NuSerein/releases).
 
 The following distribution instructions describe **upstream Serein builds**, not NuSerein builds. Upstream packages and updates do not contain the fork’s changes; use them only if you intend to install upstream Serein.
 

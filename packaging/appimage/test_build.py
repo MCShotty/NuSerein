@@ -12,11 +12,11 @@ class UpdateMetadataTest(unittest.TestCase):
             self.assertEqual(name, f"serein-v{version}-Linux-X64.AppImage")
             self.assertEqual(
                 information,
-                f"gh-releases-zsync|MCShotty|Serein|{channel}|serein-*-Linux-X64.AppImage.zsync",
+                f"gh-releases-zsync|MCShotty|NuSerein|{channel}|serein-*-Linux-X64.AppImage.zsync",
             )
             self.assertEqual(
                 url,
-                f"https://github.com/MCShotty/Serein/releases/download/v{version}/{name}",
+                f"https://github.com/MCShotty/NuSerein/releases/download/v{version}/{name}",
             )
 
     def test_invalid_release_tag_is_rejected(self):
