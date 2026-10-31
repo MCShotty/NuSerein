@@ -152,6 +152,10 @@ impl State {
 			+ self.reply_previews.bytes()
 			+ self.member_labels.bytes()
 			+ self
+				.search
+				.as_ref()
+				.map_or(0, |view| view.mutations.capacity() * size_of::<(Id, Id)>())
+			+ self
 				.member_search
 				.iter()
 				.map(|view| {

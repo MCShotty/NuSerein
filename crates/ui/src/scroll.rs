@@ -320,7 +320,9 @@ pub(super) fn instant_wheel_delta(
 			else {
 				return None;
 			};
-			if *phase != egui::TouchPhase::Move || modifiers.matches_any(options.zoom_modifier) {
+			if !matches!(phase, egui::TouchPhase::Start | egui::TouchPhase::Move)
+				|| modifiers.matches_any(options.zoom_modifier)
+			{
 				return None;
 			}
 			Some(normalized_wheel_delta(
@@ -614,6 +616,29 @@ mod tests {
 			source: egui::MouseWheelSource::Unknown,
 			modifiers: egui::Modifiers::NONE,
 		}
+	}
+
+	#[test]
+	fn unsmoothed_scrolling_keeps_the_initial_touchpad_delta() {
+		let mut event = wheel(egui::MouseWheelUnit::Point, egui::vec2(0.0, -24.0));
+		if let egui::Event::MouseWheel { phase, source, .. } = &mut event {
+			*phase = egui::TouchPhase::Start;
+			*source = egui::MouseWheelSource::Trackpad;
+		}
+		let preferences = model::ReadingPreferences {
+			smooth_scrolling: false,
+			..Default::default()
+		};
+		assert_eq!(
+			step(
+				&mut WheelMotion::default(),
+				1.0,
+				1.0 / 60.0,
+				vec![event],
+				preferences
+			),
+			egui::vec2(0.0, -24.0)
+		);
 	}
 
 	fn step(

@@ -4,9 +4,12 @@ use crate::{
 };
 use model::{Freshness, Id, SearchPage};
 
+/// Maximum gateway mutations remembered while one bounded page is in flight.
+const MAX_PENDING_MUTATIONS: usize = 128;
+
 pub struct SearchView {
 	pub pins: bool,
-	/// Conversation the search was started from; results route back to it.
+	/// Conversation that owns the current search request.
 	pub channel: Id,
 	/// Server-wide text searches keep their results while the selection stays in this server.
 	pub guild: Option<Id>,
@@ -22,6 +25,10 @@ pub struct SearchView {
 	pub loading: bool,
 	pub error: Option<&'static str>,
 	pub page: Option<SearchPage>,
+	/// A returned hit changed while this page was being displayed or fetched.
+	pub changed: bool,
+	#[doc(hidden)]
+	pub mutations: Vec<(Id, Id)>,
 }
 
 impl SearchView {
@@ -41,6 +48,45 @@ pub enum Outcome {
 	Indexing,
 }
 impl State {
+	/// Retire only the affected snippets, and fence changes racing a pending response.
+	pub(crate) fn search_message_changed(&mut self, event: &crate::Event) {
+		let (channel, ids): (Id, &[Id]) = match event {
+			crate::Event::Patch(patch) => (patch.channel, std::slice::from_ref(&patch.id)),
+			crate::Event::Delete { channel, id } => (*channel, std::slice::from_ref(id)),
+			crate::Event::DeleteBulk { channel, ids } => (*channel, ids),
+			_ => return,
+		};
+		if !self.search_covers_channel(channel) {
+			return;
+		}
+		let Some(view) = self.search.as_mut() else {
+			return;
+		};
+		if let Some(page) = &mut view.page {
+			let before = page.hits.len();
+			page.hits
+				.retain(|hit| hit.channel != channel || !ids.contains(&hit.id));
+			view.changed |= page.hits.len() != before;
+		}
+		if view.loading {
+			for &id in ids {
+				let key = (channel, id);
+				if view.mutations.contains(&key) {
+					continue;
+				}
+				if view.mutations.len() == MAX_PENDING_MUTATIONS {
+					view.mutations.clear();
+					view.loading = false;
+					view.error =
+						Some("Messages changed while searching. Retry to refresh the results.");
+					view.changed = true;
+					return;
+				}
+				view.mutations.push(key);
+			}
+		}
+	}
+
 	/// Include retained hits as well as channels known to belong to the searched server.
 	pub(crate) fn search_covers_channel(&self, channel: Id) -> bool {
 		self.search.as_ref().is_some_and(|view| {
@@ -147,6 +193,8 @@ impl State {
 			loading: true,
 			error: None,
 			page: None,
+			changed: false,
+			mutations: Vec::new(),
 		});
 		Some(Command::Search {
 			channel,
@@ -174,12 +222,20 @@ impl State {
 		let guild = view.guild;
 		self.search_request = self.search_request.wrapping_add(1);
 		self.archives = None;
+		let selected = self.selected?;
 		let view = self.search.as_mut()?;
+		// A server-wide result can move the reader to a sibling channel. Subsequent
+		// page reads belong to that channel so its history and search can coexist.
+		if guild.is_some() {
+			view.channel = selected;
+		}
 		view.offset = offset;
 		view.request = self.search_request;
 		view.loading = true;
 		view.error = None;
 		view.page = None;
+		view.changed = false;
+		view.mutations.clear();
 		Some(Command::Search {
 			channel: view.channel,
 			guild,
@@ -226,6 +282,8 @@ impl State {
 			loading: true,
 			error: None,
 			page: None,
+			changed: false,
+			mutations: Vec::new(),
 		});
 		Some(Command::Pins {
 			channel,
@@ -279,14 +337,18 @@ impl State {
 		view.loading = false;
 		let scope = view.guild.is_none().then_some(channel);
 		match result {
-			Ok(Outcome::Page(page))
+			Ok(Outcome::Page(mut page))
 				if !view.pins && page_accessible && page.valid(scope, view.before, view.oldest) =>
 			{
+				let before = page.hits.len();
+				page.hits
+					.retain(|hit| !view.mutations.contains(&(hit.channel, hit.id)));
+				view.changed |= page.hits.len() != before;
 				view.total = Some(page.total);
 				view.page = Some(page);
 				view.error = None;
 			}
-			Ok(Outcome::Pins(page))
+			Ok(Outcome::Pins(mut page))
 				if view.pins
 					&& page.valid_pins(channel)
 					&& page.partial == page.pin_cursor.is_some()
@@ -294,6 +356,10 @@ impl State {
 						!page.hits.is_empty() && view.pin_before.is_none_or(|b| cursor < b)
 					}) =>
 			{
+				let before = page.hits.len();
+				page.hits
+					.retain(|hit| !view.mutations.contains(&(hit.channel, hit.id)));
+				view.changed |= page.hits.len() != before;
 				self.message_actions
 					.reconcile_pins(channel, &page, view.pin_before.is_none());
 				view.page = Some(page);
@@ -305,6 +371,7 @@ impl State {
 			Ok(_) => view.error = Some("Message results were invalid or too large"),
 			Err(f) => view.error = Some(f.label()),
 		}
+		view.mutations.clear();
 	}
 	/// Server-wide results stay valid while the selection remains in the searched server.
 	fn search_in_scope(&self, view: &SearchView) -> bool {
@@ -333,6 +400,18 @@ impl State {
 			.find(|h| h.id == message)?
 			.channel;
 		if Some(channel) == self.selected {
+			if self.freshness == Freshness::Fresh
+				&& !self.history_pending
+				&& !self.timeline.is_deleted(message)
+				&& self
+					.timeline
+					.get(message)
+					.is_some_and(|entry| entry.channel == channel)
+			{
+				self.search_target = Some(message);
+				self.revision = self.revision.wrapping_add(1);
+				return None;
+			}
 			return self.open_target_window(message);
 		}
 		let guild = view.guild?;
@@ -427,6 +506,12 @@ mod tests {
 			},
 		}
 	}
+	fn other_mutation(channel: Id) -> Event {
+		Event::Delete {
+			channel,
+			id: Id(101),
+		}
+	}
 	fn apply(state: &mut State, event: Event) {
 		state.apply(Envelope {
 			generation: state.generation,
@@ -435,7 +520,7 @@ mod tests {
 	}
 
 	#[test]
-	fn sibling_channel_mutations_retire_loaded_and_in_flight_guild_searches() {
+	fn sibling_channel_mutations_remove_only_the_changed_hit() {
 		for in_flight in [false, true] {
 			for kind in 0..3 {
 				let mut state = state();
@@ -450,15 +535,146 @@ mod tests {
 					assert!(state.search.as_ref().unwrap().page.is_some());
 				}
 				apply(&mut state, mutation(Id(2), kind));
-				assert!(state.search.is_none());
-				assert!(state.search_request > request);
-				state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+				assert_eq!(state.search.as_ref().unwrap().request, request);
+				if in_flight {
+					state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+				}
 				assert!(
-					state.search.is_none(),
-					"A stale index must not restore the snippet"
+					state
+						.search
+						.as_ref()
+						.unwrap()
+						.page
+						.as_ref()
+						.unwrap()
+						.hits
+						.is_empty()
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn unrelated_mutations_in_the_searched_guild_do_not_close_or_filter_results() {
+		for in_flight in [false, true] {
+			let mut state = state();
+			let (channel, request) = start(&mut state, !in_flight, Id(2));
+			apply(&mut state, other_mutation(Id(2)));
+			if in_flight {
+				state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+			}
+			let view = state.search.as_ref().expect("Search remains visible");
+			assert_eq!(view.request, request);
+			assert_eq!(view.page.as_ref().unwrap().hits[0].id, Id(100));
+		}
+	}
+
+	#[test]
+	fn loading_older_history_does_not_cancel_an_in_flight_search() {
+		let mut state = state();
+		let (channel, request) = start(&mut state, false, Id(2));
+		assert!(matches!(
+			state.history(Some(Id(99))),
+			Command::History { .. }
+		));
+		assert!(state.search.as_ref().unwrap().loading);
+		state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+		assert_eq!(
+			state.search.as_ref().unwrap().page.as_ref().unwrap().hits[0].id,
+			Id(100)
+		);
+	}
+
+	#[test]
+	fn pending_mutation_overflow_fails_only_the_search_and_rejects_stale_results() {
+		let mut state = state();
+		let (channel, request) = start(&mut state, false, Id(2));
+		for id in 1..=(MAX_PENDING_MUTATIONS as u64 + 1) {
+			apply(
+				&mut state,
+				Event::Delete {
+					channel: Id(2),
+					id: Id(id),
+				},
+			);
+		}
+		let view = state.search.as_ref().unwrap();
+		assert!(!view.loading);
+		assert!(view.error.is_some());
+		assert_eq!(state.auth, AuthState::Authenticated);
+		state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+		assert!(state.search.as_ref().unwrap().page.is_none());
+		assert!(matches!(
+			state.request_search_page(0),
+			Some(Command::Search { .. })
+		));
+	}
+
+	#[test]
+	fn loaded_search_hits_jump_without_an_unnecessary_history_request() {
+		let mut state = state();
+		let mut message = crate::tests::message(100);
+		message.channel = Id(1);
+		state.timeline.insert(message, false, false).unwrap();
+		start(&mut state, true, Id(1));
+		assert!(state.open_search_hit(Id(100)).is_none());
+		assert_eq!(state.search_target, Some(Id(100)));
+		assert!(!state.history_pending);
+		assert!(state.search.as_ref().unwrap().page.is_some());
+	}
+
+	#[test]
+	fn stale_cached_search_hits_are_revalidated_before_opening() {
+		let mut state = state();
+		let mut message = crate::tests::message(100);
+		message.channel = Id(1);
+		state.timeline.insert(message, false, false).unwrap();
+		start(&mut state, true, Id(1));
+		state.freshness = Freshness::Stale;
+		assert!(matches!(
+			state.open_search_hit(Id(100)),
+			Some(Command::HistoryAround {
+				target: Id(100),
+				..
+			})
+		));
+	}
+
+	#[test]
+	fn search_page_after_a_sibling_jump_uses_the_new_conversation_scope() {
+		let mut state = state();
+		start(&mut state, true, Id(2));
+		state.open_search_hit(Id(100));
+		assert_eq!(state.selected, Some(Id(2)));
+		let Some(Command::Search {
+			channel, request, ..
+		}) = state.request_search_page(0)
+		else {
+			panic!("Expected the next search page");
+		};
+		assert_eq!(channel, Id(2));
+		assert_eq!(state.search.as_ref().unwrap().channel, Id(2));
+		state.history(Some(Id(99)));
+		state.apply_search(channel, request, Ok(Outcome::Page(page(Id(2)))));
+		assert_eq!(
+			state.search.as_ref().unwrap().page.as_ref().unwrap().hits[0].id,
+			Id(100)
+		);
+	}
+
+	#[test]
+	fn deleted_reply_observation_keeps_unrelated_search_results() {
+		let mut state = state();
+		start(&mut state, true, Id(1));
+		let mut reply = crate::tests::message(300);
+		reply.channel = Id(1);
+		reply.reply_to = Some(Id(99));
+		reply.reply_deleted = true;
+		state.record_reply_deletion(&reply);
+		assert_eq!(
+			state.search.as_ref().unwrap().page.as_ref().unwrap().hits[0].id,
+			Id(100)
+		);
 	}
 
 	#[test]
@@ -496,7 +712,17 @@ mod tests {
 		state.apply_search(channel, request, Ok(Outcome::Pins(page(channel))));
 		assert!(state.search.as_ref().unwrap().page.is_some());
 		apply(&mut state, mutation(channel, 1));
-		assert!(state.search.is_none());
+		assert!(
+			state
+				.search
+				.as_ref()
+				.unwrap()
+				.page
+				.as_ref()
+				.unwrap()
+				.hits
+				.is_empty()
+		);
 	}
 
 	fn limited_state() -> State {
@@ -690,14 +916,27 @@ mod tests {
 	}
 
 	#[test]
-	fn unresolved_channel_mutations_retire_loaded_and_in_flight_guild_searches() {
+	fn unresolved_channel_mutations_cannot_restore_stale_search_snippets() {
 		for loaded in [false, true] {
 			for kind in 0..3 {
 				let mut state = limited_state();
 				let (channel, request) = start(&mut state, loaded, Id(20));
 				assert!(state.channel(Id(20)).is_none());
 				apply(&mut state, mutation(Id(20), kind));
-				assert_retired(&mut state, channel, request, Id(20));
+				if !loaded {
+					state.apply_search(channel, request, Ok(Outcome::Page(page(Id(20)))));
+				}
+				assert!(
+					state
+						.search
+						.as_ref()
+						.unwrap()
+						.page
+						.as_ref()
+						.unwrap()
+						.hits
+						.is_empty()
+				);
 			}
 		}
 		let mut state = limited_state();

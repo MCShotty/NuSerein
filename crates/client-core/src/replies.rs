@@ -611,6 +611,10 @@ impl State {
 			return;
 		};
 		let deletion = (message.channel, target);
+		self.search_message_changed(&crate::Event::Delete {
+			channel: message.channel,
+			id: target,
+		});
 		self.forget_pending_replies(message.channel, &[target]);
 		// Only one message or an already validated <=50-message history page calls this.
 		if !self.reply_deletions.0.contains(&deletion) && self.reply_deletions.0.len() < 50 {
@@ -629,7 +633,6 @@ impl State {
 			channel.last_message = None;
 		}
 		if self.selected == Some(message.channel) {
-			self.clear_search();
 			self.deleted_navigation_target(message.channel, target);
 			if self.reply_target() == Some(target) {
 				self.reply = None;
@@ -3103,6 +3106,8 @@ mod tests {
 				request: 1,
 				loading: false,
 				error: None,
+				changed: false,
+				mutations: Vec::new(),
 				page: Some(model::SearchPage {
 					hits: vec![model::SearchHit {
 						id: Id(50),

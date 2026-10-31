@@ -92,7 +92,7 @@ impl State {
 			self.status = "Message history is unavailable with the current permissions";
 			return self.clear_search();
 		}
-		if self.search.as_ref().is_some_and(|s| s.loading)
+		if self.search.as_ref().is_some_and(|s| s.loading && s.pins)
 			|| self.archives.as_ref().is_some_and(|s| s.loading)
 		{
 			self.clear_search();

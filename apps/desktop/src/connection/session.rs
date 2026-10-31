@@ -15,6 +15,19 @@ use super::{
 
 type StreamScope = (model::Id, u64, u64);
 
+/// History and a text search may read concurrently in the same conversation.
+/// Pins and archives, or reads belonging to a different conversation, are retired.
+fn retain_search_for_history(
+	search: &mut Option<AbortTask>,
+	search_channel: &mut Option<model::Id>,
+	history_channel: model::Id,
+) {
+	if *search_channel != Some(history_channel) {
+		drop(search.take());
+		*search_channel = None;
+	}
+}
+
 /// A full write lane rejects only the unsent operation and preserves the session.
 fn queue_write(
 	sender: &mpsc::Sender<Command>,
@@ -360,6 +373,7 @@ impl Connection {
 				let mut stream_preview:Option<AbortTask>=None;
                 let mut invite:Option<AbortTask>=None;
                 let mut search:Option<AbortTask>=None;
+                let mut search_channel:Option<model::Id>=None;
                 let mut inbox=InboxTasks::default();
                 let mut gifs:Option<AbortTask>=None;
                 let mut gif_favorites:Option<AbortTask>=None;
@@ -725,6 +739,7 @@ impl Connection {
                             }
                             if matches!(command,Command::Search{..}|Command::Pins{..}|Command::Archives{..}) {
                                 drop(search.take());
+                                search_channel=match &command {Command::Search{channel,..}=>Some(*channel),_=>None};
                                 let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
                                 search=Some(AbortTask(tokio::spawn(async move {
                                     let event=api.execute(command).await;
@@ -1023,7 +1038,7 @@ impl Connection {
                             }
                             if let Command::History { channel, request, .. } | Command::HistoryAround { channel, request, .. } = &command {
                                 reply_previews.clear();
-                                drop(search.take());
+                                retain_search_for_history(&mut search,&mut search_channel,*channel);
                                 drop(reaction_read.take());
                                 let (channel, request) = (*channel, *request);
                                 drop(history.take());
@@ -1087,6 +1102,27 @@ impl Connection {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[tokio::test]
+	async fn history_keeps_same_channel_search_running_but_retires_other_reads() {
+		let (sender, mut receiver) = tokio::sync::oneshot::channel::<()>();
+		let mut search = Some(AbortTask(tokio::spawn(async move {
+			let _sender = sender;
+			std::future::pending::<()>().await;
+		})));
+		tokio::task::yield_now().await;
+		let mut channel = Some(model::Id(1));
+		retain_search_for_history(&mut search, &mut channel, model::Id(1));
+		assert!(search.is_some());
+		assert!(matches!(
+			receiver.try_recv(),
+			Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+		));
+		retain_search_for_history(&mut search, &mut channel, model::Id(2));
+		assert!(search.is_none());
+		assert_eq!(channel, None);
+		assert!(receiver.await.is_err());
+	}
 	#[test]
 	fn full_write_lane_rejects_the_unsent_message_and_keeps_the_account() {
 		let (send, mut receive) = mpsc::channel(1);

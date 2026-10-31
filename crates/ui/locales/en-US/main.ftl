@@ -73,7 +73,9 @@ gpu-high-performance-description = Use the discrete graphics card when one is av
 gpu-power-saving-description = Use integrated graphics to save battery.
 direct-messages = Direct Messages
 find-conversation = Find conversation
-find-conversation-tooltip = Search loaded conversations (Ctrl/Cmd+K)
+find-conversation-tooltip = Search loaded conversations and friends (Ctrl/Cmd+K)
+switcher-search-placeholder = Search people, channels, or servers
+switcher-kind-forum = Forum
 friends = Friends
 members = Members
 retry-shortcuts = Retry shortcuts
@@ -2407,6 +2409,7 @@ search-pane-messages-are-unavailable-while-disconnected-or-without-channel-acces
 search-pane-newest-first = Newest first
 # Context: pane
 search-pane-no-results = No results
+search-results-changed = Some messages changed. Refresh to update these results.
 # Context: pane
 search-pane-nothing-on-this-page-matches-the-query = Nothing on this page matches the query.
 # Context: pane
@@ -2451,6 +2454,7 @@ search-pins-popout-pinned-messages = Pinned Messages
 search-pins-popout-reload-pins = Reload pins
 # Context: result_card
 search-result-card-jump-to-message-from = Jump to message from
+search-result-jump = Jump
 # Context: result_card
 search-result-card-spoiler-media-open-the-message-to-reveal-it = Spoiler media - open the message to reveal it.
 
