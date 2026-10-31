@@ -4402,3 +4402,27 @@ startup, reset and an undrained tail. This is not a matched performance comparis
 or a microphone quality test.
 The extra block duration can add up to 40 ms of latency. Native Windows audio,
 physical microphones and performance on slower systems remain unverified.
+
+### Cached history reconciliation and reply navigation
+
+The baseline is merged fork main `52a9b3aeee7e1546df47f998ccfcbf64c329a15f`;
+the implementation is `ea18da1e`. On Linux x86-64, Rust 1.98.1, Intel Xeon
+Platinum 8573C, a four-core quota and a 16-GiB memory limit, the release
+`replay-bench` was pinned to CPU 0. Each binary received one warmup followed by
+five alternating measurements; concurrent task-owned builds were paused during
+sampling. The measurements are synthetic core reducer time, not user-perceived
+latency or process RSS.
+
+| Workload | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 75.88 ms (73.52–83.65) | 77.43 ms (72.86–80.31) | +2.05% |
+
+The ranges overlap. Both retained 500 rows and 417,492–417,977 estimated bytes.
+No speedup or live Discord behavior is inferred from this replay. The storage
+regression exercises a full 50-row newer page, the start/end boundaries and
+conflicting cursors; it does not measure disk or UI latency.
+
+The changed release also completed a 120-second synthetic lifecycle soak: 3,269
+passes, 104,608 channel visits and 13 logout cycles. Its retained-history bounds
+held. It used no network, storage, renderer or audio devices. Current native
+Windows/macOS behavior and live Discord synchronization were not tested here.
