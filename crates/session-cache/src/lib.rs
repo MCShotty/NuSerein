@@ -454,14 +454,20 @@ impl Timeline {
 		older: bool,
 	) -> Result<(), &'static str> {
 		self.retain_older = older;
-		// An ordinary older-page response proves only its covered interval. Rows
-		// changed by live events remain authoritative over a delayed cache/read.
+		// A full page proves only the interval it actually reached. A shorter
+		// page proves the end in the requested direction. Live changes win.
 		if !self.provisional.is_empty() {
 			let returned: BTreeSet<_> = items.iter().map(|item| item.id).collect();
 			let oldest = returned.first().copied();
+			let newest = returned.last().copied();
 			for id in std::mem::take(&mut self.provisional) {
 				let covered = self.replace
-					|| older && (items.len() < 50 || oldest.is_some_and(|oldest| id >= oldest));
+					|| items.len() < 50
+					|| if older {
+						oldest.is_some_and(|oldest| id >= oldest)
+					} else {
+						newest.is_some_and(|newest| id <= newest)
+					};
 				if covered
 					&& !returned.contains(&id)
 					&& !self.changed.contains(&id)
@@ -1881,6 +1887,48 @@ mod tests {
 			);
 		}
 	}
+	#[test]
+	fn newer_cached_pages_retire_only_rows_covered_by_the_service() {
+		let mut short = Timeline::default();
+		short.insert(message(100), false, false).unwrap();
+		short.begin_append();
+		short
+			.seed_cached_page(vec![message(101), message(102), message(103)], false)
+			.unwrap();
+		let mut changed = message(102);
+		changed.content = "Live edit".into();
+		short.insert(changed, true, false).unwrap();
+		short.finish_page(vec![message(103)], false).unwrap();
+		assert!(short.get(Id(100)).is_some());
+		assert!(short.get(Id(101)).is_none());
+		assert_eq!(short.get(Id(102)).unwrap().content, "Live edit");
+		assert!(short.get(Id(103)).is_some());
+
+		let mut empty = Timeline::default();
+		empty.insert(message(100), false, false).unwrap();
+		empty.begin_append();
+		empty.seed_cached_page(vec![message(101)], false).unwrap();
+		empty.finish_page(vec![], false).unwrap();
+		assert!(empty.get(Id(100)).is_some());
+		assert!(empty.get(Id(101)).is_none());
+
+		let mut full = Timeline::default();
+		full.insert(message(100), false, false).unwrap();
+		full.begin_append();
+		full.seed_cached_page(vec![message(101), message(200)], false)
+			.unwrap();
+		full.finish_page((102..152).map(message).collect(), false)
+			.unwrap();
+		assert!(
+			full.get(Id(101)).is_none(),
+			"the returned interval covers the missing row"
+		);
+		assert!(
+			full.get(Id(200)).is_some(),
+			"a full page does not prove the later row was deleted"
+		);
+	}
+
 	#[test]
 	fn mutations_win_over_late_history_and_memory_is_bounded() {
 		let mut t = Timeline::default();

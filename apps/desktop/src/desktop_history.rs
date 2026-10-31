@@ -199,6 +199,7 @@ impl Desktop {
 				request,
 				page: local_store::HistoryPageQuery {
 					before: None,
+					after: None,
 					around: Some(target),
 					limit: 50,
 				},
@@ -209,21 +210,19 @@ impl Desktop {
 				request,
 				page: local_store::HistoryPageQuery {
 					before: Some(before),
+					after: None,
 					around: None,
 					limit: 50,
 				},
 			}
-		} else if let Some(after) = state
-			.history_after
-			.and_then(|id| id.0.checked_add(1))
-			.map(model::Id)
-		{
+		} else if let Some(after) = state.history_after {
 			cache::Operation::LoadHistoryPage {
 				channel,
 				request,
 				page: local_store::HistoryPageQuery {
 					before: None,
-					around: Some(after),
+					after: Some(after),
+					around: None,
 					limit: 50,
 				},
 			}
