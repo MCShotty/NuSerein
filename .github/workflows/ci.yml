@@ -205,6 +205,16 @@ jobs:
           else
             dist/serein --self-test-lavasr
           fi
+      - name: Packaged LavaSRv2 real-time inference (synthetic, no devices)
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == 'Windows' ]]; then
+            dist/serein.exe --self-test-lavasr-realtime
+          elif [[ "$RUNNER_OS" == 'macOS' ]]; then
+            dist/Serein.app/Contents/MacOS/serein --self-test-lavasr-realtime
+          else
+            dist/serein --self-test-lavasr-realtime
+          fi
       - name: Validate and launch the clean Windows package without development DLL paths
         if: runner.os == 'Windows'
         shell: pwsh

@@ -18,6 +18,11 @@ fn captured(pcm: Frame) -> CapturedFrame {
 }
 
 fn main() {
+	// The same executable can act as the real helper for the optional offline
+	// LavaSR tests, without initializing a microphone or connecting to Discord.
+	if let Some(exit) = discord_voice::audio::speech_worker_command() {
+		std::process::exit(exit);
+	}
 	assert_eq!(activity::level_db(&[0.0; 960]), -100.0);
 	assert_eq!(activity::level_db(&[1.0; 960]), 0.0);
 	assert!((activity::level_db(&[0.1; 960]) + 20.0).abs() < 0.01);

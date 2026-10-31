@@ -237,8 +237,11 @@ root `res/` test media, preserving all source/build files and nested Android
 resources; its original and subset hashes are recorded separately. oneVPL source and the exact
 AMF public-header subset accompany the recipe for offline rebuilds; the AMF
 subset is identified separately from its original SDK archive. See `packaging/ffmpeg/README.md` and
-`assets/licenses/voice/PROVENANCE.md`. Serein's own application code remains
-MIT OR Apache-2.0; the bundled FFmpeg libraries have the GPL terms stated above.
+`assets/licenses/voice/PROVENANCE.md`. Serein's camera compute shader and its
+HQDN3D coefficient calculation are derived from FFmpeg and are GPL-2.0-or-later;
+their source is included under `ffmpeg-source/camera-filter`. The resulting
+application binary including this code is distributed under GPL-2.0-or-later;
+the remaining application source retains its MIT OR Apache-2.0 terms.
 
 Software AV1 decoding uses pinned **dav1d 1.5.1** (BSD-2-Clause), built as a PIC
 static library. Packages retain its complete source archive and unmodified

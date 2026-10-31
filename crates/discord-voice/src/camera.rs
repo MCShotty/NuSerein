@@ -1071,6 +1071,14 @@ mod macos {
 mod tests {
 	use super::*;
 
+	fn offline_gpu() -> bool {
+		let available = platform::video::denoise::install_test_gpu();
+		if !available {
+			eprintln!("No offline GPU adapter is available for the camera fixture");
+		}
+		available
+	}
+
 	#[test]
 	fn camera_preview_does_not_advance_encoding_and_recovery_starts_a_fresh_epoch() {
 		let request = Arc::new(AtomicBool::new(false));
@@ -1224,6 +1232,9 @@ mod tests {
 
 	#[test]
 	fn filtered_camera_preview_and_encoded_video_use_the_same_picture() {
+		if !offline_gpu() {
+			return;
+		}
 		let mut encoder = CameraEncoder::new_on_adapter(
 			VideoSettings {
 				camera_denoising: model::voice_settings::CameraDenoising::On,
@@ -1280,6 +1291,9 @@ mod tests {
 
 	#[test]
 	fn denoised_camera_discards_temporal_history_on_security_reset() {
+		if !offline_gpu() {
+			return;
+		}
 		let reset = Arc::new(AtomicU64::new(0));
 		let mut encoder = CameraEncoder::new_on_adapter(
 			VideoSettings {
@@ -1336,6 +1350,9 @@ mod tests {
 
 	#[test]
 	fn denoiser_discards_buffered_frames_on_backpressure() {
+		if !offline_gpu() {
+			return;
+		}
 		for force_pending in [false, true] {
 			let mut encoder = CameraEncoder::new_on_adapter(
 				VideoSettings {
@@ -1408,6 +1425,9 @@ mod tests {
 
 	#[test]
 	fn slow_denoiser_bypasses_without_stalling_video() {
+		if !offline_gpu() {
+			return;
+		}
 		let mut encoder = CameraEncoder::new_on_adapter(
 			VideoSettings {
 				camera_denoising: model::voice_settings::CameraDenoising::On,

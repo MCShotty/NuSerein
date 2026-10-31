@@ -461,6 +461,8 @@ pub struct MessagingUi {
 	pub screen: screen::ScreenUi,
 	pub voice_camera_available: bool,
 	pub voice_camera_status: &'static str,
+	/// Availability of the hardware-only camera filter on the renderer's GPU.
+	pub camera_denoising_availability: model::voice_settings::CameraDenoisingAvailability,
 	/// Runtime denoising state for the outgoing camera and settings preview, respectively.
 	pub call_camera_denoising_status: Option<model::voice_settings::CameraDenoisingStatus>,
 	pub preview_camera_denoising_status: Option<model::voice_settings::CameraDenoisingStatus>,

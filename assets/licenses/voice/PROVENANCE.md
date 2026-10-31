@@ -28,6 +28,9 @@ same source pins and recipe. No compiler or downloaded Cisco binary is bundled.
 `246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30`.
 `ffmpeg-COPYING.GPLv2.txt` is copied unmodified from `COPYING.GPLv2`; SHA-256
 `8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643`.
+The GPU webcam shader and coefficient calculation are derived from FFmpeg's
+ATADenoise, HQDN3D and unsharp filters; they are GPL-2.0-or-later and their
+source is packaged in `ffmpeg-source/camera-filter`.
 `nv-codec-headers-LICENSE.txt` retains verbatim the MIT notice from
 `include/ffnvcodec/nvEncodeAPI.h`; SHA-256
 `72b60be67644d841bfd54a042875b5846294d357040dd7ac8e38bde20d9e8f97`.

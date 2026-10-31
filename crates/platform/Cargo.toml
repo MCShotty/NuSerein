@@ -2,11 +2,13 @@
 name = "platform"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "(MIT OR Apache-2.0) AND GPL-2.0-or-later"
 
 [features]
 default = []
 development-data = []
+# Enables an explicitly-invoked software GPU fixture for offline tests only.
+gpu-test = ["wgpu/vulkan", "wgpu/dx12", "wgpu/metal"]
 
 [dependencies]
 client-core.workspace = true
@@ -21,6 +23,8 @@ url.workspace = true
 zeroize.workspace = true
 getrandom.workspace = true
 tempfile = "=3.27.0"
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl"] }
+pollster = "=0.4.0"
 ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "load-dynamic", "api-23"] }
 rustfft = "=6.4.1"
 sha2 = "=0.10.9"
@@ -79,6 +83,7 @@ keyring.workspace = true
 [dev-dependencies]
 futures-util.workspace = true
 flate2.workspace = true
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "dx12", "metal"] }
 
 [build-dependencies]
 cc = "=1.4.6"

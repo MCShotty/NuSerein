@@ -706,6 +706,11 @@ class BundleTest(unittest.TestCase):
                 self.assertTrue(set(bundle.LIBRARIES[system]).issubset(names))
                 self.assertIn("ffmpeg-7.1.5.tar.xz", names)
                 self.assertIn("COPYING.GPLv2", names)
+                camera_source = next(path for path in stage.rglob("camera-filter") if path.is_dir())
+                self.assertEqual((camera_source / "camera_filter.wgsl").read_bytes(),
+                                 (Path(__file__).resolve().parents[2] / "crates/platform/src/video/denoise/camera_filter.wgsl").read_bytes())
+                self.assertTrue((camera_source / "gpu.rs").is_file())
+                self.assertTrue((camera_source / "denoise.rs").is_file())
                 self.assertEqual("serein-openh264.patch" in names, system == "Linux")
                 self.assertNotIn("private.log", names)
                 self.assertNotIn("unrelated-private-log", names)

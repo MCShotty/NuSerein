@@ -17,7 +17,8 @@ bundle `Resources` on macOS).
 The outgoing-video libraries use the same pinned FFmpeg/OpenH264
 source recipe as native releases, as a separate Nix store dependency. FFmpeg's
 complete corresponding source and build recipe ship under `ffmpeg-source` in
-that documentation directory. `nix develop` sets `FFMPEG_DIR` to this build.
+that documentation directory, alongside the FFmpeg-derived GPU camera filter source.
+`nix develop` sets `FFMPEG_DIR` to this build.
 The bundled FFmpeg is GPL-2.0-or-later; no system FFmpeg is linked into this package.
 All native encoder dependencies use the Nix stdenv C/C++ compiler wrappers,
 including FFmpeg's explicit configure compiler options on macOS.

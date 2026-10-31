@@ -52,6 +52,9 @@ class NativePackageTest(unittest.TestCase):
                             "-Wl,-rpath,$ORIGIN/lib:$ORIGIN/../lib/serein", "-Wl,-rpath-link," + str(staged / "lib"),
                             "-l:libavcodec-serein.so.61", "-l:libavformat-serein.so.61", "-l:libavfilter-serein.so.10", "-l:libswscale-serein.so.8", "-l:libswresample-serein.so.5"], check=True)
             (staged / "ffmpeg-source/source").mkdir(parents=True)
+            (staged / "ffmpeg-source/camera-filter").mkdir()
+            for name in ("denoise.rs", "gpu.rs", "camera_filter.wgsl"):
+                (staged / "ffmpeg-source/camera-filter" / name).write_text("synthetic camera filter source\n")
             for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "serein-openh264.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
                          "nv-codec-headers-README", "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2",
                          "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE", "source/AMF-1.4.36-headers.tar",

@@ -2815,7 +2815,9 @@ impl MessagingUi {
 	}
 
 	fn video_settings_controls(&mut self, ui: &mut egui::Ui) {
-		use model::voice_settings::{CameraDenoising, VideoFrameRate, VideoResolution};
+		use model::voice_settings::{
+			CameraDenoising, CameraDenoisingAvailability, VideoFrameRate, VideoResolution,
+		};
 		let colors = design::palette(ui);
 		ui.add(
 			egui::Label::new(
@@ -2874,19 +2876,42 @@ impl MessagingUi {
 		);
 		ui.add_space(8.0);
 		let mut denoising = self.video_settings.camera_denoising == CameraDenoising::On;
-		if design::switch(
-			ui,
-			"voice-video-camera-denoising",
-			Some("voice-video-camera-denoising-description"),
-			&mut denoising,
-		)
-		.changed()
+		let (width, height) = self.video_settings.camera_resolution.camera_dimensions();
+		let resolution_supported = u64::from(width) * u64::from(height) <= 1920 * 1080;
+		let enabled = self.camera_denoising_availability == CameraDenoisingAvailability::Available
+			&& resolution_supported;
+		if ui
+			.add_enabled_ui(enabled, |ui| {
+				design::switch(
+					ui,
+					"voice-video-camera-denoising",
+					Some("voice-video-camera-denoising-description"),
+					&mut denoising,
+				)
+			})
+			.inner
+			.changed()
 		{
 			self.video_settings.camera_denoising = if denoising {
 				CameraDenoising::On
 			} else {
 				CameraDenoising::Off
 			};
+		}
+		let unavailable = match self.camera_denoising_availability {
+			CameraDenoisingAvailability::Checking => {
+				Some("voice-video-camera-denoising-gpu-checking")
+			}
+			CameraDenoisingAvailability::Unavailable => {
+				Some("voice-video-camera-denoising-gpu-unavailable")
+			}
+			CameraDenoisingAvailability::Available if !resolution_supported => {
+				Some("voice-video-camera-denoising-status-resolution")
+			}
+			CameraDenoisingAvailability::Available => None,
+		};
+		if let Some(reason) = unavailable {
+			design::hint(ui, &crate::i18n::translate(reason));
 		}
 		if let Some(status) = self
 			.preview_camera_denoising_status
@@ -6287,9 +6312,12 @@ mod tests {
 
 	#[test]
 	fn camera_denoising_controls_explain_and_update_the_requested_mode() {
-		use model::voice_settings::CameraDenoising;
+		use model::voice_settings::{CameraDenoising, CameraDenoisingAvailability};
 		let ctx = egui::Context::default();
-		let mut messaging = MessagingUi::default();
+		let mut messaging = MessagingUi {
+			camera_denoising_availability: CameraDenoisingAvailability::Available,
+			..Default::default()
+		};
 		assert_eq!(
 			messaging.video_settings.camera_denoising,
 			CameraDenoising::Off
@@ -6306,7 +6334,7 @@ mod tests {
 		assert!(
 			controls
 				.iter()
-				.any(|(text, _)| text.contains("Reduces camera noise"))
+				.any(|(text, _)| text.contains("reduce camera noise"))
 		);
 		for mode in [CameraDenoising::On, CameraDenoising::Off] {
 			video_controls_click(&ctx, &mut messaging, 320.0, "Camera denoising");
@@ -6320,6 +6348,71 @@ mod tests {
 			video_controls_key(&ctx, &mut messaging, key);
 			assert_eq!(messaging.video_settings.camera_denoising, mode);
 		}
+	}
+
+	#[test]
+	fn camera_denoising_is_disabled_without_a_supported_gpu_or_resolution() {
+		use model::voice_settings::{
+			CameraDenoising, CameraDenoisingAvailability, VideoResolution,
+		};
+		let ctx = egui::Context::default();
+		let mut messaging = MessagingUi::default();
+		for (availability, explanation) in [
+			(
+				CameraDenoisingAvailability::Checking,
+				"Checking GPU camera denoising",
+			),
+			(
+				CameraDenoisingAvailability::Unavailable,
+				"GPU camera denoising is unavailable",
+			),
+		] {
+			messaging.camera_denoising_availability = availability;
+			let text = video_controls_frame(&ctx, &mut messaging, 320.0, vec![]);
+			assert!(text.iter().any(|(label, _)| label.contains(explanation)));
+			video_controls_click(&ctx, &mut messaging, 320.0, "Camera denoising");
+			assert_eq!(
+				messaging.video_settings.camera_denoising,
+				CameraDenoising::Off
+			);
+			let position = text
+				.iter()
+				.find(|(label, _)| label == "Camera denoising")
+				.unwrap()
+				.1
+				.center();
+			for _ in 0..32 {
+				video_controls_key(&ctx, &mut messaging, egui::Key::Tab);
+				if let Some(response) = ctx
+					.memory(|memory| memory.focused())
+					.and_then(|id| ctx.read_response(id))
+				{
+					assert!(
+						!response.rect.contains(position),
+						"unavailable filter received keyboard focus"
+					);
+				}
+			}
+		}
+		messaging.camera_denoising_availability = CameraDenoisingAvailability::Available;
+		messaging.video_settings.camera_resolution = VideoResolution::P1440;
+		video_controls_click(&ctx, &mut messaging, 320.0, "Camera denoising");
+		assert_eq!(
+			messaging.video_settings.camera_denoising,
+			CameraDenoising::Off
+		);
+		messaging.video_settings.camera_resolution = VideoResolution::P480;
+		video_controls_click(&ctx, &mut messaging, 320.0, "Camera denoising");
+		assert_eq!(
+			messaging.video_settings.camera_denoising,
+			CameraDenoising::On
+		);
+		messaging.camera_denoising_availability = CameraDenoisingAvailability::Unavailable;
+		video_controls_click(&ctx, &mut messaging, 320.0, "Camera denoising");
+		assert_eq!(
+			messaging.video_settings.camera_denoising,
+			CameraDenoising::On
+		);
 	}
 
 	#[test]

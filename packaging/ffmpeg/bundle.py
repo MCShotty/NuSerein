@@ -63,6 +63,12 @@ def bundle(root, prefix=None):
             shutil.copyfile(origin, libraries / name)
     for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2", "OpenH264-LICENSE", "dav1d-COPYING"):
         shutil.copyfile(provenance / name, source / name)
+    camera_source = source / "camera-filter"
+    camera_source.mkdir(exist_ok=True)
+    camera_root = Path(__file__).resolve().parents[2] / "crates/platform/src/video"
+    shutil.copyfile(camera_root / "denoise.rs", camera_source / "denoise.rs")
+    for name in ("gpu.rs", "camera_filter.wgsl"):
+        shutil.copyfile(camera_root / "denoise" / name, camera_source / name)
     if system == "Linux":
         shutil.copyfile(provenance / "serein-openh264.patch", source / "serein-openh264.patch")
     (source / "source").mkdir(exist_ok=True)

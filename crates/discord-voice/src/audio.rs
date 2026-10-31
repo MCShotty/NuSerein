@@ -425,9 +425,7 @@ impl Audio {
 						let status = speech
 							.as_ref()
 							.map_or(SpeechStatus::Fallback, lavasr::Controller::status);
-						if status == SpeechStatus::Fallback
-							&& previous_speech_status != Some(status)
-						{
+						if status.is_fallback() && previous_speech_status != Some(status) {
 							echo.reset_noise();
 						}
 						previous_speech_status = Some(status);
@@ -659,10 +657,7 @@ impl Audio {
 	pub fn speech_status(&self) -> Option<SpeechStatus> {
 		match self.gate.speech_status.load(Ordering::Acquire) {
 			0 => None,
-			1 => Some(SpeechStatus::Loading),
-			2 => Some(SpeechStatus::Warming),
-			3 => Some(SpeechStatus::Active),
-			_ => Some(SpeechStatus::Fallback),
+			status => Some(SpeechStatus::from_code(status)),
 		}
 	}
 	/// Adjusts software gain without reopening devices. Defaults to 100%; clamps to 0..=200%.

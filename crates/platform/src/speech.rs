@@ -12,7 +12,9 @@ use std::{
 pub const SAMPLE_RATE: usize = 48_000;
 pub const WINDOW: usize = 47_616; // 15,872 samples at 16 kHz, exactly 63 denoiser frames.
 pub const ENHANCER_WINDOW: usize = 16_384;
-pub const HOP: usize = 1_920;
+// Run inference every 80 ms rather than every 40 ms. Each invocation still
+// analyzes the full model window; this gives real speech processing headroom.
+pub const HOP: usize = 3_840;
 pub const LOOKAHEAD: usize = 1_920;
 pub const OVERLAP: usize = 960;
 pub const MODELS: [(&str, u64, &str); 3] = [

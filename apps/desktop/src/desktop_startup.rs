@@ -335,6 +335,12 @@ impl Desktop {
 		if let Some(render_state) = cc.wgpu_render_state.as_ref() {
 			messaging.gpu_adapter = gpu::describe(&render_state.adapter.get_info());
 			gpu_video::install(render_state);
+			let wake = cc.egui_ctx.clone();
+			platform::video::denoise::initialize_gpu(
+				render_state.device.clone(),
+				render_state.queue.clone(),
+				std::sync::Arc::new(move || wake.request_repaint()),
+			);
 		}
 		let video_adapter = cc
 			.wgpu_render_state
