@@ -123,10 +123,10 @@ jobs:
       - name: FFmpeg decoder build tools
         if: runner.os == 'Windows'
         run: python -m pip install meson==1.9.2 ninja==1.13.0
-      - name: Build LGPL-only FFmpeg encoders
+      - name: Build pinned FFmpeg encoders
         if: runner.os != 'Windows'
         run: python3 scripts/build-ffmpeg.py
-      - name: Build LGPL-only FFmpeg encoders (MSVC)
+      - name: Build pinned FFmpeg encoders (MSVC)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: python scripts/build-ffmpeg.py

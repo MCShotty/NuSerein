@@ -29,6 +29,7 @@ openh264 = "=0.9.8"
 image = { version = "=0.25.10", default-features = false }
 
 [dev-dependencies]
+platform = { workspace = true, features = ["gpu-test"] }
 flate2.workspace = true
 sha3 = { version = "=0.10.9", default-features = false }
 openmls_rust_crypto = "=0.5.1"

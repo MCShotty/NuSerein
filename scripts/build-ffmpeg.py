@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Serein's LGPL-only shared video encoders; never capture or open media.
+"""Build Serein's pinned shared FFmpeg libraries; never capture or open media.
 
 Linux/macOS: Python 3.12+, make, pkg-config, C/C++ compiler, nasm; Linux also
 needs cmake, patchelf, libva and libdrm development files. Windows: run from
@@ -828,7 +828,7 @@ def validate_completed_build(prefix, system, backends):
             required += [f"lib/lib{name}-serein.dylib", f"lib/lib{name}-serein.{version}.dylib"]
         else:
             required += [f"bin/{name}-serein-{version}.dll", f"lib/{name}-serein.lib"]
-    provenance = ["build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE",
+    provenance = ["build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2", "OpenH264-LICENSE",
                   "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "source/dav1d-1.5.1.tar.xz", "dav1d-COPYING"]
     if system == "Linux":
         provenance.append("serein-openh264.patch")
@@ -876,6 +876,7 @@ def build(args):
     work = args.work_dir.resolve()
     cache.mkdir(parents=True, exist_ok=True)
     recipe = {"sources": SOURCES, "system": system, "architecture": architecture,
+              "license": "GPL-2.0-or-later", "filters": ["atadenoise", "hqdn3d", "unsharp"],
               **backends, "encoders": sorted(encoder_names(backends)), "decoders": sorted(decoder_names(backends)), "toolchain": toolchain, "recipe_sha256":
               hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     stamp = prefix / "share/serein-ffmpeg/build.json"
@@ -974,8 +975,8 @@ def build(args):
     configure = [
         f"--prefix={posix(prefix)}", "--build-suffix=-serein", "--disable-autodetect", "--disable-everything",
         "--disable-programs", "--disable-doc", "--disable-network", "--disable-static", "--enable-shared",
-        "--disable-gpl", "--disable-nonfree", "--disable-version3", "--disable-avdevice", "--enable-avformat",
-        "--enable-avfilter", "--enable-filter=buffer,buffersink,atadenoise", "--enable-swscale", "--enable-swresample", "--disable-postproc",
+        "--enable-gpl", "--disable-nonfree", "--disable-version3", "--disable-avdevice", "--enable-avformat",
+        "--enable-avfilter", "--enable-filter=buffer,buffersink,atadenoise,hqdn3d,unsharp", "--enable-swscale", "--enable-swresample", "--disable-postproc",
         "--disable-vdpau", "--disable-cuvid", "--disable-cuda-llvm",
         "--enable-avcodec", "--enable-avutil", "--enable-libopenh264", "--enable-encoder=libopenh264",
         "--enable-libdav1d", "--enable-decoder=" + ",".join(sorted(decoder_names(backends))),
@@ -994,8 +995,9 @@ def build(args):
                       f"--extra-ldflags=-libpath:{(prefix / 'lib').as_posix()}"]
     run(shell, "configure", *configure, cwd=trees["ffmpeg"], env=env)
     configuration = (trees["ffmpeg"] / "config.h").read_text()
-    if "#define CONFIG_GPL 0" not in configuration or "#define CONFIG_NONFREE 0" not in configuration:
-        raise ValueError("FFmpeg build must remain LGPL without GPL/nonfree components")
+    if ("#define CONFIG_GPL 1" not in configuration or "#define CONFIG_NONFREE 0" not in configuration
+            or "#define CONFIG_VERSION3 0" not in configuration):
+        raise ValueError("FFmpeg build must be GPLv2-or-later without nonfree or version-3-only components")
     component_config = (trees["ffmpeg"] / "config_components.h").read_text()
     expected = {name.upper() for name in encoder_names(backends)}
     actual = {line.split()[1].removeprefix("CONFIG_").removesuffix("_ENCODER")
@@ -1010,8 +1012,8 @@ def build(args):
     if actual_decoders != expected_decoders:
         raise ValueError(f"Unexpected FFmpeg decoder allowlist: {sorted(actual_decoders)}")
     # FFmpeg always compiles its four audio/video buffer source/sink filters;
-    # they are not CONFIG_*_FILTER entries. Only enable atadenoise explicitly.
-    expected_filters = {"ATADENOISE"}
+    # they are not CONFIG_*_FILTER entries. Enable only the webcam filter chain.
+    expected_filters = {"ATADENOISE", "HQDN3D", "UNSHARP"}
     actual_filters = {line.split()[1].removeprefix("CONFIG_").removesuffix("_FILTER")
                       for line in component_config.splitlines() if line.startswith("#define CONFIG_")
                       and "_FILTER 1" in line}
@@ -1058,7 +1060,7 @@ def build(args):
                 run("codesign", "--force", "--sign", "-", library)
     notices = stamp.parent
     (notices / "source").mkdir(parents=True)
-    # The LGPL corresponding FFmpeg source travels with every official binary.
+    # Corresponding FFmpeg source and license texts travel with every official binary.
     for name, archive in archives.items():
         shutil.copyfile(archive, notices / "source" / SOURCES[name]["file"])
     shutil.copyfile(Path(__file__), notices / "build-ffmpeg.py")
@@ -1067,6 +1069,7 @@ def build(args):
     if openh264_patch is not None:
         (notices / "serein-openh264.patch").write_text(openh264_patch)
     shutil.copyfile(trees["ffmpeg"] / "COPYING.LGPLv2.1", notices / "COPYING.LGPLv2.1")
+    shutil.copyfile(trees["ffmpeg"] / "COPYING.GPLv2", notices / "COPYING.GPLv2")
     shutil.copyfile(trees["dav1d"] / "COPYING", notices / "dav1d-COPYING")
     shutil.copyfile(trees["openh264-source"] / "LICENSE", notices / "OpenH264-LICENSE")
     if nvenc:

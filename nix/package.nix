@@ -91,8 +91,8 @@
         })
     ];
 
-    # Reuse the same small, LGPL-only recipe as official native packages. Never
-    # link the default nixpkgs FFmpeg, which may enable GPL components.
+    # Reuse the same pinned recipe as official native packages. Do not link
+    # the default nixpkgs FFmpeg, whose enabled components can differ.
     sereinFfmpeg = stdenv.mkDerivation {
         pname = "serein-ffmpeg";
         version = "7.1.5";
@@ -117,7 +117,7 @@
               --cache-dir sources --jobs "$NIX_BUILD_CORES" --offline
             runHook postInstall
         '';
-        meta.license = [lib.licenses.lgpl21Plus lib.licenses.bsd2 lib.licenses.mit];
+        meta.license = [lib.licenses.gpl2Plus lib.licenses.lgpl21Plus lib.licenses.bsd2 lib.licenses.mit];
     };
 
     speechSources = [
@@ -312,6 +312,8 @@ in
                 cp assets/icons/LICENSE-SIMPLE-ICONS "$docs/licenses/Simple-Icons-CC0.txt"
                 cp -R vendor/hpke-rs "$docs/source/"
                 cp -R ${sereinFfmpeg}/share/serein-ffmpeg "$docs/ffmpeg-source"
+                cp -R crates/platform/src/video/denoise "$docs/ffmpeg-source/camera-filter"
+                cp crates/platform/src/video/denoise.rs "$docs/ffmpeg-source/camera-filter/denoise.rs"
             ''
             + lib.optionalString isLinux ''
                 mkdir -p "$out/lib/serein"
@@ -343,6 +345,7 @@ in
             license = with lib.licenses; [
                 mit
                 asl20
+                gpl2Plus
             ];
             platforms = lib.platforms.linux ++ lib.platforms.darwin;
             mainProgram = "serein";

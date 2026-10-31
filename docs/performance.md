@@ -4238,7 +4238,6 @@ the overlapping samples do not establish whether the increase is repeatable.
 Its cause remains unresolved. See the [CI run](https://github.com/MCShotty/Serein/actions/runs/40442719612)
 and the [surface audit](pr-evidence/desktop-ui-polish/README.md).
 
-
 ## Force Sync and paged local history — October 30, 2026
 
 Core measurements use `31f9daf2b833bce8d8bb177131d86d4857bf1243`, based on frozen
@@ -4349,3 +4348,57 @@ at `39060d31` has 98,785,944 executable bytes, 227,730,212 installed bytes and a
 141,894,460-byte Debian distribution; these are reference values, not a measured
 final delta. Windows/macOS release app CPU/RSS and actual synchronization workload
 latency remain unmeasured.
+
+## Webcam filter chain — October 31, 2026
+
+The requested chain costs substantially more than the previous single filter.
+The following is a synthetic comparison of the native filter bridge, not an
+end-to-end webcam measurement. The baseline is `39060d31`; the new bridge uses
+`video_denoise.c` SHA-256 `ef48198cfba1b94b07521313a4b974959c1d29283742dceb17eff3516ad9b699`
+and FFmpeg recipe SHA-256
+`24bf9e4ce8ea9d7b65fee7ecf7a726823b1c3759fa157c3ee786a60fd516c916`.
+
+Both use FFmpeg 7.1.5, a two-thread graph and a bridge compiled with `-O2` on
+Linux x64 (Intel Xeon Platinum 8573C, two logical CPUs). The baseline FFmpeg is
+LGPL-only; the new build enables GPL for `hqdn3d`. For each size, one
+60-frame warmup was followed by five 60-frame samples; the table shows the
+median elapsed milliseconds per submitted synthetic I420 frame. Inputs have
+uniform luminance varying over time. Runs were sequential, with comparison order
+reversed for 720p. They include graph processing and buffer copies, but not
+camera capture, encoding, UI rendering, memory usage or actual frame latency.
+
+| Frame size | Previous `atadenoise=s=5` | Requested chain | Change |
+| --- | ---: | ---: | ---: |
+| 640 × 480 | 0.75 ms | 3.94 ms | +423% |
+| 1280 × 720 | 2.21 ms | 11.48 ms | +419% |
+| 1920 × 1080 | 4.82 ms | 26.00 ms | +440% |
+
+The requested default temporal window also starts producing output after five
+input frames, versus three previously. These measurements do not predict other
+hardware. The existing overload fallback disables filtering when it cannot keep
+up and continues the camera without it; native camera behavior remains unverified.
+
+### GPU webcam filter and LavaSRv2 follow-up
+
+The preceding webcam table describes the original **CPU** bridge and does not
+measure the new GPU implementation. On Linux x64, a software Vulkan test adapter
+ran the production compute kernels on synthetic I420 frames and compared 19 output
+frames at each of 16×16, 18×14 and 64×48 against FFmpeg 7.1.5; samples differed
+by at most one value and timestamps matched. The software adapter is admitted
+only by the explicit test fixture. Production rejects software adapters. Hardware
+GPU throughput, GPU memory, webcam quality and Windows/macOS behavior are unmeasured.
+
+The earlier LavaSRv2 helper observation at `4f86f7d2` used 40 ms input blocks:
+its median/p95/maximum inference round trip was 36.94/51.37/139.69 ms over
+100 samples on the then-recorded Linux runner. This is historical evidence of
+limited headroom, not a diagnosis of a particular user's fallback.
+
+The new 80 ms block path was exercised separately on Linux x64 (Xeon Platinum
+8573C, four-core quota, Rust 1.98.1; dev profile with voice/platform optimized).
+The production supervisor and bundled models processed six seconds of nonzero
+synthetic audio with a midstream reset in five repeated functional runs. Each
+produced 291 of 300 20 ms output frames without fallback; the count includes
+startup, reset and an undrained tail. This is not a matched performance comparison
+or a microphone quality test.
+The extra block duration can add up to 40 ms of latency. Native Windows audio,
+physical microphones and performance on slower systems remain unverified.

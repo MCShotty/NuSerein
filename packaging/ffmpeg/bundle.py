@@ -40,9 +40,11 @@ def bundle(root, prefix=None):
     prefix = Path(value).resolve()
     provenance = prefix / "share/serein-ffmpeg"
     recipe = json.loads((provenance / "build.json").read_text())
-    if recipe["system"] != system or recipe["sources"]["ffmpeg"]["sha256"] != \
-            "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f":
-        raise ValueError("Expected Serein's pinned LGPL-only FFmpeg build")
+    if (recipe["system"] != system or recipe["sources"]["ffmpeg"]["sha256"] !=
+            "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f"
+            or recipe.get("license") != "GPL-2.0-or-later"
+            or recipe.get("filters") != ["atadenoise", "hqdn3d", "unsharp"]):
+        raise ValueError("Expected Serein's pinned FFmpeg build with the webcam filters")
     if system == "Darwin":
         libraries = root / "Serein.app/Contents/Frameworks"
         source = root / "Serein.app/Contents/Resources/ffmpeg-source"
@@ -59,8 +61,14 @@ def bundle(root, prefix=None):
             replace_darwin_library(origin, libraries / name)
         else:
             shutil.copyfile(origin, libraries / name)
-    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING"):
+    for name in ("build.json", "configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2", "OpenH264-LICENSE", "dav1d-COPYING"):
         shutil.copyfile(provenance / name, source / name)
+    camera_source = source / "camera-filter"
+    camera_source.mkdir(exist_ok=True)
+    camera_root = Path(__file__).resolve().parents[2] / "crates/platform/src/video"
+    shutil.copyfile(camera_root / "denoise.rs", camera_source / "denoise.rs")
+    for name in ("gpu.rs", "camera_filter.wgsl"):
+        shutil.copyfile(camera_root / "denoise" / name, camera_source / name)
     if system == "Linux":
         shutil.copyfile(provenance / "serein-openh264.patch", source / "serein-openh264.patch")
     (source / "source").mkdir(exist_ok=True)

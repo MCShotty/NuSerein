@@ -4388,6 +4388,8 @@ voice-lavasr-description = Restores speech locally with denoising enabled. May a
 voice-lavasr-loading = Preparing LavaSRv2…
 voice-lavasr-active = LavaSRv2 is active, with denoising enabled.
 voice-lavasr-fallback = LavaSRv2 is unavailable. Using RNNoise instead.
+voice-lavasr-unavailable = LavaSRv2 could not start or its model failed. Using RNNoise instead; check the installation and retry.
+voice-lavasr-overloaded = LavaSRv2 could not keep up with live audio. Using RNNoise instead; turn it off and on to retry.
 # Context: voice_processing_controls
 voice-voice-processing-controls-off = Off
 # Context: voice_processing_controls
@@ -4771,13 +4773,12 @@ voice-video-camera-resolution-description = Your camera must support the selecte
 voice-video-camera-frame-rate = Camera frame rate
 voice-video-camera-frame-rate-description = Higher frame rates need a compatible camera and encoder. Actual frame rate depends on the camera mode and available bandwidth.
 voice-video-camera-denoising = Camera denoising
-voice-video-camera-denoising-off = Off
-voice-video-camera-denoising-on = ATADenoise
-voice-video-camera-denoising-off-description = Serein does not add camera denoising.
-voice-video-camera-denoising-on-description = Serein will try ATADenoise. If it is unavailable, the camera continues without added denoising.
+voice-video-camera-denoising-description = Uses your GPU to reduce camera noise and lightly sharpen the picture. If filtering is unavailable or too slow, video continues unchanged.
+voice-video-camera-denoising-gpu-checking = Checking GPU camera denoising…
+voice-video-camera-denoising-gpu-unavailable = GPU camera denoising is unavailable on this device.
 voice-video-camera-denoising-status-starting = Camera denoising: starting…
 voice-video-camera-denoising-status-off = Camera denoising: off
-voice-video-camera-denoising-status-active = Camera denoising: ATADenoise
+voice-video-camera-denoising-status-active = Camera denoising: on
 voice-video-camera-denoising-status-unavailable = Camera denoising: unavailable; video continues unchanged
 voice-video-camera-denoising-status-resolution = Camera denoising: resolution exceeds 2,073,600 pixels; video continues unchanged
 voice-video-camera-denoising-status-slow = Camera denoising: too slow; video continues unchanged

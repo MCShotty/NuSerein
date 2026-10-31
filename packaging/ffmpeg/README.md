@@ -1,7 +1,7 @@
 # Shared FFmpeg media libraries
 
 The camera/screen-share engine links to a small FFmpeg 7.1.5
-LGPL-2.1-or-later build of libavcodec, libavutil, libavformat, libavfilter, libswscale and
+GPL-2.0-or-later build of libavcodec, libavutil, libavformat, libavfilter, libswscale and
 libswresample. The native bridge in `crates/platform` also serves incoming
 streams and bounded video-attachment playback. FFmpeg is the only outgoing encoder
 engine; the former Media Foundation, direct VideoToolbox and GStreamer encoder
@@ -41,8 +41,8 @@ fallback applies only to H264 selection/negotiation. An explicit HEVC/AV1 select
 cannot send H264 bytes
 under that codec's transport metadata. FFmpeg Media Foundation and all three
 `h264_vaapi`/`hevc_vaapi`/`av1_vaapi` encoders,
-GPL/nonfree components, command-line programs and networking are disabled.
-The filter allowlist enables atadenoise alongside FFmpeg’s built-in audio/video
+nonfree and version-3-only components, command-line programs and networking are disabled.
+The filter allowlist enables atadenoise, hqdn3d and unsharp alongside FFmpeg’s built-in audio/video
 buffer sources and sinks. Decoder allowlists include H.264/HEVC, AV1/dav1d and supported
 hardware paths, plus AAC, Opus, Vorbis, MP3 and required PCM audio. MOV/MP4,
 Matroska/WebM demuxers, scaling and audio resampling serve attachment
@@ -115,9 +115,10 @@ The builder hashes its complete file, so recipe changes require a fresh prefix
 and work directory rather than relabelling previously built libraries.
 
 Packages contain replaceable shared libraries and the complete corresponding
-FFmpeg source archive, LGPL text, build recipe, source hashes, source patch and configure
-arguments in `ffmpeg-source` (Linux: `share/doc/serein/ffmpeg-source`). dav1d 1.5.1
-is statically linked with its unmodified BSD-2-Clause notice and full source archive.
+FFmpeg source archive, GPL and LGPL texts, build recipe, source hashes, source patch and configure
+arguments in `ffmpeg-source` (Linux: `share/doc/serein/ffmpeg-source`). The
+FFmpeg-derived GPU camera filter source is included in `ffmpeg-source/camera-filter`.
+dav1d 1.5.1 is statically linked with its unmodified BSD-2-Clause notice and full source archive.
 OpenH264
 and NVENC headers retain their BSD/MIT notices. AMF 1.4.36 public headers retain
 AMD's MIT license and standards/patent notice. Intel oneVPL 2.14.0's MIT license,

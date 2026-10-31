@@ -23,6 +23,8 @@ fn speech_status(audio: &Audio) -> Option<&'static str> {
 		SpeechStatus::Warming => "voice-lavasr-description",
 		SpeechStatus::Active => "voice-lavasr-active",
 		SpeechStatus::Fallback => "voice-lavasr-fallback",
+		SpeechStatus::Unavailable => "voice-lavasr-unavailable",
+		SpeechStatus::Overloaded => "voice-lavasr-overloaded",
 	})
 }
 
@@ -931,6 +933,7 @@ impl Voice {
 		ctx: &egui::Context,
 	) -> Option<Command> {
 		ui.voice_lavasr_status = None;
+		ui.camera_denoising_availability = platform::video::denoise::availability();
 		// Project only this frame's still-owned connection; early returns retire old data.
 		if !state.demo {
 			ui.voice_diagnostics

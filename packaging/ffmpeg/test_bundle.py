@@ -46,12 +46,28 @@ class BundleTest(unittest.TestCase):
         (provenance / "source").mkdir(parents=True)
         (provenance / "build.json").write_text(json.dumps({
             "system": "Darwin", "nvenc": False, "amf": False, "qsv": False,
+            "license": "GPL-2.0-or-later", "filters": ["atadenoise", "hqdn3d", "unsharp"],
             "sources": {"ffmpeg": builder.SOURCES["ffmpeg"]},
         }))
-        for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1",
+        for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2",
                      "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz", "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2"):
             (provenance / name).write_bytes(b"synthetic source/notice")
         return prefix
+
+    def test_bundle_rejects_old_lgpl_build_or_incomplete_filter_metadata(self):
+        for changes in ({"license": "LGPL-2.1-or-later"}, {"filters": ["atadenoise"]}, {"license": None}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prefix = self.darwin_prefix(root)
+                metadata = prefix / "share/serein-ffmpeg/build.json"
+                recipe = json.loads(metadata.read_text())
+                recipe.update(changes)
+                metadata.write_text(json.dumps(recipe))
+                stage = root / "dist"
+                with patch.object(bundle.platform, "system", return_value="Darwin"):
+                    with self.assertRaisesRegex(ValueError, "webcam filters"):
+                        bundle.bundle(stage, prefix)
+                self.assertFalse(stage.exists())
 
     @unittest.skipUnless(os.name == "posix", "Darwin-style source aliases require POSIX symlinks")
     def test_darwin_restage_replaces_library_inode_and_preserves_open_mapping(self):
@@ -113,6 +129,7 @@ class BundleTest(unittest.TestCase):
             notices.mkdir(parents=True)
             backends = builder.encoder_backends("Linux", False)
             recipe = {"sources": builder.SOURCES, "system": "Linux", "architecture": "x86_64", **backends,
+                      "license": "GPL-2.0-or-later", "filters": ["atadenoise", "hqdn3d", "unsharp"],
                       "encoders": sorted(builder.encoder_names(backends)), "decoders": sorted(builder.decoder_names(backends)),
                       "toolchain": builder.toolchain_options("Linux", False),
                       "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
@@ -129,7 +146,7 @@ class BundleTest(unittest.TestCase):
     def test_cached_build_requires_platform_artifacts_and_source_payload(self):
         headers = ("libavcodec/avcodec.h", "libavutil/avutil.h", "libavutil/error.h", "libavutil/frame.h",
                    "libavutil/hwcontext.h", "libavutil/mem.h", "libavutil/opt.h", "libavformat/avformat.h", "libavfilter/avfilter.h", "libavfilter/buffersrc.h", "libavfilter/buffersink.h", "libswscale/swscale.h", "libswresample/swresample.h")
-        provenance = ("build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
+        provenance = ("build-ffmpeg.py", "configure.json", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
                       "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "source/dav1d-1.5.1.tar.xz", "dav1d-COPYING",
                       "nv-codec-headers-README", "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE",
                       "source/AMF-1.4.36-headers.tar", "oneVPL-LICENSE", "oneVPL-third-party-programs.txt",
@@ -176,6 +193,7 @@ class BundleTest(unittest.TestCase):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(b"synthetic required artifact")
                 recipe = {"sources": builder.SOURCES, "system": system, "architecture": "x86_64", **backends,
+                          "license": "GPL-2.0-or-later", "filters": ["atadenoise", "hqdn3d", "unsharp"],
                           "encoders": sorted(builder.encoder_names(backends)), "decoders": sorted(builder.decoder_names(backends)),
                           "toolchain": builder.toolchain_options(system, False),
                           "recipe_sha256": hashlib.sha256(Path(builder.__file__).read_bytes()).hexdigest()}
@@ -191,6 +209,7 @@ class BundleTest(unittest.TestCase):
                                 with self.assertRaisesRegex(ValueError, "prefix contains another build"):
                                     builder.build(args)
                     for name in ["include/libavcodec/avcodec.h", libraries[0], aliases[0],
+                                 "share/serein-ffmpeg/COPYING.GPLv2",
                                  "share/serein-ffmpeg/source/ffmpeg-7.1.5.tar.xz", *query_files, *vulkan_provenance]:
                         target = prefix / name
                         original = target.read_bytes()
@@ -585,10 +604,30 @@ class BundleTest(unittest.TestCase):
         library = ctypes.CDLL(str(Path(os.environ["FFMPEG_DIR"]) / "lib/libavfilter-serein.so.10"))
         library.avfilter_get_by_name.argtypes = [ctypes.c_char_p]
         library.avfilter_get_by_name.restype = ctypes.c_void_p
-        for name in (b"buffer", b"buffersink", b"abuffer", b"abuffersink", b"atadenoise"):
+        allowed = {b"buffer", b"buffersink", b"abuffer", b"abuffersink", b"atadenoise", b"hqdn3d", b"unsharp"}
+        for name in allowed:
             self.assertTrue(library.avfilter_get_by_name(name), name)
+        library.av_filter_iterate.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        library.av_filter_iterate.restype = ctypes.c_void_p
+        state = ctypes.c_void_p()
+        found = set()
+        while value := library.av_filter_iterate(ctypes.byref(state)):
+            # AVFilter's first member is const char *name in pinned FFmpeg 7.
+            found.add(ctypes.cast(value, ctypes.POINTER(ctypes.c_char_p)).contents.value)
+        self.assertEqual(found, allowed)
         for name in (b"movie", b"zmq", b"scale", b"overlay"):
             self.assertFalse(library.avfilter_get_by_name(name), name)
+
+    @unittest.skipUnless(os.name == "posix" and os.environ.get("FFMPEG_DIR") and bundle.platform.system() == "Linux",
+                         "Requires the native Linux FFmpeg build")
+    def test_private_ffmpeg_reports_the_gpl_build_and_retains_its_license(self):
+        prefix = Path(os.environ["FFMPEG_DIR"])
+        library = ctypes.CDLL(str(prefix / "lib/libavutil-serein.so.59"))
+        library.avutil_license.restype = ctypes.c_char_p
+        self.assertEqual(library.avutil_license(), b"GPL version 2 or later")
+        notices = prefix / "share/serein-ffmpeg"
+        self.assertEqual(hashlib.sha256((notices / "COPYING.GPLv2").read_bytes()).hexdigest(),
+                         "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643")
 
     @unittest.skipUnless(os.environ.get("FFMPEG_DIR") and bundle.platform.system() == "Windows",
                          "Requires the native MSVC FFmpeg build and dumpbin")
@@ -644,8 +683,9 @@ class BundleTest(unittest.TestCase):
                 (notices / "source").mkdir(parents=True)
                 nvenc = system != "Darwin"
                 (notices / "build.json").write_text(json.dumps({"system": system, "nvenc": nvenc, "amf": nvenc, "qsv": nvenc,
+                    "license": "GPL-2.0-or-later", "filters": ["atadenoise", "hqdn3d", "unsharp"],
                     "sources": {"ffmpeg": builder.SOURCES["ffmpeg"]}}))
-                for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
+                for name in ("configure.json", "build-ffmpeg.py", "serein-ffmpeg.patch", "COPYING.LGPLv2.1", "COPYING.GPLv2", "OpenH264-LICENSE", "dav1d-COPYING", "source/dav1d-1.5.1.tar.xz",
                              "source/ffmpeg-7.1.5.tar.xz", "source/openh264-2.6.0-source.tar.bz2", "source/dav1d-1.5.1.tar.xz", "dav1d-COPYING", "nv-codec-headers-README",
                              "source/nv-codec-headers-12.2.72.0.tar.gz", "AMF-LICENSE", "source/AMF-1.4.36-headers.tar",
                              "oneVPL-LICENSE", "oneVPL-third-party-programs.txt", "source/libvpl-2.14.0.tar.gz"):
@@ -665,6 +705,12 @@ class BundleTest(unittest.TestCase):
                 names = {p.name for p in stage.rglob("*") if p.is_file()}
                 self.assertTrue(set(bundle.LIBRARIES[system]).issubset(names))
                 self.assertIn("ffmpeg-7.1.5.tar.xz", names)
+                self.assertIn("COPYING.GPLv2", names)
+                camera_source = next(path for path in stage.rglob("camera-filter") if path.is_dir())
+                self.assertEqual((camera_source / "camera_filter.wgsl").read_bytes(),
+                                 (Path(__file__).resolve().parents[2] / "crates/platform/src/video/denoise/camera_filter.wgsl").read_bytes())
+                self.assertTrue((camera_source / "gpu.rs").is_file())
+                self.assertTrue((camera_source / "denoise.rs").is_file())
                 self.assertEqual("serein-openh264.patch" in names, system == "Linux")
                 self.assertNotIn("private.log", names)
                 self.assertNotIn("unrelated-private-log", names)

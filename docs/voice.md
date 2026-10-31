@@ -665,15 +665,15 @@ screen audio and the separate RNNoise voice-message option are unaffected.
 
 The normal package bundles three hash-pinned models and CPU ONNX Runtime;
 there are no model downloads during a call, Python dependency or remote audio
-service. A disposable helper owns inference and fixed history, with at most two queued
-input blocks and one output block, at most four retained 20 ms output frames, epoch retirement
-on privacy/device/settings changes, up to one second for retiring-helper
-handoff, a five-second initialization deadline and a 150 ms per-request deadline. Sustained queue pressure or helper failure switches
-to RNNoise and shows a short fallback hint. Toggle suppression off and on to
+service. A disposable helper owns inference and fixed history, with at most three queued
+input blocks and two output blocks, at most twelve retained 20 ms output frames, epoch retirement
+on privacy/device/settings changes, up to five seconds for retiring-helper
+handoff, a 15-second initialization deadline and a 500 ms per-request deadline. Sustained queue pressure or helper failure switches
+to RNNoise and identifies overload or an unavailable model/runtime when known. Toggle suppression off and on to
 retry. Initialization warms the models on synthetic audio while using RNNoise;
 enhancement starts only from fresh PCM after initialization finishes.
 
-Streaming uses 40 ms blocks, 20 ms overlap and 40 ms lookahead; it adds voice
+Streaming uses 80 ms blocks, 20 ms overlap and 40 ms lookahead; it adds voice
 delay and CPU/memory cost. The upstream 44.1 kHz mel configuration is retained
 even though waveform output is 48 kHz. This streaming adaptation is not a claim
 of quality equivalence to whole-file inference. Pinned assets, licenses and
@@ -681,7 +681,9 @@ source provenance are in `packaging/lavasr/bundle.py` and
 `assets/licenses/voice/lavasr/PROVENANCE.md`. `serein --self-test-lavasr`
 checks packaged model initialization, reset and teardown using synthetic silence,
 without requiring real-time inference speed from shared CI machines. Nonzero
-model regressions and separate helper benchmarks cover processing; these checks
+model regressions cover processing. `serein --self-test-lavasr-realtime` additionally
+exercises the complete helper with nonzero synthetic audio at real-time cadence; it
+can fail when the machine cannot keep up. These checks
 do not establish physical microphone quality.
 
 ## Voice-channel status
@@ -945,9 +947,10 @@ FFmpeg OpenH264 wrapper uses camera-realtime/low-complexity tuning for H.264 sof
 fallback, including screens; active desktop text quality and throughput need native
 validation. H.264 software encoding uses the existing FFmpeg/OpenH264 path.
 
-Official builds use the pinned minimal LGPL recipe in
-[`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py), with GPL/nonfree components,
-networking and CLI programs disabled. Explicit decoder/demuxer allowlists cover
+Official builds use the pinned minimal GPL-2.0-or-later recipe in
+[`scripts/build-ffmpeg.py`](../scripts/build-ffmpeg.py); `hqdn3d` requires GPL.
+Nonfree and version-3-only components, networking and CLI programs remain disabled.
+Explicit decoder/demuxer allowlists cover
 H.264, HEVC, AV1 and supported anonymous video attachments. Replaceable shared
 libraries, license and corresponding source/patch/recipe travel with each package.
 Private library names and ELF symbol versions keep the system GStreamer FFmpeg
@@ -1061,14 +1064,15 @@ ID is session-local. Refresh discovers added/removed devices; a missing selected
 device is reported rather than silently opening another camera. Changing selection
 stops active capture and requires another camera-on click.
 
-Voice & Video offers camera denoising as **Off** (the default) or **ATADenoise**.
-ATADenoise explicitly enables FFmpeg filtering for
-camera output up to 2,073,600 pixels; it requires a five-frame temporal window and adds
-lookahead. If initialization fails or processing repeatedly exceeds the frame interval,
+Voice & Video offers a camera denoising toggle, off by default. It is enabled only when
+the selected hardware GPU can run the filter. The GPU implementation matches the FFmpeg
+chain `atadenoise,hqdn3d=4,unsharp=7:7:0.5` for output up to 2,073,600 pixels.
+ATADenoise's default nine-frame window adds lookahead. If initialization fails or
+processing repeatedly exceeds the frame interval,
 Serein continues without the filter and displays the reason. This processing stays on the
-camera worker and applies to its local preview and outgoing video, not screen sharing.
+camera worker's GPU and applies to its local preview and outgoing video, not screen sharing.
 Changes apply when the camera or preview next starts. Older saved Auto preferences
-become Off; saved On preferences select ATADenoise. Native camera quality and latency
+become Off; saved On preferences enable the filter chain. Native camera quality and latency
 remain unverified.
 
 Voice & Video also offers an explicit **Preview camera / Stop preview** control outside

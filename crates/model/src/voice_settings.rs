@@ -493,6 +493,15 @@ pub enum CameraDenoising {
 	On,
 }
 
+/// Whether the selected rendering device can run the webcam filter on a GPU.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CameraDenoisingAvailability {
+	#[default]
+	Unavailable,
+	Checking,
+	Available,
+}
+
 /// Current processing state for a running camera, distinct from the saved choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CameraDenoisingStatus {
