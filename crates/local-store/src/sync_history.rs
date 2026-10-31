@@ -15,6 +15,7 @@ type StoredCoverage = (String, String, String, String, Option<String>, bool, boo
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HistoryPageQuery {
 	pub before: Option<Id>,
+	pub after: Option<Id>,
 	pub around: Option<Id>,
 	pub limit: usize,
 }
@@ -22,6 +23,7 @@ impl Default for HistoryPageQuery {
 	fn default() -> Self {
 		Self {
 			before: None,
+			after: None,
 			around: None,
 			limit: 500,
 		}
@@ -212,6 +214,7 @@ impl LocalStore {
 			channel,
 			HistoryPageQuery {
 				before: coverage.before,
+				after: None,
 				around: None,
 				limit: 50,
 			},
@@ -849,6 +852,7 @@ mod tests {
 				Id(2),
 				HistoryPageQuery {
 					before: Some(Id(101)),
+					after: None,
 					around: None,
 					limit: 50,
 				},
@@ -861,12 +865,65 @@ mod tests {
 				Id(2),
 				HistoryPageQuery {
 					before: None,
+					after: None,
 					around: Some(Id(20)),
 					limit: 10,
 				},
 			)
 			.unwrap();
 		assert_eq!((around[0].id, around[9].id), (Id(16), Id(25)));
+		let newer = store
+			.load_history_page(
+				Id(1),
+				Id(2),
+				HistoryPageQuery {
+					before: None,
+					after: Some(Id(100)),
+					around: None,
+					limit: 50,
+				},
+			)
+			.unwrap();
+		assert_eq!(newer.len(), 50);
+		assert_eq!((newer[0].id, newer[49].id), (Id(101), Id(150)));
+		let from_start = store
+			.load_history_page(
+				Id(1),
+				Id(2),
+				HistoryPageQuery {
+					after: Some(Id(0)),
+					limit: 50,
+					..HistoryPageQuery::default()
+				},
+			)
+			.unwrap();
+		assert_eq!((from_start[0].id, from_start[49].id), (Id(1), Id(50)));
+		assert!(
+			store
+				.load_history_page(
+					Id(1),
+					Id(2),
+					HistoryPageQuery {
+						after: Some(Id(u64::MAX)),
+						limit: 50,
+						..HistoryPageQuery::default()
+					},
+				)
+				.unwrap()
+				.is_empty()
+		);
+		assert!(matches!(
+			store.load_history_page(
+				Id(1),
+				Id(2),
+				HistoryPageQuery {
+					before: Some(Id(100)),
+					after: Some(Id(1)),
+					..HistoryPageQuery::default()
+				},
+			),
+			Err(StoreError::Capacity)
+		));
 		for channel in 10..=35 {
 			let mut row = template.clone();
 			row.channel = Id(channel);

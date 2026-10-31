@@ -19,6 +19,24 @@ impl State {
 		if envelope.generation != self.generation {
 			return;
 		}
+		if self.history_navigation.provisional() {
+			let affects_provisional = match &envelope.event {
+				Event::History { .. }
+				| Event::HistoryFailed { .. }
+				| Event::Typing(_)
+				| Event::MemberPresence { .. }
+				| Event::DirectPresence(_) => false,
+				Event::Message(message) => self.selected == Some(message.channel),
+				Event::Patch(patch) => self.selected == Some(patch.channel),
+				Event::Delete { channel, .. } | Event::DeleteBulk { channel, .. } => {
+					self.selected == Some(*channel)
+				}
+				_ => true,
+			};
+			if affects_provisional {
+				self.rollback_provisional_history();
+			}
+		}
 		if !matches!(envelope.event, Event::Message(_) | Event::Typing(_)) {
 			self.invalidate_expression_event(&envelope.event);
 			self.observe_server_display(&envelope.event);
@@ -249,18 +267,8 @@ impl State {
 			self.clear_search();
 			self.search_target = None;
 		}
-		// Search is a snapshot. A mutation can race an in-flight index response; invalidate
-		// its snippets instead of restoring deleted/edited text from an older index.
-		let search_mutation = match &envelope.event {
-			Event::Patch(patch) => Some(patch.channel),
-			Event::Delete { channel, .. } | Event::DeleteBulk { channel, .. } => Some(*channel),
-			_ => None,
-		};
-		if search_mutation.is_some_and(|channel| {
-			self.selected == Some(channel) || self.search_covers_channel(channel)
-		}) {
-			self.clear_search();
-		}
+		// Keep unaffected hits while preventing stale in-flight snippets from reappearing.
+		self.search_message_changed(&envelope.event);
 		let previous_channel = self.selected;
 		let previous_tail = matches!(
 			&envelope.event,
@@ -1344,7 +1352,7 @@ impl State {
 					return;
 				}
 				if self
-					.prepare_target_history(channel, request, &messages)
+					.prepare_target_history(channel, request, &messages, false)
 					.is_err()
 				{
 					return;

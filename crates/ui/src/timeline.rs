@@ -2989,7 +2989,19 @@ impl TimelineView {
 			// egui sticks after painting; use this frame's height while the call panel resizes.
 			offset = Some(live_edge_offset);
 		}
-		let wheel = ui.input(|input| input.smooth_scroll_delta());
+		// Wheel activity in the search panel or another pane must not interrupt a
+		// timeline jump or change its reading anchor.
+		let wheel = ui.input(|input| {
+			if input
+				.pointer
+				.hover_pos()
+				.is_some_and(|pos| area.contains(pos))
+			{
+				input.smooth_scroll_delta()
+			} else {
+				egui::Vec2::ZERO
+			}
+		});
 		let user_scroll = wheel.y + autoscroll_delta;
 		if user_scroll != 0.0 && self.reveal_scroll.take().is_some() {
 			offset = None;
@@ -8709,6 +8721,82 @@ mod tests {
 		assert!(
 			view.following,
 			"The compensated short content must reach its real bottom; hidden leading bounds must not create phantom scroll space"
+		);
+	}
+
+	#[test]
+	fn scrolling_a_neighboring_pane_does_not_cancel_a_timeline_jump() {
+		let mut state = State {
+			selected: Some(Id(20)),
+			revision: 1,
+			demo: true,
+			..Default::default()
+		};
+		for id in 1..=100 {
+			state
+				.timeline
+				.insert(text_message(id), false, false)
+				.unwrap();
+		}
+		let ctx = egui::Context::default();
+		let mut view = TimelineView::default();
+		let mut avatars = crate::avatars::Avatars::default();
+		let mut frame = |view: &mut TimelineView, events: Vec<egui::Event>| {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(600.0, 400.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					ui.allocate_ui(egui::vec2(280.0, 380.0), |ui| {
+						view.show(
+							ui,
+							&mut state,
+							&mut None,
+							&mut None,
+							(
+								&mut avatars,
+								&mut crate::profiles::ProfileSession::default(),
+							),
+							None,
+						);
+					});
+				},
+			)
+			.drop_without_applying_deltas();
+		};
+		frame(&mut view, vec![]);
+		view.following = false;
+		view.reveal_scroll = Some(RevealScroll {
+			target: Id(25),
+			from: 0.0,
+			elapsed: 0.0,
+		});
+		frame(
+			&mut view,
+			vec![
+				egui::Event::PointerMoved(egui::pos2(500.0, 200.0)),
+				egui::Event::MouseWheel {
+					unit: egui::MouseWheelUnit::Point,
+					delta: egui::vec2(0.0, -40.0),
+					phase: egui::TouchPhase::Move,
+					source: egui::MouseWheelSource::Trackpad,
+					modifiers: egui::Modifiers::NONE,
+				},
+			],
+		);
+		assert_ne!(
+			ctx.input(|input| input.smooth_scroll_delta().y),
+			0.0,
+			"The neighboring pane must actually receive wheel input"
+		);
+		assert!(
+			view.reveal_scroll.is_some(),
+			"A different pane must not cancel the jump"
 		);
 	}
 

@@ -2,6 +2,7 @@ use crate::{avatars::Avatars, design, dialog, icons};
 use client_core::State;
 use egui::RichText;
 use model::{Channel, Id, User};
+use std::borrow::Cow;
 
 pub enum Action {
 	None,
@@ -16,13 +17,13 @@ pub fn suggestion_row(ui: &mut egui::Ui, key: &str, title: &str, detail: &str) -
 	let text_width = (width - 54.0).max(1.0);
 	let title = ui.painter().layout(
 		title.to_owned(),
-		egui::FontId::new(15.0, design::semibold_family(ui.ctx())),
+		egui::FontId::new(14.0, design::semibold_family(ui.ctx())),
 		colors.text_strong,
 		text_width,
 	);
 	let subtitle = ui.painter().layout(
 		detail.to_owned(),
-		egui::FontId::proportional(14.0),
+		egui::FontId::proportional(12.5),
 		colors.muted,
 		text_width,
 	);
@@ -32,7 +33,7 @@ pub fn suggestion_row(ui: &mut egui::Ui, key: &str, title: &str, detail: &str) -
 		} else {
 			2.0 + subtitle.size().y
 		};
-	let height = (text_height + 14.0).max(if detail.is_empty() { 40.0 } else { 52.0 });
+	let height = (text_height + 10.0).max(if detail.is_empty() { 36.0 } else { 44.0 });
 	let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
 	response.widget_info(|| {
 		egui::WidgetInfo::labeled(
@@ -114,7 +115,7 @@ pub struct Draft {
 	error: Option<&'static str>,
 }
 
-pub fn users(state: &State) -> Vec<&User> {
+pub fn users(state: &State) -> Vec<Cow<'_, User>> {
 	let mut users = std::collections::BTreeMap::new();
 	for user in state
 		.user
@@ -126,7 +127,6 @@ pub fn users(state: &State) -> Vec<&User> {
 				.filter(|c| Some(c.id) == state.selected)
 				.flat_map(|c| &c.recipients),
 		)
-		.chain(state.timeline.iter().map(|m| &m.author))
 		.chain(state.members.iter().flat_map(|list| {
 			list.slots
 				.iter()
@@ -137,14 +137,48 @@ pub fn users(state: &State) -> Vec<&User> {
 				})
 				.map(|member| &member.user)
 		}))
-		.take(1500)
+		.map(Cow::Borrowed)
+		.chain(
+			state
+				.selected
+				.into_iter()
+				.flat_map(|channel| state.observed_member_users(channel)),
+		)
+		.chain(
+			state
+				.timeline
+				.iter()
+				.map(|message| Cow::Borrowed(&message.author)),
+		)
+		.take(4000)
 	{
 		users.entry(user.id).or_insert(user);
-		if users.len() >= 100 {
+		if users.len() == 1500 {
 			break;
 		}
 	}
 	users.into_values().collect()
+}
+
+/// Prefer the server nickname while keeping the actual account name searchable.
+pub fn user_name<'a>(state: &'a State, user: &'a User) -> &'a str {
+	state
+		.selected
+		.and_then(|channel| state.member_nickname(channel, user.id))
+		.flatten()
+		.unwrap_or_else(|| state.user_display_name(user))
+}
+
+pub fn user_matches(state: &State, user: &User, needle: &str) -> bool {
+	needle.is_empty()
+		|| label(&user.name).to_lowercase().contains(needle)
+		|| user
+			.username
+			.as_deref()
+			.is_some_and(|name| name.to_lowercase().contains(needle))
+		|| label(user_name(state, user))
+			.to_lowercase()
+			.contains(needle)
 }
 
 /// Server whose channels a search spans; direct messages have none.
@@ -257,10 +291,16 @@ fn user_id(value: &str, state: &State, labels: &Labels) -> Option<Id> {
 		.or_else(|| labels.id("user", value))
 		.or_else(|| {
 			let value = value.to_lowercase();
-			users(state)
-				.into_iter()
-				.find(|user| label(&user.name).to_lowercase() == value)
-				.map(|user| user.id)
+			let mut matches = users(state).into_iter().filter(|user| {
+				label(&user.name).eq_ignore_ascii_case(&value)
+					|| user
+						.username
+						.as_deref()
+						.is_some_and(|name| name.eq_ignore_ascii_case(&value))
+					|| label(user_name(state, user)).eq_ignore_ascii_case(&value)
+			});
+			let first = matches.next()?.id;
+			matches.next().is_none().then_some(first)
 		})
 }
 
@@ -339,7 +379,7 @@ pub fn display(query: &str, state: &State, labels: &mut Labels) -> String {
 					users(state)
 						.into_iter()
 						.find(|user| user.id == id)
-						.map(|user| label(&user.name))
+						.map(|user| label(user_name(state, &user)))
 				})?;
 				labels.remember("user", &name, id);
 				Some(format!("{key}:{name}"))
@@ -466,12 +506,14 @@ pub fn channel_row(
 
 pub fn user_row(
 	ui: &mut egui::Ui,
+	state: &State,
 	user: &User,
 	avatars: &mut Avatars,
 	demo: bool,
 	selected: bool,
 ) -> egui::Response {
 	let colors = design::palette(ui);
+	let display = user_name(state, user);
 	let (rect, response) =
 		ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
 	if selected || response.hovered() || response.has_focus() {
@@ -485,17 +527,26 @@ pub fn user_row(
 			|ui| {
 				let avatar = avatars.show(ui, user, 24.0, demo);
 				ui.add(
-					egui::Label::new(
-						design::semibold(ui, &user.name, 14.0).color(colors.text_strong),
-					)
-					.truncate()
-					.selectable(false),
+					egui::Label::new(design::semibold(ui, display, 14.0).color(colors.text_strong))
+						.truncate()
+						.selectable(false),
 				);
+				if let Some(username) = user
+					.username
+					.as_deref()
+					.filter(|name| !name.eq_ignore_ascii_case(display))
+				{
+					ui.label(
+						RichText::new(format!("@{username}"))
+							.small()
+							.color(colors.muted),
+					);
+				}
 				avatar
 			},
 		)
 		.inner;
-	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &user.name));
+	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, display));
 	response.union(avatar)
 }
 
@@ -554,12 +605,12 @@ fn caption(query: &str, key: &str, names: &[(Id, &str)], placeholder: &str) -> S
 
 fn user_picker(
 	ui: &mut egui::Ui,
+	state: &State,
 	query: &mut String,
 	key: &str,
 	needle: &mut String,
-	users: &[&User],
+	users: &[Cow<'_, User>],
 	avatars: &mut Avatars,
-	demo: bool,
 ) {
 	egui::ComboBox::from_id_salt(key)
 		.width(ui.available_width())
@@ -568,7 +619,7 @@ fn user_picker(
 			key,
 			&users
 				.iter()
-				.map(|user| (user.id, user.name.as_str()))
+				.map(|user| (user.id, user_name(state, user)))
 				.collect::<Vec<_>>(),
 			&crate::i18n::translate("search-filters-user-picker-choose-a-user"),
 		))
@@ -582,13 +633,24 @@ fn user_picker(
 					)),
 			);
 			let mut count = 0;
+			let needle = needle.to_lowercase();
 			for user in users
 				.iter()
-				.filter(|user| user.name.to_lowercase().contains(&needle.to_lowercase()))
+				.filter(|user| user_matches(state, user, &needle))
+				.take(100)
 			{
 				count += 1;
 				let id = user.id.to_string();
-				if user_row(ui, user, avatars, demo, selected(query, key, &id)).clicked() {
+				if user_row(
+					ui,
+					state,
+					user,
+					avatars,
+					state.demo,
+					selected(query, key, &id),
+				)
+				.clicked()
+				{
 					replace(query, key, &id, true);
 				}
 			}
@@ -756,12 +818,12 @@ impl Draft {
 					heading(ui, "From", "Sent by any of the selected users");
 					user_picker(
 						ui,
+						state,
 						&mut self.query,
 						"from",
 						&mut self.from_search,
 						&users,
 						avatars,
-						state.demo,
 					);
 					ui.add_space(22.0);
 					if !channels.is_empty() {
@@ -789,12 +851,12 @@ impl Draft {
 					heading(ui, "Mentions", "Mentions any of the selected users");
 					user_picker(
 						ui,
+						state,
 						&mut self.query,
 						"mentions",
 						&mut self.mentions_search,
 						&users,
 						avatars,
-						state.demo,
 					);
 					ui.add_space(22.0);
 					heading(ui, "Date", "When the message was sent");
@@ -952,6 +1014,28 @@ impl Draft {
 
 #[cfg(test)]
 mod tests {
+	#[test]
+	fn users_beyond_the_first_hundred_can_be_found_by_account_name() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		for id in 1000..1120 {
+			let mut message = test_support::message(id, channel);
+			message.author.id = model::Id(id);
+			message.author.name = format!("Display {id}");
+			message.author.username = Some(format!("account{id}").into());
+			state.timeline.insert(message, false, false).unwrap();
+		}
+		let candidates = super::users(&state);
+		let found = candidates
+			.iter()
+			.find(|user| super::user_matches(&state, user, "account1119"));
+		assert_eq!(found.map(|user| user.id), Some(model::Id(1119)));
+		assert_eq!(
+			super::user_id("account1119", &state, &super::Labels::default()),
+			Some(model::Id(1119))
+		);
+	}
+
 	/// The caret in an empty search box is sized by this layout; it must match typed text.
 	#[test]
 	fn empty_query_lays_out_like_typed_text() {

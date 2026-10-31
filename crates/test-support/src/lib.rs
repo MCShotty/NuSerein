@@ -2907,7 +2907,13 @@ mod tests {
 			},
 		});
 		state.apply_search(Id(20), request, Ok(page()));
-		assert!(state.search.is_none());
+		let view = state.search.as_ref().expect("Unaffected search stays open");
+		assert_eq!(view.query, "fourth");
+		assert!(view.changed);
+		assert!(
+			view.page.as_ref().unwrap().hits.is_empty(),
+			"A deleted hit must not reappear"
+		);
 		let Command::Search { request, .. } = state.request_search("fifth".into(), None).unwrap()
 		else {
 			panic!()

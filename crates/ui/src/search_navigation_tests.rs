@@ -334,21 +334,7 @@ fn result_jump_and_numeric_pager_keep_scope_and_allow_explicit_retry() {
 	for _ in 0..3 {
 		labels = frame(&ctx, &mut view, &mut state, vec![], true, false).1;
 	}
-	let result = labels
-		.iter()
-		.find(|(text, _)| text == "Synthetic result to revisit")
-		.unwrap()
-		.1;
-	// Hovering the result exposes its explicit jump control above the selectable text.
-	let labels = frame(
-		&ctx,
-		&mut view,
-		&mut state,
-		vec![egui::Event::PointerMoved(result.center())],
-		true,
-		false,
-	)
-	.1;
+	// The explicit jump control is visible without hovering over the result.
 	let jump = labels
 		.iter()
 		.find(|(text, _)| text == "Jump")
@@ -404,6 +390,25 @@ fn result_jump_and_numeric_pager_keep_scope_and_allow_explicit_retry() {
 	state.apply_search(
 		Id(10),
 		loading_request,
+		Err(client_core::auth::Failure::Network),
+	);
+	let labels = frame(&ctx, &mut view, &mut state, vec![], true, false).1;
+	let retry = labels
+		.iter()
+		.find(|(text, _)| text == "Retry page")
+		.unwrap()
+		.1
+		.center();
+	let commands = click(&ctx, &mut view, &mut state, retry);
+	assert!(
+		commands
+			.iter()
+			.any(|command| matches!(command, Command::Search { offset: 50, .. }))
+	);
+	let retry_request = state.search.as_ref().unwrap().request;
+	state.apply_search(
+		Id(10),
+		retry_request,
 		Err(client_core::auth::Failure::Network),
 	);
 	let labels = frame(&ctx, &mut view, &mut state, vec![], true, false).1;

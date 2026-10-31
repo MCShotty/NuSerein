@@ -107,8 +107,10 @@ impl LocalStore {
 			|| channel.0 == 0
 			|| page.limit == 0
 			|| page.limit > 500
-			|| (page.before.is_some() && page.around.is_some())
-			|| page.before.or(page.around).is_some_and(|id| id.0 == 0)
+			|| usize::from(page.before.is_some())
+				+ usize::from(page.after.is_some())
+				+ usize::from(page.around.is_some())
+				> 1 || page.before.or(page.around).is_some_and(|id| id.0 == 0)
 		{
 			return Err(StoreError::Capacity);
 		}
@@ -128,6 +130,12 @@ impl LocalStore {
 			format!(
 				"{columns} AND id IN (SELECT id FROM (SELECT id FROM messages WHERE account=?1 AND channel=?2 AND (length(id),id)<=(length(?3),?3) ORDER BY length(id) DESC,id DESC LIMIT ?4) UNION ALL SELECT id FROM (SELECT id FROM messages WHERE account=?1 AND channel=?2 AND (length(id),id)>(length(?3),?3) ORDER BY length(id),id LIMIT ?5)) ORDER BY length(id) DESC,id DESC LIMIT ?6"
 			)
+		} else if let Some(after) = page.after {
+			values.extend([
+				Value::Text(after.to_string()),
+				Value::Integer(page.limit as i64),
+			]);
+			format!("{columns} AND (length(id),id)>(length(?3),?3) ORDER BY length(id),id LIMIT ?4")
 		} else if let Some(before) = page.before {
 			values.extend([
 				Value::Text(before.to_string()),
@@ -373,7 +381,9 @@ impl LocalStore {
 			}
 			messages.push(message);
 		}
-		messages.reverse();
+		if page.after.is_none() {
+			messages.reverse();
+		}
 		Ok(messages)
 	}
 	pub fn save_draft(&mut self, account: Id, channel: Id, content: &str) -> Result<()> {

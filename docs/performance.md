@@ -4402,3 +4402,70 @@ startup, reset and an undrained tail. This is not a matched performance comparis
 or a microphone quality test.
 The extra block duration can add up to 40 ms of latency. Native Windows audio,
 physical microphones and performance on slower systems remain unverified.
+
+### Cached history reconciliation and reply navigation
+
+The baseline is merged fork main `52a9b3aeee7e1546df47f998ccfcbf64c329a15f`;
+the implementation is `ea18da1e`. On Linux x86-64, Rust 1.98.1, Intel Xeon
+Platinum 8573C, a four-core quota and a 16-GiB memory limit, the release
+`replay-bench` was pinned to CPU 0. Each binary received one warmup followed by
+five alternating measurements; concurrent task-owned builds were paused during
+sampling. The measurements are synthetic core reducer time, not user-perceived
+latency or process RSS.
+
+| Workload | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 75.88 ms (73.52–83.65) | 77.43 ms (72.86–80.31) | +2.05% |
+
+The ranges overlap. Both retained 500 rows and 417,492–417,977 estimated bytes.
+No speedup or live Discord behavior is inferred from this replay. The storage
+regression exercises a full 50-row newer page, the start/end boundaries and
+conflicting cursors; it does not measure disk or UI latency.
+
+The changed release also completed a 120-second synthetic lifecycle soak: 3,269
+passes, 104,608 channel visits and 13 logout cycles. Its retained-history bounds
+held. It used no network, storage, renderer or audio devices. Current native
+Windows/macOS behavior and live Discord synchronization were not tested here.
+
+### Conversation search and scrolling
+
+The starting revision is `0c670e2f`; the implementation is `5a296b60`. The
+starting revision differs from the earlier `ea18da1e` replay executable only
+in documentation. On Linux x86-64 (Xeon Platinum 8573C, four-core quota,
+Rust 1.98.1), release replay binaries were pinned to CPU 0. Each received one
+warmup and five alternating measurements with no other task-owned builds.
+
+| Workload | Starting median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 81.12 ms (77.74–85.55) | 80.29 ms (78.96–87.79) | −1.02% |
+
+Both retained 500 rows and 417,492–417,977 estimated bytes. The ranges overlap;
+this synthetic reducer test does not measure search responsiveness, rendering or
+live Discord behavior. The changed release replay also completed a 120-second
+synthetic lifecycle soak: 3,252 passes, 104,064 channel visits and 13 logout
+cycles, with its retained-history bounds intact.
+
+The synthetic desktop was sampled separately in **debug** builds, using Xvfb,
+the Vulkan llvmpipe renderer, a 1280 × 800 window and the same search results.
+After a three-second warmup, five consecutive one-second process samples gave
+median idle CPU of 13.99% and 13.96% of one core, respectively. Median RSS was
+279,344 KiB and 279,460 KiB; sampled peak RSS was 284,572 KiB and 284,392 KiB.
+These short, non-alternating samples include synthetic animations and are not
+release-build or presented-frame measurements. No frame-latency claim follows.
+
+The debug executables were 339,267,264 and 339,489,976 bytes. Comparable release
+application and package sizes were unavailable locally: the preceding release
+packaging attempt approached the environment's 16 GiB memory limit. Native
+Windows/macOS input, live Discord searches and physical-device scrolling remain
+unverified. The checked-in before/after images are synthetic Linux light-theme captures; dark
+and narrow layouts were exercised by UI tests rather than native captures.
+
+The follow-up correction at `1819e47e` was compared against the same starting
+revision with the same release setup, one warmup and five alternating samples.
+The baseline median was 77.79 ms (74.76–81.21 ms), and the corrected median was
+80.02 ms (75.26–82.95 ms), a 2.86% increase with overlapping ranges. Both
+retained the same bounded timeline. These measurements do not establish a
+perceived latency change. The corrected release completed the 120-second
+synthetic lifecycle soak: 3,827 passes, 122,464 channel visits and 15 logout
+cycles, with retained-history bounds intact. The earlier UI samples and
+screenshots remain labelled to their original revisions.

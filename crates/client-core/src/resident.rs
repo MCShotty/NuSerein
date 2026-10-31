@@ -79,6 +79,7 @@ impl State {
 	/// Session-only extension policy. Disabling releases every retained deleted payload.
 	pub fn set_preserve_deleted_messages(&mut self, enabled: bool) {
 		if self.preserve_deleted_messages != enabled {
+			self.rollback_provisional_history();
 			self.history_navigation.evict_back();
 			self.preserve_deleted_messages = enabled;
 			self.revision += 1;
@@ -101,8 +102,8 @@ impl State {
 		self.clear_expression_hints();
 		self.resident = Windows::default();
 		self.reply_previews.clear();
-		self.history_navigation.clear_back();
 		self.cancel_reply_navigation();
+		self.history_navigation.clear_back();
 	}
 	/// Number of dormant windows, excluding the active timeline.
 	pub fn resident_window_count(&self) -> usize {
@@ -151,6 +152,10 @@ impl State {
 			+ self.reply_previews.bytes()
 			+ self.member_labels.bytes()
 			+ self
+				.search
+				.as_ref()
+				.map_or(0, |view| view.mutations.capacity() * size_of::<(Id, Id)>())
+			+ self
 				.member_search
 				.iter()
 				.map(|view| {
@@ -175,6 +180,10 @@ impl State {
 	pub fn enforce_resident_budget(&mut self) {
 		let mut bytes = self.resident_history_bytes();
 		let mut rows = self.resident_history_rows();
+		if (bytes > MAX_BYTES || rows > MAX_ROWS) && self.rollback_provisional_history() {
+			bytes = self.resident_history_bytes();
+			rows = self.resident_history_rows();
+		}
 		if bytes > MAX_BYTES || rows > MAX_ROWS {
 			let before = self.history_navigation.bytes();
 			let before_rows = self.history_navigation.rows();

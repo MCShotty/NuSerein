@@ -17,13 +17,35 @@ pub(super) struct Switcher {
 	composing: bool,
 	/// Results for `searched`, rebuilt when the query changes and at most once a second otherwise.
 	choices: Vec<Candidate>,
-	searched: Option<(String, f64)>,
+	searched: Option<(String, f64, FinderRevision)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FinderRevision {
+	generation: u64,
+	selected: Option<Id>,
+	channels: u64,
+	catalog: u64,
+	relationships: u64,
+}
+
+impl FinderRevision {
+	fn capture(state: &State) -> Self {
+		Self {
+			generation: state.generation,
+			selected: state.selected,
+			channels: state.channel_list_revision(),
+			catalog: state.catalog_revision(),
+			relationships: state.relationship_view(),
+		}
+	}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
 	Text,
 	Voice,
+	Forum,
 	Direct,
 	Group,
 }
@@ -41,6 +63,8 @@ struct Candidate {
 	scope: String,
 	current: bool,
 	user: Option<model::User>,
+	relevance: u8,
+	activity: Id,
 }
 
 impl Candidate {
@@ -49,6 +73,7 @@ impl Candidate {
 		let kind = match self.kind {
 			Kind::Text => "#",
 			Kind::Voice => "switcher-kind-voice-roster",
+			Kind::Forum => "switcher-kind-forum",
 			Kind::Direct | Kind::Group => "",
 		};
 		format!(
@@ -117,6 +142,7 @@ pub(super) fn channel_matches(
 		channel.recipients.iter().take(64).flat_map(|user| {
 			[
 				Some(user.name.as_str()),
+				user.username.as_deref(),
 				state.friend(user.id).map(|friend| friend.name.as_str()),
 				state.friend_nickname(user.id),
 				state.friend_username(user.id),
@@ -131,26 +157,71 @@ pub(super) fn channel_matches(
 	labels_match(labels, words, label, matched)
 }
 
+/// Exact and prefix matches should outrank unrelated recent conversations.
+fn relevance<'a>(query: &str, labels: impl Iterator<Item = &'a str>, scratch: &mut String) -> u8 {
+	if query.is_empty() {
+		return 0;
+	}
+	let mut best = 0;
+	for value in labels {
+		lowercase_bounded_into(scratch, value);
+		best = best.max(if scratch == query {
+			3
+		} else if scratch.starts_with(query) {
+			2
+		} else if scratch.contains(query) {
+			1
+		} else {
+			0
+		});
+	}
+	best.max(1) // All query words can match across several labels.
+}
+
 fn candidates(state: &State, query: &str) -> Vec<Candidate> {
 	let query = bounded(query).to_lowercase();
 	let words: Vec<_> = query.split_whitespace().collect();
 	// One reused buffer instead of a lowercase copy of every label per keystroke.
 	let mut label = String::new();
 	let mut matched = vec![false; words.len()];
-	let mut matches =
-		|channel: &Channel| channel_matches(state, channel, &words, &mut label, &mut matched);
 	let mut found: Vec<_> = state
 		.channels
 		.iter()
-		.filter(|c| (c.supports_text() || c.kind == 2) && state.can_view(c.id) && matches(c))
+		.filter_map(|channel| {
+			if !(channel.supports_text()
+				|| channel.kind == 13
+				|| (channel.guild.is_some() && matches!(channel.kind, 15 | 16)))
+				|| !state.can_view(channel.id)
+				|| !channel_matches(state, channel, &words, &mut label, &mut matched)
+			{
+				return None;
+			}
+			let names = std::iter::once(channel.name.as_str()).chain(
+				channel.recipients.iter().take(64).flat_map(|user| {
+					[
+						Some(user.name.as_str()),
+						user.username.as_deref(),
+						state.friend_nickname(user.id),
+						state.friend_username(user.id),
+					]
+					.into_iter()
+					.flatten()
+				}),
+			);
+			Some((channel, relevance(query.trim(), names, &mut label)))
+		})
 		.collect();
-	// Current conversation first, then the most recently active ones.
-	recent_first(&mut found, RESULTS, |c| {
-		(Some(c.id) == state.selected, activity(c))
+	// Relevance leads an explicit query; recency breaks ties and orders the empty view.
+	recent_first(&mut found, RESULTS, |(channel, relevance)| {
+		(
+			*relevance,
+			Some(channel.id) == state.selected,
+			activity(channel),
+		)
 	});
 	let mut choices: Vec<_> = found
 		.into_iter()
-		.map(|channel| {
+		.map(|(channel, relevance)| {
 			let name = state.conversation_name(channel);
 			let name = if name.is_empty() && channel.guild.is_none() {
 				channel.recipients.first().map_or_else(
@@ -172,8 +243,10 @@ fn candidates(state: &State, query: &str) -> Vec<Candidate> {
 				},
 				|g| g.name.clone(),
 			);
-			let kind = if channel.kind == 2 {
+			let kind = if matches!(channel.kind, 2 | 13) {
 				Kind::Voice
+			} else if matches!(channel.kind, 15 | 16) {
+				Kind::Forum
 			} else if channel.guild.is_some() {
 				Kind::Text
 			} else if channel.kind == 3 {
@@ -192,46 +265,65 @@ fn candidates(state: &State, query: &str) -> Vec<Candidate> {
 				} else {
 					None
 				},
+				relevance,
+				activity: activity(channel),
 			}
 		})
 		.collect();
-	if choices.len() == RESULTS {
+	if words.is_empty() && choices.len() == RESULTS {
 		return choices;
 	}
 	// Only one-to-one DMs suppress friend rows; at most the retained 4,000 friend IDs.
 	let direct_friends: HashSet<_> = state
 		.channels
 		.iter()
-		.filter(|channel| channel.guild.is_none() && channel.kind == 1)
+		.filter(|channel| {
+			channel.guild.is_none() && channel.kind == 1 && state.can_view(channel.id)
+		})
 		.flat_map(|channel| channel.recipients.iter().take(64))
 		.filter(|user| state.friend(user.id).is_some())
 		.map(|user| user.id)
 		.collect();
+	let mut friends = Vec::new();
 	for user in state.friends() {
 		if direct_friends.contains(&user.id) {
 			continue;
 		}
 		let labels = [
 			Some(user.name.as_str()),
+			user.username.as_deref(),
 			state.friend_nickname(user.id),
 			state.friend_username(user.id),
 		]
 		.into_iter()
 		.flatten();
-		if labels_match(labels, &words, &mut label, &mut matched) {
-			choices.push(Candidate {
-				target: Target::Friend(user.id),
-				kind: Kind::Direct,
-				name: bounded(state.user_display_name(user)),
-				scope: bounded(state.friend_username(user.id).unwrap_or("Friend")),
-				current: false,
-				user: Some(user.clone()),
-			});
-			if choices.len() == RESULTS {
-				break;
-			}
+		if labels_match(labels.clone(), &words, &mut label, &mut matched) {
+			friends.push((user, relevance(query.trim(), labels, &mut label)));
 		}
 	}
+	recent_first(&mut friends, RESULTS, |(user, relevance)| {
+		(*relevance, user.id)
+	});
+	for (user, relevance) in friends {
+		choices.push(Candidate {
+			target: Target::Friend(user.id),
+			kind: Kind::Direct,
+			name: bounded(state.user_display_name(user)),
+			scope: bounded(state.friend_username(user.id).unwrap_or("Friend")),
+			current: false,
+			user: Some(user.clone()),
+			relevance,
+			activity: Id(0),
+		});
+	}
+	recent_first(&mut choices, RESULTS, |choice| {
+		(
+			choice.relevance,
+			!words.is_empty() && matches!(choice.target, Target::Friend(_)),
+			choice.current,
+			choice.activity,
+		)
+	});
 	choices
 }
 
@@ -342,13 +434,13 @@ fn result_row(
 				colors.accent_text,
 			);
 		}
-		Kind::Text | Kind::Voice => {
+		Kind::Text | Kind::Voice | Kind::Forum => {
 			let painter = ui.painter();
 			painter.rect_filled(icon_rect, 8, colors.raised);
-			let icon = if choice.kind == Kind::Voice {
-				icons::Icon::Speaker
-			} else {
-				icons::Icon::Hash
+			let icon = match choice.kind {
+				Kind::Voice => icons::Icon::Speaker,
+				Kind::Forum => icons::Icon::Forum,
+				_ => icons::Icon::Hash,
 			};
 			icons::paint(
 				painter,
@@ -509,6 +601,10 @@ impl Switcher {
 				(ctx.content_rect().width() - f32::from(margin) * 2.0 - 32.0).clamp(200.0, 560.0),
 			);
 			ui.spacing_mut().item_spacing.y = 8.0;
+			ui.label(
+				design::semibold(ui, crate::i18n::translate("find-conversation"), 16.0)
+					.color(colors.text_strong),
+			);
 			// Search field: raised pill with a leading glyph, like the header search box.
 			let mut changed = false;
 			egui::Frame::new()
@@ -533,9 +629,7 @@ impl Switcher {
 								})
 								.frame(egui::Frame::NONE)
 								.font(egui::FontId::proportional(16.0))
-								.hint_text(crate::i18n::translate(
-									"switcher-show-where-would-you-like-to-go",
-								))
+								.hint_text(crate::i18n::translate("switcher-search-placeholder"))
 								.char_limit(QUERY_CHARS)
 								.desired_width(ui.available_width().max(60.0)),
 						);
@@ -569,13 +663,22 @@ impl Switcher {
 				);
 			}
 			let now = ui.input(|input| input.time);
-			if self
-				.searched
-				.as_ref()
-				.is_none_or(|(query, at)| *query != self.query || !(0.0..1.0).contains(&(now - at)))
-			{
+			let revision = FinderRevision::capture(state);
+			if self.searched.as_ref().is_none_or(|(query, at, previous)| {
+				*query != self.query || *previous != revision || !(0.0..1.0).contains(&(now - at))
+			}) {
+				let selected = (!changed)
+					.then(|| self.choices.get(self.selected).map(|choice| choice.target))
+					.flatten();
 				self.choices = candidates(state, &self.query);
-				self.searched = Some((self.query.clone(), now));
+				self.selected = selected
+					.and_then(|target| {
+						self.choices
+							.iter()
+							.position(|choice| choice.target == target)
+					})
+					.unwrap_or(0);
+				self.searched = Some((self.query.clone(), now, revision));
 			}
 			let choices = &self.choices;
 			self.selected = self.selected.min(choices.len().saturating_sub(1));
@@ -629,7 +732,7 @@ impl Switcher {
 					});
 			}
 			egui::ScrollArea::vertical()
-				.max_height((ctx.content_rect().height() - 220.0).clamp(88.0, 400.0))
+				.max_height((ctx.content_rect().height() - 240.0).clamp(88.0, 400.0))
 				.show(ui, |ui| {
 					ui.set_width(ui.available_width());
 					for (index, choice) in choices.iter().enumerate() {
@@ -675,9 +778,10 @@ impl Switcher {
 				}
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 					ui.add_enabled_ui(!blocked, |ui| {
-						if design::secondary_button(
+						if design::button(
 							ui,
 							&crate::i18n::translate("switcher-show-close"),
+							design::ButtonKind::Outline,
 						)
 						.clicked()
 						{
@@ -732,6 +836,122 @@ mod tests {
 			.collect();
 		state.selected = Some(Id(25));
 		state
+	}
+
+	#[test]
+	fn searches_the_actual_username_of_non_friend_dm_recipients() {
+		let mut state = state();
+		state.channels[16].recipients[0].username = Some("uniqueaccountname".into());
+		let found = candidates(&state, "uniqueaccountname");
+		assert!(
+			found
+				.iter()
+				.any(|choice| choice.target == Target::Channel(Id(17)))
+		);
+	}
+
+	#[test]
+	fn accessible_forums_and_stage_channels_are_searchable() {
+		let mut state = state();
+		let guild = state.guilds[0].id;
+		state.channels[16].guild = Some(guild);
+		state.channels[16].kind = 15;
+		state.channels[17].guild = Some(guild);
+		state.channels[17].kind = 13;
+		state.invalidate_navigation();
+		state
+			.permissions
+			.replace(test_support::permission_snapshot(&state))
+			.unwrap();
+		assert_eq!(
+			candidates(&state, "room 17")[0].target,
+			Target::Channel(Id(17))
+		);
+		assert_eq!(
+			candidates(&state, "room 18")[0].target,
+			Target::Channel(Id(18))
+		);
+	}
+
+	#[test]
+	fn exact_friend_matches_are_not_hidden_behind_twenty_partial_channel_matches() {
+		let mut state = state();
+		for channel in &mut state.channels {
+			channel.name = format!("alex-room-{}", channel.id);
+		}
+		state.invalidate_navigation();
+		let found = candidates(&state, "alex");
+		assert!(
+			found
+				.iter()
+				.any(|choice| choice.target == Target::Friend(Id(1004)))
+		);
+		assert_eq!(found[0].target, Target::Friend(Id(1004)));
+	}
+
+	#[test]
+	fn removed_conversations_disappear_without_waiting_for_a_timer() {
+		let ctx = egui::Context::default();
+		let mut state = state();
+		let mut switcher = Switcher::default();
+		let mut avatars = Avatars::default();
+		switcher.open(&ctx);
+		switcher.query = "Room 17".into();
+		let mut frame = |state: &State, switcher: &mut Switcher| {
+			ctx.run_ui(
+				egui::RawInput {
+					time: Some(1.0),
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(640.0, 700.0),
+					)),
+					..Default::default()
+				},
+				|_| {
+					switcher.show(&ctx, state, &mut avatars);
+				},
+			)
+			.drop_without_applying_deltas();
+		};
+		frame(&state, &mut switcher);
+		assert_eq!(switcher.choices[0].target, Target::Channel(Id(17)));
+		state.channels.retain(|channel| channel.id != Id(17));
+		state.invalidate_navigation();
+		frame(&state, &mut switcher);
+		assert!(switcher.choices.is_empty());
+	}
+
+	#[test]
+	fn refreshing_reordered_choices_keeps_the_selected_conversation() {
+		let ctx = egui::Context::default();
+		let mut state = state();
+		let mut switcher = Switcher::default();
+		let mut avatars = Avatars::default();
+		switcher.open(&ctx);
+		switcher.query = "room".into();
+		let mut frame = |state: &State, switcher: &mut Switcher| {
+			ctx.run_ui(
+				egui::RawInput {
+					time: Some(1.0),
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(640.0, 700.0),
+					)),
+					..Default::default()
+				},
+				|_| {
+					switcher.show(&ctx, state, &mut avatars);
+				},
+			)
+			.drop_without_applying_deltas();
+		};
+		frame(&state, &mut switcher);
+		switcher.selected = 2;
+		let selected = switcher.choices[switcher.selected].target;
+		state.channels[0].last_message = Some(Id(5000));
+		state.invalidate_navigation();
+		frame(&state, &mut switcher);
+		assert_eq!(switcher.choices[switcher.selected].target, selected);
 	}
 
 	#[test]

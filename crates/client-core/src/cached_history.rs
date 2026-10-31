@@ -33,7 +33,8 @@ impl State {
 		}
 		let target = self.pending_cached_history_target();
 		if let Some(target) = target {
-			if self.timeline.is_deleted(target)
+			if !self.history_navigation.can_stage_cached_target()
+				|| self.timeline.is_deleted(target)
 				|| !messages.iter().any(|message| message.id == target)
 			{
 				return false;
@@ -52,7 +53,7 @@ impl State {
 		}
 		if target.is_some()
 			&& self
-				.prepare_target_history(channel, request, &messages)
+				.prepare_target_history(channel, request, &messages, true)
 				.is_err()
 		{
 			return false;
@@ -62,6 +63,7 @@ impl State {
 			.seed_cached_page(messages, target.is_some())
 			.is_err()
 		{
+			self.rollback_provisional_history();
 			return false;
 		}
 		self.revision = self.revision.wrapping_add(1);

@@ -1748,6 +1748,8 @@ mod tests {
 			request: 0,
 			loading: false,
 			error: None,
+			changed: false,
+			mutations: Vec::new(),
 			page: Some(model::SearchPage {
 				hits: vec![],
 				total: 0,
