@@ -4459,3 +4459,13 @@ packaging attempt approached the environment's 16 GiB memory limit. Native
 Windows/macOS input, live Discord searches and physical-device scrolling remain
 unverified. The checked-in before/after images are synthetic Linux light-theme captures; dark
 and narrow layouts were exercised by UI tests rather than native captures.
+
+The follow-up correction at `1819e47e` was compared against the same starting
+revision with the same release setup, one warmup and five alternating samples.
+The baseline median was 77.79 ms (74.76–81.21 ms), and the corrected median was
+80.02 ms (75.26–82.95 ms), a 2.86% increase with overlapping ranges. Both
+retained the same bounded timeline. These measurements do not establish a
+perceived latency change. The corrected release completed the 120-second
+synthetic lifecycle soak: 3,827 passes, 122,464 channel visits and 15 logout
+cycles, with retained-history bounds intact. The earlier UI samples and
+screenshots remain labelled to their original revisions.
