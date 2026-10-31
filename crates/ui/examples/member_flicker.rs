@@ -77,6 +77,7 @@ fn main() {
 			.map(|id| {
 				Some(model::MemberSlot::Person(Member {
 					user: model::User {
+						member_avatar: None,
 						id: Id(id),
 						..test_support::message(id, channel).author
 					},

@@ -541,8 +541,7 @@ impl State {
 		{
 			return Some(roles);
 		}
-		self.display_member(channel, user)
-			.map(|member| member.roles.as_slice())
+		self.presentation_member_roles(channel, user)
 	}
 	fn display_roles(
 		&self,

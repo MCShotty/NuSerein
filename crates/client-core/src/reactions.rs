@@ -877,6 +877,7 @@ mod tests {
 			panic!()
 		};
 		let user = |id| User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,
@@ -1470,6 +1471,7 @@ mod tests {
 	#[test]
 	fn reaction_permissions_distinguish_existing_emoji_and_late_reads() {
 		let user = User {
+			member_avatar: None,
 			username: None,
 			primary_guild: None,
 			cosmetics: None,

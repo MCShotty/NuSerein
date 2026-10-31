@@ -111,6 +111,7 @@ impl Snapshot {
 				} else {
 					(
 						model::User {
+							member_avatar: None,
 							username: None,
 							id: r.id,
 							name: "Unknown user".into(),

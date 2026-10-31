@@ -663,6 +663,7 @@ mod tests {
 			id: Id(id),
 			channel: Id(1),
 			author: User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -2830,6 +2831,7 @@ mod tests {
 						id: Id(50),
 						channel: Id(1),
 						author: model::User {
+							member_avatar: None,
 							username: None,
 							kind: model::AccountKind::Human,
 							webhook: false,

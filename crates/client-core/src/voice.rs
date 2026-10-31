@@ -1528,6 +1528,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(User {
+				member_avatar: None,
 				username: None,
 				id: Id(1),
 				name: "Owner".into(),
@@ -1864,6 +1865,7 @@ mod tests {
 				auth: AuthState::Authenticated,
 				gateway_connected: true,
 				user: Some(User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2028,6 +2030,7 @@ mod tests {
 			oversized.member = Some(Member {
 				roles: vec![],
 				user: User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2148,6 +2151,7 @@ mod tests {
 				auth: AuthState::Authenticated,
 				gateway_connected: true,
 				user: Some(User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2311,6 +2315,7 @@ mod tests {
 			auth: AuthState::Authenticated,
 			gateway_connected: true,
 			user: Some(User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -2330,6 +2335,7 @@ mod tests {
 				position: 0,
 				kind: 1,
 				recipients: vec![User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2605,6 +2611,7 @@ mod tests {
 				auth: AuthState::Authenticated,
 				gateway_connected: true,
 				user: Some(User {
+					member_avatar: None,
 					username: None,
 					primary_guild: None,
 					cosmetics: None,
@@ -2624,6 +2631,7 @@ mod tests {
 					position: 0,
 					kind: 1,
 					recipients: vec![User {
+						member_avatar: None,
 						username: None,
 						primary_guild: None,
 						cosmetics: None,

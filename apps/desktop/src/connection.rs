@@ -32,6 +32,10 @@ use voice::*;
 type MemberWatchKey = (u64, Option<model::Id>, u64, u64, u64, bool);
 
 pub struct Connection {
+	/// Authenticated transport snapshot for cancellable, read-only background sync.
+	pub sync_api: watch::Receiver<Option<Arc<DiscordApi>>>,
+	pub sync_roster: discord_gateway::roster::RosterHandle,
+	pub sync_failure: watch::Sender<Option<Failure>>,
 	pub commands: mpsc::Sender<Command>,
 	admin_scopes: watch::Sender<ReadScopes>,
 	member_watches: watch::Sender<Option<discord_gateway::MemberWatch>>,
@@ -742,6 +746,7 @@ mod tests {
 		let ready = || Event::Ready {
 			permissions: model::permissions::Snapshot::default(),
 			user: model::User {
+				member_avatar: None,
 				username: None,
 				id: Id(1),
 				name: "Synthetic".into(),

@@ -57,6 +57,7 @@ const RETRY: Duration = Duration::from_secs(5);
 
 struct AvatarKey {
 	avatar: Option<String>,
+	member_avatar: Option<Box<model::GuildAvatar>>,
 	discriminator: u16,
 	demo: bool,
 	key: std::sync::Arc<str>,
@@ -1551,6 +1552,7 @@ impl Avatars {
 				.filter(|hash| model::valid_avatar_hash(hash));
 			let valid = self.avatar_keys.get(&user.id).is_some_and(|entry| {
 				entry.avatar.as_deref() == avatar
+					&& entry.member_avatar == user.member_avatar
 					&& entry.discriminator == user.discriminator
 					&& entry.demo == demo
 			});
@@ -1573,6 +1575,7 @@ impl Avatars {
 					user.id,
 					AvatarKey {
 						avatar: avatar.map(str::to_owned),
+						member_avatar: user.member_avatar.clone(),
 						discriminator: user.discriminator,
 						demo,
 						key: key.into(),

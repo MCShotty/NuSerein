@@ -1228,13 +1228,34 @@ fn open_disks(root: Option<&Path>, limits: model::CachePreferences) -> [Option<D
 		return [None, None];
 	};
 	let _ = adopt_artwork(root);
+	let shared = root
+		.parent()
+		.filter(|parent| parent.file_name().is_some_and(|name| name == "avatars"))
+		.and_then(Path::parent)
+		.map(local_store::cache_budget::CacheBudget::for_root);
+	if let Some(shared) = &shared {
+		shared.set_retention(limits.retention());
+		shared.set_active_account(
+			root.file_name()
+				.and_then(|name| name.to_str())
+				.and_then(|name| name.parse::<Id>().ok()),
+		);
+	}
 	let open = |partition, limit| {
-		Disk::open_with(partition_root(root, partition), limit, limits.retention()).ok()
+		let mut disk =
+			Disk::open_with(partition_root(root, partition), limit, limits.retention()).ok()?;
+		disk.shared = shared.clone();
+		disk.artwork = partition == model::CachePartition::Artwork;
+		Some(disk)
 	};
-	[
+	let disks = [
 		open(model::CachePartition::Media, limits.media_limit()),
 		open(model::CachePartition::Artwork, limits.artwork_limit()),
-	]
+	];
+	if let Some(shared) = shared {
+		let _ = shared.refresh();
+	}
+	disks
 }
 
 async fn run(
@@ -2154,11 +2175,17 @@ fn animation_frames(bytes: &[u8]) -> Option<image::Frames<'_>> {
 struct DiskReader {
 	root: PathBuf,
 	retention: Duration,
+	shared: Option<Arc<local_store::cache_budget::CacheBudget>>,
 }
 impl DiskReader {
 	fn read(&self, key: &str) -> io::Result<Option<Vec<u8>>> {
 		let name = disk_key(key).ok_or(io::ErrorKind::InvalidInput)?;
 		let path = self.root.join(format!("{name}.png"));
+		let _guard = self
+			.shared
+			.as_ref()
+			.map(|shared| shared.protect(&path))
+			.transpose()?;
 		let file = match OpenOptions::new().read(true).write(true).open(&path) {
 			Ok(file) => file,
 			Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -2180,7 +2207,15 @@ impl DiskReader {
 		if bytes.len() > encoded_limit(key) {
 			return Ok(None);
 		}
-		file.set_modified(SystemTime::now())?;
+		// Disk LRU follows successful reads, with coarse writes outside rendering.
+		// Repeated decodes during a minute must not cause repeated timestamp writes.
+		let now = SystemTime::now();
+		if now.duration_since(metadata.modified()?).unwrap_or_default() >= Duration::from_secs(60) {
+			file.set_modified(now)?;
+		}
+		if let Some(shared) = &self.shared {
+			shared.record_file_use(&path);
+		}
 		Ok(Some(bytes))
 	}
 }
@@ -2191,6 +2226,8 @@ struct Disk {
 	last_prune: Instant,
 	limit: model::DiskLimit,
 	retention: Duration,
+	shared: Option<Arc<local_store::cache_budget::CacheBudget>>,
+	artwork: bool,
 }
 impl Disk {
 	#[cfg(test)]
@@ -2218,6 +2255,8 @@ impl Disk {
 			last_prune: Instant::now(),
 			limit,
 			retention,
+			shared: None,
+			artwork: false,
 		};
 		disk.prune(0, 0)?;
 		Ok(disk)
@@ -2232,6 +2271,9 @@ impl Disk {
 	fn set_limits(&mut self, limit: model::DiskLimit, retention: Duration) -> io::Result<()> {
 		self.limit = limit;
 		self.retention = retention;
+		if let Some(shared) = &self.shared {
+			shared.set_retention(retention);
+		}
 		self.prune(0, 0)
 	}
 	/// Removes this partition's images but not nested partitions.
@@ -2244,12 +2286,16 @@ impl Disk {
 		}
 		self.bytes = 0;
 		self.files = 0;
+		if let Some(shared) = &self.shared {
+			shared.refresh()?;
+		}
 		Ok(())
 	}
 	fn reader(&self) -> DiskReader {
 		DiskReader {
 			root: self.root.clone(),
 			retention: self.retention,
+			shared: self.shared.clone(),
 		}
 	}
 	fn write(&mut self, key: &str, bytes: &[u8]) -> io::Result<()> {
@@ -2264,7 +2310,18 @@ impl Disk {
 		{
 			self.prune(bytes.len() as u64, 1)?;
 		}
+		let _guard = self
+			.shared
+			.as_ref()
+			.map(|shared| shared.protect(&path))
+			.transpose()?;
 		let previous = fs::metadata(&path).ok().map(|m| m.len());
+		// Charge the whole temporary write while the previous file still exists.
+		let reservation = self
+			.shared
+			.as_ref()
+			.map(|shared| shared.reserve(bytes.len() as u64))
+			.transpose()?;
 		static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 		let temp = self.root.join(format!(
 			"{}.{}.part",
@@ -2292,6 +2349,12 @@ impl Disk {
 			let _ = fs::remove_file(&temp);
 		}
 		result?;
+		if let Some(shared) = &self.shared {
+			shared.record_file_use(&path);
+		}
+		if let Some(reservation) = reservation {
+			reservation.commit_file(previous.unwrap_or(0), bytes.len() as u64, self.artwork)?;
+		}
 		self.bytes = self.bytes.saturating_sub(previous.unwrap_or(0)) + bytes.len() as u64;
 		self.files += usize::from(previous.is_none());
 		Ok(())
@@ -2309,6 +2372,15 @@ impl Disk {
 					continue;
 				}
 				let modified = metadata.modified()?;
+				if self
+					.shared
+					.as_ref()
+					.is_some_and(|shared| shared.is_protected(&entry.path()))
+				{
+					self.bytes = self.bytes.saturating_add(metadata.len());
+					self.files += 1;
+					continue;
+				}
 				if entry
 					.path()
 					.extension()
@@ -2333,6 +2405,9 @@ impl Disk {
 			{
 				break;
 			}
+			if oldest.is_empty() {
+				return Err(io::ErrorKind::StorageFull.into());
+			}
 			for (_, path, bytes) in oldest.into_sorted_vec() {
 				fs::remove_file(path)?;
 				self.bytes = self.bytes.saturating_sub(bytes);
@@ -2345,6 +2420,9 @@ impl Disk {
 			}
 		}
 		self.last_prune = Instant::now();
+		if let Some(shared) = &self.shared {
+			shared.refresh()?;
+		}
 		Ok(())
 	}
 }
@@ -3305,6 +3383,85 @@ mod tests {
 			)
 			.is_none()
 		);
+	}
+
+	#[test]
+	fn encoded_cache_reads_refresh_lru_coarsely_outside_rendering() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-avatar-lru-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(SystemTime::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		let mut disk = Disk::open(root.clone()).unwrap();
+		disk.write("default-0", &[1, 2, 3]).unwrap();
+		let path = root.join("default-0.png");
+		let file = OpenOptions::new().write(true).open(&path).unwrap();
+		file.set_modified(SystemTime::now() - Duration::from_secs(120))
+			.unwrap();
+		assert_eq!(disk.reader().read("default-0").unwrap().unwrap(), [1, 2, 3]);
+		assert!(
+			SystemTime::now()
+				.duration_since(file.metadata().unwrap().modified().unwrap())
+				.unwrap_or_default()
+				< Duration::from_secs(60)
+		);
+		file.set_modified(SystemTime::now() - Duration::from_secs(20))
+			.unwrap();
+		let recent = file.metadata().unwrap().modified().unwrap();
+		disk.reader().read("default-0").unwrap().unwrap();
+		assert_eq!(file.metadata().unwrap().modified().unwrap(), recent);
+		drop((file, disk));
+		fs::remove_dir_all(root).unwrap();
+	}
+
+	#[test]
+	fn global_cache_admission_bounds_the_real_image_write_before_creating_a_temporary_file() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-global-avatar-test-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(SystemTime::UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		));
+		let account = root.join("avatars/1");
+		fs::create_dir_all(&account).unwrap();
+		let database = OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(root.join("client.sqlite3"))
+			.unwrap();
+		database.set_len(model::TOTAL_CACHE_BYTES - 1).unwrap();
+		drop(database);
+		let [Some(mut media), Some(mut artwork)] = open_disks(Some(&account), Default::default())
+		else {
+			panic!("cache partitions open");
+		};
+		assert!(media.shared.is_some());
+		assert_eq!(
+			artwork.write("default-0", &[1, 2]).unwrap_err().kind(),
+			io::ErrorKind::StorageFull
+		);
+		assert_eq!(
+			media
+				.write("7-0123456789abcdef0123456789abcdef", &[1, 2])
+				.unwrap_err()
+				.kind(),
+			io::ErrorKind::StorageFull
+		);
+		assert_eq!(fs::read_dir(account.join("artwork")).unwrap().count(), 0);
+		assert!(
+			fs::read_dir(&account).unwrap().all(|entry| entry
+				.unwrap()
+				.file_type()
+				.unwrap()
+				.is_dir())
+		);
+		drop((media, artwork));
+		fs::remove_dir_all(root).unwrap();
 	}
 
 	#[test]

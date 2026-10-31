@@ -179,23 +179,81 @@ impl Desktop {
 			}
 		}
 	}
-	/// Shows the selected conversation's cached window while its recent page loads.
+	/// Show bounded disk ranges without consuming the live REST request.
 	pub(super) fn load_cached_history(&mut self) {
 		let (state, request) = (&self.state, self.state.request);
-		if let Some(channel) = state.selected
-			&& state.history_before.is_none()
-			&& state.history_after.is_none()
-			&& !state.history_targeted
-			&& wants_cached_history(state, channel, request)
-			&& let Some(cache) = &self.cache
-			&& cache.history.allows(cache.history.epoch())
-		{
-			let key = (state.generation, channel, request, cache.history.epoch());
-			if self.cached_history_request.attempt(key)
-				&& self.queue_cache(cache::Operation::LoadChannel { channel, request })
-			{
-				self.cached_history_request.accepted(key);
+		let Some(channel) = state
+			.selected
+			.filter(|channel| state.history_pending && state.can_read_history(*channel))
+		else {
+			return;
+		};
+		let Some(cache) = &self.cache else { return };
+		let epoch = cache.history.epoch();
+		if !cache.history.allows(epoch) {
+			return;
+		}
+		let operation = if let Some(target) = state.pending_cached_history_target() {
+			cache::Operation::LoadHistoryPage {
+				channel,
+				request,
+				page: local_store::HistoryPageQuery {
+					before: None,
+					around: Some(target),
+					limit: 50,
+				},
 			}
+		} else if let Some(before) = state.history_before {
+			cache::Operation::LoadHistoryPage {
+				channel,
+				request,
+				page: local_store::HistoryPageQuery {
+					before: Some(before),
+					around: None,
+					limit: 50,
+				},
+			}
+		} else if let Some(after) = state
+			.history_after
+			.and_then(|id| id.0.checked_add(1))
+			.map(model::Id)
+		{
+			cache::Operation::LoadHistoryPage {
+				channel,
+				request,
+				page: local_store::HistoryPageQuery {
+					before: None,
+					around: Some(after),
+					limit: 50,
+				},
+			}
+		} else if !state.history_targeted && wants_cached_history(state, channel, request) {
+			cache::Operation::LoadChannel { channel, request }
+		} else {
+			return;
+		};
+		let key = (state.generation, channel, request, epoch);
+		if self.cached_history_request.attempt(key) && self.queue_cache(operation) {
+			self.cached_history_request.accepted(key);
+		}
+	}
+	pub(super) fn accept_cached_history_page(
+		&mut self,
+		generation: u64,
+		channel: model::Id,
+		request: u64,
+		epoch: u64,
+		result: Result<Vec<model::Message>, local_store::StoreError>,
+	) {
+		if generation == self.state.generation
+			&& self
+				.cache
+				.as_ref()
+				.is_some_and(|cache| cache.history.allows(epoch))
+			&& let Ok(messages) = result
+		{
+			self.state
+				.hydrate_cached_history_page(channel, request, messages);
 		}
 	}
 	pub(super) fn sync_member_cache(&mut self) {
@@ -309,6 +367,19 @@ impl Desktop {
 		false
 	}
 	pub(super) fn request_history_clear(&mut self, account: model::Id) {
+		if self
+			.state
+			.user
+			.as_ref()
+			.is_some_and(|user| user.id == account)
+		{
+			if let Some(connection) = &self.connection {
+				connection.sync_roster.cancel();
+			}
+			self.force_sync = Default::default();
+			self.messaging.force_sync_progress = None;
+			self.messaging.force_sync_action = None;
+		}
 		if self.state.demo || self.fixture_only {
 			return;
 		}

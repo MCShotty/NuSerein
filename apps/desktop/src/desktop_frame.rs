@@ -1351,9 +1351,11 @@ impl Desktop {
 			// A click that adopted a hover preload sends no request of its own.
 			self.load_cached_history();
 			self.sync_member_cache();
+			self.poll_member_cache_search();
 			self.sync_expression_cache();
 			self.sync_sticker_pack_cache();
 			self.sync_server_cache();
+			self.poll_force_sync(&ctx);
 			if self.messaging.logout_requested {
 				self.messaging.logout_requested = false;
 				self.request_session_end(&ctx, SessionEnd::Logout);

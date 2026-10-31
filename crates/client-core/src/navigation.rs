@@ -16,6 +16,7 @@ impl State {
 			+ self.guilds.iter().map(Guild::bytes).sum::<usize>()
 			+ self.expression_hints.bytes()
 			+ self.server_display.bytes()
+			+ self.force_sync_banner_bytes()
 			+ (self.channels.capacity() - self.channels.len()) * size_of::<Channel>()
 			+ (self.guilds.capacity() - self.guilds.len()) * size_of::<Guild>();
 		self.set_navigation_bytes(bytes);

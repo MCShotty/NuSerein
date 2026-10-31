@@ -565,6 +565,7 @@ mod tests {
 			});
 			let mut state = State {
 				user: Some(model::User {
+					member_avatar: None,
 					username: None,
 					id: Id(2),
 					name: "Synthetic member".into(),

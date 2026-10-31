@@ -12,6 +12,9 @@ use super::{
 impl Desktop {
 	/// Dispatches one queued command to the demo or live transport.
 	pub(super) fn command(&mut self, command: Command) {
+		if let Command::MemberSearch(request) = &command {
+			self.queue_member_cache_search(request);
+		}
 		if let Some(connection) = &self.connection {
 			connection.sync_admin_reads(&self.state);
 		}
@@ -359,12 +362,8 @@ impl Desktop {
 			}
 		}
 		if matches!(
-			command,
-			Command::History {
-				before: None,
-				after: None,
-				..
-			}
+			&command,
+			Command::History { .. } | Command::HistoryAround { .. }
 		) {
 			self.load_cached_history();
 		}

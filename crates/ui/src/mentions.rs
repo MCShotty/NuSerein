@@ -1775,6 +1775,7 @@ mod tests {
 				.any(|candidate| candidate.id() == target)
 		);
 		let update = |nick| model::MemberIdentity {
+			avatar: model::Patch::Absent,
 			guild,
 			user: target,
 			profile: None,
@@ -1838,6 +1839,54 @@ mod tests {
 				.iter()
 				.any(|user| user.id == target)
 		);
+	}
+
+	#[test]
+	fn disk_search_hints_produce_id_mentions_while_the_gateway_lookup_remains_pending() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let client_core::Command::MemberSearch(request) =
+			state.search_members(channel, "PersistedNick", 0).unwrap()
+		else {
+			panic!("member query");
+		};
+		let revision = state.member_display_revision();
+		assert!(state.hydrate_member_search_displays(
+			&request,
+			revision,
+			vec![model::MemberDisplay {
+				guild,
+				user: Id(900_003),
+				name: "Display name".into(),
+				username: Some("actual_account_name".into()),
+				nick: Some("PersistedNick".into()),
+			}]
+		));
+		let mut menu = Menu::default();
+		let mut draft = "@PersistedNick".to_owned();
+		menu.refresh(
+			&state,
+			channel,
+			&draft,
+			Some(draft.len()),
+			&known_users(&state, channel),
+		);
+		let index = menu
+			.candidates
+			.iter()
+			.position(|candidate| candidate.id() == Id(900_003))
+			.expect("cached nickname candidate");
+		assert!(
+			matches!(&menu.candidates[index], Candidate::User {user,name} if name == "PersistedNick" && user.username.as_deref() == Some("actual_account_name"))
+		);
+		insert(&mut draft, menu.pick(index).unwrap(), false).unwrap();
+		assert_eq!(draft, "<@900003> ");
+		assert!(!state.member_search[0].finished);
+		assert!(state.member_search[0].rows.is_empty());
 	}
 
 	#[test]
@@ -2271,6 +2320,7 @@ mod tests {
 		};
 		let target = Id(20199);
 		state.members = Some(model::MemberList {
+			missing_identity: vec![],
 			guild,
 			channel,
 			request: 1,
@@ -2585,6 +2635,7 @@ mod tests {
 
 	fn user(id: u64, name: &str) -> User {
 		User {
+			member_avatar: None,
 			username: None,
 			id: Id(id),
 			name: name.into(),

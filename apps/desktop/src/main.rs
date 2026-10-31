@@ -41,6 +41,7 @@ mod extension_member_details;
 mod extension_message_content;
 mod extensions;
 mod font_import;
+mod force_sync;
 mod game_activity;
 mod game_mentions;
 mod gpu;
@@ -52,6 +53,7 @@ mod group_icon;
 mod inbox_demo;
 mod interaction_uploads;
 mod media_output;
+mod member_cache_search;
 mod message_speech;
 mod notification_runtime;
 mod notification_sounds;
@@ -497,7 +499,9 @@ struct Desktop {
 	window: Arc<winit::window::Window>,
 	/// The recent-page request whose cached window was already asked for.
 	cached_history_request: cache::HistoryLoad,
+	force_sync: force_sync::Sync,
 	member_cache_load: cache::HistoryLoad,
+	member_cache_search: member_cache_search::Search,
 	expression_cache: cache::ExpressionCacheSchedule,
 	sticker_pack_cache_load: cache::HistoryLoad,
 	sticker_pack_cache_save: cache::HistoryLoad,
@@ -948,6 +952,7 @@ fn demo_members(
 		}
 	}
 	model::MemberList {
+		missing_identity: vec![],
 		guild,
 		channel,
 		request,

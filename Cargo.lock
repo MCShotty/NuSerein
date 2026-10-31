@@ -1515,6 +1515,7 @@ dependencies = [
  "client-core",
  "discord-protocol",
  "futures-util",
+ "local-store",
  "model",
  "reqwest",
  "serde",

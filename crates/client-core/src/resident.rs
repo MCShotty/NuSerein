@@ -150,6 +150,13 @@ impl State {
 			+ self.history_navigation.bytes()
 			+ self.reply_previews.bytes()
 			+ self.member_labels.bytes()
+			+ self
+				.member_search
+				.iter()
+				.map(|view| {
+					view.missing_identity.capacity() * size_of::<model::MissingMemberFields>()
+				})
+				.sum::<usize>()
 			+ size_of::<Windows>()
 			+ self.resident.entries.capacity() * size_of::<Window>()
 			+ self
@@ -472,6 +479,7 @@ mod tests {
 			channel: Id(channel),
 			kind: 0,
 			author: User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,

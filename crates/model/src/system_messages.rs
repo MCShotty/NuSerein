@@ -412,6 +412,7 @@ mod tests {
 			ephemeral: false,
 			kind,
 			author: User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,
@@ -423,6 +424,7 @@ mod tests {
 				discriminator: 0,
 			},
 			mentions: vec![User {
+				member_avatar: None,
 				username: None,
 				primary_guild: None,
 				cosmetics: None,

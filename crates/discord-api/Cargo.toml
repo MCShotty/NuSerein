@@ -16,5 +16,8 @@ zeroize.workspace = true
 futures-util.workspace = true
 base64 = "0.22.1"
 
+[dev-dependencies]
+local-store.workspace = true
+
 [lints]
 workspace = true

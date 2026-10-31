@@ -1794,6 +1794,7 @@ impl MessagingUi {
 			self.apply_mod_view_intent(intent, state, &mut commands);
 			ctx.request_repaint();
 		}
+		self.show_force_sync(&ctx, state);
 		self.verification.show(&ctx, state);
 		self.mfa.show(&ctx, state, &mut commands);
 		// Discord's notice for a rate-limited send; the messages stay queued and go out on their own.

@@ -77,6 +77,7 @@ impl UserDto {
 			.take(128)
 			.collect();
 		User {
+			member_avatar: None,
 			kind: if self.bot && (self.public_flags | self.flags) & (1 << 16) != 0 {
 				model::AccountKind::VerifiedBot
 			} else if self.bot {

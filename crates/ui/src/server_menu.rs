@@ -21,6 +21,7 @@ impl Dialog {
 #[derive(Default)]
 pub(super) struct ServerMenu {
 	pub guide_requested: Option<Id>,
+	pub force_sync_requested: Option<Id>,
 	pub browse_requested: Option<Id>,
 	pub channel_preferences_requested: Option<(Id, client_core::channel_actions::Action)>,
 	pub settings_requested: Option<Id>,
@@ -37,6 +38,24 @@ pub(super) struct ServerMenu {
 }
 
 impl ServerMenu {
+	pub fn force_sync_item(&mut self, ui: &mut egui::Ui, state: &State, guild: Id) {
+		ui.add_enabled_ui(
+			state.guild(guild).is_some() && (state.demo || state.gateway_connected),
+			|ui| {
+				if menu_row(
+					ui,
+					icons::Icon::Reload,
+					"force-sync-server",
+					design::palette(ui).text,
+				)
+				.clicked()
+				{
+					self.force_sync_requested = Some(guild);
+					ui.close();
+				}
+			},
+		);
+	}
 	pub fn guide_item(&mut self, ui: &mut egui::Ui, state: &State, guild: Id) -> bool {
 		if state.guild(guild).is_some()
 			&& menu_row(
@@ -301,6 +320,7 @@ impl ServerMenu {
 						ui.close();
 					}
 					self.settings_item(ui, state, guild);
+					self.force_sync_item(ui, state, guild);
 					if ui.button("Browse Channels").clicked() {
 						self.browse_requested = Some(guild);
 						ui.close();
@@ -619,6 +639,7 @@ mod tests {
 			let output = ctx.run_ui(egui::RawInput::default(), |ui| {
 				ui.set_width(232.0);
 				menu.settings_item(ui, &state, guild);
+				menu.force_sync_item(ui, &state, guild);
 				menu.leave_item(ui, &mut state, guild);
 			});
 			let mut text = vec![];
@@ -633,6 +654,11 @@ mod tests {
 				text.iter().any(|(label, _)| label == "Leave server"),
 				!owner && known
 			);
+			assert!(
+				text.iter()
+					.any(|(label, _)| label == "Force Sync This Server")
+			);
+			assert!(menu.force_sync_requested.is_none());
 			assert!(menu.settings_requested.is_none() && menu.dialog.is_none());
 			output.drop_without_applying_deltas();
 		}

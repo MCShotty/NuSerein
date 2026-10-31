@@ -2687,6 +2687,7 @@ mod tests {
 						id: Id(10),
 						channel: Id(1),
 						author: model::User {
+							member_avatar: None,
 							username: None,
 							kind: model::AccountKind::Human,
 							webhook: false,
@@ -2978,6 +2979,7 @@ mod tests {
 			last_message: None,
 		};
 		let user = model::User {
+			member_avatar: None,
 			username: None,
 			kind: model::AccountKind::Human,
 			webhook: false,

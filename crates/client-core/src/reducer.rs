@@ -983,7 +983,15 @@ impl State {
 				self.searched_members(request, result);
 				Ok(())
 			}
-			Event::Members(list) => {
+			Event::MemberSearchPartial {
+				request,
+				rows,
+				missing,
+			} => {
+				self.searched_members_with_missing(request, Ok(rows), missing);
+				Ok(())
+			}
+			Event::Members(mut list) => {
 				if !self.gateway_connected
 					|| self.freshness == Freshness::Unavailable
 					|| !self.can_view(list.channel)
@@ -1000,49 +1008,166 @@ impl State {
 						&& !list.ranges.is_empty()
 						&& current.ranges != list.ranges
 				});
+				let mut field_users = BTreeSet::new();
 				let invalid = list.slots.len() > 200
-					|| list.slots.iter().flatten().any(|slot| match slot {
-						MemberSlot::Person(row) => {
-							!row.valid() || row.roles.len() > model::permissions::MAX_MEMBER_ROLES
-						}
-						MemberSlot::Group(id) => id.is_empty() || id.len() > 32,
-					}) || list.slot_bytes() > 256 * 1024
+					|| list.missing_identity.len() > list.slots.len()
+					|| list.missing_identity.iter().any(|fields| {
+						fields.user.0 == 0
+							|| (!fields.nick && !fields.roles)
+							|| !field_users.insert(fields.user)
+							|| !list.slots.iter().flatten().any(
+								|slot| matches!(slot, MemberSlot::Person(member) if member.user.id == fields.user),
+							)
+					}) || list.slots.iter().flatten().any(|slot| match slot {
+					MemberSlot::Person(row) => {
+						!row.valid() || row.roles.len() > model::permissions::MAX_MEMBER_ROLES
+					}
+					MemberSlot::Group(id) => id.is_empty() || id.len() > 32,
+				}) || list.slot_bytes() > 256 * 1024
 					|| list.groups.len() > model::permissions::MAX_ROLES + 2;
 				if invalid {
 					if !ranges_left {
 						self.members.as_mut().unwrap().freshness = Freshness::Unavailable;
 					}
-				} else if ranges_left {
-					if list.freshness == Freshness::Fresh {
-						let protect = self
-							.members
-							.as_ref()
-							.map(|current| current.ranges.clone())
-							.unwrap_or_default();
-						self.member_chunks.merge(&list);
-						self.member_chunks.evict(&protect);
-					}
 				} else {
-					let kept_ranges = self.members.as_ref().map(|m| m.ranges.clone());
-					self.refresh_member_labels(&list);
-					for slot in list.slots.iter().flatten() {
-						if let MemberSlot::Person(member) = slot {
-							self.timeline.apply_author_membership(
-								member.user.id,
-								&member.roles,
-								member.nick.as_deref(),
-							);
+					// A fresh subscription can contain partial members. Merge only absent
+					// fields from previously observed identities; explicit null and empty
+					// lists remain authoritative.
+					let mut history =
+						std::collections::BTreeMap::<Id, (Option<&str>, Option<&[Id]>)>::new();
+					if !field_users.is_empty() {
+						for message in self.timeline.iter().rev() {
+							if message.channel != list.channel
+								|| message.author.webhook
+								|| !field_users.contains(&message.author.id)
+							{
+								continue;
+							}
+							let value = history.entry(message.author.id).or_default();
+							if value.0.is_none() {
+								value.0 = message
+									.author_nick
+									.as_deref()
+									.filter(|nick| !nick.is_empty());
+							}
+							if value.1.is_none() && !message.author_roles.is_empty() {
+								value.1 = Some(&message.author_roles);
+							}
 						}
 					}
-					let mut list = list;
-					if list.ranges.is_empty()
-						&& let Some(ranges) = kept_ranges.filter(|ranges| !ranges.is_empty())
-					{
-						list.ranges = ranges;
+					for slot in list.slots.iter_mut().flatten() {
+						let MemberSlot::Person(member) = slot else {
+							continue;
+						};
+						let Some(fields) = list
+							.missing_identity
+							.iter()
+							.find(|fields| fields.user == member.user.id)
+						else {
+							continue;
+						};
+						if fields.nick {
+							let known = self
+								.member_identity(list.channel, member.user.id)
+								.and_then(|identity| match &identity.nick {
+									Patch::Value(nick) => Some(Some(nick.as_str())),
+									Patch::Null => Some(None),
+									Patch::Absent => None,
+								})
+								.or_else(|| {
+									list.guild
+										.and_then(|guild| {
+											self.member_labels
+												.verified_member(guild, member.user.id)
+										})
+										.map(|member| member.nick.as_deref())
+								})
+								.or_else(|| {
+									history
+										.get(&member.user.id)
+										.and_then(|entry| entry.0)
+										.map(Some)
+								});
+							if let Some(nick) = known {
+								member.nick = nick.map(str::to_owned);
+							}
+						}
+						if fields.roles {
+							let known = self
+								.member_identity(list.channel, member.user.id)
+								.and_then(|identity| match &identity.roles {
+									Patch::Value(roles) => Some(roles.as_slice()),
+									_ => None,
+								})
+								.or_else(|| {
+									list.guild
+										.and_then(|guild| {
+											self.member_labels
+												.verified_member(guild, member.user.id)
+										})
+										.map(|member| member.roles.as_slice())
+								})
+								.or_else(|| history.get(&member.user.id).and_then(|entry| entry.1));
+							if let Some(roles) = known {
+								member.roles = roles.to_vec();
+							}
+						}
 					}
-					self.member_chunks.merge(&list);
-					self.member_chunks.evict(&list.ranges);
-					self.members = Some(list);
+					if ranges_left {
+						if list.freshness == Freshness::Fresh {
+							let protect = self
+								.members
+								.as_ref()
+								.map(|current| current.ranges.clone())
+								.unwrap_or_default();
+							self.member_chunks.merge(&list);
+							self.member_chunks.evict(&protect);
+						}
+					} else {
+						let kept_ranges = self.members.as_ref().map(|m| m.ranges.clone());
+						self.refresh_member_labels(&list);
+						for slot in list.slots.iter().flatten() {
+							if let MemberSlot::Person(member) = slot {
+								if let Some(fields) = list
+									.missing_identity
+									.iter()
+									.find(|fields| fields.user == member.user.id)
+								{
+									self.timeline.apply_author_identity(&model::MemberIdentity {
+										guild: list.guild.unwrap_or(Id(0)),
+										user: member.user.id,
+										profile: None,
+										avatar: Patch::Absent,
+										nick: if fields.nick {
+											Patch::Absent
+										} else {
+											member.nick.clone().map_or(Patch::Null, Patch::Value)
+										},
+										roles: if fields.roles {
+											Patch::Absent
+										} else {
+											Patch::Value(member.roles.clone())
+										},
+										departed: false,
+									});
+								} else {
+									self.timeline.apply_author_membership(
+										member.user.id,
+										&member.roles,
+										member.nick.as_deref(),
+									);
+								}
+							}
+						}
+						if list.ranges.is_empty()
+							&& let Some(ranges) = kept_ranges.filter(|ranges| !ranges.is_empty())
+						{
+							list.ranges = ranges;
+						}
+						self.member_chunks.merge(&list);
+						self.member_chunks.evict(&list.ranges);
+						self.members = Some(list);
+					}
 				}
 				Ok(())
 			}
