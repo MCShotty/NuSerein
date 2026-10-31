@@ -1238,7 +1238,7 @@ mod tests {
 		let mut output = None;
 		for input in 0..12 {
 			let mut rgb = vec![0; WIDTH * HEIGHT * 3];
-			for (index, pixel) in rgb.chunks_exact_mut(3).enumerate() {
+			for (index, pixel) in rgb.as_chunks_mut::<3>().0.iter_mut().enumerate() {
 				let x = index % WIDTH;
 				pixel.fill(if x < WIDTH / 2 {
 					60 + input % 3
@@ -1267,7 +1267,7 @@ mod tests {
 			.y()
 			.chunks_exact(stride)
 			.take(HEIGHT)
-			.zip(encoder.i420[..WIDTH * HEIGHT].chunks_exact(WIDTH))
+			.zip(encoder.i420[..WIDTH * HEIGHT].as_chunks::<WIDTH>().0.iter())
 			.flat_map(|(actual, expected)| actual[..WIDTH].iter().zip(expected))
 			.map(|(actual, expected)| usize::from(actual.abs_diff(*expected)))
 			.sum::<usize>();
