@@ -4266,3 +4266,28 @@ The requested default temporal window also starts producing output after five
 input frames, versus three previously. These measurements do not predict other
 hardware. The existing overload fallback disables filtering when it cannot keep
 up and continues the camera without it; native camera behavior remains unverified.
+
+### GPU webcam filter and LavaSRv2 follow-up
+
+The preceding webcam table describes the original **CPU** bridge and does not
+measure the new GPU implementation. On Linux x64, a software Vulkan test adapter
+ran the production compute kernels on synthetic I420 frames and compared 19 output
+frames at each of 16×16, 18×14 and 64×48 against FFmpeg 7.1.5; samples differed
+by at most one value and timestamps matched. The software adapter is admitted
+only by the explicit test fixture. Production rejects software adapters. Hardware
+GPU throughput, GPU memory, webcam quality and Windows/macOS behavior are unmeasured.
+
+The earlier LavaSRv2 helper observation at `4f86f7d2` used 40 ms input blocks:
+its median/p95/maximum inference round trip was 36.94/51.37/139.69 ms over
+100 samples on the then-recorded Linux runner. This is historical evidence of
+limited headroom, not a diagnosis of a particular user's fallback.
+
+The new 80 ms block path was exercised separately on Linux x64 (Xeon Platinum
+8573C, four-core quota, Rust 1.98.1; dev profile with voice/platform optimized).
+The production supervisor and bundled models processed six seconds of nonzero
+synthetic audio with a midstream reset in five repeated functional runs. Each
+produced 291 of 300 20 ms output frames without fallback; the count includes
+startup, reset and an undrained tail. This is not a matched performance comparison
+or a microphone quality test.
+The extra block duration can add up to 40 ms of latency. Native Windows audio,
+physical microphones and performance on slower systems remain unverified.
