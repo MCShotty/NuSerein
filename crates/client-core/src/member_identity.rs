@@ -416,13 +416,20 @@ impl State {
 		{
 			return None;
 		}
-		// Most guilds have no recorded departure. Avoid looking through every identity
-		// for each watched author in that common case.
-		let has_departures = self
+		// Check departure identities once, rather than searching the full overlay for
+		// every watched author. Keep the latest-observation rule even for duplicate entries.
+		let departed: Vec<_> = self
 			.member_labels
 			.entries
 			.iter()
-			.any(|(_, entry)| entry.guild == guild && entry.departed);
+			.filter(|(_, entry)| entry.guild == guild && entry.departed)
+			.filter(|(_, entry)| {
+				self.member_labels
+					.get(guild, entry.user)
+					.is_some_and(|current| current.departed)
+			})
+			.map(|(_, entry)| entry.user)
+			.collect();
 		let mut users = Vec::with_capacity(128);
 		for user in self
 			.member_labels
@@ -439,14 +446,7 @@ impl State {
 			)
 			.chain(self.observed_member_users(channel).map(|u| u.id))
 		{
-			if user.0 != 0
-				&& !users.contains(&user)
-				&& (!has_departures
-					|| !self
-						.member_labels
-						.get(guild, user)
-						.is_some_and(|entry| entry.departed))
-			{
+			if user.0 != 0 && !users.contains(&user) && !departed.contains(&user) {
 				users.push(user);
 			}
 			if users.len() == 128 {
