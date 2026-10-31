@@ -16,15 +16,32 @@ pub struct MemberDisplay {
 }
 impl MemberDisplay {
 	pub fn valid(&self) -> bool {
+		Self::valid_fields(
+			self.guild,
+			self.user,
+			&self.name,
+			self.username.as_deref(),
+			self.nick.as_deref(),
+		)
+	}
+
+	/// Validate a display observation without allocating an owned cache row.
+	pub fn valid_fields(
+		guild: Id,
+		user: Id,
+		name: &str,
+		username: Option<&str>,
+		nick: Option<&str>,
+	) -> bool {
 		let text = |s: &str| {
 			s.len() <= 512 && s.chars().count() <= 128 && !s.chars().any(char::is_control)
 		};
-		self.guild.0 != 0
-			&& self.user.0 != 0
-			&& !self.name.is_empty()
-			&& text(&self.name)
-			&& self.username.as_deref().is_none_or(text)
-			&& self.nick.as_deref().is_none_or(text)
+		guild.0 != 0
+			&& user.0 != 0
+			&& !name.is_empty()
+			&& text(name)
+			&& username.is_none_or(text)
+			&& nick.is_none_or(text)
 	}
 	pub fn bytes(&self) -> usize {
 		size_of::<Self>()
@@ -253,5 +270,36 @@ impl MemberList {
 			.map(MemberSlot::bytes)
 			.sum::<usize>()
 			+ self.missing_identity.capacity() * size_of::<MissingMemberFields>()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn display_validation_preserves_text_and_identifier_limits() {
+		let mut row = MemberDisplay {
+			guild: Id(1),
+			user: Id(2),
+			name: "😀".repeat(128),
+			username: Some("account".into()),
+			nick: Some("nickname".into()),
+		};
+		assert!(row.valid());
+		row.name.push('a');
+		assert!(!row.valid());
+		row.name = "Name".into();
+		row.nick = Some("a\nb".into());
+		assert!(!row.valid());
+		row.nick = None;
+		row.username = Some("u".repeat(129).into());
+		assert!(!row.valid());
+		row.username = None;
+		row.name.clear();
+		assert!(!row.valid());
+		row.name = "Name".into();
+		row.guild = Id(0);
+		assert!(!row.valid());
 	}
 }

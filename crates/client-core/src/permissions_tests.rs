@@ -3195,6 +3195,30 @@ fn viewport_member_watch_prioritizes_old_visible_authors_without_repeated_change
 	assert_eq!(users.len(), 128);
 	assert!(users.windows(2).all(|ids| ids[0] < ids[1]));
 	assert!(users.contains(&Id(90000)) && users.contains(&Id(90001)));
+	let membership = |departed| {
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(1199),
+			profile: None,
+			avatar: Patch::Absent,
+			nick: if departed {
+				Patch::Null
+			} else {
+				Patch::Value("Returned".into())
+			},
+			roles: Patch::Absent,
+			departed,
+		}))
+	};
+	assert!(users.contains(&Id(1199)));
+	apply(&mut state, membership(true));
+	let (_, _, without_departed) = state.watched_member_users().unwrap();
+	assert_eq!(without_departed.len(), 128);
+	assert!(!without_departed.contains(&Id(1199)));
+	assert!(without_departed.contains(&Id(90000)));
+	apply(&mut state, membership(false));
+	let (_, _, after_return) = state.watched_member_users().unwrap();
+	assert!(after_return.contains(&Id(1199)));
 	state.request_author_members(&[Id(90002)]);
 	assert_ne!(state.member_watch_revision(), revision);
 }

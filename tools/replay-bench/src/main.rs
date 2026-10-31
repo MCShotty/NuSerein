@@ -27,6 +27,14 @@ fn main() {
 		wide_channels();
 		return;
 	}
+	if std::env::args().nth(1).as_deref() == Some("--member-watch") {
+		member_watch();
+		return;
+	}
+	if std::env::args().nth(1).as_deref() == Some("--member-cache") {
+		member_cache();
+		return;
+	}
 	let start = Instant::now();
 	let mut state = test_support::demo_state();
 	let mut samples = Vec::new();
@@ -52,6 +60,76 @@ fn main() {
 	state.logout();
 	assert_eq!(state.timeline.bytes(), 0);
 	assert!(!state.has_unsent());
+}
+
+/// Rebuild the production member watch for a busy conversation with cached identities.
+fn member_watch() {
+	let mut state = loading_state();
+	state.timeline.clear();
+	for id in 1..=500 {
+		let mut message = test_support::message(4_000_000 + id, Id(20));
+		message.author.id = Id(10_000 + (id % 128));
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::Message(message),
+		});
+	}
+	for id in 0..128 {
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
+				guild: Id(10),
+				user: Id(10_000 + id),
+				profile: None,
+				avatar: model::Patch::Absent,
+				nick: model::Patch::Value(format!("Synthetic {id}")),
+				roles: model::Patch::Absent,
+				departed: false,
+			})),
+		});
+	}
+	let start = Instant::now();
+	for _ in 0..10_000 {
+		let (guild, channel, users) = std::hint::black_box(state.watched_member_users()).unwrap();
+		assert_eq!((guild, channel), (Id(10), Id(20)));
+		assert_eq!(users.len(), 128);
+		std::hint::black_box(users);
+	}
+	println!(
+		"Synthetic member watch: 10000 rebuilds of 128 distinct authors from a 500-message timeline in {:?}. Excludes UI, network and RSS.",
+		start.elapsed()
+	);
+}
+
+/// Validate display rows after live nickname updates without touching the storage worker.
+fn member_cache() {
+	let mut state = loading_state();
+	for id in 0..128 {
+		let mut user = test_support::message(1, Id(20)).author;
+		user.id = Id(10_000 + id);
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
+				guild: Id(10),
+				user: user.id,
+				profile: Some(user),
+				avatar: model::Patch::Absent,
+				nick: model::Patch::Value(format!("Synthetic {id}")),
+				roles: model::Patch::Absent,
+				departed: false,
+			})),
+		});
+	}
+	let start = Instant::now();
+	for index in 0..100_000 {
+		assert!(std::hint::black_box(
+			state.has_cached_member_display(Id(10), Id(10_000 + index % 128),)
+		));
+	}
+	println!(
+		"Synthetic member-cache validation: 100000 checks across 128 live identities in {:?}. Excludes storage, UI, network and RSS.",
+		start.elapsed()
+	);
 }
 
 fn wide_channels() {
