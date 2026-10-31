@@ -272,7 +272,7 @@ impl MessagingUi {
 		};
 
 		let mut report = format!(
-			"- **Serein Version:** {} ({channel})\n- **Operating System:** {os} ({arch}){session_type}{package_type}{graphics}\n- **Display Scale:** {scale:.2}\n- **Theme:** {theme_mode} ({theme_variant})\n- **Update Channel:** {update_channel}\n- **Auto Update:** {}",
+			"- **NuSerein Version:** {} ({channel})\n- **Operating System:** {os} ({arch}){session_type}{package_type}{graphics}\n- **Display Scale:** {scale:.2}\n- **Theme:** {theme_mode} ({theme_variant})\n- **Update Channel:** {update_channel}\n- **Auto Update:** {}",
 			self.build.version,
 			if self.updates.auto_update {
 				"Enabled"
@@ -375,8 +375,12 @@ impl MessagingUi {
 					ui.vertical(|ui| {
 						ui.spacing_mut().item_spacing.y = 2.0;
 						ui.label(
-							design::semibold(ui, format!("Serein {}", self.build.version), 17.0)
-								.color(colors.text_strong),
+							design::semibold(
+								ui,
+								format!("{} {}", model::APP_NAME, self.build.version),
+								17.0,
+							)
+							.color(colors.text_strong),
 						);
 						ui.add(
 							egui::Label::new(
@@ -564,7 +568,7 @@ impl MessagingUi {
 				if index > 0 {
 					design::card_divider(ui);
 				}
-				let title = format!("Serein {}", entry.version);
+				let title = format!("{} {}", model::APP_NAME, entry.version);
 				egui::CollapsingHeader::new(
 					design::semibold(ui, &title, 14.0).color(colors.text_strong),
 				)

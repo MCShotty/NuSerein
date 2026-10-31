@@ -62,7 +62,7 @@ pub enum Status {
 impl Status {
 	pub fn label(self) -> &'static str {
 		match self {
-			Self::Disabled => "System notifications are off in Serein settings.",
+			Self::Disabled => "System notifications are off in NuSerein settings.",
 			Self::Enabling => "Checking system notification permission…",
 			Self::Ready => "",
 			Self::Denied => "System notifications are disabled in your OS settings.",
@@ -204,7 +204,7 @@ impl Notifications {
 	/// Queue a privacy-preserving generic alert. False means disabled, unavailable or overloaded.
 	pub fn notify(&self) -> bool {
 		self.enqueue(Alert {
-			title: "Serein".into(),
+			title: model::APP_NAME.into(),
 			body: GENERIC_BODY.into(),
 			image_path: None,
 		})
@@ -479,9 +479,10 @@ fn windows_setting_status(
 #[cfg(target_os = "windows")]
 fn windows_shortcut_exists() -> bool {
 	std::env::var_os("APPDATA").is_some_and(|root| {
-		std::path::PathBuf::from(root)
-			.join("Microsoft/Windows/Start Menu/Programs/Serein.lnk")
-			.is_file()
+		let programs = std::path::PathBuf::from(root).join("Microsoft/Windows/Start Menu/Programs");
+		["NuSerein.lnk", "Serein.lnk"]
+			.iter()
+			.any(|name| programs.join(name).is_file())
 	})
 }
 
@@ -557,7 +558,7 @@ fn show(alert: &Alert, activation: Activation) -> Result<NotificationHandle, ()>
 fn notification(alert: &Alert) -> notify_rust::Notification {
 	let mut notification = notify_rust::Notification::new();
 	notification
-		.appname("Serein")
+		.appname(model::APP_NAME)
 		.summary(&alert.title)
 		.body(&alert.body)
 		.timeout(5_000);
@@ -705,11 +706,11 @@ mod tests {
 	#[test]
 	fn disabled_is_lazy_and_fixed_queue_is_bounded_and_invalidated() {
 		let alert = notification(&Alert {
-			title: "Serein".into(),
+			title: model::APP_NAME.into(),
 			body: GENERIC_BODY.into(),
 			image_path: None,
 		});
-		assert_eq!(alert.summary, "Serein");
+		assert_eq!(alert.summary, model::APP_NAME);
 		assert_eq!(alert.body, "You have a new message.");
 		let mut notifications = Notifications::new(|| {}, || {});
 		assert_eq!(notifications.status(), Status::Disabled);

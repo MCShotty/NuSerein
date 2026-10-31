@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Installs or uninstalls Serein for the current Windows user without elevation.
+Installs or uninstalls NuSerein for the current Windows user without elevation.
 Preserves write permissions for seamless in-app autoupdates.
 #>
 param(
@@ -9,11 +9,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$appName = 'Serein'
-$publisher = 'Serein contributors'
-$website = 'https://github.com/ViceVerse-cz/Serein'
-$installDir = Join-Path $env:LOCALAPPDATA "Programs\$appName"
-$uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appName"
+$appName = 'NuSerein'
+# Preserve the existing install directory, uninstall registration and startup entry.
+$legacyName = 'Serein'
+$publisher = 'NuSerein contributors'
+$website = 'https://github.com/MCShotty/Serein'
+$installDir = Join-Path $env:LOCALAPPDATA "Programs\$legacyName"
+$uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$legacyName"
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) "$appName.lnk"
 
 # Check if Serein is currently running
@@ -22,7 +24,7 @@ if ($running) {
     if ($Quiet) {
         $running | Stop-Process -Force
     } else {
-        throw "Serein is currently running. Please close Serein before running setup."
+        throw "NuSerein is currently running. Please close NuSerein before running setup."
     }
 }
 
@@ -34,14 +36,14 @@ if ($Uninstall) {
         Remove-Item -LiteralPath $uninstallKey -Recurse -Force
     }
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-    if ((Get-ItemProperty -LiteralPath $runKey -Name $appName -ErrorAction SilentlyContinue)) {
-        Remove-ItemProperty -LiteralPath $runKey -Name $appName -Force
+    if ((Get-ItemProperty -LiteralPath $runKey -Name $legacyName -ErrorAction SilentlyContinue)) {
+        Remove-ItemProperty -LiteralPath $runKey -Name $legacyName -Force
     }
     if (Test-Path -LiteralPath $installDir) {
         Remove-Item -LiteralPath $installDir -Recurse -Force
     }
     if (!$Quiet) {
-        Write-Host "Serein was successfully uninstalled."
+        Write-Host "NuSerein was successfully uninstalled."
     }
     return
 }
@@ -98,5 +100,5 @@ Set-ItemProperty -LiteralPath $uninstallKey -Name 'NoModify' -Value 1 -Type DWor
 Set-ItemProperty -LiteralPath $uninstallKey -Name 'NoRepair' -Value 1 -Type DWord
 
 if (!$Quiet) {
-    Write-Host "Serein $version installed successfully to $installDir"
+    Write-Host "NuSerein $version installed successfully to $installDir"
 }

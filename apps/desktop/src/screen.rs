@@ -556,7 +556,7 @@ impl Screen {
 			.as_ref()
 			.map(|retiring| {
 				if retiring.started.elapsed() >= Duration::from_secs(5) {
-					"Screen capture is not responding; restart Serein before sharing again"
+					"Screen capture is not responding; restart NuSerein before sharing again"
 				} else if retiring.progress.native_failure().is_some() {
 					"Stopping an unresponsive screen capture…"
 				} else {
@@ -804,7 +804,12 @@ mod tests {
 		);
 		assert!(share.pending.is_none() && share.retiring.is_some() && ui.screen.busy);
 		assert_eq!(ui.screen.status, "Original encoder timeout");
-		assert!(ui.screen.capture_status.unwrap().contains("restart Serein"));
+		assert!(
+			ui.screen
+				.capture_status
+				.unwrap()
+				.contains("restart NuSerein")
+		);
 		complete.send(Ok(())).unwrap();
 		ui.screen.request = Some(ui::screen::Request::Start(share_settings().into()));
 		assert!(

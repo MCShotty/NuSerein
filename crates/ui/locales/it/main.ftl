@@ -3,7 +3,7 @@
 language-system = Sistema
 language-group = Lingua
 language-label = Lingua di visualizzazione
-language-description = Scegli la lingua di Serein. Il contenuto di Discord non viene mai tradotto.
+language-description = Scegli la lingua di NuSerein. Il contenuto di Discord non viene mai tradotto.
 section-user = Impostazioni utente
 section-app = Impostazioni dell'app
 section-customization = Personalizzazione
@@ -28,11 +28,11 @@ description-appearance = Tema, colori, effetti delle finestre e layout.
 description-chat = Come si comportano i messaggi, i media, i collegamenti e lo scorrimento.
 description-messaging-permissions = Controlla chi può contattarti e come vengono filtrati i messaggi.
 description-notifications = Scegli quali notifiche ricevere e come appaiono.
-description-registered-games = Condividi a cosa giochi e correggi o aggiungi i giochi rilevati da Serein.
+description-registered-games = Condividi a cosa giochi e correggi o aggiungi i giochi rilevati da NuSerein.
 description-voice = Microfono, altoparlanti, fotocamera ed elaborazione vocale.
-description-keybinds = Scorciatoie da tastiera per Serein.
-description-storage = Ciò che Serein conserva su questo dispositivo.
-description-updates = Mantieni aggiornato Serein su questo dispositivo.
+description-keybinds = Scorciatoie da tastiera per NuSerein.
+description-storage = Ciò che NuSerein conserva su questo dispositivo.
+description-updates = Mantieni aggiornato NuSerein su questo dispositivo.
 description-extensions = Gestisci i plugin della community.
 description-themes = Scegli un tema comunitario.
 theme-maker = Creatore di temi
@@ -45,30 +45,30 @@ log-out = Esci
 unofficial = Non ufficiale · non approvato da Discord
 offline-preview = Anteprima offline · le modifiche rimangono in questa sessione e non vengono mai inviate.
 general-startup = Avvio
-general-open-at-startup = Apri Serein all'avvio del computer
-general-open-at-startup-description = Serein accede e si connette in background.
+general-open-at-startup = Apri NuSerein all'avvio del computer
+general-open-at-startup-description = NuSerein accede e si connette in background.
 general-start-minimized = Inizia minimizzato
 general-start-minimized-description = Inizia in background, fuori dai piedi.
 general-startup-unavailable = L'avvio automatico è disponibile su Windows e macOS.
 general-window = Finestra
 general-hide-decorations = Nascondi le decorazioni delle finestre
-general-hide-decorations-description = Rimuovere la barra del titolo e i bordi del sistema. Usa il tuo window manager per spostare, ridimensionare o chiudere Serein.
-general-hide-title-bar = Nascondi la barra del titolo Serein
+general-hide-decorations-description = Rimuovere la barra del titolo e i bordi del sistema. Usa il tuo window manager per spostare, ridimensionare o chiudere NuSerein.
+general-hide-title-bar = Nascondi la barra del titolo NuSerein
 general-hide-title-bar-description = Utilizzare invece la barra del titolo del sistema e i pulsanti della finestra.
-general-keep-menu-bar = Mantieni Serein nella barra dei menu
-general-keep-system-tray = Mantieni Serein nella barra delle applicazioni
-general-menu-bar-description = Chiudendo la finestra si mantiene Serein nella barra dei menu. Esci dal suo menu per uscire.
-general-linux-tray-description = La chiusura mantiene Serein in funzione. Utilizza il vassoio per mostrare, ridurre a icona o uscire.
-general-windows-tray-description = La chiusura della finestra mantiene Serein nell'area di notifica. Esci dal suo menu per uscire.
+general-keep-menu-bar = Mantieni NuSerein nella barra dei menu
+general-keep-system-tray = Mantieni NuSerein nella barra delle applicazioni
+general-menu-bar-description = Chiudendo la finestra si mantiene NuSerein nella barra dei menu. Esci dal suo menu per uscire.
+general-linux-tray-description = La chiusura mantiene NuSerein in funzione. Utilizza il vassoio per mostrare, ridurre a icona o uscire.
+general-windows-tray-description = La chiusura della finestra mantiene NuSerein nell'area di notifica. Esci dal suo menu per uscire.
 general-tray-unavailable = Il vassoio non è disponibile su questa piattaforma.
 general-graphics = Grafica
 general-render-with = Renderizzare con
-general-gpu-restart = Ha effetto al successivo avvio di Serein.
+general-gpu-restart = Ha effetto al successivo avvio di NuSerein.
 general-gpu-current-prefix = Attualmente disegno con
 gpu-automatic = Automatico
 gpu-high-performance = Prestazioni elevate
 gpu-power-saving = Risparmio energetico
-gpu-automatic-description = Lascia che Serein scelga la GPU che può disegnare questa finestra.
+gpu-automatic-description = Lascia che NuSerein scelga la GPU che può disegnare questa finestra.
 gpu-high-performance-description = Utilizzare la scheda grafica discreta quando disponibile.
 gpu-power-saving-description = Utilizza la grafica integrata per risparmiare batteria.
 direct-messages = Messaggi diretti
@@ -212,7 +212,7 @@ account-menu-custom-status-editor-clear-after = Cancella dopo
 # Context: custom_status_editor
 account-menu-custom-status-editor-no-custom-status = Nessuno stato personalizzato
 # Context: custom_status_editor
-account-menu-custom-status-editor-serein-clears-it = Serein lo cancella
+account-menu-custom-status-editor-serein-clears-it = NuSerein lo cancella
 # Context: custom_status_editor
 account-menu-custom-status-editor-status-text = Testo dello stato
 # Context: custom_status_editor
@@ -1544,7 +1544,7 @@ keybinds-show-voice-enable-global-keybinds = Abilita le combinazioni di tasti gl
 # Context: show_voice
 keybinds-show-voice-global-availability = Disponibilità globale
 # Context: show_voice
-keybinds-show-voice-use-voice-shortcuts-while-another-app-is-focused-when-off = Utilizza le scorciatoie vocali mentre è attiva un'altra app. Quando sono disattivate, le scorciatoie funzionano solo mentre Serein è concentrato.
+keybinds-show-voice-use-voice-shortcuts-while-another-app-is-focused-when-off = Utilizza le scorciatoie vocali mentre è attiva un'altra app. Quando sono disattivate, le scorciatoie funzionano solo mentre NuSerein è concentrato.
 
 ## crates/ui/src/lib.rs
 # Context: account_card
@@ -1634,11 +1634,11 @@ main-sign-in-consent-i-own-this-account-and-authorize-this-session = Possiedo qu
 # Context: sign_in_consent
 main-sign-in-consent-passwords-and-2fa-stay-on-discord-s-own-login-page = Le password e la 2FA rimangono sulla pagina di accesso di Discord; viene conservato solo il token della sessione, nell'archivio delle credenziali del sistema operativo.
 # Context: sign_in_disclosures
-main-sign-in-disclosures-about-serein = A proposito di Serein
+main-sign-in-disclosures-about-serein = A proposito di NuSerein
 # Context: sign_in_disclosures
 main-sign-in-disclosures-connect-with-this-token = Connettiti con questo token
 # Context: sign_in_disclosures
-main-sign-in-disclosures-for-owners-who-already-hold-a-valid-discord-session-token = Per i proprietari che sono già in possesso di un token di sessione Discord valido, ad esempio da un'altra installazione Serein con accesso. Qui non vengono mai utilizzate password e 2FA; questo ignora completamente la pagina di accesso ospitata di Discord.
+main-sign-in-disclosures-for-owners-who-already-hold-a-valid-discord-session-token = Per i proprietari che sono già in possesso di un token di sessione Discord valido, ad esempio da un'altra installazione NuSerein con accesso. Qui non vengono mai utilizzate password e 2FA; questo ignora completamente la pagina di accesso ospitata di Discord.
 # Context: sign_in_disclosures
 main-sign-in-disclosures-forget-saved-login = Dimentica il login salvato
 # Context: sign_in_disclosures
@@ -1652,7 +1652,7 @@ main-sign-in-header-sign-in-with-your-discord-account-to-get-started = Accedi co
 # Context: sign_in_header
 main-sign-in-header-welcome-back = Bentornato
 # Context: sign_in_header
-main-sign-in-header-welcome-to-serein = Benvenuti a Serein
+main-sign-in-header-welcome-to-serein = Benvenuti a NuSerein
 # Context: sign_in_preview
 main-sign-in-status-copy-failure-details = Copia i dettagli dell’errore
 main-sign-in-preview-explore-the-offline-preview = Esplora l'anteprima offline
@@ -2248,9 +2248,9 @@ screen-body-refresh = Aggiorna
 # Context: body
 screen-body-screen-or-window = Schermo o finestra
 # Context: body
-screen-body-send-what-your-mac-plays-along-with-the-screen-serein = Invia ciò che il tuo Mac riproduce insieme allo schermo. L'audio della chiamata di Serein viene escluso.
+screen-body-send-what-your-mac-plays-along-with-the-screen-serein = Invia ciò che il tuo Mac riproduce insieme allo schermo. L'audio della chiamata di NuSerein viene escluso.
 # Context: body
-screen-body-share-sound-from-other-apps-even-when-sharing-one-window = Condividi l'audio da altre app, anche quando condividi una finestra. L'audio di Serein è omesso.
+screen-body-share-sound-from-other-apps-even-when-sharing-one-window = Condividi l'audio da altre app, anche quando condividi una finestra. L'audio di NuSerein è omesso.
 # Context: body
 screen-body-share-system-audio = Condividi l'audio del sistema
 # Context: body
@@ -3495,7 +3495,7 @@ settings-activity-added-games = Giochi aggiunti
 # Context: activity_settings
 settings-activity-no-games-added = Nessun gioco aggiunto
 # Context: activity_settings
-settings-activity-hidden = Nascosto. Serein non rileverà questo gioco.
+settings-activity-hidden = Nascosto. NuSerein non rileverà questo gioco.
 # Context: activity_settings
 settings-activity-detected = Rilevato automaticamente
 # Context: activity_settings
@@ -3517,7 +3517,7 @@ settings-activity-click-to-rename = Fai clic per rinominare
 # Context: activity_settings
 settings-activity-add-a-game = Aggiungi un gioco
 # Context: activity_settings
-settings-activity-choose-program = Scegli un programma in esecuzione. Serein lo mostrerà come tuo gioco ogni volta che è avviato.
+settings-activity-choose-program = Scegli un programma in esecuzione. NuSerein lo mostrerà come tuo gioco ogni volta che è avviato.
 # Context: activity_settings
 settings-activity-search-programs = Cerca programmi in esecuzione
 # Context: activity_settings
@@ -3545,7 +3545,7 @@ settings-appearance-settings-primary-color = Colore primario
 # Context: appearance_settings
 settings-appearance-settings-reset = Reset
 # Context: appearance_settings
-settings-appearance-settings-restart-serein-after-changing-this-themes-can-customize-effects-while = Riavvia Serein dopo averlo modificato. I temi possono personalizzare gli effetti mentre sono abilitati.
+settings-appearance-settings-restart-serein-after-changing-this-themes-can-customize-effects-while = Riavvia NuSerein dopo averlo modificato. I temi possono personalizzare gli effetti mentre sono abilitati.
 # Context: appearance_settings
 settings-appearance-settings-the-active-theme-brings-its-own-accent-it-takes-over = Il tema attivo porta il proprio accento; prende il sopravvento mentre il tema è in uso.
 # Context: appearance_settings
@@ -3582,11 +3582,11 @@ settings-storage-page-clear-cache = Svuota cache
 # Context: storage_page
 settings-storage-page-local-storage = Archiviazione locale
 # Context: storage_page
-settings-storage-page-messages-and-drafts-are-cached-on-this-device-inside-bounded = I messaggi e le bozze vengono memorizzati nella cache di questo dispositivo all'interno di file delimitati e isolati da un account. I dati della cache non sono crittografati da Serein; i token di accesso salvati utilizzano l'archivio credenziali del sistema operativo.
+settings-storage-page-messages-and-drafts-are-cached-on-this-device-inside-bounded = I messaggi e le bozze vengono memorizzati nella cache di questo dispositivo all'interno di file delimitati e isolati da un account. I dati della cache non sono crittografati da NuSerein; i token di accesso salvati utilizzano l'archivio credenziali del sistema operativo.
 # Context: storage_page
 settings-storage-page-removes-cached-messages-and-media-drafts-and-your-login-stay = Rimuove i messaggi e i contenuti multimediali memorizzati nella cache. Le bozze e il tuo login rimangono.
 # Context: storage_page
-settings-storage-page-serein-does-not-collect-telemetry-or-upload-diagnostics-discord-retains = Serein non raccoglie dati di telemetria né carica dati diagnostici. Discord conserva i dati sul lato servizio secondo le proprie politiche.
+settings-storage-page-serein-does-not-collect-telemetry-or-upload-diagnostics-discord-retains = NuSerein non raccoglie dati di telemetria né carica dati diagnostici. Discord conserva i dati sul lato servizio secondo le proprie politiche.
 # Context: storage_page
 settings-storage-page-your-privacy = La tua privacy
 # Context: cosmetic_settings
@@ -4037,7 +4037,7 @@ updates-update-settings-could-not-load-or-save-update-preferences-changes-may-no
 # Context: update_settings
 updates-update-settings-download-update = Scarica l'aggiornamento
 # Context: update_settings
-updates-update-settings-download-updates-in-the-background-restart-when-you-are-ready = Scarica gli aggiornamenti in background. Ricomincia quando sei pronto. Serein controlla ancora all'avvio e periodicamente quando è disattivato.
+updates-update-settings-download-updates-in-the-background-restart-when-you-are-ready = Scarica gli aggiornamenti in background. Ricomincia quando sei pronto. NuSerein controlla ancora all'avvio e periodicamente quando è disattivato.
 # Context: update_settings
 updates-update-settings-early-builds-with-the-newest-changes-nightly-releases-can-be = Prime build con le modifiche più recenti. I rilasci notturni possono essere meno affidabili.
 # Context: update_settings
@@ -4063,7 +4063,7 @@ updates-update-settings-release-channel = Canale di rilascio
 # Context: update_settings
 updates-update-settings-restart-to-update = Riavvia per aggiornare
 # Context: update_settings
-updates-update-settings-serein-was-installed-via-your-distribution-run-this-in-a = Serein è stato installato tramite la tua distribuzione. Eseguilo in un terminale per aggiornare.
+updates-update-settings-serein-was-installed-via-your-distribution-run-this-in-a = NuSerein è stato installato tramite la tua distribuzione. Eseguilo in un terminale per aggiornare.
 # Context: update_settings
 updates-update-settings-support-diagnostics = Supporto e diagnostica
 # Context: update_log
@@ -4544,7 +4544,7 @@ onboarding-rules-heading = Regole del server
 # Context: rules
 onboarding-rules-review = Un moderatore esamina queste risposte prima che tu possa chattare.
 # Context: field
-onboarding-field-unsupported = Questo server fa una domanda che Serein non può ancora mostrare. Completa l'accesso nell'app Discord.
+onboarding-field-unsupported = Questo server fa una domanda che NuSerein non può ancora mostrare. Completa l'accesso nell'app Discord.
 # Context: field
 onboarding-field-agree = Ho letto e accetto le regole
 
@@ -4674,7 +4674,7 @@ reading-double-click-reaction = Double-click reaction
 
 ## crates/platform/src/app_menu.rs
 # Context: macos_menu_bar
-app-menu-about = Informazioni su Serein
+app-menu-about = Informazioni su NuSerein
 # Context: macos_menu_bar
 app-menu-updates = Controlla aggiornamenti…
 # Context: macos_menu_bar
@@ -4682,13 +4682,13 @@ app-menu-settings = Impostazioni…
 # Context: macos_menu_bar
 app-menu-services = Servizi
 # Context: macos_menu_bar
-app-menu-hide = Nascondi Serein
+app-menu-hide = Nascondi NuSerein
 # Context: macos_menu_bar
 app-menu-hide-others = Nascondi altre
 # Context: macos_menu_bar
 app-menu-show-all = Mostra tutte
 # Context: macos_menu_bar
-app-menu-quit = Esci da Serein
+app-menu-quit = Esci da NuSerein
 # Context: macos_menu_bar
 app-menu-file = File
 # Context: macos_menu_bar
@@ -4730,7 +4730,7 @@ app-menu-bring-all-to-front = Porta tutto in primo piano
 # Context: macos_menu_bar
 app-menu-help = Aiuto
 # Context: macos_menu_bar
-app-menu-github = Serein su GitHub
+app-menu-github = NuSerein su GitHub
 # Context: macos_menu_bar
 app-menu-report-issue = Segnala un problema…
 
@@ -5145,7 +5145,7 @@ menu-application = Applicazione
 
 screen-audio-application = Condividi audio dell’applicazione
 screen-audio-application-description = Viene condiviso solo l’audio dell’applicazione selezionata e dei suoi processi ausiliari. Le altre applicazioni restano private.
-screen-audio-system-description = Condividi l’audio del sistema, escludendo Serein per evitare l’eco della chiamata.
+screen-audio-system-description = Condividi l’audio del sistema, escludendo NuSerein per evitare l’eco della chiamata.
 screen-audio-selected-source = Condividi audio
 screen-audio-selected-source-description = Le finestre condividono solo l’audio della loro applicazione. I monitor condividono l’audio del sistema. Se l’isolamento non è disponibile, il video continua senza audio.
 
@@ -5506,7 +5506,7 @@ settings-convert-emoticons-description = Converte le emoticon isolate come :) in
 settings-preload-on-hover = Precarica al passaggio del cursore
 settings-preload-on-hover-description = Carica una conversazione, un profilo o il selettore GIF mentre il cursore rimane su di esso, per aprirlo subito. Usa le stesse richieste dell’apertura, al massimo 12 al minuto per ogni tipo.
 settings-storage-page-plaintext-login = Salva i dati di accesso in testo normale senza portachiavi
-settings-storage-page-plaintext-login-description = Usato solo se nessun portachiavi del sistema operativo (GNOME Keyring, KWallet, Keychain o Credential Manager) funziona. Il token viene salvato senza cifratura in un file privato nella cartella dati di Serein; chiunque abbia accesso al tuo account utente può leggerlo. Disattivando questa opzione si eliminano questi file.
+settings-storage-page-plaintext-login-description = Usato solo se nessun portachiavi del sistema operativo (GNOME Keyring, KWallet, Keychain o Credential Manager) funziona. Il token viene salvato senza cifratura in un file privato nella cartella dati di NuSerein; chiunque abbia accesso al tuo account utente può leggerlo. Disattivando questa opzione si eliminano questi file.
 voice-video-settings-title = Codifica video
 
 # UI clarity and accessibility

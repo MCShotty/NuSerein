@@ -1076,7 +1076,7 @@ impl MessagingUi {
 				Some(Ok(model::InvitePreview {
 					guild: Id(424242),
 					embed: model::Embed {
-						title: Some("Serein community".into()),
+						title: Some("NuSerein community".into()),
 						..Default::default()
 					},
 				})),

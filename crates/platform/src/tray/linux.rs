@@ -141,7 +141,7 @@ impl ksni::Tray for Item {
 		"serein".into()
 	}
 	fn title(&self) -> String {
-		"Serein".into()
+		"NuSerein".into()
 	}
 	fn icon_pixmap(&self) -> Vec<ksni::Icon> {
 		vec![ksni::Icon {
@@ -156,13 +156,13 @@ impl ksni::Tray for Item {
 	fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
 		vec![
 			StandardItem {
-				label: "Show Serein".into(),
+				label: "Show NuSerein".into(),
 				activate: Box::new(|item: &mut Self| item.events.push(Event::Show)),
 				..Default::default()
 			}
 			.into(),
 			StandardItem {
-				label: "Minimize Serein".into(),
+				label: "Minimize NuSerein".into(),
 				activate: Box::new(|item: &mut Self| item.events.push(Event::Minimize)),
 				..Default::default()
 			}

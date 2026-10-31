@@ -56,7 +56,7 @@ impl Desktop {
 					self.messaging.custom_font.status = "";
 				} else {
 					self.messaging.custom_font.status =
-						"Could not apply the font. Restart Serein and try again.";
+						"Could not apply the font. Restart NuSerein and try again.";
 				}
 			}
 			Err(error) => self.messaging.custom_font.status = error,

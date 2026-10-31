@@ -699,7 +699,7 @@ mod macos {
 		time::{Duration, Instant},
 	};
 
-	const DENIED: &str = "Camera access denied. Allow Serein (or your terminal) in System Settings > Privacy & Security > Camera, then try again.";
+	const DENIED: &str = "Camera access denied. Allow NuSerein (or your terminal) in System Settings > Privacy & Security > Camera, then try again.";
 
 	pub(super) fn devices() -> Result<DeviceList, &'static str> {
 		// SAFETY: Framework-owned device types and discovery only; no stream or permission request.

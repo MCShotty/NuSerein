@@ -79,7 +79,7 @@ pub(crate) fn ensure_webkit_locale() -> Result<(), &'static str> {
 		|| std::env::var_os("FLATPAK_ID").is_some();
 	if flatpak && !gtk4::glib::charset().0 {
 		return Err(
-			"Serein Flatpak login/verification requires a UTF-8 locale. Repair runtime languages and restart Serein; see Flatpak troubleshooting.",
+			"NuSerein Flatpak login/verification requires a UTF-8 locale. Repair runtime languages and restart NuSerein; see Flatpak troubleshooting.",
 		);
 	}
 	Ok(())

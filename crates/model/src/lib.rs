@@ -1,4 +1,7 @@
 //! UI-neutral session entities. No filesystem or network dependencies.
+/// User-facing product name. Storage, executable and OS identifiers retain their legacy names.
+pub const APP_NAME: &str = "NuSerein";
+
 mod users;
 pub use users::{AccountKind, GuildAvatar, SavedAccount, User, valid_avatar_hash};
 mod navigation;

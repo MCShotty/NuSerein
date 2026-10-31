@@ -1632,7 +1632,7 @@ impl MessagingUi {
 				self.settings_logout(ui, state.demo);
 				ui.add_space(12.0);
 				ui.label(
-					RichText::new(format!("Serein {}", self.build.version))
+					RichText::new(format!("{} {}", model::APP_NAME, self.build.version))
 						.size(12.0)
 						.color(colors.muted),
 				);

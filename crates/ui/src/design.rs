@@ -104,7 +104,7 @@ impl Variant {
 	];
 	pub fn label(self) -> &'static str {
 		match self {
-			Variant::Standard => "Serein",
+			Variant::Standard => model::APP_NAME,
 			Variant::Eclipse => "Eclipse",
 			Variant::Slate => "Slate",
 			Variant::Nightfall => "Nightfall",
@@ -3417,7 +3417,7 @@ mod sign_in_widget_tests {
 						ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
 							ui.spacing_mut().item_spacing.y = 0.0;
 							clicks.0 = account_row(ui, "Riley Quinn", "@riley").clicked();
-							clicks.1 = disclosure(ui, "About Serein", false).clicked();
+							clicks.1 = disclosure(ui, "About NuSerein", false).clicked();
 						});
 					},
 				);
@@ -3440,7 +3440,7 @@ mod sign_in_widget_tests {
 				(text, clicks)
 			};
 			let (text, _) = run(vec![]);
-			for expected in ["Riley Quinn", "@riley", "About Serein", "RQ"] {
+			for expected in ["Riley Quinn", "@riley", "About NuSerein", "RQ"] {
 				assert!(text.iter().any(|value| value == expected), "{expected}");
 			}
 			// The row owns the full width; the expander sits directly beneath it.

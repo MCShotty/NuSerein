@@ -289,7 +289,7 @@ impl Desktop {
 			}
 		} else {
 			self.credential_status = if result == Err(platform::CredentialError::Invalid) {
-				"Launch login ownership could not be verified. Sign into this account again, then forget it, or remove the Serein login in your OS credential manager."
+				"Launch login ownership could not be verified. Sign into this account again, then forget it, or remove the login under cz.viceverse.serein in your OS credential manager."
 			} else {
 				"Could not remove the saved login; the account has been kept. Try again."
 			};

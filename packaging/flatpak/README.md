@@ -43,6 +43,11 @@ The build produces:
 - `target/flatpak-build/repo/`: exported static OSTree repository with static deltas
 - `target/flatpak-build/serein.flatpakref`: one-click repository install file
 
+The default `.flatpakref` points to the upstream Serein repository and is labelled
+accordingly; it does not install the NuSerein bundle just built. For a hosted
+NuSerein repository, pass its actual URL with `--repo-url` when building. Until
+one is available, install the local bundle directly.
+
 ### Installing and Automatic Updates
 
 #### Option A: One-click repository install (Recommended for automatic updates)

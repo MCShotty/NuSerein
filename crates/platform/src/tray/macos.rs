@@ -93,12 +93,12 @@ impl Tray {
 			image.setSize(NSSize::new(MARK_POINTS, MARK_POINTS));
 			button.setImage(Some(&image));
 		} else {
-			button.setTitle(ns_string!("Serein"));
+			button.setTitle(ns_string!("NuSerein"));
 		}
-		button.setToolTip(Some(ns_string!("Serein")));
+		button.setToolTip(Some(ns_string!("NuSerein")));
 		for (title, action) in [
-			(ns_string!("Show Serein"), sel!(showSerein:)),
-			(ns_string!("Quit Serein"), sel!(quitSerein:)),
+			(ns_string!("Show NuSerein"), sel!(showSerein:)),
+			(ns_string!("Quit NuSerein"), sel!(quitSerein:)),
 		] {
 			// SAFETY: both selectors are implemented above with the menu action signature.
 			// Tray retains their main-thread target until the menu is disconnected on drop.
