@@ -153,13 +153,13 @@ impl Desktop {
 				}
 				Command::Website => {
 					ctx.open_url(egui::OpenUrl::new_tab(
-						"https://github.com/ViceVerse-cz/Serein",
+						"https://github.com/MCShotty/NuSerein",
 					));
 					None
 				}
 				Command::ReportIssue => {
 					ctx.open_url(egui::OpenUrl::new_tab(
-						"https://github.com/ViceVerse-cz/Serein/issues/new/choose",
+						"https://github.com/MCShotty/NuSerein/issues/new/choose",
 					));
 					None
 				}

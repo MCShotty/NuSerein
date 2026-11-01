@@ -270,7 +270,7 @@ impl LoginView {
 		view.connect_print(|_, _| true);
 		view.connect_show_notification(|_, _| true);
 		let window = gtk4::Window::builder()
-			.title("Discord sign-in · Serein")
+			.title("Discord sign-in · NuSerein")
 			.default_width(900)
 			.default_height(700)
 			.child(&view)

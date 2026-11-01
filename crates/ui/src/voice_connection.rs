@@ -959,7 +959,7 @@ fn preview_participant(user: u64, now: Instant) -> ParticipantStatistics {
 
 fn report(diagnostics: &VoiceDiagnostics, context: Context, now: Instant) -> String {
 	let mut output = String::from(
-		"Serein voice diagnostics (local snapshot; no credentials or participant identifiers)\n",
+		"NuSerein voice diagnostics (local snapshot; no credentials or participant identifiers)\n",
 	);
 	for kind in KINDS {
 		let Some(s) = diagnostics.get(context, kind) else {

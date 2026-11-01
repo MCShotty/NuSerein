@@ -255,7 +255,7 @@ fn main() -> eframe::Result {
 		..Default::default()
 	};
 	eframe::run_native(
-		"Serein",
+		model::APP_NAME,
 		options,
 		Box::new(move |cc| {
 			let mut desktop =

@@ -153,7 +153,7 @@ impl ProviderPlayer {
 			}
 		});
 		let window = gtk4::Window::builder()
-			.title("YouTube · Serein")
+			.title("YouTube · NuSerein")
 			.default_width(960)
 			.default_height(540)
 			.child(&view)

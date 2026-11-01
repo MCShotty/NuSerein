@@ -52,8 +52,7 @@ mod native {
 	const READ_ERROR: &str = "Could not read the Windows startup setting.";
 	const WRITE_ERROR: &str = "Could not update the Windows startup setting.";
 	const PATH_ERROR: &str = "This executable path cannot be registered for Windows startup.";
-	const INVALID_ENTRY: &str =
-		"The Serein startup entry does not match this application. Turn startup on to replace it.";
+	const INVALID_ENTRY: &str = "The NuSerein startup entry does not match this application. Turn startup on to replace it.";
 
 	pub fn load() -> Result<Settings, &'static str> {
 		let executable = std::env::current_exe().map_err(|_| PATH_ERROR)?;
@@ -83,7 +82,7 @@ mod native {
 		let command = format!("\"{path}\" --autostart{suffix}");
 		if command.encode_utf16().count() > MAX_COMMAND {
 			return Err(
-				"The executable path is too long for Windows startup. Move Serein to a shorter path.",
+				"The executable path is too long for Windows startup. Move NuSerein to a shorter path.",
 			);
 		}
 		Ok(command)

@@ -390,7 +390,7 @@ impl Native {
 			}
 			native.context = pulse::pa_context_new(
 				pulse::pa_mainloop_get_api(native.mainloop),
-				c"Serein screen audio".as_ptr(),
+				c"NuSerein screen audio".as_ptr(),
 			);
 			if native.context.is_null()
 				|| pulse::pa_context_connect(
@@ -508,7 +508,7 @@ impl Capture {
 		let stream = unsafe {
 			pulse::pa_stream_new(
 				native.context,
-				c"Serein isolated screen audio".as_ptr(),
+				c"NuSerein isolated screen audio".as_ptr(),
 				&spec,
 				null(),
 			)
@@ -847,6 +847,7 @@ pub(super) fn check_isolation() {
 	assert!(!own.allows(Some("42"), Some("renamed-client"), None, None));
 	assert!(!own.allows(Some("999"), Some("serein"), None, None));
 	assert!(!own.allows(Some("999"), Some("other"), Some("Serein call"), None));
+	assert!(!own.allows(Some("999"), Some("other"), Some("NuSerein call"), None));
 	assert!(!own.allows(
 		Some("999"),
 		Some("other"),

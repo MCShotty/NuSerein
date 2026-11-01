@@ -1,5 +1,7 @@
 # Local storage policy and audit
 
+NuSerein retains Serein’s existing data directories, account storage and operating-system identifiers so existing installations continue to find their data. Historical entries below retain their original revision and product names.
+
 ## Force Sync and the shared disk ceiling (October 30, 2026)
 
 Force Sync freezes a 21-day message interval when the owner starts a server or account

@@ -272,7 +272,7 @@ impl MessagingUi {
 		};
 
 		let mut report = format!(
-			"- **Serein Version:** {} ({channel})\n- **Operating System:** {os} ({arch}){session_type}{package_type}{graphics}\n- **Display Scale:** {scale:.2}\n- **Theme:** {theme_mode} ({theme_variant})\n- **Update Channel:** {update_channel}\n- **Auto Update:** {}",
+			"- **NuSerein Version:** {} ({channel})\n- **Operating System:** {os} ({arch}){session_type}{package_type}{graphics}\n- **Display Scale:** {scale:.2}\n- **Theme:** {theme_mode} ({theme_variant})\n- **Update Channel:** {update_channel}\n- **Auto Update:** {}",
 			self.build.version,
 			if self.updates.auto_update {
 				"Enabled"
@@ -310,14 +310,7 @@ impl MessagingUi {
 				ui.spacing_mut().item_spacing.x = 14.0;
 				let (badge, _) =
 					ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
-				ui.painter()
-					.rect_filled(badge, 12, colors.accent.gamma_multiply(0.16));
-				crate::icons::paint(
-					ui.painter(),
-					crate::icons::Icon::Serein,
-					badge.shrink(10.0),
-					colors.accent,
-				);
+				crate::icons::paint_brand(ui.painter(), badge);
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 					if self.updates.ready {
 						ui.add_enabled_ui(!self.updates.busy, |ui| {
@@ -375,8 +368,12 @@ impl MessagingUi {
 					ui.vertical(|ui| {
 						ui.spacing_mut().item_spacing.y = 2.0;
 						ui.label(
-							design::semibold(ui, format!("Serein {}", self.build.version), 17.0)
-								.color(colors.text_strong),
+							design::semibold(
+								ui,
+								format!("{} {}", model::APP_NAME, self.build.version),
+								17.0,
+							)
+							.color(colors.text_strong),
 						);
 						ui.add(
 							egui::Label::new(
@@ -564,7 +561,7 @@ impl MessagingUi {
 				if index > 0 {
 					design::card_divider(ui);
 				}
-				let title = format!("Serein {}", entry.version);
+				let title = format!("{} {}", model::APP_NAME, entry.version);
 				egui::CollapsingHeader::new(
 					design::semibold(ui, &title, 14.0).color(colors.text_strong),
 				)

@@ -429,7 +429,7 @@ impl Video {
 		}
 		let requests = self.requests.as_ref().expect("worker created");
 		if requests.is_closed() {
-			return Err("Video worker stopped; restart Serein");
+			return Err("Video worker stopped; restart NuSerein");
 		}
 		let session = Arc::new(Session::new(volume));
 		requests.send_replace(Some(Request {

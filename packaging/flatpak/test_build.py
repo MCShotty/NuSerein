@@ -19,8 +19,13 @@ class PreparationTest(unittest.TestCase):
     def test_generate_flatpakref(self):
         ref = build.generate_flatpakref("https://example.com/flatpak/repo")
         self.assertIn("Name=cz.viceverse.serein", ref)
+        self.assertIn("Title=NuSerein", ref)
         self.assertIn("Url=https://example.com/flatpak/repo", ref)
+        self.assertNotIn("viceverse-cz.github.io", ref)
         self.assertIn("RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo", ref)
+        upstream = build.generate_flatpakref()
+        self.assertIn("Title=Serein", upstream)
+        self.assertIn("Icon=https://viceverse-cz.github.io/Serein/icons/serein.png", upstream)
 
     def test_locked_sources_and_exact_compiler_exclude_untracked_data(self):
         self.prepare_fixture()

@@ -77,9 +77,12 @@ def main():
     compiler = shutil.which("makensis") or r"C:\Program Files (x86)\NSIS\makensis.exe"
     programs = ctypes.create_unicode_buffer(1024)
     ctypes.OleDLL("shell32").SHGetFolderPathW(None, 2, None, 0, programs)
-    shortcut = Path(programs.value) / "Serein.lnk"
+    shortcut = Path(programs.value) / "NuSerein.lnk"
+    legacy_shortcut = Path(programs.value) / "Serein.lnk"
+    default_install = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Serein"
     uninstall_key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Serein"
-    assert not shortcut.exists(), "Refusing to overwrite an existing Serein shortcut"
+    assert not shortcut.exists() and not legacy_shortcut.exists(), "Refusing to overwrite an existing shortcut"
+    assert not default_install.exists(), "Refusing to overwrite the default installation directory"
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key):
             raise AssertionError("Refusing to overwrite an existing Serein installation")
@@ -136,6 +139,8 @@ def main():
         timings = []
         running = None
         try:
+            # A different legacy shortcut must not be removed by the rebranded installer.
+            legacy_shortcut.write_bytes(b"synthetic legacy shortcut; preserve")
             # Case-insensitive process recognition, with no GUI, Discord or audio.
             running_exe = root / "SEREIN.EXE"
             shutil.copy2(payload / "serein.exe", running_exe)
@@ -160,12 +165,18 @@ def main():
             unrelated_nested.write_text("Unrelated nested owner data")
             (installed / "serein.exe").write_bytes(b"legacy synthetic client; never executed")
             (installed / "LICENSE-MIT").write_text("Legacy installer fixture")
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, uninstall_key, 0,
+                                    winreg.KEY_SET_VALUE | winreg.KEY_WOW64_64KEY) as key:
+                winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, "Serein")
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(installed))
             for name in ("install-notifications.ps1", "setup.ps1"):
                 (installed / name).write_text("legacy fixture")
             assert not (installed / "avcodec-serein-61.dll").exists()
-            for _ in range(3):
+            for attempt in range(3):
                 start = time.perf_counter()
-                subprocess.run(f'"{setup}" /S /D={installed}', check=True, timeout=30)
+                # The first upgrade must discover the pre-existing registered location.
+                command = f'"{setup}" /S' if attempt == 0 else f'"{setup}" /S /D={installed}'
+                subprocess.run(command, check=True, timeout=30)
                 timings.append(round((time.perf_counter() - start) * 1000, 3))
                 assert (installed / "serein.exe").read_bytes() == (payload / "serein.exe").read_bytes()
                 for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avfilter-serein-10.dll", "openh264.dll", "ffmpeg-source/COPYING.GPLv2", "ffmpeg-source/camera-filter/camera_filter.wgsl", "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll", "msvcp140_1.dll"):
@@ -176,8 +187,10 @@ def main():
                 assert not (installed / "install-notifications.ps1").exists()
                 assert not (installed / "setup.ps1").exists()
                 check_shortcut(shortcut, installed / "serein.exe")
+                assert legacy_shortcut.read_bytes() == b"synthetic legacy shortcut; preserve"
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key, 0,
                                     winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                    assert winreg.QueryValueEx(key, "DisplayName")[0] == "NuSerein"
                     assert winreg.QueryValueEx(key, "DisplayVersion")[0] == "0.0.0-offline"
                     assert Path(winreg.QueryValueEx(key, "InstallLocation")[0]).samefile(installed)
                 # Exercise removal of files left by an older script-based installer.
@@ -199,6 +212,7 @@ def main():
             remaining = sorted(path.relative_to(installed).as_posix() for path in installed.rglob("*") if path.is_file())
             assert remaining == ["owner-data/keep.txt", "unrelated.txt"], remaining
             assert not shortcut.exists()
+            assert legacy_shortcut.read_bytes() == b"synthetic legacy shortcut; preserve"
             try:
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key, 0,
                                     winreg.KEY_READ | winreg.KEY_WOW64_64KEY):
@@ -217,6 +231,18 @@ def main():
                 wait_for(lambda: not uninstaller.exists())
             if shortcut.exists():
                 shortcut.unlink()
+            if legacy_shortcut.exists():
+                assert legacy_shortcut.read_bytes() == b"synthetic legacy shortcut; preserve"
+                legacy_shortcut.unlink()
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key, 0,
+                                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                    location = winreg.QueryValueEx(key, "InstallLocation")[0]
+                if Path(location) == installed:
+                    winreg.DeleteKeyEx(winreg.HKEY_CURRENT_USER, uninstall_key,
+                                       winreg.KEY_WOW64_64KEY)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":

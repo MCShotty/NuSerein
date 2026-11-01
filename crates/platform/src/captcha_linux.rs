@@ -185,7 +185,7 @@ impl CaptchaView {
 		view.connect_print(|_, _| true);
 		view.connect_show_notification(|_, _| true);
 		let window = gtk4::Window::builder()
-			.title("Verification · Serein")
+			.title("Verification · NuSerein")
 			.default_width(500)
 			.default_height(560)
 			.child(&view)

@@ -637,13 +637,7 @@ impl Desktop {
 						ui.add_space(self.traffic_light_inset());
 						let (rect, _) =
 							ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-						ui.painter().rect_filled(rect, 8, p.accent);
-						ui::icons::paint(
-							ui.painter(),
-							ui::icons::Icon::Serein,
-							rect.shrink(7.0),
-							p.accent_text,
-						);
+						ui::icons::paint_brand(ui.painter(), rect);
 						ui.add_space(4.0);
 						ui.vertical(|ui| {
 							ui.spacing_mut().item_spacing.y = 1.0;

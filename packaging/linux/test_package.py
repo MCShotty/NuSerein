@@ -3,6 +3,8 @@
 from pathlib import Path
 import argparse
 import shutil
+import json
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +16,55 @@ ARTIFACTS = None
 
 
 class NativePackageTest(unittest.TestCase):
+    def test_brand_assets_cover_platform_icon_sizes(self):
+        root = Path(__file__).resolve().parents[2]
+        hicolor = root / "packaging/linux/hicolor"
+        def png(size):
+            data = (hicolor / f"{size}x{size}/apps/serein.png").read_bytes()
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(struct.unpack_from(">II", data, 16), (size, size))
+            return data
+
+        sizes = (16, 22, 24, 32, 48, 64, 96, 128, 256, 512, 1024)
+        for size in sizes:
+            png(size)
+        self.assertEqual((root / "packaging/windows/serein.png").read_bytes(), png(256))
+        self.assertEqual((root / "assets/brand/serein-1024.png").read_bytes(), png(1024))
+
+        icon = (root / "packaging/windows/Serein.ico").read_bytes()
+        reserved, kind, count = struct.unpack_from("<HHH", icon)
+        self.assertEqual((reserved, kind, count), (0, 1, 16))
+        icon_sizes = set()
+        for index in range(count):
+            width, height, _, _, _, _, length, offset = struct.unpack_from("<BBBBHHII", icon, 6 + 16 * index)
+            self.assertLessEqual(offset + length, len(icon))
+            self.assertGreater(length, 0)
+            icon_sizes.add((width or 256, height or 256))
+        self.assertTrue({(16, 16), (32, 32), (48, 48), (256, 256)} <= icon_sizes)
+
+        icns = (root / "packaging/macos/Serein.icns").read_bytes()
+        self.assertEqual(icns[:4], b"icns")
+        self.assertEqual(struct.unpack_from(">I", icns, 4)[0], len(icns))
+        expected = {b"icp4": 16, b"icp5": 32, b"icp6": 64, b"ic07": 128,
+                    b"ic08": 256, b"ic09": 512, b"ic10": 1024,
+                    b"ic11": 32, b"ic12": 64, b"ic13": 256, b"ic14": 512}
+        found = set()
+        offset = 8
+        while offset < len(icns):
+            tag, length = struct.unpack_from(">4sI", icns, offset)
+            self.assertGreaterEqual(length, 8)
+            self.assertLessEqual(offset + length, len(icns))
+            self.assertIn(tag, expected)
+            self.assertEqual(icns[offset + 8:offset + length], png(expected[tag]))
+            found.add(tag)
+            offset += length
+        self.assertEqual(offset, len(icns))
+        self.assertEqual(found, set(expected))
+        composer = root / "packaging/macos/Serein.icon"
+        icon_json = json.loads((composer / "icon.json").read_text())
+        layer = icon_json["groups"][0]["layers"][0]["image-name"]
+        self.assertEqual((composer / "Assets" / layer).read_bytes(), png(1024))
+
     def test_package_allowlist_and_corrupt_archive_detection(self):
         with tempfile.TemporaryDirectory(prefix="serein-debian-test-") as directory:
             root = Path(directory)

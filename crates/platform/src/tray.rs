@@ -203,7 +203,7 @@ mod native {
 				},
 				..Default::default()
 			};
-			for (slot, unit) in data.szTip.iter_mut().zip("Serein".encode_utf16()) {
+			for (slot, unit) in data.szTip.iter_mut().zip("NuSerein".encode_utf16()) {
 				*slot = unit;
 			}
 			let tray = Self {
@@ -225,7 +225,7 @@ mod native {
 			};
 			// SAFETY: menu and hwnd are live UI-thread handles; Rc keeps callback state stable.
 			unsafe {
-				AppendMenuW(menu, MF_STRING, SHOW, w!("Show Serein")).map_err(|_| UNAVAILABLE)?;
+				AppendMenuW(menu, MF_STRING, SHOW, w!("Show NuSerein")).map_err(|_| UNAVAILABLE)?;
 				AppendMenuW(menu, MF_STRING, QUIT, w!("Quit")).map_err(|_| UNAVAILABLE)?;
 				SetMenuDefaultItem(menu, SHOW as u32, 0).map_err(|_| UNAVAILABLE)?;
 				let reference = Rc::into_raw(tray.state.clone());
@@ -288,10 +288,10 @@ mod native {
 
 	fn voice_state_tip(state: super::VoiceState) -> &'static str {
 		match state {
-			super::VoiceState::Unmuted => "Serein",
-			super::VoiceState::Speaking => "Serein (Speaking)",
-			super::VoiceState::Muted => "Serein (Muted)",
-			super::VoiceState::Deafened => "Serein (Deafened)",
+			super::VoiceState::Unmuted => "NuSerein",
+			super::VoiceState::Speaking => "NuSerein (Speaking)",
+			super::VoiceState::Muted => "NuSerein (Muted)",
+			super::VoiceState::Deafened => "NuSerein (Deafened)",
 		}
 	}
 

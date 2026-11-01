@@ -22,8 +22,8 @@ def update_metadata(version, release_tag):
         raise ValueError("AppImage release tag must match the application version")
     name = f"serein-{release_tag or version}-Linux-X64.AppImage"
     channel = "latest-pre" if "-" in version.split("+", 1)[0] else "latest"
-    information = f"gh-releases-zsync|ViceVerse-cz|Serein|{channel}|serein-*-Linux-X64.AppImage.zsync"
-    url = f"https://github.com/ViceVerse-cz/Serein/releases/download/v{version}/serein-v{version}-Linux-X64.AppImage"
+    information = f"gh-releases-zsync|MCShotty|NuSerein|{channel}|serein-*-Linux-X64.AppImage.zsync"
+    url = f"https://github.com/MCShotty/NuSerein/releases/download/v{version}/serein-v{version}-Linux-X64.AppImage"
     return name, information, url
 
 

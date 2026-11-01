@@ -102,10 +102,10 @@ palette surfaces in both message and forum composers, independently of chat tran
 
 ## Brand mark and server rail
 
-The application mark is the Serein chat-wave (`assets/brand/`), not a third-party logo. Its
-silhouette is rasterized into the shared icon atlas as `serein-mark` and painted wherever the
-client identifies itself: the loading screen, the sign-in card and its button, the login header
-and the Direct Messages tile at the top of the server rail.
+The application mark is NuSerein’s Signal N (`assets/brand/`): an N and waveform in a speech
+bubble. The full-color icon appears on the loading and sign-in screens, login header and updates
+card. A simplified, tintable version in the shared `serein-mark` atlas cell serves buttons and
+the Direct Messages tile at the top of the server rail.
 
 Server tiles keep one constant rounded-square silhouette instead of morphing between a circle and
 a squircle. Selection and unread state are shown by `notifications::rail_indicator`: a 3px accent

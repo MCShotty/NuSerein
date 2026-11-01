@@ -370,6 +370,14 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn welcome_screen_uses_the_new_product_name_in_every_language() {
+		for language in Language::ALL {
+			let welcome = language.text("main-sign-in-header-welcome-to-serein");
+			assert!(welcome.contains(model::APP_NAME), "{language:?}: {welcome}");
+		}
+	}
+
+	#[test]
 	fn forum_attachment_counts_select_singular_and_plural_labels() {
 		for (language, singular, plural) in [
 			(Language::English, "attached file", "attached files"),

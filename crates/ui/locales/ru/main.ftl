@@ -3,7 +3,7 @@
 language-system = Система
 language-group = Язык
 language-label = Язык дисплея
-language-description = Выберите язык Серейн. Контент Discord никогда не переводится.
+language-description = Выберите язык NuSerein. Контент Discord никогда не переводится.
 section-user = Пользовательские настройки
 section-app = Настройки приложения
 section-customization = Кастомизация
@@ -28,11 +28,11 @@ description-appearance = Тема, цвета, оконные эффекты и 
 description-chat = Как ведут себя сообщения, медиа, ссылки и прокрутка.
 description-messaging-permissions = Контролируйте, кто может связаться с вами и как фильтруются сообщения.
 description-notifications = Выберите, какие уведомления вы будете получать и как они будут отображаться.
-description-registered-games = Делитесь тем, во что играете, и исправляйте или добавляйте игры, найденные Serein.
+description-registered-games = Делитесь тем, во что играете, и исправляйте или добавляйте игры, найденные NuSerein.
 description-voice = Микрофон, динамики, камера и обработка голоса.
-description-keybinds = Сочетания клавиш для Серейн.
-description-storage = Что Серейн хранит на этом устройстве.
-description-updates = Держите Серейн в курсе событий на этом устройстве.
+description-keybinds = Сочетания клавиш для NuSerein.
+description-storage = Что NuSerein хранит на этом устройстве.
+description-updates = Держите NuSerein в курсе событий на этом устройстве.
 description-extensions = Управляйте плагинами сообщества.
 description-themes = Выберите тему сообщества.
 theme-maker = Создатель тем
@@ -45,30 +45,30 @@ log-out = Выйти
 unofficial = Неофициально · не одобрено Discord
 offline-preview = Офлайн-просмотр · изменения остаются в этом сеансе и никогда не отправляются.
 general-startup = Запускать
-general-open-at-startup = Откройте Sein при запуске компьютера
-general-open-at-startup-description = Серейн входит в систему и подключается в фоновом режиме.
+general-open-at-startup = Откройте NuSerein при запуске компьютера
+general-open-at-startup-description = NuSerein входит в систему и подключается в фоновом режиме.
 general-start-minimized = Начать сворачивать
 general-start-minimized-description = Начните в фоновом режиме, подальше от вас.
 general-startup-unavailable = Автоматический запуск доступен в Windows и macOS.
 general-window = Окно
 general-hide-decorations = Скрыть украшения на окнах
-general-hide-decorations-description = Удалите строку заголовка и границы системы. Используйте оконный менеджер, чтобы переместить, изменить размер или закрыть Serein.
-general-hide-title-bar = Скрыть строку заголовка Серейн
+general-hide-decorations-description = Удалите строку заголовка и границы системы. Используйте оконный менеджер, чтобы переместить, изменить размер или закрыть NuSerein.
+general-hide-title-bar = Скрыть строку заголовка NuSerein
 general-hide-title-bar-description = Вместо этого используйте системную строку заголовка и кнопки окна.
-general-keep-menu-bar = Держите Серейн в строке меню
-general-keep-system-tray = Держите Серейн в системном трее
-general-menu-bar-description = При закрытии окна Серейн остается в строке меню. Выйдите из меню, чтобы выйти.
-general-linux-tray-description = Закрытие позволяет Серейн работать. Используйте лоток, чтобы показать, свернуть или выйти.
-general-windows-tray-description = Если закрыть окно, Серейн останется в области уведомлений. Выйдите из меню, чтобы выйти.
+general-keep-menu-bar = Держите NuSerein в строке меню
+general-keep-system-tray = Держите NuSerein в системном трее
+general-menu-bar-description = При закрытии окна NuSerein остается в строке меню. Выйдите из меню, чтобы выйти.
+general-linux-tray-description = Закрытие позволяет NuSerein работать. Используйте лоток, чтобы показать, свернуть или выйти.
+general-windows-tray-description = Если закрыть окно, NuSerein останется в области уведомлений. Выйдите из меню, чтобы выйти.
 general-tray-unavailable = Лоток недоступен на этой платформе.
 general-graphics = Графика
 general-render-with = Рендеринг с помощью
-general-gpu-restart = Вступает в силу при следующем запуске Серейн.
+general-gpu-restart = Вступает в силу при следующем запуске NuSerein.
 general-gpu-current-prefix = Сейчас рисую с
 gpu-automatic = Автоматический
 gpu-high-performance = Высокая производительность
 gpu-power-saving = Экономия энергии
-gpu-automatic-description = Пусть Серейн выберет графический процессор, который сможет отрисовать это окно.
+gpu-automatic-description = Пусть NuSerein выберет графический процессор, который сможет отрисовать это окно.
 gpu-high-performance-description = Используйте дискретную видеокарту, если она доступна.
 gpu-power-saving-description = Используйте встроенную графику для экономии заряда батареи.
 direct-messages = Прямые сообщения
@@ -213,7 +213,7 @@ account-menu-custom-status-editor-clear-after = Очистить после
 # Context: custom_status_editor
 account-menu-custom-status-editor-no-custom-status = Нет индивидуального статуса
 # Context: custom_status_editor
-account-menu-custom-status-editor-serein-clears-it = Серейн очищает это
+account-menu-custom-status-editor-serein-clears-it = NuSerein очищает это
 # Context: custom_status_editor
 account-menu-custom-status-editor-status-text = Текст статуса
 # Context: custom_status_editor
@@ -1545,7 +1545,7 @@ keybinds-show-voice-enable-global-keybinds = Включить глобальны
 # Context: show_voice
 keybinds-show-voice-global-availability = Глобальная доступность
 # Context: show_voice
-keybinds-show-voice-use-voice-shortcuts-while-another-app-is-focused-when-off = Используйте голосовые команды, пока другое приложение находится в фокусе. Если этот параметр отключен, сочетания клавиш работают только тогда, когда Серейн сфокусирована.
+keybinds-show-voice-use-voice-shortcuts-while-another-app-is-focused-when-off = Используйте голосовые команды, пока другое приложение находится в фокусе. Если этот параметр отключен, сочетания клавиш работают только тогда, когда NuSerein сфокусирована.
 
 ## crates/ui/src/lib.rs
 # Context: account_card
@@ -1623,7 +1623,7 @@ main-restoring-checking-your-saved-login = Проверка сохраненно
 # Context: restoring
 main-restoring-connecting-to-discord = Подключение к Дискорду
 # Context: restoring_screen
-main-restoring-screen-serein = Серейн
+main-restoring-screen-serein = NuSerein
 # Context: restoring_screen
 main-restoring-screen-use-a-different-account = Использовать другую учетную запись
 # Context: restoring_screen
@@ -1635,11 +1635,11 @@ main-sign-in-consent-i-own-this-account-and-authorize-this-session = Я влад
 # Context: sign_in_consent
 main-sign-in-consent-passwords-and-2fa-stay-on-discord-s-own-login-page = Пароли и 2FA остаются на собственной странице входа в Discord; в хранилище учетных данных вашей ОС сохраняется только токен сеанса.
 # Context: sign_in_disclosures
-main-sign-in-disclosures-about-serein = О Серейн
+main-sign-in-disclosures-about-serein = О NuSerein
 # Context: sign_in_disclosures
 main-sign-in-disclosures-connect-with-this-token = Подключиться с помощью этого токена
 # Context: sign_in_disclosures
-main-sign-in-disclosures-for-owners-who-already-hold-a-valid-discord-session-token = Для владельцев, у которых уже есть действующий токен сеанса Discord, например, из другой установки Serein, вошедшей в систему. Пароли и 2FA здесь никогда не используются; это полностью обходит размещенную страницу входа в Discord.
+main-sign-in-disclosures-for-owners-who-already-hold-a-valid-discord-session-token = Для владельцев, у которых уже есть действующий токен сеанса Discord, например, из другой установки NuSerein, вошедшей в систему. Пароли и 2FA здесь никогда не используются; это полностью обходит размещенную страницу входа в Discord.
 # Context: sign_in_disclosures
 main-sign-in-disclosures-forget-saved-login = Забыть сохраненный логин
 # Context: sign_in_disclosures
@@ -1653,7 +1653,7 @@ main-sign-in-header-sign-in-with-your-discord-account-to-get-started = Войд�
 # Context: sign_in_header
 main-sign-in-header-welcome-back = Добро пожаловать
 # Context: sign_in_header
-main-sign-in-header-welcome-to-serein = Добро пожаловать в Серейн
+main-sign-in-header-welcome-to-serein = Добро пожаловать в NuSerein
 # Context: sign_in_preview
 main-sign-in-status-copy-failure-details = Копировать сведения об ошибке
 main-sign-in-preview-explore-the-offline-preview = Ознакомьтесь с предварительной версией в автономном режиме
@@ -1662,7 +1662,7 @@ main-sign-in-preview-sample-conversations-no-discord-connection = Примеры
 # Context: sign_in_screen
 main-sign-in-screen-independent-and-open-source-not-affiliated-with-discord = Независимый и открытый исходный код. Не связан с Discord.
 # Context: sign_in_screen
-main-sign-in-screen-serein = Серейн
+main-sign-in-screen-serein = NuSerein
 # Context: ui
 main-ui-cancel = Отмена
 # Context: ui
@@ -2249,9 +2249,9 @@ screen-body-refresh = Обновить
 # Context: body
 screen-body-screen-or-window = Экран или окно
 # Context: body
-screen-body-send-what-your-mac-plays-along-with-the-screen-serein = Отправьте то, что ваш Mac воспроизводит вместе с экраном. Звук звонка Серейн не учитывается.
+screen-body-send-what-your-mac-plays-along-with-the-screen-serein = Отправьте то, что ваш Mac воспроизводит вместе с экраном. Звук звонка NuSerein не учитывается.
 # Context: body
-screen-body-share-sound-from-other-apps-even-when-sharing-one-window = Делитесь звуком из других приложений, даже если вы делитесь одним окном. Собственный звук Серейн не учитывается.
+screen-body-share-sound-from-other-apps-even-when-sharing-one-window = Делитесь звуком из других приложений, даже если вы делитесь одним окном. Собственный звук NuSerein не учитывается.
 # Context: body
 screen-body-share-system-audio = Поделиться системным звуком
 # Context: body
@@ -3492,7 +3492,7 @@ settings-activity-added-games = Добавленные игры
 # Context: activity_settings
 settings-activity-no-games-added = Нет добавленных игр
 # Context: activity_settings
-settings-activity-hidden = Скрыто. Serein не будет обнаруживать эту игру.
+settings-activity-hidden = Скрыто. NuSerein не будет обнаруживать эту игру.
 # Context: activity_settings
 settings-activity-detected = Обнаружено автоматически
 # Context: activity_settings
@@ -3514,7 +3514,7 @@ settings-activity-click-to-rename = Нажмите, чтобы переимен�
 # Context: activity_settings
 settings-activity-add-a-game = Добавить игру
 # Context: activity_settings
-settings-activity-choose-program = Выберите запущенную программу. Serein будет показывать её как вашу игру, когда она запущена.
+settings-activity-choose-program = Выберите запущенную программу. NuSerein будет показывать её как вашу игру, когда она запущена.
 # Context: activity_settings
 settings-activity-search-programs = Поиск запущенных программ
 # Context: activity_settings
@@ -3542,7 +3542,7 @@ settings-appearance-settings-primary-color = Основной цвет
 # Context: appearance_settings
 settings-appearance-settings-reset = Сбросить
 # Context: appearance_settings
-settings-appearance-settings-restart-serein-after-changing-this-themes-can-customize-effects-while = Перезапустите Sein после изменения. Когда темы включены, можно настраивать эффекты.
+settings-appearance-settings-restart-serein-after-changing-this-themes-can-customize-effects-while = Перезапустите NuSerein после изменения. Когда темы включены, можно настраивать эффекты.
 # Context: appearance_settings
 settings-appearance-settings-the-active-theme-brings-its-own-accent-it-takes-over = Активная тема вносит свой акцент; он вступает во владение, пока используется тема.
 # Context: appearance_settings
@@ -3579,11 +3579,11 @@ settings-storage-page-clear-cache = Очистить кеш
 # Context: storage_page
 settings-storage-page-local-storage = Локальное хранилище
 # Context: storage_page
-settings-storage-page-messages-and-drafts-are-cached-on-this-device-inside-bounded = Сообщения и черновики кэшируются на этом устройстве в ограниченных файлах, изолированных от учетной записи. Данные кэша не шифруются Serein; сохраненные токены входа используют хранилище учетных данных ОС.
+settings-storage-page-messages-and-drafts-are-cached-on-this-device-inside-bounded = Сообщения и черновики кэшируются на этом устройстве в ограниченных файлах, изолированных от учетной записи. Данные кэша не шифруются NuSerein; сохраненные токены входа используют хранилище учетных данных ОС.
 # Context: storage_page
 settings-storage-page-removes-cached-messages-and-media-drafts-and-your-login-stay = Удаляет кэшированные сообщения и медиа. Черновики и ваш логин остаются.
 # Context: storage_page
-settings-storage-page-serein-does-not-collect-telemetry-or-upload-diagnostics-discord-retains = Serein не собирает телеметрию и не загружает диагностические данные. Discord сохраняет данные на стороне сервиса в соответствии со своей собственной политикой.
+settings-storage-page-serein-does-not-collect-telemetry-or-upload-diagnostics-discord-retains = NuSerein не собирает телеметрию и не загружает диагностические данные. Discord сохраняет данные на стороне сервиса в соответствии со своей собственной политикой.
 # Context: storage_page
 settings-storage-page-your-privacy = Ваша конфиденциальность
 # Context: cosmetic_settings
@@ -4037,7 +4037,7 @@ updates-update-settings-could-not-load-or-save-update-preferences-changes-may-no
 # Context: update_settings
 updates-update-settings-download-update = Скачать обновление
 # Context: update_settings
-updates-update-settings-download-updates-in-the-background-restart-when-you-are-ready = Загрузка обновлений в фоновом режиме. Перезапустите, когда будете готовы. Серейн по-прежнему проверяет при запуске и периодически, когда это выключено.
+updates-update-settings-download-updates-in-the-background-restart-when-you-are-ready = Загрузка обновлений в фоновом режиме. Перезапустите, когда будете готовы. NuSerein по-прежнему проверяет при запуске и периодически, когда это выключено.
 # Context: update_settings
 updates-update-settings-early-builds-with-the-newest-changes-nightly-releases-can-be = Ранние сборки с новейшими изменениями. Ночные выпуски могут быть менее надежными.
 # Context: update_settings
@@ -4063,7 +4063,7 @@ updates-update-settings-release-channel = Канал выпуска
 # Context: update_settings
 updates-update-settings-restart-to-update = Перезапустите, чтобы обновить
 # Context: update_settings
-updates-update-settings-serein-was-installed-via-your-distribution-run-this-in-a = Serein был установлен через ваш дистрибутив. Запустите это в терминале для обновления.
+updates-update-settings-serein-was-installed-via-your-distribution-run-this-in-a = NuSerein был установлен через ваш дистрибутив. Запустите это в терминале для обновления.
 # Context: update_settings
 updates-update-settings-support-diagnostics = Поддержка и диагностика
 # Context: update_log
@@ -4546,7 +4546,7 @@ onboarding-rules-heading = Правила сервера
 # Context: rules
 onboarding-rules-review = Модератор проверит эти ответы, прежде чем вы сможете писать.
 # Context: field
-onboarding-field-unsupported = Сервер задаёт вопрос, который Serein пока не умеет показывать. Завершите вступление в приложении Discord.
+onboarding-field-unsupported = Сервер задаёт вопрос, который NuSerein пока не умеет показывать. Завершите вступление в приложении Discord.
 # Context: field
 onboarding-field-agree = Я прочитал(а) правила и согласен(на) с ними
 
@@ -4676,7 +4676,7 @@ reading-double-click-reaction = Double-click reaction
 
 ## crates/platform/src/app_menu.rs
 # Context: macos_menu_bar
-app-menu-about = О программе Serein
+app-menu-about = О программе NuSerein
 # Context: macos_menu_bar
 app-menu-updates = Проверить обновления…
 # Context: macos_menu_bar
@@ -4684,13 +4684,13 @@ app-menu-settings = Настройки…
 # Context: macos_menu_bar
 app-menu-services = Службы
 # Context: macos_menu_bar
-app-menu-hide = Скрыть Serein
+app-menu-hide = Скрыть NuSerein
 # Context: macos_menu_bar
 app-menu-hide-others = Скрыть остальные
 # Context: macos_menu_bar
 app-menu-show-all = Показать все
 # Context: macos_menu_bar
-app-menu-quit = Завершить Serein
+app-menu-quit = Завершить NuSerein
 # Context: macos_menu_bar
 app-menu-file = Файл
 # Context: macos_menu_bar
@@ -4732,7 +4732,7 @@ app-menu-bring-all-to-front = Все окна — на передний план
 # Context: macos_menu_bar
 app-menu-help = Справка
 # Context: macos_menu_bar
-app-menu-github = Serein на GitHub
+app-menu-github = NuSerein на GitHub
 # Context: macos_menu_bar
 app-menu-report-issue = Сообщить о проблеме…
 
@@ -5144,7 +5144,7 @@ menu-application = Приложение
 
 screen-audio-application = Передавать звук приложения
 screen-audio-application-description = Передаётся только звук выбранного приложения и его вспомогательных процессов. Звук других приложений не передаётся.
-screen-audio-system-description = Передавать системный звук, кроме Serein, чтобы избежать эха звонка.
+screen-audio-system-description = Передавать системный звук, кроме NuSerein, чтобы избежать эха звонка.
 screen-audio-selected-source = Передавать звук
 screen-audio-selected-source-description = Для окна передаётся только звук приложения, для монитора — системный звук. Если изоляция недоступна, видео передаётся без звука.
 
@@ -5505,7 +5505,7 @@ settings-convert-emoticons-description = При отправке или реда
 settings-preload-on-hover = Предварительно загружать при наведении курсора
 settings-preload-on-hover-description = Загружает беседу, профиль или выбор GIF, пока указатель находится над элементом, чтобы открыть его сразу. Используются те же запросы, что и при открытии, не более 12 в минуту для каждого типа.
 settings-storage-page-plaintext-login = Сохранять данные входа в открытом виде без связки ключей
-settings-storage-page-plaintext-login-description = Используется только если ни одна системная связка ключей (GNOME Keyring, KWallet, Keychain или Credential Manager) не работает. Токен сохраняется без шифрования в закрытом файле в папке данных Serein; любой, кто имеет доступ к вашей учётной записи пользователя, может его прочитать. При отключении этой настройки эти файлы удаляются.
+settings-storage-page-plaintext-login-description = Используется только если ни одна системная связка ключей (GNOME Keyring, KWallet, Keychain или Credential Manager) не работает. Токен сохраняется без шифрования в закрытом файле в папке данных NuSerein; любой, кто имеет доступ к вашей учётной записи пользователя, может его прочитать. При отключении этой настройки эти файлы удаляются.
 voice-video-settings-title = Кодирование видео
 
 # UI clarity and accessibility

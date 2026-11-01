@@ -13,9 +13,11 @@ SetCompressor /SOLID lzma
 !include "Win\COM.nsh"
 !include "Win\Propkey.nsh"
 
-!define PRODUCT_NAME "Serein"
-!define PRODUCT_PUBLISHER "Serein contributors"
-!define PRODUCT_WEB_SITE "https://github.com/ViceVerse-cz/Serein"
+!define PRODUCT_NAME "NuSerein"
+; Keep the existing uninstall key so upgrades reuse the installed location.
+!define PRODUCT_REGISTRY_KEY "Serein"
+!define PRODUCT_PUBLISHER "NuSerein contributors"
+!define PRODUCT_WEB_SITE "https://github.com/MCShotty/NuSerein"
 !define APP_EXE "serein.exe"
 !define APP_ID "cz.viceverse.serein"
 
@@ -42,7 +44,7 @@ SetCompressor /SOLID lzma
 Name "${PRODUCT_NAME} ${VERSION}"
 OutFile "${OUTPUT_DIR}\serein-${VERSION}-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Serein"
-InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation"
+InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "InstallLocation"
 
 !if /FileExists "packaging\windows\Serein.ico"
   !define MUI_ICON "packaging\windows\Serein.ico"
@@ -172,7 +174,7 @@ Function .onInit
       Abort
     ${EndIf}
     ${If} $0 != 0
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} is currently running. Please close Serein before continuing." /SD IDCANCEL IDRETRY retry_init IDCANCEL cancel_init
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} is currently running. Please close NuSerein before continuing." /SD IDCANCEL IDRETRY retry_init IDCANCEL cancel_init
       retry_init:
         ${Continue}
       cancel_init:
@@ -198,20 +200,20 @@ Section "MainSection" SEC01
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   ; Write Add/Remove Programs uninstall registry keys
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayName" "${PRODUCT_NAME}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "Publisher" "${PRODUCT_PUBLISHER}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "DisplayIcon" "$INSTDIR\${APP_EXE},0"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoModify" 1
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoRepair" 1
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "DisplayName" "${PRODUCT_NAME}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE},0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "NoRepair" 1
 
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   IntFmt $0 "0x%08X" $0
-  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "EstimatedSize" "$0"
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}" "EstimatedSize" "$0"
 
   ; Keep uninstall registration available even if shortcut creation fails.
   ClearErrors
@@ -244,7 +246,7 @@ Function un.onInit
       Abort
     ${EndIf}
     ${If} $0 != 0
-      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} is currently running. Please close Serein before uninstalling." /SD IDCANCEL IDRETRY retry_uninit IDCANCEL cancel_uninit
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} is currently running. Please close NuSerein before uninstalling." /SD IDCANCEL IDRETRY retry_uninit IDCANCEL cancel_uninit
       retry_uninit:
         ${Continue}
       cancel_uninit:
@@ -264,10 +266,10 @@ Section "Uninstall"
   Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
 
   ; Remove Run registry key if startup was configured
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCT_NAME}"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Serein"
 
   ; Remove Uninstall registry keys
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_REGISTRY_KEY}"
 
   ; Remove installed files
   Delete "$INSTDIR\${APP_EXE}"
