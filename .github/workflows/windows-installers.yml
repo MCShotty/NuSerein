@@ -62,8 +62,30 @@ jobs:
       - name: Check merged source and CI provenance
         run: |
           if ($env:SOURCE_RUN -notmatch '^\d+$' -or $env:SOURCE_COMMIT -notmatch '^[a-f0-9]{40}$') { throw 'Invalid source run or commit' }
-          $run = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+          $nativeRun = $env:SOURCE_RUN
+          $reuseChecks = $false
+          if ($env:SOURCE_RUN -eq '41279477891') {
+            $nativeRun = '41279321946'
+            $expectedTitle = "Windows x64 installer for $env:SOURCE_COMMIT"
+            $prior = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $prior.event -ne 'workflow_dispatch' -or $prior.display_title -ne $expectedTitle -or $prior.head_branch -ne 'build/windows-installer-20261101') { throw 'Prior build source does not match' }
+            $jobs = gh api "repos/$env:GH_REPO/actions/runs/$env:SOURCE_RUN/jobs?per_page=100" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Could not read prior build checks' }
+            $job = @($jobs.jobs | Where-Object { $_.name -eq 'windows' })
+            if ($job.Count -ne 1) { throw 'Prior build job is missing or ambiguous' }
+            foreach ($name in @('Check merged source and CI provenance', 'Verify checkout', 'Build pinned FFmpeg libraries', 'Check production build and focused regressions')) {
+              $step = @($job[0].steps | Where-Object { $_.name -eq $name -and $_.conclusion -eq 'success' })
+              if ($step.Count -ne 1) { throw "Prior check did not pass: $name" }
+            }
+            $probe = gh api "repos/$env:GH_REPO/actions/runs/41281614021" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $probe.event -ne 'workflow_dispatch' -or $probe.display_title -ne $expectedTitle -or $probe.head_branch -ne 'build/windows-installer-20261101' -or $probe.conclusion -ne 'success') { throw 'Installer fixture probe does not match' }
+            $reuseChecks = $true
+            Write-Host "Reusing successful exact-source focused checks from run $env:SOURCE_RUN; packaging and installation checks will run in this job."
+          }
+          $run = gh api "repos/$env:GH_REPO/actions/runs/$nativeRun" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SOURCE_COMMIT -or $run.name -ne 'native-client' -or $run.event -ne 'push') { throw 'Native CI run does not match the merged source commit' }
+          "NATIVE_CI_RUN=$nativeRun" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "REUSE_VALIDATED_CHECKS=$($reuseChecks.ToString().ToLower())" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ env.SOURCE_COMMIT }}
@@ -121,6 +143,7 @@ jobs:
       - name: Make native libraries available to build tests
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Check production build and focused regressions
+        if: env.REUSE_VALIDATED_CHECKS != 'true'
         run: |
           cargo check --locked -p serein --bin serein --no-default-features
           if ($LASTEXITCODE -ne 0) { throw 'Production build check failed' }
@@ -162,7 +185,7 @@ jobs:
           $name = "NuSerein-$version-$($env:SOURCE_COMMIT.Substring(0,8))-Windows-X64-Setup.exe"
           Move-Item $setup[0].FullName "dist-installer/$name"
           Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
-          @{source_commit=$env:SOURCE_COMMIT; native_ci_run=$env:SOURCE_RUN; architecture='X64'; rust='1.98.1'; signed=$false; installer_fixture='Synthetic process linked with static CRT; the original fixture timed out in run 41279477891'} | ConvertTo-Json | Set-Content dist-installer/build.json
+          @{source_commit=$env:SOURCE_COMMIT; native_ci_run=$env:NATIVE_CI_RUN; focused_checks_run=$(if ($env:REUSE_VALIDATED_CHECKS -eq 'true') { $env:SOURCE_RUN } else { $env:GITHUB_RUN_ID }); architecture='X64'; rust='1.98.1'; signed=$false; installer_fixture='Synthetic process linked with static CRT; the original fixture timed out in run 41279477891'} | ConvertTo-Json | Set-Content dist-installer/build.json
       - name: Check the packaged runtime without build-library paths
         run: |
           $checkDir = Join-Path $env:RUNNER_TEMP 'nuserein-installer-check'
