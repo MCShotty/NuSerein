@@ -43,6 +43,10 @@ does not claim the whole repository has been reviewed.
 - The incoming voice jitter queue discarded valid multi-frame Opus packets
   larger than 1,275 bytes. A 120 ms packet now passes through the actual mixer
   while the aggregate queued-payload budget remains unchanged.
+- The voice jitter queue also discarded an earlier packet arriving during
+  startup. It now reorders that packet before playback, including after a
+  sequence jump, without rewinding an active stream or expanding the queue.
+  Synthetic mixer tests verify the resulting timestamp order and sequence wrap.
 - Member-identity updates accumulated obsolete message IDs even when no
   history page was loading. The regression rotates three timeline windows and
   checks that in-flight pages still preserve newer nicknames.
@@ -190,6 +194,10 @@ and all 22 programmatic demo checks passed. No fuzz campaign was run.
 At `2005f08e`, all 118 Gateway library tests passed, including the new burst
 and reconnect cases; formatting and strict Gateway Clippy passed. The two
 150-person burst reproductions each delivered only 100 updates before the fix.
+At `c8415caf`, 242 voice tests passed with four ignored; the additional
+sequence-jump assertion was run separately. The two initial reordering probes
+failed before the fix. Formatting and strict voice/platform Clippy passed with
+the X11 feature enabled. These tests did not use a microphone or live call.
 Headless egui tests
 exercise the affected interaction paths; this environment has no physical
 display for a visual or assistive-technology review. Live Discord, Windows
