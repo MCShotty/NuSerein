@@ -76,6 +76,7 @@ fn partial_member_profile_preserves_artwork_and_new_history_content() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: true,
 			guild: Id(10),
 			user: Id(7),
 			profile: Some(profile),
@@ -108,6 +109,56 @@ fn partial_member_profile_preserves_artwork_and_new_history_content() {
 			.hash
 			.is_some()
 	);
+}
+
+#[test]
+fn omitted_global_name_preserves_display_across_a_delayed_history_page() {
+	let mut state = state();
+	let mut old = message(101, Id(20));
+	old.author.id = Id(7);
+	old.author.name = "Existing Display".into();
+	old.author.username = Some("old_user".into());
+	apply(&mut state, Event::Message(old.clone()));
+	let Command::History { request, .. } = state.history(None) else {
+		panic!("history request");
+	};
+	let mut partial = old.author.clone();
+	partial.name = "new_user".into();
+	partial.username = Some("new_user".into());
+	let mut identity = model::MemberIdentity {
+		global_name_present: false,
+		guild: Id(10),
+		user: Id(7),
+		profile: Some(partial),
+		avatar: Patch::Absent,
+		nick: Patch::Absent,
+		roles: Patch::Absent,
+		departed: false,
+	};
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(identity.clone())),
+	);
+	old.content = "Updated message body".into();
+	apply(
+		&mut state,
+		Event::History {
+			channel: Id(20),
+			request,
+			older: false,
+			messages: vec![old],
+		},
+	);
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.content, "Updated message body");
+	assert_eq!(message.author.name, "Existing Display");
+	assert_eq!(message.author.username.as_deref(), Some("new_user"));
+	assert_eq!(state.message_author_name(message), "Existing Display");
+	identity.global_name_present = true;
+	apply(&mut state, Event::MemberIdentity(Box::new(identity)));
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.author.name, "new_user");
+	assert_eq!(state.message_author_name(message), "new_user");
 }
 
 #[test]
@@ -147,6 +198,7 @@ fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
 		panic!()
 	};
 	let update = |nick, roles| model::MemberIdentity {
+		global_name_present: false,
 		avatar: model::Patch::Absent,
 		guild: Id(10),
 		user: Id(7),
@@ -251,6 +303,7 @@ fn live_identity_growth_reports_a_scoped_member_search_limit() {
 		apply(
 			&mut state,
 			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name_present: false,
 				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(id),
@@ -284,6 +337,7 @@ fn live_identity_growth_reports_a_scoped_member_search_limit() {
 fn member_identity_is_scoped_bounded_and_retired_on_recovery() {
 	let mut state = state();
 	let update = |guild, user| model::MemberIdentity {
+		global_name_present: false,
 		avatar: model::Patch::Absent,
 		guild: Id(guild),
 		user: Id(user),
@@ -2703,6 +2757,7 @@ fn incomplete_author_lookup_retries_after_a_bounded_delay() {
 fn mixed_partial_member_search_keeps_absent_fields_and_newer_live_updates() {
 	let mut state = state();
 	let identity = |user, nick: Patch<String>, roles: Patch<Vec<Id>>| model::MemberIdentity {
+		global_name_present: false,
 		guild: Id(10),
 		user: Id(user),
 		profile: None,
@@ -2892,6 +2947,7 @@ fn partial_query_keeps_a_verified_nickname_when_other_fields_change() {
 fn partial_search_fields_remain_unknown_until_a_live_update_fills_them() {
 	let mut state = state();
 	let identity = model::MemberIdentity {
+		global_name_present: false,
 		guild: Id(10),
 		user: Id(7),
 		profile: None,
@@ -2945,6 +3001,7 @@ fn partial_search_fields_remain_unknown_until_a_live_update_fills_them() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			guild: Id(10),
 			user: Id(7),
 			profile: None,
@@ -2964,6 +3021,7 @@ fn repeated_typing_and_role_updates_fence_lookups_without_resaving_names() {
 	let mut state = state();
 	let person = cached_person(7, "Current nickname");
 	let identity = model::MemberIdentity {
+		global_name_present: true,
 		avatar: model::Patch::Absent,
 		guild: Id(10),
 		user: Id(7),
@@ -3093,6 +3151,7 @@ fn member_chunk_identity_and_closed_pane_remain_available_and_live() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3145,6 +3204,7 @@ fn persisted_member_names_are_display_only_and_do_not_override_live_updates() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3160,6 +3220,7 @@ fn persisted_member_names_are_display_only_and_do_not_override_live_updates() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3191,6 +3252,7 @@ fn nickname_updates_preserve_navigation_caches_and_cooldown_stays_pending() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3242,6 +3304,7 @@ fn disk_hydration_preserves_live_departures_and_most_recent_bounded_rows() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3293,6 +3356,7 @@ fn viewport_member_watch_prioritizes_old_visible_authors_without_repeated_change
 	assert!(users.contains(&Id(90000)) && users.contains(&Id(90001)));
 	let membership = |departed| {
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			guild: Id(10),
 			user: Id(1199),
 			profile: None,
@@ -3335,6 +3399,7 @@ fn member_watch_keeps_the_first_distinct_users_when_messages_repeat() {
 	assert_eq!(users, expected);
 	let departed = |departed| {
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name_present: false,
 			guild: Id(10),
 			user: Id(1_199),
 			profile: None,
@@ -3365,6 +3430,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 			apply(
 				&mut state,
 				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					global_name_present: false,
 					avatar: model::Patch::Absent,
 					guild: Id(10),
 					user: Id(8),
@@ -3405,6 +3471,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 			apply(
 				&mut state,
 				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					global_name_present: false,
 					avatar: model::Patch::Absent,
 					guild: Id(10),
 					user: Id(7),
@@ -3442,6 +3509,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 		apply(
 			&mut state,
 			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name_present: false,
 				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(7),

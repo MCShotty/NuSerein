@@ -1406,7 +1406,7 @@ mod tests {
 				clan: None,
 				id: Id(id),
 				username: name.into(),
-				global_name: None,
+				global_name: model::Patch::Absent,
 				bot: false,
 				public_flags: 0,
 				flags: 0,

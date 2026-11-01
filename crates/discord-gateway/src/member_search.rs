@@ -607,6 +607,7 @@ mod tests {
 		});
 		state.select(Id(101));
 		let identity = |user, nick, roles| model::MemberIdentity {
+			global_name_present: false,
 			guild: Id(10),
 			user: Id(user),
 			profile: None,

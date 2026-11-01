@@ -1775,6 +1775,7 @@ mod tests {
 				.any(|candidate| candidate.id() == target)
 		);
 		let update = |nick| model::MemberIdentity {
+			global_name_present: false,
 			avatar: model::Patch::Absent,
 			guild,
 			user: target,

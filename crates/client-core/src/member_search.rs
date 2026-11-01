@@ -457,6 +457,7 @@ impl State {
 						roles.sort_unstable();
 						roles.dedup();
 						self.apply_member_identity(model::MemberIdentity {
+							global_name_present: true,
 							guild: request.guild,
 							user: member.user.id,
 							profile: Some(member.user.clone()),

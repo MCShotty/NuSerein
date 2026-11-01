@@ -8,15 +8,18 @@ pub const MAX_MUTATIONS: usize = 1024;
 
 #[derive(Clone, Copy, Default)]
 struct MemberChanges {
-	profile: bool,
+	name: bool,
+	username: bool,
 	avatar: bool,
 	roles: bool,
 	nick: bool,
 }
 
 fn keep_author_identity(message: &mut Message, previous: &Message, updated: MemberChanges) {
-	if updated.profile {
+	if updated.name {
 		message.author.name.clone_from(&previous.author.name);
+	}
+	if updated.username {
 		message
 			.author
 			.username
@@ -141,7 +144,8 @@ impl Timeline {
 			return;
 		}
 		let updated = MemberChanges {
-			profile: !update.departed && update.profile.is_some(),
+			name: !update.departed && update.profile.is_some() && update.global_name_present,
+			username: !update.departed && update.profile.is_some(),
 			avatar: !matches!(update.avatar, Patch::Absent)
 				|| (!update.departed
 					&& update
@@ -186,10 +190,16 @@ impl Timeline {
 				.bytes
 				.saturating_sub(before)
 				.saturating_add(message.bytes());
-			if self.loading && (updated.profile || updated.avatar || updated.roles || updated.nick)
+			if self.loading
+				&& (updated.name
+					|| updated.username
+					|| updated.avatar
+					|| updated.roles
+					|| updated.nick)
 			{
 				let changes = self.member_changes.entry(message.id).or_default();
-				changes.profile |= updated.profile;
+				changes.name |= updated.name;
+				changes.username |= updated.username;
 				changes.avatar |= updated.avatar;
 				changes.roles |= updated.roles;
 				changes.nick |= updated.nick;
@@ -1201,6 +1211,7 @@ mod tests {
 	fn identity_updates_keep_reconciliation_state_only_while_loading() {
 		let mut timeline = Timeline::default();
 		let mut update = model::MemberIdentity {
+			global_name_present: false,
 			guild: Id(10),
 			user: Id(2),
 			profile: None,
@@ -1267,6 +1278,7 @@ mod tests {
 		profile.member_avatar = None;
 		timeline.insert(row, false, false).unwrap();
 		timeline.apply_author_identity(&model::MemberIdentity {
+			global_name_present: true,
 			guild: Id(10),
 			user: Id(2),
 			profile: Some(profile),
@@ -1294,6 +1306,7 @@ mod tests {
 		timeline.insert(row.clone(), false, false).unwrap();
 		timeline.begin_page(false);
 		timeline.apply_author_identity(&model::MemberIdentity {
+			global_name_present: false,
 			guild: Id(10),
 			user: Id(2),
 			profile: None,

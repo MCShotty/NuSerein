@@ -226,6 +226,7 @@ impl Labels {
 			// A partial live update must not promote missing fields from an older disk hint.
 			if revision != 0 && !update.departed && !old.departed {
 				if update.profile.is_none() {
+					update.global_name_present = old.global_name_present;
 					update.profile = old.profile;
 				}
 				if matches!(update.nick, Patch::Absent) {
@@ -411,6 +412,7 @@ impl Labels {
 					.is_none_or(|old| old.nick != nick);
 			self.insert(
 				MemberIdentity {
+					global_name_present: false,
 					guild,
 					user: member.user.id,
 					profile: None,
@@ -719,6 +721,7 @@ impl State {
 				break;
 			}
 			let update = MemberIdentity {
+				global_name_present: true,
 				guild,
 				user: row.user,
 				profile: Some(User {
@@ -971,6 +974,7 @@ impl State {
 			return false;
 		}
 		self.apply_member_identity(MemberIdentity {
+			global_name_present: false,
 			guild,
 			user,
 			profile: None,
@@ -1037,7 +1041,9 @@ impl State {
 				});
 			if let Some(known) = known {
 				let mut merged = known.clone();
-				merged.name.clone_from(&profile.name);
+				if update.global_name_present {
+					merged.name.clone_from(&profile.name);
+				}
 				merged.username.clone_from(&profile.username);
 				if let Some(avatar) = &profile.member_avatar
 					&& avatar.guild == update.guild
@@ -1344,6 +1350,7 @@ mod cache_search_tests {
 			state.apply(crate::Envelope {
 				generation: state.generation,
 				event: crate::Event::MemberIdentity(Box::new(MemberIdentity {
+					global_name_present: true,
 					guild: Id(2),
 					user,
 					profile,
@@ -1387,6 +1394,7 @@ mod cache_search_tests {
 		user.id = Id(9000);
 		let update = |profile, nick, departed| {
 			crate::Event::MemberIdentity(Box::new(MemberIdentity {
+				global_name_present: true,
 				guild: Id(2),
 				user: Id(9000),
 				profile,

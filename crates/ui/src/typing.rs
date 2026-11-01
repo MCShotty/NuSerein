@@ -221,6 +221,7 @@ mod tests {
 		let user = profile.id;
 		assert_ne!(Some(user), state.user.as_ref().map(|owner| owner.id));
 		let identity = MemberIdentity {
+			global_name_present: true,
 			avatar: model::Patch::Absent,
 			guild,
 			user,

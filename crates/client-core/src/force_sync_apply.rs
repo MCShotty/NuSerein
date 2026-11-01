@@ -448,6 +448,7 @@ impl State {
 			roles.sort_unstable();
 			roles.dedup();
 			self.apply_force_sync_identity(MemberIdentity {
+				global_name_present: true,
 				avatar: model::Patch::Absent,
 				guild,
 				user: member.user.id,

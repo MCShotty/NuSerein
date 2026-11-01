@@ -129,10 +129,7 @@ pub fn page(bytes: &[u8], guild: Id, query: &Query) -> Result<Page, DecodeError>
 	let response: Response = crate::decode(bytes)?;
 	if response.users.0.iter().any(|user| {
 		user.username.len() > 512
-			|| user
-				.global_name
-				.as_ref()
-				.is_some_and(|name| name.len() > 512)
+			|| matches!(&user.global_name, Patch::Value(name) if name.len() > 512)
 			|| user
 				.avatar
 				.as_ref()

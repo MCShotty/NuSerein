@@ -563,6 +563,7 @@ fuzz_target!(|data: &[u8]| {
 				apply(
 					&mut state,
 					Event::MemberIdentity(Box::new(model::MemberIdentity {
+						global_name_present: op[6] & 128 != 0,
 						avatar: match op[6] >> 3 & 3 {
 							0 => Patch::Absent,
 							1 => Patch::Null,
@@ -571,7 +572,12 @@ fuzz_target!(|data: &[u8]| {
 						},
 						guild: Id(10),
 						user: id,
-						profile: None,
+						profile: (op[6] & 64 != 0).then(|| {
+							let mut profile = user();
+							profile.id = id;
+							profile.username = Some("synthetic".into());
+							profile
+						}),
 						nick: if op[6] & 1 == 0 {
 							Patch::Null
 						} else {

@@ -58,6 +58,8 @@ pub struct MemberIdentity {
 	pub guild: Id,
 	pub user: Id,
 	pub profile: Option<User>,
+	/// Whether the profile supplied a global-name value or an explicit null.
+	pub global_name_present: bool,
 	/// Server-specific avatar patch; this never changes the account's global avatar.
 	pub avatar: Patch<String>,
 	pub nick: Patch<String>,
@@ -118,7 +120,9 @@ impl MemberIdentity {
 		if let Some(profile) = &self.profile {
 			// Member updates can carry only part of the user object. Profile cosmetics and
 			// avatars remain owned by full snapshots; this path refreshes account names.
-			user.name.clone_from(&profile.name);
+			if self.global_name_present {
+				user.name.clone_from(&profile.name);
+			}
 			user.username.clone_from(&profile.username);
 			if let Some(avatar) = &profile.member_avatar
 				&& avatar.guild == self.guild
