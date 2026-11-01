@@ -56,6 +56,61 @@ fn member_list_update_survives_a_delayed_history_response() {
 }
 
 #[test]
+fn partial_member_profile_preserves_artwork_and_new_history_content() {
+	let mut state = state();
+	let mut old = message(101, Id(20));
+	old.author.id = Id(7);
+	old.author.avatar = Some("0123456789abcdef0123456789abcdef".into());
+	old.author.member_avatar = Some(Box::new(model::GuildAvatar {
+		guild: Id(10),
+		hash: Some("fedcba9876543210fedcba9876543210".into()),
+	}));
+	apply(&mut state, Event::Message(old.clone()));
+	let Command::History { request, .. } = state.history(None) else {
+		panic!("history request");
+	};
+	let mut profile = old.author.clone();
+	profile.name = "Updated name".into();
+	profile.avatar = None;
+	profile.member_avatar = None;
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(profile),
+			avatar: Patch::Absent,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	old.content = "Updated message body".into();
+	apply(
+		&mut state,
+		Event::History {
+			channel: Id(20),
+			request,
+			older: false,
+			messages: vec![old],
+		},
+	);
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.content, "Updated message body");
+	assert_eq!(message.author.name, "Updated name");
+	assert!(message.author.avatar.is_some());
+	assert!(
+		message
+			.author
+			.member_avatar
+			.as_ref()
+			.unwrap()
+			.hash
+			.is_some()
+	);
+}
+
+#[test]
 fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
 	let mut state = state();
 	let mut colored = state.guild_roles(Id(10)).unwrap()[1].clone();

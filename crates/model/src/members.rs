@@ -110,22 +110,29 @@ impl MemberIdentity {
 			_ => 0,
 		}
 	}
-	pub fn apply(&self, member: &mut Member) {
-		if member.user.id != self.user || self.departed {
+	/// Merge the user fields carried by a member update without clearing artwork.
+	pub fn apply_profile(&self, user: &mut User) {
+		if user.id != self.user || self.departed {
 			return;
 		}
 		if let Some(profile) = &self.profile {
 			// Member updates can carry only part of the user object. Profile cosmetics and
 			// avatars remain owned by full snapshots; this path refreshes account names.
-			member.user.name.clone_from(&profile.name);
-			member.user.username.clone_from(&profile.username);
+			user.name.clone_from(&profile.name);
+			user.username.clone_from(&profile.username);
 			if let Some(avatar) = &profile.member_avatar
 				&& avatar.guild == self.guild
 				&& avatar.valid()
 			{
-				member.user.member_avatar = Some(avatar.clone());
+				user.member_avatar = Some(avatar.clone());
 			}
 		}
+	}
+	pub fn apply(&self, member: &mut Member) {
+		if member.user.id != self.user || self.departed {
+			return;
+		}
+		self.apply_profile(&mut member.user);
 		match &self.avatar {
 			Patch::Absent => {}
 			Patch::Null => {
