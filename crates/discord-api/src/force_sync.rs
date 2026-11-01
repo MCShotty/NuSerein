@@ -48,7 +48,7 @@ impl DiscordApi {
 		&self,
 		guild: Id,
 		user: Id,
-	) -> Result<(Member, Vec<u8>, bool), Failure> {
+	) -> Result<(Member, Vec<u8>, bool, model::GlobalNameUpdate), Failure> {
 		let bytes = self
 			.force_sync_get(&format!("/guilds/{guild}/members/{user}"), 64 * 1024)
 			.await?;
@@ -57,11 +57,12 @@ impl DiscordApi {
 			return Err(Failure::Protocol);
 		}
 		let nick_known = !matches!(&dto.nick, Patch::Absent);
+		let global_name = model::GlobalNameUpdate::from_patch(&dto.user.global_name);
 		let member = dto.into_guild_member(guild).ok_or(Failure::Protocol)?;
 		if !member.valid() || member.bytes() > 64 * 1024 {
 			return Err(Failure::ResponseLimit);
 		}
-		Ok((member, bytes, nick_known))
+		Ok((member, bytes, nick_known, global_name))
 	}
 	async fn force_sync_read_inner(&self, read: Read) -> Result<ReadResult, Failure> {
 		match read {
@@ -94,9 +95,11 @@ impl DiscordApi {
 					return Err(Failure::Protocol);
 				}
 				let mut self_member_nick_known = false;
+				let mut self_member_global_name = model::GlobalNameUpdate::Unchanged;
 				let self_member = match self.force_sync_member(guild, user).await {
-					Ok((member, own_bytes, nick_known)) => {
+					Ok((member, own_bytes, nick_known, global_name)) => {
 						self_member_nick_known = nick_known;
+						self_member_global_name = global_name;
 						// Reuse the existing strict timeout/own-member permission projection.
 						let mut value: serde_json::Value =
 							decode(&bytes).map_err(|_| Failure::Protocol)?;
@@ -117,6 +120,7 @@ impl DiscordApi {
 					roles,
 					self_member,
 					self_member_nick_known,
+					self_member_global_name,
 					banner: metadata.banner,
 					member_count: metadata.member_count.or(metadata.approximate_member_count),
 				})))
@@ -268,6 +272,7 @@ impl DiscordApi {
 				let mut items = Vec::new();
 				let mut missing = Vec::new();
 				let mut nick_unknown = Vec::new();
+				let mut global_names = Vec::new();
 				let mut pending = stream::iter(users)
 					.map(|user| async move {
 						let path = format!("/guilds/{guild}/members/{user}");
@@ -281,19 +286,24 @@ impl DiscordApi {
 							return Err(Failure::Protocol);
 						}
 						let nick_known = !matches!(&dto.nick, Patch::Absent);
+						let global_name =
+							model::GlobalNameUpdate::from_patch(&dto.user.global_name);
 						let member = dto.into_guild_member(guild).ok_or(Failure::Protocol)?;
 						if !member.valid() {
 							return Err(Failure::Protocol);
 						}
-						Ok((user, Some((member, nick_known))))
+						Ok((user, Some((member, nick_known, global_name))))
 					})
 					.buffered(2);
 				while let Some(result) = pending.next().await {
 					match result? {
 						(user, None) => missing.push(user),
-						(user, Some((member, nick_known))) => {
+						(user, Some((member, nick_known, global_name))) => {
 							if !nick_known {
 								nick_unknown.push(user);
+							}
+							if global_name != model::GlobalNameUpdate::Set {
+								global_names.push((user, global_name));
 							}
 							items.push(member);
 						}
@@ -307,6 +317,7 @@ impl DiscordApi {
 					items,
 					missing,
 					nick_unknown,
+					global_names,
 				})
 			}
 		}
@@ -536,6 +547,7 @@ mod tests {
 			]).await;
 			let ReadResult::Guild(value) = api.force_sync_read(Read::Guild { guild: Id(2), user: Id(1) }).await.unwrap() else { panic!("guild result") };
 			assert_eq!(value.self_member.as_ref().unwrap().nick.as_deref(), Some("Server nickname"));
+			assert_eq!(value.self_member_global_name, model::GlobalNameUpdate::Unchanged);
 			assert_eq!(value.self_member.as_ref().unwrap().user.avatar_key(), "member-avatar-2-1-0123456789abcdef0123456789abcdef");
 			assert_eq!(value.roles.items[0].colors.secondary, Some(4478310));
 			assert_eq!(value.roles.items[0].colors.tertiary, Some(7833753));
@@ -580,6 +592,7 @@ mod tests {
 				items,
 				missing,
 				nick_unknown,
+				global_names,
 				..
 			} = api.force_sync_read(Read::Members {
 				guild: Id(2),
@@ -592,11 +605,49 @@ mod tests {
 			};
 			assert!(missing.is_empty());
 			assert_eq!(nick_unknown, vec![Id(3)]);
+			assert_eq!(
+				global_names,
+				vec![(Id(3), model::GlobalNameUpdate::Unchanged)]
+			);
 			assert_eq!(items[0].roles, vec![Id(9)]);
 			server.await.unwrap();
 		})
 		.await
 		.unwrap();
+	}
+	#[tokio::test]
+	async fn member_refresh_distinguishes_cleared_and_supplied_global_names() {
+		for (wire_name, expected, display) in [
+			(json!(null), model::GlobalNameUpdate::Cleared, "account"),
+			(json!("Display"), model::GlobalNameUpdate::Set, "Display"),
+		] {
+			tokio::time::timeout(Duration::from_secs(5), async {
+				let (api, server) = fixture(vec![(
+					"/guilds/2/members/3".into(),
+					"200 OK",
+					json!({"user":{"id":"3","username":"account","global_name":wire_name},"nick":null,"roles":[]}),
+				)])
+				.await;
+				let ReadResult::Members {
+					items,
+					global_names,
+					..
+				} = api.force_sync_read(Read::Members {
+					guild: Id(2),
+					users: vec![Id(3)],
+				})
+				.await
+				.unwrap()
+				else {
+					panic!("member result")
+				};
+				assert_eq!(sync::member_name_update(&global_names, Id(3)), expected);
+				assert_eq!(items[0].user.name, display);
+				server.await.unwrap();
+			})
+			.await
+			.unwrap();
+		}
 	}
 	#[tokio::test]
 	async fn active_threads_page_through_private_and_obfuscated_rows() {

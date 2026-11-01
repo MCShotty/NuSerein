@@ -488,16 +488,7 @@ impl LocalStore {
 	}
 }
 
-/// Shared transaction writer for ordinary windows and Force Sync pages. Absence from a
-/// small display window is not deletion evidence; only verified ranges or live deletes prune.
-pub(super) fn write_messages(
-	transaction: &rusqlite::Transaction<'_>,
-	account: Id,
-	channel: Id,
-	messages: &[&Message],
-	existing: &[Message],
-	start: bool,
-) -> Result<usize> {
+fn validate_message_batch(channel: Id, messages: &[&Message]) -> Result<()> {
 	if messages.len() > 500
 		|| messages
 			.iter()
@@ -523,6 +514,118 @@ pub(super) fn write_messages(
 		}) {
 		return Err(StoreError::Capacity);
 	}
+	Ok(())
+}
+
+struct EncodedMessage {
+	mentions: String,
+	author_roles: String,
+	sticker_items: String,
+	interaction: Option<String>,
+	reactions: Option<String>,
+	components: String,
+	embeds: String,
+	attachments: String,
+}
+
+fn encode_message(message: &Message) -> Result<EncodedMessage> {
+	let mentions =
+		serde_json::to_string(&message.mentions).map_err(|_| StoreError::Incompatible)?;
+	if mentions.len() > 128 * 1024 {
+		return Err(StoreError::Capacity);
+	}
+	if message.author_roles.len() > model::permissions::MAX_MEMBER_ROLES
+		|| message.author_roles.iter().any(|role| role.0 == 0)
+	{
+		return Err(StoreError::Capacity);
+	}
+	{
+		let mut seen = BTreeSet::new();
+		if message.author_roles.iter().any(|role| !seen.insert(*role)) {
+			return Err(StoreError::Capacity);
+		}
+	}
+	let author_roles = serde_json::to_string(
+		&message
+			.author_roles
+			.iter()
+			.map(|role| role.to_string())
+			.collect::<Vec<_>>(),
+	)
+	.map_err(|_| StoreError::Incompatible)?;
+	if author_roles.len() > 16 * 1024
+		|| message
+			.author_nick
+			.as_ref()
+			.is_some_and(|nick| nick.len() > 512)
+	{
+		return Err(StoreError::Capacity);
+	}
+	let sticker_items =
+		serde_json::to_string(&message.sticker_items).map_err(|_| StoreError::Incompatible)?;
+	if sticker_items.len() > 32768 {
+		return Err(StoreError::Capacity);
+	}
+	let interaction = message
+		.interaction
+		.as_deref()
+		.map(serde_json::to_string)
+		.transpose()
+		.map_err(|_| StoreError::Incompatible)?;
+	if interaction.as_ref().is_some_and(|json| json.len() > 4096) {
+		return Err(StoreError::Capacity);
+	}
+	let reactions = message
+		.reactions
+		.as_ref()
+		.map(serde_json::to_string)
+		.transpose()
+		.map_err(|_| StoreError::Incompatible)?;
+	if reactions.as_ref().is_some_and(|json| json.len() > 16384) {
+		return Err(StoreError::Capacity);
+	}
+	let components =
+		serde_json::to_string(&message.components).map_err(|_| StoreError::Incompatible)?;
+	if components.len() > MAX_MEDIA_JSON {
+		return Err(StoreError::Capacity);
+	}
+	let embeds = serde_json::to_string(&message.embeds).map_err(|_| StoreError::Incompatible)?;
+	let attachments =
+		serde_json::to_string(&message.attachments).map_err(|_| StoreError::Incompatible)?;
+	if embeds.len() > MAX_MEDIA_JSON || attachments.len() > MAX_MEDIA_JSON {
+		return Err(StoreError::Capacity);
+	}
+	Ok(EncodedMessage {
+		mentions,
+		author_roles,
+		sticker_items,
+		interaction,
+		reactions,
+		components,
+		embeds,
+		attachments,
+	})
+}
+
+pub(super) fn validate_before_prune(channel: Id, messages: &[&Message]) -> Result<()> {
+	validate_message_batch(channel, messages)?;
+	for message in messages {
+		encode_message(message)?;
+	}
+	Ok(())
+}
+
+/// Shared transaction writer for ordinary windows and Force Sync pages. Absence from a
+/// small display window is not deletion evidence; only verified ranges or live deletes prune.
+pub(super) fn write_messages(
+	transaction: &rusqlite::Transaction<'_>,
+	account: Id,
+	channel: Id,
+	messages: &[&Message],
+	existing: &[Message],
+	start: bool,
+) -> Result<usize> {
+	validate_message_batch(channel, messages)?;
 	let account = account.to_string();
 	let channel = channel.to_string();
 	let previous: BTreeMap<_, _> = existing.iter().map(|m| (m.id, m)).collect();
@@ -544,75 +647,16 @@ pub(super) fn write_messages(
 		{
 			continue;
 		}
-		let mentions =
-			serde_json::to_string(&message.mentions).map_err(|_| StoreError::Incompatible)?;
-		if mentions.len() > 128 * 1024 {
-			return Err(StoreError::Capacity);
-		}
-		if message.author_roles.len() > model::permissions::MAX_MEMBER_ROLES
-			|| message.author_roles.iter().any(|role| role.0 == 0)
-		{
-			return Err(StoreError::Capacity);
-		}
-		{
-			let mut seen = BTreeSet::new();
-			if message.author_roles.iter().any(|role| !seen.insert(*role)) {
-				return Err(StoreError::Capacity);
-			}
-		}
-		let author_roles = serde_json::to_string(
-			&message
-				.author_roles
-				.iter()
-				.map(|role| role.to_string())
-				.collect::<Vec<_>>(),
-		)
-		.map_err(|_| StoreError::Incompatible)?;
-		if author_roles.len() > 16 * 1024 {
-			return Err(StoreError::Capacity);
-		}
-		if message
-			.author_nick
-			.as_ref()
-			.is_some_and(|nick| nick.len() > 512)
-		{
-			return Err(StoreError::Capacity);
-		}
-		let sticker_items =
-			serde_json::to_string(&message.sticker_items).map_err(|_| StoreError::Incompatible)?;
-		if sticker_items.len() > 32768 {
-			return Err(StoreError::Capacity);
-		}
-		let interaction = message
-			.interaction
-			.as_deref()
-			.map(serde_json::to_string)
-			.transpose()
-			.map_err(|_| StoreError::Incompatible)?;
-		if interaction.as_ref().is_some_and(|json| json.len() > 4096) {
-			return Err(StoreError::Capacity);
-		}
-		let reactions = message
-			.reactions
-			.as_ref()
-			.map(serde_json::to_string)
-			.transpose()
-			.map_err(|_| StoreError::Incompatible)?;
-		if reactions.as_ref().is_some_and(|json| json.len() > 16384) {
-			return Err(StoreError::Capacity);
-		}
-		let components =
-			serde_json::to_string(&message.components).map_err(|_| StoreError::Incompatible)?;
-		if components.len() > MAX_MEDIA_JSON {
-			return Err(StoreError::Capacity);
-		}
-		let embeds =
-			serde_json::to_string(&message.embeds).map_err(|_| StoreError::Incompatible)?;
-		let attachments =
-			serde_json::to_string(&message.attachments).map_err(|_| StoreError::Incompatible)?;
-		if embeds.len() > MAX_MEDIA_JSON || attachments.len() > MAX_MEDIA_JSON {
-			return Err(StoreError::Capacity);
-		}
+		let EncodedMessage {
+			mentions,
+			author_roles,
+			sticker_items,
+			interaction,
+			reactions,
+			components,
+			embeds,
+			attachments,
+		} = encode_message(message)?;
 		let verified_bot = message.author.kind == model::AccountKind::VerifiedBot;
 		let account_kind = if verified_bot {
 			model::AccountKind::Bot

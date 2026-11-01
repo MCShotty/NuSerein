@@ -203,12 +203,37 @@ impl Labels {
 			self.member_bytes -= old.bytes();
 		}
 	}
-	fn get(&self, guild: Id, user: Id) -> Option<&MemberIdentity> {
+	pub(crate) fn get(&self, guild: Id, user: Id) -> Option<&MemberIdentity> {
 		self.entries
 			.iter()
 			.rev()
 			.find(|(_, row)| row.guild == guild && row.user == user)
 			.map(|(_, row)| row)
+	}
+	pub(crate) fn global_name_after(
+		&self,
+		guild: Id,
+		user: Id,
+		started: u64,
+	) -> Option<model::GlobalNameUpdate> {
+		self.entries.iter().rev().find_map(|(revision, row)| {
+			(*revision > started && row.guild == guild && row.user == user && row.profile.is_some())
+				.then_some(row.global_name)
+		})
+	}
+	fn known_global_name(&self, guild: Id, user: Id) -> Option<model::GlobalNameUpdate> {
+		let (revision, row) = self
+			.entries
+			.iter()
+			.rev()
+			.find(|(_, row)| row.guild == guild && row.user == user)?;
+		if *revision == 0 {
+			return None;
+		}
+		if row.departed {
+			return Some(model::GlobalNameUpdate::Unchanged);
+		}
+		(row.global_name != model::GlobalNameUpdate::Unchanged).then_some(row.global_name)
 	}
 	/// Disk hints predate every live observation, including queries already in flight.
 	fn insert_hint(&mut self, update: MemberIdentity) {
@@ -225,6 +250,20 @@ impl Labels {
 			self.bytes -= old.bytes();
 			// A partial live update must not promote missing fields from an older disk hint.
 			if revision != 0 && !update.departed && !old.departed {
+				if update.global_name == model::GlobalNameUpdate::Unchanged {
+					if let (Some(profile), Some(previous)) = (&mut update.profile, &old.profile) {
+						match old.global_name {
+							model::GlobalNameUpdate::Set => profile.name.clone_from(&previous.name),
+							model::GlobalNameUpdate::Cleared => {
+								if let Some(username) = &profile.username {
+									profile.name = username.to_string();
+								}
+							}
+							model::GlobalNameUpdate::Unchanged => {}
+						}
+					}
+					update.global_name = old.global_name;
+				}
 				if update.profile.is_none() {
 					update.profile = old.profile;
 				}
@@ -272,10 +311,6 @@ impl Labels {
 			}
 		}
 	}
-	/// A query started before a live update cannot restore its old nickname/roles.
-	pub(crate) fn reconcile(&mut self, guild: Id, rows: &mut Vec<Member>, started: u64) {
-		self.reconcile_with_missing(guild, rows, started, &[]);
-	}
 	pub(crate) fn reconcile_with_missing(
 		&mut self,
 		guild: Id,
@@ -289,17 +324,17 @@ impl Labels {
 		let mut display_changed = false;
 		rows.retain_mut(|member| {
 			let fields = missing.iter().find(|fields| fields.user == member.user.id);
-			let fallback = fields
-				.and_then(|_| self.verified_member(guild, member.user.id))
-				.map(|known| (known.nick.clone(), known.roles.clone()));
 			if let Some(fields) = fields
-				&& let Some((nick, roles)) = fallback
+				&& let Some(known) = self.verified_member(guild, member.user.id)
 			{
+				if fields.global_name == model::GlobalNameUpdate::Unchanged {
+					member.user.name.clone_from(&known.user.name);
+				}
 				if fields.nick {
-					member.nick = nick;
+					member.nick.clone_from(&known.nick);
 				}
 				if fields.roles {
-					member.roles = roles;
+					member.roles.clone_from(&known.roles);
 				}
 			}
 			if let Some((revision, update)) = self
@@ -314,6 +349,15 @@ impl Labels {
 					update.apply(member);
 				} else {
 					if let Some(fields) = fields {
+						if fields.global_name == model::GlobalNameUpdate::Unchanged {
+							if update.global_name == model::GlobalNameUpdate::Cleared {
+								if let Some(username) = &member.user.username {
+									member.user.name = username.to_string();
+								}
+							} else if let Some(profile) = &update.profile {
+								member.user.name.clone_from(&profile.name);
+							}
+						}
 						if fields.nick {
 							match &update.nick {
 								Patch::Value(nick) => {
@@ -335,13 +379,20 @@ impl Labels {
 					};
 					display_changed |= update.departed
 						|| update.profile.as_ref().is_none_or(|profile| {
-							profile.name != member.user.name
+							(fields.is_none_or(|fields| {
+								fields.global_name != model::GlobalNameUpdate::Unchanged
+							}) && profile.name != member.user.name)
 								|| profile.username != member.user.username
 						}) || (fields.is_none_or(|fields| !fields.nick)
 						&& (matches!(update.nick, Patch::Absent)
 							|| nick != member.nick.as_deref().filter(|nick| !nick.is_empty())));
 					self.bytes -= update.bytes();
 					update.profile = Some(member.user.clone());
+					let global_name =
+						fields.map_or(model::GlobalNameUpdate::Set, |fields| fields.global_name);
+					if global_name != model::GlobalNameUpdate::Unchanged {
+						update.global_name = global_name;
+					}
 					if fields.is_none_or(|fields| !fields.nick) {
 						update.nick = member.nick.clone().map_or(Patch::Null, Patch::Value);
 					}
@@ -384,11 +435,14 @@ impl Labels {
 				_ => None,
 			})
 			.collect();
-		let partial: Vec<_> = rows
+		let mut partial: Vec<_> = rows
 			.extract_if(.., |member| {
-				list.missing_identity
-					.iter()
-					.any(|fields| fields.user == member.user.id)
+				list.missing_identity.iter().any(|fields| {
+					fields.user == member.user.id
+						&& (fields.nick
+							|| fields.roles || fields.global_name
+							== model::GlobalNameUpdate::Unchanged)
+				})
 			})
 			.collect();
 		for member in &partial {
@@ -397,7 +451,10 @@ impl Labels {
 				.iter()
 				.find(|fields| fields.user == member.user.id)
 				.expect("partial row has field metadata");
-			if fields.nick && fields.roles {
+			if fields.nick
+				&& fields.roles
+				&& fields.global_name == model::GlobalNameUpdate::Unchanged
+			{
 				continue;
 			}
 			let nick = if fields.nick {
@@ -405,15 +462,21 @@ impl Labels {
 			} else {
 				member.nick.clone().map_or(Patch::Null, Patch::Value)
 			};
-			let display_changed = !fields.nick
-				&& self
-					.get(guild, member.user.id)
-					.is_none_or(|old| old.nick != nick);
+			let has_name = fields.global_name != model::GlobalNameUpdate::Unchanged;
+			let display_changed = self.get(guild, member.user.id).is_none_or(|old| {
+				(!fields.nick && old.nick != nick)
+					|| (has_name
+						&& old.profile.as_ref().is_none_or(|profile| {
+							profile.name != member.user.name
+								|| profile.username != member.user.username
+						}))
+			});
 			self.insert(
 				MemberIdentity {
+					global_name: fields.global_name,
 					guild,
 					user: member.user.id,
-					profile: None,
+					profile: has_name.then(|| member.user.clone()),
 					avatar: Patch::Absent,
 					nick,
 					roles: if fields.roles {
@@ -426,7 +489,8 @@ impl Labels {
 				display_changed,
 			);
 		}
-		self.reconcile(guild, &mut rows, self.revision);
+		self.reconcile_with_missing(guild, &mut rows, self.revision, &list.missing_identity);
+		self.reconcile_with_missing(guild, &mut partial, self.revision, &list.missing_identity);
 		self.remember_with_source(guild, &rows, true);
 		self.remember_with_source(guild, &partial, false);
 		for (revision, entry) in &mut self.entries {
@@ -550,7 +614,8 @@ impl State {
 				rows.remove(&entry.user);
 				continue;
 			}
-			if let Some(profile) = &entry.profile
+			if entry.global_name != model::GlobalNameUpdate::Unchanged
+				&& let Some(profile) = &entry.profile
 				&& !matches!(entry.nick, Patch::Absent)
 			{
 				let row = MemberDisplay {
@@ -586,7 +651,9 @@ impl State {
 			if update.departed {
 				return false;
 			}
-			if let Some(profile) = &update.profile {
+			if update.global_name != model::GlobalNameUpdate::Unchanged
+				&& let Some(profile) = &update.profile
+			{
 				match &update.nick {
 					Patch::Value(nick)
 						if valid(profile, (!nick.is_empty()).then_some(nick.as_str())) =>
@@ -599,7 +666,7 @@ impl State {
 			}
 		}
 		self.member_labels
-			.member(guild, user)
+			.verified_member(guild, user)
 			.is_some_and(|member| valid(&member.user, member.nick.as_deref()))
 	}
 	/// Targeted local suggestions remain older than every live query or observation.
@@ -719,6 +786,7 @@ impl State {
 				break;
 			}
 			let update = MemberIdentity {
+				global_name: model::GlobalNameUpdate::Set,
 				guild,
 				user: row.user,
 				profile: Some(User {
@@ -763,6 +831,34 @@ impl State {
 			return None;
 		}
 		self.member_labels.get(self.channel(channel)?.guild?, user)
+	}
+	pub(crate) fn known_global_name(&self, guild: Id, user: Id) -> Option<model::GlobalNameUpdate> {
+		self.member_labels
+			.known_global_name(guild, user)
+			.or_else(|| {
+				self.members
+					.iter()
+					.chain(self.parked_members.iter().map(|parked| &parked.list))
+					.filter(|list| list.guild == Some(guild))
+					.flat_map(|list| &list.missing_identity)
+					.find_map(|fields| {
+						(fields.user == user
+							&& fields.global_name != model::GlobalNameUpdate::Unchanged)
+							.then_some(fields.global_name)
+					})
+			})
+			.or_else(|| {
+				self.member_search.iter().find_map(|view| {
+					view.request
+						.as_ref()
+						.filter(|request| request.guild == guild)?;
+					view.missing_identity.iter().find_map(|fields| {
+						(fields.user == user
+							&& fields.global_name != model::GlobalNameUpdate::Unchanged)
+							.then_some(fields.global_name)
+					})
+				})
+			})
 	}
 	/// Outer None means unknown; Some(None) is an authoritative nickname removal.
 	pub fn member_nickname(&self, channel: Id, user: Id) -> Option<Option<&str>> {
@@ -971,6 +1067,7 @@ impl State {
 			return false;
 		}
 		self.apply_member_identity(MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			guild,
 			user,
 			profile: None,
@@ -1002,6 +1099,13 @@ impl State {
 			|| (!selected_scope && !update.departed && !background)
 		{
 			return;
+		}
+		if update.profile.is_some()
+			&& update.global_name == model::GlobalNameUpdate::Unchanged
+			&& self.known_global_name(update.guild, update.user)
+				== Some(model::GlobalNameUpdate::Cleared)
+		{
+			update.global_name = model::GlobalNameUpdate::Cleared;
 		}
 		if matches!(update.avatar, Patch::Absent)
 			&& let Some(avatar) = update
@@ -1037,7 +1141,9 @@ impl State {
 				});
 			if let Some(known) = known {
 				let mut merged = known.clone();
-				merged.name.clone_from(&profile.name);
+				if update.global_name != model::GlobalNameUpdate::Unchanged {
+					merged.name.clone_from(&profile.name);
+				}
 				merged.username.clone_from(&profile.username);
 				if let Some(avatar) = &profile.member_avatar
 					&& avatar.guild == update.guild
@@ -1071,11 +1177,16 @@ impl State {
 					resolved = true;
 					return false;
 				}
-				let previous = (fields.nick, fields.roles);
+				let previous = (fields.global_name, fields.nick, fields.roles);
+				if update.profile.is_some()
+					&& update.global_name != model::GlobalNameUpdate::Unchanged
+				{
+					fields.global_name = update.global_name;
+				}
 				fields.nick &= matches!(update.nick, Patch::Absent);
 				fields.roles &= matches!(update.roles, Patch::Absent);
-				resolved |= previous != (fields.nick, fields.roles);
-				fields.nick || fields.roles
+				resolved |= previous != (fields.global_name, fields.nick, fields.roles);
+				fields.needs_metadata()
 			});
 			resolved
 		}
@@ -1100,11 +1211,16 @@ impl State {
 						resolved_fields = true;
 						return false;
 					}
-					let previous = (fields.nick, fields.roles);
+					let previous = (fields.global_name, fields.nick, fields.roles);
+					if update.profile.is_some()
+						&& update.global_name != model::GlobalNameUpdate::Unchanged
+					{
+						fields.global_name = update.global_name;
+					}
 					fields.nick &= matches!(update.nick, Patch::Absent);
 					fields.roles &= matches!(update.roles, Patch::Absent);
-					resolved_fields |= previous != (fields.nick, fields.roles);
-					fields.nick || fields.roles
+					resolved_fields |= previous != (fields.global_name, fields.nick, fields.roles);
+					fields.needs_metadata()
 				});
 			}
 		}
@@ -1344,6 +1460,7 @@ mod cache_search_tests {
 			state.apply(crate::Envelope {
 				generation: state.generation,
 				event: crate::Event::MemberIdentity(Box::new(MemberIdentity {
+					global_name: model::GlobalNameUpdate::Set,
 					guild: Id(2),
 					user,
 					profile,
@@ -1387,6 +1504,7 @@ mod cache_search_tests {
 		user.id = Id(9000);
 		let update = |profile, nick, departed| {
 			crate::Event::MemberIdentity(Box::new(MemberIdentity {
+				global_name: model::GlobalNameUpdate::Set,
 				guild: Id(2),
 				user: Id(9000),
 				profile,

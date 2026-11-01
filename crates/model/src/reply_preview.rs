@@ -38,9 +38,10 @@ impl ReplyPreview {
 		message.attachments.truncate(1);
 		if let Some(attachment) = message.attachments.first_mut() {
 			// Preserve only the classification consumed by the display renderer.
+			let image = attachment.is_image();
 			attachment.filename = if attachment.is_video() {
 				"video.mp4"
-			} else if attachment.is_image() {
+			} else if image {
 				"image.png"
 			} else if attachment.is_audio() {
 				"audio.ogg"
@@ -48,6 +49,9 @@ impl ReplyPreview {
 				"attachment"
 			}
 			.into();
+			if image && !attachment.is_image() {
+				attachment.content_type = Some("image/png".into());
+			}
 			attachment.media = Default::default();
 			attachment.description = None;
 			attachment.waveform = Vec::new();

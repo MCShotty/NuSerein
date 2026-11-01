@@ -8,7 +8,7 @@ pub struct UserDto {
 	pub id: Id,
 	pub username: String,
 	#[serde(default)]
-	pub global_name: Option<String>,
+	pub global_name: model::Patch<String>,
 	#[serde(default, deserialize_with = "lossy::null_default")]
 	pub bot: bool,
 	#[serde(default, deserialize_with = "lossy::null_default")]
@@ -86,12 +86,13 @@ impl UserDto {
 				model::AccountKind::Human
 			},
 			id: self.id,
-			name: self
-				.global_name
-				.unwrap_or_else(|| username.clone())
-				.chars()
-				.take(128)
-				.collect(),
+			name: match self.global_name {
+				model::Patch::Value(name) => name,
+				model::Patch::Null | model::Patch::Absent => username.clone(),
+			}
+			.chars()
+			.take(128)
+			.collect(),
 			username: (!username.is_empty()).then(|| username.into_boxed_str()),
 			avatar: self.avatar.filter(|hash| model::valid_avatar_hash(hash)),
 			webhook: false,

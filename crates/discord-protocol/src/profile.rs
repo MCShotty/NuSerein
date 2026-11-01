@@ -454,12 +454,10 @@ pub(crate) fn decode_profile_appearance(
 		board
 	});
 	let username = text(dto.user.user.username.clone(), 128, &mut limited);
-	let global_name = dto
-		.user
-		.user
-		.global_name
-		.as_ref()
-		.map(|s| text(s.clone(), 128, &mut limited));
+	let global_name = match &dto.user.user.global_name {
+		model::Patch::Value(name) => Some(text(name.clone(), 128, &mut limited)),
+		model::Patch::Null | model::Patch::Absent => None,
+	};
 	let mut metadata = dto.user_profile.unwrap_or_default();
 	let mut equipped =
 		Equipped::parse(metadata.collectibles.take(), metadata.profile_effect.take());

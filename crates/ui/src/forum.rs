@@ -1531,15 +1531,21 @@ fn title_row(ui: &mut egui::Ui, post: &Channel, unread: bool, mentions: u32, siz
 		let badge = crate::notifications::badge_size(mentions);
 		let title_width =
 			(ui.available_width() - if mentions > 0 { badge.x + 8.0 } else { 0.0 }).max(0.0);
-		ui.add_sized(
-			[title_width, size + 4.0],
-			egui::Label::new(if unread {
-				design::semibold(ui, &post.name, size).color(colors.text_strong)
-			} else {
-				design::medium(ui, &post.name, size).color(colors.muted)
-			})
-			.truncate()
-			.selectable(false),
+		ui.allocate_ui_with_layout(
+			egui::vec2(title_width, size + 4.0),
+			egui::Layout::left_to_right(egui::Align::Center),
+			|ui| {
+				ui.set_min_width(title_width);
+				ui.add(
+					egui::Label::new(if unread {
+						design::semibold(ui, &post.name, size).color(colors.text_strong)
+					} else {
+						design::medium(ui, &post.name, size).color(colors.muted)
+					})
+					.truncate()
+					.selectable(false),
+				);
+			},
 		);
 		if mentions > 0 {
 			let (rect, _) = ui.allocate_exact_size(badge, egui::Sense::hover());

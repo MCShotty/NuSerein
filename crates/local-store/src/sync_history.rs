@@ -253,7 +253,7 @@ impl LocalStore {
 				upper.to_string(),
 			];
 			values.extend(keep);
-			self.prune_large_verified_range(account, channel, &sql, &values)?;
+			self.prune_large_verified_range(account, channel, &sql, &values, &retained)?;
 			Some((sql, values))
 		} else {
 			None
@@ -296,6 +296,7 @@ impl LocalStore {
 		channel: Id,
 		delete_sql: &str,
 		values: &[String],
+		messages: &[&Message],
 	) -> Result<()> {
 		let charge = self.cache_row_charge("messages", None)?;
 		let select = delete_sql.replacen(
@@ -303,6 +304,7 @@ impl LocalStore {
 			&format!("SELECT id,{charge} FROM messages"),
 			1,
 		) + " ORDER BY length(id),id LIMIT 129";
+		let mut validated = false;
 		loop {
 			let mut statement = self.0.prepare_cached(&select)?;
 			let rows = statement
@@ -319,6 +321,10 @@ impl LocalStore {
 				.fold(0i64, |total, (_, charge)| total.saturating_add(*charge));
 			if rows.len() <= 128 && total <= crate::cache_cleanup::CLEANUP_BYTES {
 				return Ok(());
+			}
+			if !validated {
+				super::history::validate_before_prune(channel, messages)?;
+				validated = true;
 			}
 			let mut bytes = 0i64;
 			let transaction = self.0.transaction()?;
@@ -1113,6 +1119,65 @@ mod tests {
 		);
 		store.save_channel(Id(1), Id(2), &[row], false).unwrap();
 		assert!(store.load_channel(Id(1), Id(2)).unwrap().is_empty());
+	}
+	#[test]
+	fn invalid_page_cannot_prune_existing_history_before_its_write_fails() {
+		let mut store = store();
+		let template = message(&store, 1, 2);
+		let old: Vec<_> = (1..=200)
+			.map(|id| {
+				let mut row = template.clone();
+				row.id = Id(id);
+				row
+			})
+			.collect();
+		store.save_channel(Id(1), Id(2), &old, false).unwrap();
+		let mut invalid = template.clone();
+		invalid.id = Id(201);
+		invalid.attachments = (1..=10)
+			.map(|id| model::Attachment {
+				id: Id(id),
+				filename: "\0".repeat(1024),
+				description: Some("\0".repeat(4096)),
+				content_type: None,
+				size: 0,
+				media: Default::default(),
+				spoiler: false,
+				duration_ms: None,
+				waveform: vec![],
+			})
+			.collect();
+		assert!(model::valid_attachments(&invalid.attachments));
+		assert!(serde_json::to_string(&invalid.attachments).unwrap().len() > crate::MAX_MEDIA_JSON);
+		let mut duplicate_roles = template.clone();
+		duplicate_roles.id = Id(201);
+		duplicate_roles.author_roles = vec![Id(7), Id(7)];
+		let mut ephemeral = template.clone();
+		ephemeral.id = Id(201);
+		ephemeral.ephemeral = true;
+		for invalid in [invalid, duplicate_roles, ephemeral] {
+			assert_eq!(
+				store.save_sync_page(Id(1), Id(2), &[invalid], &coverage(1, None, None, true)),
+				Err(StoreError::Capacity)
+			);
+			assert_eq!(store.load_channel(Id(1), Id(2)).unwrap().len(), old.len());
+			assert!(store.history_coverage(Id(1), Id(2)).unwrap().is_none());
+		}
+		let mut valid = template;
+		valid.id = Id(201);
+		let saved = store
+			.save_sync_page(Id(1), Id(2), &[valid], &coverage(1, None, None, true))
+			.unwrap();
+		assert_eq!(saved.saved, 1);
+		assert_eq!(store.load_channel(Id(1), Id(2)).unwrap()[0].id, Id(201));
+		assert_eq!(store.load_channel(Id(1), Id(2)).unwrap().len(), 1);
+		assert!(
+			store
+				.history_coverage(Id(1), Id(2))
+				.unwrap()
+				.unwrap()
+				.complete
+		);
 	}
 	#[test]
 	fn page_and_coverage_roll_back_together_when_checkpoint_write_fails() {

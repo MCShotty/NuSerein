@@ -6,12 +6,38 @@ pub const MAX_MESSAGES: usize = 500;
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MUTATIONS: usize = 1024;
 
-fn keep_author_membership(message: &mut Message, roles: &[Id], nick: Option<&str>) {
-	if message.author_roles.is_empty() && !roles.is_empty() {
-		message.author_roles = roles.to_vec();
+#[derive(Clone, Copy, Default)]
+struct MemberChanges {
+	name: bool,
+	username: bool,
+	avatar: bool,
+	roles: bool,
+	nick: bool,
+}
+
+fn keep_author_identity(message: &mut Message, previous: &Message, updated: MemberChanges) {
+	if updated.name {
+		message.author.name.clone_from(&previous.author.name);
 	}
-	if message.author_nick.is_none()
-		&& let Some(nick) = nick.filter(|n| !n.is_empty())
+	if updated.username {
+		message
+			.author
+			.username
+			.clone_from(&previous.author.username);
+	}
+	if updated.avatar {
+		message
+			.author
+			.member_avatar
+			.clone_from(&previous.author.member_avatar);
+	}
+	if updated.roles || (message.author_roles.is_empty() && !previous.author_roles.is_empty()) {
+		message.author_roles.clone_from(&previous.author_roles);
+	}
+	if updated.nick {
+		message.author_nick.clone_from(&previous.author_nick);
+	} else if message.author_nick.is_none()
+		&& let Some(nick) = previous.author_nick.as_deref().filter(|n| !n.is_empty())
 	{
 		message.author_nick = Some(nick.to_owned());
 	}
@@ -24,6 +50,7 @@ pub struct Timeline {
 	payload_count: usize,
 	bytes: usize,
 	changed: BTreeSet<Id>,
+	member_changes: BTreeMap<Id, MemberChanges>,
 	provisional: BTreeSet<Id>,
 	patches: BTreeMap<Id, MessagePatch>,
 	patch_bytes: usize,
@@ -52,9 +79,30 @@ impl Timeline {
 		self.messages.get(&id).and_then(Option::as_ref)
 	}
 	pub fn apply_author_membership(&mut self, user: Id, roles: &[Id], nick: Option<&str>) -> bool {
+		self.apply_author_membership_inner(user, roles, nick, None)
+	}
+	pub fn apply_author_membership_with_profile(
+		&mut self,
+		user: Id,
+		roles: &[Id],
+		nick: Option<&str>,
+		profile: &model::User,
+	) -> bool {
+		self.apply_author_membership_inner(user, roles, nick, Some(profile))
+	}
+	fn apply_author_membership_inner(
+		&mut self,
+		user: Id,
+		roles: &[Id],
+		nick: Option<&str>,
+		profile: Option<&model::User>,
+	) -> bool {
 		if user.0 == 0 {
 			return false;
 		}
+		let profile = profile.filter(|profile| {
+			profile.id == user && !profile.webhook && profile.heap_bytes() <= 16 * 1024
+		});
 		let mut any = false;
 		for message in self.messages.values_mut().flatten() {
 			if message.author.id != user || message.author.webhook {
@@ -66,9 +114,23 @@ impl Timeline {
 				(message.author_nick.as_deref() != Some(n))
 					.then(|| n.chars().take(128).collect::<String>())
 			});
-			if next_roles.is_none() && next_nick.is_none() {
+			let next_name = profile.filter(|profile| profile.name != message.author.name);
+			let next_username =
+				profile.filter(|profile| profile.username != message.author.username);
+			if next_roles.is_none()
+				&& next_nick.is_none()
+				&& next_name.is_none()
+				&& next_username.is_none()
+			{
 				continue;
 			}
+			let updated = MemberChanges {
+				name: next_name.is_some(),
+				username: next_username.is_some(),
+				roles: next_roles.is_some(),
+				nick: next_nick.is_some(),
+				..MemberChanges::default()
+			};
 			let before = message.bytes();
 			if let Some(roles) = next_roles {
 				message.author_roles = roles;
@@ -76,10 +138,23 @@ impl Timeline {
 			if let Some(nick) = next_nick {
 				message.author_nick = Some(nick);
 			}
+			if let Some(profile) = next_name {
+				message.author.name.clone_from(&profile.name);
+			}
+			if let Some(profile) = next_username {
+				message.author.username.clone_from(&profile.username);
+			}
 			self.bytes = self
 				.bytes
 				.saturating_sub(before)
 				.saturating_add(message.bytes());
+			if self.loading {
+				let changes = self.member_changes.entry(message.id).or_default();
+				changes.name |= updated.name;
+				changes.username |= updated.username;
+				changes.roles |= updated.roles;
+				changes.nick |= updated.nick;
+			}
 			any = true;
 		}
 		if any {
@@ -90,9 +165,12 @@ impl Timeline {
 					self.older_evicted = true;
 					self.messages.pop_first()
 				};
-				if let Some((_, Some(old))) = item {
-					self.bytes -= old.bytes();
-					self.payload_count -= 1;
+				if let Some((id, old)) = item {
+					self.member_changes.remove(&id);
+					if let Some(old) = old {
+						self.bytes -= old.bytes();
+						self.payload_count -= 1;
+					}
 				}
 			}
 		}
@@ -103,14 +181,26 @@ impl Timeline {
 		if !update.valid() {
 			return;
 		}
+		let updated = MemberChanges {
+			name: !update.departed
+				&& update.profile.is_some()
+				&& update.global_name != model::GlobalNameUpdate::Unchanged,
+			username: !update.departed && update.profile.is_some(),
+			avatar: !matches!(update.avatar, Patch::Absent)
+				|| (!update.departed
+					&& update
+						.profile
+						.as_ref()
+						.is_some_and(|profile| profile.member_avatar.is_some())),
+			roles: matches!(update.roles, Patch::Value(_)),
+			nick: !matches!(update.nick, Patch::Absent),
+		};
 		for message in self.messages.values_mut().flatten() {
 			if message.author.id != update.user || message.author.webhook {
 				continue;
 			}
 			let before = message.bytes();
-			if let Some(user) = &update.profile {
-				message.author.clone_from(user);
-			}
+			update.apply_profile(&mut message.author);
 			match &update.avatar {
 				Patch::Absent => {}
 				Patch::Null => {
@@ -140,7 +230,20 @@ impl Timeline {
 				.bytes
 				.saturating_sub(before)
 				.saturating_add(message.bytes());
-			self.changed.insert(message.id);
+			if self.loading
+				&& (updated.name
+					|| updated.username
+					|| updated.avatar
+					|| updated.roles
+					|| updated.nick)
+			{
+				let changes = self.member_changes.entry(message.id).or_default();
+				changes.name |= updated.name;
+				changes.username |= updated.username;
+				changes.avatar |= updated.avatar;
+				changes.roles |= updated.roles;
+				changes.nick |= updated.nick;
+			}
 		}
 		while self.row_bytes() > MAX_BYTES {
 			let old = if self.retain_older {
@@ -149,9 +252,12 @@ impl Timeline {
 				self.older_evicted = true;
 				self.messages.pop_first()
 			};
-			if let Some((_, Some(old))) = old {
-				self.bytes -= old.bytes();
-				self.payload_count -= 1;
+			if let Some((id, old)) = old {
+				self.member_changes.remove(&id);
+				if let Some(old) = old {
+					self.bytes -= old.bytes();
+					self.payload_count -= 1;
+				}
 			}
 		}
 	}
@@ -199,6 +305,11 @@ impl Timeline {
 				&& let Some(message) = self.get(*id)
 			{
 				fresh.insert(message.clone(), true, false)?;
+			} else if let Some(updated) = self.member_changes.get(id)
+				&& let Some(message) = self.get(*id)
+			{
+				fresh.insert(message.clone(), false, false)?;
+				fresh.member_changes.insert(*id, *updated);
 			}
 		}
 		Ok(fresh)
@@ -251,6 +362,7 @@ impl Timeline {
 		size_of::<Self>() + self.bytes - self.payload_count * size_of::<Message>()
 			+ tree_bytes::<(Id, Option<Message>)>(self.messages.len())
 			+ tree_bytes::<Id>(self.changed.len())
+			+ tree_bytes::<(Id, MemberChanges)>(self.member_changes.len())
 			+ tree_bytes::<Id>(self.provisional.len())
 			+ tree_bytes::<Id>(self.deleted.len())
 			+ tree_bytes::<(Id, MessagePatch)>(self.patches.len())
@@ -263,6 +375,7 @@ impl Timeline {
 		self.replace = !older;
 		self.loading = true;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -272,6 +385,7 @@ impl Timeline {
 		self.replace = false;
 		self.loading = true;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -281,6 +395,7 @@ impl Timeline {
 		// Starting a recent-page request restores newest-first retention.
 		self.loading = false;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -327,11 +442,15 @@ impl Timeline {
 			{
 				return Ok(());
 			}
-			keep_author_membership(
-				&mut message,
-				&previous.author_roles,
-				previous.author_nick.as_deref(),
-			);
+			let updated = if live {
+				MemberChanges::default()
+			} else {
+				self.member_changes
+					.get(&message.id)
+					.copied()
+					.unwrap_or_default()
+			};
+			keep_author_identity(&mut message, previous, updated);
 			message.revision = previous.revision
 				+ u64::from(
 					previous.poll != message.poll
@@ -363,9 +482,12 @@ impl Timeline {
 				self.older_evicted = true;
 				self.messages.pop_first()
 			};
-			if let Some((_, Some(old))) = item {
-				self.bytes -= old.bytes();
-				self.payload_count -= 1;
+			if let Some((id, old)) = item {
+				self.member_changes.remove(&id);
+				if let Some(old) = old {
+					self.bytes -= old.bytes();
+					self.payload_count -= 1;
+				}
 			}
 		}
 		Ok(())
@@ -482,10 +604,13 @@ impl Timeline {
 		// Inherit only requested rows, before replacement or eviction removes their metadata.
 		for item in &mut items {
 			if let Some(previous) = self.get_display(item.id) {
-				keep_author_membership(
+				keep_author_identity(
 					item,
-					&previous.author_roles,
-					previous.author_nick.as_deref(),
+					previous,
+					self.member_changes
+						.get(&item.id)
+						.copied()
+						.unwrap_or_default(),
 				);
 			}
 		}
@@ -505,6 +630,7 @@ impl Timeline {
 		}
 		self.loading = false;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -600,6 +726,7 @@ impl Timeline {
 		}
 		self.remember(id)?;
 		self.deleted.insert(id);
+		self.member_changes.remove(&id);
 		if !self.preserve_deleted_messages {
 			self.discard_preserved(id);
 		}
@@ -1120,6 +1247,203 @@ mod tests {
 		timeline.insert(message(100), false, false).unwrap();
 		assert_eq!(timeline.row_count(), 1);
 	}
+	#[test]
+	fn identity_updates_keep_reconciliation_state_only_while_loading() {
+		let mut timeline = Timeline::default();
+		let mut update = model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
+			guild: Id(10),
+			user: Id(2),
+			profile: None,
+			avatar: Patch::Absent,
+			nick: Patch::Value("Synthetic Nick".into()),
+			roles: Patch::Absent,
+			departed: false,
+		};
+		for id in 1..=MAX_MESSAGES as u64 * 3 {
+			timeline.insert(message(id), true, false).unwrap();
+			timeline.apply_author_identity(&update);
+		}
+		assert_eq!(timeline.row_count(), MAX_MESSAGES);
+		assert!(timeline.changed.is_empty());
+
+		let id = Id(MAX_MESSAGES as u64 * 3);
+		timeline.begin_page(false);
+		update.nick = Patch::Value("New Nick".into());
+		timeline.apply_author_identity(&update);
+		assert!(timeline.member_changes.contains_key(&id));
+		let mut stale = message(id.0);
+		stale.author_nick = Some("Old Nick".into());
+		stale.content = "Updated message body".into();
+		timeline.finish_page(vec![stale], false).unwrap();
+		assert_eq!(
+			timeline.get(id).unwrap().author_nick.as_deref(),
+			Some("New Nick")
+		);
+		assert_eq!(timeline.get(id).unwrap().content, "Updated message body");
+		assert!(timeline.member_changes.is_empty());
+	}
+
+	#[test]
+	fn member_list_updates_survive_an_older_in_flight_page() {
+		for older in [false, true] {
+			let mut timeline = Timeline::default();
+			let mut original = message(1);
+			original.author_nick = Some("Old Nick".into());
+			original.author_roles = vec![Id(10)];
+			timeline.insert(original.clone(), false, false).unwrap();
+			timeline.begin_page(older);
+			assert!(timeline.apply_author_membership(Id(2), &[Id(20)], Some("New Nick")));
+			original.content = "Updated message body".into();
+			timeline.finish_page(vec![original], older).unwrap();
+			let actual = timeline.get(Id(1)).unwrap();
+			assert_eq!(actual.author_nick.as_deref(), Some("New Nick"));
+			assert_eq!(actual.author_roles, vec![Id(20)]);
+			assert_eq!(actual.content, "Updated message body");
+		}
+	}
+
+	#[test]
+	fn member_snapshot_profile_survives_an_older_in_flight_page() {
+		for older in [false, true] {
+			let mut timeline = Timeline::default();
+			let mut original = message(1);
+			original.author.name = "Old Display".into();
+			original.author.username = Some("old_account".into());
+			original.author.avatar = Some("0123456789abcdef0123456789abcdef".into());
+			let mut profile = original.author.clone();
+			profile.name = "New Display".into();
+			profile.username = Some("new_account".into());
+			profile.avatar = None;
+			timeline.insert(original.clone(), false, false).unwrap();
+			timeline.begin_page(older);
+			assert!(timeline.apply_author_membership_with_profile(Id(2), &[], None, &profile));
+			original.content = "New message body".into();
+			timeline.finish_page(vec![original], older).unwrap();
+			let actual = timeline.get(Id(1)).unwrap();
+			assert_eq!(actual.author.name, "New Display");
+			assert_eq!(actual.author.username.as_deref(), Some("new_account"));
+			assert!(actual.author.avatar.is_some());
+			assert_eq!(actual.content, "New message body");
+		}
+	}
+
+	#[test]
+	fn partial_profile_preserves_existing_author_artwork() {
+		let mut timeline = Timeline::default();
+		let mut row = message(1);
+		row.author.avatar = Some("0123456789abcdef0123456789abcdef".into());
+		row.author.member_avatar = Some(Box::new(model::GuildAvatar {
+			guild: Id(10),
+			hash: Some("fedcba9876543210fedcba9876543210".into()),
+		}));
+		let mut profile = row.author.clone();
+		profile.name = "Updated Name".into();
+		profile.avatar = None;
+		profile.member_avatar = None;
+		timeline.insert(row, false, false).unwrap();
+		timeline.apply_author_identity(&model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Set,
+			guild: Id(10),
+			user: Id(2),
+			profile: Some(profile),
+			avatar: Patch::Absent,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: false,
+		});
+		let author = &timeline.get(Id(1)).unwrap().author;
+		assert_eq!(author.name, "Updated Name");
+		assert!(author.avatar.is_some());
+		assert!(author.member_avatar.as_ref().unwrap().hash.is_some());
+	}
+
+	#[test]
+	fn identity_clears_survive_history_without_discarding_its_body() {
+		let mut timeline = Timeline::default();
+		let mut row = message(1);
+		row.author_nick = Some("Old Nick".into());
+		row.author_roles = vec![Id(10)];
+		row.author.member_avatar = Some(Box::new(model::GuildAvatar {
+			guild: Id(10),
+			hash: Some("fedcba9876543210fedcba9876543210".into()),
+		}));
+		timeline.insert(row.clone(), false, false).unwrap();
+		timeline.begin_page(false);
+		timeline.apply_author_identity(&model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
+			guild: Id(10),
+			user: Id(2),
+			profile: None,
+			avatar: Patch::Null,
+			nick: Patch::Null,
+			roles: Patch::Value(vec![]),
+			departed: false,
+		});
+		row.content = "Updated message body".into();
+		timeline.finish_page(vec![row], false).unwrap();
+		let actual = timeline.get(Id(1)).unwrap();
+		assert_eq!(actual.content, "Updated message body");
+		assert!(actual.author_nick.is_none());
+		assert!(actual.author_roles.is_empty());
+		assert!(actual.author.member_avatar.as_ref().unwrap().hash.is_none());
+	}
+
+	#[test]
+	fn member_reconciliation_updates_only_changed_fields_and_stays_bounded() {
+		for update_nick in [false, true] {
+			let mut timeline = Timeline::default();
+			let mut original = message(1);
+			original.author_nick = Some("Old Nick".into());
+			original.author_roles = vec![Id(10)];
+			timeline.insert(original.clone(), false, false).unwrap();
+			timeline.begin_page(false);
+			if update_nick {
+				timeline.apply_author_membership(Id(2), &[Id(10)], Some("New Nick"));
+				original.author_roles = vec![Id(30)];
+			} else {
+				timeline.apply_author_membership(Id(2), &[Id(20)], None);
+				original.author_nick = Some("Page Nick".into());
+			}
+			timeline
+				.seed_cached_page(vec![original.clone()], true)
+				.unwrap();
+			let mut range = timeline.history_range(&[Id(1)]).unwrap();
+			original.content = "Page body".into();
+			for target in [&mut timeline, &mut range] {
+				target.finish_page(vec![original.clone()], false).unwrap();
+				let actual = target.get(Id(1)).unwrap();
+				assert_eq!(actual.content, "Page body");
+				assert_eq!(
+					actual.author_nick.as_deref(),
+					Some(if update_nick { "New Nick" } else { "Page Nick" })
+				);
+				assert_eq!(
+					actual.author_roles,
+					vec![Id(if update_nick { 30 } else { 20 })]
+				);
+				assert!(target.member_changes.is_empty());
+			}
+		}
+
+		let mut timeline = Timeline::default();
+		timeline.insert(message(1), false, false).unwrap();
+		timeline.begin_page(false);
+		timeline.apply_author_membership(Id(2), &[], Some("New Nick"));
+		timeline.finish_page(vec![], false).unwrap();
+		assert!(timeline.get(Id(1)).is_none());
+
+		let mut timeline = Timeline::default();
+		timeline.begin_page(false);
+		for id in 1..=MAX_MESSAGES as u64 * 3 {
+			timeline.insert(message(id), false, false).unwrap();
+			timeline.apply_author_membership(Id(2), &[], Some("New Nick"));
+			assert!(timeline.member_changes.len() <= MAX_MESSAGES);
+		}
+		timeline.cancel_page();
+		assert!(timeline.member_changes.is_empty());
+	}
+
 	#[test]
 	fn retained_estimate_charges_rows_mutation_guards_and_pending_patch_capacity() {
 		let mut timeline = Timeline::default();

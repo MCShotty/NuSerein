@@ -86,6 +86,7 @@ impl Attachment {
 			return true;
 		}
 		if let Some(kind) = &self.content_type {
+			let kind = kind.split(';').next().unwrap_or(kind).trim();
 			matches!(
 				kind.to_ascii_lowercase().as_str(),
 				"image/png"
@@ -126,6 +127,27 @@ pub fn valid_attachments(attachments: &[Attachment]) -> bool {
 #[cfg(test)]
 mod audio_tests {
 	use super::*;
+	#[test]
+	fn image_detection_accepts_mime_parameters_and_whitespace() {
+		let mut file = Attachment {
+			id: Id(1),
+			filename: "upload".into(),
+			description: None,
+			content_type: None,
+			size: 32,
+			media: EmbedMedia::default(),
+			spoiler: false,
+			duration_ms: None,
+			waveform: Vec::new(),
+		};
+		for kind in ["image/png; charset=binary", " Image/JPEG ; quality=90 "] {
+			file.content_type = Some(kind.into());
+			assert!(file.is_image(), "{kind}");
+		}
+		file.content_type = Some("application/octet-stream; type=image/png".into());
+		assert!(!file.is_image());
+	}
+
 	#[test]
 	fn video_detection_uses_mime_and_case_insensitive_extension() {
 		{

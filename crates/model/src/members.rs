@@ -51,6 +51,22 @@ impl MemberDisplay {
 	}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobalNameUpdate {
+	Unchanged,
+	Cleared,
+	Set,
+}
+impl GlobalNameUpdate {
+	pub fn from_patch(value: &Patch<String>) -> Self {
+		match value {
+			Patch::Absent => Self::Unchanged,
+			Patch::Null => Self::Cleared,
+			Patch::Value(_) => Self::Set,
+		}
+	}
+}
+
 /// Partial guild identity for display only. Never grants permissions. Missing fields leave
 /// previous observations intact; a null nickname or an empty role list explicitly clears it.
 #[derive(Clone, PartialEq, Eq)]
@@ -58,6 +74,8 @@ pub struct MemberIdentity {
 	pub guild: Id,
 	pub user: Id,
 	pub profile: Option<User>,
+	/// Whether the profile omitted, cleared or supplied its global display name.
+	pub global_name: GlobalNameUpdate,
 	/// Server-specific avatar patch; this never changes the account's global avatar.
 	pub avatar: Patch<String>,
 	pub nick: Patch<String>,
@@ -110,22 +128,31 @@ impl MemberIdentity {
 			_ => 0,
 		}
 	}
-	pub fn apply(&self, member: &mut Member) {
-		if member.user.id != self.user || self.departed {
+	/// Merge the user fields carried by a member update without clearing artwork.
+	pub fn apply_profile(&self, user: &mut User) {
+		if user.id != self.user || self.departed {
 			return;
 		}
 		if let Some(profile) = &self.profile {
 			// Member updates can carry only part of the user object. Profile cosmetics and
 			// avatars remain owned by full snapshots; this path refreshes account names.
-			member.user.name.clone_from(&profile.name);
-			member.user.username.clone_from(&profile.username);
+			if self.global_name != GlobalNameUpdate::Unchanged {
+				user.name.clone_from(&profile.name);
+			}
+			user.username.clone_from(&profile.username);
 			if let Some(avatar) = &profile.member_avatar
 				&& avatar.guild == self.guild
 				&& avatar.valid()
 			{
-				member.user.member_avatar = Some(avatar.clone());
+				user.member_avatar = Some(avatar.clone());
 			}
 		}
+	}
+	pub fn apply(&self, member: &mut Member) {
+		if member.user.id != self.user || self.departed {
+			return;
+		}
+		self.apply_profile(&mut member.user);
 		match &self.avatar {
 			Patch::Absent => {}
 			Patch::Null => {
@@ -237,8 +264,15 @@ impl MemberSlot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MissingMemberFields {
 	pub user: Id,
+	/// Null stays distinct from an omitted global name across snapshot consumers.
+	pub global_name: GlobalNameUpdate,
 	pub nick: bool,
 	pub roles: bool,
+}
+impl MissingMemberFields {
+	pub fn needs_metadata(&self) -> bool {
+		self.global_name != GlobalNameUpdate::Set || self.nick || self.roles
+	}
 }
 
 #[derive(Clone)]
@@ -250,7 +284,7 @@ pub struct MemberList {
 	pub start: usize,
 	/// Contiguous window. None is a hole. At most 200 entries.
 	pub slots: Vec<Option<MemberSlot>>,
-	/// Presence information for partial rows, bounded by the current slot count.
+	/// Omitted fields and explicit global-name clears, bounded by the current slot count.
 	pub missing_identity: Vec<MissingMemberFields>,
 	pub total: u64,
 	/// Guild channel lazy list. Scrollbar length is `total`. DMs and threads are false and scroll `slots.len()`.

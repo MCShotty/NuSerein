@@ -53,10 +53,13 @@ impl<'de> Deserialize<'de> for Rows {
 					}
 					let fields = model::MissingMemberFields {
 						user: entry.user_id,
+						global_name: model::GlobalNameUpdate::from_patch(
+							&entry.member.user.global_name,
+						),
 						nick: matches!(entry.member.nick, model::Patch::Absent),
 						roles: matches!(entry.member.roles, model::Patch::Absent),
 					};
-					if fields.nick || fields.roles {
+					if fields.needs_metadata() {
 						missing_identity.push(fields);
 					}
 					let member = MemberItem::Member {
@@ -146,6 +149,32 @@ mod tests {
 		};
 		assert_eq!(member.status.as_deref(), Some("online"));
 		assert_eq!(member.activities[0].name, "Old game");
+	}
+
+	#[test]
+	fn thread_snapshots_retain_global_name_presence() {
+		for (global_name, expected) in [
+			(None, model::GlobalNameUpdate::Unchanged),
+			(Some(json!(null)), model::GlobalNameUpdate::Cleared),
+			(Some(json!("Display")), model::GlobalNameUpdate::Set),
+		] {
+			let mut user = json!({"id":"3","username":"account"});
+			if let Some(value) = global_name {
+				user["global_name"] = value;
+			}
+			let snapshot = json!({
+				"guild_id":"1", "thread_id":"2",
+				"members":[{"user_id":"3","member":{"user":user,"nick":null,"roles":[]}}]
+			});
+			let list = members(&serde_json::to_vec(&snapshot).unwrap(), Id(1), Id(2), 7).unwrap();
+			assert_eq!(
+				list.missing_identity.len(),
+				usize::from(expected != model::GlobalNameUpdate::Set)
+			);
+			if let Some(fields) = list.missing_identity.first() {
+				assert_eq!(fields.global_name, expected);
+			}
+		}
 	}
 
 	#[test]

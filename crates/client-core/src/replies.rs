@@ -1257,6 +1257,30 @@ mod tests {
 	}
 
 	#[test]
+	fn reply_preview_keeps_generic_heic_image_classification() {
+		let mut original = message(50);
+		original.attachments.push(model::Attachment {
+			id: Id(51),
+			filename: "photo.HEIC".into(),
+			description: None,
+			content_type: Some("application/octet-stream".into()),
+			size: 100,
+			media: model::EmbedMedia {
+				url: Some("https://example.invalid/private".into()),
+				..Default::default()
+			},
+			spoiler: false,
+			duration_ms: None,
+			waveform: Vec::new(),
+		});
+		assert!(original.attachments[0].is_image());
+		let preview = model::ReplyPreview::from_message(original).unwrap();
+		let attachment = &preview.message().attachments[0];
+		assert!(attachment.is_image());
+		assert!(attachment.media.url.is_none());
+	}
+
+	#[test]
 	fn old_reply_previews_deduplicate_reads_and_ignore_cancelled_results() {
 		use crate::reply_previews::{ResultEvent, Status};
 		let mut state = state();

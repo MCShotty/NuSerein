@@ -269,6 +269,22 @@ mod tests {
 		encoded[..length].to_vec()
 	}
 	#[test]
+	fn initial_reordering_reaches_the_mixer_in_timestamp_order() {
+		let mut mixer = Mixer::default();
+		mixer.announce(1, 11).unwrap();
+		let packet = opus(0.03);
+		mixer.push_timed(11, 102, 1920, packet.clone());
+		mixer.push_timed(11, 101, 960, packet);
+		assert!(mixer.pop_timed().0.is_none());
+		assert!(mixer.pop_timed().0.is_none());
+		let (first, _, timing) = mixer.pop_timed();
+		assert!(first.is_some());
+		assert_eq!(timing, Some((1, 960)));
+		let (second, _, timing) = mixer.pop_timed();
+		assert!(second.is_some());
+		assert_eq!(timing, Some((1, 1920)));
+	}
+	#[test]
 	fn independent_streams_mix_on_one_clock_and_release_on_leave() {
 		let mut together = Mixer::default();
 		let mut alice = Mixer::default();
@@ -443,6 +459,43 @@ mod tests {
 				played >= 16,
 				"duration={samples}: short packets must not starve"
 			);
+		}
+	}
+
+	#[test]
+	fn long_opus_packet_above_single_frame_limit_plays_through_the_mixer() {
+		let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Audio).unwrap();
+		encoder.set_bitrate(opus2::Bitrate::Bits(128_000)).unwrap();
+		encoder.set_vbr(false).unwrap();
+		let input: Vec<f32> = (0..2880).map(|i| (i as f32 * 0.037).sin() * 0.2).collect();
+		let mut first = [0; 1275];
+		let length = encoder.encode_float(&input, &mut first).unwrap();
+		let mut packet = [0; crate::crypto::MAX_PACKET];
+		let length = opus2::Repacketizer::new()
+			.unwrap()
+			.combine(&[&first[..length], &first[..length]], &mut packet)
+			.unwrap();
+		assert!((1276..=crate::crypto::MAX_PACKET).contains(&length));
+		let mut expected = [0.0; 5760];
+		assert_eq!(
+			Decoder::new(48_000, Channels::Mono)
+				.unwrap()
+				.decode_float(&packet[..length], &mut expected, false)
+				.unwrap(),
+			expected.len()
+		);
+		let mut mixer = Mixer::default();
+		mixer.announce(1, 11).unwrap();
+		mixer.push_timed(11, 7, 12_000, packet[..length].to_vec());
+		assert!(mixer.pop_timed().0.is_none());
+		assert!(mixer.pop_timed().0.is_none());
+		for (index, expected) in expected.as_chunks::<960>().0.iter().enumerate() {
+			let (frame, _, timing) = mixer.pop_timed();
+			let frame = frame.expect("each 20ms part must reach playback");
+			assert_eq!(timing, Some((1, 12_000 + index as u32 * 960)));
+			for (actual, expected) in frame.iter().zip(expected) {
+				assert!((actual - expected.clamp(-1.0, 1.0)).abs() < 0.0001);
+			}
 		}
 	}
 

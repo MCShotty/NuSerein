@@ -15,6 +15,510 @@ const BITS: u128 = p::VIEW_CHANNEL
 	| p::USE_VAD;
 
 #[test]
+fn member_list_update_survives_a_delayed_history_response() {
+	let mut state = state();
+	let mut old = message(101, Id(20));
+	old.author.id = Id(7);
+	old.author_nick = Some("Old nickname".into());
+	old.author_roles = vec![Id(11)];
+	apply(&mut state, Event::Message(old.clone()));
+	let Command::History { request, .. } = state.history(None) else {
+		panic!("history request");
+	};
+	state.request_members();
+	let mut list = state.members.clone().unwrap();
+	list.slots = vec![Some(model::MemberSlot::Person(model::Member {
+		user: old.author.clone(),
+		nick: Some("New nickname".into()),
+		roles: vec![Id(12)],
+		status: None,
+		custom_status: None,
+		activities: vec![],
+		clients: Default::default(),
+	}))];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list));
+	old.content = "Updated message body".into();
+	apply(
+		&mut state,
+		Event::History {
+			channel: Id(20),
+			request,
+			older: false,
+			messages: vec![old],
+		},
+	);
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.author_nick.as_deref(), Some("New nickname"));
+	assert_eq!(message.author_roles, vec![Id(12)]);
+	assert_eq!(message.content, "Updated message body");
+}
+
+#[test]
+fn partial_member_profile_preserves_artwork_and_new_history_content() {
+	let mut state = state();
+	let mut old = message(101, Id(20));
+	old.author.id = Id(7);
+	old.author.avatar = Some("0123456789abcdef0123456789abcdef".into());
+	old.author.member_avatar = Some(Box::new(model::GuildAvatar {
+		guild: Id(10),
+		hash: Some("fedcba9876543210fedcba9876543210".into()),
+	}));
+	apply(&mut state, Event::Message(old.clone()));
+	let Command::History { request, .. } = state.history(None) else {
+		panic!("history request");
+	};
+	let mut profile = old.author.clone();
+	profile.name = "Updated name".into();
+	profile.avatar = None;
+	profile.member_avatar = None;
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Set,
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(profile),
+			avatar: Patch::Absent,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	old.content = "Updated message body".into();
+	apply(
+		&mut state,
+		Event::History {
+			channel: Id(20),
+			request,
+			older: false,
+			messages: vec![old],
+		},
+	);
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.content, "Updated message body");
+	assert_eq!(message.author.name, "Updated name");
+	assert!(message.author.avatar.is_some());
+	assert!(
+		message
+			.author
+			.member_avatar
+			.as_ref()
+			.unwrap()
+			.hash
+			.is_some()
+	);
+}
+
+#[test]
+fn omitted_global_name_preserves_display_across_a_delayed_history_page() {
+	let mut state = state();
+	let mut old = message(101, Id(20));
+	old.author.id = Id(7);
+	old.author.name = "Existing Display".into();
+	old.author.username = Some("old_user".into());
+	apply(&mut state, Event::Message(old.clone()));
+	let Command::History { request, .. } = state.history(None) else {
+		panic!("history request");
+	};
+	let mut partial = old.author.clone();
+	partial.name = "new_user".into();
+	partial.username = Some("new_user".into());
+	let mut identity = model::MemberIdentity {
+		global_name: model::GlobalNameUpdate::Unchanged,
+		guild: Id(10),
+		user: Id(7),
+		profile: Some(partial),
+		avatar: Patch::Absent,
+		nick: Patch::Absent,
+		roles: Patch::Absent,
+		departed: false,
+	};
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(identity.clone())),
+	);
+	old.content = "Updated message body".into();
+	apply(
+		&mut state,
+		Event::History {
+			channel: Id(20),
+			request,
+			older: false,
+			messages: vec![old],
+		},
+	);
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.content, "Updated message body");
+	assert_eq!(message.author.name, "Existing Display");
+	assert_eq!(message.author.username.as_deref(), Some("new_user"));
+	assert_eq!(state.message_author_name(message), "Existing Display");
+	identity.global_name = model::GlobalNameUpdate::Cleared;
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(identity.clone())),
+	);
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.author.name, "new_user");
+	assert_eq!(state.message_author_name(message), "new_user");
+	identity.global_name = model::GlobalNameUpdate::Unchanged;
+	let profile = identity.profile.as_mut().unwrap();
+	profile.name = "later_user".into();
+	profile.username = Some("later_user".into());
+	apply(&mut state, Event::MemberIdentity(Box::new(identity)));
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.author.name, "later_user");
+	assert_eq!(state.message_author_name(message), "later_user");
+}
+
+#[test]
+fn member_search_with_unknown_global_name_does_not_cache_username_as_display_name() {
+	let mut state = state();
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "account", 0) else {
+		panic!("member search");
+	};
+	let mut member = cached_person(7, "Server nickname");
+	member.user.name = "account7".into();
+	member.user.username = Some("account7".into());
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![member],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				global_name: model::GlobalNameUpdate::Unchanged,
+				nick: false,
+				roles: false,
+			}],
+		},
+	);
+	assert_eq!(
+		state.member_search[0].rows[0].nick.as_deref(),
+		Some("Server nickname")
+	);
+	assert!(state.cached_member_displays(Id(10)).is_empty());
+}
+
+#[test]
+fn member_search_preserves_a_known_display_name_when_it_is_omitted() {
+	let mut state = state();
+	let mut known = cached_person(7, "Old nickname");
+	known.user.name = "Known display".into();
+	known.user.username = Some("account7".into());
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(known.user.clone()),
+			global_name: model::GlobalNameUpdate::Set,
+			avatar: Patch::Absent,
+			nick: Patch::Value("Old nickname".into()),
+			roles: Patch::Value(known.roles.clone()),
+			departed: false,
+		})),
+	);
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "account", 0) else {
+		panic!("member search");
+	};
+	known.user.name = "account7".into();
+	known.nick = Some("New nickname".into());
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![known],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				global_name: model::GlobalNameUpdate::Unchanged,
+				nick: false,
+				roles: false,
+			}],
+		},
+	);
+	let saved = &state.cached_member_displays(Id(10))[0];
+	assert_eq!(saved.name, "Known display");
+	assert_eq!(saved.nick.as_deref(), Some("New nickname"));
+}
+
+#[test]
+fn member_search_caches_an_explicit_global_name_clear() {
+	let mut state = state();
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "account", 0) else {
+		panic!("member search");
+	};
+	let mut member = cached_person(7, "Server nickname");
+	member.user.name = "account7".into();
+	member.user.username = Some("account7".into());
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![member],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				global_name: model::GlobalNameUpdate::Cleared,
+				nick: false,
+				roles: false,
+			}],
+		},
+	);
+	assert_eq!(state.cached_member_displays(Id(10))[0].name, "account7");
+}
+
+#[test]
+fn member_list_with_unknown_global_name_does_not_cache_username_as_display_name() {
+	let mut state = state();
+	state.request_members();
+	let mut list = state.members.clone().unwrap();
+	let mut member = cached_person(7, "Server nickname");
+	member.user.name = "account7".into();
+	member.user.username = Some("account7".into());
+	list.slots = vec![Some(model::MemberSlot::Person(member))];
+	list.missing_identity = vec![model::MissingMemberFields {
+		user: Id(7),
+		global_name: model::GlobalNameUpdate::Unchanged,
+		nick: false,
+		roles: false,
+	}];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list.clone()));
+	assert_eq!(
+		state.display_member(Id(20), Id(7)).unwrap().nick.as_deref(),
+		Some("Server nickname")
+	);
+	assert!(state.cached_member_displays(Id(10)).is_empty());
+	let Some(model::MemberSlot::Person(member)) = &mut list.slots[0] else {
+		panic!("member row")
+	};
+	member.user.name = "Confirmed display".into();
+	list.missing_identity.clear();
+	apply(&mut state, Event::Members(list));
+	assert_eq!(
+		state.cached_member_displays(Id(10))[0].name,
+		"Confirmed display"
+	);
+}
+
+#[test]
+fn initial_member_snapshot_keeps_a_known_omitted_global_name() {
+	let mut state = state();
+	let mut message = message(101, Id(20));
+	message.author.id = Id(7);
+	message.author.name = "Existing Display".into();
+	message.author.username = Some("account".into());
+	apply(&mut state, Event::Message(message.clone()));
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Set,
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(message.author.clone()),
+			avatar: Patch::Absent,
+			nick: Patch::Null,
+			roles: Patch::Value(vec![Id(11)]),
+			departed: false,
+		})),
+	);
+	state.request_members();
+	let mut list = state.members.clone().unwrap();
+	let mut partial_user = message.author.clone();
+	partial_user.name = "account".into();
+	list.slots = vec![Some(model::MemberSlot::Person(model::Member {
+		user: partial_user,
+		nick: None,
+		roles: vec![Id(11)],
+		status: None,
+		custom_status: None,
+		activities: vec![],
+		clients: Default::default(),
+	}))];
+	list.missing_identity = vec![model::MissingMemberFields {
+		user: Id(7),
+		global_name: model::GlobalNameUpdate::Unchanged,
+		nick: false,
+		roles: false,
+	}];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list.clone()));
+	let loaded = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(state.message_author_name(loaded), "Existing Display");
+	let Some(model::MemberSlot::Person(row)) = state.member_slot(0) else {
+		panic!("member row");
+	};
+	assert_eq!(row.user.name, "Existing Display");
+	assert_eq!(
+		state.cached_member_displays(Id(10))[0].name,
+		"Existing Display"
+	);
+	assert_eq!(
+		state.presentation_member_roles(Id(20), Id(7)),
+		Some(&[Id(11)][..])
+	);
+	list.missing_identity[0].global_name = model::GlobalNameUpdate::Cleared;
+	apply(&mut state, Event::Members(list));
+	let loaded = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(state.message_author_name(loaded), "account");
+	assert_eq!(state.cached_member_displays(Id(10))[0].name, "account");
+	let mut renamed = message.author;
+	renamed.name = "renamed".into();
+	renamed.username = Some("renamed".into());
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(renamed),
+			avatar: Patch::Absent,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	let loaded = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(state.message_author_name(loaded), "renamed");
+}
+
+#[test]
+fn cleared_name_fallback_survives_member_overlay_eviction() {
+	let mut state = state();
+	state.request_members();
+	let mut list = state.members.clone().unwrap();
+	list.slots = (1000..1200)
+		.map(|id| {
+			let mut member = cached_person(id, "");
+			member.nick = None;
+			member.user.name = member.user.username.as_ref().unwrap().to_string();
+			Some(model::MemberSlot::Person(member))
+		})
+		.collect();
+	list.missing_identity = (1000..1200)
+		.map(|id| model::MissingMemberFields {
+			user: Id(id),
+			global_name: model::GlobalNameUpdate::Cleared,
+			nick: false,
+			roles: false,
+		})
+		.collect();
+	list.freshness = Freshness::Fresh;
+	list.total = 200;
+	apply(&mut state, Event::Members(list));
+	assert!(state.member_identity(Id(20), Id(1000)).is_none());
+	let mut next = state.members.clone().unwrap();
+	let Some(model::MemberSlot::Person(member)) = &mut next.slots[0] else {
+		panic!("member row");
+	};
+	member.user.name = "new_account".into();
+	member.user.username = Some("new_account".into());
+	next.missing_identity[0].global_name = model::GlobalNameUpdate::Unchanged;
+	apply(&mut state, Event::Members(next));
+	assert_eq!(
+		state.display_member(Id(20), Id(1000)).unwrap().user.name,
+		"new_account"
+	);
+	let mut profile = state.display_member(Id(20), Id(1000)).unwrap().user.clone();
+	profile.name = "latest_account".into();
+	profile.username = Some("latest_account".into());
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(1000),
+			profile: Some(profile),
+			global_name: model::GlobalNameUpdate::Unchanged,
+			avatar: Patch::Absent,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	assert_eq!(
+		state.display_member(Id(20), Id(1000)).unwrap().user.name,
+		"latest_account"
+	);
+}
+
+#[test]
+fn stale_search_clear_cannot_resurface_after_overlay_eviction() {
+	let mut state = state();
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "account", 0) else {
+		panic!("member search");
+	};
+	let mut current = cached_person(7, "").user;
+	current.name = "Newest display".into();
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(current.clone()),
+			global_name: model::GlobalNameUpdate::Set,
+			avatar: Patch::Absent,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	let mut stale = cached_person(7, "");
+	stale.user.name = "account7".into();
+	stale.nick = None;
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![stale],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				global_name: model::GlobalNameUpdate::Cleared,
+				nick: false,
+				roles: false,
+			}],
+		},
+	);
+	assert_eq!(state.member_search[0].rows[0].user.name, "Newest display");
+	assert!(state.member_search[0].missing_identity.is_empty());
+	for id in 1000..1130 {
+		let user = cached_person(id, "").user;
+		apply(
+			&mut state,
+			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				guild: Id(10),
+				user: Id(id),
+				profile: Some(user),
+				global_name: model::GlobalNameUpdate::Set,
+				avatar: Patch::Absent,
+				nick: Patch::Absent,
+				roles: Patch::Absent,
+				departed: false,
+			})),
+		);
+	}
+	assert!(state.member_identity(Id(20), Id(7)).is_none());
+	current.name = "renamed".into();
+	current.username = Some("renamed".into());
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(current),
+			global_name: model::GlobalNameUpdate::Unchanged,
+			avatar: Patch::Absent,
+			nick: Patch::Absent,
+			roles: Patch::Absent,
+			departed: false,
+		})),
+	);
+	assert_eq!(state.member_search[0].rows[0].user.name, "Newest display");
+}
+
+#[test]
 fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
 	let mut state = state();
 	let mut colored = state.guild_roles(Id(10)).unwrap()[1].clone();
@@ -51,6 +555,7 @@ fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
 		panic!()
 	};
 	let update = |nick, roles| model::MemberIdentity {
+		global_name: model::GlobalNameUpdate::Unchanged,
 		avatar: model::Patch::Absent,
 		guild: Id(10),
 		user: Id(7),
@@ -155,6 +660,7 @@ fn live_identity_growth_reports_a_scoped_member_search_limit() {
 		apply(
 			&mut state,
 			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name: model::GlobalNameUpdate::Unchanged,
 				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(id),
@@ -188,6 +694,7 @@ fn live_identity_growth_reports_a_scoped_member_search_limit() {
 fn member_identity_is_scoped_bounded_and_retired_on_recovery() {
 	let mut state = state();
 	let update = |guild, user| model::MemberIdentity {
+		global_name: model::GlobalNameUpdate::Unchanged,
 		avatar: model::Patch::Absent,
 		guild: Id(guild),
 		user: Id(user),
@@ -2415,6 +2922,7 @@ fn sidebar_only_member_is_refreshed_and_success_updates_every_consumer() {
 	incomplete.roles.clear();
 	list.slots = vec![Some(model::MemberSlot::Person(incomplete))];
 	list.missing_identity = vec![model::MissingMemberFields {
+		global_name: model::GlobalNameUpdate::Set,
 		user: Id(7),
 		nick: true,
 		roles: true,
@@ -2503,6 +3011,7 @@ fn partial_member_snapshot_across_subscriptions_preserves_labels_but_explicit_cl
 	partial.freshness = Freshness::Fresh;
 	partial.total = 1;
 	partial.missing_identity = vec![model::MissingMemberFields {
+		global_name: model::GlobalNameUpdate::Set,
 		user: Id(7),
 		nick: true,
 		roles: true,
@@ -2560,6 +3069,7 @@ fn an_unknown_sidebar_row_does_not_mask_the_message_identity() {
 	incomplete.roles.clear();
 	list.slots = vec![Some(model::MemberSlot::Person(incomplete))];
 	list.missing_identity = vec![model::MissingMemberFields {
+		global_name: model::GlobalNameUpdate::Set,
 		user: Id(7),
 		nick: true,
 		roles: true,
@@ -2607,6 +3117,7 @@ fn incomplete_author_lookup_retries_after_a_bounded_delay() {
 fn mixed_partial_member_search_keeps_absent_fields_and_newer_live_updates() {
 	let mut state = state();
 	let identity = |user, nick: Patch<String>, roles: Patch<Vec<Id>>| model::MemberIdentity {
+		global_name: model::GlobalNameUpdate::Unchanged,
 		guild: Id(10),
 		user: Id(user),
 		profile: None,
@@ -2646,11 +3157,13 @@ fn mixed_partial_member_search_keeps_absent_fields_and_newer_live_updates() {
 	let rows = vec![first, second, third];
 	let missing = vec![
 		model::MissingMemberFields {
+			global_name: model::GlobalNameUpdate::Set,
 			user: Id(7),
 			nick: true,
 			roles: false,
 		},
 		model::MissingMemberFields {
+			global_name: model::GlobalNameUpdate::Set,
 			user: Id(8),
 			nick: false,
 			roles: true,
@@ -2709,12 +3222,14 @@ fn mixed_partial_member_search_keeps_absent_fields_and_newer_live_updates() {
 fn malformed_partial_member_search_is_rejected_without_mutating_identity() {
 	for missing in [
 		vec![model::MissingMemberFields {
+			global_name: model::GlobalNameUpdate::Set,
 			user: Id(99),
 			nick: true,
 			roles: false,
 		}],
 		vec![
 			model::MissingMemberFields {
+				global_name: model::GlobalNameUpdate::Set,
 				user: Id(7),
 				nick: true,
 				roles: false
@@ -2722,6 +3237,7 @@ fn malformed_partial_member_search_is_rejected_without_mutating_identity() {
 			2
 		],
 		vec![model::MissingMemberFields {
+			global_name: model::GlobalNameUpdate::Set,
 			user: Id(7),
 			nick: false,
 			roles: false,
@@ -2771,6 +3287,7 @@ fn partial_query_keeps_a_verified_nickname_when_other_fields_change() {
 			request: second,
 			rows: vec![partial],
 			missing: vec![model::MissingMemberFields {
+				global_name: model::GlobalNameUpdate::Set,
 				user: Id(7),
 				nick: true,
 				roles: false,
@@ -2796,6 +3313,7 @@ fn partial_query_keeps_a_verified_nickname_when_other_fields_change() {
 fn partial_search_fields_remain_unknown_until_a_live_update_fills_them() {
 	let mut state = state();
 	let identity = model::MemberIdentity {
+		global_name: model::GlobalNameUpdate::Unchanged,
 		guild: Id(10),
 		user: Id(7),
 		profile: None,
@@ -2820,6 +3338,7 @@ fn partial_search_fields_remain_unknown_until_a_live_update_fills_them() {
 			request,
 			rows: vec![partial],
 			missing: vec![model::MissingMemberFields {
+				global_name: model::GlobalNameUpdate::Set,
 				user: Id(7),
 				nick: true,
 				roles: true,
@@ -2849,6 +3368,7 @@ fn partial_search_fields_remain_unknown_until_a_live_update_fills_them() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			guild: Id(10),
 			user: Id(7),
 			profile: None,
@@ -2868,6 +3388,7 @@ fn repeated_typing_and_role_updates_fence_lookups_without_resaving_names() {
 	let mut state = state();
 	let person = cached_person(7, "Current nickname");
 	let identity = model::MemberIdentity {
+		global_name: model::GlobalNameUpdate::Set,
 		avatar: model::Patch::Absent,
 		guild: Id(10),
 		user: Id(7),
@@ -2997,6 +3518,7 @@ fn member_chunk_identity_and_closed_pane_remain_available_and_live() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3049,6 +3571,7 @@ fn persisted_member_names_are_display_only_and_do_not_override_live_updates() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3064,6 +3587,7 @@ fn persisted_member_names_are_display_only_and_do_not_override_live_updates() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3095,6 +3619,7 @@ fn nickname_updates_preserve_navigation_caches_and_cooldown_stays_pending() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3146,6 +3671,7 @@ fn disk_hydration_preserves_live_departures_and_most_recent_bounded_rows() {
 	apply(
 		&mut state,
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(7),
@@ -3197,6 +3723,7 @@ fn viewport_member_watch_prioritizes_old_visible_authors_without_repeated_change
 	assert!(users.contains(&Id(90000)) && users.contains(&Id(90001)));
 	let membership = |departed| {
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			guild: Id(10),
 			user: Id(1199),
 			profile: None,
@@ -3239,6 +3766,7 @@ fn member_watch_keeps_the_first_distinct_users_when_messages_repeat() {
 	assert_eq!(users, expected);
 	let departed = |departed| {
 		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
 			guild: Id(10),
 			user: Id(1_199),
 			profile: None,
@@ -3269,6 +3797,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 			apply(
 				&mut state,
 				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					global_name: model::GlobalNameUpdate::Unchanged,
 					avatar: model::Patch::Absent,
 					guild: Id(10),
 					user: Id(8),
@@ -3309,6 +3838,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 			apply(
 				&mut state,
 				Event::MemberIdentity(Box::new(model::MemberIdentity {
+					global_name: model::GlobalNameUpdate::Unchanged,
 					avatar: model::Patch::Absent,
 					guild: Id(10),
 					user: Id(7),
@@ -3346,6 +3876,7 @@ fn member_reply_after_disk_hint(role_update: bool) {
 		apply(
 			&mut state,
 			Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name: model::GlobalNameUpdate::Unchanged,
 				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(7),

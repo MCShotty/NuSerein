@@ -1600,7 +1600,14 @@ mod tests {
 				id: Id(id + 10),
 				filename: format!("synthetic-image-{id}.png"),
 				description: None,
-				content_type: Some("image/png".into()),
+				content_type: Some(
+					if id == 1 {
+						"image/png; charset=binary"
+					} else {
+						"image/png"
+					}
+					.into(),
+				),
 				size: 512,
 				spoiler: false,
 				media: model::EmbedMedia {

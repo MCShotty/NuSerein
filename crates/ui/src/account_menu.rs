@@ -45,35 +45,25 @@ impl ClearAfter {
 			Self::Today => "account-menu-label-today",
 		})
 	}
+	fn expiration(self, now: time::OffsetDateTime) -> Option<time::OffsetDateTime> {
+		let at = match self {
+			Self::Never => return None,
+			Self::Minutes30 => now.checked_add(time::Duration::minutes(30))?,
+			Self::Hour => now.checked_add(time::Duration::hours(1))?,
+			Self::Hours4 => now.checked_add(time::Duration::hours(4))?,
+			Self::Today => return crate::local_time::next_midnight(now),
+		};
+		Some(crate::local_time::local(at))
+	}
 	/// Absolute deadline in milliseconds since the Unix epoch; `None` never clears.
 	fn deadline(self) -> Option<u64> {
-		let now = crate::local_time::now();
-		let seconds = match self {
-			Self::Never => return None,
-			Self::Minutes30 => now.unix_timestamp() + 30 * 60,
-			Self::Hour => now.unix_timestamp() + 60 * 60,
-			Self::Hours4 => now.unix_timestamp() + 4 * 60 * 60,
-			// End of the local day, which is what Discord means by "Today".
-			Self::Today => {
-				let midnight = now.replace_time(time::Time::MIDNIGHT);
-				(midnight + time::Duration::days(1)).unix_timestamp()
-			}
-		};
-		u64::try_from(seconds).ok().map(|seconds| seconds * 1000)
+		let seconds = self.expiration(crate::local_time::now())?.unix_timestamp();
+		u64::try_from(seconds).ok()?.checked_mul(1000)
 	}
 	/// Plain-language moment this choice lands on, for the line under the dropdown.
 	fn clears_at(self) -> Option<String> {
-		if self == Self::Never {
-			return None;
-		}
 		let now = crate::local_time::now();
-		let at = match self {
-			Self::Never => return None,
-			Self::Minutes30 => now + time::Duration::minutes(30),
-			Self::Hour => now + time::Duration::hours(1),
-			Self::Hours4 => now + time::Duration::hours(4),
-			Self::Today => now.replace_time(time::Time::MIDNIGHT) + time::Duration::days(1),
-		};
+		let at = self.expiration(now)?;
 		let clock = crate::local_time::clock(at);
 		Some(if at.date() == now.date() {
 			format!(
@@ -980,6 +970,38 @@ fn presence_dot(
 mod tests {
 	use super::*;
 	use egui::{Event, Pos2, Rect};
+
+	#[test]
+	fn status_expiration_uses_the_offset_at_each_deadline() {
+		let _zone = crate::local_time::pin_timezone("America/New_York");
+		crate::local_time::set_format(
+			model::TimeFormat::TwentyFourHour,
+			crate::i18n::Language::English,
+		);
+		for (now, midnight, hour_label) in [
+			(1_772_951_400, 1_773_028_800, "03:30"),
+			(1_793_511_000, 1_793_595_600, "01:30"),
+		] {
+			let _clock =
+				crate::local_time::pin_now(time::OffsetDateTime::from_unix_timestamp(now).unwrap());
+			assert_eq!(ClearAfter::Today.deadline(), Some(midnight * 1000));
+			assert!(ClearAfter::Hour.clears_at().unwrap().contains(hour_label));
+		}
+	}
+
+	#[test]
+	fn status_today_handles_a_skipped_local_midnight() {
+		let _zone = crate::local_time::pin_timezone("America/Sao_Paulo");
+		crate::local_time::set_format(
+			model::TimeFormat::TwentyFourHour,
+			crate::i18n::Language::English,
+		);
+		let _clock = crate::local_time::pin_now(
+			time::OffsetDateTime::from_unix_timestamp(1_541_257_200).unwrap(),
+		);
+		assert_eq!(ClearAfter::Today.deadline(), Some(1_541_300_400_000));
+		assert!(ClearAfter::Today.clears_at().unwrap().contains("01:00"));
+	}
 
 	fn frame(
 		ctx: &egui::Context,

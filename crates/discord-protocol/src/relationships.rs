@@ -183,10 +183,7 @@ pub fn friend(user: crate::UserDto) -> Result<(model::User, String), crate::Deco
 		|| user.username.is_empty()
 		|| user.username.len() > 128
 		|| user.username.chars().any(char::is_control)
-		|| user
-			.global_name
-			.as_ref()
-			.is_some_and(|n| n.is_empty() || n.len() > 512 || n.chars().any(char::is_control))
+		|| matches!(&user.global_name, model::Patch::Value(n) if n.is_empty() || n.len() > 512 || n.chars().any(char::is_control))
 	{
 		return Err(crate::DecodeError);
 	}

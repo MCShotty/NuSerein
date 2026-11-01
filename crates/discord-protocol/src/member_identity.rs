@@ -43,7 +43,7 @@ pub fn embedded(bytes: &[u8], guild: Id, user: Id) -> Result<MemberIdentity, Dec
 	if fields.user_id.is_some_and(|id| id != user) {
 		return Err(DecodeError);
 	}
-	let profile = match fields.user {
+	let (profile, global_name) = match fields.user {
 		Some(raw) => {
 			let identity: crate::UserIdentity = decode(raw.get().as_bytes())?;
 			if identity.id != user {
@@ -51,9 +51,17 @@ pub fn embedded(bytes: &[u8], guild: Id, user: Id) -> Result<MemberIdentity, Dec
 			}
 			decode::<UserDto>(raw.get().as_bytes())
 				.ok()
-				.map(UserDto::into_model)
+				.map(|dto| {
+					let change = match &dto.global_name {
+						Patch::Absent => model::GlobalNameUpdate::Unchanged,
+						Patch::Null => model::GlobalNameUpdate::Cleared,
+						Patch::Value(_) => model::GlobalNameUpdate::Set,
+					};
+					(Some(dto.into_model()), change)
+				})
+				.unwrap_or((None, model::GlobalNameUpdate::Unchanged))
 		}
-		None => None,
+		None => (None, model::GlobalNameUpdate::Unchanged),
 	};
 	// Invalid optional presentation fields are ignored, never converted into a clearing update.
 	let nick = match fields.nick {
@@ -83,6 +91,7 @@ pub fn embedded(bytes: &[u8], guild: Id, user: Id) -> Result<MemberIdentity, Dec
 		Patch::Absent => Patch::Absent,
 	};
 	let update = MemberIdentity {
+		global_name,
 		avatar,
 		guild,
 		user,
@@ -123,6 +132,37 @@ pub fn removed(bytes: &[u8]) -> Result<MemberIdentity, DecodeError> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn partial_user_names_distinguish_absent_null_and_value() {
+		for (wire, expected_name, change) in [
+			(
+				br#"{"guild_id":"1","user":{"id":"2","username":"new_user"}}"#.as_slice(),
+				"Existing Display",
+				model::GlobalNameUpdate::Unchanged,
+			),
+			(
+				br#"{"guild_id":"1","user":{"id":"2","username":"new_user","global_name":null}}"#.as_slice(),
+				"new_user",
+				model::GlobalNameUpdate::Cleared,
+			),
+			(
+				br#"{"guild_id":"1","user":{"id":"2","username":"new_user","global_name":"Updated Display"}}"#.as_slice(),
+				"Updated Display",
+				model::GlobalNameUpdate::Set,
+			),
+		] {
+			let update = update(wire).unwrap();
+			assert_eq!(update.global_name, change);
+			let mut user = update.profile.as_ref().unwrap().clone();
+			user.name = "Existing Display".into();
+			user.username = Some("old_user".into());
+			update.apply_profile(&mut user);
+			assert_eq!(user.name, expected_name);
+			assert_eq!(user.username.as_deref(), Some("new_user"));
+		}
+	}
+
 	#[test]
 	fn member_avatar_updates_keep_absent_null_and_scoped_value_distinct() {
 		let value = update(br#"{"guild_id":"1","user":{"id":"2","username":"account"},"avatar":"0123456789abcdef0123456789abcdef"}"#).unwrap();

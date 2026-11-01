@@ -471,24 +471,20 @@ impl Outgoing {
 		}
 		let bytes = frame.len() + std::mem::size_of::<Packet>();
 		let mut state = self.state.lock().map_err(|_| Failure::Network)?;
-		if let Some(Key::CancelSubscription(guild)) = meta.key {
-			let mut removed = 0;
-			state.queue.retain(|packet| {
-				if matches!(packet.meta.key,Some(Key::Subscription(id,_) | Key::MemberIdentities(id)) if id==guild) {
-					removed += packet.bytes;
-					false
-				} else {
-					true
-				}
+		let superseded = |packet: &Packet| {
+			meta.key.is_some_and(|key| {
+				packet.meta.key == Some(key)
+					|| matches!((key, packet.meta.key),
+						(Key::CancelSubscription(guild), Some(Key::Subscription(id, _) | Key::MemberIdentities(id))) if guild == id)
+			})
+		};
+		let (removed_count, removed_bytes) = state
+			.queue
+			.iter()
+			.filter(|packet| superseded(packet))
+			.fold((0, 0), |(count, bytes), packet| {
+				(count + 1, bytes + packet.bytes)
 			});
-			state.bytes -= removed;
-		}
-		if let Some(key) = meta.key
-			&& let Some(index) = state.queue.iter().position(|p| p.meta.key == Some(key))
-		{
-			let old = state.queue.remove(index).unwrap();
-			state.bytes -= old.bytes;
-		}
 
 		let limit = if meta.heartbeat {
 			PACKETS
@@ -498,8 +494,8 @@ impl Outgoing {
 			PACKETS - 4
 		};
 		let reserve = if meta.critical { 0 } else { 16 * 1024 };
-		if state.queue.len() + usize::from(state.in_flight) >= limit
-			|| bytes > BYTES.saturating_sub(state.bytes + reserve)
+		if state.queue.len() - removed_count + usize::from(state.in_flight) >= limit
+			|| bytes > BYTES.saturating_sub(state.bytes - removed_bytes + reserve)
 		{
 			return Err(if bytes > BYTES {
 				Failure::ResponseLimit
@@ -507,6 +503,8 @@ impl Outgoing {
 				Failure::Busy
 			});
 		}
+		state.queue.retain(|packet| !superseded(packet));
+		state.bytes -= removed_bytes;
 
 		state.serial = state.serial.wrapping_add(1);
 		let serial = state.serial;
@@ -734,6 +732,31 @@ mod tests {
 		assert!(writer.progress.borrow().heartbeat.unwrap().1 <= Instant::now());
 		assert_eq!(frames.lock().unwrap().len(), 2);
 	}
+	#[tokio::test]
+	async fn rejected_replacements_preserve_queued_updates() {
+		let (sink, _, _, _) = fixture();
+		let writer = Outgoing::start(sink, Duration::from_secs(45));
+		let presence = frame(serde_json::json!({"op":3,"d":{"status":"online"}}));
+		writer.send(presence.clone()).await.unwrap();
+		let original = writer.occupancy();
+		for size in [55 * 1024, BYTES + 1] {
+			let replacement = frame(serde_json::json!({"op":3,"d":{"status":"x".repeat(size)}}));
+			assert!(writer.send(replacement).await.is_err());
+			assert_eq!(writer.occupancy(), original);
+			assert_eq!(writer.state.lock().unwrap().queue[0].frame, presence);
+		}
+
+		let subscription = crate::subscription_packet(Id(2), true, None, false);
+		writer.send(subscription.clone()).await.unwrap();
+		let original = writer.occupancy();
+		let cancellation = frame(serde_json::json!({
+			"op":37,"d":{"subscriptions":{"2":{"typing":false,"padding":"x".repeat(BYTES)}}}
+		}));
+		assert!(writer.send(cancellation).await.is_err());
+		assert_eq!(writer.occupancy(), original);
+		assert_eq!(writer.state.lock().unwrap().queue[1].frame, subscription);
+	}
+
 	#[tokio::test]
 	async fn pending_presence_and_viewports_coalesce_without_losing_initial_subscription() {
 		let (sink, ready, wake, frames) = fixture();

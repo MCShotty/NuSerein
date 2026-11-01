@@ -563,6 +563,11 @@ fuzz_target!(|data: &[u8]| {
 				apply(
 					&mut state,
 					Event::MemberIdentity(Box::new(model::MemberIdentity {
+						global_name: match op[6] >> 6 {
+							0 => model::GlobalNameUpdate::Unchanged,
+							1 => model::GlobalNameUpdate::Cleared,
+							_ => model::GlobalNameUpdate::Set,
+						},
 						avatar: match op[6] >> 3 & 3 {
 							0 => Patch::Absent,
 							1 => Patch::Null,
@@ -571,7 +576,12 @@ fuzz_target!(|data: &[u8]| {
 						},
 						guild: Id(10),
 						user: id,
-						profile: None,
+						profile: (op[6] & 64 != 0).then(|| {
+							let mut profile = user();
+							profile.id = id;
+							profile.username = Some("synthetic".into());
+							profile
+						}),
 						nick: if op[6] & 1 == 0 {
 							Patch::Null
 						} else {
@@ -648,6 +658,12 @@ fuzz_target!(|data: &[u8]| {
 						1 => vec![id],
 						2 => vec![Id(0)],
 						_ => vec![id, id],
+					},
+					global_names: match (op[6] >> 2) & 3 {
+						0 => vec![],
+						1 => vec![(id, model::GlobalNameUpdate::Unchanged)],
+						2 => vec![(id, model::GlobalNameUpdate::Cleared)],
+						_ => vec![(Id(0), model::GlobalNameUpdate::Unchanged)],
 					},
 				});
 				assert_eq!(state.selected, selected);

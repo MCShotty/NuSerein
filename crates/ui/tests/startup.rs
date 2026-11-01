@@ -16,8 +16,58 @@ fn session_clear_preserves_device_startup_preferences_and_pending_status() {
 }
 
 #[test]
+fn unavailable_startup_switches_have_the_same_disabled_text_color() {
+	for dark in [true, false] {
+		let ctx = egui::Context::default();
+		ctx.set_theme(if dark {
+			egui::ThemePreference::Dark
+		} else {
+			egui::ThemePreference::Light
+		});
+		ui::design::apply(&ctx);
+		let mut state = test_support::demo_state();
+		let mut view = MessagingUi::default();
+		view.language = ui::i18n::Language::English;
+		view.startup_available = false;
+		view.startup_enabled = false;
+		view.preview_settings("general");
+		let mut checked = false;
+		for _ in 0..3 {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1120.0, 760.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					view.show(ui, &mut state);
+				},
+			);
+			let colors =
+				["Open NuSerein when your computer starts", "Start minimized"].map(|label| {
+					output.shapes.iter().find_map(|shape| match &shape.shape {
+						egui::Shape::Text(text) if text.galley.job.text == label => {
+							Some(text.fallback_color)
+						}
+						_ => None,
+					})
+				});
+			output.drop_without_applying_deltas();
+			if let [Some(startup), Some(minimized)] = colors {
+				assert_eq!(startup, minimized);
+				checked = true;
+				break;
+			}
+		}
+		assert!(checked, "startup labels were not rendered");
+	}
+}
+
+#[test]
 fn startup_switches_require_availability_and_dependency_and_disable_while_pending() {
-	const LABELS: [&str; 2] = ["Open Serein when your computer starts", "Start minimized"];
+	const LABELS: [&str; 2] = ["Open NuSerein when your computer starts", "Start minimized"];
 	for dark in [true, false] {
 		for width in [760.0, 1120.0] {
 			let ctx = egui::Context::default();

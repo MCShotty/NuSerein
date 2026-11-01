@@ -2,7 +2,7 @@
 use crate::{Failure, Frame, Id};
 use client_core::force_sync_apply::RosterPermit;
 use discord_protocol::MemberDto;
-use model::Member;
+use model::{GlobalNameUpdate, Member};
 use serde::{
 	Deserialize,
 	de::{Error, SeqAccess, Visitor},
@@ -41,6 +41,7 @@ pub enum Event {
 		total: usize,
 		members: Vec<Member>,
 		nick_unknown: Vec<Id>,
+		global_names: Vec<(Id, GlobalNameUpdate)>,
 	},
 	Finished {
 		request: Request,
@@ -58,10 +59,12 @@ impl Event {
 				Self::Chunk {
 					members,
 					nick_unknown,
+					global_names,
 					..
 				} => {
 					members.capacity() * size_of::<Member>()
 						+ nick_unknown.capacity() * size_of::<Id>()
+						+ global_names.capacity() * size_of::<(Id, GlobalNameUpdate)>()
 						+ members
 							.iter()
 							.map(|m| m.bytes().saturating_sub(size_of::<Member>()))
@@ -359,6 +362,7 @@ impl Worker {
 		}
 		let mut members = Vec::with_capacity(chunk.members.len());
 		let mut nick_unknown = Vec::new();
+		let mut global_names = Vec::new();
 		let mut bytes = 0_usize;
 		let mut seen = std::collections::BTreeSet::new();
 		for member in chunk.members {
@@ -371,6 +375,7 @@ impl Worker {
 				return true;
 			}
 			let nick_known = !matches!(&member.nick, model::Patch::Absent);
+			let global_name = GlobalNameUpdate::from_patch(&member.user.global_name);
 			let Some(member) = member.into_guild_member(active.request.guild) else {
 				self.fail(Failure::Protocol);
 				return true;
@@ -387,10 +392,18 @@ impl Worker {
 			if !nick_known {
 				nick_unknown.push(member.user.id);
 			}
+			if global_name != GlobalNameUpdate::Set {
+				global_names.push((member.user.id, global_name));
+			}
 			members.push(member);
 		}
 		nick_unknown.sort_unstable();
-		if bytes.saturating_add(nick_unknown.capacity() * size_of::<Id>()) > CHUNK_BYTES {
+		global_names.sort_unstable_by_key(|(id, _)| *id);
+		if bytes
+			.saturating_add(nick_unknown.capacity() * size_of::<Id>())
+			.saturating_add(global_names.capacity() * size_of::<(Id, GlobalNameUpdate)>())
+			> CHUNK_BYTES
+		{
 			self.fail(Failure::ResponseLimit);
 			return true;
 		}
@@ -417,6 +430,7 @@ impl Worker {
 					total: chunk.chunk_count,
 					members,
 					nick_unknown,
+					global_names,
 				},
 			) {
 				self.active = None;
@@ -481,6 +495,33 @@ mod tests {
 		assert!(
 			matches!(handle.try_recv(), Some(Event::Chunk { nick_unknown, .. }) if nick_unknown.is_empty())
 		);
+		assert!(matches!(handle.try_recv(), Some(Event::Finished { .. })));
+	}
+	#[test]
+	fn roster_keeps_omitted_and_cleared_global_names_distinct() {
+		let (handle, mut worker, request) = fixture();
+		let wire = json!({"guild_id":request.guild,"nonce":request.nonce(),"chunk_index":0,"chunk_count":1,"members":[
+			{"user":{"id":"3","username":"third","global_name":"Display"},"nick":null,"roles":[]},
+			{"user":{"id":"2","username":"second","global_name":null},"nick":null,"roles":[]},
+			{"user":{"id":"1","username":"first"},"nick":null,"roles":[]}
+		]});
+		assert!(worker.chunk(&serde_json::to_vec(&wire).unwrap()));
+		let Some(Event::Chunk {
+			members,
+			global_names,
+			..
+		}) = handle.try_recv()
+		else {
+			panic!("roster chunk")
+		};
+		assert_eq!(
+			global_names,
+			vec![
+				(Id(1), GlobalNameUpdate::Unchanged),
+				(Id(2), GlobalNameUpdate::Cleared)
+			]
+		);
+		assert_eq!(members[0].user.name, "Display");
 		assert!(matches!(handle.try_recv(), Some(Event::Finished { .. })));
 	}
 	#[test]
