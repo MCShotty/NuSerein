@@ -58,17 +58,15 @@ impl WheelMotion {
 			self.cancel();
 		}
 		self.focused = Some(input.focused);
-		if self.last_time.is_some_and(|last| now < last)
-			|| input.raw.events.iter().any(replaces_wheel_motion)
-		{
+		let events = after_wheel_replacement(&input.raw.events);
+		if self.last_time.is_some_and(|last| now < last) || events.len() != input.raw.events.len() {
 			self.cancel();
 		}
 		if !preferences.smooth_scrolling {
 			self.cancel();
 			self.last_time = Some(now);
-			let output =
-				instant_wheel_delta(&input.raw.events, options, input.viewport_rect().height())
-					* (f32::from(preferences.scroll_speed_percent) / 100.0);
+			let output = instant_wheel_delta(events, options, input.viewport_rect().height())
+				* (f32::from(preferences.scroll_speed_percent) / 100.0);
 			return if output.is_finite() {
 				output
 			} else {
@@ -78,7 +76,7 @@ impl WheelMotion {
 		let was_pending = self.pending != egui::Vec2::ZERO;
 		let mut direct = egui::Vec2::ZERO;
 		let mut fresh = false;
-		for event in &input.raw.events {
+		for event in events {
 			let egui::Event::MouseWheel {
 				unit,
 				delta,
@@ -179,6 +177,14 @@ fn replaces_wheel_motion(event: &egui::Event) -> bool {
 				..
 			}
 	)
+}
+
+fn after_wheel_replacement(events: &[egui::Event]) -> &[egui::Event] {
+	let start = events
+		.iter()
+		.rposition(replaces_wheel_motion)
+		.map_or(0, |index| index + 1);
+	&events[start..]
 }
 
 fn wheel_id(ctx: &egui::Context) -> egui::Id {
@@ -808,6 +814,51 @@ mod tests {
 			),
 			egui::Vec2::ZERO
 		);
+	}
+
+	#[test]
+	fn later_interaction_retires_wheel_input_from_the_same_frame() {
+		let click = egui::Event::PointerButton {
+			pos: egui::pos2(10.0, 10.0),
+			button: egui::PointerButton::Primary,
+			pressed: true,
+			modifiers: egui::Modifiers::NONE,
+		};
+		let line = wheel(egui::MouseWheelUnit::Line, egui::vec2(0.0, -1.0));
+		let mut touchpad = wheel(egui::MouseWheelUnit::Point, egui::vec2(0.0, -24.0));
+		if let egui::Event::MouseWheel { source, .. } = &mut touchpad {
+			*source = egui::MouseWheelSource::Trackpad;
+		}
+		for wheel in [line, touchpad] {
+			for smooth_scrolling in [false, true] {
+				let preferences = model::ReadingPreferences {
+					smooth_scrolling,
+					..Default::default()
+				};
+				let mut motion = WheelMotion::default();
+				assert_eq!(
+					step(
+						&mut motion,
+						0.0,
+						1.0 / 60.0,
+						vec![wheel.clone(), click.clone()],
+						preferences
+					),
+					egui::Vec2::ZERO,
+				);
+				assert_eq!(motion.pending, egui::Vec2::ZERO);
+				assert!(
+					step(
+						&mut motion,
+						0.1,
+						1.0 / 60.0,
+						vec![click.clone(), wheel.clone()],
+						preferences
+					)
+					.y < 0.0
+				);
+			}
+		}
 	}
 
 	#[test]

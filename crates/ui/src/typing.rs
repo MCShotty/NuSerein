@@ -141,14 +141,12 @@ pub(super) fn overlay(
 		egui::Sense::hover(),
 	);
 	let painter = ui.painter_at(rect);
-	// Three pulsing dots, Discord style; the animation runs only while someone is typing and
-	// this window has focus. A background window paints them at rest and asks for no frames.
-	let focused = ui.input(|input| input.focused);
+	let animate = ui.input(|input| input.focused) && ui.style().animation_time > 0.0;
 	let time = ui.input(|input| input.time);
 	let dots_left = rect.left() + DOT_RADIUS + 2.0;
 	for index in 0..3 {
 		let phase = (time / DOT_PERIOD - f64::from(index) * 0.18).fract();
-		let pulse = if focused {
+		let pulse = if animate {
 			(0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()) as f32
 		} else {
 			0.5
@@ -196,12 +194,10 @@ pub(super) fn overlay(
 		egui::WidgetInfo::labeled(egui::Role::Label, true, text)
 	});
 	if let Some(deadline) = state.typing_deadline(now) {
-		// Keep the dots moving until the earliest deadline, then go idle without repaints.
-		// Unfocused, only the expiry itself is worth a frame; the dots hold still until then.
 		let frame = std::time::Duration::from_millis(80);
 		let delay = deadline.saturating_duration_since(now);
 		ui.ctx()
-			.request_repaint_after(if focused { delay.min(frame) } else { delay });
+			.request_repaint_after(if animate { delay.min(frame) } else { delay });
 	}
 }
 
@@ -385,9 +381,18 @@ mod tests {
 		assert!(!text.contains('\n'));
 		assert!(text.chars().count() < 160);
 		assert!(label(&state, Id(11), now).is_none());
-		for (width, focused) in [(160.0, true), (760.0, true), (760.0, false)] {
+		for (width, focused, animate) in [
+			(160.0, true, true),
+			(760.0, true, true),
+			(760.0, false, true),
+			(760.0, true, false),
+		] {
 			let ctx = egui::Context::default();
+			if !animate {
+				ctx.global_style_mut(|style| style.animation_time = 0.0);
+			}
 			let mut row_height = None;
+			let mut stationary_dots = None;
 			for expired in [false, true] {
 				let instant = if expired {
 					now + Duration::from_secs(11)
@@ -398,6 +403,7 @@ mod tests {
 					let output = ctx.run_ui(
 						egui::RawInput {
 							focused,
+							time: Some(f64::from(pass) * 0.2),
 							screen_rect: Some(egui::Rect::from_min_size(
 								egui::Pos2::ZERO,
 								egui::vec2(width, 100.0),
@@ -420,18 +426,32 @@ mod tests {
                         egui::Shape::Text(text) if text.galley.job.text.contains("typing"))
 					});
 					assert_eq!(rendered, !expired);
+					if !animate && !expired {
+						let dots: Vec<_> = output
+							.shapes
+							.iter()
+							.filter_map(|shape| match &shape.shape {
+								egui::Shape::Circle(circle) => {
+									Some((circle.radius.to_bits(), circle.fill))
+								}
+								_ => None,
+							})
+							.collect();
+						assert_eq!(dots.len(), 3);
+						assert_eq!(stationary_dots.get_or_insert(dots.clone()), &dots);
+					}
 					if pass == 4 {
 						let delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
 						if expired {
 							assert_eq!(delay, Duration::MAX);
-						} else if focused {
+						} else if focused && animate {
 							// Animation frames only while the window has focus.
 							assert!(delay > Duration::ZERO && delay <= Duration::from_millis(80));
 						} else {
 							assert!(
 								delay > Duration::from_millis(80)
 									&& delay <= Duration::from_secs(10),
-								"an unfocused window must not ask for animation frames"
+								"an unfocused or non-animated view must not ask for animation frames"
 							);
 						}
 					}
