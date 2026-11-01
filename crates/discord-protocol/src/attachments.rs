@@ -38,15 +38,19 @@ pub(crate) fn placeholder(value: Option<String>, version: Option<u32>) -> Vec<u8
 	if version != Some(1) {
 		return Vec::new();
 	}
-	let mut bytes = [0u8; model::MAX_PLACEHOLDER_BYTES];
+	let mut bytes = [0u8; model::MAX_PLACEHOLDER_BYTES.div_ceil(3) * 3];
 	value
-		.filter(|value| value.len() <= model::MAX_PLACEHOLDER_BYTES / 3 * 4)
+		.filter(|value| value.len() <= model::MAX_PLACEHOLDER_BYTES.div_ceil(3) * 4)
 		.and_then(|value| {
 			base64::engine::general_purpose::STANDARD
-				.decode_slice(value.trim_end_matches('='), &mut bytes)
+				.decode_slice(&value, &mut bytes)
+				.or_else(|_| {
+					base64::engine::general_purpose::STANDARD_NO_PAD
+						.decode_slice(&value, &mut bytes)
+				})
 				.ok()
 		})
-		.filter(|len| *len >= 5)
+		.filter(|len| (5..=model::MAX_PLACEHOLDER_BYTES).contains(len))
 		.map_or_else(Vec::new, |len| bytes[..len].to_vec())
 }
 fn url(value: Option<String>) -> Option<String> {
@@ -173,6 +177,42 @@ mod tests {
 	use super::*;
 	use model::Patch;
 	use serde_json::json;
+
+	#[test]
+	fn placeholders_accept_padded_and_unpadded_base64_within_the_limit() {
+		for len in [5, 6, 7, 63, 64, 65] {
+			let bytes: Vec<u8> = (0..len).map(|value| value as u8).collect();
+			for engine in [
+				&base64::engine::general_purpose::STANDARD,
+				&base64::engine::general_purpose::STANDARD_NO_PAD,
+			] {
+				let encoded = engine.encode(&bytes);
+				let message = json!({
+					"id":"1", "channel_id":"2", "author":{"id":"3","username":"Synthetic"},
+					"attachments":[{"id":"4","filename":"a.png","placeholder":encoded,"placeholder_version":1}],
+					"embeds":[{"type":"image","thumbnail":{"placeholder":encoded,"placeholder_version":1}}]
+				});
+				let message = crate::decode::<crate::MessageDto>(message.to_string().as_bytes())
+					.unwrap()
+					.into_model();
+				let expected = if len <= model::MAX_PLACEHOLDER_BYTES {
+					bytes.as_slice()
+				} else {
+					&[]
+				};
+				assert_eq!(
+					message.attachments[0].media.placeholder, expected,
+					"{len} bytes"
+				);
+				assert_eq!(
+					message.embeds[0].thumbnail.as_ref().unwrap().placeholder,
+					expected
+				);
+			}
+		}
+		assert!(placeholder(Some("AAECAwQ==".into()), Some(1)).is_empty());
+		assert!(placeholder(Some("AAECAwQ=".into()), Some(2)).is_empty());
+	}
 
 	#[test]
 	fn image_only_messages_nullable_dimensions_spoilers_and_patch_semantics() {
