@@ -2131,7 +2131,9 @@ impl MessagingUi {
 				let description = language.text("general-open-at-startup-description");
 				design::switch(ui, &label, Some(&description), &mut self.startup_enabled);
 				design::card_divider(ui);
-				ui.add_enabled_ui(self.startup_enabled, |ui| {
+				// An already-disabled parent has applied the disabled opacity.
+				let nested_enabled = !ui.is_enabled() || self.startup_enabled;
+				ui.add_enabled_ui(nested_enabled, |ui| {
 					let label = language.text("general-start-minimized");
 					let description = language.text("general-start-minimized-description");
 					design::switch(ui, &label, Some(&description), &mut self.startup_minimized);
