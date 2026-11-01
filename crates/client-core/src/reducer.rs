@@ -1021,7 +1021,7 @@ impl State {
 					|| list.missing_identity.len() > list.slots.len()
 					|| list.missing_identity.iter().any(|fields| {
 						fields.user.0 == 0
-							|| (!fields.nick && !fields.roles)
+							|| !fields.needs_metadata()
 							|| !field_users.insert(fields.user)
 							|| !list.slots.iter().flatten().any(
 								|slot| matches!(slot, MemberSlot::Person(member) if member.user.id == fields.user),
@@ -1041,8 +1041,10 @@ impl State {
 					// A fresh subscription can contain partial members. Merge only absent
 					// fields from previously observed identities; explicit null and empty
 					// lists remain authoritative.
-					let mut history =
-						std::collections::BTreeMap::<Id, (Option<&str>, Option<&[Id]>)>::new();
+					let mut history = std::collections::BTreeMap::<
+						Id,
+						(Option<&str>, Option<&[Id]>, Option<&str>),
+					>::new();
 					if !field_users.is_empty() {
 						for message in self.timeline.iter().rev() {
 							if message.channel != list.channel
@@ -1052,6 +1054,9 @@ impl State {
 								continue;
 							}
 							let value = history.entry(message.author.id).or_default();
+							if value.2.is_none() {
+								value.2 = Some(&message.author.name);
+							}
 							if value.0.is_none() {
 								value.0 = message
 									.author_nick
@@ -1074,6 +1079,35 @@ impl State {
 						else {
 							continue;
 						};
+						if fields.global_name == model::GlobalNameUpdate::Unchanged {
+							let cleared = list.guild.is_some_and(|guild| {
+								self.known_global_name(guild, member.user.id)
+									== Some(model::GlobalNameUpdate::Cleared)
+							});
+							let known = if cleared {
+								member.user.username.as_deref().map(str::to_owned)
+							} else {
+								self.member_identity(list.channel, member.user.id)
+									.and_then(|identity| identity.profile.as_ref())
+									.map(|profile| profile.name.clone())
+							}
+							.or_else(|| {
+								list.guild
+									.and_then(|guild| {
+										self.member_labels.verified_member(guild, member.user.id)
+									})
+									.map(|member| member.user.name.clone())
+							})
+							.or_else(|| {
+								history
+									.get(&member.user.id)
+									.and_then(|entry| entry.2)
+									.map(str::to_owned)
+							});
+							if let Some(name) = known {
+								member.user.name = name;
+							}
+						}
 						if fields.nick {
 							let known = self
 								.member_identity(list.channel, member.user.id)
@@ -1121,6 +1155,17 @@ impl State {
 							}
 						}
 					}
+					if let Some(guild) = list.guild {
+						for fields in &mut list.missing_identity {
+							if fields.global_name == model::GlobalNameUpdate::Unchanged
+								&& let Some(previous) = self.known_global_name(guild, fields.user)
+							{
+								fields.global_name = previous;
+							}
+						}
+						list.missing_identity
+							.retain(model::MissingMemberFields::needs_metadata);
+					}
 					if ranges_left {
 						if list.freshness == Freshness::Fresh {
 							let protect = self
@@ -1141,11 +1186,21 @@ impl State {
 									.iter()
 									.find(|fields| fields.user == member.user.id)
 								{
+									let global_name = if fields.global_name
+										== model::GlobalNameUpdate::Unchanged
+									{
+										self.member_identity(list.channel, member.user.id).map_or(
+											model::GlobalNameUpdate::Unchanged,
+											|identity| identity.global_name,
+										)
+									} else {
+										fields.global_name
+									};
 									self.timeline.apply_author_identity(&model::MemberIdentity {
-										global_name: model::GlobalNameUpdate::Unchanged,
+										global_name,
 										guild: list.guild.unwrap_or(Id(0)),
 										user: member.user.id,
-										profile: None,
+										profile: Some(member.user.clone()),
 										avatar: Patch::Absent,
 										nick: if fields.nick {
 											Patch::Absent
@@ -1160,10 +1215,11 @@ impl State {
 										departed: false,
 									});
 								} else {
-									self.timeline.apply_author_membership(
+									self.timeline.apply_author_membership_with_profile(
 										member.user.id,
 										&member.roles,
 										member.nick.as_deref(),
+										&member.user,
 									);
 								}
 							}

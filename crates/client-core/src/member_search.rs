@@ -42,7 +42,7 @@ pub struct View {
 	pub rows: Vec<Member>,
 	/// Recently resolved labels for the same conversation, bounded like one search page.
 	pub retained: Vec<Member>,
-	/// Fields the service omitted from the retained search rows, rather than cleared.
+	/// Omitted fields and explicit global-name clears in the retained rows.
 	pub(crate) missing_identity: Vec<model::MissingMemberFields>,
 	pub finished: bool,
 	pub error: Option<&'static str>,
@@ -54,7 +54,7 @@ pub struct View {
 impl View {
 	pub(crate) fn trim_missing_identity(&mut self) {
 		self.missing_identity.retain(|fields| {
-			(fields.nick || fields.roles)
+			fields.needs_metadata()
 				&& self
 					.rows
 					.iter()
@@ -97,6 +97,11 @@ impl State {
 							.iter()
 							.find(|fields| fields.user == member.user.id);
 						let mut updated = (*updated).clone();
+						if fields.is_some_and(|fields| {
+							fields.global_name == model::GlobalNameUpdate::Unchanged
+						}) {
+							updated.user.name.clone_from(&member.user.name);
+						}
 						if fields.is_some_and(|fields| fields.nick) {
 							updated.nick.clone_from(&member.nick);
 						}
@@ -118,6 +123,13 @@ impl State {
 						.missing_identity
 						.iter()
 						.find(|row| row.user == fields.user);
+					if let Some(name) = missing.map(|row| row.global_name) {
+						if name != model::GlobalNameUpdate::Unchanged {
+							fields.global_name = name;
+						}
+					} else {
+						fields.global_name = model::GlobalNameUpdate::Set;
+					}
 					fields.nick &= missing.is_some_and(|row| row.nick);
 					fields.roles &= missing.is_some_and(|row| row.roles);
 				}
@@ -382,7 +394,7 @@ impl State {
 		&mut self,
 		request: Request,
 		result: Result<Vec<Member>, Failure>,
-		missing: Vec<model::MissingMemberFields>,
+		mut missing: Vec<model::MissingMemberFields>,
 	) {
 		if !request.valid()
 			|| self.selected != Some(request.channel)
@@ -397,7 +409,7 @@ impl State {
 		let invalid_missing = missing.len() > LIMIT
 			|| missing.iter().any(|fields| {
 				fields.user.0 == 0
-					|| (!fields.nick && !fields.roles)
+					|| !fields.needs_metadata()
 					|| !seen.insert(fields.user)
 					|| result
 						.as_ref()
@@ -411,7 +423,14 @@ impl State {
 		};
 		let retry_seconds = match &result {
 			Ok(rows) if rows.is_empty() => 300,
-			Ok(_) if !missing.is_empty() => 300,
+			Ok(_)
+				if missing.iter().any(|fields| {
+					fields.global_name == model::GlobalNameUpdate::Unchanged
+						|| fields.nick || fields.roles
+				}) =>
+			{
+				300
+			}
 			_ => 30,
 		};
 		self.member_search[request.slot].finished = true;
@@ -439,6 +458,33 @@ impl State {
 						Some("Member search exceeded its safety limit");
 					return;
 				}
+				let started = self.member_search[request.slot].identity_revision;
+				for member in &rows {
+					let Some(name) = self.member_labels.global_name_after(
+						request.guild,
+						member.user.id,
+						started,
+					) else {
+						continue;
+					};
+					if name == model::GlobalNameUpdate::Unchanged {
+						continue;
+					}
+					if let Some(fields) = missing
+						.iter_mut()
+						.find(|fields| fields.user == member.user.id)
+					{
+						fields.global_name = name;
+					} else if name == model::GlobalNameUpdate::Cleared {
+						missing.push(model::MissingMemberFields {
+							user: member.user.id,
+							global_name: name,
+							nick: false,
+							roles: false,
+						});
+					}
+				}
+				missing.retain(model::MissingMemberFields::needs_metadata);
 				// The sidebar takes precedence when rendering. Refresh matching stale rows
 				// too, while retaining their presence and honoring newer live updates
 				// already merged by `reconcile` above.
@@ -456,8 +502,20 @@ impl State {
 						let mut roles = member.roles.clone();
 						roles.sort_unstable();
 						roles.dedup();
+						let global_name = self
+							.member_labels
+							.global_name_after(
+								request.guild,
+								member.user.id,
+								self.member_search[request.slot].identity_revision,
+							)
+							.unwrap_or_else(|| {
+								fields.map_or(model::GlobalNameUpdate::Set, |fields| {
+									fields.global_name
+								})
+							});
 						self.apply_member_identity(model::MemberIdentity {
-							global_name: model::GlobalNameUpdate::Set,
+							global_name,
 							guild: request.guild,
 							user: member.user.id,
 							profile: Some(member.user.clone()),
@@ -496,13 +554,19 @@ impl State {
 					let complete: Vec<_> = rows
 						.iter()
 						.filter(|member| {
-							!missing.iter().any(|fields| fields.user == member.user.id)
+							!missing.iter().any(|fields| {
+								fields.user == member.user.id && (fields.nick || fields.roles)
+							})
 						})
 						.cloned()
 						.collect();
 					let partial: Vec<_> = rows
 						.iter()
-						.filter(|member| missing.iter().any(|fields| fields.user == member.user.id))
+						.filter(|member| {
+							missing.iter().any(|fields| {
+								fields.user == member.user.id && (fields.nick || fields.roles)
+							})
+						})
 						.cloned()
 						.collect();
 					self.member_labels.remember(request.guild, &complete);

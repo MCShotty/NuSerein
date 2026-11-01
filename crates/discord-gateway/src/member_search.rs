@@ -411,13 +411,14 @@ impl Search {
 			for member in chunk.members {
 				let fields = model::MissingMemberFields {
 					user: member.user.id,
+					global_name: model::GlobalNameUpdate::from_patch(&member.user.global_name),
 					nick: matches!(member.nick, model::Patch::Absent),
 					roles: matches!(member.roles, model::Patch::Absent),
 				};
 				let Some(member) = member.into_guild_member(request.guild) else {
 					continue;
 				};
-				if fields.nick || fields.roles {
+				if fields.needs_metadata() {
 					missing.push(fields);
 				}
 				rows.push(member);
@@ -477,7 +478,7 @@ pub fn debug_check(request: Request) -> Event {
 		assert!(packet["d"].get("query").is_none());
 	}
 	assert_eq!(packet["d"]["limit"], 100);
-	let mut chunk = serde_json::json!({"guild_id":request.guild.to_string(),"nonce":"wrong","chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"987654321","username":"remote-person"},"nick":"OutsideFirstHundred","roles":[]}]});
+	let mut chunk = serde_json::json!({"guild_id":request.guild.to_string(),"nonce":"wrong","chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"987654321","username":"remote-person","global_name":"remote-person"},"nick":"OutsideFirstHundred","roles":[]}]});
 	assert!(search.chunk(&serde_json::to_vec(&chunk).unwrap()).is_none());
 	chunk["nonce"] = serde_json::json!(request.nonce.to_string());
 	let event = search.chunk(&serde_json::to_vec(&chunk).unwrap()).unwrap();
@@ -512,19 +513,35 @@ mod tests {
 	}
 	#[test]
 	fn member_queries_do_not_turn_omitted_fields_into_removals() {
-		for (member, missing_nick, missing_roles) in [
+		use model::GlobalNameUpdate::{Cleared, Set, Unchanged};
+		for (member, global_name, missing_nick, missing_roles) in [
 			(
 				serde_json::json!({"user":{"id":"7","username":"account"},"roles":[]}),
+				Unchanged,
 				true,
 				false,
 			),
 			(
 				serde_json::json!({"user":{"id":"7","username":"account"},"nick":"Nickname"}),
+				Unchanged,
 				false,
 				true,
 			),
 			(
 				serde_json::json!({"user":{"id":"7","username":"account"},"nick":null,"roles":[]}),
+				Unchanged,
+				false,
+				false,
+			),
+			(
+				serde_json::json!({"user":{"id":"7","username":"account","global_name":null},"nick":null,"roles":[]}),
+				Cleared,
+				false,
+				false,
+			),
+			(
+				serde_json::json!({"user":{"id":"7","username":"account","global_name":"Display"},"nick":null,"roles":[]}),
+				Set,
 				false,
 				false,
 			),
@@ -536,7 +553,7 @@ mod tests {
 			match search.chunk(&serde_json::to_vec(&wire).unwrap()).unwrap() {
 				Event::MemberSearch {
 					result: Ok(rows), ..
-				} if !missing_nick && !missing_roles => {
+				} if global_name == Set && !missing_nick && !missing_roles => {
 					assert_eq!(rows.len(), 1);
 					assert!(rows[0].nick.is_none() && rows[0].roles.is_empty());
 				}
@@ -545,6 +562,7 @@ mod tests {
 					assert_eq!(
 						missing,
 						vec![model::MissingMemberFields {
+							global_name,
 							user: Id(7),
 							nick: missing_nick,
 							roles: missing_roles
@@ -626,6 +644,23 @@ mod tests {
 				))),
 			});
 		}
+		let mut profile = state.user.clone().unwrap();
+		profile.id = Id(7);
+		profile.name = "Known display".into();
+		profile.username = Some("one".into());
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name: model::GlobalNameUpdate::Set,
+				guild: Id(10),
+				user: Id(7),
+				profile: Some(profile),
+				avatar: Patch::Absent,
+				nick: Patch::Absent,
+				roles: Patch::Absent,
+				departed: false,
+			})),
+		});
 		let Some(Command::MemberSearch(request)) =
 			state.request_author_members(&[Id(7), Id(8), Id(9)])
 		else {
@@ -655,11 +690,98 @@ mod tests {
 		});
 		let rows = &state.member_search[1].rows;
 		assert_eq!(rows.len(), 3);
+		assert_eq!(rows[0].user.name, "Known display");
 		assert_eq!(rows[0].nick.as_deref(), Some("Live"));
 		assert!(rows[0].roles.is_empty());
 		assert_eq!(rows[1].nick.as_deref(), Some("Current"));
 		assert_eq!(rows[1].roles, vec![Id(11)]);
 		assert!(rows[2].nick.is_none() && rows[2].roles.is_empty());
+
+		let Some(Command::MemberSearch(next)) = state.search_members(Id(101), "one", 0) else {
+			panic!("follow-up query");
+		};
+		let mut follow_up = Search::default();
+		follow_up.update(&[Some(next.clone()), None]);
+		follow_up.tick(&|_| Ok(())).unwrap().unwrap();
+		let cleared = serde_json::json!({"guild_id":"10","nonce":next.nonce.to_string(),"chunk_index":0,"chunk_count":1,"members":[
+			{"user":{"id":"7","username":"one","global_name":null},"nick":null,"roles":[]}
+		]});
+		state.apply(Envelope {
+			generation: state.generation,
+			event: follow_up
+				.chunk(&serde_json::to_vec(&cleared).unwrap())
+				.unwrap(),
+		});
+		let mut renamed = state.user.clone().unwrap();
+		renamed.id = Id(7);
+		renamed.name = "renamed".into();
+		renamed.username = Some("renamed".into());
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name: model::GlobalNameUpdate::Unchanged,
+				guild: Id(10),
+				user: Id(7),
+				profile: Some(renamed),
+				avatar: Patch::Absent,
+				nick: Patch::Absent,
+				roles: Patch::Absent,
+				departed: false,
+			})),
+		});
+		assert_eq!(state.member_search[0].rows[0].user.name, "renamed");
+
+		let Some(Command::MemberSearch(stale)) = state.search_members(Id(101), "renamed", 0) else {
+			panic!("stale query");
+		};
+		let mut newest = state.user.clone().unwrap();
+		newest.id = Id(7);
+		newest.name = "Newest display".into();
+		newest.username = Some("renamed".into());
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name: model::GlobalNameUpdate::Set,
+				guild: Id(10),
+				user: Id(7),
+				profile: Some(newest),
+				avatar: Patch::Absent,
+				nick: Patch::Absent,
+				roles: Patch::Absent,
+				departed: false,
+			})),
+		});
+		let mut stale_search = Search::default();
+		stale_search.update(&[Some(stale.clone()), None]);
+		stale_search.tick(&|_| Ok(())).unwrap().unwrap();
+		let stale_wire = serde_json::json!({"guild_id":"10","nonce":stale.nonce.to_string(),"chunk_index":0,"chunk_count":1,"members":[
+			{"user":{"id":"7","username":"renamed","global_name":null},"nick":null,"roles":[]}
+		]});
+		state.apply(Envelope {
+			generation: state.generation,
+			event: stale_search
+				.chunk(&serde_json::to_vec(&stale_wire).unwrap())
+				.unwrap(),
+		});
+		assert_eq!(state.member_search[0].rows[0].user.name, "Newest display");
+		let mut renamed_again = state.user.clone().unwrap();
+		renamed_again.id = Id(7);
+		renamed_again.name = "account_two".into();
+		renamed_again.username = Some("account_two".into());
+		state.apply(Envelope {
+			generation: state.generation,
+			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
+				global_name: model::GlobalNameUpdate::Unchanged,
+				guild: Id(10),
+				user: Id(7),
+				profile: Some(renamed_again),
+				avatar: Patch::Absent,
+				nick: Patch::Absent,
+				roles: Patch::Absent,
+				departed: false,
+			})),
+		});
+		assert_eq!(state.member_search[0].rows[0].user.name, "Newest display");
 	}
 	#[test]
 	fn cached_member_watches_subscribe_without_a_query_and_cancel_old_scope() {
@@ -778,7 +900,7 @@ mod tests {
 		search.update(&[Some(lookup), None]);
 		assert!(search.pending_subscription().is_none());
 		search.tick(&|_| Ok(())).unwrap().unwrap();
-		let event = search.chunk(br#"{"guild_id":"1","nonce":"1","chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"7","username":"account"},"nick":"Nickname","roles":[]}]}"#);
+		let event = search.chunk(br#"{"guild_id":"1","nonce":"1","chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"7","username":"account","global_name":"account"},"nick":"Nickname","roles":[]}]}"#);
 		assert!(matches!(
 			event,
 			Some(Event::MemberSearch { result: Ok(_), .. })

@@ -57,6 +57,15 @@ pub enum GlobalNameUpdate {
 	Cleared,
 	Set,
 }
+impl GlobalNameUpdate {
+	pub fn from_patch(value: &Patch<String>) -> Self {
+		match value {
+			Patch::Absent => Self::Unchanged,
+			Patch::Null => Self::Cleared,
+			Patch::Value(_) => Self::Set,
+		}
+	}
+}
 
 /// Partial guild identity for display only. Never grants permissions. Missing fields leave
 /// previous observations intact; a null nickname or an empty role list explicitly clears it.
@@ -255,8 +264,15 @@ impl MemberSlot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MissingMemberFields {
 	pub user: Id,
+	/// Null stays distinct from an omitted global name across snapshot consumers.
+	pub global_name: GlobalNameUpdate,
 	pub nick: bool,
 	pub roles: bool,
+}
+impl MissingMemberFields {
+	pub fn needs_metadata(&self) -> bool {
+		self.global_name != GlobalNameUpdate::Set || self.nick || self.roles
+	}
 }
 
 #[derive(Clone)]
@@ -268,7 +284,7 @@ pub struct MemberList {
 	pub start: usize,
 	/// Contiguous window. None is a hole. At most 200 entries.
 	pub slots: Vec<Option<MemberSlot>>,
-	/// Presence information for partial rows, bounded by the current slot count.
+	/// Omitted fields and explicit global-name clears, bounded by the current slot count.
 	pub missing_identity: Vec<MissingMemberFields>,
 	pub total: u64,
 	/// Guild channel lazy list. Scrollbar length is `total`. DMs and threads are false and scroll `slots.len()`.

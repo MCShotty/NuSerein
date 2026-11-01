@@ -79,9 +79,30 @@ impl Timeline {
 		self.messages.get(&id).and_then(Option::as_ref)
 	}
 	pub fn apply_author_membership(&mut self, user: Id, roles: &[Id], nick: Option<&str>) -> bool {
+		self.apply_author_membership_inner(user, roles, nick, None)
+	}
+	pub fn apply_author_membership_with_profile(
+		&mut self,
+		user: Id,
+		roles: &[Id],
+		nick: Option<&str>,
+		profile: &model::User,
+	) -> bool {
+		self.apply_author_membership_inner(user, roles, nick, Some(profile))
+	}
+	fn apply_author_membership_inner(
+		&mut self,
+		user: Id,
+		roles: &[Id],
+		nick: Option<&str>,
+		profile: Option<&model::User>,
+	) -> bool {
 		if user.0 == 0 {
 			return false;
 		}
+		let profile = profile.filter(|profile| {
+			profile.id == user && !profile.webhook && profile.heap_bytes() <= 16 * 1024
+		});
 		let mut any = false;
 		for message in self.messages.values_mut().flatten() {
 			if message.author.id != user || message.author.webhook {
@@ -93,10 +114,19 @@ impl Timeline {
 				(message.author_nick.as_deref() != Some(n))
 					.then(|| n.chars().take(128).collect::<String>())
 			});
-			if next_roles.is_none() && next_nick.is_none() {
+			let next_name = profile.filter(|profile| profile.name != message.author.name);
+			let next_username =
+				profile.filter(|profile| profile.username != message.author.username);
+			if next_roles.is_none()
+				&& next_nick.is_none()
+				&& next_name.is_none()
+				&& next_username.is_none()
+			{
 				continue;
 			}
 			let updated = MemberChanges {
+				name: next_name.is_some(),
+				username: next_username.is_some(),
 				roles: next_roles.is_some(),
 				nick: next_nick.is_some(),
 				..MemberChanges::default()
@@ -108,12 +138,20 @@ impl Timeline {
 			if let Some(nick) = next_nick {
 				message.author_nick = Some(nick);
 			}
+			if let Some(profile) = next_name {
+				message.author.name.clone_from(&profile.name);
+			}
+			if let Some(profile) = next_username {
+				message.author.username.clone_from(&profile.username);
+			}
 			self.bytes = self
 				.bytes
 				.saturating_sub(before)
 				.saturating_add(message.bytes());
 			if self.loading {
 				let changes = self.member_changes.entry(message.id).or_default();
+				changes.name |= updated.name;
+				changes.username |= updated.username;
 				changes.roles |= updated.roles;
 				changes.nick |= updated.nick;
 			}
@@ -1262,6 +1300,31 @@ mod tests {
 			assert_eq!(actual.author_nick.as_deref(), Some("New Nick"));
 			assert_eq!(actual.author_roles, vec![Id(20)]);
 			assert_eq!(actual.content, "Updated message body");
+		}
+	}
+
+	#[test]
+	fn member_snapshot_profile_survives_an_older_in_flight_page() {
+		for older in [false, true] {
+			let mut timeline = Timeline::default();
+			let mut original = message(1);
+			original.author.name = "Old Display".into();
+			original.author.username = Some("old_account".into());
+			original.author.avatar = Some("0123456789abcdef0123456789abcdef".into());
+			let mut profile = original.author.clone();
+			profile.name = "New Display".into();
+			profile.username = Some("new_account".into());
+			profile.avatar = None;
+			timeline.insert(original.clone(), false, false).unwrap();
+			timeline.begin_page(older);
+			assert!(timeline.apply_author_membership_with_profile(Id(2), &[], None, &profile));
+			original.content = "New message body".into();
+			timeline.finish_page(vec![original], older).unwrap();
+			let actual = timeline.get(Id(1)).unwrap();
+			assert_eq!(actual.author.name, "New Display");
+			assert_eq!(actual.author.username.as_deref(), Some("new_account"));
+			assert!(actual.author.avatar.is_some());
+			assert_eq!(actual.content, "New message body");
 		}
 	}
 

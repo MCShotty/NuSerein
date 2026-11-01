@@ -1797,8 +1797,9 @@ impl Desktop {
 								};
 								nick || update.departed
 									|| update.profile.as_ref().is_some_and(|user| {
-										user.name != member.user.name
-											|| user.username != member.user.username
+										(update.global_name != model::GlobalNameUpdate::Unchanged
+											&& user.name != member.user.name) || user.username
+											!= member.user.username
 									})
 							}),
 						Event::Members(list) => list.slots.iter().any(|slot| match slot {
@@ -1814,8 +1815,14 @@ impl Desktop {
 										.iter()
 										.find(|fields| fields.user == current.user.id)
 										.is_none_or(|fields| !fields.nick)
-										&& old.nick != current.nick) || old.user.name
-										!= current.user.name || old.user.username
+										&& old.nick != current.nick) || (list
+										.missing_identity
+										.iter()
+										.find(|fields| fields.user == current.user.id)
+										.is_none_or(|fields| {
+											fields.global_name != model::GlobalNameUpdate::Unchanged
+										}) && old.user.name
+										!= current.user.name) || old.user.username
 										!= current.user.username
 								}),
 							_ => false,
@@ -1849,8 +1856,14 @@ impl Desktop {
 											.iter()
 											.find(|fields| fields.user == current.user.id)
 											.is_none_or(|fields| !fields.nick)
-											&& old.nick != current.nick) || old.user.name
-											!= current.user.name || old.user.username
+											&& old.nick != current.nick) || (missing
+											.iter()
+											.find(|fields| fields.user == current.user.id)
+											.is_none_or(|fields| {
+												fields.global_name
+													!= model::GlobalNameUpdate::Unchanged
+											}) && old.user.name
+											!= current.user.name) || old.user.username
 											!= current.user.username
 									})
 							})
@@ -2672,6 +2685,7 @@ mod tests {
 			request,
 			rows: vec![row.clone()],
 			missing: vec![model::MissingMemberFields {
+				global_name: model::GlobalNameUpdate::Set,
 				user: Id(7),
 				nick: true,
 				roles: false,

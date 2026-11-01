@@ -701,10 +701,11 @@ impl ActiveMembers {
 			}
 			let fields = model::MissingMemberFields {
 				user,
+				global_name: model::GlobalNameUpdate::from_patch(&member.user.global_name),
 				nick: matches!(member.nick, model::Patch::Absent),
 				roles: matches!(member.roles, model::Patch::Absent),
 			};
-			if fields.nick || fields.roles {
+			if fields.needs_metadata() {
 				self.missing_identity.insert(user, fields);
 			} else {
 				self.missing_identity.remove(&user);
@@ -846,9 +847,13 @@ impl ActiveMembers {
 			self.missing_identity.remove(&update.user);
 			self.global_names.remove(&update.user);
 		} else if let Some(fields) = self.missing_identity.get_mut(&update.user) {
+			if update.profile.is_some() && update.global_name != model::GlobalNameUpdate::Unchanged
+			{
+				fields.global_name = update.global_name;
+			}
 			fields.nick &= matches!(update.nick, model::Patch::Absent);
 			fields.roles &= matches!(update.roles, model::Patch::Absent);
-			if !fields.nick && !fields.roles {
+			if !fields.needs_metadata() {
 				self.missing_identity.remove(&update.user);
 			}
 		}
@@ -4546,16 +4551,14 @@ mod member_tests {
 		assert_eq!(person(&list, 1).nick.as_deref(), Some("First nickname"));
 		assert_eq!(person(&list, 1).roles, vec![Id(11)]);
 		let fields = list.snapshot(Freshness::Fresh).missing_identity;
-		assert!(
-			fields
-				.iter()
-				.any(|fields| fields.user == Id(3) && fields.nick && fields.roles)
-		);
-		assert!(
-			fields
-				.iter()
-				.any(|fields| fields.user == Id(4) && fields.nick && fields.roles)
-		);
+		assert!(fields.iter().any(|fields| fields.user == Id(3)
+			&& fields.global_name == model::GlobalNameUpdate::Unchanged
+			&& fields.nick
+			&& fields.roles));
+		assert!(fields.iter().any(|fields| fields.user == Id(4)
+			&& fields.global_name == model::GlobalNameUpdate::Unchanged
+			&& fields.nick
+			&& fields.roles));
 		send(
 			&mut list,
 			json!([
@@ -4567,11 +4570,14 @@ mod member_tests {
 		assert_eq!(person(&list, 0).user.name, "two");
 		assert!(person(&list, 0).roles.is_empty());
 		assert!(
-			!list
-				.snapshot(Freshness::Fresh)
+			list.snapshot(Freshness::Fresh)
 				.missing_identity
 				.iter()
-				.any(|fields| fields.user == Id(4))
+				.any(|fields| {
+					fields.user == Id(4)
+						&& fields.global_name == model::GlobalNameUpdate::Cleared
+						&& !fields.nick && !fields.roles
+				})
 		);
 		assert_eq!(person(&list, 1).nick.as_deref(), Some("First nickname"));
 		assert_eq!(person(&list, 1).roles, vec![Id(11)]);
