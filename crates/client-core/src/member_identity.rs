@@ -12,6 +12,38 @@ const MAX_BYTES: usize = 128 * 1024;
 const MEMBER_LIMIT: usize = 512;
 const MEMBER_BYTES: usize = 384 * 1024;
 
+enum ObservedUser<'a> {
+	Profile(&'a User),
+	Nickname(Id, &'a str),
+}
+
+impl<'a> ObservedUser<'a> {
+	fn id(&self) -> Id {
+		match self {
+			Self::Profile(user) => user.id,
+			Self::Nickname(id, _) => *id,
+		}
+	}
+
+	fn into_user(self) -> std::borrow::Cow<'a, User> {
+		match self {
+			Self::Profile(user) => std::borrow::Cow::Borrowed(user),
+			Self::Nickname(id, nick) => std::borrow::Cow::Owned(User {
+				member_avatar: None,
+				id,
+				name: nick.to_owned(),
+				username: None,
+				avatar: None,
+				discriminator: 0,
+				primary_guild: None,
+				cosmetics: None,
+				webhook: false,
+				kind: Default::default(),
+			}),
+		}
+	}
+}
+
 #[derive(Default)]
 pub struct Labels {
 	entries: VecDeque<(u64, MemberIdentity)>,
@@ -416,6 +448,21 @@ impl State {
 		{
 			return None;
 		}
+		// Check departure identities once, rather than searching the full overlay for
+		// every watched author. Keep the latest-observation rule even for duplicate entries.
+		let departed: Vec<_> = self
+			.member_labels
+			.entries
+			.iter()
+			.filter(|(_, entry)| entry.guild == guild && entry.departed)
+			.filter(|(_, entry)| {
+				self.member_labels
+					.get(guild, entry.user)
+					.is_some_and(|current| current.departed)
+			})
+			.map(|(_, entry)| entry.user)
+			.collect();
+		// Maintain sorted IDs while preserving the first 128 distinct observations.
 		let mut users = Vec::with_capacity(128);
 		for user in self
 			.member_labels
@@ -430,22 +477,20 @@ impl State {
 					.flat_map(|v| v.rows.iter().chain(&v.retained))
 					.map(|m| m.user.id),
 			)
-			.chain(self.observed_member_users(channel).map(|u| u.id))
-		{
+			.chain(
+				self.observed_member_candidates(Some(guild))
+					.map(|user| user.id()),
+			) {
 			if user.0 != 0
-				&& !users.contains(&user)
-				&& !self
-					.member_labels
-					.get(guild, user)
-					.is_some_and(|entry| entry.departed)
+				&& !departed.contains(&user)
+				&& let Err(index) = users.binary_search(&user)
 			{
-				users.push(user);
+				users.insert(index, user);
 			}
 			if users.len() == 128 {
 				break;
 			}
 		}
-		users.sort_unstable();
 		Some((guild, channel, users))
 	}
 	pub fn member_watch_revision(&self) -> u64 {
@@ -529,14 +574,13 @@ impl State {
 	/// row. This does not confer membership, permissions or profile freshness.
 	pub fn has_cached_member_display(&self, guild: Id, user: Id) -> bool {
 		let valid = |profile: &User, nick: Option<&str>| {
-			MemberDisplay {
+			MemberDisplay::valid_fields(
 				guild,
 				user,
-				name: profile.name.clone(),
-				username: profile.username.clone(),
-				nick: nick.map(str::to_owned),
-			}
-			.valid()
+				&profile.name,
+				profile.username.as_deref(),
+				nick,
+			)
 		};
 		if let Some(update) = self.member_labels.get(guild, user) {
 			if update.departed {
@@ -799,6 +843,14 @@ impl State {
 			.channel(channel)
 			.filter(|_| self.can_view(channel))
 			.and_then(|c| c.guild);
+		self.observed_member_candidates(guild)
+			.map(ObservedUser::into_user)
+	}
+
+	fn observed_member_candidates(
+		&self,
+		guild: Option<Id>,
+	) -> impl Iterator<Item = ObservedUser<'_>> {
 		self.member_labels
 			.entries
 			.iter()
@@ -808,7 +860,7 @@ impl State {
 					return None;
 				}
 				if let Some(user) = &update.profile {
-					return Some(std::borrow::Cow::Borrowed(user));
+					return Some(ObservedUser::Profile(user));
 				}
 				let Patch::Value(nick) = &update.nick else {
 					return None;
@@ -816,18 +868,7 @@ impl State {
 				if nick.is_empty() {
 					return None;
 				}
-				Some(std::borrow::Cow::Owned(User {
-					member_avatar: None,
-					id: update.user,
-					name: nick.clone(),
-					username: None,
-					avatar: None,
-					discriminator: 0,
-					primary_guild: None,
-					cosmetics: None,
-					webhook: false,
-					kind: Default::default(),
-				}))
+				Some(ObservedUser::Nickname(update.user, nick))
 			})
 			.chain(
 				self.member_labels
@@ -840,7 +881,7 @@ impl State {
 								.member_labels
 								.get(*g, member.user.id)
 								.is_some_and(|e| e.departed))
-						.then_some(std::borrow::Cow::Borrowed(&member.user))
+						.then_some(ObservedUser::Profile(&member.user))
 					}),
 			)
 	}
@@ -1285,6 +1326,91 @@ mod cache_search_tests {
 			username: Some("synthetic_account".into()),
 			nick: Some(nick.into()),
 		}
+	}
+
+	#[test]
+	fn observed_users_keep_nickname_and_profile_order_for_display_and_watch() {
+		let mut state = state();
+		let mut profile = crate::tests::message(1).author;
+		profile.id = Id(12);
+		profile.name = "Profile name".into();
+		for (user, profile, nick, departed) in [
+			(Id(11), None, Patch::Value("Nickname only".into()), false),
+			(Id(12), Some(profile), Patch::Absent, false),
+			(Id(13), None, Patch::Null, false),
+			(Id(14), None, Patch::Value(String::new()), false),
+			(Id(15), None, Patch::Null, true),
+		] {
+			state.apply(crate::Envelope {
+				generation: state.generation,
+				event: crate::Event::MemberIdentity(Box::new(MemberIdentity {
+					guild: Id(2),
+					user,
+					profile,
+					avatar: Patch::Absent,
+					nick,
+					roles: Patch::Absent,
+					departed,
+				})),
+			});
+		}
+		let displayed: Vec<_> = state
+			.observed_member_users(Id(1))
+			.map(|user| (user.id, user.name.clone()))
+			.collect();
+		assert_eq!(
+			displayed,
+			vec![
+				(Id(12), "Profile name".into()),
+				(Id(11), "Nickname only".into()),
+			]
+		);
+		assert_eq!(
+			state.watched_member_users().unwrap().2,
+			vec![Id(11), Id(12)]
+		);
+		assert_eq!(state.observed_member_users(Id(99)).count(), 0);
+		state.gateway_connected = false;
+		assert!(state.watched_member_users().is_none());
+	}
+
+	#[test]
+	fn cached_display_requires_a_complete_current_identity() {
+		let mut state = state();
+		state.hydrate_member_displays(
+			Id(2),
+			state.member_display_revision(),
+			vec![row(9000, "Old")],
+		);
+		assert!(state.has_cached_member_display(Id(2), Id(9000)));
+		let mut user = crate::tests::message(1).author;
+		user.id = Id(9000);
+		let update = |profile, nick, departed| {
+			crate::Event::MemberIdentity(Box::new(MemberIdentity {
+				guild: Id(2),
+				user: Id(9000),
+				profile,
+				avatar: Patch::Absent,
+				nick,
+				roles: Patch::Absent,
+				departed,
+			}))
+		};
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: update(None, Patch::Null, false),
+		});
+		assert!(!state.has_cached_member_display(Id(2), Id(9000)));
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: update(Some(user), Patch::Value("New".into()), false),
+		});
+		assert!(state.has_cached_member_display(Id(2), Id(9000)));
+		state.apply(crate::Envelope {
+			generation: state.generation,
+			event: update(None, Patch::Null, true),
+		});
+		assert!(!state.has_cached_member_display(Id(2), Id(9000)));
 	}
 
 	#[test]

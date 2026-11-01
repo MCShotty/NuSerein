@@ -3195,8 +3195,71 @@ fn viewport_member_watch_prioritizes_old_visible_authors_without_repeated_change
 	assert_eq!(users.len(), 128);
 	assert!(users.windows(2).all(|ids| ids[0] < ids[1]));
 	assert!(users.contains(&Id(90000)) && users.contains(&Id(90001)));
+	let membership = |departed| {
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(1199),
+			profile: None,
+			avatar: Patch::Absent,
+			nick: if departed {
+				Patch::Null
+			} else {
+				Patch::Value("Returned".into())
+			},
+			roles: Patch::Absent,
+			departed,
+		}))
+	};
+	assert!(users.contains(&Id(1199)));
+	apply(&mut state, membership(true));
+	let (_, _, without_departed) = state.watched_member_users().unwrap();
+	assert_eq!(without_departed.len(), 128);
+	assert!(!without_departed.contains(&Id(1199)));
+	assert!(without_departed.contains(&Id(90000)));
+	apply(&mut state, membership(false));
+	let (_, _, after_return) = state.watched_member_users().unwrap();
+	assert!(after_return.contains(&Id(1199)));
 	state.request_author_members(&[Id(90002)]);
 	assert_ne!(state.member_watch_revision(), revision);
+}
+
+#[test]
+fn member_watch_keeps_the_first_distinct_users_when_messages_repeat() {
+	let mut state = state();
+	state.timeline.clear();
+	for index in 0..400 {
+		let mut chat = message(10_000 + index, Id(20));
+		chat.author.id = Id(1_000 + index % 200);
+		apply(&mut state, Event::Message(chat));
+	}
+	state.request_author_members(&[Id(90_000), Id(0), Id(90_001), Id(90_000)]);
+	let mut expected: Vec<_> = (1_074..1_200).map(Id).collect();
+	expected.extend([Id(90_000), Id(90_001)]);
+	let (_, _, users) = state.watched_member_users().unwrap();
+	assert_eq!(users, expected);
+	let departed = |departed| {
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(1_199),
+			profile: None,
+			avatar: Patch::Absent,
+			nick: if departed {
+				Patch::Null
+			} else {
+				Patch::Value("Returned".into())
+			},
+			roles: Patch::Absent,
+			departed,
+		}))
+	};
+	apply(&mut state, departed(true));
+	expected.retain(|id| *id != Id(1_199));
+	expected.insert(0, Id(1_073));
+	assert_eq!(state.watched_member_users().unwrap().2, expected);
+	apply(&mut state, departed(false));
+	expected.remove(0);
+	expected.insert(125, Id(1_199));
+	assert_eq!(state.watched_member_users().unwrap().2, expected);
 }
 
 fn member_reply_after_disk_hint(role_update: bool) {
