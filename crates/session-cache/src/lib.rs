@@ -140,7 +140,9 @@ impl Timeline {
 				.bytes
 				.saturating_sub(before)
 				.saturating_add(message.bytes());
-			self.changed.insert(message.id);
+			if self.loading {
+				self.changed.insert(message.id);
+			}
 		}
 		while self.row_bytes() > MAX_BYTES {
 			let old = if self.retain_older {
@@ -1120,6 +1122,40 @@ mod tests {
 		timeline.insert(message(100), false, false).unwrap();
 		assert_eq!(timeline.row_count(), 1);
 	}
+	#[test]
+	fn identity_updates_keep_reconciliation_state_only_while_loading() {
+		let mut timeline = Timeline::default();
+		let mut update = model::MemberIdentity {
+			guild: Id(10),
+			user: Id(2),
+			profile: None,
+			avatar: Patch::Absent,
+			nick: Patch::Value("Synthetic Nick".into()),
+			roles: Patch::Absent,
+			departed: false,
+		};
+		for id in 1..=MAX_MESSAGES as u64 * 3 {
+			timeline.insert(message(id), true, false).unwrap();
+			timeline.apply_author_identity(&update);
+		}
+		assert_eq!(timeline.row_count(), MAX_MESSAGES);
+		assert!(timeline.changed.is_empty());
+
+		let id = Id(MAX_MESSAGES as u64 * 3);
+		timeline.begin_page(false);
+		update.nick = Patch::Value("New Nick".into());
+		timeline.apply_author_identity(&update);
+		assert!(timeline.changed.contains(&id));
+		let mut stale = message(id.0);
+		stale.author_nick = Some("Old Nick".into());
+		timeline.finish_page(vec![stale], false).unwrap();
+		assert_eq!(
+			timeline.get(id).unwrap().author_nick.as_deref(),
+			Some("New Nick")
+		);
+		assert!(timeline.changed.is_empty());
+	}
+
 	#[test]
 	fn retained_estimate_charges_rows_mutation_guards_and_pending_patch_capacity() {
 		let mut timeline = Timeline::default();
