@@ -1,7 +1,7 @@
 # NuSerein
 
 <p align="center">
-  <img src="assets/brand/serein-1024.png" alt="NuSerein Signal N logo" width="96" />
+  <img src="packaging/linux/hicolor/256x256/apps/serein.png" alt="NuSerein Signal N logo" width="96" />
 </p>
 
 <p align="center">
