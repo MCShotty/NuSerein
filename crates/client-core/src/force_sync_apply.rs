@@ -156,13 +156,19 @@ impl State {
 				}
 				if let Ok(member) = value.self_member {
 					let unknown = [member.user.id];
-					self.apply_force_sync_members_with_unknown_nicks(
+					let global_names = [(member.user.id, value.self_member_global_name)];
+					self.apply_force_sync_members_with_presence(
 						guild,
 						&[member],
 						if value.self_member_nick_known {
 							&[]
 						} else {
 							&unknown
+						},
+						if value.self_member_global_name == model::GlobalNameUpdate::Set {
+							&[]
+						} else {
+							&global_names
 						},
 					);
 				}
@@ -334,6 +340,7 @@ impl State {
 				items,
 				missing,
 				nick_unknown,
+				global_names,
 			} => {
 				let returned: std::collections::BTreeSet<_> =
 					items.iter().map(|member| member.user.id).collect();
@@ -353,10 +360,16 @@ impl State {
 					}) || !missing.windows(2).all(|ids| ids[0] < ids[1])
 					|| !nick_unknown.windows(2).all(|ids| ids[0] < ids[1])
 					|| nick_unknown.iter().any(|id| !returned.contains(id))
+					|| !crate::force_sync_read::valid_member_name_updates(&global_names, &items)
 				{
 					return false;
 				}
-				self.apply_force_sync_members_with_unknown_nicks(guild, &items, &nick_unknown);
+				self.apply_force_sync_members_with_presence(
+					guild,
+					&items,
+					&nick_unknown,
+					&global_names,
+				);
 				for user in missing {
 					self.retire_force_sync_member(guild, user);
 				}
@@ -417,14 +430,15 @@ impl State {
 	}
 	/// Applies only live member observations. Authorization remains with the account permission mirror.
 	pub fn apply_force_sync_members(&mut self, guild: Id, members: &[Member]) {
-		self.apply_force_sync_members_with_unknown_nicks(guild, members, &[]);
+		self.apply_force_sync_members_with_presence(guild, members, &[], &[]);
 	}
-	/// Applies current roles while leaving omitted nickname fields unchanged.
-	pub fn apply_force_sync_members_with_unknown_nicks(
+	/// Applies current roles while leaving omitted display fields unchanged.
+	pub fn apply_force_sync_members_with_presence(
 		&mut self,
 		guild: Id,
 		members: &[Member],
 		nick_unknown: &[Id],
+		global_names: &[(Id, model::GlobalNameUpdate)],
 	) {
 		if self.auth != AuthState::Authenticated
 			|| !self.gateway_connected
@@ -439,6 +453,7 @@ impl State {
 			|| nick_unknown
 				.iter()
 				.any(|id| !members.iter().any(|member| member.user.id == *id))
+			|| !crate::force_sync_read::valid_member_name_updates(global_names, members)
 			|| members.iter().map(Member::bytes).sum::<usize>() > 4 * 1024 * 1024
 		{
 			return;
@@ -448,7 +463,10 @@ impl State {
 			roles.sort_unstable();
 			roles.dedup();
 			self.apply_force_sync_identity(MemberIdentity {
-				global_name: model::GlobalNameUpdate::Set,
+				global_name: crate::force_sync_read::member_name_update(
+					global_names,
+					member.user.id,
+				),
 				avatar: model::Patch::Absent,
 				guild,
 				user: member.user.id,
@@ -462,15 +480,41 @@ impl State {
 				departed: false,
 			});
 		}
-		if nick_unknown.is_empty() {
+		if nick_unknown.is_empty()
+			&& !global_names
+				.iter()
+				.any(|(_, name)| *name == model::GlobalNameUpdate::Unchanged)
+		{
 			self.member_labels.remember(guild, members);
 		} else {
-			let complete: Vec<_> = members
-				.iter()
-				.filter(|member| nick_unknown.binary_search(&member.user.id).is_err())
-				.cloned()
-				.collect();
+			let mut complete = Vec::new();
+			let mut partial = Vec::new();
+			for member in members {
+				let missing_nick = nick_unknown.binary_search(&member.user.id).is_ok();
+				let missing_name =
+					crate::force_sync_read::member_name_update(global_names, member.user.id)
+						== model::GlobalNameUpdate::Unchanged;
+				if !missing_nick && !missing_name {
+					complete.push(member.clone());
+					continue;
+				}
+				let mut display = member.clone();
+				if let Some(previous) = self.member_labels.member(guild, member.user.id) {
+					if missing_name {
+						display.user.name.clone_from(&previous.user.name);
+					}
+					if missing_nick {
+						display.nick.clone_from(&previous.nick);
+					}
+				}
+				if let Some(update) = self.member_labels.get(guild, member.user.id) {
+					update.apply(&mut display);
+				}
+				partial.push(display);
+			}
 			self.member_labels.remember(guild, &complete);
+			self.member_labels
+				.remember_with_source(guild, &partial, false);
 		}
 	}
 }
@@ -783,6 +827,7 @@ mod tests {
 				roles,
 				self_member: Err(crate::auth::Failure::Forbidden),
 				self_member_nick_known: false,
+				self_member_global_name: model::GlobalNameUpdate::Unchanged,
 				banner: Patch::Value("0123456789abcdef0123456789abcdef".into()),
 				member_count: None
 			}
@@ -870,28 +915,42 @@ mod tests {
 			},
 			self_member: Err(failure),
 			self_member_nick_known: false,
+			self_member_global_name: model::GlobalNameUpdate::Unchanged,
 			banner: Patch::Absent,
 			member_count: None,
 		}))
 	}
 	#[test]
-	fn own_member_refresh_with_omitted_nickname_keeps_current_name() {
+	fn own_member_refresh_with_omitted_display_fields_keeps_current_names() {
 		let mut state = fixture(0);
-		let original = cached_person(2, "Own nickname");
+		let mut original = cached_person(2, "Own nickname");
+		original.user.name = "Own display".into();
 		state.apply_force_sync_members(Id(10), std::slice::from_ref(&original));
 		let mut response = guild_with_incomplete_own_member(crate::auth::Failure::Network);
 		let ReadResult::Guild(value) = &mut response else {
 			panic!("guild response")
 		};
+		let mut fallback = original;
+		fallback.user.name = "synthetic".into();
 		value.self_member = Ok(Member {
 			nick: None,
-			..original
+			..fallback
 		});
 		value.self_member_nick_known = false;
 		assert!(state.apply_force_sync_result(response));
 		assert_eq!(
 			state.member_nickname(Id(20), Id(2)),
 			Some(Some("Own nickname"))
+		);
+		assert_eq!(
+			state
+				.member_identity(Id(20), Id(2))
+				.unwrap()
+				.profile
+				.as_ref()
+				.unwrap()
+				.name,
+			"Own display"
 		);
 	}
 	#[test]
@@ -1032,7 +1091,8 @@ mod tests {
 			guild: Id(10),
 			items: vec![],
 			missing: vec![Id(7)],
-			nick_unknown: vec![]
+			nick_unknown: vec![],
+			global_names: vec![],
 		}));
 		assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
 		let identity = state.member_identity(Id(20), Id(7)).unwrap();
@@ -1055,7 +1115,8 @@ mod tests {
 			guild: Id(10),
 			items: vec![],
 			missing: vec![],
-			nick_unknown: vec![]
+			nick_unknown: vec![],
+			global_names: vec![],
 		}));
 		assert_eq!(
 			state.member_nickname(Id(20), Id(7)),
@@ -1071,7 +1132,8 @@ mod tests {
 				guild: Id(10),
 				items: vec![],
 				missing,
-				nick_unknown: vec![]
+				nick_unknown: vec![],
+				global_names: vec![],
 			}));
 			assert_eq!(
 				state.member_nickname(Id(20), Id(7)),
@@ -1085,12 +1147,104 @@ mod tests {
 				..member
 			}],
 			missing: vec![Id(7)],
-			nick_unknown: vec![]
+			nick_unknown: vec![],
+			global_names: vec![],
 		}));
 		assert_eq!(
 			state.member_nickname(Id(20), Id(7)),
 			Some(Some("Still a member"))
 		);
+	}
+	#[test]
+	fn member_refresh_with_omitted_global_name_preserves_display_name() {
+		let mut state = fixture(0);
+		let mut original = cached_person(7, "Existing nickname");
+		original.user.name = "Known display name".into();
+		state.apply_force_sync_members(Id(10), std::slice::from_ref(&original));
+		let mut response = original;
+		// This is the username fallback produced when the wire field is absent.
+		response.user.name = "synthetic".into();
+		response.roles = vec![Id(42)];
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![response.clone()],
+			missing: vec![],
+			nick_unknown: vec![],
+			global_names: vec![(Id(7), model::GlobalNameUpdate::Unchanged)],
+		}));
+		let identity = state.member_identity(Id(20), Id(7)).unwrap();
+		assert_eq!(
+			identity.profile.as_ref().unwrap().name,
+			"Known display name"
+		);
+		assert!(matches!(&identity.roles, Patch::Value(roles) if roles == &[Id(42)]));
+		assert_eq!(
+			state.cached_member_displays(Id(10))[0].name,
+			"Known display name"
+		);
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![response],
+			missing: vec![],
+			nick_unknown: vec![],
+			global_names: vec![(Id(7), model::GlobalNameUpdate::Cleared)],
+		}));
+		let identity = state.member_identity(Id(20), Id(7)).unwrap();
+		assert_eq!(identity.global_name, model::GlobalNameUpdate::Cleared);
+		assert_eq!(identity.profile.as_ref().unwrap().name, "synthetic");
+	}
+	#[test]
+	fn incomplete_new_member_is_visible_without_caching_an_unconfirmed_name() {
+		let mut state = fixture(0);
+		let mut person = cached_person(7, "Nickname");
+		person.user.name = "synthetic".into();
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![person.clone()],
+			missing: vec![],
+			nick_unknown: vec![],
+			global_names: vec![(Id(7), model::GlobalNameUpdate::Unchanged)],
+		}));
+		assert_eq!(
+			state.display_member(Id(20), Id(7)).unwrap().nick.as_deref(),
+			Some("Nickname")
+		);
+		assert!(!state.has_cached_member_display(Id(10), Id(7)));
+		assert!(state.cached_member_displays(Id(10)).is_empty());
+		assert!(state.apply_force_sync_result(ReadResult::Members {
+			guild: Id(10),
+			items: vec![person],
+			missing: vec![],
+			nick_unknown: vec![],
+			global_names: vec![(Id(7), model::GlobalNameUpdate::Cleared)],
+		}));
+		assert!(state.has_cached_member_display(Id(10), Id(7)));
+		assert_eq!(state.cached_member_displays(Id(10))[0].name, "synthetic");
+	}
+	#[test]
+	fn invalid_member_name_presence_cannot_partially_apply() {
+		let mut state = fixture(0);
+		let original = cached_person(7, "Current");
+		state.apply_force_sync_members(Id(10), std::slice::from_ref(&original));
+		for names in [
+			vec![(Id(8), model::GlobalNameUpdate::Unchanged)],
+			vec![(Id(7), model::GlobalNameUpdate::Set)],
+			vec![
+				(Id(7), model::GlobalNameUpdate::Cleared),
+				(Id(7), model::GlobalNameUpdate::Unchanged),
+			],
+		] {
+			let mut changed = original.clone();
+			changed.nick = Some("Unexpected".into());
+			assert!(!state.apply_force_sync_result(ReadResult::Members {
+				guild: Id(10),
+				items: vec![changed],
+				missing: vec![],
+				nick_unknown: vec![],
+				global_names: names,
+			}));
+			assert_eq!(state.member_nickname(Id(20), Id(7)), Some(Some("Current")));
+		}
 	}
 	#[test]
 	fn member_read_with_omitted_nickname_keeps_it_while_refreshing_roles() {
@@ -1105,6 +1259,7 @@ mod tests {
 			items: vec![updated.clone()],
 			missing: vec![],
 			nick_unknown: vec![Id(7)],
+			global_names: vec![],
 		}));
 		assert_eq!(
 			state.member_nickname(Id(20), Id(7)),
@@ -1118,6 +1273,7 @@ mod tests {
 			items: vec![updated],
 			missing: vec![],
 			nick_unknown: vec![],
+			global_names: vec![],
 		}));
 		assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
 	}

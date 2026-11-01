@@ -659,6 +659,12 @@ fuzz_target!(|data: &[u8]| {
 						2 => vec![Id(0)],
 						_ => vec![id, id],
 					},
+					global_names: match (op[6] >> 2) & 3 {
+						0 => vec![],
+						1 => vec![(id, model::GlobalNameUpdate::Unchanged)],
+						2 => vec![(id, model::GlobalNameUpdate::Cleared)],
+						_ => vec![(Id(0), model::GlobalNameUpdate::Unchanged)],
+					},
 				});
 				assert_eq!(state.selected, selected);
 				assert_eq!(state.request, request);

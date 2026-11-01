@@ -203,7 +203,7 @@ impl Labels {
 			self.member_bytes -= old.bytes();
 		}
 	}
-	fn get(&self, guild: Id, user: Id) -> Option<&MemberIdentity> {
+	pub(crate) fn get(&self, guild: Id, user: Id) -> Option<&MemberIdentity> {
 		self.entries
 			.iter()
 			.rev()
@@ -435,11 +435,14 @@ impl Labels {
 				_ => None,
 			})
 			.collect();
-		let partial: Vec<_> = rows
+		let mut partial: Vec<_> = rows
 			.extract_if(.., |member| {
-				list.missing_identity
-					.iter()
-					.any(|fields| fields.user == member.user.id && (fields.nick || fields.roles))
+				list.missing_identity.iter().any(|fields| {
+					fields.user == member.user.id
+						&& (fields.nick
+							|| fields.roles || fields.global_name
+							== model::GlobalNameUpdate::Unchanged)
+				})
 			})
 			.collect();
 		for member in &partial {
@@ -487,6 +490,7 @@ impl Labels {
 			);
 		}
 		self.reconcile_with_missing(guild, &mut rows, self.revision, &list.missing_identity);
+		self.reconcile_with_missing(guild, &mut partial, self.revision, &list.missing_identity);
 		self.remember_with_source(guild, &rows, true);
 		self.remember_with_source(guild, &partial, false);
 		for (revision, entry) in &mut self.entries {
@@ -610,7 +614,8 @@ impl State {
 				rows.remove(&entry.user);
 				continue;
 			}
-			if let Some(profile) = &entry.profile
+			if entry.global_name != model::GlobalNameUpdate::Unchanged
+				&& let Some(profile) = &entry.profile
 				&& !matches!(entry.nick, Patch::Absent)
 			{
 				let row = MemberDisplay {
@@ -646,7 +651,9 @@ impl State {
 			if update.departed {
 				return false;
 			}
-			if let Some(profile) = &update.profile {
+			if update.global_name != model::GlobalNameUpdate::Unchanged
+				&& let Some(profile) = &update.profile
+			{
 				match &update.nick {
 					Patch::Value(nick)
 						if valid(profile, (!nick.is_empty()).then_some(nick.as_str())) =>
@@ -659,7 +666,7 @@ impl State {
 			}
 		}
 		self.member_labels
-			.member(guild, user)
+			.verified_member(guild, user)
 			.is_some_and(|member| valid(&member.user, member.nick.as_deref()))
 	}
 	/// Targeted local suggestions remain older than every live query or observation.

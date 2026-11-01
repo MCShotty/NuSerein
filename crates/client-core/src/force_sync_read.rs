@@ -1,6 +1,8 @@
 //! Bounded, read-only synchronization contracts. These results never replace a timeline.
 use crate::auth::Failure;
-use model::{Channel, CustomEmoji, GuildPatch, Id, Member, Message, Patch, Sticker};
+use model::{
+	Channel, CustomEmoji, GlobalNameUpdate, GuildPatch, Id, Member, Message, Patch, Sticker,
+};
 
 pub const PAGE_MESSAGES: usize = 50;
 pub const THREAD_PAGE_SIZE: usize = 25;
@@ -9,6 +11,27 @@ pub const MAX_MEMBER_IDS: usize = 100;
 pub const HISTORY_DAYS: i64 = 21;
 pub const HISTORY_MILLIS: i64 = HISTORY_DAYS * 86_400_000;
 pub const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
+
+/// Only omitted and explicitly cleared names need entries; supplied names are the default.
+pub fn member_name_update(updates: &[(Id, GlobalNameUpdate)], user: Id) -> GlobalNameUpdate {
+	updates
+		.binary_search_by_key(&user, |(id, _)| *id)
+		.map_or(GlobalNameUpdate::Set, |index| updates[index].1)
+}
+
+pub fn valid_member_name_updates(updates: &[(Id, GlobalNameUpdate)], members: &[Member]) -> bool {
+	if updates.is_empty() {
+		return true;
+	}
+	if updates.len() > members.len() || !updates.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+		return false;
+	}
+	let users: std::collections::BTreeSet<_> =
+		members.iter().map(|member| member.user.id).collect();
+	updates
+		.iter()
+		.all(|(id, update)| *update != GlobalNameUpdate::Set && users.contains(id))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
@@ -131,6 +154,7 @@ pub struct GuildRead {
 	pub self_member: Result<Member, Failure>,
 	/// A missing nickname field is not an explicit removal.
 	pub self_member_nick_known: bool,
+	pub self_member_global_name: GlobalNameUpdate,
 	pub banner: Patch<String>,
 	pub member_count: Option<u64>,
 }
@@ -181,6 +205,8 @@ pub enum ReadResult {
 		missing: Vec<Id>,
 		/// Returned identities for which Discord omitted the nickname field.
 		nick_unknown: Vec<Id>,
+		/// Omitted or explicitly cleared global names, sorted by user ID.
+		global_names: Vec<(Id, GlobalNameUpdate)>,
 	},
 }
 impl ReadResult {
@@ -235,11 +261,13 @@ impl ReadResult {
 					items,
 					missing,
 					nick_unknown,
+					global_names,
 					..
 				} => {
 					items.iter().map(Member::bytes).sum::<usize>()
 						+ items.capacity().saturating_sub(items.len()) * size_of::<Member>()
 						+ (missing.capacity() + nick_unknown.capacity()) * size_of::<Id>()
+						+ global_names.capacity() * size_of::<(Id, GlobalNameUpdate)>()
 				}
 			}
 	}

@@ -173,6 +173,41 @@ fn omitted_global_name_preserves_display_across_a_delayed_history_page() {
 }
 
 #[test]
+fn member_list_with_unknown_global_name_does_not_cache_username_as_display_name() {
+	let mut state = state();
+	state.request_members();
+	let mut list = state.members.clone().unwrap();
+	let mut member = cached_person(7, "Server nickname");
+	member.user.name = "account7".into();
+	member.user.username = Some("account7".into());
+	list.slots = vec![Some(model::MemberSlot::Person(member))];
+	list.missing_identity = vec![model::MissingMemberFields {
+		user: Id(7),
+		global_name: model::GlobalNameUpdate::Unchanged,
+		nick: false,
+		roles: false,
+	}];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list.clone()));
+	assert_eq!(
+		state.display_member(Id(20), Id(7)).unwrap().nick.as_deref(),
+		Some("Server nickname")
+	);
+	assert!(state.cached_member_displays(Id(10)).is_empty());
+	let Some(model::MemberSlot::Person(member)) = &mut list.slots[0] else {
+		panic!("member row")
+	};
+	member.user.name = "Confirmed display".into();
+	list.missing_identity.clear();
+	apply(&mut state, Event::Members(list));
+	assert_eq!(
+		state.cached_member_displays(Id(10))[0].name,
+		"Confirmed display"
+	);
+}
+
+#[test]
 fn initial_member_snapshot_keeps_a_known_omitted_global_name() {
 	let mut state = state();
 	let mut message = message(101, Id(20));
@@ -222,6 +257,10 @@ fn initial_member_snapshot_keeps_a_known_omitted_global_name() {
 	};
 	assert_eq!(row.user.name, "Existing Display");
 	assert_eq!(
+		state.cached_member_displays(Id(10))[0].name,
+		"Existing Display"
+	);
+	assert_eq!(
 		state.presentation_member_roles(Id(20), Id(7)),
 		Some(&[Id(11)][..])
 	);
@@ -229,6 +268,7 @@ fn initial_member_snapshot_keeps_a_known_omitted_global_name() {
 	apply(&mut state, Event::Members(list));
 	let loaded = state.timeline.get(Id(101)).unwrap();
 	assert_eq!(state.message_author_name(loaded), "account");
+	assert_eq!(state.cached_member_displays(Id(10))[0].name, "account");
 	let mut renamed = message.author;
 	renamed.name = "renamed".into();
 	renamed.username = Some("renamed".into());

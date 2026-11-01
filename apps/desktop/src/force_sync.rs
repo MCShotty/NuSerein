@@ -551,7 +551,36 @@ struct RosterChunk {
 	guild: Id,
 	members: Vec<model::Member>,
 	nick_unknown: Vec<Id>,
+	global_names: Vec<(Id, model::GlobalNameUpdate)>,
 	index: usize,
+}
+
+fn complete_member_display(
+	user: Id,
+	nick_unknown: &[Id],
+	global_names: &[(Id, model::GlobalNameUpdate)],
+) -> bool {
+	nick_unknown.binary_search(&user).is_err()
+		&& client_core::force_sync_read::member_name_update(global_names, user)
+			!= model::GlobalNameUpdate::Unchanged
+}
+
+fn member_display_rows<'a>(
+	guild: Id,
+	members: impl Iterator<Item = &'a model::Member>,
+	nick_unknown: &[Id],
+	global_names: &[(Id, model::GlobalNameUpdate)],
+) -> Vec<model::MemberDisplay> {
+	members
+		.filter(|member| complete_member_display(member.user.id, nick_unknown, global_names))
+		.map(|member| model::MemberDisplay {
+			guild,
+			user: member.user.id,
+			name: member.user.name.clone(),
+			username: member.user.username.clone(),
+			nick: member.nick.clone(),
+		})
+		.collect()
 }
 
 #[derive(Default)]
@@ -1307,22 +1336,19 @@ impl Desktop {
 				items,
 				missing,
 				nick_unknown,
+				global_names,
 			} => {
 				let missing_on_disk = missing.clone();
 				let unknown_on_disk = nick_unknown.clone();
+				let names_on_disk = global_names.clone();
 				let completed_members = items.clone();
-				let rows = items
-					.iter()
-					.filter(|member| nick_unknown.binary_search(&member.user.id).is_err())
-					.map(|member| model::MemberDisplay {
-						guild,
-						user: member.user.id,
-						name: member.user.name.clone(),
-						username: member.user.username.clone(),
-						nick: member.nick.clone(),
-					})
-					.collect();
-				if !missing.is_empty() || !nick_unknown.is_empty() {
+				let rows = member_display_rows(guild, items.iter(), &nick_unknown, &global_names);
+				if !missing.is_empty()
+					|| !nick_unknown.is_empty()
+					|| global_names
+						.iter()
+						.any(|(_, name)| *name == model::GlobalNameUpdate::Unchanged)
+				{
 					job.record(Stage::Members, Outcome::Partial);
 				}
 				if !self.state.apply_force_sync_result(ReadResult::Members {
@@ -1330,8 +1356,11 @@ impl Desktop {
 					items,
 					missing,
 					nick_unknown,
+					global_names,
 				}) {
 					job.record(Stage::Members, Outcome::Partial);
+					job.skip_read(&read);
+					return;
 				}
 				if self.queue_cache(cache::Operation::SyncSaveMembers {
 					job: job.id,
@@ -1346,6 +1375,7 @@ impl Desktop {
 						guild,
 						members: completed_members,
 						nick_unknown: unknown_on_disk,
+						global_names: names_on_disk,
 						index: count,
 					});
 				} else {
@@ -1378,7 +1408,8 @@ impl Desktop {
 				}
 				if let ReadResult::Guild(value) = &other
 					&& value.self_member.is_ok()
-					&& !value.self_member_nick_known
+					&& (!value.self_member_nick_known
+						|| value.self_member_global_name == model::GlobalNameUpdate::Unchanged)
 				{
 					job.record(Stage::Members, Outcome::Partial);
 				}
@@ -1779,13 +1810,18 @@ impl Desktop {
 					|RosterChunk {
 					     members,
 					     nick_unknown,
+					     global_names,
 					     ..
 					 }| match event {
 						Event::MemberIdentity(update) => members
 							.iter()
 							.find(|member| {
 								member.user.id == update.user
-									&& nick_unknown.binary_search(&member.user.id).is_err()
+									&& complete_member_display(
+										member.user.id,
+										nick_unknown,
+										global_names,
+									)
 							})
 							.is_some_and(|member| {
 								let nick = match &update.nick {
@@ -1807,7 +1843,11 @@ impl Desktop {
 								.iter()
 								.find(|member| {
 									member.user.id == current.user.id
-										&& nick_unknown.binary_search(&member.user.id).is_err()
+										&& complete_member_display(
+											member.user.id,
+											nick_unknown,
+											global_names,
+										)
 								})
 								.is_some_and(|old| {
 									(list
@@ -1835,7 +1875,11 @@ impl Desktop {
 								.iter()
 								.find(|member| {
 									member.user.id == current.user.id
-										&& nick_unknown.binary_search(&member.user.id).is_err()
+										&& complete_member_display(
+											member.user.id,
+											nick_unknown,
+											global_names,
+										)
 								})
 								.is_some_and(|old| {
 									old.nick != current.nick
@@ -1849,7 +1893,11 @@ impl Desktop {
 									.iter()
 									.find(|member| {
 										member.user.id == current.user.id
-											&& nick_unknown.binary_search(&member.user.id).is_err()
+											&& complete_member_display(
+												member.user.id,
+												nick_unknown,
+												global_names,
+											)
 									})
 									.is_some_and(|old| {
 										(missing
@@ -1966,6 +2014,7 @@ impl Desktop {
 			guild: chunk_guild,
 			members,
 			nick_unknown,
+			global_names,
 			index,
 		}) = self.force_sync.roster_chunk.take()
 		{
@@ -1984,32 +2033,35 @@ impl Desktop {
 				.copied()
 				.filter(|id| accepted.iter().any(|member| member.user.id == *id))
 				.collect();
-			self.state.apply_force_sync_members_with_unknown_nicks(
+			let accepted_names: Vec<_> = global_names
+				.iter()
+				.copied()
+				.filter(|(id, _)| accepted.iter().any(|member| member.user.id == *id))
+				.collect();
+			self.state.apply_force_sync_members_with_presence(
 				guild,
 				&accepted,
 				&accepted_unknown,
+				&accepted_names,
 			);
 			if end < members.len() {
 				self.force_sync.roster_chunk = Some(RosterChunk {
 					guild,
 					members,
 					nick_unknown,
+					global_names,
 					index: end,
 				});
 				return;
 			}
-			let rows = members
-				.iter()
-				.filter(|member| !self.force_sync.roster_changed.contains(&member.user.id))
-				.filter(|member| nick_unknown.binary_search(&member.user.id).is_err())
-				.map(|member| model::MemberDisplay {
-					guild,
-					user: member.user.id,
-					name: member.user.name.clone(),
-					username: member.user.username.clone(),
-					nick: member.nick.clone(),
-				})
-				.collect();
+			let rows = member_display_rows(
+				guild,
+				members
+					.iter()
+					.filter(|member| !self.force_sync.roster_changed.contains(&member.user.id)),
+				&nick_unknown,
+				&global_names,
+			);
 			job.request = job.request.wrapping_add(1);
 			if self.queue_cache(cache::Operation::SyncSaveMembers {
 				job: job.id,
@@ -2023,6 +2075,7 @@ impl Desktop {
 					guild,
 					members,
 					nick_unknown,
+					global_names,
 					index: end,
 				});
 			} else {
@@ -2093,23 +2146,32 @@ impl Desktop {
 			R::Chunk {
 				members,
 				nick_unknown,
+				global_names,
 				..
 			} => {
 				let users: std::collections::BTreeSet<_> =
 					members.iter().map(|member| member.user.id).collect();
 				if !nick_unknown.windows(2).all(|ids| ids[0] < ids[1])
 					|| nick_unknown.iter().any(|id| !users.contains(id))
-				{
+					|| !client_core::force_sync_read::valid_member_name_updates(
+						&global_names,
+						&members,
+					) {
 					self.finish_force_sync_roster(job, Some(Failure::Protocol));
 					return;
 				}
-				if !nick_unknown.is_empty() {
+				if !nick_unknown.is_empty()
+					|| global_names
+						.iter()
+						.any(|(_, name)| *name == model::GlobalNameUpdate::Unchanged)
+				{
 					job.record(Stage::Members, Outcome::Partial);
 				}
 				self.force_sync.roster_chunk = Some(RosterChunk {
 					guild,
 					members,
 					nick_unknown,
+					global_names,
 					index: 0,
 				});
 			}
@@ -2462,6 +2524,53 @@ fn sync_event_affects_read(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn incomplete_names_leave_existing_sqlite_display_intact() {
+		let mut store = local_store::LocalStore::open(std::path::Path::new(":memory:")).unwrap();
+		let account = Id(1);
+		let guild = Id(10);
+		let user = Id(7);
+		let prior = model::MemberDisplay {
+			guild,
+			user,
+			name: "Known display".into(),
+			username: Some("account".into()),
+			nick: Some("Nickname".into()),
+		};
+		store
+			.save_member_displays(account, std::slice::from_ref(&prior))
+			.unwrap();
+		let mut profile = test_support::message(3, Id(20)).author;
+		profile.id = user;
+		profile.name = "account".into();
+		profile.username = Some("account".into());
+		let member = model::Member {
+			user: profile,
+			nick: Some("Nickname".into()),
+			roles: vec![],
+			status: None,
+			custom_status: None,
+			activities: vec![],
+			clients: Default::default(),
+		};
+		let missing = [(user, model::GlobalNameUpdate::Unchanged)];
+		let rows = member_display_rows(guild, std::iter::once(&member), &[], &missing);
+		assert!(rows.is_empty());
+		store.save_member_displays(account, &rows).unwrap();
+		assert_eq!(
+			store.load_member_displays(account, guild).unwrap(),
+			vec![prior]
+		);
+		let cleared = [(user, model::GlobalNameUpdate::Cleared)];
+		let rows = member_display_rows(guild, std::iter::once(&member), &[], &cleared);
+		assert_eq!(rows.len(), 1);
+		store.save_member_displays(account, &rows).unwrap();
+		assert_eq!(
+			store.load_member_displays(account, guild).unwrap()[0].name,
+			"account"
+		);
+		assert!(member_display_rows(guild, std::iter::once(&member), &[user], &cleared).is_empty());
+	}
 	#[test]
 	fn job_identity_does_not_repeat_within_one_millisecond_or_after_clock_reversal() {
 		let first = next_job_id(42).unwrap();
