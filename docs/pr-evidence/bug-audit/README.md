@@ -56,13 +56,18 @@ does not claim the whole repository has been reviewed.
   updates already-loaded messages, and keeps fallback names working across
   successive 200-member snapshots and overlay eviction. Disk hints do not
   establish permission or authoritative name provenance.
+- Force Sync now carries omitted and explicitly cleared global names through
+  REST and Gateway roster reads. Incomplete records remain visible without
+  replacing a confirmed SQLite display name, and rejected member results are
+  not written to disk. Member-list snapshots also avoid caching an omitted
+  name as though Discord supplied the username as a display name.
 
 The Gateway, scrolling, typing, image, reply, poll, status, placeholder, voice
 and identity regressions failed before their respective fixes. The
-member-list races, partial-profile and omitted-name probes also failed before
-their fixes. The gallery fixture and the skipped-midnight case were extended
-afterward. The
-tests use synthetic data and do not contact Discord or capture devices.
+member-list races, partial-profile, omitted-name and Force Sync probes also
+failed before their fixes. The gallery fixture and the skipped-midnight case
+were extended afterward. The tests use synthetic data and do not contact
+Discord or capture devices.
 
 ## Review coverage
 
@@ -92,10 +97,9 @@ These checks used software rendering, not Discord or native device controls. A
 complete UI delivery gate remains open because the full interface has not been
 visually inspected or exercised here.
 
-Force Sync's REST member refresh and Gateway roster refresh still discard
-global-name field presence, so an omitted field can overwrite a known display
-name. Their reconciliation and cache-write paths need a separate correction;
-these changes do not establish complete display-name synchronization.
+Force Sync and member-list name handling are covered by synthetic fixtures;
+live Discord synchronization and the performance of large snapshots have not
+been measured here.
 
 ## Validation limits
 
@@ -128,7 +132,11 @@ tests respectively. The exact `cargo xtask check` stopped during
 `autoscroll` example after Clippy passed. The split workspace test run above
 does not include examples or doctests. At `6951883b`, the three startup UI tests,
 focused strict Clippy and state-transition fuzz-target compilation passed after
-the visual fix; no fuzz campaign was run. Headless egui tests
+the visual fix. At `4c1c26fd`, 459 core tests passed with two ignored, 151 API
+tests passed with one ignored, 110 Gateway tests passed, and 19 desktop Force
+Sync tests passed. Formatting and strict Clippy passed for the changed crates;
+the state-transition fuzz target compiled, but no fuzz campaign was run.
+Headless egui tests
 exercise the affected interaction paths; this environment has no physical
 display for a visual or assistive-technology review. Live Discord, Windows
 capture, microphone and real-device behavior remain owner-controlled and
