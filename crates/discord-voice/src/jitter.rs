@@ -1,5 +1,7 @@
-//! Fixed 40ms startup with a bounded reorder window for 2.5?120ms Opus packets.
+//! Fixed 40ms startup with a bounded reorder window for 2.5–120 ms Opus packets.
 const SLOTS: usize = 8;
+// Preserve the original total payload budget while admitting multi-frame packets.
+const QUEUE_BYTES: usize = SLOTS * 1275;
 #[derive(Default)]
 pub(crate) struct Jitter {
 	packets: Vec<(u16, Vec<u8>, Option<u32>)>,
@@ -15,7 +17,7 @@ impl Jitter {
 		self.push_timed(sequence, None, opus);
 	}
 	pub fn push_timed(&mut self, sequence: u16, timestamp: Option<u32>, opus: Vec<u8>) {
-		if opus.len() > 1275 {
+		if opus.len() > crate::crypto::MAX_PACKET {
 			return;
 		}
 		if self.next.is_none() {
@@ -32,7 +34,15 @@ impl Jitter {
 			self.wait = 2;
 			self.missing = 0;
 		}
-		if self.packets.len() < SLOTS && !self.packets.iter().any(|(id, _, _)| *id == sequence) {
+		if self.packets.len() < SLOTS
+			&& !self.packets.iter().any(|(id, _, _)| *id == sequence)
+			&& self
+				.packets
+				.iter()
+				.map(|(_, data, _)| data.len())
+				.sum::<usize>()
+				+ opus.len() <= QUEUE_BYTES
+		{
 			self.packets.push((sequence, opus, timestamp));
 		}
 	}
@@ -144,7 +154,31 @@ mod tests {
 			jitter.push(sequence, vec![1; 1275]);
 			assert!(jitter.packets.len() <= SLOTS);
 		}
-		jitter.push(1000, vec![0; 1276]);
+		jitter.push(1000, vec![0; crate::crypto::MAX_PACKET + 1]);
 		assert!(jitter.packets.len() <= SLOTS);
+	}
+
+	#[test]
+	fn larger_packets_respect_the_existing_queue_byte_budget() {
+		let mut jitter = Jitter::default();
+		jitter.push(1, vec![0; crate::crypto::MAX_PACKET + 1]);
+		assert!(jitter.next.is_none());
+		for sequence in 1..=3 {
+			jitter.push(sequence, vec![sequence as u8; crate::crypto::MAX_PACKET]);
+		}
+		assert_eq!(jitter.packets.len(), 2);
+		assert!(
+			jitter
+				.packets
+				.iter()
+				.map(|(_, data, _)| data.len())
+				.sum::<usize>()
+				<= QUEUE_BYTES
+		);
+		assert!(jitter.pop().is_none());
+		assert!(jitter.pop().is_none());
+		assert_eq!(jitter.pop().unwrap().len(), crate::crypto::MAX_PACKET);
+		jitter.push(3, vec![3; crate::crypto::MAX_PACKET]);
+		assert_eq!(jitter.packets.len(), 2);
 	}
 }

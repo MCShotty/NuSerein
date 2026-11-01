@@ -447,6 +447,43 @@ mod tests {
 	}
 
 	#[test]
+	fn long_opus_packet_above_single_frame_limit_plays_through_the_mixer() {
+		let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Audio).unwrap();
+		encoder.set_bitrate(opus2::Bitrate::Bits(128_000)).unwrap();
+		encoder.set_vbr(false).unwrap();
+		let input: Vec<f32> = (0..2880).map(|i| (i as f32 * 0.037).sin() * 0.2).collect();
+		let mut first = [0; 1275];
+		let length = encoder.encode_float(&input, &mut first).unwrap();
+		let mut packet = [0; crate::crypto::MAX_PACKET];
+		let length = opus2::Repacketizer::new()
+			.unwrap()
+			.combine(&[&first[..length], &first[..length]], &mut packet)
+			.unwrap();
+		assert!((1276..=crate::crypto::MAX_PACKET).contains(&length));
+		let mut expected = [0.0; 5760];
+		assert_eq!(
+			Decoder::new(48_000, Channels::Mono)
+				.unwrap()
+				.decode_float(&packet[..length], &mut expected, false)
+				.unwrap(),
+			expected.len()
+		);
+		let mut mixer = Mixer::default();
+		mixer.announce(1, 11).unwrap();
+		mixer.push_timed(11, 7, 12_000, packet[..length].to_vec());
+		assert!(mixer.pop_timed().0.is_none());
+		assert!(mixer.pop_timed().0.is_none());
+		for (index, expected) in expected.as_chunks::<960>().0.iter().enumerate() {
+			let (frame, _, timing) = mixer.pop_timed();
+			let frame = frame.expect("each 20ms part must reach playback");
+			assert_eq!(timing, Some((1, 12_000 + index as u32 * 960)));
+			for (actual, expected) in frame.iter().zip(expected) {
+				assert!((actual - expected.clamp(-1.0, 1.0)).abs() < 0.0001);
+			}
+		}
+	}
+
+	#[test]
 	fn packet_loss_preserves_short_and_long_packet_timing() {
 		for samples in [240, 2880, 5760] {
 			let mut mixer = Mixer::default();
