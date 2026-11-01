@@ -4510,3 +4510,47 @@ samples. The earlier `049f2961` numbers above remain historical.
 The departure and general reducer ranges overlap. Watch results remain sorted,
 bounded and exclude departed users. These figures measure only the stated core
 workloads; they do not measure application-wide responsiveness.
+
+### Member-watch simplification follow-up
+
+The previous PR head `728696b0` is the baseline; the production change is
+`c2372c4a`. A shared borrowed candidate representation lets the ID-only watch
+avoid building owned nickname-only users. Sorted insertion retains the first
+128 distinct eligible users and the same sorted result, including when users
+leave or rejoin. Display callers still receive the same user data.
+
+On Linux x86-64 (Xeon Platinum 8573C, five exposed CPUs with a four-core
+quota), separate Rust 1.98.1 release builds used fat LTO and one codegen unit.
+The table shows one warmup and 20 alternating samples per binary on CPU 0.
+The ranges are individual synthetic replay times, not frame times, actual
+process memory, network latency or live Discord measurements.
+
+| Synthetic workload | `728696b0` median (range) | `c2372c4a` median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 10,000 member-watch rebuilds | 76.575 ms (71.044–168.661) | 44.471 ms (40.641–65.015) | −41.9% |
+| 10,000 watches, one recorded departure | 330.669 ms (319.886–339.385) | 97.859 ms (93.849–102.959) | −70.4% |
+| 10,000 watches, one recent author | 112.185 ms (107.796–115.649) | 69.167 ms (65.729–71.325) | −38.3% |
+| 100,000 reducer events | 87.417 ms (82.279–124.467) | 86.950 ms (77.335–218.746) | −0.5% |
+| 10,000 wide-channel message events | 9.965 ms (8.264–28.972) | 11.566 ms (8.234–36.905) | +16.1% |
+
+The initial wide-channel result warranted investigation. With no builds running,
+a subsequent run used one warmup and 30 alternating samples on each exposed
+CPU, with the same binaries and workload:
+
+| CPU | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 0 | 8.729 ms (8.215–10.072) | 8.563 ms (7.842–12.157) | −1.9% |
+| 1 | 8.759 ms (8.102–10.946) | 8.546 ms (7.785–10.094) | −2.4% |
+| 2 | 8.797 ms (7.935–9.465) | 8.654 ms (8.095–9.751) | −1.6% |
+| 3 | 8.661 ms (8.078–9.905) | 8.720 ms (8.053–9.223) | +0.7% |
+| 4 | 8.585 ms (8.009–11.367) | 8.505 ms (7.683–13.714) | −0.9% |
+
+The later runs did not reproduce the initial slowdown, but they do not prove
+unchanged performance in the live application. The replay executables were
+2,431,600 bytes before and 2,430,752 bytes after; application and package
+sizes, UI latency and live Discord behavior were not measured.
+
+The changed release binary also completed the 120-second synthetic lifecycle
+soak: 3,632 passes, 116,224 channel visits and 15 logout cycles, with the
+retained-history assertions intact. This checks reducer resource bounds; it
+does not exercise the member-watch workload, network, storage or native UI.
