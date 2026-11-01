@@ -3223,6 +3223,45 @@ fn viewport_member_watch_prioritizes_old_visible_authors_without_repeated_change
 	assert_ne!(state.member_watch_revision(), revision);
 }
 
+#[test]
+fn member_watch_keeps_the_first_distinct_users_when_messages_repeat() {
+	let mut state = state();
+	state.timeline.clear();
+	for index in 0..400 {
+		let mut chat = message(10_000 + index, Id(20));
+		chat.author.id = Id(1_000 + index % 200);
+		apply(&mut state, Event::Message(chat));
+	}
+	state.request_author_members(&[Id(90_000), Id(0), Id(90_001), Id(90_000)]);
+	let mut expected: Vec<_> = (1_074..1_200).map(Id).collect();
+	expected.extend([Id(90_000), Id(90_001)]);
+	let (_, _, users) = state.watched_member_users().unwrap();
+	assert_eq!(users, expected);
+	let departed = |departed| {
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(1_199),
+			profile: None,
+			avatar: Patch::Absent,
+			nick: if departed {
+				Patch::Null
+			} else {
+				Patch::Value("Returned".into())
+			},
+			roles: Patch::Absent,
+			departed,
+		}))
+	};
+	apply(&mut state, departed(true));
+	expected.retain(|id| *id != Id(1_199));
+	expected.insert(0, Id(1_073));
+	assert_eq!(state.watched_member_users().unwrap().2, expected);
+	apply(&mut state, departed(false));
+	expected.remove(0);
+	expected.insert(125, Id(1_199));
+	assert_eq!(state.watched_member_users().unwrap().2, expected);
+}
+
 fn member_reply_after_disk_hint(role_update: bool) {
 	for slot in 0..=1 {
 		let mut state = state();
