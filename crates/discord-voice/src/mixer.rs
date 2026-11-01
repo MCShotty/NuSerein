@@ -269,6 +269,22 @@ mod tests {
 		encoded[..length].to_vec()
 	}
 	#[test]
+	fn initial_reordering_reaches_the_mixer_in_timestamp_order() {
+		let mut mixer = Mixer::default();
+		mixer.announce(1, 11).unwrap();
+		let packet = opus(0.03);
+		mixer.push_timed(11, 102, 1920, packet.clone());
+		mixer.push_timed(11, 101, 960, packet);
+		assert!(mixer.pop_timed().0.is_none());
+		assert!(mixer.pop_timed().0.is_none());
+		let (first, _, timing) = mixer.pop_timed();
+		assert!(first.is_some());
+		assert_eq!(timing, Some((1, 960)));
+		let (second, _, timing) = mixer.pop_timed();
+		assert!(second.is_some());
+		assert_eq!(timing, Some((1, 1920)));
+	}
+	#[test]
 	fn independent_streams_mix_on_one_clock_and_release_on_leave() {
 		let mut together = Mixer::default();
 		let mut alice = Mixer::default();

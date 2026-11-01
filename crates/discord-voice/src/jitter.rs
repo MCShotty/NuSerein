@@ -7,6 +7,8 @@ pub(crate) struct Jitter {
 	packets: Vec<(u16, Vec<u8>, Option<u32>)>,
 	next: Option<u16>,
 	wait: u8,
+	// The final wait tick reaches zero before the first packet is played.
+	started: bool,
 	missing: u8,
 }
 impl Jitter {
@@ -23,15 +25,26 @@ impl Jitter {
 		if self.next.is_none() {
 			self.next = Some(sequence);
 			self.wait = 2;
+			self.started = false;
 		}
-		let distance = sequence.wrapping_sub(self.next.unwrap());
-		if distance >= 32768 {
+		let next = self.next.unwrap();
+		let distance = sequence.wrapping_sub(next);
+		let earlier = distance >= 32768;
+		if earlier
+			&& (self.started
+				|| next.wrapping_sub(sequence) >= SLOTS as u16
+				|| self
+					.packets
+					.iter()
+					.any(|(id, _, _)| id.wrapping_sub(sequence) >= SLOTS as u16))
+		{
 			return;
 		}
-		if distance >= SLOTS as u16 {
+		if !earlier && distance >= SLOTS as u16 {
 			self.packets.clear();
 			self.next = Some(sequence);
 			self.wait = 2;
+			self.started = false;
 			self.missing = 0;
 		}
 		if self.packets.len() < SLOTS
@@ -43,6 +56,9 @@ impl Jitter {
 				.sum::<usize>()
 				+ opus.len() <= QUEUE_BYTES
 		{
+			if earlier {
+				self.next = Some(sequence);
+			}
 			self.packets.push((sequence, opus, timestamp));
 		}
 	}
@@ -62,6 +78,7 @@ impl Jitter {
 			self.wait = 0;
 		}
 		let next = self.next?;
+		self.started = true;
 		self.next = Some(next.wrapping_add(1));
 		if let Some(index) = self.packets.iter().position(|(id, _, _)| *id == next) {
 			self.missing = 0;
@@ -91,6 +108,53 @@ impl Jitter {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn startup_reorders_earlier_packets_without_rewinding_playback() {
+		for first in [100_u16, u16::MAX] {
+			let mut jitter = Jitter::default();
+			jitter.push_timed(first.wrapping_add(1), Some(960), vec![2]);
+			jitter.push_timed(first, Some(0), vec![1]);
+			jitter.push_timed(first.wrapping_add(2), Some(1920), vec![3]);
+			assert!(jitter.pop_timed().is_none());
+			assert!(jitter.pop_timed().is_none());
+			assert_eq!(jitter.pop_timed(), Some((vec![1], Some(0))));
+			jitter.push_timed(first, Some(0), vec![9]);
+			assert_eq!(jitter.pop_timed(), Some((vec![2], Some(960))));
+			assert_eq!(jitter.pop_timed(), Some((vec![3], Some(1920))));
+		}
+	}
+	#[test]
+	fn startup_can_accept_earlier_packets_after_waiting_but_before_output() {
+		let mut jitter = Jitter::default();
+		jitter.push(12, vec![2]);
+		assert!(jitter.pop().is_none());
+		assert!(jitter.pop().is_none());
+		jitter.push(11, vec![1]);
+		assert_eq!(jitter.pop(), Some(vec![1]));
+		assert_eq!(jitter.pop(), Some(vec![2]));
+		jitter.push(100, vec![4]);
+		jitter.push(99, vec![3]);
+		assert!(jitter.pop().is_none());
+		assert!(jitter.pop().is_none());
+		assert_eq!(jitter.pop(), Some(vec![3]));
+		assert_eq!(jitter.pop(), Some(vec![4]));
+	}
+	#[test]
+	fn startup_rewind_keeps_the_existing_window_and_byte_limits() {
+		let mut jitter = Jitter::default();
+		jitter.push(100, vec![1]);
+		jitter.push(107, vec![2]);
+		jitter.push(99, vec![3]);
+		assert_eq!(jitter.next, Some(100));
+		assert_eq!(jitter.packets.len(), 2);
+
+		jitter.clear();
+		jitter.push(100, vec![1; crate::crypto::MAX_PACKET]);
+		jitter.push(101, vec![2; crate::crypto::MAX_PACKET]);
+		jitter.push(99, vec![3; crate::crypto::MAX_PACKET]);
+		assert_eq!(jitter.next, Some(100));
+		assert_eq!(jitter.packets.len(), 2);
+	}
 	#[test]
 	fn timestamps_follow_reordered_packets_and_survive_sequence_wrap() {
 		let mut jitter = Jitter::default();
