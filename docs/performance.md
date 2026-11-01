@@ -4554,3 +4554,43 @@ The changed release binary also completed the 120-second synthetic lifecycle
 soak: 3,632 passes, 116,224 channel visits and 15 logout cycles, with the
 retained-history assertions intact. This checks reducer resource bounds; it
 does not exercise the member-watch workload, network, storage or native UI.
+
+### Bug-audit replay comparison
+
+The merged baseline is `1e8123c0`; the fixes are at `9c5ab81a`. Separate
+Rust 1.98.1 release builds used fat LTO and one codegen unit on Linux x86-64,
+Xeon Platinum 8573C, with a four-core quota. Each workload had one warmup per
+binary and five alternating samples pinned to CPU 0.
+
+| Synthetic core workload | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 80.910 ms (75.758–84.957) | 81.230 ms (78.215–83.834) | +0.4% |
+| 10,000 member-watch rebuilds | 41.837 ms (41.023–44.769) | 39.680 ms (38.643–43.342) | −5.2% |
+
+These overlapping samples are not evidence of a speedup. Both replay binaries
+were 2,430,752 bytes and retained 500 messages / 417,492–417,977 estimated
+bytes in the reducer workload. The replay does not measure the changed Gateway
+writer, voice buffering, rendering, process RSS, network latency or live
+Discord behavior.
+Full application and package sizes and native UI timings were not measured.
+
+### Bug-audit identity follow-up
+
+Using the same environment and alternating method above, the merged baseline
+`1e8123c0` was compared with source revision `9f43824d`. The identity harness
+had an additional unpinned sanity run before the pinned warmup and samples. It
+uses a separate `rustc -C opt-level=3` harness linked to each revision's
+release libraries. It inserts 3,000 synthetic messages and applies an identity
+update after each insert, retaining at most 500 timeline rows.
+
+| Synthetic workload | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 80.020 ms (77.573–84.670) | 82.181 ms (81.490–86.359) | +2.7% |
+| 10,000 member-watch rebuilds | 42.982 ms (41.004–45.291) | 43.454 ms (42.466–44.351) | +1.1% |
+| 3,000 message/identity updates | 98.809 ms (97.337–102.623) | 68.311 ms (64.037–71.071) | −30.9% |
+
+At 500 and 3,000 inserts, the baseline estimated bookkeeping overhead rose
+from 614,896 to 794,896 bytes; the changed build stayed at 578,104 bytes.
+These are timeline allocation estimates, not process RSS. Replay binaries
+were 2,430,752 and 2,430,800 bytes respectively. The results do not measure
+Gateway, voice, rendering, storage, native input or live Discord performance.
