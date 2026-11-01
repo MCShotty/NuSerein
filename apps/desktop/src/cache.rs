@@ -4387,7 +4387,7 @@ mod tests {
 		state.apply(client_core::Envelope {
 			generation: state.generation,
 			event: client_core::Event::MemberIdentity(Box::new(model::MemberIdentity {
-				global_name_present: false,
+				global_name: model::GlobalNameUpdate::Unchanged,
 				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(900001),
@@ -4699,7 +4699,7 @@ mod tests {
 		// fresh observation in one guild must not restore another guild's old rows.
 		state.hydrate_member_displays(Id(10), state.member_display_revision(), vec![row]);
 		let identity = model::MemberIdentity {
-			global_name_present: false,
+			global_name: model::GlobalNameUpdate::Unchanged,
 			avatar: model::Patch::Absent,
 			guild: Id(10),
 			user: Id(900001),
@@ -4774,7 +4774,7 @@ mod tests {
 			);
 			state.hydrate_member_displays(Id(10), state.member_display_revision(), rows);
 			let identity = model::MemberIdentity {
-				global_name_present: false,
+				global_name: model::GlobalNameUpdate::Unchanged,
 				avatar: model::Patch::Absent,
 				guild: Id(10),
 				user: Id(900000),

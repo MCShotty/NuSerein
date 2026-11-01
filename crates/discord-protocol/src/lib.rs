@@ -1788,10 +1788,13 @@ impl MemberItem {
 			other => other.into_slot(),
 		}
 	}
-	pub fn preserve_missing(&mut self, previous: &model::Member) {
+	pub fn preserve_missing(&mut self, previous: &model::Member, global_name_is_set: bool) {
 		if let Self::Member { member, .. } = self
 			&& member.user.id == previous.user.id
 		{
+			if global_name_is_set && matches!(member.user.global_name, Patch::Absent) {
+				member.user.global_name = Patch::Value(previous.user.name.clone());
+			}
 			if matches!(member.nick, Patch::Absent) {
 				member.nick = previous.nick.clone().map_or(Patch::Null, Patch::Value);
 			}

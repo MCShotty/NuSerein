@@ -144,7 +144,9 @@ impl Timeline {
 			return;
 		}
 		let updated = MemberChanges {
-			name: !update.departed && update.profile.is_some() && update.global_name_present,
+			name: !update.departed
+				&& update.profile.is_some()
+				&& update.global_name != model::GlobalNameUpdate::Unchanged,
 			username: !update.departed && update.profile.is_some(),
 			avatar: !matches!(update.avatar, Patch::Absent)
 				|| (!update.departed
@@ -1211,7 +1213,7 @@ mod tests {
 	fn identity_updates_keep_reconciliation_state_only_while_loading() {
 		let mut timeline = Timeline::default();
 		let mut update = model::MemberIdentity {
-			global_name_present: false,
+			global_name: model::GlobalNameUpdate::Unchanged,
 			guild: Id(10),
 			user: Id(2),
 			profile: None,
@@ -1278,7 +1280,7 @@ mod tests {
 		profile.member_avatar = None;
 		timeline.insert(row, false, false).unwrap();
 		timeline.apply_author_identity(&model::MemberIdentity {
-			global_name_present: true,
+			global_name: model::GlobalNameUpdate::Set,
 			guild: Id(10),
 			user: Id(2),
 			profile: Some(profile),
@@ -1306,7 +1308,7 @@ mod tests {
 		timeline.insert(row.clone(), false, false).unwrap();
 		timeline.begin_page(false);
 		timeline.apply_author_identity(&model::MemberIdentity {
-			global_name_present: false,
+			global_name: model::GlobalNameUpdate::Unchanged,
 			guild: Id(10),
 			user: Id(2),
 			profile: None,

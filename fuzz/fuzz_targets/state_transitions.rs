@@ -563,7 +563,11 @@ fuzz_target!(|data: &[u8]| {
 				apply(
 					&mut state,
 					Event::MemberIdentity(Box::new(model::MemberIdentity {
-						global_name_present: op[6] & 128 != 0,
+						global_name: match op[6] >> 6 {
+							0 => model::GlobalNameUpdate::Unchanged,
+							1 => model::GlobalNameUpdate::Cleared,
+							_ => model::GlobalNameUpdate::Set,
+						},
 						avatar: match op[6] >> 3 & 3 {
 							0 => Patch::Absent,
 							1 => Patch::Null,

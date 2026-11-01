@@ -226,7 +226,7 @@ impl Labels {
 			// A partial live update must not promote missing fields from an older disk hint.
 			if revision != 0 && !update.departed && !old.departed {
 				if update.profile.is_none() {
-					update.global_name_present = old.global_name_present;
+					update.global_name = old.global_name;
 					update.profile = old.profile;
 				}
 				if matches!(update.nick, Patch::Absent) {
@@ -412,7 +412,7 @@ impl Labels {
 					.is_none_or(|old| old.nick != nick);
 			self.insert(
 				MemberIdentity {
-					global_name_present: false,
+					global_name: model::GlobalNameUpdate::Unchanged,
 					guild,
 					user: member.user.id,
 					profile: None,
@@ -721,7 +721,7 @@ impl State {
 				break;
 			}
 			let update = MemberIdentity {
-				global_name_present: true,
+				global_name: model::GlobalNameUpdate::Set,
 				guild,
 				user: row.user,
 				profile: Some(User {
@@ -974,7 +974,7 @@ impl State {
 			return false;
 		}
 		self.apply_member_identity(MemberIdentity {
-			global_name_present: false,
+			global_name: model::GlobalNameUpdate::Unchanged,
 			guild,
 			user,
 			profile: None,
@@ -1006,6 +1006,16 @@ impl State {
 			|| (!selected_scope && !update.departed && !background)
 		{
 			return;
+		}
+		if update.profile.is_some()
+			&& update.global_name == model::GlobalNameUpdate::Unchanged
+			&& self
+				.member_labels
+				.get(update.guild, update.user)
+				.is_some_and(|old| {
+					!old.departed && old.global_name == model::GlobalNameUpdate::Cleared
+				}) {
+			update.global_name = model::GlobalNameUpdate::Cleared;
 		}
 		if matches!(update.avatar, Patch::Absent)
 			&& let Some(avatar) = update
@@ -1041,7 +1051,7 @@ impl State {
 				});
 			if let Some(known) = known {
 				let mut merged = known.clone();
-				if update.global_name_present {
+				if update.global_name != model::GlobalNameUpdate::Unchanged {
 					merged.name.clone_from(&profile.name);
 				}
 				merged.username.clone_from(&profile.username);
@@ -1350,7 +1360,7 @@ mod cache_search_tests {
 			state.apply(crate::Envelope {
 				generation: state.generation,
 				event: crate::Event::MemberIdentity(Box::new(MemberIdentity {
-					global_name_present: true,
+					global_name: model::GlobalNameUpdate::Set,
 					guild: Id(2),
 					user,
 					profile,
@@ -1394,7 +1404,7 @@ mod cache_search_tests {
 		user.id = Id(9000);
 		let update = |profile, nick, departed| {
 			crate::Event::MemberIdentity(Box::new(MemberIdentity {
-				global_name_present: true,
+				global_name: model::GlobalNameUpdate::Set,
 				guild: Id(2),
 				user: Id(9000),
 				profile,

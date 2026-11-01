@@ -27,7 +27,7 @@ use discord_protocol::*;
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use model::{Freshness, Id, Member, MemberList};
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, BTreeSet},
 	sync::{Arc, Mutex},
 	time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -439,6 +439,7 @@ struct ActiveMembers {
 	start: usize,
 	slots: Vec<Option<model::MemberSlot>>,
 	missing_identity: BTreeMap<Id, model::MissingMemberFields>,
+	global_names: BTreeSet<Id>,
 	lazy: bool,
 	synced: bool,
 	awaiting_sync: bool,
@@ -614,6 +615,7 @@ impl ActiveMembers {
 			start,
 			slots,
 			missing_identity: BTreeMap::new(),
+			global_names: BTreeSet::new(),
 			lazy,
 			synced: false,
 			awaiting_sync: true,
@@ -688,6 +690,15 @@ impl ActiveMembers {
 	fn note_identity_fields(&mut self, item: &discord_protocol::MemberItem) {
 		if let discord_protocol::MemberItem::Member { member, .. } = item {
 			let user = member.user.id;
+			match &member.user.global_name {
+				model::Patch::Absent => {}
+				model::Patch::Null => {
+					self.global_names.remove(&user);
+				}
+				model::Patch::Value(_) => {
+					self.global_names.insert(user);
+				}
+			}
 			let fields = model::MissingMemberFields {
 				user,
 				nick: matches!(member.nick, model::Patch::Absent),
@@ -701,10 +712,16 @@ impl ActiveMembers {
 		}
 	}
 	fn prune_identity_fields(&mut self) {
-		let visible: std::collections::BTreeSet<_> =
-			self.people().map(|member| member.user.id).collect();
+		let visible: BTreeSet<_> = self.people().map(|member| member.user.id).collect();
 		self.missing_identity
 			.retain(|user, _| visible.contains(user));
+		self.global_names.retain(|user| visible.contains(user));
+	}
+	fn prune_global_names(&mut self) {
+		if !self.global_names.is_empty() {
+			let visible: BTreeSet<_> = self.people().map(|member| member.user.id).collect();
+			self.global_names.retain(|user| visible.contains(user));
+		}
 	}
 	fn span_end(&self) -> usize {
 		self.start
@@ -718,6 +735,7 @@ impl ActiveMembers {
 			.sum::<usize>()
 			+ self.missing_identity.len()
 				* (size_of::<Id>() + size_of::<model::MissingMemberFields>() + 48)
+			+ self.global_names.len() * (size_of::<Id>() + 48)
 	}
 	fn people(&self) -> impl Iterator<Item = &Member> {
 		self.slots.iter().filter_map(|slot| match slot {
@@ -794,6 +812,21 @@ impl ActiveMembers {
 		if update.guild != self.subscription.guild || !update.valid() {
 			return;
 		}
+		let fallback_name = update.profile.as_ref().filter(|_| {
+			update.global_name == model::GlobalNameUpdate::Unchanged
+				&& !self.global_names.contains(&update.user)
+		});
+		if update.profile.is_some() && self.people().any(|member| member.user.id == update.user) {
+			match update.global_name {
+				model::GlobalNameUpdate::Unchanged => {}
+				model::GlobalNameUpdate::Cleared => {
+					self.global_names.remove(&update.user);
+				}
+				model::GlobalNameUpdate::Set => {
+					self.global_names.insert(update.user);
+				}
+			}
+		}
 		for slot in &mut self.slots {
 			if let Some(model::MemberSlot::Person(member)) = slot
 				&& member.user.id == update.user
@@ -802,12 +835,16 @@ impl ActiveMembers {
 					*slot = None;
 				} else {
 					update.apply(member);
+					if let Some(profile) = fallback_name {
+						member.user.name.clone_from(&profile.name);
+					}
 				}
 			}
 		}
 		if update.departed {
 			self.pending_presence.remove(&update.user);
 			self.missing_identity.remove(&update.user);
+			self.global_names.remove(&update.user);
 		} else if let Some(fields) = self.missing_identity.get_mut(&update.user) {
 			fields.nick &= matches!(update.nick, model::Patch::Absent);
 			fields.roles &= matches!(update.roles, model::Patch::Absent);
@@ -883,7 +920,8 @@ impl ActiveMembers {
 						if let discord_protocol::MemberItem::Member { member, .. } = item
 							&& let Some(known) = previous.get(&member.user.id)
 						{
-							item.preserve_missing(known);
+							let global_name_is_set = self.global_names.contains(&member.user.id);
+							item.preserve_missing(known, global_name_is_set);
 						}
 					}
 					let clear_from = start.max(span_start);
@@ -894,6 +932,7 @@ impl ActiveMembers {
 					for (index, item) in items.into_iter().enumerate() {
 						self.write_slot(start + index, item);
 					}
+					self.prune_global_names();
 					self.synced = true;
 					self.awaiting_sync = false;
 					self.retries = 0;
@@ -918,13 +957,27 @@ impl ActiveMembers {
 				| MemberOp::Unknown => {}
 				MemberOp::Update { index, mut item } => {
 					if self.synced && index >= span_start && index <= span_end {
+						let old_user = match &self.slots[index - span_start] {
+							Some(model::MemberSlot::Person(member)) => Some(member.user.id),
+							_ => None,
+						};
 						self.note_identity_fields(&item);
 						if let Some(model::MemberSlot::Person(previous)) =
 							&self.slots[index - span_start]
 						{
-							item.preserve_missing(previous);
+							item.preserve_missing(
+								previous,
+								self.global_names.contains(&previous.user.id),
+							);
 						}
 						self.write_slot(index, item);
+						let new_user = match &self.slots[index - span_start] {
+							Some(model::MemberSlot::Person(member)) => Some(member.user.id),
+							_ => None,
+						};
+						if old_user != new_user {
+							self.prune_global_names();
+						}
 					}
 				}
 				MemberOp::Insert { index, item } => {
@@ -937,6 +990,7 @@ impl ActiveMembers {
 					if index < span_start {
 						self.slots.pop();
 						self.slots.insert(0, None);
+						self.prune_global_names();
 						continue;
 					}
 					let relative = index - span_start;
@@ -946,6 +1000,7 @@ impl ActiveMembers {
 					if self.slots.len() > span_end - span_start + 1 {
 						self.slots.pop();
 					}
+					self.prune_global_names();
 				}
 				MemberOp::Delete { index } => {
 					if !self.synced || self.slots.is_empty() {
@@ -957,11 +1012,13 @@ impl ActiveMembers {
 					if index < span_start {
 						self.slots.remove(0);
 						self.slots.push(None);
+						self.prune_global_names();
 						continue;
 					}
 					let relative = index - span_start;
 					self.slots.remove(relative);
 					self.slots.push(None);
+					self.prune_global_names();
 				}
 			}
 		}
@@ -995,6 +1052,7 @@ impl ActiveMembers {
 		.map_err(|_| Failure::Protocol)?;
 		self.clear_presence();
 		self.start = 0;
+		self.global_names.clear();
 		self.missing_identity = list
 			.missing_identity
 			.iter()
@@ -4468,8 +4526,8 @@ mod member_tests {
 		send(
 			&mut list,
 			json!([
-				{"member":{"user":{"id":"3","username":"one"},"nick":"First nickname","roles":["11"]}},
-				{"member":{"user":{"id":"4","username":"two"},"nick":"Second nickname","roles":["12"]}}
+				{"member":{"user":{"id":"3","username":"one","global_name":"First Display"},"nick":"First nickname","roles":["11"]}},
+				{"member":{"user":{"id":"4","username":"two","global_name":"Second Display"},"nick":"Second nickname","roles":["12"]}}
 			]),
 		);
 		send(
@@ -4480,9 +4538,11 @@ mod member_tests {
 			]),
 		);
 		assert_eq!(person(&list, 0).user.id, Id(4));
+		assert_eq!(person(&list, 0).user.name, "Second Display");
 		assert_eq!(person(&list, 0).nick.as_deref(), Some("Second nickname"));
 		assert_eq!(person(&list, 0).roles, vec![Id(12)]);
 		assert_eq!(person(&list, 1).user.id, Id(3));
+		assert_eq!(person(&list, 1).user.name, "First Display");
 		assert_eq!(person(&list, 1).nick.as_deref(), Some("First nickname"));
 		assert_eq!(person(&list, 1).roles, vec![Id(11)]);
 		let fields = list.snapshot(Freshness::Fresh).missing_identity;
@@ -4499,11 +4559,12 @@ mod member_tests {
 		send(
 			&mut list,
 			json!([
-				{"member":{"user":{"id":"4","username":"two"},"nick":null,"roles":[]}},
+				{"member":{"user":{"id":"4","username":"two","global_name":null},"nick":null,"roles":[]}},
 				{"member":{"user":{"id":"3","username":"one"}}}
 			]),
 		);
 		assert_eq!(person(&list, 0).nick, None);
+		assert_eq!(person(&list, 0).user.name, "two");
 		assert!(person(&list, 0).roles.is_empty());
 		assert!(
 			!list
@@ -4514,6 +4575,97 @@ mod member_tests {
 		);
 		assert_eq!(person(&list, 1).nick.as_deref(), Some("First nickname"));
 		assert_eq!(person(&list, 1).roles, vec![Id(11)]);
+		send(
+			&mut list,
+			json!([
+				{"member":{"user":{"id":"4","username":"two","global_name":"Updated Display"}}},
+				{"member":{"user":{"id":"3","username":"one"}}}
+			]),
+		);
+		assert_eq!(person(&list, 0).user.name, "Updated Display");
+		assert_eq!(person(&list, 1).user.name, "First Display");
+		send(
+			&mut list,
+			json!([
+				{"member":{"user":{"id":"4","username":"two"}}},
+				{"member":{"user":{"id":"3","username":"same","global_name":"same"}}}
+			]),
+		);
+		send(
+			&mut list,
+			json!([
+				{"member":{"user":{"id":"4","username":"two"}}},
+				{"member":{"user":{"id":"3","username":"renamed"}}}
+			]),
+		);
+		assert_eq!(person(&list, 1).user.name, "same");
+		assert_eq!(person(&list, 1).user.username.as_deref(), Some("renamed"));
+		let mut profile = person(&list, 1).user.clone();
+		profile.name = "renamed".into();
+		list.identity(&model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Cleared,
+			guild: Id(1),
+			user: Id(3),
+			profile: Some(profile),
+			avatar: model::Patch::Absent,
+			nick: model::Patch::Absent,
+			roles: model::Patch::Absent,
+			departed: false,
+		});
+		let mut profile = person(&list, 1).user.clone();
+		profile.name = "later".into();
+		profile.username = Some("later".into());
+		list.identity(&model::MemberIdentity {
+			global_name: model::GlobalNameUpdate::Unchanged,
+			guild: Id(1),
+			user: Id(3),
+			profile: Some(profile),
+			avatar: model::Patch::Absent,
+			nick: model::Patch::Absent,
+			roles: model::Patch::Absent,
+			departed: false,
+		});
+		assert_eq!(person(&list, 1).user.name, "later");
+		send(
+			&mut list,
+			json!([
+				{"member":{"user":{"id":"4","username":"two"}}},
+				{"member":{"user":{"id":"3","username":"newer"}}}
+			]),
+		);
+		assert_eq!(person(&list, 1).user.name, "newer");
+		assert!(list.global_names.len() <= list.people().count());
+	}
+
+	#[test]
+	fn global_name_tracking_follows_the_bounded_member_window() {
+		let mut list = ActiveMembers::new(MemberSubscription {
+			thread: false,
+			guild: Id(1),
+			channel: Id(2),
+			request: 7,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99]],
+		});
+		let initial: Vec<_> = (1..=100)
+			.map(|id| json!({"member":{"user":{"id":id.to_string(),"username":"account","global_name":"Display"}}}))
+			.collect();
+		let wire = json!({"guild_id":"1","id":"everyone","member_count":100,"ops":[{"op":"SYNC","range":[0,99],"items":initial}]});
+		list.update(decode::<MemberUpdate>(&serde_json::to_vec(&wire).unwrap()).unwrap())
+			.unwrap();
+		let ops: Vec<_> = (0..300)
+			.map(|index| json!({"op":"UPDATE","index":index % 100,"item":{"member":{"user":{"id":(index+1000).to_string(),"username":"account","global_name":"Display"}}}}))
+			.collect();
+		let wire = json!({"guild_id":"1","id":"everyone","member_count":100,"ops":ops});
+		list.update(decode::<MemberUpdate>(&serde_json::to_vec(&wire).unwrap()).unwrap())
+			.unwrap();
+		assert_eq!(list.global_names.len(), 100);
+		assert!(
+			list.global_names
+				.iter()
+				.all(|id| list.people().any(|member| member.user.id == *id))
+		);
+		assert!(list.slot_bytes() <= MEMBER_LIST_BYTES);
 	}
 
 	#[test]

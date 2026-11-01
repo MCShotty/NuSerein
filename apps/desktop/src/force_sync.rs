@@ -2814,7 +2814,7 @@ mod tests {
 			None
 		));
 		let update = Event::MemberIdentity(Box::new(model::MemberIdentity {
-			global_name_present: false,
+			global_name: model::GlobalNameUpdate::Unchanged,
 			avatar: model::Patch::Absent,
 			guild,
 			user: Id(987654321),

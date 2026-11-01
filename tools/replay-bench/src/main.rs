@@ -90,7 +90,7 @@ fn member_watch(departed: bool, sparse: bool) {
 		state.apply(Envelope {
 			generation: state.generation,
 			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
-				global_name_present: false,
+				global_name: model::GlobalNameUpdate::Unchanged,
 				guild: Id(10),
 				user: Id(10_000 + id),
 				profile: None,
@@ -132,7 +132,7 @@ fn member_cache() {
 		state.apply(Envelope {
 			generation: state.generation,
 			event: Event::MemberIdentity(Box::new(model::MemberIdentity {
-				global_name_present: true,
+				global_name: model::GlobalNameUpdate::Set,
 				guild: Id(10),
 				user: user.id,
 				profile: Some(user),

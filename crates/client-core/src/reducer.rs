@@ -1142,7 +1142,7 @@ impl State {
 									.find(|fields| fields.user == member.user.id)
 								{
 									self.timeline.apply_author_identity(&model::MemberIdentity {
-										global_name_present: false,
+										global_name: model::GlobalNameUpdate::Unchanged,
 										guild: list.guild.unwrap_or(Id(0)),
 										user: member.user.id,
 										profile: None,
