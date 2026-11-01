@@ -61,6 +61,12 @@ does not claim the whole repository has been reviewed.
   replacing a confirmed SQLite display name, and rejected member results are
   not written to disk. Member-list snapshots also avoid caching an omitted
   name as though Discord supplied the username as a display name.
+- Member-search results now keep an omitted name out of the confirmed display
+  cache while retaining the nickname; an explicit name removal is still saved.
+- Large history-range cleanup used to delete a batch before checking whether
+  the incoming page could be serialized. A rejected page could remove 128
+  cached messages. Large cleanups now validate the page before their first
+  committed deletion; a valid retry still completes the cleanup.
 
 The Gateway, scrolling, typing, image, reply, poll, status, placeholder, voice
 and identity regressions failed before their respective fixes. The
@@ -99,7 +105,8 @@ visually inspected or exercised here.
 
 Force Sync and member-list name handling are covered by synthetic fixtures;
 live Discord synchronization and the performance of large snapshots have not
-been measured here.
+been measured here. Large history cleanups still use multiple transactions; a
+later storage failure can leave a partially cleaned, verified range.
 
 ## Validation limits
 
@@ -135,7 +142,10 @@ focused strict Clippy and state-transition fuzz-target compilation passed after
 the visual fix. At `4c1c26fd`, 459 core tests passed with two ignored, 151 API
 tests passed with one ignored, 110 Gateway tests passed, and 19 desktop Force
 Sync tests passed. Formatting and strict Clippy passed for the changed crates;
-the state-transition fuzz target compiled, but no fuzz campaign was run.
+the state-transition fuzz target compiled. At `86e55c5f`, 462 core tests passed
+with two ignored, and focused strict Clippy passed. At `f608babc`, 97 local-store
+tests passed with two ignored, strict Clippy passed for that crate, and the
+HTTP-to-SQLite Force Sync fixture passed. No fuzz campaign was run.
 Headless egui tests
 exercise the affected interaction paths; this environment has no physical
 display for a visual or assistive-technology review. Live Discord, Windows
