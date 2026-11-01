@@ -60,16 +60,33 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2.9.2
         with:
-          save-if: false
+          cache-on-failure: true
       - name: Install native packaging tools
         run: |
           choco install nsis --no-progress -y
           if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
           python -m pip install meson==1.9.2 ninja==1.13.0
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg build tools installation failed' }
+      - name: Restore the exact-source FFmpeg build
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4.2.3
+        with:
+          path: |
+            ${{ env.FFMPEG_DIR }}
+            ${{ env.FFMPEG_CACHE }}
+          key: nuserein-windows-x64-ffmpeg-${{ inputs.source_commit }}-v1
       - name: Build pinned FFmpeg libraries
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: msys2 {0}
         run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
+      - name: Save the exact-source FFmpeg build
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4.2.3
+        with:
+          path: |
+            ${{ env.FFMPEG_DIR }}
+            ${{ env.FFMPEG_CACHE }}
+          key: nuserein-windows-x64-ffmpeg-${{ inputs.source_commit }}-v1
       - name: Make native libraries available to build tests
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Check production build and focused regressions
@@ -88,10 +105,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows update archive fixtures failed' }
           python -m unittest discover -s packaging/lavasr -p 'test_*.py'
           if ($LASTEXITCODE -ne 0) { throw 'Speech packaging fixtures failed' }
-          python packaging/windows/test_installer.py
-          if ($LASTEXITCODE -ne 0) { throw 'Windows installer fixtures failed' }
+          # The synthetic package contains placeholder CRT DLLs. Link its
+          # throwaway process statically so those placeholders cannot prevent
+          # Windows from loading it; the production executable is unchanged.
+          $source = Get-Content -Raw packaging/windows/test_installer.py
+          $before = '["rustc", "--edition=2024", "-O", str(fixture), "-o", str(payload / "serein.exe")]'
+          $after = '["rustc", "--edition=2024", "-C", "target-feature=+crt-static", "-O", str(fixture), "-o", str(payload / "serein.exe")]'
+          if (-not $source.Contains($before) -or $source.IndexOf($before) -ne $source.LastIndexOf($before)) { throw 'Installer fixture source changed unexpectedly' }
+          $fixture = 'packaging/windows/installer-static-fixture.py'
+          try {
+            [IO.File]::WriteAllText((Join-Path (Get-Location) $fixture), $source.Replace($before, $after), [Text.UTF8Encoding]::new($false))
+            python $fixture
+            if ($LASTEXITCODE -ne 0) { throw 'Windows installer fixtures failed' }
+          } finally { Remove-Item $fixture -ErrorAction SilentlyContinue }
       - name: Build the production package and installer
         run: |
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'Production source differs from the merged commit' }
           cargo xtask package
           if ($LASTEXITCODE -ne 0) { throw 'Production packaging failed' }
           $setup = @(Get-ChildItem dist-installer/*-setup.exe -File)
@@ -101,7 +131,7 @@ jobs:
           $name = "NuSerein-$version-$($env:SOURCE_COMMIT.Substring(0,8))-Windows-X64-Setup.exe"
           Move-Item $setup[0].FullName "dist-installer/$name"
           Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
-          @{source_commit=$env:SOURCE_COMMIT; native_ci_run=$env:SOURCE_RUN; architecture='X64'; rust='1.98.1'; signed=$false} | ConvertTo-Json | Set-Content dist-installer/build.json
+          @{source_commit=$env:SOURCE_COMMIT; native_ci_run=$env:SOURCE_RUN; architecture='X64'; rust='1.98.1'; signed=$false; installer_fixture='Synthetic process linked with static CRT; the original fixture timed out in run 41279477891'} | ConvertTo-Json | Set-Content dist-installer/build.json
       - name: Check the packaged runtime without build-library paths
         run: |
           $checkDir = Join-Path $env:RUNNER_TEMP 'nuserein-installer-check'
