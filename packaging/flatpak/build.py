@@ -26,14 +26,15 @@ def clean_git_environment():
 
 def generate_flatpakref(repo_url=DEFAULT_REPO_URL):
     # The default repository is upstream; never label its packages as this fork.
-    title = "Serein" if repo_url.rstrip("/") == DEFAULT_REPO_URL else "NuSerein"
+    upstream = repo_url.rstrip("/") == DEFAULT_REPO_URL
+    title = "Serein" if upstream else "NuSerein"
+    icon = "Icon=https://viceverse-cz.github.io/Serein/icons/serein.png\n" if upstream else ""
     return f"""[Flatpak Ref]
 Name=cz.viceverse.serein
 Branch=master
 Title={title}
 Comment=Fast, secure and lightweight native Discord client
-Icon=https://viceverse-cz.github.io/Serein/icons/serein.png
-Url={repo_url}
+{icon}Url={repo_url}
 RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo
 IsRuntime=false
 """

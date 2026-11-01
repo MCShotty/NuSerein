@@ -6,7 +6,7 @@ use objc2_app_kit::{NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem};
 use objc2_foundation::{MainThreadMarker, NSData, NSObject, NSObjectProtocol, NSSize, ns_string};
 use std::sync::Arc;
 
-/// Serein's own mark, rasterized from `assets/brand/serein-mark.svg` as a menu bar template:
+/// NuSerein's own mark, rasterized from `assets/brand/serein-mark.svg` as a menu bar template:
 /// only its alpha matters, so macOS tints it for light, dark and highlighted menu bars.
 const MARK: &[u8] = include_bytes!("../../../../assets/brand/serein-tray.png");
 /// Menu bar images are measured in points; the render is larger so Retina scales stay sharp.

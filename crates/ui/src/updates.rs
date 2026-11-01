@@ -310,14 +310,7 @@ impl MessagingUi {
 				ui.spacing_mut().item_spacing.x = 14.0;
 				let (badge, _) =
 					ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
-				ui.painter()
-					.rect_filled(badge, 12, colors.accent.gamma_multiply(0.16));
-				crate::icons::paint(
-					ui.painter(),
-					crate::icons::Icon::Serein,
-					badge.shrink(10.0),
-					colors.accent,
-				);
+				crate::icons::paint_brand(ui.painter(), badge);
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 					if self.updates.ready {
 						ui.add_enabled_ui(!self.updates.busy, |ui| {

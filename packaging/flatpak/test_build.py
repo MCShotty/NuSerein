@@ -21,8 +21,11 @@ class PreparationTest(unittest.TestCase):
         self.assertIn("Name=cz.viceverse.serein", ref)
         self.assertIn("Title=NuSerein", ref)
         self.assertIn("Url=https://example.com/flatpak/repo", ref)
+        self.assertNotIn("viceverse-cz.github.io", ref)
         self.assertIn("RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo", ref)
-        self.assertIn("Title=Serein", build.generate_flatpakref())
+        upstream = build.generate_flatpakref()
+        self.assertIn("Title=Serein", upstream)
+        self.assertIn("Icon=https://viceverse-cz.github.io/Serein/icons/serein.png", upstream)
 
     def test_locked_sources_and_exact_compiler_exclude_untracked_data(self):
         self.prepare_fixture()

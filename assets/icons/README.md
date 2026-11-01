@@ -26,8 +26,8 @@ legal disclaimer applies. The license file is staged in both packages as
 One repository-drawn glyph, `thread.svg` (four slanted round-capped bars on the same 256-unit
 grid), marks threads; it is rasterized with the Phosphor set and carries no upstream license.
 
-- `atlas.png`: 512×896 RGBA, 26,267 bytes after lossless `oxipng -o max --strip all`.
-  SHA-256 `eb0553105dd745e67b1c1e2249cdf0f037c56ea2f1d7b5af45ebbf38f240a8f2`.
+- `atlas.png`: 512×896 RGBA, 58,189 bytes.
+  SHA-256 `8ffa076cb9969f3dfb337f18dba24a9c53670dd77e55637b0bc3600c1866c227`.
 - `index.tsv`: icon name, tab, zero-based cell; SHA-256
   `cc8a5f5cebe0bcb916e6a12c4dae58c6feabee0487b2ca3e8bb1a3f1c6f378de`.
 
@@ -39,8 +39,9 @@ cargo install resvg --version 0.45.1 --root /tmp/resvg-tool
 python3 tools/generate-icons.py --resvg /tmp/resvg-tool/bin/resvg
 ```
 
-PNG compression bytes can vary with the resvg/png versions; decoded pixels and cell indices
-are deterministic. `cargo test -p ui icons` checks that every `Icon` variant maps to a
+PNG compression and edge pixels can vary with the renderer. `tools/generate-brand-assets.py`
+uses Inkscape to update only the brand cell in the checked-in atlas; a full regeneration uses
+resvg for every cell. `cargo test -p ui icons` checks that every `Icon` variant maps to a
 distinct, non-blank cell and that the atlas stays below 256 KiB.
 
 The folder and open-folder glyphs are unmodified Phosphor `folder-fill.svg` and
@@ -53,8 +54,8 @@ The screen-share fullscreen glyph is unmodified Phosphor `corners-out-bold.svg`,
 same pinned 2.1.1 package on September 27, 2026.
 
 The `serein-mark` cell is our own artwork, not an upstream icon: it is the solid silhouette of
-the Serein chat-wave from `assets/brand/serein-mark.svg`, trimmed to its bounding box so it
-matches Phosphor's glyph weight in the cell. It replaced the Discord brand mark that previously
+the NuSerein Signal N and waveform from `assets/brand/serein-mark.svg`, sized to match
+Phosphor glyphs in the cell. It replaced the Discord brand mark that previously
 occupied cell 58; no third-party application logo is bundled any more. `tools/generate-icons.py`
 pins its SHA-256 like every upstream source and rasterizes it from the repository rather than a
 package mirror.

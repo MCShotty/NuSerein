@@ -1,4 +1,4 @@
-//! Phosphor Icons (MIT), Simple Icons brand marks (CC0) and the Serein mark rasterized once
+//! Phosphor Icons (MIT), Simple Icons brand marks (CC0) and the NuSerein mark rasterized once
 //! into one bundled atlas and tinted at draw time.
 //!
 //! `assets/icons/atlas.png` holds white glyphs on transparency in fixed 64px cells;
@@ -9,6 +9,7 @@ use egui::{Color32, Rect, Response, Sense, TextureHandle, Vec2};
 use std::sync::OnceLock;
 
 const ATLAS: &[u8] = include_bytes!("../../../assets/icons/atlas.png");
+const BRAND: &[u8] = include_bytes!("../../../packaging/linux/hicolor/64x64/apps/serein.png");
 const INDEX: &str = include_str!("../../../assets/icons/index.tsv");
 const COLUMNS: usize = 8;
 const CELL: f32 = 64.0;
@@ -384,9 +385,44 @@ fn decoded() -> egui::ColorImage {
 	egui::ColorImage::from_rgba_unmultiplied(size, &image)
 }
 
-/// Upload the atlas for `ctx` during application creation, outside the render callback.
+/// Upload the atlas and small full-color brand for `ctx` during application creation.
 pub fn install(ctx: &egui::Context) {
 	let _ = texture(ctx);
+	let _ = brand_texture(ctx);
+}
+
+fn brand_texture(ctx: &egui::Context) -> TextureHandle {
+	let id = egui::Id::unique("nuserein-brand");
+	if let Some(texture) = ctx.data(|data| data.get_temp::<TextureHandle>(id)) {
+		return texture;
+	}
+	let image = image::load_from_memory_with_format(BRAND, image::ImageFormat::Png)
+		.expect("bundled NuSerein logo")
+		.into_rgba8();
+	let size = [image.width() as usize, image.height() as usize];
+	let texture = ctx.load_texture(
+		"NuSerein logo",
+		egui::ColorImage::from_rgba_unmultiplied(size, &image),
+		egui::TextureOptions {
+			mipmap_mode: Some(egui::TextureFilter::Linear),
+			..egui::TextureOptions::LINEAR
+		},
+	);
+	ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
+	texture
+}
+
+/// Paint the full-color app icon without changing the surrounding widget's interaction.
+pub fn paint_brand(painter: &egui::Painter, rect: Rect) {
+	let size = rect.width().min(rect.height());
+	let rect = Rect::from_center_size(rect.center(), Vec2::splat(size))
+		.round_to_pixels(painter.pixels_per_point());
+	painter.image(
+		brand_texture(painter.ctx()).id(),
+		rect,
+		Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+		Color32::WHITE,
+	);
 }
 
 fn texture(ctx: &egui::Context) -> TextureHandle {
@@ -564,6 +600,25 @@ pub fn inline(ui: &mut egui::Ui, icon: Icon, size: f32, color: Color32) -> Rect 
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn full_color_brand_is_bounded_and_reuses_its_texture() {
+		let image = image::load_from_memory_with_format(BRAND, image::ImageFormat::Png)
+			.unwrap()
+			.into_rgba8();
+		assert_eq!(image.dimensions(), (64, 64));
+		assert!(image.pixels().any(|pixel| pixel[3] == 0));
+		assert!(
+			image
+				.pixels()
+				.any(|pixel| pixel[2] > pixel[0].saturating_add(60))
+		);
+		let ctx = egui::Context::default();
+		let first = brand_texture(&ctx);
+		let second = brand_texture(&ctx);
+		assert_eq!(first.id(), second.id());
+		assert_eq!(first.size(), [64, 64]);
+	}
+
 	#[test]
 	fn atlas_covers_every_icon_once_and_paints_inside_its_rect() {
 		let image = decoded();

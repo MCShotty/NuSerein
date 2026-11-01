@@ -460,13 +460,7 @@ impl Desktop {
 						18,
 						p.accent.gamma_multiply(0.10 + 0.10 * pulse),
 					);
-					ui.painter().rect_filled(mark, 14, p.accent);
-					ui::icons::paint(
-						ui.painter(),
-						ui::icons::Icon::Serein,
-						mark.shrink(13.0),
-						p.accent_text,
-					);
+					ui::icons::paint_brand(ui.painter(), mark);
 					ui.add_space(18.0);
 					ui.label(
 						ui::design::semibold(
@@ -557,13 +551,7 @@ impl Desktop {
 							// Wordmark lockup: app mark, name, then a quiet outlined stage pill.
 							let (mark, _) = ui
 								.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-							ui.painter().rect_filled(mark, 6, p.accent);
-							ui::icons::paint(
-								ui.painter(),
-								ui::icons::Icon::Serein,
-								mark.shrink(5.0),
-								p.accent_text,
-							);
+							ui::icons::paint_brand(ui.painter(), mark);
 							ui.add_space(8.0);
 							ui.label(
 								ui::design::semibold(
@@ -777,13 +765,7 @@ impl Desktop {
 			let (mark, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
 			ui.painter()
 				.rect_filled(mark.expand(6.0), 17, p.accent.gamma_multiply(0.16));
-			ui.painter().rect_filled(mark, 13, p.accent);
-			ui::icons::paint(
-				ui.painter(),
-				ui::icons::Icon::Serein,
-				mark.shrink(11.0),
-				p.accent_text,
-			);
+			ui::icons::paint_brand(ui.painter(), mark);
 			ui.add_space(12.0);
 			ui.label(
 				ui::design::semibold(
