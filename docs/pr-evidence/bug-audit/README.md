@@ -10,6 +10,12 @@ does not claim the whole repository has been reviewed.
   replacement fit. A rejected presence update or subscription cancellation
   could therefore discard earlier work. The regression checks both byte-limit
   failures and confirms that the original packets remain queued.
+- Gateway presence batching discarded updates after 100 people or when the
+  batch filled its byte budget. Both direct and server-member updates now flush
+  bounded batches instead. Replayed direct presence waits for RESUMED; if its
+  three-batch holding area fills, recovery requests a fresh synchronization.
+  Synthetic tests cover 150-person bursts, byte pressure, partial updates,
+  delivery failure and local WebSocket delivery during normal use and resume.
 - Wheel events preceding a click in the same input frame could restart motion
   after the click. The regression covers wheel and touchpad input with smooth
   scrolling enabled and disabled, in both event orders.
@@ -70,8 +76,8 @@ does not claim the whole repository has been reviewed.
   cached messages. Large cleanups now validate the page before their first
   committed deletion; a valid retry still completes the cleanup.
 
-The Gateway, scrolling, typing, image, reply, poll, status, placeholder, voice
-and identity regressions failed before their respective fixes. The
+The Gateway, presence-burst, scrolling, typing, image, reply, poll, status,
+placeholder, voice and identity regressions failed before their respective fixes. The
 member-list races, partial-profile, omitted-name and Force Sync probes also
 failed before their fixes. The gallery fixture and the skipped-midnight case
 were extended afterward. The tests use synthetic data and do not contact
@@ -91,9 +97,15 @@ packaging, workflow and vendor code still needs review.
 
 A repository-wide search of first-party Rust sources found no `TODO:`, `FIXME:`,
 `todo!` or `unimplemented!` markers. That mechanical search is not a correctness
-or security audit. A search for decorative comment banners, numbered steps and
-generic labels found one false positive: the `WSAEMSGSIZE` comment records a
-Windows-specific behavior and was retained. This is not a full comment review.
+or security audit. Searches for decorative comment banners, numbered steps,
+generic labels and action narration found explanatory comments, including the
+`WSAEMSGSIZE` comment recording Windows-specific behavior; those were retained.
+This is not a full comment review.
+
+Syntax checks at `67743f64` also passed for 27 Python, nine shell and ten
+JavaScript files in the first-party application, crates, extensions, tools,
+packaging, scripts, tests, examples and fuzz directories. These checks do not
+execute the files or establish their behavior.
 
 The Anti-Slop core, UI and code guidance was applied to the changed comments
 and inspected interactions. An offline virtual-display preview at 1120 × 760
@@ -120,11 +132,15 @@ An offline demo with software rendering showed the forum list at 1120 × 760
 - Removing a channel unchecked Show All and made its category mixed; selecting
   it again restored the channel. Tab and Enter selected a channel-list filter.
 
-Seven additional programmatic demo checks covered member lookup, suggestion
-clicks, settings sliders, forum navigation and menus, the conversation switcher
-and forwarding. These are synthetic checks, not live Discord acceptance. The
-first preview logged an X11 error after its test window was forcibly destroyed;
-the later preview logged no errors during interaction and was ended by signal.
+Twenty-two additional programmatic demo checks covered member lookup, suggestion
+clicks, settings sliders, forum navigation and menus, the conversation switcher,
+forwarding, polls, components, slash commands, access labels, updates,
+customization, reconnect and send handling, notification badges and clicks,
+profile and message presentation, extensions, image sharing, voice preferences,
+window geometry, and microphone and camera preview guards. These are synthetic
+checks, not live Discord acceptance or device tests. The first preview logged an
+X11 error after its test window was forcibly destroyed; the later preview logged
+no errors during interaction and was ended by signal.
 
 Force Sync and member-list name handling are covered by synthetic fixtures;
 live Discord synchronization and the performance of large snapshots have not
@@ -170,7 +186,10 @@ with two ignored, and focused strict Clippy passed. At `f608babc`, 97 local-stor
 tests passed with two ignored, strict Clippy passed for that crate, and the
 HTTP-to-SQLite Force Sync fixture passed. At `67743f64`, 849 UI tests passed
 with 10 ignored, strict Clippy passed for UI, Gateway and the demo application,
-and the seven programmatic demo checks passed. No fuzz campaign was run.
+and all 22 programmatic demo checks passed. No fuzz campaign was run.
+At `2005f08e`, all 118 Gateway library tests passed, including the new burst
+and reconnect cases; formatting and strict Gateway Clippy passed. The two
+150-person burst reproductions each delivered only 100 updates before the fix.
 Headless egui tests
 exercise the affected interaction paths; this environment has no physical
 display for a visual or assistive-technology review. Live Discord, Windows
@@ -193,7 +212,9 @@ these counts are not a performance comparison.
 At `cb506cb2`, the Linux Nix CI job failed while downloading the pinned FFmpeg
 tarball: the connection to ffmpeg.org was reset. The same download failure
 occurred at `66f78e54`. That earlier revision's macOS Nix job also failed to
-link `___isPlatformVersionAtLeast`; the current macOS Nix result is pending.
-The current macOS native job passed. Windows ARM64 failed the GPU webcam
-denoising fixture with `DenoiseError`, as it did at `66f78e54`; the cause has
-not been established here.
+link `___isPlatformVersionAtLeast`. At `cb506cb2`, the macOS native job passed,
+but Windows x64 failed the synthetic WARP device-removal fixture with its
+generic `-1` result. That result covers several setup and processing failures,
+so its cause is not established. Windows ARM64 failed the GPU webcam denoising
+fixture with `DenoiseError`, as it did at `66f78e54`; its cause is also unknown.
+Later CI results are tracked separately in the PR.
