@@ -1,10 +1,16 @@
 # NuSerein
 
 <p align="center">
+  <img src="assets/brand/serein-1024.png" alt="NuSerein Signal N logo" width="96" />
+</p>
+
+<p align="center">
   <a href="https://github.com/MCShotty/NuSerein">
     <img src="docs/preview.png" alt="NuSerein Native Discord Client" width="900" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);" />
   </a>
 </p>
+
+The preview above is a historical Serein screenshot; the interface and icon have since changed.
 
 <p align="center">
   <strong>A lightweight, native Discord desktop client written in Rust, powered by egui and wgpu.</strong>
