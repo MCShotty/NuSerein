@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 mod zone;
 pub(crate) use zone::names as timezone_names;
+pub(crate) use zone::next_midnight;
 #[cfg(test)]
 pub(crate) use zone::pin_timezone;
 pub use zone::{

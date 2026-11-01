@@ -277,6 +277,23 @@ pub fn wall_time(value: &str) -> Vec<time::OffsetDateTime> {
 	result
 }
 
+/// The next local day's start, including zones whose midnight falls in a DST gap or fold.
+pub(crate) fn next_midnight(instant: time::OffsetDateTime) -> Option<time::OffsetDateTime> {
+	let zone = display_zone();
+	let date = convert(&zone, instant).date().next_day()?;
+	let civil = jiff::civil::Date::new(
+		i16::try_from(date.year()).ok()?,
+		u8::from(date.month()) as i8,
+		date.day() as i8,
+	)
+	.ok()?
+	.at(0, 0, 0, 0);
+	let zoned = zone.to_ambiguous_zoned(civil).compatible().ok()?;
+	let utc =
+		time::OffsetDateTime::from_unix_timestamp_nanos(zoned.timestamp().as_nanosecond()).ok()?;
+	(utc > instant).then(|| convert(&zone, utc))
+}
+
 pub(super) fn convert(zone: &TimeZone, instant: time::OffsetDateTime) -> time::OffsetDateTime {
 	let offset = jiff::Timestamp::from_second(instant.unix_timestamp())
 		.ok()

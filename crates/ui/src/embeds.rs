@@ -597,7 +597,10 @@ pub fn poll_result(ui: &mut egui::Ui, message: &Message, can_open: bool) -> bool
 	let (title, detail) = match winner {
 		Some(text) => {
 			let votes = number("victor_answer_votes").unwrap_or(0).min(total);
-			let percent = (votes * 100 + total / 2).checked_div(total).unwrap_or(0);
+			let total = u128::from(total);
+			let percent = (u128::from(votes) * 100 + total / 2)
+				.checked_div(total)
+				.unwrap_or(0);
 			// Custom emoji images are not resolved here; Unicode emoji carry no id.
 			let emoji = embed
 				.field("victor_answer_emoji_name")
@@ -1368,6 +1371,54 @@ pub fn estimated_height(embeds: &[Embed]) -> f32 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn poll_result_renders_extreme_vote_counts_without_overflow() {
+		for (votes, total, expected) in [
+			(u64::MAX, u64::MAX, "100%"),
+			(10, 20, "50%"),
+			(21, 20, "100%"),
+			(0, 0, "0%"),
+		] {
+			let mut message = test_support::message(1, model::Id(2));
+			message.embeds.push(Embed {
+				kind: "poll_result".into(),
+				fields: [
+					("victor_answer_text", "Synthetic".into()),
+					("victor_answer_votes", votes.to_string()),
+					("total_votes", total.to_string()),
+				]
+				.into_iter()
+				.map(|(name, value)| model::EmbedField {
+					name: name.into(),
+					value,
+					..Default::default()
+				})
+				.collect(),
+				..Default::default()
+			});
+			let ctx = egui::Context::default();
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(640.0, 200.0),
+					)),
+					..Default::default()
+				},
+				|ui| {
+					assert!(!poll_result(ui, &message, false));
+				},
+			);
+			assert!(
+				output.shapes.iter().any(|shape| {
+					matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(expected))
+				}),
+				"expected {expected} for {votes}/{total}"
+			);
+			output.drop_without_applying_deltas();
+		}
+	}
 
 	#[test]
 	fn youtube_links_resolve_only_bounded_public_video_ids_and_start_times() {
