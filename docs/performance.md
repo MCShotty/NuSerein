@@ -4594,3 +4594,20 @@ from 614,896 to 794,896 bytes; the changed build stayed at 578,104 bytes.
 These are timeline allocation estimates, not process RSS. Replay binaries
 were 2,430,752 and 2,430,800 bytes respectively. The results do not measure
 Gateway, voice, rendering, storage, native input or live Discord performance.
+
+### Bug-audit member reconciliation follow-up
+
+The same Linux release comparison was repeated for `fd8541bf` against merged
+baseline `1e8123c0`, using one warmup and five alternating samples pinned to CPU
+0. The identity harness has the same scope described above.
+
+| Synthetic workload | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 80.920 ms (79.340–85.578) | 77.165 ms (75.610–80.861) | −4.6% |
+| 10,000 member-watch rebuilds | 45.079 ms (42.146–49.122) | 41.738 ms (41.063–44.931) | −7.4% |
+| 3,000 message/identity updates | 98.128 ms (97.759–103.837) | 70.620 ms (65.473–71.092) | −28.0% |
+
+The identity bookkeeping estimate stayed at 578,128 bytes across the changed
+run, while the baseline rose from 614,896 to 794,896 bytes. Reducer and
+member-watch sample ranges overlap. These measurements do not establish
+application-wide performance or replace native UI and device checks.

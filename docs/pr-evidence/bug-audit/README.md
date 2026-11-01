@@ -35,10 +35,19 @@ does not claim the whole repository has been reviewed.
 - Member-identity updates accumulated obsolete message IDs even when no
   history page was loading. The regression rotates three timeline windows and
   checks that in-flight pages still preserve newer nicknames.
+- A delayed history page could overwrite newer member-list nicknames and role
+  assignments. Reconciliation now retains only the changed member fields,
+  allowing newer message content to load. Tests cover cached pages, range
+  navigation and bounded tracking as well as the reducer's member-list path.
+- A partial member profile replaced the whole message-author record and could
+  erase existing avatars or cosmetics. Member-list and timeline updates now
+  share the same partial profile merge. Explicit identity clears also survive
+  delayed history without suppressing newer message bodies.
 
 The Gateway, scrolling, typing, image, reply, poll, status, placeholder, voice
 and identity regressions failed before their respective fixes. The
-gallery fixture and the skipped-midnight case were extended afterward. The
+member-list race and partial-profile fixture also failed before their fixes. The gallery fixture and the
+skipped-midnight case were extended afterward. The
 tests use synthetic data and do not contact Discord or capture devices.
 
 ## Review coverage
@@ -74,7 +83,13 @@ At `9f43824d`, the core suite passed 449 tests with two ignored, and the
 session-cache suite passed 13 tests with two ignored. Synthetic login-handoff,
 cached-xtask workspace, and two Linux packaging fixture tests, formatting and
 strict workspace Clippy also passed at that revision. The full workspace check
-and native CI are tracked in the PR. Headless egui tests
+and native CI are tracked in the PR. At `fd8541bf`, 451 core tests, 74 model
+tests and 17 session-cache tests passed, with two ignored in each of the core
+and session-cache suites; strict Clippy passed for those crates. Repository
+policy and license checks passed at `03f1179d`. An older local
+FFmpeg build initially failed the webcam reference fixture because it lacked
+`hqdn3d` and `unsharp`; the fixture passed after rebuilding the project's pinned
+FFmpeg recipe with those filters. Headless egui tests
 exercise the affected interaction paths; this environment has no native
 display for a visual or assistive-technology review. Live Discord, Windows
 capture, microphone and real-device behavior remain owner-controlled and
