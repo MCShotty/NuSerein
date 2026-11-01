@@ -16,7 +16,38 @@ permissions:
   actions: read
 
 jobs:
+  fixture-probe:
+    if: inputs.run_id == '0'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Install NSIS
+        run: choco install nsis --no-progress -y
+      - name: Run the installer fixture with a static synthetic process
+        run: |
+          $source = Get-Content -Raw packaging/windows/test_installer.py
+          $before = '["rustc", "--edition=2024", "-O", str(fixture), "-o", str(payload / "serein.exe")]'
+          $after = '["rustc", "--edition=2024", "-C", "target-feature=+crt-static", "-O", str(fixture), "-o", str(payload / "serein.exe")]'
+          if (-not $source.Contains($before) -or $source.IndexOf($before) -ne $source.LastIndexOf($before)) { throw 'Installer fixture source changed unexpectedly' }
+          $fixture = 'packaging/windows/installer-static-fixture.py'
+          try {
+            [IO.File]::WriteAllText((Join-Path (Get-Location) $fixture), $source.Replace($before, $after), [Text.UTF8Encoding]::new($false))
+            python $fixture
+            if ($LASTEXITCODE -ne 0) { throw 'Windows installer fixtures failed' }
+          } finally { Remove-Item $fixture -ErrorAction SilentlyContinue }
   windows:
+    if: inputs.run_id != '0'
     runs-on: windows-latest
     timeout-minutes: 120
     env:
