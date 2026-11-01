@@ -226,7 +226,12 @@ pub(super) fn before_startup() -> bool {
 			"stale result must be ignored"
 		);
 		state.demo = false;
-		let user = model::Id(987654321);
+		assert!(
+			state
+				.request_author_members(&[model::Id(987654321)])
+				.is_none()
+		);
+		let user = model::Id(987654324);
 		let Some(Command::MemberSearch(author_request)) = state.request_author_members(&[user])
 		else {
 			panic!("visible author lookup should be permitted");

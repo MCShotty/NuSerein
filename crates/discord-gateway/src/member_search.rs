@@ -478,12 +478,13 @@ pub fn debug_check(request: Request) -> Event {
 		assert!(packet["d"].get("query").is_none());
 	}
 	assert_eq!(packet["d"]["limit"], 100);
-	let mut chunk = serde_json::json!({"guild_id":request.guild.to_string(),"nonce":"wrong","chunk_index":0,"chunk_count":1,"members":[{"user":{"id":"987654321","username":"remote-person","global_name":"remote-person"},"nick":"OutsideFirstHundred","roles":[]}]});
+	let user = request.users.first().copied().unwrap_or(Id(987654321));
+	let mut chunk = serde_json::json!({"guild_id":request.guild.to_string(),"nonce":"wrong","chunk_index":0,"chunk_count":1,"members":[{"user":{"id":user.to_string(),"username":"remote-person","global_name":"remote-person"},"nick":"OutsideFirstHundred","roles":[]}]});
 	assert!(search.chunk(&serde_json::to_vec(&chunk).unwrap()).is_none());
 	chunk["nonce"] = serde_json::json!(request.nonce.to_string());
 	let event = search.chunk(&serde_json::to_vec(&chunk).unwrap()).unwrap();
 	assert!(
-		matches!(&event, Event::MemberSearch { result: Ok(rows), .. } if rows.len() == 1 && rows[0].user.id == Id(987654321))
+		matches!(&event, Event::MemberSearch { result: Ok(rows), .. } if rows.len() == 1 && rows[0].user.id == user)
 	);
 	assert!(search.chunk(&serde_json::to_vec(&chunk).unwrap()).is_none());
 	search.next_send = Instant::now();
