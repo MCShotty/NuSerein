@@ -18,6 +18,8 @@ does not claim the whole repository has been reviewed.
 - When startup was unavailable, the nested Start minimized switch was dimmed
   twice. Both switches now use the same disabled text treatment without
   changing when either can be used.
+- Forum cards centered short titles inside their reserved width. List and
+  gallery titles now align with the unread marker while preserving badge space.
 - Image MIME types with parameters were not classified as images. The model
   regression covers parameters, whitespace and non-image types; the gallery
   fixture verifies that such an image is displayed and can be opened.
@@ -103,6 +105,27 @@ These checks used software rendering, not Discord or native device controls. A
 complete UI delivery gate remains open because the full interface has not been
 visually inspected or exercised here.
 
+An offline demo with software rendering showed the forum list at 1120 × 760
+[before](forum-before.png) at `fff246c8` and [after](forum-after.png) at
+`67743f64`. The [dark, narrow view](forum-dark-narrow.png) was inspected at
+700 × 700. In that demo, the following interactions were exercised:
+
+- Browse Channels opened; the Muted filter showed the muted channel.
+- Searching for a forum while Muted was selected showed no match; clearing the
+  filter showed the forum, and its row opened it.
+- Sort & View opened the gallery; Escape closed its menu. New Post opened an
+  empty composer with Post disabled, and its close control dismissed it.
+- Appearance opened from the settings control; Dark changed the theme, and
+  Escape closed settings.
+- Removing a channel unchecked Show All and made its category mixed; selecting
+  it again restored the channel. Tab and Enter selected a channel-list filter.
+
+Seven additional programmatic demo checks covered member lookup, suggestion
+clicks, settings sliders, forum navigation and menus, the conversation switcher
+and forwarding. These are synthetic checks, not live Discord acceptance. The
+first preview logged an X11 error after its test window was forcibly destroyed;
+the later preview logged no errors during interaction and was ended by signal.
+
 Force Sync and member-list name handling are covered by synthetic fixtures;
 live Discord synchronization and the performance of large snapshots have not
 been measured here. Large history cleanups still use multiple transactions; a
@@ -145,7 +168,9 @@ Sync tests passed. Formatting and strict Clippy passed for the changed crates;
 the state-transition fuzz target compiled. At `86e55c5f`, 462 core tests passed
 with two ignored, and focused strict Clippy passed. At `f608babc`, 97 local-store
 tests passed with two ignored, strict Clippy passed for that crate, and the
-HTTP-to-SQLite Force Sync fixture passed. No fuzz campaign was run.
+HTTP-to-SQLite Force Sync fixture passed. At `67743f64`, 849 UI tests passed
+with 10 ignored, strict Clippy passed for UI, Gateway and the demo application,
+and the seven programmatic demo checks passed. No fuzz campaign was run.
 Headless egui tests
 exercise the affected interaction paths; this environment has no physical
 display for a visual or assistive-technology review. Live Discord, Windows
