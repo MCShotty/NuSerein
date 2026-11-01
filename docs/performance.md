@@ -4611,3 +4611,20 @@ The identity bookkeeping estimate stayed at 578,128 bytes across the changed
 run, while the baseline rose from 614,896 to 794,896 bytes. Reducer and
 member-watch sample ranges overlap. These measurements do not establish
 application-wide performance or replace native UI and device checks.
+
+### Bug-audit snapshot reconciliation follow-up
+
+The same Linux release method compared merged baseline `1e8123c0` with
+`cb506cb2`, using one warmup and five alternating samples pinned to CPU 0.
+No build ran during the measurements.
+
+| Synthetic workload | Baseline median (range) | Changed median (range) | Delta |
+| --- | ---: | ---: | ---: |
+| 100,000 reducer events | 85.125 ms (82.784–87.245) | 85.449 ms (84.308–87.935) | +0.4% |
+| 10,000 member-watch rebuilds | 44.390 ms (42.859–45.976) | 44.873 ms (44.124–49.247) | +1.1% |
+| 3,000 message/identity updates | 102.205 ms (99.401–107.222) | 62.598 ms (60.002–65.052) | −38.8% |
+
+Estimated identity bookkeeping remained at 578,128 bytes in the changed run;
+the baseline grew from 614,896 to 794,896 bytes. These workloads do not
+measure member-list snapshot processing, UI frame time, process memory or
+live Discord behavior. The reducer and member-watch ranges overlap.

@@ -15,6 +15,9 @@ does not claim the whole repository has been reviewed.
   scrolling enabled and disabled, in both event orders.
 - The typing indicator animated even when the egui style disabled animation.
   The regression checks static dot appearance and repaint deadlines.
+- When startup was unavailable, the nested Start minimized switch was dimmed
+  twice. Both switches now use the same disabled text treatment without
+  changing when either can be used.
 - Image MIME types with parameters were not classified as images. The model
   regression covers parameters, whitespace and non-image types; the gallery
   fixture verifies that such an image is displayed and can be opened.
@@ -43,11 +46,22 @@ does not claim the whole repository has been reviewed.
   erase existing avatars or cosmetics. Member-list and timeline updates now
   share the same partial profile merge. Explicit identity clears also survive
   delayed history without suppressing newer message bodies.
+- Omitted `global_name` values were converted to usernames and overwrote known
+  display names. Partial identity updates now distinguish omission, null and a
+  supplied value. Active Gateway member lists retain bounded name provenance
+  across row updates and reordering, including the case where a global name
+  matches the old username. Explicit clears still follow later username changes.
+- Initial member lists, thread lists and member-search results now retain that
+  distinction. Reconciliation keeps newer names through delayed searches,
+  updates already-loaded messages, and keeps fallback names working across
+  successive 200-member snapshots and overlay eviction. Disk hints do not
+  establish permission or authoritative name provenance.
 
 The Gateway, scrolling, typing, image, reply, poll, status, placeholder, voice
 and identity regressions failed before their respective fixes. The
-member-list race and partial-profile fixture also failed before their fixes. The gallery fixture and the
-skipped-midnight case were extended afterward. The
+member-list races, partial-profile and omitted-name probes also failed before
+their fixes. The gallery fixture and the skipped-midnight case were extended
+afterward. The
 tests use synthetic data and do not contact Discord or capture devices.
 
 ## Review coverage
@@ -69,8 +83,19 @@ generic labels found one false positive: the `WSAEMSGSIZE` comment records a
 Windows-specific behavior and was retained. This is not a full comment review.
 
 The Anti-Slop core, UI and code guidance was applied to the changed comments
-and inspected interactions. A complete UI delivery gate remains open because
-the full interface has not been visually inspected or exercised here.
+and inspected interactions. An offline virtual-display preview at 1120 × 760
+shows the unavailable startup switches [before](startup-before.png) at
+`cb506cb2` and [after](startup-after.png) at `6951883b`. In the same synthetic
+preview, clicking the tray switch changed its state and Escape closed settings.
+A compact light-theme conversation and mention picker were also inspected.
+These checks used software rendering, not Discord or native device controls. A
+complete UI delivery gate remains open because the full interface has not been
+visually inspected or exercised here.
+
+Force Sync's REST member refresh and Gateway roster refresh still discard
+global-name field presence, so an omitted field can overwrite a known display
+name. Their reconciliation and cache-write paths need a separate correction;
+these changes do not establish complete display-name synchronization.
 
 ## Validation limits
 
@@ -89,8 +114,22 @@ and session-cache suites; strict Clippy passed for those crates. Repository
 policy and license checks passed at `03f1179d`. An older local
 FFmpeg build initially failed the webcam reference fixture because it lacked
 `hqdn3d` and `unsharp`; the fixture passed after rebuilding the project's pinned
-FFmpeg recipe with those filters. Headless egui tests
-exercise the affected interaction paths; this environment has no native
+FFmpeg recipe with those filters. At `fe93c25c`, 452 core, 109 Gateway, 149
+protocol, 74 model and 17 session-cache tests passed, with two ignored in each
+of the core and session-cache suites. Eight focused member-list tests, strict
+workspace Clippy, the fuzz-target compilation and 849 UI tests also passed;
+10 UI tests were ignored. At `cb506cb2`, the split workspace run passed 2,689
+tests across 30 targets, with 35 ignored. Formatting, synthetic login handoff,
+cached-xtask workspace/package fixtures, policy, license checks and strict
+workspace Clippy passed. FFmpeg bundle fixtures passed 20 tests with five
+skipped; Flatpak preparation and Linux package fixtures passed four and two
+tests respectively. The exact `cargo xtask check` stopped during
+`cargo test --workspace`: the container killed the linker for the UI
+`autoscroll` example after Clippy passed. The split workspace test run above
+does not include examples or doctests. At `6951883b`, the three startup UI tests,
+focused strict Clippy and state-transition fuzz-target compilation passed after
+the visual fix; no fuzz campaign was run. Headless egui tests
+exercise the affected interaction paths; this environment has no physical
 display for a visual or assistive-technology review. Live Discord, Windows
 capture, microphone and real-device behavior remain owner-controlled and
 unverified. Release replay measurements are in
@@ -103,3 +142,15 @@ same 120-second soak with 2,921 passes, 93,472 channel visits and 12 logout
 cycles. Other build work ran concurrently with both, so the pass counts are not
 a performance comparison. The soak does not exercise network, storage,
 rendering or devices.
+
+At `cb506cb2`, the 120-second synthetic lifecycle soak completed 3,787 passes,
+121,184 channel visits and 15 logout cycles. The preview build ran concurrently;
+these counts are not a performance comparison.
+
+At `cb506cb2`, the Linux Nix CI job failed while downloading the pinned FFmpeg
+tarball: the connection to ffmpeg.org was reset. The same download failure
+occurred at `66f78e54`. That earlier revision's macOS Nix job also failed to
+link `___isPlatformVersionAtLeast`; the current macOS Nix result is pending.
+The current macOS native job passed. Windows ARM64 failed the GPU webcam
+denoising fixture with `DenoiseError`, as it did at `66f78e54`; the cause has
+not been established here.
