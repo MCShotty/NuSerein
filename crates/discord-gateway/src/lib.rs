@@ -372,8 +372,17 @@ pub struct MemberSubscription {
 }
 
 const MEMBER_LIST_BYTES: usize = 256 * 1024;
+const REPLAYED_PRESENCE_BATCHES: usize = 3;
 /// Busy lists batch many row moves into one dispatch; each costs at most one 200-slot shift.
 const MAX_MEMBER_OPS: usize = 1024;
+
+fn defer_replayed_presence(pending: &mut Vec<Event>, event: Event) -> Result<(), Failure> {
+	if pending.len() >= REPLAYED_PRESENCE_BATCHES {
+		return Err(Failure::Busy);
+	}
+	pending.push(event);
+	Ok(())
+}
 /// Lists this connection recently left: late replies are never adopted, and reopening one
 /// restores the identity the service used for it.
 const RETIRED_LISTS: usize = 8;
@@ -450,6 +459,7 @@ struct ActiveMembers {
 	total: u64,
 	groups: Vec<(String, u64)>,
 	pending_presence: BTreeMap<Id, model::MemberPresence>,
+	pending_presence_bytes: usize,
 	presence_deadline: Option<Instant>,
 }
 
@@ -624,6 +634,7 @@ impl ActiveMembers {
 			total: 0,
 			groups: vec![],
 			pending_presence: BTreeMap::new(),
+			pending_presence_bytes: 0,
 			presence_deadline: None,
 		}
 	}
@@ -843,7 +854,9 @@ impl ActiveMembers {
 			}
 		}
 		if update.departed {
-			self.pending_presence.remove(&update.user);
+			if let Some(presence) = self.pending_presence.remove(&update.user) {
+				self.pending_presence_bytes -= presence.heap_bytes();
+			}
 			self.missing_identity.remove(&update.user);
 			self.global_names.remove(&update.user);
 		} else if let Some(fields) = self.missing_identity.get_mut(&update.user) {
@@ -1073,14 +1086,24 @@ impl ActiveMembers {
 	}
 	fn clear_presence(&mut self) {
 		self.pending_presence.clear();
+		self.pending_presence_bytes = 0;
 		self.presence_deadline = None;
 	}
+	#[cfg(test)]
 	fn presence(&mut self, update: discord_protocol::presence::PresenceUpdate, now: Instant) {
+		self.push_presence(update, now, &|_| Ok(())).unwrap();
+	}
+	fn push_presence(
+		&mut self,
+		update: discord_protocol::presence::PresenceUpdate,
+		now: Instant,
+		emit: &impl Fn(Event) -> Result<(), Failure>,
+	) -> Result<(), Failure> {
 		if !self.synced || update.guild != Some(self.subscription.guild) {
-			return;
+			return Ok(());
 		}
 		let Some(previous) = self.people().find(|row| row.user.id == update.user) else {
-			return;
+			return Ok(());
 		};
 		let explicit_unknown = matches!(&update.status, model::Patch::Null)
 			|| matches!(&update.status, model::Patch::Value(status) if !matches!(status.as_str(), "online" | "idle" | "dnd" | "offline"));
@@ -1126,17 +1149,19 @@ impl ActiveMembers {
 			custom_status,
 		};
 		if !resolved.valid() {
-			return;
+			return Ok(());
 		}
-		if self.pending_presence.len() == 100 && !self.pending_presence.contains_key(&update.user) {
-			return;
-		}
+		let mut changed = false;
 		let projected = self
 			.slots
 			.iter()
 			.flatten()
 			.map(|slot| match slot {
 				model::MemberSlot::Person(row) if row.user.id == update.user => {
+					changed |= row.status != resolved.status
+						|| row.custom_status != resolved.custom_status
+						|| row.activities != resolved.activities
+						|| row.clients != resolved.clients;
 					client_core::presence::projected_row_bytes(row, &resolved)
 				}
 				model::MemberSlot::Person(row) => row.bytes(),
@@ -1144,9 +1169,32 @@ impl ActiveMembers {
 			})
 			.sum::<usize>();
 		if projected > MEMBER_LIST_BYTES {
-			return;
+			return Ok(());
 		}
-		let mut changed = false;
+		if !changed {
+			return Ok(());
+		}
+		let old_bytes = self
+			.pending_presence
+			.get(&update.user)
+			.map_or(0, model::MemberPresence::heap_bytes);
+		let new_bytes = resolved.heap_bytes();
+		let projected = self.pending_presence_bytes - old_bytes
+			+ new_bytes
+			+ 100 * size_of::<model::MemberPresence>()
+			+ size_of::<Event>();
+		if ((self.pending_presence.len() >= 100
+			&& !self.pending_presence.contains_key(&update.user))
+			|| projected > client_core::MAX_MEMBER_PRESENCE_BYTES)
+			&& let Some(event) = self.take_presence()
+		{
+			emit(event)?;
+		}
+		if new_bytes + 100 * size_of::<model::MemberPresence>() + size_of::<Event>()
+			> client_core::MAX_MEMBER_PRESENCE_BYTES
+		{
+			return Ok(());
+		}
 		for row in self.people_mut().filter(|row| row.user.id == update.user) {
 			if row.status != resolved.status
 				|| row.custom_status != resolved.custom_status
@@ -1157,19 +1205,19 @@ impl ActiveMembers {
 				row.custom_status = resolved.custom_status.clone();
 				row.activities = resolved.activities.clone();
 				row.clients = resolved.clients;
-				changed = true;
 			}
 		}
-		if changed {
-			// <=100 entries within the member-row byte budget. The
-			// deadline belongs to the first change, never to the latest packet.
-			self.pending_presence.insert(update.user, resolved);
-			self.presence_deadline
-				.get_or_insert(now + Duration::from_millis(100));
+		if let Some(old) = self.pending_presence.insert(update.user, resolved) {
+			self.pending_presence_bytes -= old.heap_bytes();
 		}
+		self.pending_presence_bytes += new_bytes;
+		self.presence_deadline
+			.get_or_insert(now + Duration::from_millis(100));
+		Ok(())
 	}
 	fn take_presence(&mut self) -> Option<Event> {
 		self.presence_deadline = None;
+		self.pending_presence_bytes = 0;
 		let pending = std::mem::take(&mut self.pending_presence);
 		(self.synced && !pending.is_empty()).then(|| Event::MemberPresence {
 			guild: self.subscription.guild,
@@ -1866,6 +1914,9 @@ async fn run_observed_inner(
 
 		let mut active_members: Option<ActiveMembers> = None;
 		let mut direct_presence = presence::Pending::default();
+		// The reducer ignores direct presence until RESUMED. If replay exceeds
+		// these bounded batches, request a fresh sync rather than silently dropping it.
+		let mut replayed_presence = Vec::with_capacity(REPLAYED_PRESENCE_BATCHES);
 		let mut sent_members = false;
 		let mut members_deadline: Option<Instant> = None;
 		let mut subscriptions_open = true;
@@ -2322,6 +2373,7 @@ async fn run_observed_inner(
 								0 => match packet.t.as_deref().unwrap_or("") {
 									"READY" => {
 										direct_presence=presence::Pending::default();
+										replayed_presence.clear();
 										active_members=None;members_deadline=None;sent_members = !subscriptions_open;
 										let envelope = ready::decode(packet.d.get().as_bytes()).map_err(|_| diagnosed(emit, Failure::ProtocolAt("Gateway login: invalid READY identity or relationships"), ready::diagnose(packet.d.get().as_bytes())))?;
 										if envelope.user.bot { return Err(Failure::InvalidCredential); }
@@ -2474,6 +2526,7 @@ async fn run_observed_inner(
 									}
 									"RESUMED" => {
 										record(ConnectionReason::Resumed,None,attempt,writer.occupancy()); emit(Event::Interaction(client_core::interactions::Event::Session(state.session.clone().ok_or(Failure::Protocol)?)))?; emit(Event::Resumed)?; state.failures = 0;
+										for event in replayed_presence.drain(..) { emit(event)?; }
 										ready_at = Some(Instant::now()); },
 									"GUILD_SCHEDULED_EVENT_EXCEPTION_CREATE" | "GUILD_SCHEDULED_EVENT_EXCEPTION_DELETE" | "GUILD_SCHEDULED_EVENT_EXCEPTION_UPDATE" | "GUILD_SCHEDULED_EVENT_CREATE" | "GUILD_SCHEDULED_EVENT_UPDATE" | "GUILD_SCHEDULED_EVENT_DELETE" | "GUILD_SCHEDULED_EVENT_USER_ADD" | "GUILD_SCHEDULED_EVENT_USER_REMOVE" | "STAGE_INSTANCE_CREATE" | "STAGE_INSTANCE_UPDATE" | "STAGE_INSTANCE_DELETE" => {
 										#[derive(serde::Deserialize)] struct Notice { guild_id: Id, #[serde(default)] channel_id: Option<Id> }
@@ -2524,8 +2577,11 @@ async fn run_observed_inner(
 									}
 									"PRESENCE_UPDATE" => {
 										if let Ok(update)=discord_protocol::presence::decode(packet.d.get().as_bytes()) {
-											if update.guild.is_none() { direct_presence.push(update,Instant::now()); }
-											else if let Some(active)=&mut active_members && active.synced { active.presence(update,Instant::now()); }
+											if update.guild.is_none() {
+													if ready_at.is_some() { direct_presence.push(update,Instant::now(),emit)?; }
+												else { direct_presence.push(update,Instant::now(),|event| defer_replayed_presence(&mut replayed_presence,event))?; }
+											}
+											else if let Some(active)=&mut active_members && active.synced { active.push_presence(update,Instant::now(),&emit)?; }
 										}
 									}
 									"TYPING_START" => {
@@ -2840,6 +2896,18 @@ fn notification_preferences(
 mod tests {
 	use super::*;
 	#[test]
+	fn replayed_presence_buffer_requests_recovery_at_its_bound() {
+		let mut pending = Vec::new();
+		for _ in 0..REPLAYED_PRESENCE_BATCHES {
+			defer_replayed_presence(&mut pending, Event::DirectPresence(vec![])).unwrap();
+		}
+		assert_eq!(
+			defer_replayed_presence(&mut pending, Event::DirectPresence(vec![])),
+			Err(Failure::Busy)
+		);
+		assert_eq!(pending.len(), REPLAYED_PRESENCE_BATCHES);
+	}
+	#[test]
 	fn notification_settings_forward_explicit_mention_suppression() {
 		use model::Patch;
 		let setting=decode::<discord_protocol::notifications::Setting>(br#"{"guild_id":"1","muted":false,"message_notifications":1,"channel_overrides":[{"channel_id":"3","muted":true,"mute_config":{"end_time":"2020-01-01T00:00:00Z"}}],"suppress_everyone":false,"suppress_roles":true}"#).unwrap();
@@ -2990,6 +3058,63 @@ mod tests {
 			"user":{"id":"1","username":"synthetic"}, "session_id":session,
 			"resume_gateway_url":"wss://gateway.discord.gg/", "guilds":[], "private_channels":[]
 		}})
+	}
+
+	#[tokio::test]
+	async fn replayed_presence_bursts_wait_for_resumed_before_delivery() {
+		timeout(Duration::from_secs(15), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+			let (completed, done) = tokio::sync::oneshot::channel();
+			let (client_finished, terminal_observed) = tokio::sync::oneshot::channel();
+			let observed = std::sync::Mutex::new((false, BTreeSet::new(), Some(completed)));
+			let server = async {
+				let (stream, _) = listener.accept().await.unwrap();
+				let mut socket = accept_async(stream).await.unwrap();
+				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
+				assert_eq!(packet(&mut socket).await["op"], 2);
+				send(&mut socket, ready(1, "synthetic-replayed-presence")).await;
+				send(&mut socket, json!({"op":7,"d":null})).await;
+				drop(socket);
+				let (stream, _) = listener.accept().await.unwrap();
+				let mut socket = accept_async(stream).await.unwrap();
+				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
+				let resume = packet(&mut socket).await;
+				assert_eq!(resume["op"], 6);
+				assert_eq!(resume["d"]["seq"], 1);
+				for (sequence, user) in (2_u64..).zip(10..160) {
+					send(&mut socket, json!({"op":0,"t":"PRESENCE_UPDATE","s":sequence,"d":{"user":{"id":user.to_string()},"status":"online"}})).await;
+				}
+				send(&mut socket, json!({"op":0,"t":"RESUMED","s":152,"d":{}})).await;
+				done.await.unwrap();
+				socket.send(Frame::Close(Some(CloseFrame { code: CloseCode::Library(4004), reason: "synthetic stop".into() }))).await.unwrap();
+				terminal_observed.await.unwrap();
+			};
+			let client = run_inner(
+				Arc::new(SessionSecret::from_owner_input("synthetic-owner-session".into()).unwrap()),
+				"wss://gateway.discord.gg/".into(), watch::channel(None).1, mpsc::channel(1).1, None,
+				|event| {
+					let mut seen = observed.lock().unwrap();
+					match event {
+						Event::Resumed => seen.0 = true,
+						Event::DirectPresence(updates) => {
+							assert!(seen.0, "direct presence must not reach the disconnected reducer");
+							assert!(updates.len() <= 100);
+							seen.1.extend(updates.into_iter().map(|u| u.user));
+						}
+						_ => {}
+					}
+					if seen.1.len() == 150 && let Some(done) = seen.2.take() { let _ = done.send(()); }
+					Ok(())
+				}, Some(&endpoint),
+			);
+			let client = async { let result = client.await; let _ = client_finished.send(()); result };
+			let ((), result) = tokio::join!(server, client);
+			assert_eq!(result, Err(Failure::Expired));
+			let seen = observed.into_inner().unwrap();
+			assert!(seen.0);
+			assert_eq!(seen.1, (10..160).map(Id).collect());
+		}).await.unwrap();
 	}
 
 	#[tokio::test]
@@ -4217,6 +4342,175 @@ mod member_tests {
 			model::MemberSlot::Person(member) => member,
 			_ => panic!("expected person at {index}"),
 		}
+	}
+	#[test]
+	fn member_presence_burst_delivers_every_user() {
+		let mut list = ActiveMembers::new(MemberSubscription {
+			thread: false,
+			guild: Id(1),
+			channel: Id(2),
+			request: 7,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99], [100, 199]],
+		});
+		let rows = |start, end| {
+			(start..end)
+				.map(
+					|id: u64| json!({"member":{"user":{"id":id.to_string(),"username":"Synthetic"}}}),
+				)
+				.collect::<Vec<_>>()
+		};
+		list.update(decode(&serde_json::to_vec(&json!({"guild_id":"1","id":"everyone","member_count":150,"ops":[{"op":"SYNC","range":[0,99],"items":rows(10,110)},{"op":"SYNC","range":[100,199],"items":rows(110,160)}]})).unwrap()).unwrap()).unwrap();
+		let now = Instant::now();
+		let received = std::cell::RefCell::new(Vec::new());
+		let emit = |event: Event| {
+			assert!(event.bytes() <= client_core::MAX_MEMBER_PRESENCE_BYTES);
+			let Event::MemberPresence { updates, .. } = event else {
+				panic!("expected member presence")
+			};
+			assert!(updates.len() <= 100);
+			received
+				.borrow_mut()
+				.extend(updates.into_iter().map(|u| u.user));
+			Ok(())
+		};
+		for user in 10..160 {
+			let wire = format!(r#"{{"guild_id":"1","user":{{"id":"{user}"}},"status":"online"}}"#);
+			list.push_presence(
+				discord_protocol::presence::decode(wire.as_bytes()).unwrap(),
+				now,
+				&emit,
+			)
+			.unwrap();
+		}
+		emit(list.take_presence().unwrap()).unwrap();
+		assert_eq!(*received.borrow(), (10..160).map(Id).collect::<Vec<_>>());
+	}
+	#[test]
+	fn member_presence_flushes_at_the_byte_limit() {
+		let mut list = ActiveMembers::new(MemberSubscription {
+			thread: false,
+			guild: Id(1),
+			channel: Id(2),
+			request: 7,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99]],
+		});
+		let rows: Vec<_> = (1..=25)
+			.map(|id: u64| json!({"member":{"user":{"id":id.to_string(),"username":"Synthetic"}}}))
+			.collect();
+		let snapshot = json!({"guild_id":"1","id":"everyone","member_count":25,"ops":[{"op":"SYNC","range":[0,99],"items":rows}]});
+		list.update(decode(&serde_json::to_vec(&snapshot).unwrap()).unwrap())
+			.unwrap();
+		let received = std::cell::RefCell::new(Vec::new());
+		let emit = |event: Event| {
+			assert!(event.bytes() <= client_core::MAX_MEMBER_PRESENCE_BYTES);
+			let Event::MemberPresence { updates, .. } = event else {
+				panic!()
+			};
+			received
+				.borrow_mut()
+				.extend(updates.into_iter().map(|u| u.user));
+			Ok(())
+		};
+		let text = "🚀".repeat(128);
+		let activities: Vec<_> = (0..4)
+			.map(|kind| json!({"type":kind,"name":text,"details":text,"state":text}))
+			.collect();
+		let now = Instant::now();
+		for user in 1..=25 {
+			let wire = json!({"guild_id":"1","user":{"id":user.to_string()},"status":"online","activities":activities});
+			list.push_presence(
+				discord_protocol::presence::decode(&serde_json::to_vec(&wire).unwrap()).unwrap(),
+				now,
+				&emit,
+			)
+			.unwrap();
+		}
+		assert!(
+			!received.borrow().is_empty(),
+			"the byte limit should flush before 100 users"
+		);
+		emit(list.take_presence().unwrap()).unwrap();
+		assert_eq!(*received.borrow(), (1..=25).map(Id).collect::<Vec<_>>());
+		assert_eq!(list.pending_presence_bytes, 0);
+	}
+	#[tokio::test]
+	async fn local_gateway_delivers_bursts_for_direct_and_server_presence() {
+		use super::tests::{packet, ready, send};
+		use tokio::net::TcpListener;
+		use tokio_tungstenite::{
+			accept_async,
+			tungstenite::protocol::{CloseFrame, frame::coding::CloseCode},
+		};
+
+		timeout(Duration::from_secs(15), async {
+			let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let endpoint = format!("ws://{}/", listener.local_addr().unwrap());
+			let (_selection, receive) = watch::channel(Some(MemberSubscription {
+				thread: false, guild: Id(1), channel: Id(2), request: 7,
+				list_id: "everyone".into(), ranges: vec![[0, 99], [100, 199]],
+			}));
+			let (completed, done) = tokio::sync::oneshot::channel();
+			let (client_finished, terminal_observed) = tokio::sync::oneshot::channel();
+			let observed = std::sync::Mutex::new((BTreeSet::new(), BTreeSet::new(), Some(completed)));
+			let server = async {
+				let (stream, _) = listener.accept().await.unwrap();
+				let mut socket = accept_async(stream).await.unwrap();
+				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
+				assert_eq!(packet(&mut socket).await["op"], 2);
+				send(&mut socket, ready(1, "synthetic-presence-burst")).await;
+				loop {
+					let outbound = packet(&mut socket).await;
+					if outbound["op"] == 1 {
+						send(&mut socket, json!({"op":11,"d":null})).await;
+					} else if outbound["op"] == 37
+						&& outbound["d"]["subscriptions"]["1"]["channels"] == json!({"2":[[0,99],[100,199]]})
+					{
+						break;
+					}
+				}
+				let rows = |start, end| (start..end).map(|id: u64| json!({"member":{"user":{"id":id.to_string(),"username":"Synthetic"}}})).collect::<Vec<_>>();
+				send(&mut socket, json!({"op":0,"t":"GUILD_MEMBER_LIST_UPDATE","s":2,"d":{"guild_id":"1","id":"everyone","member_count":150,"ops":[{"op":"SYNC","range":[0,99],"items":rows(10,110)},{"op":"SYNC","range":[100,199],"items":rows(110,160)}]}})).await;
+				for (sequence, user) in (3_u64..).zip(10..160) {
+					send(&mut socket, json!({"op":0,"t":"PRESENCE_UPDATE","s":sequence,"d":{"guild_id":"1","user":{"id":user.to_string()},"status":"online"}})).await;
+				}
+				for (sequence, user) in (153_u64..).zip(10..160) {
+					send(&mut socket, json!({"op":0,"t":"PRESENCE_UPDATE","s":sequence,"d":{"user":{"id":user.to_string()},"status":"idle"}})).await;
+				}
+				done.await.unwrap();
+				socket.send(Frame::Close(Some(CloseFrame { code: CloseCode::Library(4004), reason: "synthetic stop".into() }))).await.unwrap();
+				terminal_observed.await.unwrap();
+			};
+			let client = run_inner(
+				Arc::new(SessionSecret::from_owner_input("synthetic-owner-session".into()).unwrap()),
+				"wss://gateway.discord.gg/".into(), receive, mpsc::channel(1).1, None,
+				|event| {
+					let bytes = event.bytes();
+					let mut seen = observed.lock().unwrap();
+					match event {
+						Event::DirectPresence(updates) => {
+							assert!(updates.len() <= 100 && bytes <= client_core::MAX_MEMBER_PRESENCE_BYTES);
+							seen.0.extend(updates.into_iter().map(|u| u.user));
+						}
+						Event::MemberPresence { guild, channel, request, updates } => {
+							assert_eq!((guild, channel, request), (Id(1), Id(2), 7));
+							assert!(updates.len() <= 100 && bytes <= client_core::MAX_MEMBER_PRESENCE_BYTES);
+							seen.1.extend(updates.into_iter().map(|u| u.user));
+						}
+						_ => {}
+					}
+					if seen.0.len() == 150 && seen.1.len() == 150 && let Some(done) = seen.2.take() { let _ = done.send(()); }
+					Ok(())
+				}, Some(&endpoint),
+			);
+			let client = async { let result = client.await; let _ = client_finished.send(()); result };
+			let ((), result) = tokio::join!(server, client);
+			assert_eq!(result, Err(Failure::Expired));
+			let seen = observed.into_inner().unwrap();
+			assert_eq!(seen.0, (10..160).map(Id).collect());
+			assert_eq!(seen.1, (10..160).map(Id).collect());
+		}).await.unwrap();
 	}
 	#[test]
 	fn rich_activity_patches_preserve_absence_and_clear_on_status_loss() {
