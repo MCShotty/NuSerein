@@ -173,6 +173,102 @@ fn omitted_global_name_preserves_display_across_a_delayed_history_page() {
 }
 
 #[test]
+fn member_search_with_unknown_global_name_does_not_cache_username_as_display_name() {
+	let mut state = state();
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "account", 0) else {
+		panic!("member search");
+	};
+	let mut member = cached_person(7, "Server nickname");
+	member.user.name = "account7".into();
+	member.user.username = Some("account7".into());
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![member],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				global_name: model::GlobalNameUpdate::Unchanged,
+				nick: false,
+				roles: false,
+			}],
+		},
+	);
+	assert_eq!(
+		state.member_search[0].rows[0].nick.as_deref(),
+		Some("Server nickname")
+	);
+	assert!(state.cached_member_displays(Id(10)).is_empty());
+}
+
+#[test]
+fn member_search_preserves_a_known_display_name_when_it_is_omitted() {
+	let mut state = state();
+	let mut known = cached_person(7, "Old nickname");
+	known.user.name = "Known display".into();
+	known.user.username = Some("account7".into());
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: Some(known.user.clone()),
+			global_name: model::GlobalNameUpdate::Set,
+			avatar: Patch::Absent,
+			nick: Patch::Value("Old nickname".into()),
+			roles: Patch::Value(known.roles.clone()),
+			departed: false,
+		})),
+	);
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "account", 0) else {
+		panic!("member search");
+	};
+	known.user.name = "account7".into();
+	known.nick = Some("New nickname".into());
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![known],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				global_name: model::GlobalNameUpdate::Unchanged,
+				nick: false,
+				roles: false,
+			}],
+		},
+	);
+	let saved = &state.cached_member_displays(Id(10))[0];
+	assert_eq!(saved.name, "Known display");
+	assert_eq!(saved.nick.as_deref(), Some("New nickname"));
+}
+
+#[test]
+fn member_search_caches_an_explicit_global_name_clear() {
+	let mut state = state();
+	let Some(Command::MemberSearch(request)) = state.search_members(Id(20), "account", 0) else {
+		panic!("member search");
+	};
+	let mut member = cached_person(7, "Server nickname");
+	member.user.name = "account7".into();
+	member.user.username = Some("account7".into());
+	apply(
+		&mut state,
+		Event::MemberSearchPartial {
+			request,
+			rows: vec![member],
+			missing: vec![model::MissingMemberFields {
+				user: Id(7),
+				global_name: model::GlobalNameUpdate::Cleared,
+				nick: false,
+				roles: false,
+			}],
+		},
+	);
+	assert_eq!(state.cached_member_displays(Id(10))[0].name, "account7");
+}
+
+#[test]
 fn member_list_with_unknown_global_name_does_not_cache_username_as_display_name() {
 	let mut state = state();
 	state.request_members();

@@ -551,24 +551,15 @@ impl State {
 				if missing.is_empty() {
 					self.member_labels.remember(request.guild, &rows);
 				} else {
-					let complete: Vec<_> = rows
-						.iter()
-						.filter(|member| {
-							!missing.iter().any(|fields| {
-								fields.user == member.user.id && (fields.nick || fields.roles)
-							})
-						})
-						.cloned()
-						.collect();
-					let partial: Vec<_> = rows
-						.iter()
-						.filter(|member| {
+					let (partial, complete): (Vec<_>, Vec<_>) =
+						rows.iter().cloned().partition(|member| {
 							missing.iter().any(|fields| {
-								fields.user == member.user.id && (fields.nick || fields.roles)
+								fields.user == member.user.id
+									&& (fields.nick
+										|| fields.roles || fields.global_name
+										== model::GlobalNameUpdate::Unchanged)
 							})
-						})
-						.cloned()
-						.collect();
+						});
 					self.member_labels.remember(request.guild, &complete);
 					self.member_labels
 						.remember_with_source(request.guild, &partial, false);
