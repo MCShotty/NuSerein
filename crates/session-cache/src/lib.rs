@@ -6,11 +6,24 @@ pub const MAX_MESSAGES: usize = 500;
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_MUTATIONS: usize = 1024;
 
-fn keep_author_membership(message: &mut Message, roles: &[Id], nick: Option<&str>) {
-	if message.author_roles.is_empty() && !roles.is_empty() {
+#[derive(Clone, Copy, Default)]
+struct MemberChanges {
+	roles: bool,
+	nick: bool,
+}
+
+fn keep_author_membership(
+	message: &mut Message,
+	roles: &[Id],
+	nick: Option<&str>,
+	updated: MemberChanges,
+) {
+	if updated.roles || (message.author_roles.is_empty() && !roles.is_empty()) {
 		message.author_roles = roles.to_vec();
 	}
-	if message.author_nick.is_none()
+	if updated.nick {
+		message.author_nick = nick.map(str::to_owned);
+	} else if message.author_nick.is_none()
 		&& let Some(nick) = nick.filter(|n| !n.is_empty())
 	{
 		message.author_nick = Some(nick.to_owned());
@@ -24,6 +37,7 @@ pub struct Timeline {
 	payload_count: usize,
 	bytes: usize,
 	changed: BTreeSet<Id>,
+	member_changes: BTreeMap<Id, MemberChanges>,
 	provisional: BTreeSet<Id>,
 	patches: BTreeMap<Id, MessagePatch>,
 	patch_bytes: usize,
@@ -69,6 +83,10 @@ impl Timeline {
 			if next_roles.is_none() && next_nick.is_none() {
 				continue;
 			}
+			let updated = MemberChanges {
+				roles: next_roles.is_some(),
+				nick: next_nick.is_some(),
+			};
 			let before = message.bytes();
 			if let Some(roles) = next_roles {
 				message.author_roles = roles;
@@ -80,6 +98,11 @@ impl Timeline {
 				.bytes
 				.saturating_sub(before)
 				.saturating_add(message.bytes());
+			if self.loading {
+				let changes = self.member_changes.entry(message.id).or_default();
+				changes.roles |= updated.roles;
+				changes.nick |= updated.nick;
+			}
 			any = true;
 		}
 		if any {
@@ -90,9 +113,12 @@ impl Timeline {
 					self.older_evicted = true;
 					self.messages.pop_first()
 				};
-				if let Some((_, Some(old))) = item {
-					self.bytes -= old.bytes();
-					self.payload_count -= 1;
+				if let Some((id, old)) = item {
+					self.member_changes.remove(&id);
+					if let Some(old) = old {
+						self.bytes -= old.bytes();
+						self.payload_count -= 1;
+					}
 				}
 			}
 		}
@@ -151,9 +177,12 @@ impl Timeline {
 				self.older_evicted = true;
 				self.messages.pop_first()
 			};
-			if let Some((_, Some(old))) = old {
-				self.bytes -= old.bytes();
-				self.payload_count -= 1;
+			if let Some((id, old)) = old {
+				self.member_changes.remove(&id);
+				if let Some(old) = old {
+					self.bytes -= old.bytes();
+					self.payload_count -= 1;
+				}
 			}
 		}
 	}
@@ -201,6 +230,11 @@ impl Timeline {
 				&& let Some(message) = self.get(*id)
 			{
 				fresh.insert(message.clone(), true, false)?;
+			} else if let Some(updated) = self.member_changes.get(id)
+				&& let Some(message) = self.get(*id)
+			{
+				fresh.insert(message.clone(), false, false)?;
+				fresh.member_changes.insert(*id, *updated);
 			}
 		}
 		Ok(fresh)
@@ -253,6 +287,7 @@ impl Timeline {
 		size_of::<Self>() + self.bytes - self.payload_count * size_of::<Message>()
 			+ tree_bytes::<(Id, Option<Message>)>(self.messages.len())
 			+ tree_bytes::<Id>(self.changed.len())
+			+ tree_bytes::<(Id, MemberChanges)>(self.member_changes.len())
 			+ tree_bytes::<Id>(self.provisional.len())
 			+ tree_bytes::<Id>(self.deleted.len())
 			+ tree_bytes::<(Id, MessagePatch)>(self.patches.len())
@@ -265,6 +300,7 @@ impl Timeline {
 		self.replace = !older;
 		self.loading = true;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -274,6 +310,7 @@ impl Timeline {
 		self.replace = false;
 		self.loading = true;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -283,6 +320,7 @@ impl Timeline {
 		// Starting a recent-page request restores newest-first retention.
 		self.loading = false;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -329,10 +367,19 @@ impl Timeline {
 			{
 				return Ok(());
 			}
+			let updated = if live {
+				MemberChanges::default()
+			} else {
+				self.member_changes
+					.get(&message.id)
+					.copied()
+					.unwrap_or_default()
+			};
 			keep_author_membership(
 				&mut message,
 				&previous.author_roles,
 				previous.author_nick.as_deref(),
+				updated,
 			);
 			message.revision = previous.revision
 				+ u64::from(
@@ -365,9 +412,12 @@ impl Timeline {
 				self.older_evicted = true;
 				self.messages.pop_first()
 			};
-			if let Some((_, Some(old))) = item {
-				self.bytes -= old.bytes();
-				self.payload_count -= 1;
+			if let Some((id, old)) = item {
+				self.member_changes.remove(&id);
+				if let Some(old) = old {
+					self.bytes -= old.bytes();
+					self.payload_count -= 1;
+				}
 			}
 		}
 		Ok(())
@@ -488,6 +538,10 @@ impl Timeline {
 					item,
 					&previous.author_roles,
 					previous.author_nick.as_deref(),
+					self.member_changes
+						.get(&item.id)
+						.copied()
+						.unwrap_or_default(),
 				);
 			}
 		}
@@ -507,6 +561,7 @@ impl Timeline {
 		}
 		self.loading = false;
 		self.changed.clear();
+		self.member_changes.clear();
 		self.provisional.clear();
 		self.patches.clear();
 		self.patch_bytes = 0;
@@ -602,6 +657,7 @@ impl Timeline {
 		}
 		self.remember(id)?;
 		self.deleted.insert(id);
+		self.member_changes.remove(&id);
 		if !self.preserve_deleted_messages {
 			self.discard_preserved(id);
 		}
@@ -1154,6 +1210,73 @@ mod tests {
 			Some("New Nick")
 		);
 		assert!(timeline.changed.is_empty());
+	}
+
+	#[test]
+	fn member_list_updates_survive_an_older_in_flight_page() {
+		for older in [false, true] {
+			let mut timeline = Timeline::default();
+			let mut original = message(1);
+			original.author_nick = Some("Old Nick".into());
+			original.author_roles = vec![Id(10)];
+			timeline.insert(original.clone(), false, false).unwrap();
+			timeline.begin_page(older);
+			assert!(timeline.apply_author_membership(Id(2), &[Id(20)], Some("New Nick")));
+			original.content = "Updated message body".into();
+			timeline.finish_page(vec![original], older).unwrap();
+			let actual = timeline.get(Id(1)).unwrap();
+			assert_eq!(actual.author_nick.as_deref(), Some("New Nick"));
+			assert_eq!(actual.author_roles, vec![Id(20)]);
+			assert_eq!(actual.content, "Updated message body");
+		}
+	}
+
+	#[test]
+	fn member_reconciliation_updates_only_changed_fields_and_stays_bounded() {
+		for update_nick in [false, true] {
+			let mut timeline = Timeline::default();
+			let mut original = message(1);
+			original.author_nick = Some("Old Nick".into());
+			original.author_roles = vec![Id(10)];
+			timeline.insert(original.clone(), false, false).unwrap();
+			timeline.begin_page(false);
+			if update_nick {
+				timeline.apply_author_membership(Id(2), &[Id(10)], Some("New Nick"));
+				original.author_roles = vec![Id(30)];
+			} else {
+				timeline.apply_author_membership(Id(2), &[Id(20)], None);
+				original.author_nick = Some("Page Nick".into());
+			}
+			timeline
+				.seed_cached_page(vec![original.clone()], true)
+				.unwrap();
+			let mut range = timeline.history_range(&[Id(1)]).unwrap();
+			original.content = "Page body".into();
+			for target in [&mut timeline, &mut range] {
+				target.finish_page(vec![original.clone()], false).unwrap();
+				let actual = target.get(Id(1)).unwrap();
+				assert_eq!(actual.content, "Page body");
+				assert_eq!(
+					actual.author_nick.as_deref(),
+					Some(if update_nick { "New Nick" } else { "Page Nick" })
+				);
+				assert_eq!(
+					actual.author_roles,
+					vec![Id(if update_nick { 30 } else { 20 })]
+				);
+				assert!(target.member_changes.is_empty());
+			}
+		}
+
+		let mut timeline = Timeline::default();
+		timeline.begin_page(false);
+		for id in 1..=MAX_MESSAGES as u64 * 3 {
+			timeline.insert(message(id), false, false).unwrap();
+			timeline.apply_author_membership(Id(2), &[], Some("New Nick"));
+			assert!(timeline.member_changes.len() <= MAX_MESSAGES);
+		}
+		timeline.cancel_page();
+		assert!(timeline.member_changes.is_empty());
 	}
 
 	#[test]

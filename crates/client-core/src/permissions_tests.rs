@@ -15,6 +15,47 @@ const BITS: u128 = p::VIEW_CHANNEL
 	| p::USE_VAD;
 
 #[test]
+fn member_list_update_survives_a_delayed_history_response() {
+	let mut state = state();
+	let mut old = message(101, Id(20));
+	old.author.id = Id(7);
+	old.author_nick = Some("Old nickname".into());
+	old.author_roles = vec![Id(11)];
+	apply(&mut state, Event::Message(old.clone()));
+	let Command::History { request, .. } = state.history(None) else {
+		panic!("history request");
+	};
+	state.request_members();
+	let mut list = state.members.clone().unwrap();
+	list.slots = vec![Some(model::MemberSlot::Person(model::Member {
+		user: old.author.clone(),
+		nick: Some("New nickname".into()),
+		roles: vec![Id(12)],
+		status: None,
+		custom_status: None,
+		activities: vec![],
+		clients: Default::default(),
+	}))];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list));
+	old.content = "Updated message body".into();
+	apply(
+		&mut state,
+		Event::History {
+			channel: Id(20),
+			request,
+			older: false,
+			messages: vec![old],
+		},
+	);
+	let message = state.timeline.get(Id(101)).unwrap();
+	assert_eq!(message.author_nick.as_deref(), Some("New nickname"));
+	assert_eq!(message.author_roles, vec![Id(12)]);
+	assert_eq!(message.content, "Updated message body");
+}
+
+#[test]
 fn live_member_identity_reconciles_sidebar_search_and_old_messages() {
 	let mut state = state();
 	let mut colored = state.guild_roles(Id(10)).unwrap()[1].clone();
