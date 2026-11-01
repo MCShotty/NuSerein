@@ -24,9 +24,6 @@ jobs:
       GH_REPO: ${{ github.repository }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       SOURCE_RUN: ${{ inputs.run_id }}
-      FFMPEG_DIR: ${{ runner.temp }}/nuserein-installer-ffmpeg/prefix
-      FFMPEG_WORK: ${{ runner.temp }}/nuserein-installer-ffmpeg/build
-      FFMPEG_CACHE: ${{ runner.temp }}/nuserein-installer-ffmpeg/sources
     defaults:
       run:
         shell: pwsh
@@ -44,6 +41,12 @@ jobs:
         run: |
           $actual = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0 -or $actual -ne $env:SOURCE_COMMIT) { throw 'Source checkout mismatch' }
+      - name: Prepare native build paths
+        run: |
+          $native = Join-Path $env:RUNNER_TEMP 'nuserein-installer-ffmpeg'
+          "FFMPEG_DIR=$native/prefix" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "FFMPEG_WORK=$native/build" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "FFMPEG_CACHE=$native/sources" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: x64
@@ -157,7 +160,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Preserve FFmpeg diagnostics on failure
-        if: failure()
+        if: failure() && env.FFMPEG_WORK != ''
         uses: actions/upload-artifact@v7.0.1
         with:
           name: NuSerein-Windows-X64-build-diagnostics
