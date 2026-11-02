@@ -10,6 +10,19 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  windows-installer-fixture:
+    name: Windows installer icons and shortcuts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - run: choco install nsis --no-progress -y
+      - run: python packaging/windows/test_installer.py
   replay-comparison:
     name: replay comparison (${{ matrix.os }})
     if: github.event_name == 'pull_request' || github.event.before != '0000000000000000000000000000000000000000'
@@ -139,6 +152,9 @@ jobs:
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Check production build without development fixtures
         run: cargo check --locked -p serein --bin serein --no-default-features
+      - name: Windows taskbar icon (synthetic window)
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p serein --bin serein windows_taskbar_icon_tests::applies_the_brand_icon_to_the_taskbar_window -- --exact
       - name: Run cargo xtask check
         if: runner.os == 'Windows'
         run: cargo xtask check
@@ -195,6 +211,14 @@ jobs:
           rm -rf dist dist-installer
       - name: Package app without demo or developer features
         run: cargo xtask package
+      - name: Verify Windows application and installer icons
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist-installer/*-setup.exe
+          if (@($setup).Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          ./packaging/windows/check-brand-icon.ps1 dist/serein.exe
+          ./packaging/windows/check-brand-icon.ps1 $setup.FullName
       - name: Packaged LavaSRv2 microphone worker (synthetic, no devices)
         shell: bash
         run: |

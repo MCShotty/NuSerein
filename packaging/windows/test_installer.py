@@ -43,6 +43,12 @@ def check_shortcut(shortcut, executable):
         working = ctypes.create_unicode_buffer(1024)
         method(link, 8, ctypes.HRESULT, ctypes.c_void_p, ctypes.c_int)(link, working, len(working))
         assert Path(working.value).samefile(executable.parent), working.value
+        icon_path = ctypes.create_unicode_buffer(1024)
+        icon_index = ctypes.c_int()
+        method(link, 16, ctypes.HRESULT, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int))(
+            link, icon_path, len(icon_path), ctypes.byref(icon_index))
+        assert Path(icon_path.value).samefile(executable), icon_path.value
+        assert icon_index.value == 0, icon_index.value
         shell.SHGetPropertyStoreFromParsingName(ctypes.c_wchar_p(str(shortcut)), None, 0,
             ctypes.byref(GUID("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99")), ctypes.byref(store))
         key = GUID("9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3").bytes[:] + list((5).to_bytes(4, "little"))
@@ -95,7 +101,9 @@ def main():
         output.mkdir()
         fixture = root / "fixture.rs"
         fixture.write_text('fn main() { if let Some(p) = std::env::args().nth(1) { std::fs::write(p, b"ready").unwrap(); std::thread::sleep(std::time::Duration::from_secs(120)); } }')
-        subprocess.run(["rustc", "--edition=2024", "-O", str(fixture), "-o", str(payload / "serein.exe")], check=True)
+        # The fixture runs outside the toolchain environment after installation.
+        subprocess.run(["rustc", "--edition=2024", "-C", "target-feature=+crt-static", "-O",
+                        str(fixture), "-o", str(payload / "serein.exe")], check=True)
         (payload / "LICENSE-MIT").write_text("Synthetic installer fixture")
         for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avformat-serein-61.dll", "avfilter-serein-10.dll", "swscale-serein-8.dll", "swresample-serein-5.dll", "openh264.dll"):
             (payload / name).write_bytes(b"synthetic DLL; never loaded")
@@ -117,6 +125,9 @@ def main():
                         f"-DOUTPUT_DIR={output}", str(repository / "packaging/windows/installer.nsi")],
                        cwd=repository, check=True, timeout=120)
         setup = output / "serein-0.0.0-offline-setup.exe"
+        icon_check = repository / "packaging/windows/check-brand-icon.ps1"
+        subprocess.run(["powershell", "-NoProfile", "-File", str(icon_check), str(setup)],
+                       check=True, timeout=30)
         installed = root / "Installed Serein žluťoučký"
         uninstaller = installed / "uninstall.exe"
         copied_uninstaller = root / "uninstall-test.exe"
@@ -182,6 +193,8 @@ def main():
                 for name in ("avcodec-serein-61.dll", "avutil-serein-59.dll", "avfilter-serein-10.dll", "openh264.dll", "ffmpeg-source/COPYING.GPLv2", "ffmpeg-source/camera-filter/camera_filter.wgsl", "ffmpeg-source/source/ffmpeg-7.1.5.tar.xz", "voice-enhancement/denoiser_core.onnx", "voice-enhancement/onnxruntime.dll", "msvcp140_1.dll"):
                     assert (installed / name).read_bytes() == (payload / name).read_bytes()
                 assert uninstaller.is_file()
+                subprocess.run(["powershell", "-NoProfile", "-File", str(icon_check), str(uninstaller)],
+                               check=True, timeout=30)
                 assert unrelated.read_text() == "Owner data must survive install, upgrade and uninstall"
                 assert unrelated_nested.read_text() == "Unrelated nested owner data"
                 assert not (installed / "install-notifications.ps1").exists()
@@ -191,6 +204,7 @@ def main():
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall_key, 0,
                                     winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
                     assert winreg.QueryValueEx(key, "DisplayName")[0] == "NuSerein"
+                    assert winreg.QueryValueEx(key, "DisplayIcon")[0] == f"{installed / 'serein.exe'},0"
                     assert winreg.QueryValueEx(key, "DisplayVersion")[0] == "0.0.0-offline"
                     assert Path(winreg.QueryValueEx(key, "InstallLocation")[0]).samefile(installed)
                 # Exercise removal of files left by an older script-based installer.

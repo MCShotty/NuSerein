@@ -1,6 +1,4 @@
 //! Construct the desktop owner and restore its existing settings.
-#[cfg(target_os = "windows")]
-use super::align_undecorated_surface;
 #[cfg(feature = "demo")]
 use super::{
 	AuthState, Command, Event, community_admin_demo, components_demo, demo_members, inbox_demo,
@@ -13,6 +11,8 @@ use super::{
 	sound_upload, startup, sticker_upload, toggle_setting, tray_window, updater, uploads, video,
 	voice, voice_messages,
 };
+#[cfg(target_os = "windows")]
+use super::{align_undecorated_surface, set_windows_taskbar_icon};
 
 impl Desktop {
 	pub(super) fn new(
@@ -857,6 +857,8 @@ impl Desktop {
 		#[cfg(target_os = "windows")]
 		{
 			use winit::platform::windows::{CornerPreference, WindowExtWindows as _};
+			// egui sets ICON_SMALL; winit otherwise leaves ICON_BIG empty for the taskbar.
+			set_windows_taskbar_icon(&window);
 			window.set_corner_preference(CornerPreference::Round);
 			align_undecorated_surface(&window);
 		}

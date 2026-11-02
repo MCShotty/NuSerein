@@ -229,6 +229,9 @@ Section "MainSection" SEC01
     SetErrorLevel 2
     Abort
   ${EndIf}
+  ; Refresh the executable and shortcut icons after an upgrade replaces the artwork.
+  System::Call 'shell32::SHChangeNotify(i 0x00002000, i 0x0005, w "$INSTDIR\${APP_EXE}", p 0)'
+  System::Call 'shell32::SHChangeNotify(i 0x00002000, i 0x0005, w "$SMPROGRAMS\${PRODUCT_NAME}.lnk", p 0)'
 SectionEnd
 
 Function un.onInit
