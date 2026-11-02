@@ -651,6 +651,53 @@ mod tests {
 	}
 
 	#[test]
+	fn cached_server_nickname_is_drawn_while_the_draft_keeps_the_user_id() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let target = model::Id(99123);
+		let revision = state.member_display_revision();
+		state.hydrate_member_displays(
+			guild,
+			revision,
+			vec![model::MemberDisplay {
+				guild,
+				user: target,
+				name: "Global display".into(),
+				username: Some("account_name".into()),
+				nick: Some("Server nickname".into()),
+			}],
+		);
+		let draft = "<@99123> ";
+		let users = crate::mentions::composer_users(&state, channel, draft, &[]);
+		let ctx = egui::Context::default();
+		let mut layout = Layout::default();
+		let mut avatars = Avatars::default();
+		let output = ctx.run_ui(Default::default(), |ui| {
+			let galley = layout.galley(
+				ui,
+				draft,
+				300.0,
+				&users,
+				&[],
+				&[],
+				false,
+				&mut avatars,
+				false,
+			);
+			assert_eq!(galley.job.text, draft);
+			assert_eq!(
+				layout.inlines[0].label.as_ref().unwrap().job.text,
+				"@Server nickname"
+			);
+		});
+		output.drop_without_applying_deltas();
+	}
+
+	#[test]
 	fn emoji_slots_stay_large_and_never_use_font_artwork_while_loading() {
 		let ctx = egui::Context::default();
 		let mut avatars = Avatars::default();

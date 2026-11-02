@@ -349,9 +349,9 @@ impl MessagingUi {
 								.on_hover_text(&text);
 						}
 						Some(model::MemberSlot::Person(member)) => {
-							let name = member
-								.nick
-								.as_deref()
+							let name = state
+								.member_nickname(channel, member.user.id)
+								.unwrap_or(member.nick.as_deref())
 								.filter(|nick| !nick.is_empty())
 								.unwrap_or_else(|| state.user_display_name(&member.user));
 							let (status, custom, activities, clients) =
@@ -433,21 +433,21 @@ impl MessagingUi {
 										colors.sidebar,
 									);
 								}
+								let role_ids = state.display_member_role_ids(channel, member);
 								let role_colors = online
 									.then(|| {
 										guild.and_then(|guild| {
 											state
-												.member_roles(guild, member)
+												.roles_for_display(guild, role_ids)
 												.1
 												.map(|role| role.colors())
 										})
 									})
 									.flatten();
 								let text_color = if online { colors.text } else { colors.muted };
-								let icon_role =
-									guild.and_then(|guild| state.guild_roles(guild)).and_then(
-										|roles| mentions::member_icon_role(roles, &member.roles),
-									);
+								let icon_role = guild
+									.and_then(|guild| state.guild_roles(guild))
+									.and_then(|roles| mentions::member_icon_role(roles, role_ids));
 								let mut show_name = |ui: &mut egui::Ui| {
 									ui.allocate_ui_with_layout(
 										egui::vec2(ui.available_width(), 18.0),

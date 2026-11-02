@@ -8,7 +8,8 @@ use std::{
 };
 
 const LIMIT: usize = 128;
-const MAX_BYTES: usize = 128 * 1024;
+const HINT_LIMIT: usize = 128;
+const MAX_BYTES: usize = 256 * 1024;
 const MEMBER_LIMIT: usize = 512;
 const MEMBER_BYTES: usize = 384 * 1024;
 
@@ -62,8 +63,10 @@ pub struct Labels {
 impl Labels {
 	pub(crate) fn clear(&mut self) {
 		let display_revision = self.display_revision.wrapping_add(1);
+		let watch_revision = self.watch_revision.wrapping_add(1);
 		*self = Self::default();
 		self.display_revision = display_revision;
+		self.watch_revision = watch_revision;
 	}
 	pub(crate) fn revision(&self) -> u64 {
 		self.revision
@@ -105,6 +108,33 @@ impl Labels {
 			.rev()
 			.find(|(g, m, _, _)| *g == guild && m.user.id == user)
 			.map(|(_, m, _, _)| m)
+	}
+	fn fill_partial_nickname(&mut self, guild: Id, user: Id, nick: Option<&str>) -> bool {
+		let Some(nick) = nick.filter(|nick| !nick.is_empty()) else {
+			return false;
+		};
+		if self
+			.get(guild, user)
+			.is_some_and(|identity| identity.departed || !matches!(identity.nick, Patch::Absent))
+		{
+			return false;
+		}
+		let Some((_, member, _, false)) = self
+			.members
+			.iter_mut()
+			.rev()
+			.find(|(g, member, _, _)| *g == guild && member.user.id == user)
+		else {
+			return false;
+		};
+		if member.nick.is_some() {
+			return false;
+		}
+		self.member_bytes -= member.bytes();
+		member.nick = Some(nick.to_owned());
+		self.member_bytes += member.bytes();
+		self.trim_members();
+		true
 	}
 	pub(crate) fn verified_member(&self, guild: Id, user: Id) -> Option<&Member> {
 		self.members
@@ -189,6 +219,7 @@ impl Labels {
 			}
 		}
 		self.trim_members();
+		self.trim_overlay();
 	}
 
 	fn trim_members(&mut self) {
@@ -239,6 +270,38 @@ impl Labels {
 	fn insert_hint(&mut self, update: MemberIdentity) {
 		self.bytes += update.bytes();
 		self.entries.push_back((0, update));
+	}
+	fn trim_overlay(&mut self) {
+		if self.entries.len() <= LIMIT && self.overlay_bytes() <= MAX_BYTES {
+			return;
+		}
+		let mut hints = self
+			.entries
+			.iter()
+			.filter(|(revision, _)| *revision == 0)
+			.count();
+		while self.entries.len().saturating_sub(hints) > LIMIT {
+			let Some(index) = self.entries.iter().position(|(revision, _)| *revision != 0) else {
+				break;
+			};
+			let (_, old) = self
+				.entries
+				.remove(index)
+				.expect("live identity index checked");
+			self.bytes -= old.bytes();
+		}
+		while hints > HINT_LIMIT || self.overlay_bytes() > MAX_BYTES {
+			let index = self
+				.entries
+				.iter()
+				.position(|(revision, _)| *revision == 0)
+				.unwrap_or(0);
+			let Some((revision, old)) = self.entries.remove(index) else {
+				break;
+			};
+			hints -= usize::from(revision == 0);
+			self.bytes -= old.bytes();
+		}
 	}
 	fn insert(&mut self, mut update: MemberIdentity, display_changed: bool) {
 		if let Some(index) = self
@@ -296,20 +359,9 @@ impl Labels {
 		if display_changed {
 			self.display_revision = self.display_revision.wrapping_add(1);
 		}
-		if self.entries.len() == LIMIT
-			&& let Some((_, old)) = self.entries.pop_front()
-		{
-			self.bytes -= old.bytes();
-		}
 		self.bytes += update.bytes();
 		self.entries.push_back((self.revision, update));
-		while self.entries.len() > LIMIT || self.overlay_bytes() > MAX_BYTES {
-			if let Some((_, old)) = self.entries.pop_front() {
-				self.bytes -= old.bytes();
-			} else {
-				break;
-			}
-		}
+		self.trim_overlay();
 	}
 	pub(crate) fn reconcile_with_missing(
 		&mut self,
@@ -416,13 +468,7 @@ impl Labels {
 		if display_changed {
 			self.display_revision = self.display_revision.wrapping_add(1);
 		}
-		while self.overlay_bytes() > MAX_BYTES {
-			if let Some((_, old)) = self.entries.pop_front() {
-				self.bytes -= old.bytes();
-			} else {
-				break;
-			}
-		}
+		self.trim_overlay();
 	}
 	pub(crate) fn refresh(&mut self, list: &model::MemberList) {
 		let Some(guild) = list.guild else { return };
@@ -491,6 +537,21 @@ impl Labels {
 		}
 		self.reconcile_with_missing(guild, &mut rows, self.revision, &list.missing_identity);
 		self.reconcile_with_missing(guild, &mut partial, self.revision, &list.missing_identity);
+		for member in &mut partial {
+			if member.nick.is_none()
+				&& list
+					.missing_identity
+					.iter()
+					.any(|fields| fields.user == member.user.id && fields.nick)
+				&& self.get(guild, member.user.id).is_none_or(|identity| {
+					!identity.departed && matches!(identity.nick, Patch::Absent)
+				}) && let Some(nick) = self
+				.member(guild, member.user.id)
+				.and_then(|old| old.nick.as_ref())
+			{
+				member.nick = Some(nick.clone());
+			}
+		}
 		self.remember_with_source(guild, &rows, true);
 		self.remember_with_source(guild, &partial, false);
 		for (revision, entry) in &mut self.entries {
@@ -498,6 +559,7 @@ impl Labels {
 				*revision = self.revision;
 			}
 		}
+		self.trim_overlay();
 	}
 }
 
@@ -559,6 +621,45 @@ impl State {
 	}
 	pub fn member_watch_revision(&self) -> u64 {
 		self.member_labels.watch_revision
+	}
+	pub fn visible_member_cache_scope(&self) -> Option<(Id, u64)> {
+		let channel = self.selected?;
+		let guild = self.channel(channel)?.guild?;
+		if self.auth != crate::auth::AuthState::Authenticated
+			|| !self.gateway_connected
+			|| !self.can_view(channel)
+			|| self.member_labels.visible_scope != Some((guild, channel))
+		{
+			return None;
+		}
+		Some((channel, self.member_labels.watch_revision))
+	}
+	/// Visible authors missing a display observation, independent of the Gateway query slot.
+	pub fn visible_member_cache_request(&self) -> Option<member_search::Request> {
+		let (channel, nonce) = self.visible_member_cache_scope()?;
+		let guild = self.channel(channel)?.guild?;
+		let mut users: Vec<_> = self
+			.member_labels
+			.visible_users
+			.iter()
+			.copied()
+			.filter(|user| !self.has_cached_member_display(guild, *user))
+			.filter(|user| {
+				!self
+					.member_identity(channel, *user)
+					.is_some_and(|entry| entry.departed)
+			})
+			.collect();
+		users.sort_unstable();
+		users.dedup();
+		(!users.is_empty()).then_some(member_search::Request {
+			guild,
+			channel,
+			query: String::new(),
+			users,
+			nonce,
+			slot: 1,
+		})
 	}
 	/// Revision of bounded display observations, for deduplicated asynchronous disk work.
 	pub fn member_display_revision(&self) -> u64 {
@@ -688,8 +789,6 @@ impl State {
 			|| self.auth != crate::auth::AuthState::Authenticated
 			|| self.member_labels.revision() != started_revision
 			|| self.member_search[request.slot].request.as_ref() != Some(request)
-			|| (self.member_search[request.slot].finished
-				&& self.member_search[request.slot].error.is_none())
 			|| rows.len() > member_search::LIMIT
 			|| rows.iter().map(MemberDisplay::bytes).sum::<usize>() > member_search::MAX_BYTES
 		{
@@ -717,15 +816,62 @@ impl State {
 		}) {
 			return false;
 		}
+		self.hydrate_targeted_member_displays(request.guild, started_revision, rows);
+		true
+	}
+	/// Apply a local visible-author lookup without completing or replacing a live lookup.
+	pub fn hydrate_visible_member_displays(
+		&mut self,
+		request: &member_search::Request,
+		started_revision: u64,
+		rows: Vec<MemberDisplay>,
+	) -> bool {
+		if !request.valid()
+			|| request.slot != 1
+			|| self.selected != Some(request.channel)
+			|| self.member_labels.visible_scope != Some((request.guild, request.channel))
+			|| self.member_labels.watch_revision != request.nonce
+			|| self.member_labels.revision() != started_revision
+			|| self.auth != crate::auth::AuthState::Authenticated
+			|| !self.gateway_connected
+			|| !self.can_view(request.channel)
+			|| self
+				.channel(request.channel)
+				.and_then(|channel| channel.guild)
+				!= Some(request.guild)
+			|| rows.len() > member_search::LIMIT
+			|| rows.iter().map(MemberDisplay::bytes).sum::<usize>() > member_search::MAX_BYTES
+			|| rows.iter().any(|row| {
+				row.guild != request.guild || !row.valid() || !request.users.contains(&row.user)
+			}) {
+			return false;
+		}
+		self.hydrate_targeted_member_displays(request.guild, started_revision, rows);
+		true
+	}
+	fn hydrate_targeted_member_displays(
+		&mut self,
+		guild: Id,
+		started_revision: u64,
+		rows: Vec<MemberDisplay>,
+	) {
 		let needed = rows
 			.iter()
 			.filter(|row| {
-				self.member_labels.get(request.guild, row.user).is_none()
-					&& self.member_labels.member(request.guild, row.user).is_none()
+				self.member_labels.get(guild, row.user).is_none()
+					&& self.member_labels.member(guild, row.user).is_none()
 			})
 			.count();
 		let mut removed = false;
-		while self.member_labels.entries.len().saturating_add(needed) > LIMIT {
+		while self
+			.member_labels
+			.entries
+			.iter()
+			.filter(|(revision, _)| *revision == 0)
+			.count()
+			.saturating_add(needed)
+			> HINT_LIMIT
+		{
 			let Some(index) = self
 				.member_labels
 				.entries
@@ -751,8 +897,7 @@ impl State {
 			self.revision = self.revision.wrapping_add(1);
 			self.skip_identity_navigation();
 		}
-		self.hydrate_member_displays(request.guild, started_revision, rows);
-		true
+		self.hydrate_member_displays(guild, started_revision, rows);
 	}
 	/// Older disk observations never override a live result, removal or account transition.
 	pub fn hydrate_member_displays(
@@ -775,14 +920,23 @@ impl State {
 			return;
 		}
 		let mut changed = false;
+		let mut hints = self
+			.member_labels
+			.entries
+			.iter()
+			.filter(|(revision, _)| *revision == 0)
+			.count();
 		for row in rows {
 			if self.member_labels.get(guild, row.user).is_some()
 				|| self.member_labels.member(guild, row.user).is_some()
 			{
+				changed |=
+					self.member_labels
+						.fill_partial_nickname(guild, row.user, row.nick.as_deref());
 				continue;
 			}
 			// Never evict a known live identity or departure to install an older disk name.
-			if self.member_labels.entries.len() >= LIMIT {
+			if hints >= HINT_LIMIT {
 				break;
 			}
 			let update = MemberIdentity {
@@ -816,6 +970,7 @@ impl State {
 				break;
 			}
 			self.member_labels.insert_hint(update);
+			hints += 1;
 			changed = true;
 		}
 		if !changed {
@@ -867,6 +1022,9 @@ impl State {
 			return None;
 		}
 		if let Some(update) = self.member_identity(channel, user) {
+			if update.departed {
+				return Some(None);
+			}
 			match &update.nick {
 				Patch::Value(nick) => return Some((!nick.is_empty()).then_some(nick.as_str())),
 				Patch::Null => return Some(None),
@@ -903,6 +1061,13 @@ impl State {
 							&& !message.author.webhook
 					})
 					.find_map(|message| message.author_nick.as_deref().map(Some))
+			})
+			.or_else(|| {
+				self.member_labels
+					.member(guild, user)
+					.and_then(|member| member.nick.as_deref())
+					.filter(|nick| !nick.is_empty())
+					.map(Some)
 			})
 	}
 	/// An incomplete list row cannot assert that its absent role array is empty.
@@ -941,6 +1106,18 @@ impl State {
 			.and_then(|c| c.guild);
 		self.observed_member_candidates(guild)
 			.map(ObservedUser::into_user)
+	}
+	/// Session display observations only; they do not prove membership or permissions.
+	pub fn observed_display_members(&self, channel: Id) -> impl Iterator<Item = &Member> {
+		let guild = self
+			.channel(channel)
+			.filter(|_| self.can_view(channel))
+			.and_then(|c| c.guild);
+		self.member_labels
+			.members
+			.iter()
+			.rev()
+			.filter_map(move |(scope, member, _, _)| (Some(*scope) == guild).then_some(member))
 	}
 
 	fn observed_member_candidates(
@@ -1562,6 +1739,102 @@ mod cache_search_tests {
 	}
 
 	#[test]
+	fn cached_search_can_fill_after_an_empty_live_result() {
+		let mut state = state();
+		let Some(crate::Command::MemberSearch(request)) =
+			state.search_members(Id(1), "CachedNick", 0)
+		else {
+			panic!("member query");
+		};
+		let revision = state.member_display_revision();
+		state.searched_members(request.clone(), Ok(vec![]));
+		assert!(state.hydrate_member_search_displays(
+			&request,
+			revision,
+			vec![row(9000, "CachedNick")]
+		));
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9000)),
+			Some(Some("CachedNick"))
+		);
+	}
+
+	#[test]
+	fn visible_cache_lookup_continues_while_an_older_gateway_lookup_is_pending() {
+		let mut state = state();
+		let Some(crate::Command::MemberSearch(live)) = state.request_author_members(&[Id(9000)])
+		else {
+			panic!("initial lookup");
+		};
+		assert!(state.request_author_members(&[Id(9001)]).is_none());
+		let visible = state.visible_member_cache_request().unwrap();
+		assert_eq!(visible.users, vec![Id(9001)]);
+		let revision = state.member_display_revision();
+		assert!(state.hydrate_visible_member_displays(
+			&visible,
+			revision,
+			vec![row(9001, "Visible nick")]
+		));
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9001)),
+			Some(Some("Visible nick"))
+		);
+		assert_eq!(state.member_search[1].request.as_ref(), Some(&live));
+		assert!(!state.member_search[1].finished);
+		state.request_author_members(&[Id(9002)]);
+		assert!(!state.hydrate_visible_member_displays(
+			&visible,
+			state.member_display_revision(),
+			vec![row(9001, "Stale")]
+		));
+		let before_resume = state.visible_member_cache_request().unwrap();
+		state.member_labels.clear();
+		state.request_author_members(&[Id(9002)]);
+		let after_resume = state.visible_member_cache_request().unwrap();
+		assert_ne!(before_resume.nonce, after_resume.nonce);
+		assert!(!state.hydrate_visible_member_displays(
+			&before_resume,
+			state.member_display_revision(),
+			vec![row(9002, "Before resume")]
+		));
+	}
+
+	#[test]
+	fn targeted_cache_search_survives_a_full_live_identity_overlay() {
+		let mut state = state();
+		for user in 1000..1000 + LIMIT as u64 {
+			state.apply_member_identity(MemberIdentity {
+				guild: Id(2),
+				user: Id(user),
+				profile: None,
+				global_name: model::GlobalNameUpdate::Unchanged,
+				avatar: Patch::Absent,
+				nick: Patch::Value(format!("Live {user}")),
+				roles: Patch::Absent,
+				departed: false,
+			});
+		}
+		let Some(crate::Command::MemberSearch(request)) =
+			state.search_members(Id(1), "CachedNick", 0)
+		else {
+			panic!("member query");
+		};
+		assert!(state.hydrate_member_search_displays(
+			&request,
+			state.member_display_revision(),
+			vec![row(9000, "CachedNick")]
+		));
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9000)),
+			Some(Some("CachedNick"))
+		);
+		assert_eq!(
+			state.member_nickname(Id(1), Id(1000)),
+			Some(Some("Live 1000"))
+		);
+	}
+
+	#[test]
 	fn live_results_and_changed_queries_fence_delayed_disk_searches() {
 		let mut state = state();
 		let Some(crate::Command::MemberSearch(old)) = state.search_members(Id(1), "OldNick", 0)
@@ -1596,6 +1869,41 @@ mod cache_search_tests {
 		assert_eq!(
 			state.member_nickname(Id(1), Id(9000)),
 			Some(Some("NewNick"))
+		);
+		let revision = state.member_display_revision();
+		assert!(state.hydrate_member_search_displays(
+			&current,
+			revision,
+			vec![row(9000, "NewNickOld"), row(9001, "NewNickCached")]
+		));
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9000)),
+			Some(Some("NewNick"))
+		);
+		assert_eq!(
+			state.member_nickname(Id(1), Id(9001)),
+			Some(Some("NewNickCached"))
+		);
+		state.apply_member_identity(MemberIdentity {
+			guild: Id(2),
+			user: Id(9001),
+			profile: None,
+			global_name: model::GlobalNameUpdate::Unchanged,
+			avatar: Patch::Absent,
+			nick: Patch::Null,
+			roles: Patch::Absent,
+			departed: true,
+		});
+		assert!(state.hydrate_member_search_displays(
+			&current,
+			state.member_display_revision(),
+			vec![row(9001, "NewNickCached")]
+		));
+		assert!(state.member_identity(Id(1), Id(9001)).unwrap().departed);
+		assert!(
+			!state
+				.observed_member_users(Id(1))
+				.any(|user| user.id == Id(9001))
 		);
 	}
 

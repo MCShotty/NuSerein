@@ -7761,6 +7761,7 @@ dependencies = [
  "iana-time-zone",
  "image",
  "jiff",
+ "local-store",
  "model",
  "pulldown-cmark",
  "ruzstd",

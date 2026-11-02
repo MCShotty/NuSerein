@@ -97,6 +97,7 @@ pub enum Operation {
 	FindMemberDisplays {
 		request: client_core::member_search::Request,
 		revision: u64,
+		visible: bool,
 	},
 	SyncSaveMembers {
 		job: u64,
@@ -211,6 +212,7 @@ pub enum Outcome {
 	MemberDisplaysFound {
 		request: client_core::member_search::Request,
 		revision: u64,
+		visible: bool,
 		epoch: u64,
 		result: Result<Vec<model::MemberDisplay>, StoreError>,
 	},
@@ -808,8 +810,10 @@ impl Cache {
 			return false;
 		}
 		let payload = match &operation {
-			Operation::FindMemberDisplays { request, .. } => {
-				if !request.valid() {
+			Operation::FindMemberDisplays {
+				request, visible, ..
+			} => {
+				if !request.valid() || (*visible && request.slot != 1) {
 					return false;
 				}
 				request.query.capacity() + request.users.capacity() * size_of::<Id>() + 1024 * 1024
@@ -1566,9 +1570,13 @@ fn execute_sync(
 	operation: Operation,
 ) -> Result<Operation, Outcome> {
 	let outcome = match operation {
-		Operation::FindMemberDisplays { request, revision } => {
+		Operation::FindMemberDisplays {
+			request,
+			revision,
+			visible,
+		} => {
 			let result = sync_store(store, history, epoch).and_then(|store| {
-				if !request.valid() {
+				if !request.valid() || (visible && request.slot != 1) {
 					return Err(StoreError::Capacity);
 				}
 				if request.slot == 1 {
@@ -1586,6 +1594,7 @@ fn execute_sync(
 			Outcome::MemberDisplaysFound {
 				request,
 				revision,
+				visible,
 				epoch,
 				result,
 			}
@@ -1891,7 +1900,7 @@ fn execute(
 			epoch,
 			result: if history.allows(epoch) {
 				match store {
-					Ok(store) => store.load_member_displays(account, guild),
+					Ok(store) => store.load_recent_member_displays(account, guild),
 					Err(error) => Err(*error),
 				}
 			} else {
@@ -4313,6 +4322,50 @@ mod tests {
 			panic!("member load")
 		};
 		result.unwrap()
+	}
+	#[test]
+	fn visible_author_cache_worker_does_not_complete_the_gateway_query() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let account = state.user.as_ref().unwrap().id;
+		let Some(client_core::Command::MemberSearch(live)) =
+			state.request_author_members(&[Id(900000)])
+		else {
+			panic!("author lookup");
+		};
+		let request = state.visible_member_cache_request().unwrap();
+		let revision = state.member_display_revision();
+		let safety = HistorySafety::default();
+		let mut store = member_hint_store(account);
+		let Outcome::MemberDisplaysFound {
+			request,
+			revision,
+			visible: true,
+			result: Ok(rows),
+			..
+		} = execute(
+			&mut store,
+			&safety,
+			account,
+			safety.epoch(),
+			Operation::FindMemberDisplays {
+				request,
+				revision,
+				visible: true,
+			},
+		)
+		else {
+			panic!("visible member result");
+		};
+		assert!(state.hydrate_visible_member_displays(&request, revision, rows));
+		assert_eq!(
+			state.member_nickname(Id(20), Id(900000)),
+			Some(Some("Cached nickname"))
+		);
+		assert_eq!(state.member_search[1].request.as_ref(), Some(&live));
+		assert!(!state.member_search[1].finished);
 	}
 	#[test]
 	fn resumed_session_reloads_member_hints_without_changing_history_epoch() {

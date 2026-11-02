@@ -129,6 +129,22 @@ impl LocalStore {
 			Vec::new(),
 		)
 	}
+	/// The initial presentation overlay holds at most 128 disk hints.
+	pub fn load_recent_member_displays(
+		&self,
+		account: Id,
+		guild: Id,
+	) -> Result<Vec<MemberDisplay>> {
+		if account.0 == 0 || guild.0 == 0 {
+			return Err(StoreError::Capacity);
+		}
+		self.read_member_displays(
+			account,
+			guild,
+			" ORDER BY touched DESC,user LIMIT 128",
+			Vec::new(),
+		)
+	}
 	/// Resolve only referenced people without loading a server's complete directory.
 	pub fn load_member_displays_for_users(
 		&self,
@@ -408,6 +424,39 @@ mod tests {
 			username: Some(format!("user_{user}").into()),
 			nick: Some(format!("Nickname {user}")),
 		}
+	}
+	#[test]
+	fn recent_member_hints_are_bounded_and_scoped() {
+		let mut store = store();
+		let older: Vec<_> = (1..=200).map(|user| entry(10, user)).collect();
+		store.save_member_displays(Id(1), &older).unwrap();
+		let recent = entry(10, 9000);
+		store
+			.save_member_displays(Id(1), std::slice::from_ref(&recent))
+			.unwrap();
+		store
+			.save_member_displays(Id(2), &[entry(10, 9999)])
+			.unwrap();
+		store
+			.save_member_displays(Id(1), &[entry(11, 9998)])
+			.unwrap();
+		let rows = store.load_recent_member_displays(Id(1), Id(10)).unwrap();
+		assert_eq!(rows.len(), 128);
+		assert_eq!(rows[0], recent);
+		assert!(
+			rows.iter()
+				.all(|row| row.guild == Id(10) && row.user != Id(9999))
+		);
+		assert_eq!(
+			store.load_member_displays(Id(1), Id(10)).unwrap().len(),
+			201
+		);
+		let plan: String = store.0.query_row(
+			"EXPLAIN QUERY PLAN SELECT user FROM member_displays WHERE account='1' AND guild='10' ORDER BY touched DESC,user LIMIT 128",
+			[],
+			|row| row.get(3),
+		).unwrap();
+		assert!(plan.contains("member_displays_guild_recency"), "{plan}");
 	}
 	#[test]
 	fn display_cache_migrates_and_preserves_settings_and_account_scope() {
