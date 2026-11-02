@@ -116,8 +116,9 @@ fn bundled_application_icon_decodes_with_transparency() {
 	let icon = application_icon();
 	assert_eq!((icon.width, icon.height), (256, 256));
 	assert_eq!(icon.rgba.len(), 256 * 256 * 4);
-	assert!(icon.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0));
-	assert!(icon.rgba.chunks_exact(4).any(|pixel| pixel[3] == 255));
+	let pixels = icon.rgba.as_chunks::<4>().0;
+	assert!(pixels.iter().any(|pixel| pixel[3] == 0));
+	assert!(pixels.iter().any(|pixel| pixel[3] == 255));
 }
 
 #[cfg(target_os = "windows")]
