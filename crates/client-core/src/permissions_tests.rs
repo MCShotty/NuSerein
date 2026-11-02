@@ -3084,12 +3084,108 @@ fn an_unknown_sidebar_row_does_not_mask_the_message_identity() {
 	apply(&mut state, Event::Message(chat.clone()));
 	assert_eq!(state.message_author_name(&chat), "Message nickname");
 	assert_eq!(state.message_author_color(&chat), Some(0x112233));
+	let Some(model::MemberSlot::Person(sidebar)) = state.member_slot(0) else {
+		panic!("member")
+	};
+	assert_eq!(
+		state.member_nickname(Id(20), sidebar.user.id),
+		Some(Some("Message nickname"))
+	);
+	assert_eq!(state.display_member_role_ids(Id(20), sidebar), &[Id(11)]);
+	assert_eq!(
+		state
+			.roles_for_display(Id(10), state.display_member_role_ids(Id(20), sidebar))
+			.1
+			.unwrap()
+			.color,
+		0x112233
+	);
 	apply(&mut state, Event::Members(list));
 	let Some(model::MemberSlot::Person(sidebar)) = state.member_slot(0) else {
 		panic!("member")
 	};
 	assert_eq!(sidebar.nick.as_deref(), Some("Message nickname"));
 	assert_eq!(sidebar.roles, vec![Id(11)]);
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			global_name: model::GlobalNameUpdate::Unchanged,
+			avatar: Patch::Absent,
+			nick: Patch::Null,
+			roles: Patch::Value(vec![]),
+			departed: false,
+		})),
+	);
+	let Some(model::MemberSlot::Person(sidebar)) = state.member_slot(0) else {
+		panic!("member")
+	};
+	assert_eq!(state.member_nickname(Id(20), sidebar.user.id), Some(None));
+	assert!(state.display_member_role_ids(Id(20), sidebar).is_empty());
+}
+
+#[test]
+fn cached_nickname_fills_a_partial_sidebar_row_without_promoting_roles() {
+	let mut state = state();
+	state.request_members().unwrap();
+	let mut list = state.members.clone().unwrap();
+	let mut partial = cached_person(7, "unused");
+	partial.nick = None;
+	partial.roles.clear();
+	list.slots = vec![Some(model::MemberSlot::Person(partial))];
+	list.missing_identity = vec![model::MissingMemberFields {
+		global_name: model::GlobalNameUpdate::Set,
+		user: Id(7),
+		nick: true,
+		roles: true,
+	}];
+	list.freshness = Freshness::Fresh;
+	list.total = 1;
+	apply(&mut state, Event::Members(list.clone()));
+	let cached = model::MemberDisplay {
+		guild: Id(10),
+		user: Id(7),
+		name: "Display".into(),
+		username: Some("account".into()),
+		nick: Some("Cached nickname".into()),
+	};
+	state.hydrate_member_displays(
+		Id(10),
+		state.member_display_revision(),
+		vec![cached.clone()],
+	);
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Cached nickname"))
+	);
+	assert!(state.member_labels.verified_member(Id(10), Id(7)).is_none());
+	assert_eq!(state.presentation_member_roles(Id(20), Id(7)), None);
+	apply(&mut state, Event::Members(list));
+	assert_eq!(
+		state.member_nickname(Id(20), Id(7)),
+		Some(Some("Cached nickname"))
+	);
+	apply(
+		&mut state,
+		Event::MemberIdentity(Box::new(model::MemberIdentity {
+			guild: Id(10),
+			user: Id(7),
+			profile: None,
+			global_name: model::GlobalNameUpdate::Unchanged,
+			avatar: Patch::Absent,
+			nick: Patch::Null,
+			roles: Patch::Value(vec![]),
+			departed: false,
+		})),
+	);
+	state.hydrate_member_displays(Id(10), state.member_display_revision(), vec![cached]);
+	assert_eq!(state.member_nickname(Id(20), Id(7)), Some(None));
+	assert_eq!(
+		state.presentation_member_roles(Id(20), Id(7)),
+		Some(&[][..])
+	);
 }
 
 #[test]

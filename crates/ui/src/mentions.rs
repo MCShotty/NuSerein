@@ -241,6 +241,20 @@ pub fn known_users(state: &State, channel: Id) -> Vec<User> {
 		for member in &state.member_search[0].rows {
 			add(&member.user);
 		}
+		let query = request.query.to_lowercase();
+		for member in state.observed_display_members(channel) {
+			if [
+				member.nick.as_deref(),
+				Some(member.user.name.as_str()),
+				member.user.username.as_deref(),
+			]
+			.into_iter()
+			.flatten()
+			.any(|name| rank(&query, name, member.user.id).is_some())
+			{
+				add(&member.user);
+			}
+		}
 	}
 	for user in state.observed_member_users(channel) {
 		add(&user);
@@ -316,11 +330,34 @@ pub(crate) fn composer_users<'a>(
 		};
 		let token = &rest[start..];
 		if let Some((id, len)) = model::user_mention_prefix(token) {
-			if let Some(index) = users.iter().position(|user| user.id == id) {
-				let label = mention_label(id, users, Some(&MentionSource { state, channel }));
-				let name = label.strip_prefix('@').unwrap_or(&label);
+			let source = MentionSource { state, channel };
+			let label = mention_label(id, &names, Some(&source));
+			let name = label.strip_prefix('@').unwrap_or(&label);
+			if let Some(index) = names.iter().position(|user| user.id == id) {
 				if names[index].name != name {
 					names.to_mut()[index].name = name.to_owned();
+				}
+			} else {
+				let resolved = find_user(id, users, Some(&source)).cloned().or_else(|| {
+					state
+						.member_nickname(channel, id)
+						.flatten()
+						.map(|nick| User {
+							id,
+							name: nick.to_owned(),
+							username: None,
+							avatar: None,
+							member_avatar: None,
+							discriminator: 0,
+							primary_guild: None,
+							cosmetics: None,
+							webhook: false,
+							kind: Default::default(),
+						})
+				});
+				if let Some(mut user) = resolved {
+					user.name = name.to_owned();
+					names.to_mut().push(user);
 				}
 			}
 			rest = &token[len..];
@@ -1711,6 +1748,34 @@ mod tests {
 	}
 
 	#[test]
+	fn draft_mention_resolves_a_known_member_outside_the_suggestion_snapshot() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let target = Id(99123);
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberIdentity(Box::new(model::MemberIdentity {
+				guild,
+				user: target,
+				profile: Some(user(target.0, "Global display")),
+				global_name: model::GlobalNameUpdate::Set,
+				avatar: model::Patch::Absent,
+				nick: model::Patch::Value("Server nickname".into()),
+				roles: model::Patch::Absent,
+				departed: false,
+			})),
+		});
+		let users = composer_users(&state, channel, "<@99123> ", &[]);
+		assert_eq!(users.len(), 1);
+		assert_eq!(users[0].id, target);
+		assert_eq!(users[0].name, "Server nickname");
+	}
+
+	#[test]
 	fn nickname_completion_survives_query_edits_and_live_member_changes() {
 		let mut state = test_support::demo_state();
 		state.demo = false;
@@ -1888,6 +1953,188 @@ mod tests {
 		assert_eq!(draft, "<@900003> ");
 		assert!(!state.member_search[0].finished);
 		assert!(state.member_search[0].rows.is_empty());
+	}
+
+	#[test]
+	fn sqlite_nickname_search_inserts_the_selected_id_and_refreshes_its_label() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let account = state.user.as_ref().unwrap().id;
+		let target = Id(900_007);
+		let mut store = local_store::LocalStore::open(std::path::Path::new(":memory:")).unwrap();
+		store
+			.save_member_displays(
+				account,
+				&[model::MemberDisplay {
+					guild,
+					user: target,
+					name: "Global display".into(),
+					username: Some("actual_account".into()),
+					nick: Some("Cached nickname".into()),
+				}],
+			)
+			.unwrap();
+		let client_core::Command::MemberSearch(request) =
+			state.search_members(channel, "Cached nickname", 0).unwrap()
+		else {
+			panic!("member query");
+		};
+		let revision = state.member_display_revision();
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::MemberSearch {
+				request: request.clone(),
+				result: Ok(vec![]),
+			},
+		});
+		let rows = store
+			.search_member_displays(account, guild, "cached nickname", 100)
+			.unwrap();
+		assert!(state.hydrate_member_search_displays(&request, revision, rows));
+		let mut draft = "@Cached nickname".to_owned();
+		let mut menu = Menu::default();
+		menu.refresh(
+			&state,
+			channel,
+			&draft,
+			Some(draft.chars().count()),
+			&known_users(&state, channel),
+		);
+		let index = menu
+			.candidates
+			.iter()
+			.position(|row| row.id() == target)
+			.unwrap();
+		assert!(
+			matches!(&menu.candidates[index], Candidate::User { user, name }
+			if name == "Cached nickname" && user.username.as_deref() == Some("actual_account"))
+		);
+		insert(&mut draft, menu.pick(index).unwrap(), false).unwrap();
+		assert_eq!(draft, "<@900007> ");
+		assert_eq!(
+			composer_users(&state, channel, &draft, &[])[0].name,
+			"Cached nickname"
+		);
+
+		let mut profile = user(target.0, "Global display");
+		profile.username = Some("actual_account".into());
+		for (nick, expected) in [
+			(
+				model::Patch::Value("Updated nickname".into()),
+				"Updated nickname",
+			),
+			(model::Patch::Null, "Global display"),
+		] {
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::MemberIdentity(Box::new(model::MemberIdentity {
+					guild,
+					user: target,
+					profile: Some(profile.clone()),
+					global_name: model::GlobalNameUpdate::Set,
+					avatar: model::Patch::Absent,
+					nick,
+					roles: model::Patch::Absent,
+					departed: false,
+				})),
+			});
+			assert_eq!(
+				composer_users(&state, channel, &draft, &[])[0].name,
+				expected
+			);
+			assert_eq!(draft, "<@900007> ");
+		}
+	}
+
+	#[test]
+	fn cached_partial_member_remains_searchable_when_identity_snapshot_is_full() {
+		let mut state = test_support::demo_state();
+		state.demo = false;
+		state.auth = client_core::auth::AuthState::Authenticated;
+		state.gateway_connected = true;
+		let channel = state.selected.unwrap();
+		let guild = state.channel(channel).unwrap().guild.unwrap();
+		let target = Id(900_007);
+		state.request_members().unwrap();
+		let mut list = state.members.clone().unwrap();
+		list.slots = vec![Some(model::MemberSlot::Person(model::Member {
+			user: user(target.0, "Account name"),
+			nick: None,
+			roles: vec![],
+			status: None,
+			custom_status: None,
+			activities: vec![],
+			clients: Default::default(),
+		}))];
+		list.missing_identity = vec![model::MissingMemberFields {
+			user: target,
+			nick: true,
+			roles: true,
+			global_name: model::GlobalNameUpdate::Set,
+		}];
+		list.freshness = model::Freshness::Fresh;
+		list.total = 1;
+		state.apply(client_core::Envelope {
+			generation: state.generation,
+			event: client_core::Event::Members(list),
+		});
+		for id in 10_000..10_128 {
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::MemberIdentity(Box::new(model::MemberIdentity {
+					guild,
+					user: Id(id),
+					profile: None,
+					global_name: model::GlobalNameUpdate::Unchanged,
+					avatar: model::Patch::Absent,
+					nick: model::Patch::Value(format!("Live {id}")),
+					roles: model::Patch::Absent,
+					departed: false,
+				})),
+			});
+		}
+		let rows = (20_000..20_128)
+			.map(|id| model::MemberDisplay {
+				guild,
+				user: Id(id),
+				name: format!("Cached {id}"),
+				username: None,
+				nick: None,
+			})
+			.collect();
+		state.hydrate_member_displays(guild, state.member_display_revision(), rows);
+		let client_core::Command::MemberSearch(request) =
+			state.search_members(channel, "Target nickname", 0).unwrap()
+		else {
+			panic!("member query");
+		};
+		assert!(state.hydrate_member_search_displays(
+			&request,
+			state.member_display_revision(),
+			vec![model::MemberDisplay {
+				guild,
+				user: target,
+				name: "Account name".into(),
+				username: None,
+				nick: Some("Target nickname".into()),
+			}]
+		));
+		let users = known_users(&state, channel);
+		assert!(users.iter().any(|user| user.id == target));
+		let draft = "@Target nickname";
+		let mut menu = Menu::default();
+		menu.refresh(&state, channel, draft, Some(draft.chars().count()), &users);
+		let candidate = menu
+			.candidates
+			.iter()
+			.find(|row| row.id() == target)
+			.expect("cached target");
+		assert!(matches!(candidate, Candidate::User { name, .. } if name == "Target nickname"));
+		assert_eq!(candidate.token(), "<@900007> ");
 	}
 
 	#[test]

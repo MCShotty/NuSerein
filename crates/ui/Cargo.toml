@@ -30,6 +30,7 @@ skrifa = { version = "=0.44.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 test-support.workspace = true
+local-store.workspace = true
 
 [lints]
 workspace = true

@@ -237,7 +237,8 @@ impl LocalStore {
             nick TEXT CHECK(nick IS NULL OR (typeof(nick)='text' AND length(CAST(nick AS BLOB))<=512)),
             touched INTEGER NOT NULL CHECK(typeof(touched)='integer'),
             PRIMARY KEY(account,guild,user));
-            CREATE INDEX IF NOT EXISTS member_displays_recency ON member_displays(touched,account,guild,user);")?;
+            CREATE INDEX IF NOT EXISTS member_displays_recency ON member_displays(touched,account,guild,user);
+            CREATE INDEX IF NOT EXISTS member_displays_guild_recency ON member_displays(account,guild,touched DESC,user);")?;
 		transaction.execute_batch("CREATE TABLE IF NOT EXISTS expression_catalogs(
             account TEXT NOT NULL CHECK(length(account) BETWEEN 1 AND 20),
             guild TEXT NOT NULL CHECK(length(guild) BETWEEN 1 AND 20),
