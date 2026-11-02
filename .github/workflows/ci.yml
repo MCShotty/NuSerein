@@ -152,6 +152,9 @@ jobs:
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Check production build without development fixtures
         run: cargo check --locked -p serein --bin serein --no-default-features
+      - name: Windows taskbar icon (synthetic window)
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p serein --bin serein windows_taskbar_icon_tests::applies_the_brand_icon_to_the_taskbar_window -- --exact
       - name: Run cargo xtask check
         if: runner.os == 'Windows'
         run: cargo xtask check
