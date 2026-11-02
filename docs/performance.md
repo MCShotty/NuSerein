@@ -4628,3 +4628,37 @@ Estimated identity bookkeeping remained at 578,128 bytes in the changed run;
 the baseline grew from 614,896 to 794,896 bytes. These workloads do not
 measure member-list snapshot processing, UI frame time, process memory or
 live Discord behavior. The reducer and member-watch ranges overlap.
+
+### Cached mention and member loading
+
+CI compared fork baseline `287182f3` and source `485f89e9` with upstream nightly
+`1b2f8942` (nightly tag `v1.0.0-nightly.20261028.68`). Each runner used Rust
+1.98.1, release optimization level 3, thin LTO, one codegen unit, one warmup
+and five measured repetitions. Times are medians in milliseconds.
+
+| Synthetic workload | Nightly | Fork baseline | Changed | Delta vs fork |
+| --- | ---: | ---: | ---: | ---: |
+| Linux reducer | 66.437 | 65.410 | 65.651 | +0.4% |
+| Linux wide-channel reducer | 86.454 | 7.281 | 7.180 | −1.4% |
+| macOS reducer | 62.252 | 68.311 | 62.850 | −8.0% |
+| macOS wide-channel reducer | 95.747 | 6.976 | 6.980 | +0.1% |
+| Windows reducer | 58.242 | 62.074 | 61.885 | −0.3% |
+| Windows wide-channel reducer | 67.393 | 6.833 | 6.759 | −1.1% |
+
+The macOS reducer ranges overlapped substantially; the median difference alone
+does not establish a speedup. CI pinned Linux and Windows to one logical CPU;
+macOS used the platform scheduler. These are core replays, not UI frame times,
+network latency, process RSS or live Discord measurements. See the
+[CI run](https://github.com/MCShotty/NuSerein/actions/runs/41390383867) for
+sample ranges, runner details and artifacts.
+
+Separately, an in-memory Python SQLite 3.53.1 fixture on Linux x86-64 with a
+Xeon Platinum 8573C contained 50,000 rows in the queried server and 50,000 in
+another account. With one warmup and five alternating samples, fetching the
+old 4,096-row initial query took a median of 33.817 ms; the indexed 128-row
+query took 0.153 ms. Both selected the same display columns and ordered by
+`touched DESC, user`; the baseline had the original recency index and the new
+fixture also had the account/guild recency index. This measures SQLite and
+row retrieval only, not total channel-opening time. UI responsiveness, native
+screenshots, installed/compressed package sizes and real server synchronization
+were not measured in this environment.
