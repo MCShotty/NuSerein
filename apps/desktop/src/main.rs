@@ -101,6 +101,72 @@ use model::Delivery;
 use std::{sync::Arc, time::Duration};
 use zeroize::Zeroizing;
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn application_icon() -> egui::IconData {
+	#[cfg(target_os = "windows")]
+	let png = include_bytes!("../../../packaging/windows/serein.png").as_slice();
+	#[cfg(target_os = "linux")]
+	let png = include_bytes!("../../../packaging/linux/hicolor/256x256/apps/serein.png").as_slice();
+	eframe::icon_data::from_png_bytes(png).expect("bundled app icon")
+}
+
+#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
+#[test]
+fn bundled_application_icon_decodes_with_transparency() {
+	let icon = application_icon();
+	assert_eq!((icon.width, icon.height), (256, 256));
+	assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+	assert!(icon.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0));
+	assert!(icon.rgba.chunks_exact(4).any(|pixel| pixel[3] == 255));
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_taskbar_icon(window: &winit::window::Window) {
+	use winit::platform::windows::WindowExtWindows as _;
+	let icon = application_icon();
+	let icon = winit::window::Icon::from_rgba(icon.rgba, icon.width, icon.height)
+		.expect("bundled taskbar icon");
+	window.set_taskbar_icon(Some(icon));
+}
+
+#[cfg(all(test, target_os = "windows"))]
+#[allow(unsafe_code)]
+mod windows_taskbar_icon_tests {
+	use winit::{
+		event_loop::EventLoop,
+		platform::windows::EventLoopBuilderExtWindows as _,
+		raw_window_handle::{HasWindowHandle as _, RawWindowHandle},
+	};
+
+	#[link(name = "user32")]
+	unsafe extern "system" {
+		fn SendMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> isize;
+	}
+
+	#[test]
+	#[allow(deprecated)]
+	fn applies_the_brand_icon_to_the_taskbar_window() {
+		let mut builder = EventLoop::builder();
+		builder.with_any_thread(true);
+		let event_loop = builder.build().unwrap();
+		let window = event_loop
+			.create_window(winit::window::Window::default_attributes().with_visible(false))
+			.unwrap();
+		let RawWindowHandle::Win32(handle) = window.window_handle().unwrap().as_raw() else {
+			panic!("expected a Windows window");
+		};
+		const WM_GETICON: u32 = 0x007f;
+		const ICON_BIG: usize = 1;
+		// SAFETY: the hidden test window remains alive through both synchronous calls.
+		let before = unsafe { SendMessageW(handle.hwnd.get(), WM_GETICON, ICON_BIG, 0) };
+		assert_eq!(before, 0);
+		super::set_windows_taskbar_icon(&window);
+		// SAFETY: the window and its winit-owned taskbar icon are still alive.
+		let after = unsafe { SendMessageW(handle.hwnd.get(), WM_GETICON, ICON_BIG, 0) };
+		assert_ne!(after, 0);
+	}
+}
+
 /// Run explicit offline checks before native startup, or launch the configured desktop client.
 fn main() -> eframe::Result {
 	platform::memory::tune_allocator();
@@ -168,10 +234,6 @@ fn main() -> eframe::Result {
 	#[cfg(feature = "demo")]
 	let transparency_available =
 		transparency_available || demo && std::env::args().any(|arg| arg == "--demo-transparency");
-	#[cfg(target_os = "windows")]
-	let icon = include_bytes!("../../../packaging/windows/serein.png").as_slice();
-	#[cfg(target_os = "linux")]
-	let icon = include_bytes!("../../../packaging/linux/hicolor/256x256/apps/serein.png").as_slice();
 	let options = eframe::NativeOptions {
 		viewport: {
 			let builder = egui::ViewportBuilder::default()
@@ -190,8 +252,7 @@ fn main() -> eframe::Result {
 				.with_active(!start_minimized)
 				.with_app_id("cz.viceverse.serein");
 			#[cfg(any(target_os = "windows", target_os = "linux"))]
-			let builder = builder
-				.with_icon(eframe::icon_data::from_png_bytes(icon).expect("bundled app icon"));
+			let builder = builder.with_icon(application_icon());
 			if cfg!(target_os = "macos") {
 				// Discord-style inline title bar: traffic lights sit over the app's own strip.
 				// eframe swaps in the egui logo when no icon is set; an empty icon keeps the

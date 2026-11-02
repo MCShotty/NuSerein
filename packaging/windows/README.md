@@ -50,7 +50,7 @@ and corresponding source before upload. Run the offline checks with
 never start the client. Manual migration on physical Windows installations
 still needs native verification before release.
 
-Run `python packaging/windows/test_installer.py` in a disposable Windows user with Rust and NSIS installed. It uses an offline fixture executable to check the running-process guard, Unicode install paths, shortcut target/working directory/AppUserModelID, upgrades, registry entries and uninstall cleanup. It never launches the real client. CI runs this check on Windows x64 and ARM64, including draft PRs.
+Run `python packaging/windows/test_installer.py` in a disposable Windows user with Rust and NSIS installed. It uses an offline fixture executable to check the running-process guard, Unicode install paths, shortcut target/working directory/AppUserModelID and icon, upgrades, registry entries and uninstall cleanup. It also checks the installer and uninstaller artwork; it never launches the real client. CI runs this check on Windows x64 and ARM64, including draft PRs. `packaging/windows/check-brand-icon.ps1` also checks the icon Windows extracts from the real packaged executable and installer against the bundled artwork.
 
 Removing script-driven setup behavior addresses the installer heuristics reported in [issue #546](https://github.com/ViceVerse-cz/Serein/issues/546). Windows signing is not configured in the release workflow; a rebuilt installer still needs vendor scanning and can receive reputation or antivirus warnings. Portable notification setup and the app's existing update helper remain separate PowerShell flows.
 

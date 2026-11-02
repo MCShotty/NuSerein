@@ -13,7 +13,7 @@ permissions:
   actions: read
 jobs:
   installer:
-    if: github.repository == 'MCShotty/Serein'
+    if: github.repository == 'MCShotty/NuSerein'
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
@@ -60,7 +60,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $version -notmatch '^\d+\.\d+\.\d+([+-][A-Za-z0-9.-]+)?$') { throw 'Invalid package version' }
           & $compiler -V2 -NOCD "-DVERSION=$version" '-DDIST_DIR=dist' '-DOUTPUT_DIR=dist-installer' packaging/windows/installer.nsi
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
-          $name = "serein-$version-$($env:SOURCE_COMMIT.Substring(0,7))-Windows-${env:PACKAGE_ARCH}-Setup.exe"
+          $name = "NuSerein-$version-$($env:SOURCE_COMMIT.Substring(0,7))-Windows-${env:PACKAGE_ARCH}-Setup.exe"
           Move-Item "dist-installer/serein-$version-setup.exe" "dist-installer/$name"
           Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
       - name: Install the real payload silently and compare every packaged file
@@ -99,9 +99,12 @@ jobs:
           print(f'Native installer smoke passed: {count} matching payload files, correct PE architecture; application never launched')
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Installed payload validation failed' }
+          ./packaging/windows/check-brand-icon.ps1 $setup.FullName
+          ./packaging/windows/check-brand-icon.ps1 (Join-Path $install 'serein.exe')
+          ./packaging/windows/check-brand-icon.ps1 (Join-Path $install 'uninstall.exe')
       - uses: actions/upload-artifact@v7.0.1
         with:
-          name: serein-Windows-${{ matrix.arch }}-installer
+          name: NuSerein-Windows-${{ matrix.arch }}-installer
           path: dist-installer/
           if-no-files-found: error
           retention-days: 30
