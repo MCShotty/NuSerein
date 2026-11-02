@@ -573,10 +573,19 @@ impl Desktop {
 				cache::Outcome::MemberDisplaysFound {
 					request,
 					revision,
+					visible,
 					epoch,
 					result,
 				} => {
-					self.accept_member_cache_search(generation, request, revision, epoch, result);
+					if visible {
+						self.accept_visible_member_cache(
+							generation, request, revision, epoch, result,
+						);
+					} else {
+						self.accept_member_cache_search(
+							generation, request, revision, epoch, result,
+						);
+					}
 				}
 				cache::Outcome::HistoryPage {
 					channel,
@@ -1058,6 +1067,7 @@ impl Desktop {
 			{
 				self.member_cache_saved = None;
 				self.member_cache_cleared = Default::default();
+				self.member_cache_search = Default::default();
 			}
 			let reset_expression = event.event.invalidates_expression_catalogs();
 			let reset_session = event.event.ready_navigation().is_some()

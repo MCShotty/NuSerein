@@ -453,6 +453,37 @@ impl State {
 	) -> (Option<&p::Role>, Option<&p::Role>) {
 		self.display_roles(guild, &member.roles)
 	}
+	/// Presentation-only assignments; cached history never changes actual permissions.
+	pub fn display_member_role_ids<'a>(
+		&'a self,
+		channel: Id,
+		member: &'a model::Member,
+	) -> &'a [Id] {
+		self.channel(channel)
+			.and_then(|channel_data| channel_data.guild)
+			.and_then(|guild| self.live_member_roles(guild, channel, member.user.id))
+			.or_else(|| {
+				self.can_view(channel)
+					.then(|| {
+						self.timeline.iter().rev().find_map(|message| {
+							(message.channel == channel
+								&& message.author.id == member.user.id
+								&& !message.author.webhook
+								&& !message.author_roles.is_empty())
+							.then_some(message.author_roles.as_slice())
+						})
+					})
+					.flatten()
+			})
+			.unwrap_or(&member.roles)
+	}
+	pub fn roles_for_display(
+		&self,
+		guild: Id,
+		role_ids: &[Id],
+	) -> (Option<&p::Role>, Option<&p::Role>) {
+		self.display_roles(guild, role_ids)
+	}
 	/// Known roles for a server, retained in the service's hierarchy order.
 	pub fn guild_roles(&self, guild: Id) -> Option<&[p::Role]> {
 		self.permissions
