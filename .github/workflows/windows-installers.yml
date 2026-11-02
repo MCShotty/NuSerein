@@ -10,6 +10,9 @@ on:
       source_commit:
         description: Exact merged source commit
         required: true
+      regression_run:
+        description: Optional same-source run performing focused regressions in parallel
+        required: false
 
 permissions:
   contents: read
@@ -47,6 +50,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
       SOURCE_RUN: ${{ inputs.run_id }}
+      REGRESSION_RUN: ${{ inputs.regression_run }}
     defaults:
       run:
         shell: pwsh
@@ -120,6 +124,7 @@ jobs:
       - name: Make native libraries available to build tests
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
       - name: Check production build and focused regressions
+        if: inputs.regression_run == ''
         run: |
           cargo check --locked -p serein --bin serein --no-default-features
           if ($LASTEXITCODE -ne 0) { throw 'Production build check failed' }
@@ -158,7 +163,7 @@ jobs:
           $name = "NuSerein-$version-$($env:SOURCE_COMMIT.Substring(0,8))-Windows-X64-Setup.exe"
           Move-Item $setup[0].FullName "dist-installer/$name"
           Get-FileHash "dist-installer/$name" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $name" } | Set-Content dist-installer/SHA256SUMS.txt
-          @{source_commit=$env:SOURCE_COMMIT; native_ci_run=$env:NATIVE_CI_RUN; focused_checks_run=$env:GITHUB_RUN_ID; architecture='X64'; rust='1.98.1'; signed=$false; installer_fixture='Offline synthetic process linked with static CRT'} | ConvertTo-Json | Set-Content dist-installer/build.json
+          @{source_commit=$env:SOURCE_COMMIT; native_ci_run=$env:NATIVE_CI_RUN; focused_checks_run=$(if ($env:REGRESSION_RUN) { $env:REGRESSION_RUN } else { $env:GITHUB_RUN_ID }); architecture='X64'; rust='1.98.1'; signed=$false; installer_fixture='Offline synthetic process linked with static CRT'} | ConvertTo-Json | Set-Content dist-installer/build.json
       - name: Check the packaged runtime without build-library paths
         run: |
           $checkDir = Join-Path $env:RUNNER_TEMP 'nuserein-installer-check'
@@ -213,6 +218,26 @@ jobs:
           ./packaging/windows/check-brand-icon.ps1 $setup.FullName
           ./packaging/windows/check-brand-icon.ps1 (Join-Path $install 'serein.exe')
           ./packaging/windows/check-brand-icon.ps1 (Join-Path $install 'uninstall.exe')
+      - name: Verify the parallel focused regressions
+        if: inputs.regression_run != ''
+        run: |
+          if ($env:REGRESSION_RUN -notmatch '^\d+$') { throw 'Invalid regression run' }
+          $run = gh api "repos/$env:GH_REPO/actions/runs/$env:REGRESSION_RUN" | ConvertFrom-Json
+          $expected = "Windows x64 installer for $env:SOURCE_COMMIT"
+          if ($LASTEXITCODE -ne 0 -or $run.event -ne 'workflow_dispatch' -or $run.head_sha -ne '292b656ca23fbe4d082aeccbc2bf8ad3d0158338' -or $run.display_title -ne $expected) { throw 'Focused regression run does not match the source and workflow' }
+          $passed = $false
+          for ($attempt = 0; $attempt -lt 120; $attempt++) {
+            $jobs = gh api "repos/$env:GH_REPO/actions/runs/$env:REGRESSION_RUN/jobs?per_page=100" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Could not read focused regression status' }
+            $job = @($jobs.jobs | Where-Object { $_.name -eq 'windows' })
+            if ($job.Count -ne 1) { throw 'Focused regression job is missing or ambiguous' }
+            $step = @($job[0].steps | Where-Object { $_.name -eq 'Check production build and focused regressions' })
+            if ($step.Count -ne 1) { throw 'Focused regression step is missing or ambiguous' }
+            if ($step[0].conclusion -eq 'success') { $passed = $true; break }
+            if ($step[0].status -eq 'completed') { throw 'Focused regressions did not pass' }
+            Start-Sleep -Seconds 15
+          }
+          if (-not $passed) { throw 'Timed out waiting for focused regressions' }
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: NuSerein-Windows-X64-installer
