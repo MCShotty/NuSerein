@@ -279,6 +279,8 @@ in
         # link needs the SDK overlays plus the store stdlib/toolchain libs.
         preBuild = lib.optionalString isDarwin ''
             export RUSTFLAGS="$RUSTFLAGS -L native=$SDKROOT/usr/lib/swift -L native=${lib.getLib swiftPackages.stdlib}/lib -L native=${lib.getDev swiftPackages.stdlib}/lib -L native=${lib.getLib swift}/lib"
+            # Clang's runtime provides the availability check used by capture.
+            export NIX_LDFLAGS="$NIX_LDFLAGS -lclang_rt.osx"
         '';
 
         preFixup = lib.optionalString isLinux ''
