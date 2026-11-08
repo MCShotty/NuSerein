@@ -2,6 +2,7 @@
  * synchronously mapping a full desktop texture from every WGC callback. */
 #include "capture_windows.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -988,7 +989,7 @@ int serein_capture_synthetic_device_loss(void)
     FARPROC symbol;
     HRESULT result;
     ULONGLONG deadline;
-    int status = -1;
+    int status = -1, stage = 0;
     dxgi = LoadLibraryExW(L"dxgi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     d3d12 = LoadLibraryExW(L"d3d12.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     d3d11 = LoadLibraryExW(L"d3d11.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -1000,22 +1001,29 @@ int serein_capture_synthetic_device_loss(void)
     symbol = GetProcAddress(d3d11, "D3D11On12CreateDevice");
     memcpy(&create_device11, &symbol, sizeof(create_device11));
     if (!create_factory || !create_device12 || !create_device11) { status = 0; goto cleanup; }
+    stage = 1;
     result = create_factory(&factory_iid, (void **)&factory);
     if (result == E_NOINTERFACE) { status = 2; goto cleanup; }
     if (FAILED(result) || !factory) goto cleanup;
+    stage = 2;
     result = IDXGIFactory4_EnumWarpAdapter(factory, &adapter_iid, (void **)&warp);
     if (result == DXGI_ERROR_UNSUPPORTED || result == DXGI_ERROR_NOT_FOUND) { status = 3; goto cleanup; }
     if (FAILED(result) || !warp) goto cleanup;
+    stage = 3;
     result = create_device12((IUnknown *)warp, D3D_FEATURE_LEVEL_11_0, &device_iid, (void **)&device12);
     if (result == DXGI_ERROR_UNSUPPORTED) { status = 3; goto cleanup; }
     if (FAILED(result) || !device12) goto cleanup;
+    stage = 4;
     result = ID3D12Device_QueryInterface(device12, &device5_iid, (void **)&device5);
     if (result == E_NOINTERFACE) { status = 2; goto cleanup; }
     if (FAILED(result) || !device5) goto cleanup;
     queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    if (FAILED(ID3D12Device_CreateCommandQueue(device12, &queue_description, &queue_iid, (void **)&queue)) || !queue)
+    stage = 5;
+    result = ID3D12Device_CreateCommandQueue(device12, &queue_description, &queue_iid, (void **)&queue);
+    if (FAILED(result) || !queue)
         goto cleanup;
     IUnknown *queues[] = {(IUnknown *)queue};
+    stage = 6;
     result = create_device11((IUnknown *)device12, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         NULL, 0, queues, 1, 0, &device, &context, &feature);
     if (result == E_NOINTERFACE || result == DXGI_ERROR_UNSUPPORTED) { status = 4; goto cleanup; }
@@ -1029,14 +1037,21 @@ int serein_capture_synthetic_device_loss(void)
     texture_description.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
     initial.pSysMem = pixels;
     initial.SysMemPitch = 64 * 4;
-    if (FAILED(ID3D11Device_CreateTexture2D(device, &texture_description, &initial, &texture))) goto cleanup;
+    stage = 7;
+    result = ID3D11Device_CreateTexture2D(device, &texture_description, &initial, &texture);
+    if (FAILED(result)) goto cleanup;
+    stage = 8;
     capture = serein_capture_open(device, context, NULL, 0);
-    if (!capture || serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL) != 1 ||
-        synthetic_take(capture, &retained) != 1 ||
-        serein_capture_frame_download(retained, downloaded, sizeof(downloaded)) != 1)
-        goto cleanup;
+    if (!capture) goto cleanup;
+    stage = 9;
+    if (serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL) != 1) goto cleanup;
+    stage = 10;
+    if (synthetic_take(capture, &retained) != 1) goto cleanup;
+    stage = 11;
+    if (serein_capture_frame_download(retained, downloaded, sizeof(downloaded)) != 1) goto cleanup;
     /* Keep one completed frame and one submitted transfer while removing this
      * owned software device. Both pool states must be safe to retire. */
+    stage = 12;
     if (serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL) != 1) goto cleanup;
     ID3D12Device5_RemoveDevice(device5);
     deadline = GetTickCount64() + 2000;
@@ -1067,6 +1082,7 @@ int serein_capture_synthetic_device_loss(void)
     if (processing != -1 || pending) { status = -3; goto cleanup; }
     serein_capture_close(capture);
     capture = NULL;
+    stage = 13;
     if (!serein_capture_frame_description(retained, &description) ||
         description.source_width != 64 || description.source_height != 32)
         goto cleanup;
@@ -1076,6 +1092,7 @@ int serein_capture_synthetic_device_loss(void)
     retained = NULL;
     status = 1;
 cleanup:
+    if (status == -1) fprintf(stderr, "WARP diagnostic stage=%d HRESULT=0x%08lx\n", stage, (unsigned long)result);
     serein_capture_frame_close(pending);
     serein_capture_frame_close(retained);
     serein_capture_close(capture);
