@@ -421,6 +421,25 @@ mod tests {
 	}
 	#[test]
 	fn synthetic_warp_device_removal_retires_pending_and_retained_pools() {
+		const CHILD: &str = "SEREIN_TEST_ISOLATED_WARP_REMOVAL";
+		const TEST: &str = "video::capture::tests::synthetic_warp_device_removal_retires_pending_and_retained_pools";
+		if std::env::var_os(CHILD).is_none() {
+			let output = std::process::Command::new(std::env::current_exe().unwrap())
+				.args(["--exact", TEST, "--nocapture"])
+				.env(CHILD, "1")
+				.output()
+				.expect("Could not start the isolated WARP device-removal test");
+			let stdout = String::from_utf8_lossy(&output.stdout);
+			let stderr = String::from_utf8_lossy(&output.stderr);
+			assert!(
+				output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+				"Isolated WARP device-removal test failed:\n{stdout}\n{stderr}"
+			);
+			if !stderr.is_empty() {
+				eprint!("{stderr}");
+			}
+			return;
+		}
 		// SAFETY: Only a newly created private D3D12 WARP device is removed.
 		// Its D3D11On12 capture surfaces are synthetic; no hardware GPU,
 		// desktop capture session, display reset or system-wide TDR is used.
