@@ -313,9 +313,9 @@ in
                 cp assets/icons/LICENSE "$docs/licenses/Phosphor-Icons-MIT.txt"
                 cp assets/icons/LICENSE-SIMPLE-ICONS "$docs/licenses/Simple-Icons-CC0.txt"
                 cp -R vendor/hpke-rs "$docs/source/"
-                mkdir -p "$docs/ffmpeg-source"
+                mkdir -p "$docs/ffmpeg-source/camera-filter"
                 cp -R ${sereinFfmpeg}/share/serein-ffmpeg/. "$docs/ffmpeg-source/"
-                cp -R crates/platform/src/video/denoise "$docs/ffmpeg-source/camera-filter"
+                cp -R crates/platform/src/video/denoise/. "$docs/ffmpeg-source/camera-filter/"
                 cp crates/platform/src/video/denoise.rs "$docs/ffmpeg-source/camera-filter/denoise.rs"
             ''
             + lib.optionalString isLinux ''

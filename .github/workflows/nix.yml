@@ -50,6 +50,8 @@ jobs:
         run: nix build --print-build-logs --show-trace .#serein
       - name: Verify installed binary
         run: test -x result/bin/serein
+      - name: Verify packaged speech runtime (offline)
+        run: result/bin/serein --self-test-lavasr
       - name: Verify bundled notices and corresponding source
         shell: bash
         run: |
