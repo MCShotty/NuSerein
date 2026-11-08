@@ -302,5 +302,8 @@ jobs:
       - name: Diagnose concurrent platform fixtures
         shell: pwsh
         run: |
-          cargo test --locked -p platform --lib -- --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Concurrent platform fixtures failed' }
+          for ($iteration = 1; $iteration -le 10; $iteration++) {
+            Write-Host "Platform fixture repetition $iteration of 10"
+            cargo test --locked -p platform --lib -- --nocapture
+            if ($LASTEXITCODE -ne 0) { throw "Concurrent platform fixtures failed on repetition $iteration" }
+          }
