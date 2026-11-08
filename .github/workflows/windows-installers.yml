@@ -42,7 +42,7 @@ jobs:
           python packaging/windows/test_installer.py
           if ($LASTEXITCODE -ne 0) { throw 'Windows installer fixtures failed' }
   windows:
-    if: inputs.run_id != '0' && inputs.run_id != 'diagnostic'
+    if: inputs.run_id != '0'
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -252,58 +252,3 @@ jobs:
           path: ${{ env.FFMPEG_WORK }}/**/ffbuild/config.log
           if-no-files-found: ignore
           retention-days: 7
-
-  warp-diagnostic:
-    if: inputs.run_id == 'diagnostic'
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ilammy/msvc-dev-cmd@v1.13.0
-        with:
-          arch: x64
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MSYS
-          path-type: inherit
-          install: make pkgconf nasm diffutils
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2.9.2
-        with:
-          cache-on-failure: true
-      - name: Prepare native build paths
-        shell: pwsh
-        run: |
-          $native = Join-Path $env:RUNNER_TEMP 'nuserein-installer-ffmpeg'
-          "FFMPEG_DIR=$native/prefix" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "FFMPEG_WORK=$native/build" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          "FFMPEG_CACHE=$native/sources" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Restore the known FFmpeg build
-        uses: actions/cache/restore@v4.2.3
-        with:
-          path: |
-            ${{ env.FFMPEG_DIR }}
-            ${{ env.FFMPEG_CACHE }}
-          key: nuserein-windows-x64-ffmpeg-287182f3a4d1c258b2ab7eb2c51b3d0b616bf14c-v1
-          fail-on-cache-miss: true
-      - name: Verify FFmpeg build
-        shell: msys2 {0}
-        run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE" --offline
-      - name: Make native libraries available
-        shell: pwsh
-        run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
-      - name: Diagnose concurrent platform fixtures
-        shell: pwsh
-        run: |
-          for ($iteration = 1; $iteration -le 10; $iteration++) {
-            Write-Host "Platform fixture repetition $iteration of 10"
-            cargo test --locked -p platform --lib -- --nocapture
-            if ($LASTEXITCODE -ne 0) { throw "Concurrent platform fixtures failed on repetition $iteration" }
-          }
-      - name: Diagnose the private WARP device-loss fixture
-        shell: pwsh
-        run: |
-          cargo test --locked -p platform --lib video::capture::tests::synthetic_warp_device_removal_retires_pending_and_retained_pools -- --exact --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Private WARP diagnostic failed' }
