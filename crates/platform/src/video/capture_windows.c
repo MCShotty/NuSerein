@@ -1044,7 +1044,13 @@ int serein_capture_synthetic_device_loss(void)
     capture = serein_capture_open(device, context, NULL, 0);
     if (!capture) goto cleanup;
     stage = 9;
-    if (serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL) != 1) goto cleanup;
+    int submitted = serein_capture_submit(capture, texture, 64, 32, 32, 16, 0, NULL);
+    if (submitted != 1) {
+        fprintf(stderr, "WARP submit=%d force_cpu=%ld configured=%d scaled=%d format=%u count=%u\n",
+            submitted, (long)InterlockedCompareExchange(&capture->force_cpu, 0, 0),
+            capture->configured, capture->scaled, capture->format, capture->count);
+        goto cleanup;
+    }
     stage = 10;
     if (synthetic_take(capture, &retained) != 1) goto cleanup;
     stage = 11;
