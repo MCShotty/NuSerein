@@ -253,7 +253,12 @@ failed:
 static int query_new(Capture *capture, ID3D11Query **query)
 {
     D3D11_QUERY_DESC description = { D3D11_QUERY_EVENT, 0 };
-    if (FAILED(ID3D11Device_CreateQuery(capture->device, &description, query))) return 0;
+    HRESULT result = ID3D11Device_CreateQuery(capture->device, &description, query);
+    if (FAILED(result)) {
+        fprintf(stderr, "WARP query_new HRESULT=0x%08lx removed=0x%08lx\n",
+            (unsigned long)result, (unsigned long)ID3D11Device_GetDeviceRemovedReason(capture->device));
+        return 0;
+    }
     capture->stats.resources_created++;
     return 1;
 }
@@ -270,7 +275,13 @@ static int texture_new(Capture *capture, uint32_t width, uint32_t height,
     description.Usage = staging ? D3D11_USAGE_STAGING : D3D11_USAGE_DEFAULT;
     description.CPUAccessFlags = staging ? D3D11_CPU_ACCESS_READ : 0;
     description.BindFlags = staging ? 0 : D3D11_BIND_RENDER_TARGET;
-    if (FAILED(ID3D11Device_CreateTexture2D(capture->device, &description, NULL, texture))) return 0;
+    HRESULT result = ID3D11Device_CreateTexture2D(capture->device, &description, NULL, texture);
+    if (FAILED(result)) {
+        fprintf(stderr, "WARP texture_new HRESULT=0x%08lx size=%ux%u format=%u staging=%d removed=0x%08lx\n",
+            (unsigned long)result, width, height, (unsigned)format, staging,
+            (unsigned long)ID3D11Device_GetDeviceRemovedReason(capture->device));
+        return 0;
+    }
     capture->stats.resources_created++;
     return 1;
 }
@@ -291,8 +302,13 @@ static int output_view(Capture *capture, ID3D11Texture2D *texture,
         description.Texture2DArray.FirstArraySlice = slice;
         description.Texture2DArray.ArraySize = 1;
     }
-    if (FAILED(ID3D11VideoDevice_CreateVideoProcessorOutputView(capture->video,
-            (ID3D11Resource *)texture, enumerator, &description, view))) return 0;
+    HRESULT result = ID3D11VideoDevice_CreateVideoProcessorOutputView(capture->video,
+            (ID3D11Resource *)texture, enumerator, &description, view);
+    if (FAILED(result)) {
+        fprintf(stderr, "WARP output_view HRESULT=0x%08lx removed=0x%08lx\n",
+            (unsigned long)result, (unsigned long)ID3D11Device_GetDeviceRemovedReason(capture->device));
+        return 0;
+    }
     capture->stats.resources_created++;
     return 1;
 }
@@ -399,6 +415,9 @@ static int configure(Capture *capture, uint32_t width, uint32_t height,
     capture->configured = 1;
     return 1;
 failed:
+    fprintf(stderr, "WARP configure failed: count=%u scaled=%d format=%u resources=%llu\n",
+        capture->count, capture->scaled, capture->format,
+        (unsigned long long)capture->stats.resources_created);
     pool_clear(capture);
     return 0;
 }
