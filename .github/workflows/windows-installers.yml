@@ -294,11 +294,6 @@ jobs:
       - name: Make native libraries available
         shell: pwsh
         run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
-      - name: Diagnose the private WARP device-loss fixture
-        shell: pwsh
-        run: |
-          cargo test --locked -p platform --lib video::capture::tests::synthetic_warp_device_removal_retires_pending_and_retained_pools -- --exact --nocapture
-          if ($LASTEXITCODE -ne 0) { throw 'Private WARP diagnostic failed' }
       - name: Diagnose concurrent platform fixtures
         shell: pwsh
         run: |
@@ -307,3 +302,8 @@ jobs:
             cargo test --locked -p platform --lib -- --nocapture
             if ($LASTEXITCODE -ne 0) { throw "Concurrent platform fixtures failed on repetition $iteration" }
           }
+      - name: Diagnose the private WARP device-loss fixture
+        shell: pwsh
+        run: |
+          cargo test --locked -p platform --lib video::capture::tests::synthetic_warp_device_removal_retires_pending_and_retained_pools -- --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Private WARP diagnostic failed' }
