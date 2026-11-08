@@ -334,6 +334,13 @@ in
                 mkdir -p "$app/Resources" "$app/Frameworks"
                 cp -R ${sereinSpeech}/Serein.app/Contents/Resources/voice-enhancement "$app/Resources/"
                 cp ${sereinSpeech}/Serein.app/Contents/Frameworks/*.dylib "$app/Frameworks/"
+                for library in \
+                    libavcodec-serein.61.dylib libavutil-serein.59.dylib \
+                    libavformat-serein.61.dylib libavfilter-serein.10.dylib \
+                    libswscale-serein.8.dylib libswresample-serein.5.dylib \
+                    libopenh264.8.dylib; do
+                    install -m755 "${sereinFfmpeg}/lib/$library" "$app/Frameworks/$library"
+                done
                 install -Dm444 packaging/macos/Info.plist "$app/Info.plist"
                 install -Dm444 packaging/macos/Serein.icns "$app/Resources/Serein.icns"
                 mkdir -p "$app/MacOS" "$out/share/doc"

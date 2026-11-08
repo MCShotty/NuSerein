@@ -85,3 +85,10 @@ jobs:
         run: |
           test -x result/Applications/Serein.app/Contents/MacOS/serein
           plutil -lint result/Applications/Serein.app/Contents/Info.plist
+          for library in \
+            libavcodec-serein.61.dylib libavutil-serein.59.dylib \
+            libavformat-serein.61.dylib libavfilter-serein.10.dylib \
+            libswscale-serein.8.dylib libswresample-serein.5.dylib \
+            libopenh264.8.dylib; do
+            test -s "result/Applications/Serein.app/Contents/Frameworks/$library"
+          done
