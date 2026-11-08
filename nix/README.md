@@ -25,15 +25,12 @@ including FFmpeg's explicit configure compiler options on macOS.
 The macOS encoder build uses nixpkgs' `darwin.sigtool` and `cctools` for
 ad-hoc signing after changing library install names; no host signing tools or
 Developer ID credentials are needed.
-Linux x64 includes pinned AMF headers and a static oneVPL dispatcher. libva/libdrm
-are Nix dependencies for Quick Sync device setup, while compatible Intel/AMD/NVIDIA
-GPU runtimes remain system-provided. Experimental FFmpeg's H264/HEVC/AV1 VA-API
-encoders are excluded; H264 has OpenH264 software fallback, while HEVC/AV1 need
-compatible hardware. Stable retains its original GStreamer VA-API/NVENC H264
-path from the existing Base/Good/Bad plugin dependencies, with Rust OpenH264
-fallback. Vendor factories depend on nixpkgs' plugin build and installed drivers.
-The package retains exact vendor source
-and notices for the same offline rebuild recipe as native distributions.
+Linux x64 includes pinned AMF headers and a static oneVPL dispatcher. FFmpeg can
+use compatible NVIDIA, AMD and Intel encoders when their GPU runtimes are available;
+H.264 also has an OpenH264 software fallback. Direct VA-API encoders are excluded,
+though VA-API is used for supported decoding and Quick Sync device setup.
+The package retains the vendor source and notices for the same offline rebuild
+recipe as native distributions.
 
 The package version is the Cargo workspace version, as with `cargo build`. Nix
 installations are updated through Nix; the in-app updater does not replace store

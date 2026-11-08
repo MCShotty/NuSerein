@@ -279,6 +279,8 @@ in
         # link needs the SDK overlays plus the store stdlib/toolchain libs.
         preBuild = lib.optionalString isDarwin ''
             export RUSTFLAGS="$RUSTFLAGS -L native=$SDKROOT/usr/lib/swift -L native=${lib.getLib swiftPackages.stdlib}/lib -L native=${lib.getDev swiftPackages.stdlib}/lib -L native=${lib.getLib swift}/lib"
+            # Clang's runtime provides the availability check used by capture.
+            export NIX_LDFLAGS="$NIX_LDFLAGS -lclang_rt.osx"
         '';
 
         preFixup = lib.optionalString isLinux ''
@@ -311,8 +313,9 @@ in
                 cp assets/icons/LICENSE "$docs/licenses/Phosphor-Icons-MIT.txt"
                 cp assets/icons/LICENSE-SIMPLE-ICONS "$docs/licenses/Simple-Icons-CC0.txt"
                 cp -R vendor/hpke-rs "$docs/source/"
-                cp -R ${sereinFfmpeg}/share/serein-ffmpeg "$docs/ffmpeg-source"
-                cp -R crates/platform/src/video/denoise "$docs/ffmpeg-source/camera-filter"
+                mkdir -p "$docs/ffmpeg-source/camera-filter"
+                cp -R ${sereinFfmpeg}/share/serein-ffmpeg/. "$docs/ffmpeg-source/"
+                cp -R crates/platform/src/video/denoise/. "$docs/ffmpeg-source/camera-filter/"
                 cp crates/platform/src/video/denoise.rs "$docs/ffmpeg-source/camera-filter/denoise.rs"
             ''
             + lib.optionalString isLinux ''
@@ -331,6 +334,13 @@ in
                 mkdir -p "$app/Resources" "$app/Frameworks"
                 cp -R ${sereinSpeech}/Serein.app/Contents/Resources/voice-enhancement "$app/Resources/"
                 cp ${sereinSpeech}/Serein.app/Contents/Frameworks/*.dylib "$app/Frameworks/"
+                for library in \
+                    libavcodec-serein.61.dylib libavutil-serein.59.dylib \
+                    libavformat-serein.61.dylib libavfilter-serein.10.dylib \
+                    libswscale-serein.8.dylib libswresample-serein.5.dylib \
+                    libopenh264.8.dylib; do
+                    install -m755 "${sereinFfmpeg}/lib/$library" "$app/Frameworks/$library"
+                done
                 install -Dm444 packaging/macos/Info.plist "$app/Info.plist"
                 install -Dm444 packaging/macos/Serein.icns "$app/Resources/Serein.icns"
                 mkdir -p "$app/MacOS" "$out/share/doc"
@@ -341,7 +351,7 @@ in
 
         meta = {
             description = "Tiny, performant, native Discord client written in Rust (egui/wgpu)";
-            homepage = "https://github.com/ViceVerse-cz/Serein";
+            homepage = "https://github.com/MCShotty/NuSerein";
             license = with lib.licenses; [
                 mit
                 asl20

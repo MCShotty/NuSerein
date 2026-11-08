@@ -50,6 +50,8 @@ jobs:
         run: nix build --print-build-logs --show-trace .#serein
       - name: Verify installed binary
         run: test -x result/bin/serein
+      - name: Verify packaged speech runtime (offline)
+        run: result/bin/serein --self-test-lavasr
       - name: Verify bundled notices and corresponding source
         shell: bash
         run: |
@@ -69,6 +71,10 @@ jobs:
           cmp assets/icons/LICENSE "$docs/licenses/Phosphor-Icons-MIT.txt"
           cmp assets/icons/LICENSE-SIMPLE-ICONS "$docs/licenses/Simple-Icons-CC0.txt"
           diff -r vendor/hpke-rs "$docs/source/hpke-rs"
+          cmp scripts/build-ffmpeg.py "$docs/ffmpeg-source/build-ffmpeg.py"
+          cmp crates/platform/src/video/denoise.rs "$docs/ffmpeg-source/camera-filter/denoise.rs"
+          cmp crates/platform/src/video/denoise/gpu.rs "$docs/ffmpeg-source/camera-filter/gpu.rs"
+          cmp crates/platform/src/video/denoise/camera_filter.wgsl "$docs/ffmpeg-source/camera-filter/camera_filter.wgsl"
       - name: Verify Linux desktop assets
         if: runner.os == 'Linux'
         run: |
@@ -79,3 +85,10 @@ jobs:
         run: |
           test -x result/Applications/Serein.app/Contents/MacOS/serein
           plutil -lint result/Applications/Serein.app/Contents/Info.plist
+          for library in \
+            libavcodec-serein.61.dylib libavutil-serein.59.dylib \
+            libavformat-serein.61.dylib libavfilter-serein.10.dylib \
+            libswscale-serein.8.dylib libswresample-serein.5.dylib \
+            libopenh264.8.dylib; do
+            test -s "result/Applications/Serein.app/Contents/Frameworks/$library"
+          done
