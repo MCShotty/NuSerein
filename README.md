@@ -119,11 +119,11 @@ Use `net-im/serein-bin` in the keyword file and emerge command to install the pr
 
 Nix installs are updated through Nix, not the in-app updater. On macOS the build produces an unsigned, non-notarized `Serein.app`. See the [Nix package guide](nix/README.md) for the development shell and details.
 
-The repository flake builds Serein from source for `x86_64-linux` and `aarch64-darwin`:
+The repository flake builds NuSerein from source for `x86_64-linux` and `aarch64-darwin`:
 
 ```sh
-nix run github:ViceVerse-cz/Serein#serein
-nix profile install github:ViceVerse-cz/Serein#serein
+nix run github:MCShotty/NuSerein#serein
+nix profile install github:MCShotty/NuSerein#serein
 ```
 
 Or declaring it in the flake
@@ -140,7 +140,7 @@ Both modules below take `inputs` as an argument, so your flake must pass it thro
             inputs.nixpkgs.follows = "nixpkgs";
         };
         serein = {
-            url = "github:ViceVerse-cz/Serein";
+            url = "github:MCShotty/NuSerein";
             inputs.nixpkgs.follows = "nixpkgs";
         };
     };
