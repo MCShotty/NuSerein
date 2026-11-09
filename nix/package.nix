@@ -232,7 +232,7 @@ in
         src = ../.;
 
         cargoLock = {
-            lockFile = "${finalAttrs.src}/Cargo.lock";
+            lockFile = finalAttrs.src + "/Cargo.lock";
             allowBuiltinFetchGit = true;
         };
 

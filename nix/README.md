@@ -44,6 +44,9 @@ A first source build may fetch a Rust toolchain and other build dependencies.
 The installed closure and fresh-build download are different sizes; use
 `nix path-info -Sh .#serein` after building to measure the closure, including
 paths already shared with other packages.
+Nix builds use the minimal official Rust toolchain pinned in
+`rust-toolchain.toml`. The development shell adds that file's Clippy and
+rustfmt components.
 
 The package version is the Cargo workspace version, as with `cargo build`. Nix
 installations are updated through Nix; the in-app updater does not replace store
