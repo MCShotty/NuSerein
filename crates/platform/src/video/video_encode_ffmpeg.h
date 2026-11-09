@@ -68,6 +68,8 @@ int serein_video_bind_adapter(struct AVCodecContext *codec, int backend,
                              const SereinVideoAdapter *adapter);
 int serein_video_bind_decoder(struct AVCodecContext *codec,
                               const SereinVideoAdapter *adapter);
+/* Codec queries return 1/0 for support, -1 for errors, or -2 when Linux AMF
+ * cannot load its runtime. Preset queries return a bit mask. */
 int serein_video_query_on_adapter(int backend, int codec, const SereinVideoAdapter *adapter);
 int serein_query_nvenc_on_adapter(int codec, const SereinVideoAdapter *adapter);
 int serein_query_qsv_on_adapter(int codec, const SereinVideoAdapter *adapter);

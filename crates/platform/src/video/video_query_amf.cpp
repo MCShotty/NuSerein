@@ -11,7 +11,6 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #else
-#include <cstring>
 #include <dlfcn.h>
 #endif
 
@@ -57,11 +56,7 @@ public:
     }
 #else
     explicit Library(const char *name) : handle_(dlopen(name, RTLD_NOW | RTLD_LOCAL)) {
-        if (!handle_) {
-            const char *error = dlerror();
-            if (error && std::strstr(error, "No such file or directory"))
-                failure_ = 0;
-        }
+        if (!handle_) failure_ = -2;
     }
     ~Library() { if (handle_) dlclose(handle_); }
     void *symbol(const char *name) const {

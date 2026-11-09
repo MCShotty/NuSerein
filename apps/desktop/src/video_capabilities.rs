@@ -118,7 +118,9 @@ pub fn probe_command() -> Option<i32> {
 						"{}",
 						serde_json::json!({"presets":presets.map(EncoderPresets::bits)})
 					);
-					if ordinary == ProbeResult::Unavailable {
+					if ordinary == ProbeResult::RuntimeUnavailable {
+						10
+					} else if ordinary == ProbeResult::Unavailable {
 						0
 					} else if ordinary != ProbeResult::Available {
 						2
@@ -160,6 +162,7 @@ fn decode_query(exit: Exit) -> ProbeResult {
 	match exit {
 		Exit::Code(Some(1 | 5 | 9)) => ProbeResult::Available,
 		Exit::Code(Some(0)) => ProbeResult::Unavailable,
+		Exit::Code(Some(10)) => ProbeResult::RuntimeUnavailable,
 		Exit::TimedOut => ProbeResult::TimedOut,
 		_ => ProbeResult::Failed,
 	}
@@ -997,6 +1000,10 @@ mod tests {
 	fn driver_and_encode_statuses_are_separate_and_errors_stay_unknown() {
 		assert_eq!(decode_query(Exit::Code(Some(1))), ProbeResult::Available);
 		assert_eq!(decode_query(Exit::Code(Some(0))), ProbeResult::Unavailable);
+		assert_eq!(
+			decode_query(Exit::Code(Some(10))),
+			ProbeResult::RuntimeUnavailable
+		);
 		assert_eq!(decode_query(Exit::Code(Some(2))), ProbeResult::Failed);
 		assert_eq!(
 			decode_test(Exit::Code(Some(1))),

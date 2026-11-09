@@ -80,6 +80,16 @@ jobs:
         run: |
           test -f result/share/applications/cz.viceverse.serein.desktop
           test -f result/share/icons/hicolor/256x256/apps/serein.png
+      - name: Verify Linux AMD runtime search
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          debug=$(mktemp)
+          status=0
+          env -u LD_LIBRARY_PATH LD_DEBUG=libs result/bin/serein --query-video-codec amf av1 > /dev/null 2> "$debug" || status=$?
+          case "$status" in 0|1|2|5|9|10) ;; *) cat "$debug"; exit "$status" ;; esac
+          grep -qF '/run/opengl-driver/lib' "$debug"
+          rm "$debug"
       - name: Verify macOS app bundle
         if: runner.os == 'macOS'
         run: |

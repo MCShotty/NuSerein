@@ -164,7 +164,7 @@ def run_amf(include_path):
             )
         missing_library = directory / "absent-amf.so"
         subprocess.run(
-            [str(executable), "0", "0"],
+            [str(executable), "0", "-2"],
             env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(missing_library)},
             check=True,
             timeout=5,
@@ -172,7 +172,7 @@ def run_amf(include_path):
         invalid_library = directory / "invalid-amf.so"
         invalid_library.write_text("This fixture is deliberately not a shared library.\n")
         subprocess.run(
-            [str(executable), "0", "-1"],
+            [str(executable), "0", "-2"],
             env={**environment, "SEREIN_AMF_TEST_RUNTIME": str(invalid_library)},
             check=True,
             timeout=5,
