@@ -155,6 +155,15 @@ def run_amf(include_path):
                     check=True,
                     timeout=5,
                 )
+        for mode in ("init-failed", "no-device"):
+            diagnostic = subprocess.run(
+                [str(executable), "0", str(modes[mode])],
+                env={**environment, "AMF_MOCK_MODE": mode},
+                capture_output=True,
+                check=True,
+                timeout=5,
+            )
+            assert b"Vulkan initialization failed (AMF result=" in diagnostic.stderr, mode
         for codec in [-1, 3]:
             subprocess.run(
                 [str(executable), str(codec), "-1"],

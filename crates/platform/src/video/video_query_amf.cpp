@@ -378,8 +378,10 @@ int query_devices(amf::AMFFactory *factory, int codec, const SereinVideoAdapter 
         nullptr
 #endif
     );
-    if (initialized != AMF_OK)
-        return unavailable(initialized) ? 0 : failed("Vulkan initialization", initialized);
+    if (initialized != AMF_OK) {
+        failed("Vulkan initialization", initialized);
+        return unavailable(initialized) ? 0 : -1;
+    }
     return query_caps(factory, context.value, codec);
 }
 #endif
