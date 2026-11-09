@@ -699,14 +699,96 @@ def patch_ffmpeg(tree):
          "        dev_select.drm_major = major(drm_node_info.st_rdev);\n"),
         ("libavutil/hwcontext_vulkan.c", "        dev_select.drm_minor = minor(drm_node_info.st_dev);\n",
          "        dev_select.drm_minor = minor(drm_node_info.st_rdev);\n"),
-        ("libavutil/hwcontext_vulkan.c", "    if (select->has_uuid) {\n",
-         "    /* Explicit DRM selection may never fall through to vendor/model matching. */\n"
-         "    if (select->has_drm && !(p->vkctx.extensions & FF_VK_EXT_DEVICE_DRM)) {\n"
-         "        av_log(ctx, AV_LOG_ERROR, \"Exact DRM adapter selection requires VK_EXT_physical_device_drm.\\n\");\n"
-         "        err = AVERROR(ENOSYS);\n"
-         "        goto end;\n"
-         "    }\n\n"
-         "    if (select->has_uuid) {\n"),
+        ("libavutil/hwcontext_vulkan.c", "/* Finds a device */\n",
+         """/* Device extensions are known only after a device is selected. Query each
+ * physical device here instead of testing the as-yet-unset device flag. */
+static int serein_vk_has_drm_extension(AVHWDeviceContext *ctx, VkPhysicalDevice device)
+{
+    VulkanDevicePriv *p = ctx->hwctx;
+    FFVulkanFunctions *vk = &p->vkctx.vkfn;
+
+    for (int attempt = 0; attempt < 3; attempt++) {
+        VkExtensionProperties *extensions;
+        uint32_t count = 0;
+        VkResult ret = vk->EnumerateDeviceExtensionProperties(device, NULL, &count, NULL);
+        if (ret != VK_SUCCESS)
+            return AVERROR_EXTERNAL;
+        if (!count)
+            return 0;
+        if (count > 4096)
+            return AVERROR(E2BIG);
+        extensions = av_malloc_array(count, sizeof(*extensions));
+        if (!extensions)
+            return AVERROR(ENOMEM);
+        ret = vk->EnumerateDeviceExtensionProperties(device, NULL, &count, extensions);
+        if (ret == VK_INCOMPLETE) {
+            av_free(extensions);
+            continue;
+        }
+        if (ret != VK_SUCCESS) {
+            av_free(extensions);
+            return AVERROR_EXTERNAL;
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            if (!strcmp(extensions[i].extensionName, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)) {
+                av_free(extensions);
+                return 1;
+            }
+        }
+        av_free(extensions);
+        return 0;
+    }
+    return AVERROR_EXTERNAL;
+}
+
+/* Finds a device */
+"""),
+        ("libavutil/hwcontext_vulkan.c", "    int err = 0, choice = -1;\n",
+         "    int err = 0, choice = -1, drm_query_error = 0;\n"),
+        ("libavutil/hwcontext_vulkan.c",
+         "    if (p->vkctx.extensions & FF_VK_EXT_DEVICE_DRM) {\n        drm_prop = av_calloc(num, sizeof(*drm_prop));\n",
+         "    if (select->has_drm) {\n        drm_prop = av_calloc(num, sizeof(*drm_prop));\n"),
+        ("libavutil/hwcontext_vulkan.c",
+         """        if (p->vkctx.extensions & FF_VK_EXT_DEVICE_DRM) {
+            drm_prop[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+            idp[i].pNext = &drm_prop[i];
+        }
+""",
+         """        if (drm_prop) {
+            int supported = serein_vk_has_drm_extension(ctx, devices[i]);
+            if (supported < 0) {
+                av_log(ctx, AV_LOG_ERROR, "Unable to query Vulkan device extensions for GPU %d.\\n", i);
+                if (!drm_query_error)
+                    drm_query_error = supported;
+            } else if (supported) {
+                drm_prop[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+                idp[i].pNext = &drm_prop[i];
+            }
+        }
+"""),
+        ("libavutil/hwcontext_vulkan.c",
+         "    } else if ((p->vkctx.extensions & FF_VK_EXT_DEVICE_DRM) && select->has_drm) {\n",
+         "    } else if (select->has_drm) {\n"),
+        ("libavutil/hwcontext_vulkan.c",
+         """            if ((select->drm_major == drm_prop[i].primaryMajor &&
+                 select->drm_minor == drm_prop[i].primaryMinor) ||
+                (select->drm_major == drm_prop[i].renderMajor &&
+                 select->drm_minor == drm_prop[i].renderMinor)) {
+""",
+         """            if ((drm_prop[i].hasPrimary && select->drm_major == drm_prop[i].primaryMajor &&
+                 select->drm_minor == drm_prop[i].primaryMinor) ||
+                (drm_prop[i].hasRender && select->drm_major == drm_prop[i].renderMajor &&
+                 select->drm_minor == drm_prop[i].renderMinor)) {
+"""),
+        ("libavutil/hwcontext_vulkan.c",
+         """        av_log(ctx, AV_LOG_ERROR, "Unable to find device by given DRM node numbers %i:%i!\\n",
+               select->drm_major, select->drm_minor);
+        err = AVERROR(ENODEV);
+""",
+         """        av_log(ctx, AV_LOG_ERROR, "Unable to find device by given DRM node numbers %i:%i!\\n",
+               select->drm_major, select->drm_minor);
+        err = drm_query_error ? drm_query_error : AVERROR(ENODEV);
+"""),
         ("libavcodec/qsvenc.c", "    ret = MFXVideoENCODE_QueryIOSurf(q->session, &q->param, &q->req);\n",
          "    /* Never silently add reordered pictures or drop requested quality features.\n"
          "     * Startup can retry conservative settings on this same physical adapter. */\n"

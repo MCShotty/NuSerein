@@ -426,7 +426,7 @@ def run_amf_control(prefix, archive):
         subprocess.run([str(executable)], check=True, timeout=10)
 
 
-def run_patch(archive):
+def run_patch(archive, prefix=None):
     repository = Path(__file__).resolve().parents[4]
     spec = importlib.util.spec_from_file_location("ffmpeg_recipe", repository / "scripts/build-ffmpeg.py")
     recipe = importlib.util.module_from_spec(spec)
@@ -448,6 +448,20 @@ def run_patch(archive):
                     (tree / path).parent.mkdir(parents=True, exist_ok=True)
                     (tree / path).write_bytes(content)
         patch = recipe.patch_ffmpeg(modified)
+        if prefix:
+            vulkan = (modified / "libavutil/hwcontext_vulkan.c").read_text()
+            start = vulkan.index("typedef struct VulkanDeviceSelection {")
+            end = vulkan.index("/* Picks the least used qf", start)
+            (root / "vulkan_device_selection.inc").write_text(vulkan[start:end])
+            executable = root / "vulkan-selection-test"
+            subprocess.run([
+                *shlex.split(os.environ.get("CC", "cc")), "-std=c11", "-Wall", "-Wextra",
+                "-Werror", "-Wno-sign-compare", "-Wno-pointer-sign",
+                "-I" + str(prefix / "include"), "-I" + str(root),
+                str(Path(__file__).with_name("video_vulkan_selection_test.c")),
+                "-o", str(executable),
+            ], check=True)
+            subprocess.run([str(executable)], check=True, timeout=10)
         subprocess.run(["patch", "--batch", "--fuzz=0", "-p1"], input=patch, text=True,
                        cwd=reproduced, stdout=subprocess.DEVNULL, check=True)
         original_paths = paths.copy()
@@ -491,4 +505,4 @@ if __name__ == "__main__":
     if args.suite == "amf-control":
         run_amf_control(args.prefix.resolve(), args.archive.resolve())
     if args.suite in ["patch", "all"]:
-        run_patch(args.archive.resolve())
+        run_patch(args.archive.resolve(), args.prefix.resolve() if args.prefix else None)
