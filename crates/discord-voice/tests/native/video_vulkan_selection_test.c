@@ -12,14 +12,20 @@ typedef struct {
     PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices;
     PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties;
     PFN_vkGetPhysicalDeviceProperties2 GetPhysicalDeviceProperties2;
+    PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2;
 } FFVulkanFunctions;
 typedef struct {
     VkInstance inst;
     VkPhysicalDevice phys_dev;
+    VkPhysicalDeviceFeatures2 device_features;
+    const char *const *enabled_dev_extensions;
+    int nb_enabled_dev_extensions;
 } AVVulkanDeviceContext;
 typedef struct {
     AVVulkanDeviceContext p;
     struct { FFVulkanFunctions vkfn; uint64_t extensions; } vkctx;
+    VkPhysicalDeviceVulkan12Features device_features_1_2;
+    VkPhysicalDeviceCoherentMemoryFeaturesAMD serein_amf_coherent;
 } VulkanDevicePriv;
 typedef struct { void *hwctx; } AVHWDeviceContext;
 
@@ -39,6 +45,52 @@ static void av_log(void *context, int level, const char *message, ...) {
 static const char *ff_vk_ret2str(VkResult result) { (void)result; return "mock"; }
 
 #include "vulkan_device_selection.inc"
+
+static void ff_vk_link_struct(void *first, void *extension) {
+    VkBaseOutStructure *current = first;
+    while (current->pNext) current = current->pNext;
+    current->pNext = extension;
+}
+#include "vulkan_amf_features.inc"
+
+static int coherent_queries, coherent_supported;
+static VKAPI_ATTR void VKAPI_CALL device_features(VkPhysicalDevice device, VkPhysicalDeviceFeatures2 *features) {
+    (void)device;
+    VkPhysicalDeviceCoherentMemoryFeaturesAMD *coherent = features->pNext;
+    assert(coherent && coherent->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COHERENT_MEMORY_FEATURES_AMD);
+    coherent->deviceCoherentMemory = coherent_supported;
+    coherent_queries++;
+}
+
+static void amf_features(void) {
+    const char *extensions[] = {"VK_AMD_device_coherent_memory"};
+    for (int advertised = 0; advertised < 2; ++advertised) {
+        for (coherent_supported = 0; coherent_supported < 2; ++coherent_supported) {
+            VulkanDevicePriv state = {0};
+            AVHWDeviceContext context = {.hwctx = &state};
+            VkPhysicalDeviceFeatures2 supported = {0};
+            VkPhysicalDeviceVulkan12Features supported12 = {0};
+            supported.features.robustBufferAccess = VK_TRUE;
+            supported12.descriptorIndexing = VK_TRUE;
+            supported12.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+            state.p.device_features.pNext = &state.device_features_1_2;
+            state.p.enabled_dev_extensions = extensions;
+            state.p.nb_enabled_dev_extensions = advertised;
+            state.vkctx.vkfn.GetPhysicalDeviceFeatures2 = device_features;
+            coherent_queries = 0;
+            serein_vk_amf_features(&context, &supported, &supported12);
+            assert(state.p.device_features.features.robustBufferAccess);
+            assert(!state.p.device_features.features.geometryShader);
+            assert(state.device_features_1_2.descriptorIndexing);
+            assert(state.device_features_1_2.descriptorBindingStorageBufferUpdateAfterBind);
+            assert(!state.device_features_1_2.descriptorBindingSampledImageUpdateAfterBind);
+            assert(coherent_queries == advertised);
+            assert((state.device_features_1_2.pNext != NULL) == (advertised && coherent_supported));
+            if (advertised && coherent_supported)
+                assert(state.device_features_1_2.pNext == &state.serein_amf_coherent);
+        }
+    }
+}
 
 typedef struct {
     int has_extension;
@@ -117,6 +169,7 @@ static void reset_gpus(void) {
     extension_queries = 0;
 }
 int main(void) {
+    amf_features();
     uintptr_t selected;
     VulkanDeviceSelection selection = { .has_drm = 1, .drm_major = 226,
                                         .drm_minor = 129, .vendor_id = 0x1002 };

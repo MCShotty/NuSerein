@@ -208,7 +208,13 @@ Intel driver device; VA-API encoders remain disabled. Windows AMF/QSV use
 D3D11 devices bound by the renderer's LUID. Linux AMF derives a Vulkan device
 from that physical GPU's explicit DRM render node and gives its native handles
 to AMF; encoding uses no AMD VA-API driver interface or Vulkan video encoder. The
-bundled patch queries DRM extension support on each Vulkan physical device before
+runtime's bounded `GetVulkanDeviceExtensions` list is used for both capability
+queries and encoding. The external Vulkan device enables the supported AMF
+descriptor-indexing and coherent-memory features before `InitVulkan`; duplicate
+extension requests are removed. Recheck and encoder-test failures are written to
+the launching terminal, including the AMF failure stage and numeric result; raw
+driver output is capped at 4 KiB per helper and is not saved by the application.
+The bundled patch queries DRM extension support on each Vulkan physical device before
 matching DRM character-device numbers, and rejects unavailable identity rather
 than selecting another GPU by vendor/model. macOS requires the renderer GPU's
 Metal registry ID in VideoToolbox's encoder specification. QSV's frame-free

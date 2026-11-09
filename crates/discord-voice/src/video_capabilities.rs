@@ -178,15 +178,26 @@ fn probe_profile<E: ProbeEncoder>(
 	backend: HardwareBackend,
 	open: &mut impl FnMut(Config, HardwareBackend) -> Result<E, &'static str>,
 ) -> ProbeResult {
-	let Ok(mut encoder) = open(config, backend) else {
-		return ProbeResult::Unavailable;
+	let mut encoder = match open(config, backend) {
+		Ok(encoder) => encoder,
+		Err(reason) => {
+			eprintln!(
+				"[NuSerein] Video encoder test {backend:?} {:?} {}x{}: {reason}",
+				config.codec, config.width, config.height,
+			);
+			return ProbeResult::Unavailable;
+		}
 	};
 	let luma = config.width as usize * config.height as usize;
 	let mut picture = vec![128; luma * 3 / 2];
 	picture[..luma].fill(16);
 	for index in 0..MAX_PROBE_FRAMES {
-		let Ok((data, keyframe)) = encoder.encode(&picture, index == 0) else {
-			return ProbeResult::Unavailable;
+		let (data, keyframe) = match encoder.encode(&picture, index == 0) {
+			Ok(output) => output,
+			Err(reason) => {
+				eprintln!("[NuSerein] Video encoder test {backend:?} output: {reason}");
+				return ProbeResult::Unavailable;
+			}
 		};
 		if data.is_empty() {
 			continue;

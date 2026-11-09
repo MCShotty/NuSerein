@@ -533,6 +533,71 @@ def hardware_options(system, backends):
     return options
 
 
+def amf_vulkan_patches():
+    source = "libavutil/hwcontext_vulkan.c"
+    return [
+        (source, "    FFVkQueueFamilyCtx transfer_qf;\n",
+         "    FFVkQueueFamilyCtx transfer_qf;\n"
+         "    VkPhysicalDeviceCoherentMemoryFeaturesAMD serein_amf_coherent;\n"),
+        (source, "static int vulkan_device_create_internal(AVHWDeviceContext *ctx,\n",
+         """/* Match AMF's external-device feature contract, using supported values only.
+ * Keep the extension feature in the device owner, not a temporary pNext node. */
+static void serein_vk_amf_features(AVHWDeviceContext *ctx,
+                                   const VkPhysicalDeviceFeatures2 *supported,
+                                   const VkPhysicalDeviceVulkan12Features *supported12)
+{
+    VulkanDevicePriv *p = ctx->hwctx;
+    AVVulkanDeviceContext *hwctx = &p->p;
+    FFVulkanFunctions *vk = &p->vkctx.vkfn;
+    hwctx->device_features.features = supported->features;
+#define AMF_COPY_FEATURE(name) p->device_features_1_2.name = supported12->name
+    AMF_COPY_FEATURE(descriptorIndexing);
+    AMF_COPY_FEATURE(descriptorBindingUniformBufferUpdateAfterBind);
+    AMF_COPY_FEATURE(descriptorBindingSampledImageUpdateAfterBind);
+    AMF_COPY_FEATURE(descriptorBindingStorageImageUpdateAfterBind);
+    AMF_COPY_FEATURE(descriptorBindingStorageBufferUpdateAfterBind);
+    AMF_COPY_FEATURE(descriptorBindingUniformTexelBufferUpdateAfterBind);
+    AMF_COPY_FEATURE(descriptorBindingStorageTexelBufferUpdateAfterBind);
+#undef AMF_COPY_FEATURE
+    for (int i = 0; i < hwctx->nb_enabled_dev_extensions; i++) {
+        if (!strcmp(hwctx->enabled_dev_extensions[i], VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME)) {
+            VkPhysicalDeviceFeatures2 features = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                .pNext = &p->serein_amf_coherent,
+            };
+            p->serein_amf_coherent.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COHERENT_MEMORY_FEATURES_AMD;
+            vk->GetPhysicalDeviceFeatures2(hwctx->phys_dev, &features);
+            if (p->serein_amf_coherent.deviceCoherentMemory)
+                ff_vk_link_struct(hwctx->device_features.pNext, &p->serein_amf_coherent);
+            break;
+        }
+    }
+}
+
+static int vulkan_device_create_internal(AVHWDeviceContext *ctx,
+"""),
+        (source, "    /* Add the enabled features into the pnext chain of device creation */\n",
+         """    if (av_dict_get(opts, "serein_amf", NULL, 0)) {
+        /* Make the actual enabled list available to the AMF feature query. */
+        hwctx->enabled_dev_extensions = dev_info.ppEnabledExtensionNames;
+        hwctx->nb_enabled_dev_extensions = dev_info.enabledExtensionCount;
+        serein_vk_amf_features(ctx, &dev_features, &dev_features_1_2);
+        hwctx->enabled_dev_extensions = NULL;
+        hwctx->nb_enabled_dev_extensions = 0;
+    }
+
+    /* Add the enabled features into the pnext chain of device creation */
+"""),
+        (source, """                ADD_VAL_TO_LIST(extension_names, extensions_found, token);
+""", """                int duplicate = 0;
+                for (int i = 0; i < extensions_found; i++)
+                    duplicate |= !strcmp(extension_names[i], token);
+                if (!duplicate)
+                    ADD_VAL_TO_LIST(extension_names, extensions_found, token);
+"""),
+    ]
+
+
 def patch_ffmpeg(tree):
     patches = []
     originals = {}
@@ -683,6 +748,8 @@ def patch_ffmpeg(tree):
          "    device.hDevice = hwctx->act_dev;\n"
          "    result = context1->pVtbl->InitVulkan(context1, &device);\n"
          "    context1->pVtbl->Release(context1);\n"
+         "    if (result != AMF_OK)\n"
+         "        av_log(avctx, AV_LOG_ERROR, \"AMF initialization on the selected Vulkan device failed (result=%d).\\n\", result);\n"
          "    return result == AMF_OK ? 0 : AVERROR(ENODEV);\n"
          "}\n#endif\n\n"
          "#if CONFIG_D3D11VA\nstatic int amf_init_from_d3d11_device"),
@@ -826,6 +893,7 @@ static int serein_vk_has_drm_extension(AVHWDeviceContext *ctx, VkPhysicalDevice 
          "    dump_video_av1_param(avctx, q, ext_buffers);\n"),
     ]
     replacements += amf_control_patches()
+    replacements += amf_vulkan_patches()
     for relative, old, new in replacements:
         path = tree / relative
         before = path.read_text()
