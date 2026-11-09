@@ -80,6 +80,11 @@ jobs:
         run: |
           test -f result/share/applications/cz.viceverse.serein.desktop
           test -f result/share/icons/hicolor/256x256/apps/serein.png
+      - name: Report Linux Nix output and closure sizes
+        if: runner.os == 'Linux'
+        run: |
+          nix path-info -sh "$(readlink -f result)"
+          nix path-info -Sh "$(readlink -f result)"
       - name: Verify Linux AMD runtime search
         if: runner.os == 'Linux'
         shell: bash
