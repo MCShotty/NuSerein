@@ -270,5 +270,18 @@
     "macOS native packaging cancelled; macOS Nix built but packaged LavaSR self-test failed.",
     "Windows installers unsigned.",
     "Measured UI callback improvements use a synthetic debug fixture; no native input-latency claim."
-  ]
+  ],
+  "baseline_package_sizes": {
+    "source": "42ad076871757225fe50a4d8e4b3ab8bc5cfef30",
+    "linux": {
+      "app_bytes": 100114648,
+      "deb_bytes": 143190448,
+      "installed_bytes": 229994412
+    },
+    "windows_x64": {
+      "app_bytes": 102331904,
+      "payload_bytes": 230214994,
+      "installer_bytes": 137783258
+    }
+  }
 }
