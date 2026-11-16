@@ -1,0 +1,274 @@
+{
+  "version": "0.1.1-nightly.20261116.1",
+  "pr": "https://github.com/MCShotty/NuSerein/pull/45",
+  "validation": "Rust 1.98.1 formatting, strict Clippy, cargo xtask check (2804 tests), login/workspace/package policy, licenses, bounded decoder/state fuzz, replay, 120-second soak; native Windows x64 and Linux clean packaging; Windows cached packaging and installed-file hash verification.",
+  "performance": {
+    "windows": {
+      "revisions": {
+        "nightly": "bedb57c0c8def62e736e8a4f03e0a5d248b22126",
+        "previous_fork": "42ad076871757225fe50a4d8e4b3ab8bc5cfef30",
+        "after": "5e21524c0cbfc256edc7772bf58175fc57960829"
+      },
+      "nightly_tag": "v1.0.0-nightly.20261114.91",
+      "os": "Windows-2025Server-10.0.26100-SP0",
+      "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "logical_cpus": 4,
+      "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "release_settings": {
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+        "CARGO_PROFILE_RELEASE_LTO": "thin",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+        "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+        "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+        "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+        "CARGO_PROFILE_RELEASE_PANIC": "abort",
+        "CARGO_BUILD_JOBS": "2"
+      },
+      "samples": 5,
+      "warmup_runs": 1,
+      "workloads": {
+        "reducer": {
+          "nightly": {
+            "median_ms": 112.8693,
+            "min_ms": 112.2561,
+            "max_ms": 131.978,
+            "samples_ms": [
+              112.8693,
+              124.7432,
+              112.5281,
+              131.978,
+              112.2561
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 111.4487,
+            "min_ms": 111.0381,
+            "max_ms": 125.8698,
+            "samples_ms": [
+              111.2943,
+              111.0381,
+              125.8698,
+              112.0536,
+              111.4487
+            ]
+          },
+          "after": {
+            "median_ms": 110.4203,
+            "min_ms": 109.9258,
+            "max_ms": 112.2001,
+            "samples_ms": [
+              112.2001,
+              110.6739,
+              110.2712,
+              110.4203,
+              109.9258
+            ]
+          }
+        },
+        "wide_channels": {
+          "nightly": {
+            "median_ms": 174.1014,
+            "min_ms": 172.774,
+            "max_ms": 174.6795,
+            "samples_ms": [
+              173.7146,
+              172.774,
+              174.6795,
+              174.1014,
+              174.1736
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 11.9068,
+            "min_ms": 11.874,
+            "max_ms": 11.9289,
+            "samples_ms": [
+              11.9068,
+              11.874,
+              11.9289,
+              11.9209,
+              11.8818
+            ]
+          },
+          "after": {
+            "median_ms": 11.8319,
+            "min_ms": 11.7452,
+            "max_ms": 11.878,
+            "samples_ms": [
+              11.7452,
+              11.878,
+              11.8319,
+              11.7569,
+              11.8391
+            ]
+          }
+        }
+      },
+      "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+      "binary_provenance": {
+        "nightly": {
+          "bytes": 1241088,
+          "sha256": "6f96a497c24ec44ee87cd3fd8a73419684213b8553648f29a40fcf326cd4554b"
+        },
+        "previous_fork": {
+          "bytes": 1916416,
+          "sha256": "04645aca3dcc2519cd032eef2d92e98cab61d5021c46e5f2dd17ecf0b8f15a15"
+        },
+        "after": {
+          "bytes": 1917440,
+          "sha256": "bc06f2c0ce369327bba92ba20257bfa331d41c3770a27406eabf571b927033a1"
+        }
+      },
+      "sampling_affinity": "logical CPU mask 1"
+    },
+    "linux": {
+      "revisions": {
+        "nightly": "bedb57c0c8def62e736e8a4f03e0a5d248b22126",
+        "previous_fork": "42ad076871757225fe50a4d8e4b3ab8bc5cfef30",
+        "after": "5e21524c0cbfc256edc7772bf58175fc57960829"
+      },
+      "nightly_tag": "v1.0.0-nightly.20261114.91",
+      "os": "Linux-7.0.0-1014-aws-x86_64-with-glibc2.39",
+      "cpu": "x86_64",
+      "logical_cpus": 4,
+      "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "release_settings": {
+        "CARGO_PROFILE_RELEASE_OPT_LEVEL": "3",
+        "CARGO_PROFILE_RELEASE_LTO": "thin",
+        "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+        "CARGO_PROFILE_RELEASE_DEBUG": "line-tables-only",
+        "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+        "CARGO_PROFILE_RELEASE_INCREMENTAL": "false",
+        "CARGO_PROFILE_RELEASE_PANIC": "abort",
+        "CARGO_BUILD_JOBS": "2"
+      },
+      "samples": 5,
+      "warmup_runs": 1,
+      "workloads": {
+        "reducer": {
+          "nightly": {
+            "median_ms": 54.782041,
+            "min_ms": 54.131826,
+            "max_ms": 55.34448,
+            "samples_ms": [
+              54.643422,
+              54.857684,
+              54.782041,
+              55.34448,
+              54.131826
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 47.98572,
+            "min_ms": 46.882597,
+            "max_ms": 48.851689,
+            "samples_ms": [
+              48.230319,
+              46.882597,
+              47.98572,
+              47.084367,
+              48.851689
+            ]
+          },
+          "after": {
+            "median_ms": 48.21658,
+            "min_ms": 47.516926,
+            "max_ms": 49.425022,
+            "samples_ms": [
+              48.198352,
+              49.425022,
+              48.21658,
+              48.586523,
+              47.516926
+            ]
+          }
+        },
+        "wide_channels": {
+          "nightly": {
+            "median_ms": 54.154323,
+            "min_ms": 51.319795,
+            "max_ms": 71.899791,
+            "samples_ms": [
+              53.631241,
+              51.319795,
+              54.154323,
+              71.899791,
+              60.364917
+            ]
+          },
+          "previous_fork": {
+            "median_ms": 5.225604,
+            "min_ms": 5.155246,
+            "max_ms": 5.30945,
+            "samples_ms": [
+              5.29294,
+              5.225604,
+              5.21457,
+              5.155246,
+              5.30945
+            ]
+          },
+          "after": {
+            "median_ms": 5.243722,
+            "min_ms": 5.179632,
+            "max_ms": 5.404009,
+            "samples_ms": [
+              5.243722,
+              5.179632,
+              5.404009,
+              5.245284,
+              5.219306
+            ]
+          }
+        }
+      },
+      "limits": "Synthetic core reducer only; no UI/media throughput, RSS or live interoperability claim.",
+      "binary_provenance": {
+        "nightly": {
+          "bytes": 1548192,
+          "sha256": "19b98508603e010a9b554c013c7e242778cef30cdf0c472c9a6c00c2f2c6d219"
+        },
+        "previous_fork": {
+          "bytes": 2267272,
+          "sha256": "4f737e25603cb043eea4adc0bdae120dc7ac708efc2d3692525096f07c8b1e37"
+        },
+        "after": {
+          "bytes": 2268272,
+          "sha256": "51d01c5e936d9ea50129b80725c7dcd17d77f4098461b976cad943d30f2fc856"
+        }
+      },
+      "sampling_affinity": "logical CPU 0"
+    }
+  },
+  "composer_performance": {
+    "profile": "debug UI callbacks, not native input latency",
+    "runs": "one warmup, five alternating repetitions",
+    "plain_typing_before_ms": 2.148,
+    "plain_typing_after_ms": 1.227,
+    "focused_plain_before_ms": 1.34,
+    "focused_plain_after_ms": 0.661
+  },
+  "linux_package": {
+    "source": "5e21524c0cbfc256edc7772bf58175fc57960829",
+    "native_run": 43933415531,
+    "artifact_id": 14262417318,
+    "artifact_sha256": "9f3fa4082a54b12701cb7cddaf0a47d50b5464efd5b6c41ab2a78623fc625e1a",
+    "asset": "serein_0.1.1.nightly.20261116.1-1_amd64.deb",
+    "asset_bytes": 143226420,
+    "sha256": "4f1bc4e8131fd82f252936e654ff3b54daa76b9c99d26b9a1de2bf6cbd95aaf1",
+    "app_bytes": 100154328,
+    "app_sha256": "fb3f64c33ae7d6b9827b906cba2238771696812269375ced5fe489cf92cc2546",
+    "installed_bytes": 230034092,
+    "installed_files": 310,
+    "version": "0.1.1~nightly.20261116.1-1",
+    "architecture": "amd64"
+  },
+  "limitations": [
+    "Live Discord nickname synchronization and physical Windows/macOS clipboard/IME checks remain owner-controlled.",
+    "Inherited dependency security audit fails on unchanged third-party advisories.",
+    "ARM64 withheld: vcruntime140_1.dll in the artifact is x64; strict architecture check failed despite passing native smoke.",
+    "macOS native packaging cancelled; macOS Nix built but packaged LavaSR self-test failed.",
+    "Windows installers unsigned.",
+    "Measured UI callback improvements use a synthetic debug fixture; no native input-latency claim."
+  ]
+}

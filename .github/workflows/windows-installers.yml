@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [X64, ARM64]
+        arch: [X64]
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -108,3 +108,23 @@ jobs:
           path: dist-installer/
           if-no-files-found: error
           retention-days: 30
+
+  upload-verified-draft:
+    needs: installer
+    if: github.repository == 'MCShotty/NuSerein'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_RUN: ${{ inputs.run_id }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Upload verified assets to the existing draft without publishing
+        run: python3 .github/release/upload-verified-draft.py
