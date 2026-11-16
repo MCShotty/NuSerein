@@ -13,7 +13,7 @@ permissions:
   actions: read
 jobs:
   installer:
-    if: github.repository == 'MCShotty/NuSerein'
+    if: false # Already verified in run 43951006518; reuse its exact installer artifact.
     runs-on: windows-latest
     timeout-minutes: 15
     strategy:
@@ -110,7 +110,6 @@ jobs:
           retention-days: 30
 
   upload-verified-draft:
-    needs: installer
     if: github.repository == 'MCShotty/NuSerein'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -128,3 +127,10 @@ jobs:
           persist-credentials: false
       - name: Upload verified assets to the existing draft without publishing
         run: python3 .github/release/upload-verified-draft.py
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: verified-release-evidence
+          path: |
+            release-assets/BUILDINFO.json
+            release-assets/SHA256SUMS.txt
+          if-no-files-found: error

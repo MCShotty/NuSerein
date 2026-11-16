@@ -60,7 +60,9 @@ def main():
     assert os.environ["GITHUB_REPOSITORY"] == REPO
     assert os.environ["SOURCE_COMMIT"] == SOURCE
     assert int(os.environ["SOURCE_RUN"]) == NATIVE_RUN
-    installer_run = int(os.environ["GITHUB_RUN_ID"])
+    installer_run = 43951006518
+    installer_source = api(f"actions/runs/{installer_run}")
+    assert installer_source["head_sha"] == "7a864e1df69d9527a0c11c645f5b7196e327cd03"
     run = api(f"actions/runs/{NATIVE_RUN}")
     assert run["head_sha"] == SOURCE and run["name"] == "native-client"
     jobs = api(f"actions/runs/{NATIVE_RUN}/jobs?per_page=100")["jobs"]
@@ -70,7 +72,9 @@ def main():
     installer_jobs = api(f"actions/runs/{installer_run}/jobs?per_page=100")["jobs"]
     assert any(j["name"] == "installer (X64)" and j["conclusion"] == "success"
                for j in installer_jobs)
-    release = api(f"releases/tags/{TAG}")
+    # GitHub's tag lookup excludes unpublished drafts; address the verified draft by ID.
+    release = api("releases/447562482")
+    assert release["tag_name"] == TAG
     assert release["draft"] and release["prerelease"] and not release["assets"]
     assert release["target_commitish"] == SOURCE
     OUT.mkdir()
@@ -120,6 +124,7 @@ def main():
         assert digest(OUT / installer_name) == sums[0]
     report = json.loads((ROOT / ".github/release/verified-release-evidence.json").read_text())
     report.update(source=SOURCE, native_run=NATIVE_RUN, installer_run=installer_run,
+                  publication_run=int(os.environ["GITHUB_RUN_ID"]),
                   publication_workflow_commit=os.environ["GITHUB_SHA"],
                   artifacts=[windows_info, linux_info, installer_info],
                   windows_payload=payload,
