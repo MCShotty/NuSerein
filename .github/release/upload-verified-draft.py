@@ -28,9 +28,9 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def verified_run(run_id, source, name, event, jobs):
+def verified_run(run_id, source, name, event, jobs, branch="main"):
     run = api(f"actions/runs/{run_id}")
-    assert run["head_sha"] == source and run["head_branch"] == "main"
+    assert run["head_sha"] == source and run["head_branch"] == branch
     assert run["name"] == name and run["event"] == event
     actual = api(f"actions/runs/{run_id}/jobs?per_page=100")["jobs"]
     for required in jobs:
@@ -173,6 +173,7 @@ def main():
     assert native_run == int(os.environ["SOURCE_RUN"])
     installer_run = plan["installer_run"]
     installer_workflow_commit = plan["installer_workflow_commit"]
+    installer_branch = plan["installer_branch"]
     assert re.fullmatch(r"[0-9a-f]{40}", installer_workflow_commit)
     for value in (native_run, installer_run, plan["release_id"]):
         assert isinstance(value, int) and value > 0
@@ -187,7 +188,8 @@ def main():
         native_jobs.append("native (windows-11-arm)")
     native_url = verified_run(native_run, source, "native-client", "push", native_jobs)
     installer_url = verified_run(installer_run, installer_workflow_commit, "Windows installers from verified binaries",
-                                 "workflow_dispatch", [f"installer ({arch})" for arch in architectures])
+                                 "workflow_dispatch", [f"installer ({arch})" for arch in architectures],
+                                 branch=installer_branch)
     release_path = f"releases/{plan['release_id']}"
     release = api(release_path)
     assert release["draft"] and release["prerelease"] and release["tag_name"] == tag
@@ -204,6 +206,7 @@ def main():
         "version": version, "source": source, "native_run": native_run, "native_workflow": native_url,
         "installer_run": installer_run, "installer_workflow": installer_url,
         "installer_workflow_commit": installer_workflow_commit,
+        "installer_branch": installer_branch,
         "publication_run": int(os.environ["GITHUB_RUN_ID"]),
         "publication_workflow_commit": os.environ["GITHUB_SHA"],
         "artifacts": artifacts, "windows_payloads": windows, "linux": linux,

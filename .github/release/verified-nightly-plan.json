@@ -2,8 +2,9 @@
   "source": "17dad1263da827da89a2fc896c0796ca7c2c43af",
   "tag": "v0.1.1-nightly.20261118.1",
   "native_run": 44254362627,
-  "installer_run": 44267483695,
-  "installer_workflow_commit": "c64eca25d853f0ef166dab7e6d08aae22daaa97c",
+  "installer_run": 44268249863,
+  "installer_workflow_commit": "168ffdf1984ccd2c03b86a996b75cbd6503433de",
+  "installer_branch": "release/installers-20261118",
   "release_id": 449620639,
   "windows_architectures": ["X64", "ARM64"]
 }
