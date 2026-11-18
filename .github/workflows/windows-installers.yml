@@ -49,8 +49,20 @@ jobs:
           name: serein-Windows-${{ matrix.arch }}-unsigned
           # The native artifact contains dist/ and dist-installer/ at its root.
           path: .
-      - name: Install NSIS
-        run: choco install nsis --no-progress -y
+      - name: Install checksum-pinned NSIS
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'nsis-3.12-setup.exe'
+          $sha = '3bc2b06253a7e4957111be152ac6a536e0c7478a706e19da814038db5d706495'
+          $url = 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12-setup.exe'
+          curl.exe --fail --location --retry 2 --max-time 45 --max-filesize 10485760 --output $setup $url
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash $setup -Algorithm SHA256).Hash -ne $sha) {
+            throw 'NSIS download could not be verified'
+          }
+          $process = Start-Process -FilePath $setup -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or -not (Test-Path 'C:\Program Files (x86)\NSIS\makensis.exe')) {
+            throw 'NSIS silent setup failed'
+          }
       - name: Compile the installer from the matching source
         shell: pwsh
         run: |
