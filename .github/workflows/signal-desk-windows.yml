@@ -1,0 +1,77 @@
+name: Signal Desk Windows x64
+
+on:
+  push:
+    branches: [build/signal-desk-windows]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signal-desk-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    if: github.repository == 'MCShotty/NuSerein'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: x64
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make pkgconf nasm diffutils
+      - name: Install native packaging tools
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          python -m pip install meson==1.9.2 ninja==1.13.0
+      - name: Set native build paths
+        shell: bash
+        run: |
+          ffmpeg_root="${{ runner.temp }}/serein-ffmpeg"
+          echo "FFMPEG_DIR=$ffmpeg_root/prefix" >> "$GITHUB_ENV"
+          echo "FFMPEG_WORK=$ffmpeg_root/build" >> "$GITHUB_ENV"
+          echo "FFMPEG_CACHE=$ffmpeg_root/sources" >> "$GITHUB_ENV"
+      - name: Build the pinned FFmpeg SDK with MSVC
+        shell: msys2 {0}
+        run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
+      - name: Make SDK DLLs available to tests
+        shell: pwsh
+        run: '"$env:FFMPEG_DIR/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append'
+      - name: Test the Signal Desk motion regression
+        run: cargo test --locked -p ui --lib design::signal_desk_tests::destination_change_is_bounded_and_reduced_motion_is_static -- --exact
+      - name: Build the production app and unsigned installer
+        run: cargo xtask package
+      - name: Verify installer and write its SHA-256
+        shell: pwsh
+        run: |
+          $setup = @(Get-ChildItem -Path dist-installer -Filter '*-setup.exe' -File)
+          if ($setup.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          ./packaging/windows/check-brand-icon.ps1 dist/serein.exe
+          ./packaging/windows/check-brand-icon.ps1 $setup[0].FullName
+          $hash = (Get-FileHash $setup[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($setup[0].Name)" | Set-Content -Encoding ascii dist-installer/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: NuSerein-Signal-Desk-Windows-X64-unsigned
+          path: dist-installer/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve configure diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: signal-desk-ffmpeg-configure
+          path: ${{ env.FFMPEG_WORK }}/**/ffbuild/config.log
+          if-no-files-found: ignore
+          retention-days: 7
