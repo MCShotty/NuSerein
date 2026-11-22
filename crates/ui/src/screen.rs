@@ -23,6 +23,25 @@ fn audio_control(source: Option<SourceId>) -> (&'static str, &'static str) {
 	}
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum SharePhase {
+	#[default]
+	Idle,
+	Starting,
+	Live,
+	Stopping,
+}
+impl SharePhase {
+	pub(crate) fn label(self) -> &'static str {
+		match self {
+			Self::Idle => "screen-show-share-your-screen",
+			Self::Starting => "share-cancel-start",
+			Self::Live => "voice-share-stop",
+			Self::Stopping => "share-stopping",
+		}
+	}
+}
+
 pub enum Request {
 	Start(RequestSettings),
 	Stop,
@@ -35,7 +54,8 @@ pub struct ScreenUi {
 	pub selected: Option<SourceId>,
 	pub refresh_requested: bool,
 	pub request: Option<Request>,
-	pub busy: bool,
+	pub phase: SharePhase,
+	source_lost: bool,
 	pub status: &'static str,
 	pub capture_status: Option<&'static str>,
 	pub adapting: bool,
@@ -58,7 +78,8 @@ impl Default for ScreenUi {
 			selected: None,
 			refresh_requested: false,
 			request: None,
-			busy: false,
+			phase: SharePhase::Idle,
+			source_lost: false,
 			status: "",
 			capture_status: None,
 			adapting: false,
@@ -78,6 +99,9 @@ impl Default for ScreenUi {
 	}
 }
 impl ScreenUi {
+	pub fn busy(&self) -> bool {
+		self.phase != SharePhase::Idle
+	}
 	/// Local presentation demand is independent of whether the share has viewers.
 	pub fn preview_requested(&self, ctx: &egui::Context) -> bool {
 		self.preview_window_visible
@@ -108,12 +132,16 @@ impl ScreenUi {
 		let Some(call) = &state.voice.active else {
 			return;
 		};
-		if self.busy {
+		if self.phase == SharePhase::Stopping {
+			return;
+		}
+		if self.busy() {
 			self.request = Some(Request::Stop);
 			return;
 		}
 		self.context = Some((state.generation, call.channel, call.request));
 		self.open = true;
+		self.source_lost = false;
 		self.selected = None;
 		self.sources.clear();
 		if state.demo {
@@ -137,7 +165,7 @@ impl ScreenUi {
 					},
 				]
 			};
-			self.selected = self.sources.first().map(|source| source.id);
+			// Demo sources follow the same explicit selection rule as real windows.
 			self.status = "screen-source-status-offline";
 		} else {
 			self.refresh_requested = true;
@@ -173,11 +201,13 @@ impl ScreenUi {
 		}
 	}
 	pub fn replace_sources(&mut self, sources: Vec<Source>) {
+		let previous = self.selected;
 		self.sources = sources;
-		self.selected = self
-			.selected
-			.filter(|id| self.sources.iter().any(|source| source.id == *id))
-			.or_else(|| self.sources.first().map(|source| source.id));
+		self.selected = previous.filter(|id| self.sources.iter().any(|source| source.id == *id));
+		if previous.is_some() && self.selected.is_none() {
+			self.source_lost = true;
+			self.audio = false;
+		}
 		self.limit_resolution();
 	}
 	fn settings(&self) -> Option<RequestSettings> {
@@ -230,10 +260,38 @@ impl ScreenUi {
 		.width(460.0)
 		.show(ctx, |d| {
 			d.scroll(260.0, |ui| self.body(ui, state));
+			d.content(|ui| {
+				if let Some(source) = self.sources.iter().find(|s| Some(s.id) == self.selected) {
+					let audio = if self.audio {
+						audio_control(self.selected).0
+					} else {
+						"share-audio-off"
+					};
+					let kind = match source.id.audio_scope() {
+						AudioScope::Application => "screen-source-kind-window",
+						AudioScope::System => "screen-source-kind-screen",
+						AudioScope::Pending => "screen-body-screen-or-window",
+					};
+					let summary = format!(
+						"{}: {} · {}",
+						crate::i18n::translate(kind),
+						source.name,
+						crate::i18n::translate(audio)
+					);
+					ui.add(egui::Label::new(&summary).truncate())
+						.on_hover_text(summary);
+				} else {
+					ui.label(crate::i18n::translate(if self.source_lost {
+						"share-source-lost"
+					} else {
+						"screen-source-status-choose"
+					}));
+				}
+			});
 			d.footer(|ui| {
 				let allowed = !state.demo
 					&& self.supported
-					&& !self.busy && self.settings().is_some()
+					&& !self.busy() && self.settings().is_some()
 					&& state.voice.active.as_ref().is_some_and(|call| {
 						matches!(call.phase, Phase::Connected | Phase::Waiting)
 							&& state.can_stream(call.channel)
@@ -293,69 +351,6 @@ impl ScreenUi {
 			.max_height(196.0)
 			.show(ui, |ui| self.source_list(ui));
 		self.limit_resolution();
-		ui.add_space(14.0);
-		ui.label(crate::design::eyebrow(
-			ui,
-			crate::i18n::translate("screen-body-quality"),
-			colors.muted,
-		));
-		ui.add_space(6.0);
-		ui.horizontal_wrapped(|ui| {
-			ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-			let source_label = crate::i18n::translate("screen-body-source-resolution");
-			let source_label = self
-				.selected_dimensions()
-				.map_or(source_label.clone(), |(w, h)| {
-					format!("{source_label} · {w} × {h}")
-				});
-			self.resolution_choice(ui, Resolution::Source, &source_label);
-			for resolution in VideoResolution::ALL {
-				let mode = Resolution::Preset(resolution);
-				let response = self.resolution_choice(ui, mode, resolution.label());
-				if let Some((width, height)) = self
-					.selected_dimensions()
-					.and_then(|size| mode.dimensions(size))
-				{
-					response.on_hover_text(format!("{width} × {height}"));
-				}
-			}
-		});
-		ui.add_space(8.0);
-		ui.label(crate::design::eyebrow(
-			ui,
-			crate::i18n::translate("screen-body-frame-rate"),
-			colors.muted,
-		));
-		ui.add_space(6.0);
-		ui.horizontal_wrapped(|ui| {
-			ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-			for fps in [15, 30, 60] {
-				if segment(ui, &format!("{fps} fps"), self.fps == fps).clicked() {
-					self.fps = fps;
-				}
-			}
-		});
-		ui.add_space(4.0);
-		ui.add(
-			egui::Label::new(
-				egui::RichText::new(crate::i18n::translate(
-					"screen-body-quality-selection-does-not-require-nitro",
-				))
-				.size(12.0)
-				.color(colors.muted),
-			)
-			.wrap(),
-		);
-		ui.add_space(10.0);
-		crate::design::hint(ui, "screen-adaptive-quality-hint");
-		ui.add(
-			egui::Label::new(
-				egui::RichText::new(crate::i18n::translate("screen-body-resolution-description"))
-					.size(12.0)
-					.color(colors.muted),
-			)
-			.wrap(),
-		);
 		crate::design::switch(
 			ui,
 			"screen-body-show-cursor",
@@ -378,6 +373,85 @@ impl ScreenUi {
 			)
 			.wrap(),
 		);
+		let quality = match self.resolution {
+			Resolution::Source => crate::i18n::translate("screen-body-source-resolution"),
+			Resolution::Preset(preset) => preset.label().to_owned(),
+			Resolution::Fixed(w, h) => format!("{w} × {h}"),
+		};
+		let title = format!(
+			"{} · {quality} · {} fps",
+			crate::i18n::translate("screen-body-quality"),
+			self.fps
+		);
+		egui::CollapsingHeader::new(title)
+			.id_salt("screen-quality-options")
+			.show(ui, |ui| {
+				ui.add_space(14.0);
+				ui.label(crate::design::eyebrow(
+					ui,
+					crate::i18n::translate("screen-body-quality"),
+					colors.muted,
+				));
+				ui.add_space(6.0);
+				ui.horizontal_wrapped(|ui| {
+					ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+					let source_label = crate::i18n::translate("screen-body-source-resolution");
+					let source_label = self
+						.selected_dimensions()
+						.map_or(source_label.clone(), |(w, h)| {
+							format!("{source_label} · {w} × {h}")
+						});
+					self.resolution_choice(ui, Resolution::Source, &source_label);
+					for resolution in VideoResolution::ALL {
+						let mode = Resolution::Preset(resolution);
+						let response = self.resolution_choice(ui, mode, resolution.label());
+						if let Some((width, height)) = self
+							.selected_dimensions()
+							.and_then(|size| mode.dimensions(size))
+						{
+							response.on_hover_text(format!("{width} × {height}"));
+						}
+					}
+				});
+				ui.add_space(8.0);
+				ui.label(crate::design::eyebrow(
+					ui,
+					crate::i18n::translate("screen-body-frame-rate"),
+					colors.muted,
+				));
+				ui.add_space(6.0);
+				ui.horizontal_wrapped(|ui| {
+					ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+					for fps in [15, 30, 60] {
+						if segment(ui, &format!("{fps} fps"), self.fps == fps).clicked() {
+							self.fps = fps;
+						}
+					}
+				});
+				ui.add_space(4.0);
+				ui.add(
+					egui::Label::new(
+						egui::RichText::new(crate::i18n::translate(
+							"screen-body-quality-selection-does-not-require-nitro",
+						))
+						.size(12.0)
+						.color(colors.muted),
+					)
+					.wrap(),
+				);
+				ui.add_space(10.0);
+				crate::design::hint(ui, "screen-adaptive-quality-hint");
+				ui.add(
+					egui::Label::new(
+						egui::RichText::new(crate::i18n::translate(
+							"screen-body-resolution-description",
+						))
+						.size(12.0)
+						.color(colors.muted),
+					)
+					.wrap(),
+				);
+			});
 		if !self.status.is_empty() {
 			ui.add_space(10.0);
 			egui::Frame::new()
@@ -514,6 +588,7 @@ impl ScreenUi {
 			let response = response.on_hover_text(&source_name);
 			if response.clicked() {
 				self.selected = Some(source.id);
+				self.source_lost = false;
 			}
 			ui.add_space(4.0);
 		}
@@ -541,6 +616,7 @@ fn segment(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 		colors.base
 	};
 	ui.painter().rect_filled(rect, 8, fill);
+	crate::design::focus_outline(ui, &response, 8);
 	let color = if !ui.is_enabled() {
 		colors.muted
 	} else if selected {
@@ -776,6 +852,7 @@ mod tests {
 			});
 			let mut picker = ScreenUi::default();
 			picker.replace_sources(vec![source(1, Some((1920, 1080)))]);
+			picker.selected = Some(SourceId::Display(1));
 			picker.resolution = Resolution::Preset(VideoResolution::P1080);
 			let mode = Resolution::Preset(VideoResolution::P2160);
 			let mut center = egui::Pos2::ZERO;
@@ -842,6 +919,8 @@ mod tests {
 		};
 		assert_eq!(picker.resolution, Resolution::Preset(expected));
 		picker.replace_sources(vec![source(1, Some((7680, 4320)))]);
+		assert!(picker.settings().is_none());
+		picker.selected = Some(SourceId::Display(1));
 		for preset in VideoResolution::ALL {
 			picker.resolution = Resolution::Preset(preset);
 			let settings = picker.settings().unwrap().resolve((7680, 4320)).unwrap();
@@ -869,6 +948,7 @@ mod tests {
 			source(1, Some((6144, 2560))),
 			source(2, Some((1920, 1080))),
 		]);
+		picker.selected = Some(SourceId::Display(1));
 		picker.resolution = Resolution::Preset(VideoResolution::P2160);
 		assert!(picker.settings().is_some());
 		picker.selected = Some(SourceId::Display(2));
@@ -886,15 +966,31 @@ mod tests {
 		let output = picker.settings().unwrap().resolve((1080, 1920)).unwrap();
 		assert_eq!((output.width, output.height), (1080, 1920));
 		picker.replace_sources(vec![source(3, Some((320, 240)))]);
-		assert_eq!(picker.selected, Some(SourceId::Display(3)));
-		assert_eq!(picker.resolution, Resolution::Source);
+		assert!(picker.source_lost && picker.settings().is_none());
+		assert_eq!(picker.selected, None);
 		picker.replace_sources(vec![]);
 		assert!(picker.settings().is_none());
+	}
+	#[test]
+	fn a_missing_window_never_promotes_window_audio_to_desktop_audio() {
+		let mut picker = ScreenUi::default();
+		let window = Source {
+			id: SourceId::Window(7),
+			name: "Notes".into(),
+			dimensions: None,
+		};
+		picker.replace_sources(vec![source(1, None), window]);
+		assert!(picker.settings().is_none());
+		picker.selected = Some(SourceId::Window(7));
+		picker.audio = true;
+		picker.replace_sources(vec![source(1, None)]);
+		assert!(picker.settings().is_none() && picker.source_lost && !picker.audio);
 	}
 	#[test]
 	fn unknown_picker_geometry_is_deferred_and_source_uses_native_pixels() {
 		let mut picker = ScreenUi::default();
 		picker.replace_sources(vec![source(1, None)]);
+		picker.selected = Some(SourceId::Display(1));
 		picker.resolution = Resolution::Source;
 		let request = picker.settings().unwrap();
 		let output = request.resolve((6144, 2560)).unwrap();

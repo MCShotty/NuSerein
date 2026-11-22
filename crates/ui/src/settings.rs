@@ -661,28 +661,11 @@ enum Page {
 	Themes,
 }
 impl Page {
-	/// Every page in sidebar order; the narrow-window page picker lists them the same way.
-	const ALL: [Self; 19] = [
-		Self::Account,
-		Self::Profile,
-		Self::MessagingPermissions,
-		Self::Privacy,
-		Self::ContentFilters,
-		Self::Connections,
-		Self::Accessibility,
-		Self::Storage,
-		Self::Appearance,
-		Self::Chat,
-		Self::Notifications,
-		Self::Voice,
-		Self::Keybinds,
-		Self::Activity,
-		Self::LanguageTime,
-		Self::General,
-		Self::Updates,
-		Self::Themes,
-		Self::Extensions,
-	];
+	fn all() -> impl Iterator<Item = Self> {
+		Self::SECTIONS
+			.iter()
+			.flat_map(|(_, pages)| pages.iter().copied())
+	}
 	/// Sidebar sections: account-level choices first, then how this app looks and behaves,
 	/// then community add-ons.
 	const SECTIONS: [(&'static str, &'static [Self]); 3] = [
@@ -1040,7 +1023,7 @@ impl Settings {
 			})
 			.collect();
 		self.search_pages = 0;
-		for page in Page::ALL {
+		for page in Page::all() {
 			if page.matches(&query, language)
 				|| self
 					.search_results
@@ -1240,19 +1223,15 @@ impl MessagingUi {
 			return;
 		}
 		// A label wins; keywords still reach pages that were merged or renamed ("activity").
-		if let Some(page) = Page::ALL
-			.into_iter()
+		if let Some(page) = Page::all()
 			.find(|candidate| {
 				candidate
 					.label(Language::English)
 					.to_lowercase()
 					.contains(page)
 			})
-			.or_else(|| {
-				Page::ALL
-					.into_iter()
-					.find(|candidate| candidate.matches(page, Language::English))
-			}) {
+			.or_else(|| Page::all().find(|candidate| candidate.matches(page, Language::English)))
+		{
 			self.settings.page = page;
 		}
 	}
@@ -1654,7 +1633,7 @@ impl MessagingUi {
 			.width(ui.available_width().max(1.0))
 			.truncate()
 			.show_ui(ui, |ui| {
-				for page in Page::ALL {
+				for page in Page::all() {
 					if self.settings.search_matches_page(page) {
 						ui.selectable_value(
 							&mut self.settings.page,
@@ -3100,6 +3079,7 @@ fn theme_preference_cards(ui: &mut egui::Ui) {
 					colors.text
 				},
 			);
+			design::focus_outline(ui, &response, 8);
 			if response.clicked() {
 				chosen = Some(preference);
 			}

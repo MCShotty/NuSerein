@@ -128,6 +128,7 @@ mod native {
 	struct State {
 		icon: NOTIFYICONDATAW,
 		menu: HMENU,
+		labels: Box<dyn Fn() -> (String, String)>,
 		previous: WNDPROC,
 		restart: u32,
 		hooked: Cell<bool>,
@@ -144,6 +145,13 @@ mod native {
 		pub fn new(
 			window: Arc<winit::window::Window>,
 			wake: impl Fn() + 'static,
+		) -> Result<Self, &'static str> {
+			Self::new_localized(window, wake, || ("Show NuSerein".into(), "Quit".into()))
+		}
+		pub fn new_localized(
+			window: Arc<winit::window::Window>,
+			wake: impl Fn() + 'static,
+			labels: impl Fn() -> (String, String) + 'static,
 		) -> Result<Self, &'static str> {
 			let RawWindowHandle::Win32(handle) =
 				window.window_handle().map_err(|_| UNAVAILABLE)?.as_raw()
@@ -210,6 +218,7 @@ mod native {
 				state: Rc::new(State {
 					icon: data,
 					menu,
+					labels: Box::new(labels),
 					previous,
 					restart,
 					hooked: Cell::new(false),
@@ -349,6 +358,23 @@ mod native {
 				if GetCursorPos(&mut cursor).is_err() {
 					return;
 				}
+				let (show, quit) = (self.labels)();
+				let show = windows::core::HSTRING::from(show.as_str());
+				let quit = windows::core::HSTRING::from(quit.as_str());
+				let _ = ModifyMenuW(
+					self.menu,
+					SHOW as u32,
+					MF_BYCOMMAND | MF_STRING,
+					SHOW,
+					&show,
+				);
+				let _ = ModifyMenuW(
+					self.menu,
+					QUIT as u32,
+					MF_BYCOMMAND | MF_STRING,
+					QUIT,
+					&quit,
+				);
 				let _ = SetForegroundWindow(self.icon.hWnd);
 				let command = TrackPopupMenu(
 					self.menu,

@@ -528,6 +528,8 @@ pub struct MessagingUi {
 	stream_preview_open: Option<((Id, Id, Id), u64)>,
 	stream_preview_request: Option<(Id, Id, Id)>,
 	stream_preview_watch: Option<(Id, Id)>,
+	watch_after_join: Option<(u64, u64, Id, Id)>,
+	watch_mute_restore: Option<(u64, u64, bool)>,
 	pub voice_inputs: Vec<(String, String)>,
 	pub voice_outputs: Vec<(String, String)>,
 	pub voice_input: Option<String>,

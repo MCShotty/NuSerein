@@ -297,17 +297,17 @@ impl ChannelMenu {
 				},
 			);
 			ui.add_enabled_ui(state.personal_channel_controls_available(guild), |ui| {
-				ui.menu_button("Unread Badges", |ui| {
+				ui.menu_button(crate::i18n::translate("channel-unread-badges"), |ui| {
 					let mask = model::channel_visibility::UNREADS_ONLY_MENTIONS
 						| model::channel_visibility::UNREADS_ALL_MESSAGES;
 					for (label, bits) in [
-						("Use notification setting", 0),
+						("channel-use-notification-setting", 0),
 						(
-							"All new messages",
+							"channel-all-new",
 							model::channel_visibility::UNREADS_ALL_MESSAGES,
 						),
 						(
-							"Only mentions",
+							"server-notifications-mentions",
 							model::channel_visibility::UNREADS_ONLY_MENTIONS,
 						),
 					] {
@@ -316,7 +316,7 @@ impl ChannelMenu {
 								state
 									.personal_channel_flags(channel.id)
 									.is_some_and(|flags| flags & mask == bits),
-								label,
+								crate::i18n::translate(label),
 							)
 							.clicked() && let Some(action) =
 							state.personal_channel_flag_change(channel.id, mask, bits)
@@ -326,34 +326,37 @@ impl ChannelMenu {
 					}
 				});
 				if matches!(channel.kind, 15 | 16) {
-					ui.menu_button("New Post Notifications", |ui| {
-						let mask = model::channel_visibility::NEW_FORUM_THREADS_OFF
-							| model::channel_visibility::NEW_FORUM_THREADS_ON;
-						for (label, bits) in [
-							("Use server default", 0),
-							(
-								"Show unread for new posts",
-								model::channel_visibility::NEW_FORUM_THREADS_ON,
-							),
-							(
-								"Do not mark unread for new posts",
-								model::channel_visibility::NEW_FORUM_THREADS_OFF,
-							),
-						] {
-							if ui
-								.selectable_label(
-									state
-										.personal_channel_flags(channel.id)
-										.is_some_and(|flags| flags & mask == bits),
-									label,
-								)
-								.clicked() && let Some(action) =
-								state.personal_channel_flag_change(channel.id, mask, bits)
-							{
-								intent = Some(Intent::Write(action));
+					ui.menu_button(
+						crate::i18n::translate("channel-new-post-notifications"),
+						|ui| {
+							let mask = model::channel_visibility::NEW_FORUM_THREADS_OFF
+								| model::channel_visibility::NEW_FORUM_THREADS_ON;
+							for (label, bits) in [
+								("channel-server-default", 0),
+								(
+									"channel-show-unread-posts",
+									model::channel_visibility::NEW_FORUM_THREADS_ON,
+								),
+								(
+									"channel-hide-unread-posts",
+									model::channel_visibility::NEW_FORUM_THREADS_OFF,
+								),
+							] {
+								if ui
+									.selectable_label(
+										state
+											.personal_channel_flags(channel.id)
+											.is_some_and(|flags| flags & mask == bits),
+										crate::i18n::translate(label),
+									)
+									.clicked() && let Some(action) =
+									state.personal_channel_flag_change(channel.id, mask, bits)
+								{
+									intent = Some(Intent::Write(action));
+								}
 							}
-						}
-					});
+						},
+					);
 				}
 			});
 			if state.can_open_channel_settings(channel.id) {

@@ -68,7 +68,7 @@ impl Settings {
 			voice_processing: Some(ui.voice_processing),
 			video_settings: ui.video_settings,
 			voice_push_to_talk: ui.voice_push_to_talk,
-			voice_muted: ui.voice_muted,
+			voice_muted: ui.saved_voice_muted(),
 			voice_deafened: ui.voice_deafened,
 			voice_input: ui.voice_input.clone(),
 			voice_output: ui.voice_output.clone(),

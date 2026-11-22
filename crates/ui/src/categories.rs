@@ -2983,7 +2983,7 @@ mod tests {
 					"name={name} painted={} strong={} accent={} badge={badge} pill={pill} label={label:?}",
 					name_row.is_some(),
 					color == colors.text_strong,
-					color == colors.accent,
+					color == design::readable_tint(colors.accent, colors.selected),
 				)
 			};
 			let painted = (indicators("getting-started"), indicators("hangout"));

@@ -84,6 +84,18 @@ layout stay put. The first visible frame is settled, and the motion stops on foc
 Accessibility → Motion and scrolling → Reduce interface motion uses the settled treatment and
 skips chrome fades. This device setting is independent of artwork playback and scrolling.
 
+### Stream controls
+
+Sharing requires choosing a source; refreshing a missing window never substitutes a display.
+The confirmation names the source and audio scope; resolution and fps are secondary options.
+Watching from outside the channel joins with the microphone muted, separately from saved mic
+preferences. Watching from another call requires an explicit switch. The call exit always leaves
+the call; stopping a stream is a separate action. Compact layouts keep watch actions named and
+retain sharing in the call bar’s More menu.
+
+Menu labels fall back to the bundled English message if the selected locale has no entry.
+The user settings sidebar and compact page picker use the same section order.
+
 ## Theme tokens and presets
 
 The `Palette` carries surface roles: `base` (title strip and server rail), `sidebar`

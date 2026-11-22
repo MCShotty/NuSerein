@@ -295,7 +295,7 @@ impl Screen {
 			self.cleanup = None;
 			ui.screen.refresh_requested = false;
 			ui.screen.request = None;
-			ui.screen.busy = false;
+			ui.screen.phase = ui::screen::SharePhase::Idle;
 			ui.screen.supported = false;
 			ui.screen.preview = None;
 			ui.screen.capture_status = None;
@@ -546,10 +546,15 @@ impl Screen {
 				ctx.request_repaint_after(SIGNAL_TIMEOUT.saturating_sub(closing.started.elapsed()));
 			}
 		}
-		ui.screen.busy = self.pending.is_some()
-			|| self.live.is_some()
-			|| self.closing.is_some()
-			|| self.retiring.is_some();
+		ui.screen.phase = if self.closing.is_some() || self.retiring.is_some() {
+			ui::screen::SharePhase::Stopping
+		} else if self.live.is_some() {
+			ui::screen::SharePhase::Live
+		} else if self.pending.is_some() {
+			ui::screen::SharePhase::Starting
+		} else {
+			ui::screen::SharePhase::Idle
+		};
 		ui.screen.status = self.failure.unwrap_or(self.status);
 		ui.screen.capture_status = self
 			.retiring
@@ -802,7 +807,7 @@ mod tests {
 				.poll(&runtime, &state, &mut ui, &ctx, Some(call()))
 				.is_none()
 		);
-		assert!(share.pending.is_none() && share.retiring.is_some() && ui.screen.busy);
+		assert!(share.pending.is_none() && share.retiring.is_some() && ui.screen.busy());
 		assert_eq!(ui.screen.status, "Original encoder timeout");
 		assert!(
 			ui.screen
@@ -1077,7 +1082,7 @@ mod tests {
 				..
 			}))
 		));
-		assert!(ui.screen.busy);
+		assert!(ui.screen.busy());
 		assert!(ui.screen.status.contains("permission"));
 	}
 }

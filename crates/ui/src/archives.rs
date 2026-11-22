@@ -96,22 +96,24 @@ impl ArchivesUi {
 								ui.add_enabled_ui(allowed && !view.loading, |ui| {
 									egui::ComboBox::from_id_salt(("archive-kind", parent))
 										.width(112.0)
-										.selected_text(match kind {
-											Kind::Public => "Public",
-											Kind::JoinedPrivate => "Joined private",
-											Kind::Private => "Private",
-										})
+										.selected_text(crate::i18n::translate(match kind {
+											Kind::Public => "archive-public",
+											Kind::JoinedPrivate => "archive-joined-private",
+											Kind::Private => "archive-private",
+										}))
 										.show_ui(ui, |ui| {
 											for (option, label) in [
-												(Kind::Public, "Public"),
-												(Kind::JoinedPrivate, "Joined private"),
-												(Kind::Private, "Private"),
+												(Kind::Public, "archive-public"),
+												(Kind::JoinedPrivate, "archive-joined-private"),
+												(Kind::Private, "archive-private"),
 											] {
 												ui.add_enabled_ui(
 													state.can_archive(parent, option),
 													|ui| {
 														ui.selectable_value(
-															&mut kind, option, label,
+															&mut kind,
+															option,
+															crate::i18n::translate(label),
 														);
 													},
 												);

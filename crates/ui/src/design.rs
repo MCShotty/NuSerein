@@ -861,7 +861,7 @@ fn customize(mut palette: Palette, primary: Option<[u8; 3]>) -> Palette {
 	palette
 }
 /// Whichever of a light or dark tint of `base` reads better against `background`.
-fn readable_tint(base: Color32, background: Color32) -> Color32 {
+pub(crate) fn readable_tint(base: Color32, background: Color32) -> Color32 {
 	let light = base.lerp_to_gamma(Color32::WHITE, 0.55);
 	let dark = base.lerp_to_gamma(Color32::BLACK, 0.45);
 	if contrast(light, background) >= contrast(dark, background) {
@@ -1891,6 +1891,15 @@ fn contrast(a: Color32, b: Color32) -> f32 {
 mod tests {
 
 	#[test]
+	fn connected_channel_text_is_readable_in_both_stock_selections() {
+		for dark in [true, false] {
+			let p = super::builtin_colors(dark, super::Variant::Standard);
+			let text = super::readable_tint(p.accent, p.selected);
+			assert!(super::contrast(text, p.selected) >= 4.5);
+			assert!(super::contrast(text, p.sidebar) >= 4.5);
+		}
+	}
+	#[test]
 	fn narrow_segmented_controls_keep_each_choice_clickable_inside_the_track() {
 		for width in [120.0, 240.0] {
 			for target in 0..3 {
@@ -2396,6 +2405,16 @@ pub fn button(ui: &mut egui::Ui, label: &str, kind: ButtonKind) -> egui::Respons
 	} else {
 		fill
 	};
+	let text =
+		if matches!(kind, ButtonKind::Primary | ButtonKind::Danger) && contrast(text, fill) < 4.5 {
+			if contrast(Color32::BLACK, fill) > contrast(Color32::WHITE, fill) {
+				Color32::BLACK
+			} else {
+				Color32::WHITE
+			}
+		} else {
+			text
+		};
 	let text = if enabled {
 		text
 	} else {

@@ -791,7 +791,7 @@ impl MessagingUi {
 				{
 					commands.push(command);
 				}
-				self.apply_stream_preview_watch(state, commands);
+
 				self.apply_watch_request(state);
 				if let Some((channel, action)) = self.channel_move.take()
 					&& let Some(command) = state.request_channel_action(channel, action)

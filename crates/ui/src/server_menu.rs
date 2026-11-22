@@ -264,9 +264,16 @@ impl ServerMenu {
 		}
 		false
 	}
-	/// Create invite for `guild`, shown only where the account may create one.
+	/// Both server menus use the same actionable destination or disabled explanation.
 	pub fn invite_item(&mut self, ui: &mut egui::Ui, state: &mut State, guild: Id) -> bool {
 		let Some(channel) = state.invite_channel(guild) else {
+			ui.add_enabled(
+				false,
+				egui::Button::new(crate::i18n::translate("server-menu-header-create-invite")),
+			)
+			.on_disabled_hover_text(crate::i18n::translate(
+				"server-invite-picker-no-eligible-channel",
+			));
 			return false;
 		};
 		let available = !state.server_action_pending()
@@ -358,13 +365,19 @@ impl ServerMenu {
 					ui.separator();
 					self.guide_item(ui, state, guild);
 
-					if ui.button("Server events").clicked() {
+					if ui
+						.button(crate::i18n::translate("server-settings-page-events"))
+						.clicked()
+					{
 						self.events_requested = Some(guild);
 						ui.close();
 					}
 					self.settings_item(ui, state, guild);
 					self.force_sync_item(ui, state, guild);
-					if ui.button("Browse Channels").clicked() {
+					if ui
+						.button(crate::i18n::translate("browse-channels-title"))
+						.clicked()
+					{
 						self.browse_requested = Some(guild);
 						ui.close();
 					}
@@ -372,7 +385,10 @@ impl ServerMenu {
 					if ui
 						.add_enabled(
 							state.personal_channel_controls_available(guild),
-							egui::Checkbox::new(&mut show_all, "Show All Channels"),
+							egui::Checkbox::new(
+								&mut show_all,
+								crate::i18n::translate("browse-channels-show-all"),
+							),
 						)
 						.changed() && let Some(action) =
 						state.personal_show_all_change(guild, show_all)
@@ -382,27 +398,7 @@ impl ServerMenu {
 					}
 					self.notifications_item(ui, state, guild);
 					self.mute_item(ui, state, guild);
-					if ui
-						.add_enabled_ui(available, |ui| {
-							menu_row(
-								ui,
-								icons::Icon::AddPeople,
-								&crate::i18n::translate("server-menu-header-create-invite"),
-								colors.text,
-							)
-						})
-						.inner
-						.clicked()
-					{
-						state.clear_server_action_result(guild);
-						self.dialog = Some(Dialog::Invite {
-							guild,
-							channel: state.invite_channel(guild),
-						});
-						self.generation = state.generation;
-						self.invite.open();
-						ui.close();
-					}
+					self.invite_item(ui, state, guild);
 					ui.separator();
 					self.leave_item(ui, state, guild);
 					if !available {

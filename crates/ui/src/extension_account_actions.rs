@@ -324,13 +324,13 @@ impl MessagingUi {
 				self.voice_camera_device = device_id;
 			}
 			AppAction::OpenScreenSharePicker => {
-				if state.voice.active.is_none() || self.screen.busy {
+				if state.voice.active.is_none() || self.screen.busy() {
 					return Err("Screen sharing is unavailable in the current call".into());
 				}
 				self.screen.launch(state);
 			}
 			AppAction::StopScreenShare => {
-				if !self.screen.busy {
+				if !self.screen.busy() {
 					return Err("There is no active screen share".into());
 				}
 				self.screen.request = Some(crate::screen::Request::Stop);

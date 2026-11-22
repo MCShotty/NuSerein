@@ -27,7 +27,7 @@ pub(crate) fn tint(colors: &Palette, access: ChannelAccess, emphasis: Emphasis) 
 	}
 	match emphasis {
 		Emphasis::Unavailable => colors.muted.gamma_multiply(DIM),
-		Emphasis::Connected => colors.accent,
+		Emphasis::Connected => crate::design::readable_tint(colors.accent, colors.selected),
 		Emphasis::Focused | Emphasis::Unread => colors.text_strong,
 		Emphasis::Idle => colors.muted,
 	}
