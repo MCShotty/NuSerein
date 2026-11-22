@@ -3188,6 +3188,8 @@ mod tests {
 				send(&mut socket, json!({"op":10,"d":{"heartbeat_interval":1000}})).await;
 				assert_eq!(packet(&mut socket).await["op"], 2);
 				send(&mut socket, ready(1, "synthetic-replayed-presence")).await;
+				// Do not tear down this socket until the client has admitted READY.
+				acknowledge(&mut socket, 1).await;
 				send(&mut socket, json!({"op":7,"d":null})).await;
 				drop(socket);
 				let (stream, _) = listener.accept().await.unwrap();

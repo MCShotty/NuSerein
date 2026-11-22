@@ -390,11 +390,13 @@ fn thread_card(
 		);
 	}
 	ui.add_space(CARD_GAP);
-	response.on_hover_text(format!(
+	let label = format!(
 		"{} “{}”",
 		crate::i18n::translate("archives-thread-card-open-thread"),
 		thread.name
-	))
+	);
+	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label));
+	response.on_hover_text(label)
 }
 
 #[cfg(test)]
@@ -554,6 +556,13 @@ mod tests {
 		assert!(commands.is_empty());
 	}
 	fn frame(ctx: &egui::Context, key: Option<egui::Key>, draw: impl FnMut(&mut egui::Ui)) {
+		let _ = frame_focus(ctx, key, draw);
+	}
+	fn frame_focus(
+		ctx: &egui::Context,
+		key: Option<egui::Key>,
+		draw: impl FnMut(&mut egui::Ui),
+	) -> Option<String> {
 		let output = ctx.run_ui(
 			egui::RawInput {
 				screen_rect: Some(egui::Rect::from_min_size(
@@ -562,20 +571,44 @@ mod tests {
 				)),
 				events: key
 					.into_iter()
-					.map(|key| egui::Event::Key {
-						key,
-						physical_key: None,
-						pressed: true,
-						repeat: false,
-						modifiers: egui::Modifiers::NONE,
+					.flat_map(|key| {
+						[true, false].map(move |pressed| egui::Event::Key {
+							key,
+							physical_key: None,
+							pressed,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+						})
 					})
 					.collect(),
 				..Default::default()
 			},
 			draw,
 		);
-		assert!(output.platform_output.commands.is_empty());
+		let no_platform_commands = output.platform_output.commands.is_empty();
+		let focused = output
+			.platform_output
+			.events
+			.iter()
+			.find_map(|event| match event {
+				egui::output::OutputEvent::FocusGained(info) => info.label.clone(),
+				_ => None,
+			});
 		output.drop_without_applying_deltas();
+		assert!(no_platform_commands);
+		focused
+	}
+
+	fn activate_by_tab(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&mut egui::Ui)) {
+		// Rebuild the page (and honor its initial search focus), then drive real key taps.
+		frame(ctx, None, &mut draw);
+		for _ in 0..16 {
+			if frame_focus(ctx, Some(egui::Key::Tab), &mut draw).as_deref() == Some(label) {
+				frame(ctx, Some(egui::Key::Enter), &mut draw);
+				return;
+			}
+		}
+		panic!("archive action not reachable with Tab: {label}");
 	}
 	#[test]
 	fn forum_archive_is_keyboard_accessible_paginates_and_opens_only_history() {
@@ -653,17 +686,14 @@ mod tests {
 					next: Some(before),
 				}),
 			);
-			for key in [
-				None,
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Enter),
-			] {
-				frame(&ctx, key, |_| {
+			activate_by_tab(
+				&ctx,
+				&crate::i18n::translate("archives-action-older"),
+				|_| {
 					ui.archives
 						.show(&ctx, &mut state, &mut commands, &mut ui.avatars)
-				});
-			}
+				},
+			);
 			assert!(
 				matches!(commands.last(), Some(Command::Archives { before: Some(cursor), .. }) if *cursor == before)
 			);
@@ -679,17 +709,14 @@ mod tests {
 			);
 			ui.archives.focus = true;
 			// With no Older control, keyboard Reload returns from an older page to the newest.
-			for key in [
-				None,
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Enter),
-			] {
-				frame(&ctx, key, |_| {
+			activate_by_tab(
+				&ctx,
+				&crate::i18n::translate("archives-action-reload"),
+				|_| {
 					ui.archives
 						.show(&ctx, &mut state, &mut commands, &mut ui.avatars)
-				});
-			}
+				},
+			);
 			assert!(matches!(
 				commands.last(),
 				Some(Command::Archives {
@@ -709,19 +736,18 @@ mod tests {
 				}),
 			);
 			ui.archives.focus = true;
-			// Search, Close, Reload, Open thread (Create is disabled for this forum).
-			for key in [
-				None,
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Enter),
-			] {
-				frame(&ctx, key, |_| {
+			// Follow keyboard focus to the named result, independent of toolbar order.
+			activate_by_tab(
+				&ctx,
+				&format!(
+					"{} “Synthetic thread 9”",
+					crate::i18n::translate("archives-thread-card-open-thread")
+				),
+				|_| {
 					ui.archives
 						.show(&ctx, &mut state, &mut commands, &mut ui.avatars)
-				});
-			}
+				},
+			);
 			assert!(matches!(
 				commands.last(),
 				Some(Command::History { channel: Id(9), .. })

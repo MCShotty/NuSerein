@@ -803,7 +803,13 @@ impl MessagingUi {
 								egui::Button::new(crate::i18n::translate("watch-short")),
 							)
 							.accessible_name(&label)
-							.on_hover_text(&label)
+							.on_hover_ui(|ui| {
+								// A streamer or channel name can exceed a narrow viewport.
+								let width =
+									(ui.ctx().content_rect().width() - 32.0).clamp(1.0, 300.0);
+								ui.set_max_width(width);
+								ui.add(egui::Label::new(&label).wrap());
+							})
 							.on_disabled_hover_text(crate::i18n::translate_if_key(reason));
 						if watch.clicked() {
 							self.stream_preview_watch =
@@ -8798,39 +8804,39 @@ mod tests {
 					)
 				};
 				frame(&mut messaging).drop_without_applying_deltas();
-				let output = frame(&mut messaging);
-				fn find_text(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+				let mut output = frame(&mut messaging);
+				// No renderer in this fixture. A layout assertion must not double-panic on drop.
+				output.textures_delta.clear();
+				fn collect_text(shape: &egui::Shape, label: &str, bounds: &mut Vec<egui::Rect>) {
 					match shape {
 						egui::Shape::Text(text) if text.galley.job.text == label => {
-							Some(text.galley.rect.translate(text.pos.to_vec2()))
+							bounds.push(text.galley.rect.translate(text.pos.to_vec2()));
 						}
 						egui::Shape::Vec(shapes) => {
-							shapes.iter().find_map(|shape| find_text(shape, label))
+							for shape in shapes {
+								collect_text(shape, label, bounds);
+							}
 						}
-						_ => None,
+						_ => {}
 					}
 				}
-				let watch = output
-					.shapes
-					.iter()
-					.find_map(|shape| {
-						find_text(
-							&shape.shape,
-							&watch_label(
-								&state,
-								Id(25),
-								resolve_member(&state, &state.voice.roster[2]).1,
-							),
-						)
-					})
-					.expect("watch action is visible in the preview");
+				let label = watch_label(
+					&state,
+					Id(25),
+					resolve_member(&state, &state.voice.roster[2]).1,
+				);
+				let mut watch = Vec::new();
+				for shape in &output.shapes {
+					collect_text(&shape.shape, &label, &mut watch);
+				}
+				assert!(!watch.is_empty(), "watch action is visible");
 				let expected = if loading {
 					"Loading stream preview"
 				} else {
 					"Preview hidden or unavailable"
 				};
 				assert!(
-					viewport.contains_rect(watch),
+					watch.iter().all(|rect| viewport.contains_rect(*rect)),
 					"watch action escaped {viewport:?}: {watch:?}"
 				);
 				assert!(

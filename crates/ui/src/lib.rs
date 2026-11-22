@@ -2751,7 +2751,18 @@ mod composer_tests {
 				}
 				_ => {
 					composer_selection(&ctx, widget, MAX_CONTENT, MAX_CONTENT);
-					events.push(composer_shortcut(egui::Key::Home, false, true));
+					// Move to the document start using the host editor's native shortcut.
+					let home = if ctx.os() == egui::os::OperatingSystem::Mac {
+						let mut event = edit_key(egui::Key::ArrowUp);
+						if let egui::Event::Key { modifiers, .. } = &mut event {
+							modifiers.command = true;
+							modifiers.mac_cmd = true;
+						}
+						event
+					} else {
+						composer_shortcut(egui::Key::Home, false, true)
+					};
+					events.push(home);
 					let mut right = edit_key(egui::Key::ArrowRight);
 					if let egui::Event::Key { modifiers, .. } = &mut right {
 						*modifiers = egui::Modifiers::SHIFT;
