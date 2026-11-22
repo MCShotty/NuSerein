@@ -32,17 +32,17 @@ allow = ["MIT", "Apache-2.0", "GPL-2.0-or-later"]
 # Exact versions require renewed review on upgrades, including vendored crates.
 [[licenses.exceptions]]
 name = "hpke-rs"
-version = "=0.6.1"
+version = "=0.8.1"
 allow = ["MPL-2.0"]
 
 [[licenses.exceptions]]
 name = "hpke-rs-crypto"
-version = "=0.6.1"
+version = "=0.8.0"
 allow = ["MPL-2.0"]
 
 [[licenses.exceptions]]
 name = "hpke-rs-rust-crypto"
-version = "=0.6.1"
+version = "=0.8.0"
 allow = ["MPL-2.0"]
 
 [[licenses.exceptions]]

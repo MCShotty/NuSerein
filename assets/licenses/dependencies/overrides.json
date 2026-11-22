@@ -282,24 +282,24 @@
     },
     {
       "name": "hpke-rs-crypto",
-      "version": "0.6.1",
+      "version": "0.8.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "files": [
         "assets/licenses/voice/hpke-rs-LICENSE-MPL-2.0.txt"
       ],
       "source_archives": [
-        "assets/licenses/dependencies/hpke-rs-crypto-0.6.1.crate"
+        "assets/licenses/dependencies/hpke-rs-crypto-0.8.0.crate"
       ]
     },
     {
       "name": "hpke-rs-rust-crypto",
-      "version": "0.6.1",
+      "version": "0.8.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "files": [
         "assets/licenses/voice/hpke-rs-LICENSE-MPL-2.0.txt"
       ],
       "source_archives": [
-        "assets/licenses/dependencies/hpke-rs-rust-crypto-0.6.1.crate"
+        "assets/licenses/dependencies/hpke-rs-rust-crypto-0.8.0.crate"
       ]
     },
     {

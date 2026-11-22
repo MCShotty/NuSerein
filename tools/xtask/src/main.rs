@@ -494,6 +494,10 @@ fn package() -> Result<(), String> {
 		std::path::Path::new("assets/licenses/dependencies"),
 		&resources.join("licenses/dependencies"),
 	)?;
+	copy_directory(
+		std::path::Path::new("vendor/hpke-rs-0.8"),
+		&resources.join("source/hpke-rs"),
+	)?;
 	for file in [
 		"README.md",
 		"LICENSE-MIT",

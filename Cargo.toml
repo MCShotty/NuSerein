@@ -190,8 +190,10 @@ opt-level = 3
 [patch.crates-io]
 # Align Direct3D interfaces with wgpu-hal; see vendor/gpu-allocator/SEREIN-PATCH.md.
 gpu-allocator = { path = "vendor/gpu-allocator" }
-# Replace an affected SHAKE dependency while retaining the compatible HPKE API.
-hpke-rs = { path = "vendor/hpke-rs" }
+# Migrate native MLS consumers to patched P-256/HPKE without changing OpenMLS 0.8 wire types.
+openmls_basic_credential = { path = "vendor/openmls_basic_credential" }
+hpke-rs = { path = "vendor/hpke-rs-0.8" }
+openmls_rust_crypto = { path = "vendor/openmls_rust_crypto" }
 # Native DAVE does not need OpenMLS browser timers; see vendor/davey/SEREIN-PATCH.md.
 davey = { path = "vendor/davey" }
 

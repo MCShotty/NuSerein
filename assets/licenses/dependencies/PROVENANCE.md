@@ -195,3 +195,10 @@ Unmodified license texts copied from crates.io gpu-allocator 0.28.0, also retain
 
 - `gpu-allocator-0.28.0-LICENSE-MIT`: SHA-256 `ad41be6cc6538b29b9346648f41432b5e460bad6be073b5eeaa41320ea2921dc`.
 - `gpu-allocator-0.28.0-LICENSE-APACHE`: SHA-256 `0178e21322b0e88aa3aeb3146f6a9611bc1f8df6d98bdfb34be28b9dd56a8107`.
+
+### Current HPKE corresponding sources
+
+The current voice build uses these unmodified MPL-2.0 archives. The earlier HPKE archive rows above are historical.
+
+- [hpke-rs-crypto 0.8.0](https://static.crates.io/crates/hpke-rs-crypto/hpke-rs-crypto-0.8.0.crate): `72ae5655535eadbe2c8091ccc4c1913768b795dc04d1b85c821d5c41fe49d828`
+- [hpke-rs-rust-crypto 0.8.0](https://static.crates.io/crates/hpke-rs-rust-crypto/hpke-rs-rust-crypto-0.8.0.crate): `2ed2ce2a3de9b4b7f4d829d3e45e40c19daea7ff0246e7f22b9c7d6b00d1b517`

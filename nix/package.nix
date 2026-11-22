@@ -302,7 +302,7 @@ in
                 cp assets/twemoji/LICENSE-UNICODE "$docs/licenses/Unicode-LICENSE.txt"
                 cp assets/icons/LICENSE "$docs/licenses/Phosphor-Icons-MIT.txt"
                 cp assets/icons/LICENSE-SIMPLE-ICONS "$docs/licenses/Simple-Icons-CC0.txt"
-                cp -R vendor/hpke-rs "$docs/source/"
+                cp -R vendor/hpke-rs-0.8 "$docs/source/hpke-rs"
                 mkdir -p "$docs/ffmpeg-source/camera-filter"
                 cp -R ${sereinFfmpeg}/share/serein-ffmpeg/. "$docs/ffmpeg-source/"
                 cp -R crates/platform/src/video/denoise/. "$docs/ffmpeg-source/camera-filter/"

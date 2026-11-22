@@ -31,7 +31,7 @@ image = { version = "=0.25.10", default-features = false }
 [dev-dependencies]
 platform = { workspace = true, features = ["gpu-test"] }
 flate2.workspace = true
-sha3 = { version = "=0.10.9", default-features = false }
+openmls_traits = "=0.5.0"
 openmls_rust_crypto = "=0.5.1"
 openmls_basic_credential = "=0.5.0"
 
