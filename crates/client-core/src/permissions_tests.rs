@@ -868,6 +868,8 @@ fn author_gradients_follow_role_hierarchy_and_reject_invalid_stops() {
 		},
 	);
 	let mut chat = message(100, Id(20));
+	// This author is known from the message, not from our own membership in READY.
+	chat.author.id = Id(7);
 	chat.author_roles = vec![role_id];
 	assert_eq!(state.message_author_colors(&chat), Some(colors));
 	assert_eq!(
@@ -2610,7 +2612,11 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 			activities: vec![],
 			clients: model::ClientPlatforms::default(),
 			roles: vec![Id(13), Id(12), Id(11), Id(10)],
-			user: user(),
+			// Exercise another member's history fallback; READY knows our own assignments.
+			user: User {
+				id: Id(7),
+				..user()
+			},
 			nick: None,
 			status: Some("online".into()),
 			custom_status: None,
@@ -2646,6 +2652,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 		};
 		assert_eq!(resolved(&state, &member), (Some(Id(11)), Some(0x112233)));
 		let mut chat = message(100, Id(20));
+		chat.author = member.user.clone();
 		chat.author_roles = member.roles.clone();
 		assert_eq!(state.message_author_color(&chat), Some(0x112233));
 		chat.author.webhook = true;
