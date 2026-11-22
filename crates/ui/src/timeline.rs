@@ -2838,6 +2838,17 @@ impl TimelineView {
 				}
 			}));
 		}
+		if empty
+			&& history_available
+			&& state.freshness == model::Freshness::Stale
+			&& !state.history_pending
+			&& ui
+				.button(crate::i18n::translate("reload-history"))
+				.clicked()
+		{
+			self.latest = true;
+			self.follow_latest(state);
+		}
 		let area = ui.available_rect_before_wrap().intersect(ui.clip_rect());
 		let autoscroll_delta =
 			session.bind(ui, ui.scope_id().with(("timeline", state.selected)), area);

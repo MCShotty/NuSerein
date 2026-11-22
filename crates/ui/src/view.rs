@@ -952,7 +952,10 @@ impl MessagingUi {
 				let notices: Vec<String> = [
 					match state.freshness {
 						Freshness::Fresh | Freshness::Loading => None,
-						Freshness::Stale => Some("Cached history · awaiting sync"),
+						Freshness::Stale if state.timeline.display_iter().next().is_some() => {
+							Some("Cached history · awaiting sync")
+						}
+						Freshness::Stale => None,
 						Freshness::Unavailable => Some("Conversation unavailable"),
 					}
 					.map(str::to_owned),

@@ -6535,6 +6535,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "html5ever",
  "image",
  "libc",
  "local-store",

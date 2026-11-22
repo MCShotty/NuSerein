@@ -578,7 +578,17 @@ impl State {
 				return Some(roles);
 			}
 		}
-		self.presentation_member_roles(channel, user)
+		self.presentation_member_roles(channel, user).or_else(|| {
+			// REST history need not repeat the signed-in member's guild assignments.
+			// Use the same guild snapshot as the profile, never another user's roles.
+			self.user.as_ref().filter(|own| own.id == user)?;
+			self.permissions
+				.guilds
+				.get(&guild)?
+				.member
+				.as_ref()
+				.map(|member| member.roles.as_slice())
+		})
 	}
 	fn display_roles(
 		&self,

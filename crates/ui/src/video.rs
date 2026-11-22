@@ -1202,6 +1202,56 @@ pub fn embedded_video_candidates(media: &model::EmbedMedia) -> Vec<url::Url> {
 			urls
 		})
 }
+/// Public video pages eligible for one explicit, anonymous metadata lookup, not decoder URLs.
+/// Drop tracking parameters. Do not treat arbitrary posts, profiles or provider-supplied players as files.
+pub fn social_video_page(raw: &str) -> Option<url::Url> {
+	if raw.len() > 2048 || raw.contains('\\') || raw.chars().any(char::is_control) {
+		return None;
+	}
+	let mut url = url::Url::parse(raw).ok()?;
+	if url.scheme() != "https"
+		|| url.port_or_known_default() != Some(443)
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+		|| url.fragment().is_some()
+	{
+		return None;
+	}
+	let path: Vec<_> = url
+		.path()
+		.trim_end_matches('/')
+		.strip_prefix('/')?
+		.split('/')
+		.collect();
+	let id = |s: &str| {
+		!s.is_empty()
+			&& s.len() <= 128
+			&& s.bytes()
+				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+	};
+	let valid = match (url.host_str()?, path.as_slice()) {
+		(
+			"instagram.com"
+			| "www.instagram.com"
+			| "m.instagram.com"
+			| "oginstagram.com"
+			| "www.oginstagram.com",
+			["reel" | "reels" | "tv", code],
+		) => id(code),
+		("v.redd.it", [code]) => id(code),
+		("reddit.com" | "www.reddit.com" | "old.reddit.com", ["mediaembed", code]) => id(code),
+		(
+			"reddit.com" | "www.reddit.com" | "old.reddit.com",
+			["r", sub, "comments", code] | ["r", sub, "comments", code, _],
+		) => id(sub) && id(code),
+		_ => false,
+	};
+	if !valid {
+		return None;
+	}
+	url.set_query(None);
+	Some(url)
+}
 pub(crate) fn embedded_video_candidate(raw: &str) -> Option<url::Url> {
 	if raw.len() > 2048 || raw.contains('\\') || raw.chars().any(char::is_control) {
 		return None;

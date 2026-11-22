@@ -3179,6 +3179,45 @@ fn partial_member_snapshot_across_subscriptions_preserves_labels_but_explicit_cl
 }
 
 #[test]
+fn own_message_without_member_uses_current_guild_roles_only() {
+	let mut state = state();
+	let mut role = state.guild_roles(Id(10)).unwrap()[1].clone();
+	role.color = 0x123456;
+	permission(
+		&mut state,
+		PermissionEvent::Role {
+			guild: Id(10),
+			role,
+		},
+	);
+	permission(
+		&mut state,
+		PermissionEvent::Member {
+			guild: Id(10),
+			roles: Patch::Value(vec![Id(11)]),
+			timeout_until: Patch::Absent,
+		},
+	);
+	let mut row = message(101, Id(20));
+	row.author = state.user.clone().unwrap();
+	row.author_roles.clear();
+	assert_eq!(state.message_author_color(&row), Some(0x123456));
+	row.author.id = Id(8765);
+	assert_eq!(state.message_author_color(&row), None);
+	row.author = state.user.clone().unwrap();
+	row.author_roles = vec![Id(11)];
+	permission(
+		&mut state,
+		PermissionEvent::Member {
+			guild: Id(10),
+			roles: Patch::Value(vec![]),
+			timeout_until: Patch::Absent,
+		},
+	);
+	assert_eq!(state.message_author_color(&row), None);
+}
+
+#[test]
 fn cached_history_supplies_role_colors_before_the_member_list_arrives() {
 	let mut state = state();
 	let mut role = state.guild_roles(Id(10)).unwrap()[1].clone();

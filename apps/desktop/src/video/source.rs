@@ -1,4 +1,5 @@
 //! Decoder-driven attachment ranges. No file cache or eager whole-video download.
+mod social;
 use std::{
 	collections::VecDeque,
 	io::{self, Read, Seek, SeekFrom},
@@ -122,13 +123,22 @@ pub(super) fn source_until(
 		if !url.username().is_empty() || url.password().is_some() {
 			return Err(INVALID);
 		}
-		let client = reqwest::Client::builder()
+		let page = (expected == 0)
+			.then(|| ui::social_video_page(url.as_str()))
+			.flatten();
+		// A new provider lookup and its resulting media transfer both use the configured proxy.
+		let builder = reqwest::Client::builder();
+		let builder = if page.is_some() {
+			builder
+		} else {
+			builder.no_proxy()
+		};
+		let client = builder
 			.user_agent(concat!(
 				"Serein/",
 				env!("CARGO_PKG_VERSION"),
 				" (+https://github.com/ViceVerse-cz/Serein)"
 			))
-			.no_proxy()
 			.no_gzip()
 			.no_brotli()
 			.no_deflate()
@@ -147,6 +157,16 @@ pub(super) fn source_until(
 			.timeout(Duration::from_secs(15))
 			.build()
 			.map_err(|_| INVALID)?;
+		let url = if let Some(page) = page {
+			runtime.block_on(async {
+				tokio::select! { biased;
+					error = interruption(&cancelled, startup.as_ref()) => Err(error),
+					url = social::resolve(page) => url,
+				}
+			})?
+		} else {
+			url
+		};
 		let len = if expected == 0 {
 			let (len, whole) = probe(&client, &url, &cancelled, &runtime, startup.as_ref())?;
 			if let Some(bytes) = whole {

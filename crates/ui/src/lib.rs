@@ -25,6 +25,7 @@ pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
 pub use video::{
 	MediaView, VideoCommand, VideoState, VideoUi, embedded_video_candidates, embedded_video_url,
+	social_video_page,
 };
 mod attachments;
 pub mod external_upload;

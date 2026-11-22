@@ -5,6 +5,8 @@ use serde::Deserialize;
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct EmbedDto {
+	#[serde(skip)]
+	limited: bool,
 	#[serde(rename = "type")]
 	kind: Option<String>,
 	title: Option<String>,
@@ -34,6 +36,7 @@ struct MediaDto {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct AuthorDto {
+	#[serde(deserialize_with = "crate::lossy::null_default")]
 	name: String,
 	url: Option<String>,
 	icon_url: Option<String>,
@@ -42,6 +45,7 @@ struct AuthorDto {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct FooterDto {
+	#[serde(deserialize_with = "crate::lossy::null_default")]
 	text: String,
 	icon_url: Option<String>,
 	proxy_icon_url: Option<String>,
@@ -95,7 +99,7 @@ fn author(a: AuthorDto, limited: &mut bool) -> EmbedAuthor {
 }
 impl EmbedDto {
 	fn into_model(self) -> Embed {
-		let mut limited = false;
+		let mut limited = self.limited;
 		let mut fields = self.fields;
 		limited |= fields.len() > 25;
 		fields.truncate(25);
@@ -167,6 +171,28 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn unreadable_card_does_not_discard_the_history_page_or_expose_its_urls() {
+		let bytes = br#"[{"id":"5","channel_id":"2","author":{"id":"3","username":"A"},"content":"retained","flags":4,"embeds":[{"title":"still valid","provider":{"name":null}},{"video":{"height":"unknown","url":"https://example.invalid/private"}}]},{"id":"4","channel_id":"2","author":{"id":"3","username":"A"}}]"#;
+		let rows = crate::decode::<Vec<crate::MessageDto>>(bytes)
+			.unwrap()
+			.into_iter()
+			.map(crate::MessageDto::into_model)
+			.collect::<Vec<_>>();
+		assert_eq!(rows.len(), 2);
+		assert_eq!(rows[0].content, "retained");
+		assert!(rows[0].embeds_suppressed);
+		assert_eq!(rows[0].embeds[0].title.as_deref(), Some("still valid"));
+		assert!(rows[0].embeds[1].limited && rows[0].embeds[1].video.is_none());
+		assert!(model::valid_embeds(&rows[0].embeds));
+		assert!(
+			crate::decode::<crate::MessageDto>(
+				br#"{"id":{},"channel_id":"2","author":{"id":"3","username":"A"},"embeds":[]}"#
+			)
+			.is_err()
+		);
+	}
+
+	#[test]
 	fn unknown_video_dimensions_keep_the_card_and_signed_source() {
 		let message = crate::decode::<crate::MessageDto>(
 			br#"{
@@ -234,29 +260,21 @@ mod tests {
 pub struct EmbedList(pub Vec<EmbedDto>);
 impl<'de> Deserialize<'de> for EmbedList {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-		struct List;
-		impl<'de> serde::de::Visitor<'de> for List {
-			type Value = EmbedList;
-			fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-				f.write_str("at most ten embeds")
-			}
-			fn visit_seq<A: serde::de::SeqAccess<'de>>(
-				self,
-				mut seq: A,
-			) -> Result<Self::Value, A::Error> {
-				let mut items = Vec::new();
-				while items.len() < model::MAX_EMBEDS {
-					match seq.next_element()? {
-						Some(item) => items.push(item),
-						None => return Ok(EmbedList(items)),
-					}
-				}
-				if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
-					return Err(serde::de::Error::custom("too many embeds"));
-				}
-				Ok(EmbedList(items))
-			}
-		}
-		deserializer.deserialize_seq(List)
+		// A card is optional presentation, not the message envelope. Keep its slot but
+		// discard all of its links/content if its shape cannot be represented.
+		let slots =
+			crate::lossy::Slots::<EmbedDto, { model::MAX_EMBEDS }>::deserialize(deserializer)?;
+		Ok(Self(
+			slots
+				.items
+				.into_iter()
+				.map(|card| {
+					card.unwrap_or_else(|| EmbedDto {
+						limited: true,
+						..Default::default()
+					})
+				})
+				.collect(),
+		))
 	}
 }

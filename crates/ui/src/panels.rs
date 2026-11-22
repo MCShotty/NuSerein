@@ -434,7 +434,8 @@ impl MessagingUi {
 									);
 								}
 								let role_ids = state.display_member_role_ids(channel, member);
-								let role_colors = online
+								// Missing presence is not evidence that guild role assignments were removed.
+								let role_colors = (online || status.is_none())
 									.then(|| {
 										guild.and_then(|guild| {
 											state

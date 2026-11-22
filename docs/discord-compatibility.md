@@ -3654,3 +3654,23 @@ Discord session, account mutation, message, call, microphone or native device ac
 performed for this coverage. The review also examined administration, extension runtime
 and storage paths without demonstrating another fix there. Coverage is limited to the
 examined paths and scenarios. AMF/Nix work tracked in PR #43 is separate.
+
+
+### Signal Desk: channel history, role presentation and social video
+
+An unsupported embed object no longer invalidates the rest of its message or a history page.
+It retains a limited placeholder with no actionable media. The wire-size and card-count limits,
+message identity checks and channel permissions still apply. A stale empty timeline offers an
+explicit reload rather than claiming cached messages are on screen.
+
+Guild role colors are presentation only. If member data is absent on the signed-in user's
+message, the current guild's own member snapshot can supply its roles. Missing sidebar presence
+no longer suppresses known role colors; explicitly offline members keep the muted treatment.
+
+Unofficial, unverified with live providers: for supported Reel and Reddit video pages, explicit
+Play can resolve public Open Graph video metadata or a single Reddit post's `reddit_video`
+fallback file. No account token, cookies, webview, arbitrary player or script is used. A lookup
+is limited to three anonymous requests and 192 KiB of metadata per response, is cancelled with
+the player, and feeds only a validated media origin to the existing bounded range reader.
+Authentication walls, missing media and unsupported streams retain Open original. A Reddit
+fallback file need not contain the separate adaptive audio track.
