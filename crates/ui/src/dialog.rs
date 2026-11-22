@@ -108,7 +108,7 @@ impl Dialog {
 	pub fn show<R>(self, ctx: &egui::Context, add: impl FnOnce(&mut Body<'_>) -> R) -> Response<R> {
 		self.show_inner(ctx, None::<fn(&mut egui::Ui)>, add)
 	}
-	/// Uses the title row for compact search or action controls.
+	/// Places search or action controls in their own row below the title.
 	pub fn show_with_toolbar<R>(
 		self,
 		ctx: &egui::Context,
@@ -416,12 +416,12 @@ pub fn settings_page<R>(
 	id_salt: impl std::hash::Hash + std::fmt::Debug,
 	add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-	let page = egui::Id::unique(&id_salt);
+	let lane = ui.id();
+	settings_signal(ui, lane, egui::Id::unique(&id_salt));
 	egui::ScrollArea::vertical()
 		.id_salt(id_salt)
 		.auto_shrink([false, false])
 		.show(ui, |ui| {
-			page_fade(ui, page);
 			fixed_width(ui, |ui| {
 				let inner = add(ui);
 				ui.add_space(24.0);
@@ -431,30 +431,12 @@ pub fn settings_page<R>(
 		.inner
 }
 
-/// Fades a settings page in when `page` differs from the page shown last frame.
-/// Only one settings layer is visible at a time, so one shared slot is enough; the first
-/// page of a freshly opened layer appears immediately. Follows `animation_time`, so a zero
-/// animation time disables the motion.
-pub fn page_fade(ui: &mut egui::Ui, page: egui::Id) {
-	let ctx = ui.ctx().clone();
-	let now = ctx.input(|input| input.time);
-	let duration = f64::from(ui.style().animation_time) * 1.5;
-	let start = ctx.data_mut(|data| {
-		let slot = data.get_temp_mut_or_insert_with(egui::Id::unique("settings-page-fade"), || {
-			(page, f64::NEG_INFINITY)
-		});
-		if slot.0 != page {
-			*slot = (page, now);
-		}
-		slot.1
-	});
-	if duration <= 0.0 || now - start >= duration {
-		return;
-	}
-	let t = ((now - start) / duration).clamp(0.0, 1.0) as f32;
-	// Opacity only: the layout never moves, so click targets stay put while it settles.
-	ui.multiply_opacity(egui::lerp(0.9..=1.0, egui::emath::easing::cubic_out(t)));
-	ctx.request_repaint();
+/// Fixed gap before the settings content. Only the accent line moves; form text,
+/// focus rings and mounted controls paint at full strength from the first frame.
+pub fn settings_signal(ui: &mut egui::Ui, lane: egui::Id, page: egui::Id) {
+	let (rect, _) =
+		ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
+	design::destination_signal(ui, lane, page, rect.translate(egui::vec2(0.0, -2.0)));
 }
 
 /// Destructive entry at the bottom of a settings sidebar, such as "Delete Server".
@@ -532,50 +514,10 @@ fn toolbar_header(
 	dismissable: bool,
 	toolbar: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-	let title = crate::i18n::translate_if_key(title);
-	let colors = design::palette(ui);
-	let mut close = false;
+	let close = header(ui, title, None, tone, icon, dismissable);
 	egui::Frame::new()
-		.inner_margin(egui::Margin {
-			left: PAD as i8,
-			right: PAD as i8 - 4,
-			top: PAD as i8,
-			bottom: 4,
-		})
-		.show(ui, |ui| {
-			ui.set_width(ui.available_width());
-			let width = ui.available_width();
-			ui.allocate_ui_with_layout(
-				egui::vec2(width, 38.0),
-				egui::Layout::left_to_right(egui::Align::Center),
-				|ui| {
-					header_icon(ui, tone, icon, &colors);
-					ui.add(
-						egui::Label::new(
-							design::semibold(ui, title, 21.0).color(colors.text_strong),
-						)
-						.wrap_mode(egui::TextWrapMode::Extend),
-					);
-					ui.separator();
-					let toolbar_width =
-						(ui.available_width() - if dismissable { 38.0 } else { 0.0 }).max(80.0);
-					ui.allocate_ui_with_layout(
-						egui::vec2(toolbar_width, 38.0),
-						egui::Layout::left_to_right(egui::Align::Center),
-						toolbar,
-					);
-					if dismissable {
-						close = icons::button(
-							ui,
-							icons::Icon::Close,
-							30.0,
-							&crate::i18n::translate("dialog-header-close-dialog-esc"),
-						)
-						.clicked();
-					}
-				},
-			);
-		});
+		.inner_margin(egui::Margin::symmetric(PAD as i8, 0))
+		.show(ui, toolbar);
 	ui.add_space(8.0);
 	close
 }
@@ -624,26 +566,24 @@ fn header(
 			ui.set_width(ui.available_width());
 			ui.horizontal_top(|ui| {
 				header_icon(ui, tone, icon, &colors);
-				let text_width = (ui.available_width() - 34.0).max(1.0);
+				let close_width = if dismissable {
+					30.0 + ui.spacing().item_spacing.x
+				} else {
+					0.0
+				};
+				let text_width = (ui.available_width() - close_width).max(1.0);
 				ui.allocate_ui_with_layout(
 					egui::vec2(text_width, 0.0),
 					egui::Layout::top_down(egui::Align::Min),
 					|ui| {
 						ui.set_width(text_width);
-						ui.spacing_mut().item_spacing.y = 3.0;
+						ui.spacing_mut().item_spacing.y = design::HEADING_GAP;
 						ui.add(
-							egui::Label::new(
-								design::semibold(ui, title, 21.0).color(colors.text_strong),
-							)
-							.wrap(),
+							egui::Label::new(design::page_heading(ui, title, text_width < 360.0))
+								.wrap(),
 						);
 						if let Some(subtitle) = subtitle {
-							ui.add(
-								egui::Label::new(
-									RichText::new(subtitle).size(13.0).color(colors.muted),
-								)
-								.wrap(),
-							);
+							ui.add(egui::Label::new(design::supporting_text(ui, subtitle)).wrap());
 						}
 					},
 				);
@@ -813,6 +753,46 @@ fn enter_after_shown_frame(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn long_toolbar_title_leaves_room_for_filter_below() {
+		let ctx = egui::Context::default();
+		let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 440.0));
+		let mut filter = String::new();
+		let mut field = egui::Rect::NOTHING;
+		let mut content = egui::Rect::NOTHING;
+		for _ in 0..3 {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(screen),
+					focused: true,
+					..Default::default()
+				},
+				|_| {
+					Dialog::new(
+						"toolbar-layout",
+						"Bereits archivierte Unterhaltungen durchsuchen",
+					)
+					.icon(icons::Icon::Thread)
+					.show_with_toolbar(
+						&ctx,
+						|body| body.content(|ui| content = ui.label("Results").rect),
+						|ui| field = input(ui, egui::TextEdit::singleline(&mut filter)).rect,
+					);
+				},
+			)
+			.drop_without_applying_deltas();
+		}
+		let modal = ctx
+			.memory(|m| m.area_rect(egui::Id::unique("toolbar-layout")))
+			.unwrap();
+		assert!(
+			modal.width() <= screen.width(),
+			"dialog must not expand to fit its title"
+		);
+		assert!(modal.contains_rect(field) && field.width() >= 180.0);
+		assert!(field.bottom() < content.top());
+	}
 
 	#[test]
 	fn dialog_and_settings_shell_fit_small_viewports() {

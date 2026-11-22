@@ -1025,6 +1025,28 @@ pub fn semibold(ui: &egui::Ui, text: impl Into<String>, size: f32) -> RichText {
 pub fn medium(ui: &egui::Ui, text: impl Into<String>, size: f32) -> RichText {
 	RichText::new(text).font(FontId::new(size, medium_family(ui.ctx())))
 }
+/// Regular detail and metadata stay quieter than the destination title or body.
+pub(crate) const METADATA_SIZE: f32 = 12.0;
+pub(crate) const WORKSPACE_TITLE_SIZE: f32 = 18.0;
+pub(crate) const WORKSPACE_INSET: i8 = 16;
+pub(crate) const SETTINGS_CONTENT_WIDTH: f32 = 720.0;
+pub(crate) const HEADING_GAP: f32 = 4.0;
+
+/// Primary titles in fixed-height navigation and call chrome.
+pub(crate) fn workspace_title(ui: &egui::Ui, text: impl Into<String>) -> RichText {
+	semibold(ui, text, WORKSPACE_TITLE_SIZE).color(palette(ui).text_strong)
+}
+
+/// Headings for pages, dialogs and the sign-in surface. The compact role leaves
+/// space for the close control and long localized text without shrinking body copy.
+pub fn page_heading(ui: &egui::Ui, text: impl Into<String>, compact: bool) -> RichText {
+	semibold(ui, text, if compact { 20.0 } else { 24.0 }).color(palette(ui).text_strong)
+}
+
+pub fn supporting_text(ui: &egui::Ui, text: impl Into<String>) -> RichText {
+	RichText::new(text).size(14.0).color(palette(ui).muted)
+}
+
 /// Emoji-only messages: Discord paints their artwork at about three times the body size.
 /// Scaling the body style grows every inline emoji slot with it, text included.
 pub(crate) fn jumbo_emoji(ui: &mut egui::Ui) {
@@ -2484,8 +2506,8 @@ pub fn divider(ui: &mut egui::Ui) {
 /// Heading at the top of a settings page, matching the server and channel settings pages.
 pub fn page_title(ui: &mut egui::Ui, title: &str) {
 	let title = crate::i18n::translate_if_key(title);
-	let p = palette(ui);
-	ui.add(egui::Label::new(semibold(ui, title, 22.0).color(p.text_strong)).wrap());
+	let compact = ui.available_width() < 360.0;
+	ui.add(egui::Label::new(page_heading(ui, title, compact)).wrap());
 	ui.add_space(12.0);
 }
 
@@ -2499,7 +2521,6 @@ pub fn page_header(
 ) {
 	let title = crate::i18n::translate_if_key(title);
 	let subtitle = subtitle.map(crate::i18n::translate_if_key);
-	let p = palette(ui);
 	// Actions take only their natural width from the right; with none, the title and
 	// subtitle get the whole row.
 	ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -2511,12 +2532,10 @@ pub fn page_header(
 			egui::Layout::top_down(egui::Align::Min),
 			|ui| {
 				ui.set_width(width);
-				ui.spacing_mut().item_spacing.y = 4.0;
-				ui.add(egui::Label::new(semibold(ui, title, 22.0).color(p.text_strong)).wrap());
+				ui.spacing_mut().item_spacing.y = HEADING_GAP;
+				ui.add(egui::Label::new(page_heading(ui, title, width < 360.0)).wrap());
 				if let Some(subtitle) = subtitle {
-					ui.add(
-						egui::Label::new(RichText::new(subtitle).size(14.0).color(p.muted)).wrap(),
-					);
+					ui.add(egui::Label::new(supporting_text(ui, subtitle)).wrap());
 				}
 			},
 		);
@@ -3312,6 +3331,8 @@ mod signal_desk_tests {
 	#[test]
 	fn destination_change_is_bounded_and_reduced_motion_is_static() {
 		let ctx = egui::Context::default();
+		let lane = std::cell::Cell::new("header");
+		let width = std::cell::Cell::new(180.0);
 		let draw = |time, destination, focused| {
 			let input = egui::RawInput {
 				time: Some(time),
@@ -3319,10 +3340,11 @@ mod signal_desk_tests {
 				..Default::default()
 			};
 			let output = ctx.run_ui(input, |ui| {
-				let rect = egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(180.0, 30.0));
+				let rect =
+					egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(width.get(), 30.0));
 				destination_signal(
 					ui,
-					egui::Id::unique("header"),
+					egui::Id::unique(lane.get()),
 					egui::Id::unique(destination),
 					rect,
 				);
@@ -3359,6 +3381,23 @@ mod signal_desk_tests {
 		set_reduced_motion(&ctx, false);
 		assert_eq!(draw(3.0, 5, true), 128.0);
 		assert_eq!(draw(3.2, 5, true), 24.0);
+
+		lane.set("settings");
+		assert_eq!(draw(3.3, 6, true), 24.0, "a different lane starts settled");
+		lane.set("header");
+		assert_eq!(
+			draw(3.4, 5, true),
+			24.0,
+			"another lane cannot restart the header"
+		);
+		lane.set("settings");
+		assert_eq!(draw(3.5, 7, true), 24.0, "a returning lane does not flash");
+		width.set(56.0);
+		assert_eq!(
+			draw(3.6, 8, true),
+			56.0,
+			"motion stays within the available width"
+		);
 	}
 }
 

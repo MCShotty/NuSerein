@@ -215,45 +215,66 @@ impl ArchivesUi {
 				});
 			},
 			|ui| {
-				let create_width = 88.0;
-				let field_width = (ui.available_width() - create_width - 12.0).max(80.0);
-				let field = ui
-					.allocate_ui_with_layout(
-						egui::vec2(field_width, 38.0),
-						egui::Layout::left_to_right(egui::Align::Center),
-						|ui| {
-							crate::dialog::input(
-								ui,
-								egui::TextEdit::singleline(&mut self.filter)
-									.align(egui::Align2::LEFT_CENTER)
-									.char_limit(100)
-									.hint_text(crate::i18n::translate(
-										"archives-show-search-for-thread-name",
-									)),
-							)
-						},
+				let available = ui.available_width();
+				let create_label = crate::i18n::translate("archives-show-create");
+				let label_width = ui
+					.painter()
+					.layout_no_wrap(
+						create_label,
+						egui::FontId::new(14.0, crate::design::medium_family(ui.ctx())),
+						egui::Color32::WHITE,
 					)
-					.inner;
-				self.filter.shrink_to_fit();
-				ui.add_space(12.0);
-				ui.add_enabled_ui(can_create && !action_pending, |ui| {
-					create = crate::dialog::action(
-						ui,
-						"archives-show-create",
-						crate::dialog::Action::Primary,
-					)
-					.on_disabled_hover_text(crate::i18n::translate(
-						"archives-show-you-cannot-start-a-thread-in-this-channel",
-					))
-					.clicked();
+					.size()
+					.x;
+				let shared_width = available - (label_width + 32.0).max(92.0) - 8.0;
+				// Long translated labels can move below the full-width field. Keep the
+				// same child ID and focus order in both arrangements.
+				let stacked = shared_width < 120.0;
+				let layout = if stacked {
+					egui::Layout::top_down(egui::Align::Min)
+				} else {
+					egui::Layout::left_to_right(egui::Align::Center)
+				};
+				let field_width = if stacked { available } else { shared_width };
+				ui.with_layout(layout, |ui| {
+					ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+					let field = ui
+						.allocate_ui_with_layout(
+							egui::vec2(field_width, crate::design::BUTTON_HEIGHT),
+							egui::Layout::left_to_right(egui::Align::Center),
+							|ui| {
+								crate::dialog::input(
+									ui,
+									egui::TextEdit::singleline(&mut self.filter)
+										.align(egui::Align2::LEFT_CENTER)
+										.char_limit(100)
+										.hint_text(crate::i18n::translate(
+											"archives-show-search-for-thread-name",
+										)),
+								)
+							},
+						)
+						.inner;
+					self.filter.shrink_to_fit();
+					ui.add_enabled_ui(can_create && !action_pending, |ui| {
+						create = crate::dialog::action(
+							ui,
+							"archives-show-create",
+							crate::dialog::Action::Primary,
+						)
+						.on_disabled_hover_text(crate::i18n::translate(
+							"archives-show-you-cannot-start-a-thread-in-this-channel",
+						))
+						.clicked();
+					});
+					if field.changed() {
+						ui.ctx().request_repaint();
+					}
+					if self.focus {
+						field.request_focus();
+						self.focus = false;
+					}
 				});
-				if field.changed() {
-					ui.ctx().request_repaint();
-				}
-				if self.focus {
-					field.request_focus();
-					self.focus = false;
-				}
 			},
 		);
 		if create {

@@ -1174,8 +1174,10 @@ impl Editor {
 				// Pages that virtualize their own list own the only vertical scrollbar;
 				// wrapping them again would nest two scroll areas over one list.
 				dialog::ShellRegion::Body if self.scrolling_page() => {
-					dialog::page_fade(
+					let lane = ui.id();
+					dialog::settings_signal(
 						ui,
+						lane,
 						egui::Id::unique(("server-settings-content", self.page as u8)),
 					);
 					dialog::fixed_width(ui, |ui| {
