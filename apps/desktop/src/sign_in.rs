@@ -773,31 +773,22 @@ impl Desktop {
 			);
 			ui::icons::paint_brand(ui.painter(), plate.shrink(10.0));
 			ui.add_space(8.0);
-			ui.label(
-				ui::design::semibold(
-					ui,
-					ui::i18n::translate_if_key(if returning {
-						"main-sign-in-header-welcome-back"
-					} else {
-						"main-sign-in-header-welcome-to-serein"
-					}),
-					22.0,
-				)
-				.color(p.text_strong),
-			);
-			ui.add_space(5.0);
-			ui.add(
-				egui::Label::new(
-					egui::RichText::new(ui::i18n::translate_if_key(if returning {
-						"main-sign-in-header-continue-with-a-saved-account-or-sign-in-with-another"
-					} else {
-						"main-sign-in-header-sign-in-with-your-discord-account-to-get-started"
-					}))
-					.size(14.0)
-					.color(p.muted),
-				)
-				.wrap(),
-			);
+			ui.scope(|ui| {
+				ui.spacing_mut().item_spacing.y = 4.0;
+				let title = ui::i18n::translate_if_key(if returning {
+					"main-sign-in-header-welcome-back"
+				} else {
+					"main-sign-in-header-welcome-to-serein"
+				});
+				let detail = ui::i18n::translate_if_key(if returning {
+					"main-sign-in-header-continue-with-a-saved-account-or-sign-in-with-another"
+				} else {
+					"main-sign-in-header-sign-in-with-your-discord-account-to-get-started"
+				});
+				let compact = ui.available_width() < 360.0;
+				ui.add(egui::Label::new(ui::design::page_heading(ui, title, compact)).wrap());
+				ui.add(egui::Label::new(ui::design::supporting_text(ui, detail)).wrap());
+			});
 		});
 	}
 	/// Accounts already signed in on this device: one tap restores their saved login.

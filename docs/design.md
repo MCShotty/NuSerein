@@ -77,11 +77,12 @@ actions. Selected rows use a full outline and tint; keyboard focus has a separat
 outline. Unread, mention, warning, and call states keep their own labels, icons, or badges.
 Sign-in, Friends, conversations, settings, dialogs, and the dark call stage share this hierarchy.
 
-Switching conversations briefly extends the accent line under the destination header, then settles
-it at the same width every time. Only paint changes: focus, text, media, and the timeline stay put.
-There is no entry animation on first paint, and the transition stops on focus loss. Accessibility →
-Motion and scrolling → Reduce interface motion uses the settled treatment and skips chrome fades.
-This is a device setting, independent of artwork playback and scrolling.
+Switching conversations, Friends tabs, or settings pages briefly extends the accent line at the
+edge of the destination header, then settles to 24 points in 160 ms. Settings no longer dim their
+contents on page changes. Only paint changes during the handoff: focus, text, media, and the
+layout stay put. The first visible frame is settled, and the motion stops on focus loss.
+Accessibility → Motion and scrolling → Reduce interface motion uses the settled treatment and
+skips chrome fades. This device setting is independent of artwork playback and scrolling.
 
 ## Theme tokens and presets
 
@@ -133,7 +134,12 @@ Inter (Regular, Medium, SemiBold; SIL OFL 1.1) leads proportional text; egui's d
 the bundled Noto CJK/Arabic fallbacks follow in every family. egui has no synthetic bold, so
 `design::semibold`/`design::medium` select the heavier families for author names, headings,
 unread/selected channel names and 12px eyebrows. Category names retain their original case;
-read channel names use the regular face. Body is 15px, small 12px. Until `fonts::install`
+read channel names use the regular face. Body stays at 15 points, with 12-point metadata and
+14-point supporting copy. Workspace headers use 18-point SemiBold; page and dialog titles use
+24 points or 20 when compact. Keep descriptions close to their titles, with a larger gap before
+controls. Thread search sits below the dialog heading so a long title cannot crowd out the filter
+or Close; the Create action stacks below the filter when they do not fit side by side.
+Until `fonts::install`
 marks a context, the weight families resolve to the default face so headless tests never
 reference an unknown family.
 

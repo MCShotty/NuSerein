@@ -1053,12 +1053,12 @@ impl MessagingUi {
 					} else {
 						egui::Color32::TRANSPARENT
 					})
-					.inner_margin(egui::Margin::symmetric(16, 0)),
+					.inner_margin(egui::Margin::symmetric(design::WORKSPACE_INSET, 0)),
 			)
 			.show(ui, |ui| {
 				let rect = ui.max_rect();
 				ui.painter().hline(
-					rect.x_range().expand(16.0),
+					rect.x_range().expand(f32::from(design::WORKSPACE_INSET)),
 					rect.bottom(),
 					egui::Stroke::new(1.0, colors.border),
 				);
@@ -1354,7 +1354,10 @@ impl MessagingUi {
 						.painter()
 						.layout_no_wrap(
 							name.to_owned(),
-							egui::FontId::new(16.0, design::semibold_family(ui.ctx())),
+							egui::FontId::new(
+								design::WORKSPACE_TITLE_SIZE,
+								design::semibold_family(ui.ctx()),
+							),
 							colors.text_strong,
 						)
 						.size()
@@ -1364,7 +1367,7 @@ impl MessagingUi {
 							.painter()
 							.layout_no_wrap(
 								text.clone(),
-								egui::FontId::proportional(12.0),
+								egui::FontId::proportional(design::METADATA_SIZE),
 								colors.muted,
 							)
 							.size()
@@ -1384,11 +1387,9 @@ impl MessagingUi {
 						// Keep the status row at its text height so the measured centring holds.
 						ui.spacing_mut().interact_size.y = 0.0;
 						ui.add(
-							egui::Label::new(
-								design::semibold(ui, name, 16.0).color(colors.text_strong),
-							)
-							.truncate(),
-						);
+							egui::Label::new(design::workspace_title(ui, name.as_str())).truncate(),
+						)
+						.on_hover_text(name);
 						{
 							if subtitle.is_some() || in_voice {
 								ui.horizontal(|ui| {
@@ -1397,7 +1398,9 @@ impl MessagingUi {
 									if let Some(text) = subtitle {
 										ui.add(
 											egui::Label::new(
-												RichText::new(&text).size(12.0).color(colors.muted),
+												RichText::new(&text)
+													.size(design::METADATA_SIZE)
+													.color(colors.muted),
 											)
 											.truncate(),
 										)

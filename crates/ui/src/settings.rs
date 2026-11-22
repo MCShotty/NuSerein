@@ -1325,7 +1325,7 @@ impl MessagingUi {
 				egui::CentralPanel::default()
 					.frame(egui::Frame::new().inner_margin(egui::Margin {
 						left: if wide {
-							40
+							32
 						} else if compact {
 							8
 						} else {
@@ -1373,7 +1373,15 @@ impl MessagingUi {
 								self.settings_page_picker(ui);
 							}
 						}
-						ui.add_space(if compact { 4.0 } else { 16.0 });
+						ui.add_space(if compact { 0.0 } else { 8.0 });
+						crate::dialog::settings_signal(
+							ui,
+							egui::Id::unique("user-settings-page"),
+							egui::Id::unique((
+								self.settings.page as u8,
+								self.extensions.theme_editor_tab_key(),
+							)),
+						);
 						if self.settings.page == Page::Themes && self.extensions.editing_theme() {
 							self.extensions.theme_editor_toolbar(ui);
 							ui.add_space(12.0);
@@ -1393,19 +1401,15 @@ impl MessagingUi {
 							.auto_shrink([false, false])
 							.show(ui, |ui| {
 								crate::scroll::claim_wheel_content(ui);
-								crate::dialog::page_fade(
-									ui,
-									egui::Id::unique((
-										"settings-content",
-										self.settings.page as u8,
-									)),
-								);
 								let scroll_padding = if self.settings.page == Page::Profile {
 									8.0
 								} else {
 									0.0
 								};
-								ui.set_width((ui.available_width() - scroll_padding).min(720.0));
+								ui.set_width(
+									(ui.available_width() - scroll_padding)
+										.min(design::SETTINGS_CONTENT_WIDTH),
+								);
 								ui.spacing_mut().item_spacing.y = 12.0;
 								let jump = self
 									.settings
@@ -1568,7 +1572,6 @@ impl MessagingUi {
 				crate::scroll::claim_wheel_content(ui);
 				ui.spacing_mut().item_spacing.y = 2.0;
 				self.settings_search(ui);
-				ui.add_space(12.0);
 				for (heading, pages) in Page::SECTIONS {
 					let visible: Vec<Page> = pages
 						.iter()
@@ -1578,7 +1581,7 @@ impl MessagingUi {
 					if visible.is_empty() {
 						continue;
 					}
-					ui.add_space(6.0);
+					ui.add_space(12.0);
 					ui.add(egui::Label::new(design::eyebrow(
 						ui,
 						language.text(heading),
@@ -2770,7 +2773,6 @@ fn page_header(
 	description: &str,
 	compact: bool,
 ) -> egui::Response {
-	let colors = design::palette(ui);
 	ui.horizontal_top(|ui| {
 		let text_width = (ui.available_width() - 40.0 - ui.spacing().item_spacing.x).max(1.0);
 		ui.allocate_ui_with_layout(
@@ -2778,23 +2780,20 @@ fn page_header(
 			egui::Layout::top_down(egui::Align::Min),
 			|ui| {
 				ui.set_width(text_width);
-				ui.spacing_mut().item_spacing.y = 2.0;
-				let title = egui::Label::new(
-					design::semibold(ui, heading, if compact { 20.0 } else { 24.0 })
-						.color(colors.text_strong),
-				);
+				ui.spacing_mut().item_spacing.y = design::HEADING_GAP;
+				let title = egui::Label::new(design::page_heading(ui, heading, compact));
 				let title = ui.add(if compact {
 					title.truncate()
 				} else {
 					title.wrap()
 				});
 				if compact {
-					title.on_hover_text(description);
+					title.on_hover_ui(|ui| {
+						ui.strong(heading);
+						ui.label(description);
+					});
 				} else {
-					ui.add(
-						egui::Label::new(RichText::new(description).size(13.0).color(colors.muted))
-							.wrap(),
-					);
+					ui.add(egui::Label::new(design::supporting_text(ui, description)).wrap());
 				}
 			},
 		);
