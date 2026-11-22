@@ -256,7 +256,7 @@ pub fn wall_time(value: &str) -> Vec<time::OffsetDateTime> {
 		return Vec::new();
 	};
 	let zone = display_zone();
-	let ambiguous = zone.to_ambiguous_zoned(civil);
+	let ambiguous = zone.to_ambiguous_zoned_datetime(civil);
 	let mut result = Vec::with_capacity(2);
 	for resolved in [ambiguous.clone().earlier(), ambiguous.later()]
 		.into_iter()
@@ -288,7 +288,7 @@ pub(crate) fn next_midnight(instant: time::OffsetDateTime) -> Option<time::Offse
 	)
 	.ok()?
 	.at(0, 0, 0, 0);
-	let zoned = zone.to_ambiguous_zoned(civil).compatible().ok()?;
+	let zoned = zone.to_ambiguous_zoned_datetime(civil).compatible().ok()?;
 	let utc =
 		time::OffsetDateTime::from_unix_timestamp_nanos(zoned.timestamp().as_nanosecond()).ok()?;
 	(utc > instant).then(|| convert(&zone, utc))

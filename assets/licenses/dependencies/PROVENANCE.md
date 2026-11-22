@@ -24,6 +24,8 @@ registry package. Existing direct-component notices are reused where their prove
 not complete license grants by themselves. Their presence must not close a missing-text
 check. Older `objc2-*-LICENSE.txt` files contain the upstream MIT text.
 
+The November 2026 refresh uses objc2 0.5.3: its [upstream LICENSE.txt](https://raw.githubusercontent.com/madsmtm/objc2/5237cbf081d04ef75a1f6a207b4018e7c1ae7438/LICENSE.txt) matches the existing `objc2-4fc083f1-LICENSE.txt` byte-for-byte. RealFFT 3.5.1 now supplies the full MIT text. `realfft-3.5.1-LICENSE` is copied from its checksummed crate, SHA-256 `080766c57f9e48f00218f4e43c7d671d4b6ffee85a39417b5ab3c916dfe29b0d` (license file). The earlier 3.5.0 declaration and archive below are historical, not evidence for the updated dependency.
+
 ## Payloads
 
 | File | Component(s) | Exact source | SHA-256 |
@@ -35,7 +37,7 @@ check. Older `objc2-*-LICENSE.txt` files contain the upstream MIT text.
 | `egui-fonts-UFL.txt` | epaint_default_fonts 0.36.2 | [upstream](https://github.com/emilk/egui/blob/4821fc54ae083ac516e137a61e70550330e55169/crates/epaint_default_fonts/fonts/UFL.txt) | `2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002` |
 | `egui-fonts-emoji-icon-font-mit-license.txt` | epaint_default_fonts 0.36.2 | [upstream](https://github.com/emilk/egui/blob/4821fc54ae083ac516e137a61e70550330e55169/crates/epaint_default_fonts/fonts/emoji-icon-font-mit-license.txt) | `b9d2c1d909aa149996fd4c91dcb92b2362a04431640c1d200959da94caf8cde1` |
 | `egui-fonts-egui-icons.txt` | epaint_default_fonts 0.36.2 | [upstream](https://github.com/emilk/egui/blob/4821fc54ae083ac516e137a61e70550330e55169/crates/epaint_default_fonts/fonts/egui-icons.txt) | `36dbbfd79d73974f864116879c17dd11559e1340277385f1ac52d8d29a5f5c79` |
-| `aws-lc-fiat-LICENSE` | aws-lc-sys 0.45.0 | [upstream](https://docs.rs/crate/aws-lc-sys/0.45.0/source/aws-lc/third_party/fiat/LICENSE) | `43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061` |
+| `aws-lc-fiat-LICENSE` | aws-lc-sys 0.47.0 | [upstream](https://docs.rs/crate/aws-lc-sys/0.47.0/source/aws-lc/third_party/fiat/LICENSE) | `43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061` |
 | `option-ext-0.2.0.crate` | option-ext 0.2.0 | [upstream](https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate) | `04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d` |
 | `hpke-rs-crypto-0.6.1.crate` | hpke-rs-crypto 0.6.1 | [upstream](https://static.crates.io/crates/hpke-rs-crypto/hpke-rs-crypto-0.6.1.crate) | `0a73a99d9008010d73289f41335a3f6e14fb8c04eaf60e9111b450463b1bbc7f` |
 | `hpke-rs-rust-crypto-0.6.1.crate` | hpke-rs-rust-crypto 0.6.1 | [upstream](https://static.crates.io/crates/hpke-rs-rust-crypto/hpke-rs-rust-crypto-0.6.1.crate) | `14b28be6cba9081c7feda2651d51c2a900029798e78b4c1e093e792f4571a870` |

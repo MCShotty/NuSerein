@@ -1,10 +1,10 @@
 # Third-party notices
 
-Display timezone conversion uses **Jiff 0.2.38**, **jiff-core 0.1.1** and the
-bundled **jiff-tzdb 0.1.9** IANA database (Unlicense OR MIT), using the MIT option.
+Display timezone conversion uses **Jiff 1.0.1**, **jiff-core 1.0.1** and the
+bundled **jiff-tzdb 1.0.0** IANA database (Unlicense OR MIT), using the MIT option.
 System timezone identification uses **iana-time-zone 0.1.65** (MIT OR Apache-2.0),
 also using MIT. Unmodified license texts, exact source/archive hashes and the
-IANA **2026e** data provenance are retained under `assets/licenses/files` in
+IANA **2026f** data provenance are retained under `assets/licenses/files` in
 `timezone-PROVENANCE.md` and ship through the existing license-copy step.
 
 Discord Lottie sticker previews use **rasterlottie 0.2.2** (MIT OR Apache-2.0)
@@ -13,13 +13,13 @@ license is retained in `assets/licenses/files/rasterlottie-0.2.2-LICENSE-MIT`.
 The pure-Rust renderer reuses the existing serde stack and adds tiny-skia 0.12.0;
 exact archive checksums are recorded in `Cargo.lock`.
 
-AppImage delta updates use **md4 0.10.2** (MIT OR Apache-2.0) for legacy zsync
+AppImage delta updates use **md4 0.11.0** (MIT OR Apache-2.0) for legacy zsync
 block matching only; SHA-256 remains the final update integrity check. The
 unmodified upstream MIT license is bundled at
-`assets/licenses/files/md4-0.10.2-LICENSE-MIT`; `Cargo.lock` records the registry
-archive checksum. Source: https://crates.io/crates/md4/0.10.2 (RustCrypto/hashes).
+`assets/licenses/files/md4-0.11.0-LICENSE-MIT`; `Cargo.lock` records the registry
+archive checksum. Source: https://crates.io/crates/md4/0.11.0 (RustCrypto/hashes).
 
-Linux tray integration uses **ksni 0.3.6** (Unlicense), reusing zbus, Tokio and image.
+Linux tray integration uses **ksni 0.3.7** (Unlicense), reusing zbus, Tokio and image.
 The unmodified license is retained in `assets/licenses/files/ksni-0.3.6-UNLICENSE`;
 `Cargo.lock` records the archive checksum.
 
@@ -140,7 +140,7 @@ System frameworks and runtimes (Metal, WebKit/WKWebView, WebView2, GTK/WebKitGTK
 
 The notification sound pack embeds original audio assets belonging to **Discord, Inc.** These assets are not covered by this repository's MIT/Apache licenses. Sources, hashes and the outstanding redistribution-permission review are documented in [assets/sounds/README.md](assets/sounds/README.md), packaged as `licenses/notification-sounds.md`. A public asset URL does not establish redistribution permission; this must be resolved before distributing builds containing these sounds.
 
-The standard build additionally uses **Davey 0.1.4** (MIT, Snazzah; [upstream commit a1e2e741](https://github.com/Snazzah/davey/tree/a1e2e741bea06bc3b7167a5c3792844b8975993c)), **OpenMLS 0.8.1** (MIT, OpenMLS Authors; [upstream commit 47dbedec](https://github.com/openmls/openmls/tree/47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6)), **CPAL 0.18.2** (Apache-2.0), **opus2 0.4.0** (MIT OR Apache-2.0), **rtrb 0.4.0** (MIT OR Apache-2.0), and **chacha20poly1305 0.10.1** (Apache-2.0 OR MIT). Davey implements DAVE with OpenMLS; this build does not link Discord's C++ libdave. The local `vendor/davey` manifest patch removes OpenMLS browser-only timer features from this native build; all Davey Rust sources are unchanged. Exact provenance and the MIT license are retained there. Its DAVE and transport cryptography dependencies retain their own licenses and are not covered merely by naming these direct components.
+The standard build additionally uses **Davey 0.1.4** (MIT, Snazzah; [upstream commit a1e2e741](https://github.com/Snazzah/davey/tree/a1e2e741bea06bc3b7167a5c3792844b8975993c)), **OpenMLS 0.8.1** (MIT, OpenMLS Authors; [upstream commit 47dbedec](https://github.com/openmls/openmls/tree/47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6)), **CPAL 0.18.2** (Apache-2.0), **opus2 0.4.0** (MIT OR Apache-2.0), **rtrb 0.4.1** (MIT OR Apache-2.0), and **chacha20poly1305 0.10.1** (Apache-2.0 OR MIT). Davey implements DAVE with OpenMLS; this build does not link Discord's C++ libdave. The local `vendor/davey` manifest patch removes OpenMLS browser-only timer features from this native build; all Davey Rust sources are unchanged. Exact provenance and the MIT license are retained there. Its DAVE and transport cryptography dependencies retain their own licenses and are not covered merely by naming these direct components.
 
 The voice build statically links the bundled Opus source from **libopus_sys 0.3.3**. Binding notices include its current MIT license and preserved earlier ISC license. The codec's unmodified `COPYING` and `LICENSE_PLEASE_READ.txt` retain its contributor copyrights, BSD-style redistribution conditions and references to IETF patent statements. These notices are distinct from the binding license; no independent patent or licensing conclusion is claimed.
 
@@ -200,12 +200,12 @@ Optional microphone noise suppression uses **nnnoiseless 0.5.2**, a Rust port of
 Xiph RNNoise, with the built-in model (BSD-3-Clause). Its original COPYING is
 `assets/licenses/voice/nnnoiseless-COPYING.txt`. Default crate features are disabled.
 New support crates are easyfft 0.4.2, anymap3 1.1.0, array-init 2.1.0,
-generic_singleton 0.5.3, primal-check 0.3.4, realfft 3.5.0, rustfft 6.4.1,
+generic_singleton 0.5.3, primal-check 0.3.4, realfft 3.5.1, rustfft 6.4.1,
 strength_reduce 0.2.4 and transpose 0.2.3. Their license declarations and retained
 texts/notices are recorded in docs/dependency-versions.md and
 assets/licenses/voice/PROVENANCE.md and staged by the existing voice packager.
 
-Native screen capture uses **screencapturekit 10.0.3** (MIT OR Apache-2.0) on macOS and **windows-capture 2.0.1** (MIT) on Windows. Incoming software decoding uses **openh264 / openh264-sys2 0.9.8** (BSD-2-Clause). Media reuses **image 0.25.10** (MIT OR Apache-2.0) for bounded scaling. Native frameworks are supplied by the OS. Voice and video ship in the standard build. Unmodified available license texts and source provenance are retained in `assets/licenses/voice/PROVENANCE.md`; the noted missing binding license text and existing full per-artifact redistribution review remain outstanding.
+Native screen capture uses **screencapturekit 10.0.3** (MIT OR Apache-2.0) on macOS and **windows-capture 2.0.1** (MIT) on Windows. Incoming software decoding uses **openh264 / openh264-sys2 0.9.10** (BSD-2-Clause). Media reuses **image 0.25.10** (MIT OR Apache-2.0) for bounded scaling. Native frameworks are supplied by the OS. Voice and video ship in the standard build. Unmodified available license texts and source provenance are retained in `assets/licenses/voice/PROVENANCE.md`; the noted missing binding license text and existing full per-artifact redistribution review remain outstanding.
 
 Experimental camera/screen encoding, incoming video and supported attachments
 share **FFmpeg 7.1.5** libavcodec/libavutil/libavformat/libavfilter/libswscale/libswresample,
@@ -256,9 +256,9 @@ retained as `ffmpeg-source/serein-openh264.patch` beside the original source
 subset; the supplied build recipe applies them automatically. The Cisco license
 text remains unchanged.
 
-Stable H.264 encoding and the existing diagnostic helpers retain **openh264 0.9.8** and
-**openh264-sys2 0.9.8** (BSD-2-Clause, Ralf Biedert), built locally with the
-`source` feature. The sys crate bundles **Cisco OpenH264 2.6.0**, as identified
+Stable H.264 encoding and the existing diagnostic helpers retain **openh264 0.9.10** and
+**openh264-sys2 0.9.10** (BSD-2-Clause, Ralf Biedert), built locally with the
+`source` feature. The sys crate bundles **Cisco OpenH264 2.7.0**, as identified
 by `upstream/codec/api/wels/codec_ver.h`; its BSD-2-Clause notice is reproduced
 below verbatim from that registry archive's `upstream/LICENSE`. The Rust
 wrapper manifests and README declare BSD-2-Clause, but their published archives
@@ -277,7 +277,7 @@ Camera and codec dependencies ship on supported platforms in the standard build.
 exact per-artifact license collection remains subject to the existing packaging
 gate described above; no camera package was produced by this local change.
 
-Cisco OpenH264 2.6.0 notice:
+Cisco OpenH264 notice:
 
 ```text
 Copyright (c) 2013, Cisco Systems
@@ -313,8 +313,8 @@ Wasmparser 0.228.0 is used under its MIT option; its upstream license at
 `e66235859a6ec0502bf6f9dcc358953eda4cafcc` is bundled alongside it.
 New transitive foldhash 0.1.5, hashbrown 0.15.5, spin 0.9.9 and
 string-interner 0.19.0 license texts are copied from their registry packages.
-Test-only WAT/WAST/wasm-encoder/wasmparser 0.245.1 use the wasm-tools MIT
-license at `76927bf4bdbddf4b15f835c5eddfffbdfe3bdbd5` (`wat-1.245.1-LICENSE-MIT`);
+Test-only WAT/WAST/wasm-encoder/wasmparser (wasm-tools release 1.263.0) use the wasm-tools MIT
+license at `7a2fa422cdf9aeeaf488a2acac8bc94a078bfa32` (`wat-1.245.1-LICENSE-MIT`);
 leb128fmt license texts are also bundled. These test tools are not a plugin
 compiler shipped to end users. Creator packages carry their own license metadata.
 
@@ -327,8 +327,8 @@ Their notices and license texts are retained in
 [the Adwaita dependency notices](assets/licenses/dependencies/wayland-adwaita-LICENSES.txt)
 and copied by the existing dependency-notice packaging step.
 
-Linux screen sharing reuses the already locked **gstreamer 0.25.3**,
-**gstreamer-app 0.25.2**, **gstreamer-video 0.25.3** Rust bindings
+Linux screen sharing reuses the already locked **gstreamer 0.25.4**,
+**gstreamer-app 0.25.2**, **gstreamer-video 0.25.4** Rust bindings
 (MIT OR Apache-2.0) and **zbus 5.19.0** (MIT, Tokio backend).
 GStreamer/PipeWire, VA-API/NVENC/OpenGL plugins and GPU drivers are native runtime
 components supplied by the distribution/Flatpak runtime, not new bundled codec source.
@@ -338,7 +338,7 @@ uses the existing bundled OpenH264 notices above.
 Wayland global voice keybinds use **ashpd 0.13.13** (MIT) to access the desktop
 GlobalShortcuts portal. Its license is bundled under `assets/licenses/dependencies`.
 
-Scalable bundled Twemoji artwork uses **resvg 0.48.1** and **usvg 0.48.1**
+Scalable bundled Twemoji artwork uses **resvg 0.50.0** and **usvg 0.50.0**
 (MIT OR Apache-2.0), with default features disabled: no text shaping, font discovery,
 raster image decoding or SVGZ. The integration denies image-href resolution.
 New resolved dependencies are data-url 0.3.2 (MIT OR Apache-2.0), float-cmp 0.9.0
