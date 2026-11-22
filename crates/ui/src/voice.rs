@@ -2280,7 +2280,11 @@ impl MessagingUi {
 		};
 		let call = state.voice.active.as_ref().expect("join owns a call");
 		self.watch_after_join = Some((state.generation, call.request, channel, user));
-		self.watch_mute_restore = Some((state.generation, call.request, self.saved_voice_muted()));
+		self.watch_mute_restore = Some((
+			state.generation,
+			call.initial_request,
+			self.saved_voice_muted(),
+		));
 		self.voice_muted = true;
 		commands.push(cmd);
 		true
@@ -2292,13 +2296,13 @@ impl MessagingUi {
 	}
 
 	pub fn retire_watch_mute(&mut self, state: &State) {
-		if let Some((generation, request, previous)) = self.watch_mute_restore
+		if let Some((generation, initial_request, previous)) = self.watch_mute_restore
 			&& (state.generation != generation
 				|| state
 					.voice
 					.active
 					.as_ref()
-					.is_none_or(|call| call.request != request))
+					.is_none_or(|call| call.initial_request != initial_request))
 		{
 			self.voice_muted = previous;
 			self.watch_mute_restore = None;
@@ -7146,10 +7150,57 @@ mod tests {
 		));
 		assert!(view.voice_muted && !view.saved_voice_muted());
 		commands.clear();
-		state.voice.active = None;
+		assert!(state.leave_call().is_some());
 		view.retire_watch_mute(&state);
 		view.apply_stream_preview_watch(&mut state, &mut commands);
 		assert!(!view.voice_muted && view.watch_after_join.is_none() && commands.is_empty());
+	}
+
+	#[test]
+	fn watch_mute_survives_media_rejoin_but_not_a_new_call_in_the_same_channel() {
+		use client_core::voice::Command as Voice;
+
+		let mut state = test_support::call_demo_state();
+		state.demo = false;
+		state.gateway_connected = true;
+		assert!(state.leave_call().is_some());
+		let mut view = MessagingUi {
+			voice_muted: false,
+			..Default::default()
+		};
+		let mut commands = Vec::new();
+		assert!(view.join_stream_muted(&mut state, Id(22), Id(2), &mut commands));
+		let first = state.voice.active.as_ref().unwrap().request;
+		state.reconnect_call(first, 1, "synthetic media drop");
+		let Some(Command::Voice(Voice::Join {
+			request,
+			mute: true,
+			..
+		})) = state.rejoin_call()
+		else {
+			panic!("recovery must rejoin muted");
+		};
+		assert_ne!(request, first);
+		view.retire_watch_mute(&state);
+		commands.clear();
+		view.apply_stream_preview_watch(&mut state, &mut commands);
+		assert!(view.watch_after_join.is_none() && commands.is_empty());
+		assert!(view.voice_muted && !view.saved_voice_muted());
+		assert_eq!(view.toggle_voice(true), (true, true));
+		assert_eq!(view.toggle_voice(true), (true, false));
+		let (mute, deaf) = view.toggle_voice(false);
+		assert!(
+			matches!(state.set_call_mute(mute, deaf), Some(Command::Voice(Voice::SetMute { request: current, mute: false, deaf: false, .. })) if current == request)
+		);
+		assert!(view.watch_mute_restore.is_none());
+
+		// A leave followed by another join can occur between UI frames.
+		assert!(state.leave_call().is_some());
+		assert!(view.join_stream_muted(&mut state, Id(22), Id(2), &mut commands));
+		assert!(state.leave_call().is_some());
+		assert!(state.start_call(Id(22), false).is_some());
+		view.retire_watch_mute(&state);
+		assert!(!view.voice_muted && view.watch_mute_restore.is_none());
 	}
 	#[test]
 	fn explicit_join_audio_waits_for_call_switch_and_survives_teardown() {

@@ -1174,7 +1174,7 @@ impl Editor {
 				// Pages that virtualize their own list own the only vertical scrollbar;
 				// wrapping them again would nest two scroll areas over one list.
 				dialog::ShellRegion::Body if self.scrolling_page() => {
-					let lane = ui.id();
+					let lane = ui.scope_id();
 					dialog::settings_signal(
 						ui,
 						lane,

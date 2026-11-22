@@ -416,7 +416,7 @@ pub fn settings_page<R>(
 	id_salt: impl std::hash::Hash + std::fmt::Debug,
 	add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-	let lane = ui.id();
+	let lane = ui.scope_id();
 	settings_signal(ui, lane, egui::Id::unique(&id_salt));
 	egui::ScrollArea::vertical()
 		.id_salt(id_salt)

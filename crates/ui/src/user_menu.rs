@@ -911,6 +911,7 @@ mod tests {
 					server_muted: false,
 					server_deafened: false,
 					stage: Default::default(),
+					initial_request: 1,
 					request: 1,
 					phase: Phase::Connected,
 					muted: true,

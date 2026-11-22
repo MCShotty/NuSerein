@@ -143,6 +143,8 @@ pub struct Call {
 	pub server_muted: bool,
 	pub server_deafened: bool,
 	pub stage: StageParticipation,
+	/// First join request in this logical call; unlike `request`, unchanged by media recovery.
+	pub initial_request: u64,
 	pub request: u64,
 	pub phase: Phase,
 	pub muted: bool,
@@ -730,6 +732,7 @@ impl ClientState {
 			server_muted,
 			server_deafened,
 			stage,
+			initial_request: request,
 			request,
 			phase: Phase::Connecting,
 			muted,

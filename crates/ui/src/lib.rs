@@ -529,6 +529,7 @@ pub struct MessagingUi {
 	stream_preview_request: Option<(Id, Id, Id)>,
 	stream_preview_watch: Option<(Id, Id)>,
 	watch_after_join: Option<(u64, u64, Id, Id)>,
+	/// Account generation, initial call request, and mic preference before joining to watch.
 	watch_mute_restore: Option<(u64, u64, bool)>,
 	pub voice_inputs: Vec<(String, String)>,
 	pub voice_outputs: Vec<(String, String)>,

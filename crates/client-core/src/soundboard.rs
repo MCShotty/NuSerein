@@ -538,6 +538,7 @@ mod tests {
 			channel_started_at: None,
 			server_muted: false,
 			server_deafened: false,
+			initial_request: 1,
 			request: 1,
 			phase: Phase::Connected,
 			muted: false,

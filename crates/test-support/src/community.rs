@@ -70,6 +70,7 @@ pub fn community_state(stage: bool) -> State {
 		state.voice.active = Some(Call {
 			channel: Id(90),
 			guild: Some(guild),
+			initial_request: 1,
 			request: 1,
 			phase: Phase::Connected,
 			connected_at: None,
