@@ -159,6 +159,7 @@ pub struct TimelineView {
 	language: Option<crate::i18n::Language>,
 	scale: f32,
 	pub(super) load_older: bool,
+	pub(super) reload_requested: bool,
 	pub(super) latest: bool,
 	pub(super) visible_authors: Vec<Id>,
 	jump: bool,
@@ -2846,8 +2847,7 @@ impl TimelineView {
 				.button(crate::i18n::translate("reload-history"))
 				.clicked()
 		{
-			self.latest = true;
-			self.follow_latest(state);
+			self.reload_requested = true;
 		}
 		let area = ui.available_rect_before_wrap().intersect(ui.clip_rect());
 		let autoscroll_delta =
