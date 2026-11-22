@@ -91,24 +91,6 @@ for invalid in (
         pass
     else:
         raise AssertionError("invalid JSON accepted")
-# Pins are compared by content; a catalog pinned to another repository is always re-pinned.
-pinned = json.loads((catalog.ROOT / "catalog.json").read_bytes())
-for entry in pinned["entries"]:
-    commit = entry["source_commit"]
-    for value in [entry] + ([entry["preview"]] if "preview" in entry else []):
-        key = "release_url" if value is entry else "url"
-        value[key] = value[key].replace("ViceVerse-cz/Serein-extensions/" + commit + "/", "ViceVerse-cz/Serein/" + commit + "/extensions/")
-moved = json.loads(json.dumps(pinned))
-for entry in moved["entries"]:
-    old = entry["source_commit"]
-    entry["source_commit"] = "f" * 40
-    for value in [entry] + ([entry["preview"]] if "preview" in entry else []):
-        key = "release_url" if value is entry else "url"
-        value[key] = value[key].replace(old, "f" * 40)
-assert catalog.content(pinned, "ViceVerse-cz/Serein") == catalog.content(moved, "ViceVerse-cz/Serein") is not None
-assert catalog.content(pinned, "ViceVerse-cz/Other") is None
-moved["entries"][0]["sha256"] = "0" * 64
-assert catalog.content(pinned, "ViceVerse-cz/Serein") != catalog.content(moved, "ViceVerse-cz/Serein")
 
 workflow = (catalog.ROOT.parent / ".github/workflows/extension-catalog.yml").read_text()
 assert "fetch-depth: 0" in workflow
@@ -153,4 +135,13 @@ with tempfile.TemporaryDirectory(prefix="serein-fork-catalog-") as temporary:
                    env=environment | {"GITHUB_SHA": git_fixture("rev-parse", "HEAD"),
                                       "GITHUB_REPOSITORY": repository})
     assert json.loads((extensions / "catalog.json").read_bytes()) == generated
+    # A forced pin to the second commit must still compare equal by package content.
+    new_commit = git_fixture("rev-parse", "HEAD")
+    subprocess.run([sys.executable, "extensions/catalog.py", "--commit", new_commit,
+                    "--repository", repository], cwd=root, env=environment, check=True, stdout=subprocess.PIPE)
+    moved = json.loads((extensions / "catalog.json").read_bytes())
+    assert moved["entries"][0]["source_commit"] == new_commit != commit
+    assert catalog.content(generated, repository) == catalog.content(moved, repository) is not None
+    moved["entries"][0]["sha256"] = "0" * 64
+    assert catalog.content(generated, repository) != catalog.content(moved, repository)
 print("Theme/plugin identity, byte, capability, action and URL checks passed.")

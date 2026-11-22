@@ -661,28 +661,11 @@ enum Page {
 	Themes,
 }
 impl Page {
-	/// Every page in sidebar order; the narrow-window page picker lists them the same way.
-	const ALL: [Self; 19] = [
-		Self::Account,
-		Self::Profile,
-		Self::MessagingPermissions,
-		Self::Privacy,
-		Self::ContentFilters,
-		Self::Connections,
-		Self::Accessibility,
-		Self::Storage,
-		Self::Appearance,
-		Self::Chat,
-		Self::Notifications,
-		Self::Voice,
-		Self::Keybinds,
-		Self::Activity,
-		Self::LanguageTime,
-		Self::General,
-		Self::Updates,
-		Self::Themes,
-		Self::Extensions,
-	];
+	fn all() -> impl Iterator<Item = Self> {
+		Self::SECTIONS
+			.iter()
+			.flat_map(|(_, pages)| pages.iter().copied())
+	}
 	/// Sidebar sections: account-level choices first, then how this app looks and behaves,
 	/// then community add-ons.
 	const SECTIONS: [(&'static str, &'static [Self]); 3] = [
@@ -950,6 +933,7 @@ const SEARCH_TARGETS: &[SearchTarget] = &[
 		Page::Accessibility,
 		"reading-chat-reading-settings-compact-message-spacing",
 	),
+	target(Page::Accessibility, "accessibility-reduce-interface-motion"),
 	target(Page::Accessibility, "accessibility-animate-artwork"),
 	target(
 		Page::Accessibility,
@@ -1039,7 +1023,7 @@ impl Settings {
 			})
 			.collect();
 		self.search_pages = 0;
-		for page in Page::ALL {
+		for page in Page::all() {
 			if page.matches(&query, language)
 				|| self
 					.search_results
@@ -1239,19 +1223,15 @@ impl MessagingUi {
 			return;
 		}
 		// A label wins; keywords still reach pages that were merged or renamed ("activity").
-		if let Some(page) = Page::ALL
-			.into_iter()
+		if let Some(page) = Page::all()
 			.find(|candidate| {
 				candidate
 					.label(Language::English)
 					.to_lowercase()
 					.contains(page)
 			})
-			.or_else(|| {
-				Page::ALL
-					.into_iter()
-					.find(|candidate| candidate.matches(page, Language::English))
-			}) {
+			.or_else(|| Page::all().find(|candidate| candidate.matches(page, Language::English)))
+		{
 			self.settings.page = page;
 		}
 	}
@@ -1324,7 +1304,7 @@ impl MessagingUi {
 				egui::CentralPanel::default()
 					.frame(egui::Frame::new().inner_margin(egui::Margin {
 						left: if wide {
-							40
+							32
 						} else if compact {
 							8
 						} else {
@@ -1372,7 +1352,15 @@ impl MessagingUi {
 								self.settings_page_picker(ui);
 							}
 						}
-						ui.add_space(if compact { 4.0 } else { 16.0 });
+						ui.add_space(if compact { 0.0 } else { 8.0 });
+						crate::dialog::settings_signal(
+							ui,
+							egui::Id::unique("user-settings-page"),
+							egui::Id::unique((
+								self.settings.page as u8,
+								self.extensions.theme_editor_tab_key(),
+							)),
+						);
 						if self.settings.page == Page::Themes && self.extensions.editing_theme() {
 							self.extensions.theme_editor_toolbar(ui);
 							ui.add_space(12.0);
@@ -1392,19 +1380,15 @@ impl MessagingUi {
 							.auto_shrink([false, false])
 							.show(ui, |ui| {
 								crate::scroll::claim_wheel_content(ui);
-								crate::dialog::page_fade(
-									ui,
-									egui::Id::unique((
-										"settings-content",
-										self.settings.page as u8,
-									)),
-								);
 								let scroll_padding = if self.settings.page == Page::Profile {
 									8.0
 								} else {
 									0.0
 								};
-								ui.set_width((ui.available_width() - scroll_padding).min(720.0));
+								ui.set_width(
+									(ui.available_width() - scroll_padding)
+										.min(design::SETTINGS_CONTENT_WIDTH),
+								);
 								ui.spacing_mut().item_spacing.y = 12.0;
 								let jump = self
 									.settings
@@ -1567,7 +1551,6 @@ impl MessagingUi {
 				crate::scroll::claim_wheel_content(ui);
 				ui.spacing_mut().item_spacing.y = 2.0;
 				self.settings_search(ui);
-				ui.add_space(12.0);
 				for (heading, pages) in Page::SECTIONS {
 					let visible: Vec<Page> = pages
 						.iter()
@@ -1577,7 +1560,7 @@ impl MessagingUi {
 					if visible.is_empty() {
 						continue;
 					}
-					ui.add_space(6.0);
+					ui.add_space(12.0);
 					ui.add(egui::Label::new(design::eyebrow(
 						ui,
 						language.text(heading),
@@ -1650,7 +1633,7 @@ impl MessagingUi {
 			.width(ui.available_width().max(1.0))
 			.truncate()
 			.show_ui(ui, |ui| {
-				for page in Page::ALL {
+				for page in Page::all() {
 					if self.settings.search_matches_page(page) {
 						ui.selectable_value(
 							&mut self.settings.page,
@@ -2769,7 +2752,6 @@ fn page_header(
 	description: &str,
 	compact: bool,
 ) -> egui::Response {
-	let colors = design::palette(ui);
 	ui.horizontal_top(|ui| {
 		let text_width = (ui.available_width() - 40.0 - ui.spacing().item_spacing.x).max(1.0);
 		ui.allocate_ui_with_layout(
@@ -2777,21 +2759,20 @@ fn page_header(
 			egui::Layout::top_down(egui::Align::Min),
 			|ui| {
 				ui.set_width(text_width);
-				ui.spacing_mut().item_spacing.y = 2.0;
-				let title =
-					egui::Label::new(design::semibold(ui, heading, 20.0).color(colors.text_strong));
+				ui.spacing_mut().item_spacing.y = design::HEADING_GAP;
+				let title = egui::Label::new(design::page_heading(ui, heading, compact));
 				let title = ui.add(if compact {
 					title.truncate()
 				} else {
 					title.wrap()
 				});
 				if compact {
-					title.on_hover_text(description);
+					title.on_hover_ui(|ui| {
+						ui.strong(heading);
+						ui.label(description);
+					});
 				} else {
-					ui.add(
-						egui::Label::new(RichText::new(description).size(13.0).color(colors.muted))
-							.wrap(),
-					);
+					ui.add(egui::Label::new(design::supporting_text(ui, description)).wrap());
 				}
 			},
 		);
@@ -2810,41 +2791,12 @@ pub(super) fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::
 		egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, &label)
 	});
 	let hot = response.hovered() || response.has_focus();
-	// Hover and selection ease in instead of snapping; idle rows cost no repaint.
-	let time = ui.style().animation_time;
-	let lit = ui
-		.ctx()
-		.animate_bool_with_time(response.id.with("nav-hover"), hot, time);
-	let chosen =
-		ui.ctx()
-			.animate_bool_with_time(response.id.with("nav-selected"), selected, time * 1.5);
-	if chosen > 0.0 || lit > 0.0 {
-		let fill = colors
-			.hover
-			.gamma_multiply(lit.max(chosen))
-			.lerp_to_gamma(colors.selected, chosen);
-		ui.painter().rect_filled(rect, 8, fill);
+	if selected {
+		design::selection_surface(ui, rect);
+	} else if hot {
+		ui.painter().rect_filled(rect, 8, colors.hover);
 	}
-	if chosen > 0.0 {
-		// Discord marks the open page with an accent rail at the left edge.
-		let height = 16.0 * egui::emath::easing::cubic_out(chosen);
-		ui.painter().rect_filled(
-			egui::Rect::from_min_size(
-				egui::pos2(rect.left(), rect.center().y - height * 0.5),
-				egui::vec2(3.0, height),
-			),
-			2,
-			colors.accent,
-		);
-	}
-	if response.has_focus() {
-		ui.painter().rect_stroke(
-			rect.shrink(1.0),
-			8,
-			egui::Stroke::new(1.0, colors.accent),
-			egui::StrokeKind::Inside,
-		);
-	}
+	design::focus_outline(ui, &response, 8);
 	let color = if selected {
 		colors.text_strong
 	} else if hot {
@@ -3127,6 +3079,7 @@ fn theme_preference_cards(ui: &mut egui::Ui) {
 					colors.text
 				},
 			);
+			design::focus_outline(ui, &response, 8);
 			if response.clicked() {
 				chosen = Some(preference);
 			}

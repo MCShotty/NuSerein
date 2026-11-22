@@ -7,6 +7,7 @@ use super::{
 
 impl MessagingUi {
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
+		self.retire_watch_mute(state);
 		self.retire_menu_paste(state);
 		message_menu::set_owner(
 			ui.ctx(),
@@ -1773,6 +1774,7 @@ impl MessagingUi {
 				None => {}
 			}
 		}
+		self.apply_stream_preview_watch(state, &mut commands);
 		self.show_call_switch(&ctx, state, &mut commands);
 		self.mentions_inbox(&ctx, state, &mut commands);
 		self.apply_ring_request(state, &mut commands);

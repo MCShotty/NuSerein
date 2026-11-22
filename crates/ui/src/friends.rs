@@ -412,16 +412,13 @@ impl MessagingUi {
 		let colors = design::palette(ui);
 		let language = self.language;
 		egui::Frame::new()
-			.inner_margin(egui::Margin::symmetric(16, 8))
+			.inner_margin(egui::Margin::symmetric(design::WORKSPACE_INSET, 8))
 			.show(ui, |ui| {
 				ui.horizontal_wrapped(|ui| {
 					ui.set_min_height(32.0);
 					ui.spacing_mut().item_spacing.x = 8.0;
 					icons::inline(ui, Icon::People, 20.0, colors.muted);
-					ui.label(
-						design::semibold(ui, language.text("friends"), 16.0)
-							.color(colors.text_strong),
-					);
+					ui.label(design::workspace_title(ui, language.text("friends")));
 					let (rule, _) = ui.allocate_exact_size(vec2(17.0, 24.0), egui::Sense::hover());
 					ui.painter().vline(
 						rule.center().x,
@@ -458,7 +455,14 @@ impl MessagingUi {
 					}
 				});
 			});
-		ui.separator();
+		let rule = ui.separator().rect;
+		let inset = f32::from(design::WORKSPACE_INSET);
+		design::destination_signal(
+			ui,
+			egui::Id::unique("friends-header"),
+			egui::Id::unique(self.friends.tab as u8),
+			rule.shrink2(egui::vec2(inset, rule.height() * 0.5)),
+		);
 		if matches!(self.friends.tab, Tab::Online | Tab::All)
 			&& state.gateway_connected
 			&& state.startup_warnings.presence
@@ -957,7 +961,11 @@ fn header_tab(
 		(Color32::TRANSPARENT, colors.muted)
 	};
 	let painter = ui.painter();
-	painter.rect_filled(rect, 6, fill);
+	if selected && !accent {
+		design::selection_surface(ui, rect);
+	} else {
+		painter.rect_filled(rect, 6, fill);
+	}
 	if response.has_focus() {
 		painter.rect_stroke(
 			rect.expand(1.0),

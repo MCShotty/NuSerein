@@ -528,6 +528,9 @@ pub struct MessagingUi {
 	stream_preview_open: Option<((Id, Id, Id), u64)>,
 	stream_preview_request: Option<(Id, Id, Id)>,
 	stream_preview_watch: Option<(Id, Id)>,
+	watch_after_join: Option<(u64, u64, Id, Id)>,
+	/// Account generation, initial call request, and mic preference before joining to watch.
+	watch_mute_restore: Option<(u64, u64, bool)>,
 	pub voice_inputs: Vec<(String, String)>,
 	pub voice_outputs: Vec<(String, String)>,
 	pub voice_input: Option<String>,
@@ -608,6 +611,7 @@ pub struct MessagingUi {
 	/// Set when the user picks a theme preset; the host persists it.
 	pub theme_variant_changed: Option<design::Variant>,
 	pub primary_color: Option<[u8; 3]>,
+	pub reduce_interface_motion: bool,
 	pub transparency_blur: bool,
 	pub transparency: u8,
 	pub blur: u8,
@@ -621,7 +625,7 @@ fn composer_cap(
 ) -> egui::Rect {
 	design::glass_frame(
 		ui,
-		design::mix(colors.raised, colors.base, 0.45),
+		design::mix(colors.raised, colors.accent, 0.16),
 		egui::Margin {
 			left: 16,
 			right: 8,
@@ -2747,7 +2751,18 @@ mod composer_tests {
 				}
 				_ => {
 					composer_selection(&ctx, widget, MAX_CONTENT, MAX_CONTENT);
-					events.push(composer_shortcut(egui::Key::Home, false, true));
+					// Move to the document start using the host editor's native shortcut.
+					let home = if ctx.os() == egui::os::OperatingSystem::Mac {
+						let mut event = edit_key(egui::Key::ArrowUp);
+						if let egui::Event::Key { modifiers, .. } = &mut event {
+							modifiers.command = true;
+							modifiers.mac_cmd = true;
+						}
+						event
+					} else {
+						composer_shortcut(egui::Key::Home, false, true)
+					};
+					events.push(home);
 					let mut right = edit_key(egui::Key::ArrowRight);
 					if let egui::Event::Key { modifiers, .. } = &mut right {
 						*modifiers = egui::Modifiers::SHIFT;

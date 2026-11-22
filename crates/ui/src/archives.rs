@@ -96,22 +96,24 @@ impl ArchivesUi {
 								ui.add_enabled_ui(allowed && !view.loading, |ui| {
 									egui::ComboBox::from_id_salt(("archive-kind", parent))
 										.width(112.0)
-										.selected_text(match kind {
-											Kind::Public => "Public",
-											Kind::JoinedPrivate => "Joined private",
-											Kind::Private => "Private",
-										})
+										.selected_text(crate::i18n::translate(match kind {
+											Kind::Public => "archive-public",
+											Kind::JoinedPrivate => "archive-joined-private",
+											Kind::Private => "archive-private",
+										}))
 										.show_ui(ui, |ui| {
 											for (option, label) in [
-												(Kind::Public, "Public"),
-												(Kind::JoinedPrivate, "Joined private"),
-												(Kind::Private, "Private"),
+												(Kind::Public, "archive-public"),
+												(Kind::JoinedPrivate, "archive-joined-private"),
+												(Kind::Private, "archive-private"),
 											] {
 												ui.add_enabled_ui(
 													state.can_archive(parent, option),
 													|ui| {
 														ui.selectable_value(
-															&mut kind, option, label,
+															&mut kind,
+															option,
+															crate::i18n::translate(label),
 														);
 													},
 												);
@@ -215,45 +217,66 @@ impl ArchivesUi {
 				});
 			},
 			|ui| {
-				let create_width = 88.0;
-				let field_width = (ui.available_width() - create_width - 12.0).max(80.0);
-				let field = ui
-					.allocate_ui_with_layout(
-						egui::vec2(field_width, 38.0),
-						egui::Layout::left_to_right(egui::Align::Center),
-						|ui| {
-							crate::dialog::input(
-								ui,
-								egui::TextEdit::singleline(&mut self.filter)
-									.align(egui::Align2::LEFT_CENTER)
-									.char_limit(100)
-									.hint_text(crate::i18n::translate(
-										"archives-show-search-for-thread-name",
-									)),
-							)
-						},
+				let available = ui.available_width();
+				let create_label = crate::i18n::translate("archives-show-create");
+				let label_width = ui
+					.painter()
+					.layout_no_wrap(
+						create_label,
+						egui::FontId::new(14.0, crate::design::medium_family(ui.ctx())),
+						egui::Color32::WHITE,
 					)
-					.inner;
-				self.filter.shrink_to_fit();
-				ui.add_space(12.0);
-				ui.add_enabled_ui(can_create && !action_pending, |ui| {
-					create = crate::dialog::action(
-						ui,
-						"archives-show-create",
-						crate::dialog::Action::Primary,
-					)
-					.on_disabled_hover_text(crate::i18n::translate(
-						"archives-show-you-cannot-start-a-thread-in-this-channel",
-					))
-					.clicked();
+					.size()
+					.x;
+				let shared_width = available - (label_width + 32.0).max(92.0) - 8.0;
+				// Long translated labels can move below the full-width field. Keep the
+				// same child ID and focus order in both arrangements.
+				let stacked = shared_width < 120.0;
+				let layout = if stacked {
+					egui::Layout::top_down(egui::Align::Min)
+				} else {
+					egui::Layout::left_to_right(egui::Align::Center)
+				};
+				let field_width = if stacked { available } else { shared_width };
+				ui.with_layout(layout, |ui| {
+					ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+					let field = ui
+						.allocate_ui_with_layout(
+							egui::vec2(field_width, crate::design::BUTTON_HEIGHT),
+							egui::Layout::left_to_right(egui::Align::Center),
+							|ui| {
+								crate::dialog::input(
+									ui,
+									egui::TextEdit::singleline(&mut self.filter)
+										.align(egui::Align2::LEFT_CENTER)
+										.char_limit(100)
+										.hint_text(crate::i18n::translate(
+											"archives-show-search-for-thread-name",
+										)),
+								)
+							},
+						)
+						.inner;
+					self.filter.shrink_to_fit();
+					ui.add_enabled_ui(can_create && !action_pending, |ui| {
+						create = crate::dialog::action(
+							ui,
+							"archives-show-create",
+							crate::dialog::Action::Primary,
+						)
+						.on_disabled_hover_text(crate::i18n::translate(
+							"archives-show-you-cannot-start-a-thread-in-this-channel",
+						))
+						.clicked();
+					});
+					if field.changed() {
+						ui.ctx().request_repaint();
+					}
+					if self.focus {
+						field.request_focus();
+						self.focus = false;
+					}
 				});
-				if field.changed() {
-					ui.ctx().request_repaint();
-				}
-				if self.focus {
-					field.request_focus();
-					self.focus = false;
-				}
 			},
 		);
 		if create {
@@ -367,11 +390,13 @@ fn thread_card(
 		);
 	}
 	ui.add_space(CARD_GAP);
-	response.on_hover_text(format!(
+	let label = format!(
 		"{} “{}”",
 		crate::i18n::translate("archives-thread-card-open-thread"),
 		thread.name
-	))
+	);
+	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label));
+	response.on_hover_text(label)
 }
 
 #[cfg(test)]
@@ -531,6 +556,13 @@ mod tests {
 		assert!(commands.is_empty());
 	}
 	fn frame(ctx: &egui::Context, key: Option<egui::Key>, draw: impl FnMut(&mut egui::Ui)) {
+		let _ = frame_focus(ctx, key, draw);
+	}
+	fn frame_focus(
+		ctx: &egui::Context,
+		key: Option<egui::Key>,
+		draw: impl FnMut(&mut egui::Ui),
+	) -> Option<String> {
 		let output = ctx.run_ui(
 			egui::RawInput {
 				screen_rect: Some(egui::Rect::from_min_size(
@@ -539,20 +571,44 @@ mod tests {
 				)),
 				events: key
 					.into_iter()
-					.map(|key| egui::Event::Key {
-						key,
-						physical_key: None,
-						pressed: true,
-						repeat: false,
-						modifiers: egui::Modifiers::NONE,
+					.flat_map(|key| {
+						[true, false].map(move |pressed| egui::Event::Key {
+							key,
+							physical_key: None,
+							pressed,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+						})
 					})
 					.collect(),
 				..Default::default()
 			},
 			draw,
 		);
-		assert!(output.platform_output.commands.is_empty());
+		let no_platform_commands = output.platform_output.commands.is_empty();
+		let focused = output
+			.platform_output
+			.events
+			.iter()
+			.find_map(|event| match event {
+				egui::output::OutputEvent::FocusGained(info) => info.label.clone(),
+				_ => None,
+			});
 		output.drop_without_applying_deltas();
+		assert!(no_platform_commands);
+		focused
+	}
+
+	fn activate_by_tab(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&mut egui::Ui)) {
+		// Rebuild the page (and honor its initial search focus), then drive real key taps.
+		frame(ctx, None, &mut draw);
+		for _ in 0..16 {
+			if frame_focus(ctx, Some(egui::Key::Tab), &mut draw).as_deref() == Some(label) {
+				frame(ctx, Some(egui::Key::Enter), &mut draw);
+				return;
+			}
+		}
+		panic!("archive action not reachable with Tab: {label}");
 	}
 	#[test]
 	fn forum_archive_is_keyboard_accessible_paginates_and_opens_only_history() {
@@ -630,17 +686,14 @@ mod tests {
 					next: Some(before),
 				}),
 			);
-			for key in [
-				None,
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Enter),
-			] {
-				frame(&ctx, key, |_| {
+			activate_by_tab(
+				&ctx,
+				&crate::i18n::translate("archives-action-older"),
+				|_| {
 					ui.archives
 						.show(&ctx, &mut state, &mut commands, &mut ui.avatars)
-				});
-			}
+				},
+			);
 			assert!(
 				matches!(commands.last(), Some(Command::Archives { before: Some(cursor), .. }) if *cursor == before)
 			);
@@ -656,17 +709,14 @@ mod tests {
 			);
 			ui.archives.focus = true;
 			// With no Older control, keyboard Reload returns from an older page to the newest.
-			for key in [
-				None,
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Enter),
-			] {
-				frame(&ctx, key, |_| {
+			activate_by_tab(
+				&ctx,
+				&crate::i18n::translate("archives-action-reload"),
+				|_| {
 					ui.archives
 						.show(&ctx, &mut state, &mut commands, &mut ui.avatars)
-				});
-			}
+				},
+			);
 			assert!(matches!(
 				commands.last(),
 				Some(Command::Archives {
@@ -686,19 +736,18 @@ mod tests {
 				}),
 			);
 			ui.archives.focus = true;
-			// Search, Close, Reload, Open thread (Create is disabled for this forum).
-			for key in [
-				None,
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Tab),
-				Some(egui::Key::Enter),
-			] {
-				frame(&ctx, key, |_| {
+			// Follow keyboard focus to the named result, independent of toolbar order.
+			activate_by_tab(
+				&ctx,
+				&format!(
+					"{} “Synthetic thread 9”",
+					crate::i18n::translate("archives-thread-card-open-thread")
+				),
+				|_| {
 					ui.archives
 						.show(&ctx, &mut state, &mut commands, &mut ui.avatars)
-				});
-			}
+				},
+			);
 			assert!(matches!(
 				commands.last(),
 				Some(Command::History { channel: Id(9), .. })

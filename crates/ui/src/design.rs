@@ -316,22 +316,22 @@ fn gradient(stops: [u32; 2]) -> Palette {
 pub fn builtin_colors(dark: bool, variant: Variant) -> Palette {
 	let palette = match variant {
 		Variant::Standard if dark => dark_common(
-			rgb(0x0e0e10),
-			rgb(0x141416),
-			rgb(0x18181b),
-			rgb(0x202023),
-			rgb(0x242427),
-			rgb(0x2e2e32),
-			rgb(0x27272a),
+			rgb(0x0c111a),
+			rgb(0x121a27),
+			rgb(0x171f2c),
+			rgb(0x202c3d),
+			rgb(0x27354a),
+			rgb(0x2b3f59),
+			rgb(0x334257),
 		),
 		Variant::Standard => Palette {
-			base: rgb(0xe4e4e7),
-			sidebar: rgb(0xf2f2f4),
+			base: rgb(0xe4ebf6),
+			sidebar: rgb(0xf0f4fa),
 			chat: Color32::WHITE,
-			raised: rgb(0xebebee),
-			hover: rgb(0xe8e8eb),
-			selected: rgb(0xdadade),
-			border: rgb(0xe0e0e4),
+			raised: rgb(0xf3f6fb),
+			hover: rgb(0xe9eff8),
+			selected: rgb(0xdce8f8),
+			border: rgb(0xcbd7e8),
 			text_strong: rgb(0x0f0f11),
 			text: rgb(0x2f2f34),
 			muted: rgb(0x62626a),
@@ -345,7 +345,7 @@ pub fn builtin_colors(dark: bool, variant: Variant) -> Palette {
 			mention_text: rgb(0x14508f),
 			backdrop: None,
 			canvas: Color32::WHITE,
-			surface: rgb(0xf2f2f4),
+			surface: rgb(0xf0f4fa),
 		},
 		Variant::Eclipse => dark_common(
 			Color32::BLACK,
@@ -861,7 +861,7 @@ fn customize(mut palette: Palette, primary: Option<[u8; 3]>) -> Palette {
 	palette
 }
 /// Whichever of a light or dark tint of `base` reads better against `background`.
-fn readable_tint(base: Color32, background: Color32) -> Color32 {
+pub(crate) fn readable_tint(base: Color32, background: Color32) -> Color32 {
 	let light = base.lerp_to_gamma(Color32::WHITE, 0.55);
 	let dark = base.lerp_to_gamma(Color32::BLACK, 0.45);
 	if contrast(light, background) >= contrast(dark, background) {
@@ -1025,6 +1025,28 @@ pub fn semibold(ui: &egui::Ui, text: impl Into<String>, size: f32) -> RichText {
 pub fn medium(ui: &egui::Ui, text: impl Into<String>, size: f32) -> RichText {
 	RichText::new(text).font(FontId::new(size, medium_family(ui.ctx())))
 }
+/// Regular detail and metadata stay quieter than the destination title or body.
+pub(crate) const METADATA_SIZE: f32 = 12.0;
+pub(crate) const WORKSPACE_TITLE_SIZE: f32 = 18.0;
+pub(crate) const WORKSPACE_INSET: i8 = 16;
+pub(crate) const SETTINGS_CONTENT_WIDTH: f32 = 720.0;
+pub(crate) const HEADING_GAP: f32 = 4.0;
+
+/// Primary titles in fixed-height navigation and call chrome.
+pub(crate) fn workspace_title(ui: &egui::Ui, text: impl Into<String>) -> RichText {
+	semibold(ui, text, WORKSPACE_TITLE_SIZE).color(palette(ui).text_strong)
+}
+
+/// Headings for pages, dialogs and the sign-in surface. The compact role leaves
+/// space for the close control and long localized text without shrinking body copy.
+pub fn page_heading(ui: &egui::Ui, text: impl Into<String>, compact: bool) -> RichText {
+	semibold(ui, text, if compact { 20.0 } else { 24.0 }).color(palette(ui).text_strong)
+}
+
+pub fn supporting_text(ui: &egui::Ui, text: impl Into<String>) -> RichText {
+	RichText::new(text).size(14.0).color(palette(ui).muted)
+}
+
 /// Emoji-only messages: Discord paints their artwork at about three times the body size.
 /// Scaling the body style grows every inline emoji slot with it, text included.
 pub(crate) fn jumbo_emoji(ui: &mut egui::Ui) {
@@ -1070,6 +1092,101 @@ impl egui::Plugin for ClickableCursor {
 		}) {
 			ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
 		}
+	}
+}
+
+/// Apply the device's chrome motion preference to both appearance variants.
+/// GIF playback and scroll physics have their own independent controls.
+pub fn set_reduced_motion(ctx: &egui::Context, reduce: bool) {
+	let duration = if reduce {
+		0.0
+	} else {
+		egui::Style::default().animation_time
+	};
+	for theme in [egui::Theme::Dark, egui::Theme::Light] {
+		let style = ctx.style_of(theme);
+		if style.animation_time != duration {
+			let mut style = (*style).clone();
+			style.animation_time = duration;
+			ctx.set_style_of(theme, style);
+		}
+	}
+}
+
+/// Fixed-geometry selection shared by the desktop's navigation surfaces.
+pub(crate) fn selection_surface(ui: &egui::Ui, rect: egui::Rect) {
+	let p = palette(ui);
+	ui.painter().rect(
+		rect,
+		8,
+		p.selected,
+		Stroke::new(1.0, mix(p.border, p.accent, 0.65)),
+		egui::StrokeKind::Inside,
+	);
+}
+
+/// A keyboard-focus outline that fits inside the existing hit target.
+pub(crate) fn focus_outline(ui: &egui::Ui, response: &egui::Response, radius: u8) {
+	if response.enabled() && response.has_focus() {
+		let p = palette(ui);
+		ui.painter().rect_stroke(
+			response.rect,
+			radius,
+			Stroke::new(2.0, p.link),
+			egui::StrokeKind::Inside,
+		);
+	}
+}
+
+/// Existing fades with a fixed duration still honor the chrome motion preference.
+pub(crate) fn motion_duration(ui: &egui::Ui, seconds: f32) -> f32 {
+	if ui.style().animation_time > 0.0 {
+		seconds
+	} else {
+		0.0
+	}
+}
+
+/// One short, paint-only handoff when the active destination changes. Remember
+/// only the most recent destination, not an animation for every channel ID.
+pub(crate) fn destination_signal(
+	ui: &egui::Ui,
+	lane: egui::Id,
+	destination: egui::Id,
+	rect: egui::Rect,
+) {
+	let ctx = ui.ctx();
+	let (now, focused) = ui.input(|input| (input.time, input.focused));
+	let frame = ctx.cumulative_frame_nr();
+	let duration = f64::from(motion_duration(ui, 0.16));
+	let t = ctx.data_mut(|data| {
+		let last = data.get_temp_mut_or_insert_with(lane.with("destination-signal"), || {
+			(destination, frame, f64::NEG_INFINITY)
+		});
+		if !focused || duration <= 0.0 || frame.saturating_sub(last.1) > 1 {
+			last.2 = f64::NEG_INFINITY;
+		} else if last.0 != destination {
+			last.2 = now;
+		}
+		last.0 = destination;
+		last.1 = frame;
+		if duration > 0.0 {
+			((now - last.2) / duration).clamp(0.0, 1.0) as f32
+		} else {
+			1.0
+		}
+	});
+	let t = egui::emath::easing::cubic_out(t);
+	let accent = palette(ui).accent;
+	ui.painter().line_segment(
+		[
+			rect.left_bottom(),
+			rect.left_bottom() + egui::vec2(rect.width().min(24.0 + (1.0 - t) * 104.0), 0.0),
+		],
+		Stroke::new(2.0, accent),
+	);
+	if t < 1.0 {
+		ctx.request_repaint();
 	}
 }
 
@@ -1774,6 +1891,15 @@ fn contrast(a: Color32, b: Color32) -> f32 {
 mod tests {
 
 	#[test]
+	fn connected_channel_text_is_readable_in_both_stock_selections() {
+		for dark in [true, false] {
+			let p = super::builtin_colors(dark, super::Variant::Standard);
+			let text = super::readable_tint(p.accent, p.selected);
+			assert!(super::contrast(text, p.selected) >= 4.5);
+			assert!(super::contrast(text, p.sidebar) >= 4.5);
+		}
+	}
+	#[test]
 	fn narrow_segmented_controls_keep_each_choice_clickable_inside_the_track() {
 		for width in [120.0, 240.0] {
 			for target in 0..3 {
@@ -2279,6 +2405,16 @@ pub fn button(ui: &mut egui::Ui, label: &str, kind: ButtonKind) -> egui::Respons
 	} else {
 		fill
 	};
+	let text =
+		if matches!(kind, ButtonKind::Primary | ButtonKind::Danger) && contrast(text, fill) < 4.5 {
+			if contrast(Color32::BLACK, fill) > contrast(Color32::WHITE, fill) {
+				Color32::BLACK
+			} else {
+				Color32::WHITE
+			}
+		} else {
+			text
+		};
 	let text = if enabled {
 		text
 	} else {
@@ -2389,8 +2525,8 @@ pub fn divider(ui: &mut egui::Ui) {
 /// Heading at the top of a settings page, matching the server and channel settings pages.
 pub fn page_title(ui: &mut egui::Ui, title: &str) {
 	let title = crate::i18n::translate_if_key(title);
-	let p = palette(ui);
-	ui.add(egui::Label::new(semibold(ui, title, 20.0).color(p.text_strong)).wrap());
+	let compact = ui.available_width() < 360.0;
+	ui.add(egui::Label::new(page_heading(ui, title, compact)).wrap());
 	ui.add_space(12.0);
 }
 
@@ -2404,7 +2540,6 @@ pub fn page_header(
 ) {
 	let title = crate::i18n::translate_if_key(title);
 	let subtitle = subtitle.map(crate::i18n::translate_if_key);
-	let p = palette(ui);
 	// Actions take only their natural width from the right; with none, the title and
 	// subtitle get the whole row.
 	ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -2416,12 +2551,10 @@ pub fn page_header(
 			egui::Layout::top_down(egui::Align::Min),
 			|ui| {
 				ui.set_width(width);
-				ui.spacing_mut().item_spacing.y = 4.0;
-				ui.add(egui::Label::new(semibold(ui, title, 20.0).color(p.text_strong)).wrap());
+				ui.spacing_mut().item_spacing.y = HEADING_GAP;
+				ui.add(egui::Label::new(page_heading(ui, title, width < 360.0)).wrap());
 				if let Some(subtitle) = subtitle {
-					ui.add(
-						egui::Label::new(RichText::new(subtitle).size(14.0).color(p.muted)).wrap(),
-					);
+					ui.add(egui::Label::new(supporting_text(ui, subtitle)).wrap());
 				}
 			},
 		);
@@ -3208,6 +3341,83 @@ pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 		lerp(a.b(), b.b()),
 		lerp(a.a(), b.a()),
 	)
+}
+
+#[cfg(test)]
+mod signal_desk_tests {
+	use super::*;
+
+	#[test]
+	fn destination_change_is_bounded_and_reduced_motion_is_static() {
+		let ctx = egui::Context::default();
+		let lane = std::cell::Cell::new("header");
+		let width = std::cell::Cell::new(180.0);
+		let draw = |time, destination, focused| {
+			let input = egui::RawInput {
+				time: Some(time),
+				focused,
+				..Default::default()
+			};
+			let output = ctx.run_ui(input, |ui| {
+				let rect =
+					egui::Rect::from_min_size(ui.min_rect().min, egui::vec2(width.get(), 30.0));
+				destination_signal(
+					ui,
+					egui::Id::unique(lane.get()),
+					egui::Id::unique(destination),
+					rect,
+				);
+			});
+			let shape = output
+				.shapes
+				.iter()
+				.find_map(|shape| match shape.shape {
+					egui::Shape::LineSegment { points, stroke } if stroke.width == 2.0 => {
+						Some((points[1] - points[0]).x)
+					}
+					_ => None,
+				})
+				.expect("visible destination line");
+			output.drop_without_applying_deltas();
+			shape
+		};
+		assert_eq!(draw(0.0, 1, true), 24.0);
+		assert_eq!(draw(1.0, 2, true), 128.0);
+		let mid = draw(1.08, 2, true);
+		assert!(mid > 24.0 && mid < 128.0);
+		assert_eq!(
+			draw(1.09, 3, true),
+			128.0,
+			"a new destination replaces the old transition"
+		);
+		assert_eq!(draw(1.10, 3, false), 24.0, "focus loss settles the signal");
+		assert_eq!(draw(1.5, 3, true), 24.0);
+		set_reduced_motion(&ctx, true);
+		assert_eq!(draw(2.0, 4, true), 24.0);
+		for theme in [egui::Theme::Light, egui::Theme::Dark] {
+			assert_eq!(ctx.style_of(theme).animation_time, 0.0);
+		}
+		set_reduced_motion(&ctx, false);
+		assert_eq!(draw(3.0, 5, true), 128.0);
+		assert_eq!(draw(3.2, 5, true), 24.0);
+
+		lane.set("settings");
+		assert_eq!(draw(3.3, 6, true), 24.0, "a different lane starts settled");
+		lane.set("header");
+		assert_eq!(
+			draw(3.4, 5, true),
+			24.0,
+			"another lane cannot restart the header"
+		);
+		lane.set("settings");
+		assert_eq!(draw(3.5, 7, true), 24.0, "a returning lane does not flash");
+		width.set(56.0);
+		assert_eq!(
+			draw(3.6, 8, true),
+			56.0,
+			"motion stays within the available width"
+		);
+	}
 }
 
 #[cfg(test)]

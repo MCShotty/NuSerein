@@ -92,7 +92,7 @@
     },
     {
       "name": "aws-lc-sys",
-      "version": "0.45.0",
+      "version": "0.47.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "files": [
         "assets/licenses/dependencies/aws-lc-fiat-LICENSE"
@@ -123,7 +123,7 @@
     },
     {
       "name": "clipboard-win",
-      "version": "5.4.1",
+      "version": "5.4.3",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "files": [
         "assets/licenses/dependencies/clipboard-win-3b27cf2b-LICENSE"
@@ -358,7 +358,7 @@
     },
     {
       "name": "objc2",
-      "version": "0.5.2",
+      "version": "0.5.3",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "files": [
         "assets/licenses/dependencies/objc2-4fc083f1-LICENSE.txt"
@@ -670,16 +670,12 @@
     },
     {
       "name": "realfft",
-      "version": "3.5.0",
+      "version": "3.5.1",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "files": [
-        "assets/licenses/dependencies/MIT-reference.txt",
-        "assets/licenses/dependencies/realfft-3.5.0-license-declaration.toml"
+        "assets/licenses/dependencies/realfft-3.5.1-LICENSE"
       ],
-      "source_archives": [
-        "assets/licenses/dependencies/realfft-3.5.0.crate"
-      ],
-      "unresolved": "The exact release and VCS tree declare MIT but omit a license grant/copyright notice. Original declaration and source plus MIT reference terms are included; reference terms do not invent a copyright holder or establish redistribution clearance."
+      "source_archives": []
     },
     {
       "name": "sonora-aec3",

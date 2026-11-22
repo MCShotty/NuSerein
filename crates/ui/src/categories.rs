@@ -951,7 +951,7 @@ impl MessagingUi {
 							}
 							let hovered = enabled && (response.hovered() || response.has_focus());
 							if active {
-								ui.painter().rect_filled(row, 8, colors.selected);
+								design::selection_surface(ui, row);
 							} else if hovered {
 								ui.painter().rect_filled(
 									row,
@@ -2983,7 +2983,7 @@ mod tests {
 					"name={name} painted={} strong={} accent={} badge={badge} pill={pill} label={label:?}",
 					name_row.is_some(),
 					color == colors.text_strong,
-					color == colors.accent,
+					color == design::readable_tint(colors.accent, colors.selected),
 				)
 			};
 			let painted = (indicators("getting-started"), indicators("hangout"));
@@ -3041,6 +3041,7 @@ mod tests {
 			channel_started_at: None,
 			server_muted: false,
 			server_deafened: false,
+			initial_request: 1,
 			request: 1,
 			phase: client_core::voice::Phase::Connecting,
 			muted: false,
@@ -3117,6 +3118,7 @@ mod tests {
 		state.voice.active = Some(client_core::voice::Call {
 			channel: Id(25),
 			guild: Some(Id(10)),
+			initial_request: 1,
 			request: 1,
 			stage_revision: 0,
 			media_mode: client_core::voice::MediaMode::Dave,

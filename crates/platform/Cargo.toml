@@ -15,7 +15,7 @@ client-core.workspace = true
 model.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["process"] }
-notify-rust = { version = "=4.18.0", features = ["preview-macos-un"] }
+notify-rust = { version = "=4.19.0", features = ["preview-macos-un"] }
 winit.workspace = true
 global-hotkey.workspace = true
 keyring-core.workspace = true
@@ -23,11 +23,12 @@ url.workspace = true
 zeroize.workspace = true
 getrandom.workspace = true
 tempfile = "=3.27.0"
-wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl"] }
-pollster = "=0.4.0"
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "wgsl"] }
+pollster = "=1.0.3"
 ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "load-dynamic", "api-23"] }
 rustfft = "=6.4.1"
-sha2 = "=0.10.9"
+sha2 = "=0.11.1"
+hex = "=0.4.3"
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal", "wayland"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 
@@ -40,13 +41,13 @@ wayland-backend = { version = "=0.3.17", features = ["client_system", "dlopen"] 
 wayland-client = "=0.31.15"
 wayland-protocols = { version = "=0.32.13", features = ["client", "staging"] }
 x11-dl = "=2.21.0"
-ksni = "=0.3.6"
+ksni = "=0.3.7"
 zbus = { version = "=5.19.0", default-features = false, features = ["tokio", "blocking-api"] }
 # Owned directly so a missing Secret Service can be retried after activating KWallet.
 zbus-secret-service-keyring-store = { version = "=1.0.1", features = ["crypto-rust"] }
 ashpd = { version = "=0.13.13", default-features = false, features = ["tokio", "global_shortcuts", "settings"] }
 futures-util.workspace = true
-gtk4 = { version = "=0.11.4", features = ["v4_10"] }
+gtk4 = { version = "=0.11.5", features = ["v4_10"] }
 webkit6 = "=0.6.1"
 
 [lints.rust]
@@ -71,11 +72,11 @@ objc2-core-video = { version = "=0.3.2", default-features = false, features = ["
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFBase", "CFArray", "CFDictionary", "CFNumber", "CFString"] }
 
 [target.'cfg(target_os = "linux")'.dependencies.gstreamer]
-version = "=0.25.3"
+version = "=0.25.4"
 [target.'cfg(target_os = "linux")'.dependencies.gstreamer-app]
 version = "=0.25.2"
 [target.'cfg(target_os = "linux")'.dependencies.gstreamer-video]
-version = "=0.25.3"
+version = "=0.25.4"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 wry.workspace = true
@@ -84,8 +85,8 @@ keyring.workspace = true
 [dev-dependencies]
 futures-util.workspace = true
 flate2.workspace = true
-wgpu = { version = "=30.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "dx12", "metal"] }
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "wgsl", "vulkan", "dx12", "metal"] }
 
 [build-dependencies]
-cc = "=1.4.6"
+cc = "=1.11.3"
 pkg-config = "=0.3.34"

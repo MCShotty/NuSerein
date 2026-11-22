@@ -69,6 +69,33 @@ accent, softer corner radii and its own server-rail selection language. The pale
 and spacing live in `crates/ui/src/design.rs`; every view resolves colours through
 `design::palette(ui)`.
 
+## Signal Desk
+
+The desktop uses cool, stepped surfaces to separate navigation, the current workspace, and its
+controls. The existing Signal N and azure identify the app, the current destination, and primary
+actions. Selected rows use a full outline and tint; keyboard focus has a separate, stronger
+outline. Unread, mention, warning, and call states keep their own labels, icons, or badges.
+Sign-in, Friends, conversations, settings, dialogs, and the dark call stage share this hierarchy.
+
+Switching conversations, Friends tabs, or settings pages briefly extends the accent line at the
+edge of the destination header, then settles to 24 points in 160 ms. Settings no longer dim their
+contents on page changes. Only paint changes during the handoff: focus, text, media, and the
+layout stay put. The first visible frame is settled, and the motion stops on focus loss.
+Accessibility → Motion and scrolling → Reduce interface motion uses the settled treatment and
+skips chrome fades. This device setting is independent of artwork playback and scrolling.
+
+### Stream controls
+
+Sharing requires choosing a source; refreshing a missing window never substitutes a display.
+The confirmation names the source and audio scope; resolution and fps are secondary options.
+Watching from outside the channel joins with the microphone muted, separately from saved mic
+preferences. Watching from another call requires an explicit switch. The call exit always leaves
+the call; stopping a stream is a separate action. Compact layouts keep watch actions named and
+retain sharing in the call bar’s More menu.
+
+Menu labels fall back to the bundled English message if the selected locale has no entry.
+The user settings sidebar and compact page picker use the same section order.
+
 ## Theme tokens and presets
 
 The `Palette` carries surface roles: `base` (title strip and server rail), `sidebar`
@@ -82,7 +109,7 @@ A process-wide `Variant` recolours the whole application on top of egui's light/
 
 | Preset | Surfaces |
 |---|---|
-| Serein | House neutral greys: dark (`#0e0e10` / `#141416` / `#18181b` / `#202023`) or light (`#e4e4e7` / `#f2f2f4` / white), following System/Light/Dark |
+| Serein | Signal Desk surfaces: dark (`#0c111a` / `#121a27` / `#171f2c` / `#202c3d`) or light (`#e4ebf6` / `#f0f4fa` / white), following System/Light/Dark |
 | Eclipse | Deep black surfaces for OLED displays |
 | Slate | Lighter blue-grey surfaces (`#1b1f2a` / `#262b38` / `#2c3140`) |
 | Nightfall, Ember, Verdant, Afterglow | Gradient backdrop painted under translucent dark surfaces |
@@ -119,7 +146,12 @@ Inter (Regular, Medium, SemiBold; SIL OFL 1.1) leads proportional text; egui's d
 the bundled Noto CJK/Arabic fallbacks follow in every family. egui has no synthetic bold, so
 `design::semibold`/`design::medium` select the heavier families for author names, headings,
 unread/selected channel names and 12px eyebrows. Category names retain their original case;
-read channel names use the regular face. Body is 15px, small 12px. Until `fonts::install`
+read channel names use the regular face. Body stays at 15 points, with 12-point metadata and
+14-point supporting copy. Workspace headers use 18-point SemiBold; page and dialog titles use
+24 points or 20 when compact. Keep descriptions close to their titles, with a larger gap before
+controls. Thread search sits below the dialog heading so a long title cannot crowd out the filter
+or Close; the Create action stacks below the filter when they do not fit side by side.
+Until `fonts::install`
 marks a context, the weight families resolve to the default face so headless tests never
 reference an unknown family.
 

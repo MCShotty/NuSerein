@@ -33,7 +33,18 @@ impl Desktop {
 					self.tray_window.restorer(),
 				)
 			};
-			#[cfg(not(target_os = "linux"))]
+			#[cfg(target_os = "windows")]
+			let tray = platform::tray::Tray::new_localized(
+				self.window.clone(),
+				move || wake.request_repaint(),
+				|| {
+					(
+						ui::i18n::translate("tray-show-app"),
+						ui::i18n::translate("app-menu-quit"),
+					)
+				},
+			);
+			#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 			let tray = platform::tray::Tray::new(self.window.clone(), move || wake.request_repaint());
 			match tray {
 				Ok(tray) => self.tray = Some(tray),

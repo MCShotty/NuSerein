@@ -52,6 +52,7 @@ impl Desktop {
 		self.sync_fonts(ctx);
 		self.hotkeys.sync(&self.messaging.keybinds, &self.runtime);
 		self.messaging.global_keybind_status = self.hotkeys.status();
+		self.messaging.retire_watch_mute(&self.state);
 		let voice_toggles = self.hotkeys.take_toggle_pending()
 			| self
 				.messaging

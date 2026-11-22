@@ -1519,7 +1519,7 @@ fn argument(
 					.char_limit(22)
 					.desired_width((ui.available_width() - 25.0).max(24.0)),
 			);
-			ui.menu_button("▾", |ui| {
+			let picker = ui.menu_button("▾", |ui| {
 				egui::ScrollArea::vertical()
 					.max_height(180.0)
 					.show(ui, |ui| {
@@ -1567,6 +1567,10 @@ fn argument(
 						}
 					});
 			});
+			picker.response.accessible_name(crate::i18n::translate_args(
+				"command-choose-option",
+				&[("name", &option.name)],
+			));
 			response
 		})
 		.inner
@@ -1585,7 +1589,7 @@ fn argument(
 			let suggestions = completion_current
 				.then(|| state.autocomplete_view(channel, command, path, &option.name, value))
 				.flatten();
-			ui.menu_button("▾", |ui| {
+			let picker = ui.menu_button("▾", |ui| {
 				if let Some(view) = suggestions {
 					if view.loading {
 						ui.spinner();
@@ -1612,6 +1616,10 @@ fn argument(
 					ui.weak(crate::i18n::translate("application-menu-type-suggestions"));
 				}
 			});
+			picker.response.accessible_name(crate::i18n::translate_args(
+				"command-choose-option",
+				&[("name", &option.name)],
+			));
 			response
 		})
 		.inner

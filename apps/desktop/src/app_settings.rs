@@ -59,6 +59,7 @@ impl Settings {
 			hide_window_decorations: ui.hide_window_decorations,
 			gpu_preference: ui.gpu_preference,
 			primary_color: ui.primary_color,
+			reduce_interface_motion: ui.reduce_interface_motion,
 			transparency_blur: ui.transparency_blur,
 			transparency: ui.transparency,
 			blur: ui.blur,
@@ -67,7 +68,7 @@ impl Settings {
 			voice_processing: Some(ui.voice_processing),
 			video_settings: ui.video_settings,
 			voice_push_to_talk: ui.voice_push_to_talk,
-			voice_muted: ui.voice_muted,
+			voice_muted: ui.saved_voice_muted(),
 			voice_deafened: ui.voice_deafened,
 			voice_input: ui.voice_input.clone(),
 			voice_output: ui.voice_output.clone(),
@@ -110,6 +111,7 @@ impl Settings {
 		ui.hide_window_decorations = value.hide_window_decorations;
 		ui.gpu_preference = value.gpu_preference;
 		ui.primary_color = value.primary_color;
+		ui.reduce_interface_motion = value.reduce_interface_motion;
 		ui.transparency_blur = value.transparency_blur;
 		ui.transparency = value.transparency;
 		ui.blur = value.blur;

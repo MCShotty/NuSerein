@@ -176,6 +176,7 @@ impl Desktop {
 		ui::fonts::reset_session_memory(ctx);
 		let _ = ui::emoji::install(ctx);
 		ui::design::apply(ctx);
+		ui::design::set_reduced_motion(ctx, self.messaging.reduce_interface_motion);
 		ctx.set_theme(self.appearance);
 		self.sync_system_theme(ctx);
 		self.messaging
@@ -762,36 +763,32 @@ impl Desktop {
 	fn sign_in_header(&self, ui: &mut egui::Ui, returning: bool) {
 		let p = ui::design::palette(ui);
 		ui.vertical_centered(|ui| {
-			let (mark, _) = ui.allocate_exact_size(egui::vec2(44.0, 44.0), egui::Sense::hover());
-			ui.painter()
-				.rect_filled(mark.expand(6.0), 17, p.accent.gamma_multiply(0.16));
-			ui::icons::paint_brand(ui.painter(), mark);
-			ui.add_space(12.0);
-			ui.label(
-				ui::design::semibold(
-					ui,
-					ui::i18n::translate_if_key(if returning {
-						"main-sign-in-header-welcome-back"
-					} else {
-						"main-sign-in-header-welcome-to-serein"
-					}),
-					22.0,
-				)
-				.color(p.text_strong),
+			let (plate, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+			ui.painter().rect(
+				plate,
+				16,
+				ui::design::mix(p.raised, p.accent, 0.16),
+				egui::Stroke::new(1.0, ui::design::mix(p.border, p.accent, 0.65)),
+				egui::StrokeKind::Inside,
 			);
-			ui.add_space(5.0);
-			ui.add(
-				egui::Label::new(
-					egui::RichText::new(ui::i18n::translate_if_key(if returning {
-						"main-sign-in-header-continue-with-a-saved-account-or-sign-in-with-another"
-					} else {
-						"main-sign-in-header-sign-in-with-your-discord-account-to-get-started"
-					}))
-					.size(14.0)
-					.color(p.muted),
-				)
-				.wrap(),
-			);
+			ui::icons::paint_brand(ui.painter(), plate.shrink(10.0));
+			ui.add_space(8.0);
+			ui.scope(|ui| {
+				ui.spacing_mut().item_spacing.y = 4.0;
+				let title = ui::i18n::translate_if_key(if returning {
+					"main-sign-in-header-welcome-back"
+				} else {
+					"main-sign-in-header-welcome-to-serein"
+				});
+				let detail = ui::i18n::translate_if_key(if returning {
+					"main-sign-in-header-continue-with-a-saved-account-or-sign-in-with-another"
+				} else {
+					"main-sign-in-header-sign-in-with-your-discord-account-to-get-started"
+				});
+				let compact = ui.available_width() < 360.0;
+				ui.add(egui::Label::new(ui::design::page_heading(ui, title, compact)).wrap());
+				ui.add(egui::Label::new(ui::design::supporting_text(ui, detail)).wrap());
+			});
 		});
 	}
 	/// Accounts already signed in on this device: one tap restores their saved login.

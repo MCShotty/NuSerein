@@ -24,6 +24,8 @@ registry package. Existing direct-component notices are reused where their prove
 not complete license grants by themselves. Their presence must not close a missing-text
 check. Older `objc2-*-LICENSE.txt` files contain the upstream MIT text.
 
+The November 2026 refresh uses objc2 0.5.3: its [upstream LICENSE.txt](https://raw.githubusercontent.com/madsmtm/objc2/5237cbf081d04ef75a1f6a207b4018e7c1ae7438/LICENSE.txt) matches the existing `objc2-4fc083f1-LICENSE.txt` byte-for-byte. RealFFT 3.5.1 now supplies the full MIT text. `realfft-3.5.1-LICENSE` is copied from its checksummed crate, SHA-256 `080766c57f9e48f00218f4e43c7d671d4b6ffee85a39417b5ab3c916dfe29b0d` (license file). The earlier 3.5.0 declaration and archive below are historical, not evidence for the updated dependency.
+
 ## Payloads
 
 | File | Component(s) | Exact source | SHA-256 |
@@ -35,7 +37,7 @@ check. Older `objc2-*-LICENSE.txt` files contain the upstream MIT text.
 | `egui-fonts-UFL.txt` | epaint_default_fonts 0.36.2 | [upstream](https://github.com/emilk/egui/blob/4821fc54ae083ac516e137a61e70550330e55169/crates/epaint_default_fonts/fonts/UFL.txt) | `2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002` |
 | `egui-fonts-emoji-icon-font-mit-license.txt` | epaint_default_fonts 0.36.2 | [upstream](https://github.com/emilk/egui/blob/4821fc54ae083ac516e137a61e70550330e55169/crates/epaint_default_fonts/fonts/emoji-icon-font-mit-license.txt) | `b9d2c1d909aa149996fd4c91dcb92b2362a04431640c1d200959da94caf8cde1` |
 | `egui-fonts-egui-icons.txt` | epaint_default_fonts 0.36.2 | [upstream](https://github.com/emilk/egui/blob/4821fc54ae083ac516e137a61e70550330e55169/crates/epaint_default_fonts/fonts/egui-icons.txt) | `36dbbfd79d73974f864116879c17dd11559e1340277385f1ac52d8d29a5f5c79` |
-| `aws-lc-fiat-LICENSE` | aws-lc-sys 0.45.0 | [upstream](https://docs.rs/crate/aws-lc-sys/0.45.0/source/aws-lc/third_party/fiat/LICENSE) | `43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061` |
+| `aws-lc-fiat-LICENSE` | aws-lc-sys 0.47.0 | [upstream](https://docs.rs/crate/aws-lc-sys/0.47.0/source/aws-lc/third_party/fiat/LICENSE) | `43e358d7b6eb109d0f51f7b3a090fd82607965767c25fadee39e922475de2061` |
 | `option-ext-0.2.0.crate` | option-ext 0.2.0 | [upstream](https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate) | `04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d` |
 | `hpke-rs-crypto-0.6.1.crate` | hpke-rs-crypto 0.6.1 | [upstream](https://static.crates.io/crates/hpke-rs-crypto/hpke-rs-crypto-0.6.1.crate) | `0a73a99d9008010d73289f41335a3f6e14fb8c04eaf60e9111b450463b1bbc7f` |
 | `hpke-rs-rust-crypto-0.6.1.crate` | hpke-rs-rust-crypto 0.6.1 | [upstream](https://static.crates.io/crates/hpke-rs-rust-crypto/hpke-rs-rust-crypto-0.6.1.crate) | `14b28be6cba9081c7feda2651d51c2a900029798e78b4c1e093e792f4571a870` |
@@ -49,7 +51,7 @@ check. Older `objc2-*-LICENSE.txt` files contain the upstream MIT text.
 | `accesskit-c88605b9-LICENSE-APACHE` | accesskit_consumer 0.38.0; accesskit_macos 0.26.3 | [upstream](https://raw.githubusercontent.com/AccessKit/accesskit/c88605b96d04431f9c3c792464a0f2f253480e94/LICENSE-APACHE) | `62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a` |
 | `objc2-4fc083f1-LICENSE.txt` | block2 0.5.1; objc-sys 0.3.5; objc2 0.5.2 | [upstream](https://raw.githubusercontent.com/madsmtm/objc2/4fc083f1c6d6784577e38b0ee8dbd344481e2fd2/LICENSE.txt) | `e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5` |
 | `objc2-b4167b58-LICENSE.md` | block2 0.6.2 | [upstream](https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md) | `7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54` |
-| `clipboard-win-3b27cf2b-LICENSE` | clipboard-win 5.4.1 | [upstream](https://raw.githubusercontent.com/DoumanAsh/clipboard-win/3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342/LICENSE) | `c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566` |
+| `clipboard-win-3b27cf2b-LICENSE` | clipboard-win 5.4.3 (unchanged text) | [upstream](https://raw.githubusercontent.com/DoumanAsh/clipboard-win/ed27008ae5d1f10cfbb266de039f0fb35fd05a56/LICENSE) | `c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566` |
 | `sample-97c3bb9b-LICENSE-MIT` | dasp_sample 0.11.0 | [upstream](https://raw.githubusercontent.com/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT) | `b1d6df41ed3aa96806e74c729444d7c121d90e6660a6aed01d298e03fde475a0` |
 | `sample-97c3bb9b-LICENSE-APACHE` | dasp_sample 0.11.0 | [upstream](https://raw.githubusercontent.com/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-APACHE) | `756c8d2ab2dc24f256e1455b5f03937f4933d83d7bc9f2d55009fc962377d512` |
 | `gl-rs-ea503e8d-LICENSE` | gl_generator 0.14.0 | [upstream](https://raw.githubusercontent.com/brendanzab/gl-rs/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/LICENSE) | `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30` |
@@ -86,7 +88,7 @@ notices. Git-sourced egui uses the full revision recorded in its source links in
 - accesskit_winit 0.32.2: 1fe9a94394896352cc4660ca2288bd4ef883d83238853c038b44070c8f134313
 - block2 0.5.1: 2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f
 - block2 0.6.2: cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5
-- clipboard-win 5.4.1: bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4
+- clipboard-win 5.4.3: 052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a
 - dasp_sample 0.11.0: 0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f
 - gl_generator 0.14.0: 1a95dfc23a2b4a9a2f5ab41d194f8bfda3cabec42af4e39f08c339eb2a0c124d
 - khronos_api 3.1.0: e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc

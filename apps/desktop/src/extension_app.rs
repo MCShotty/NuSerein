@@ -618,7 +618,7 @@ pub fn snapshot(
 			muted: call.is_some_and(|c| c.muted),
 			deafened: call.is_some_and(|c| c.deafened),
 			camera: call.is_some_and(|c| c.camera),
-			streaming: call.is_some() && messaging.screen.busy,
+			streaming: call.is_some() && messaging.screen.busy(),
 			participants: call
 				.into_iter()
 				.flat_map(|c| &c.participants)
@@ -1231,7 +1231,7 @@ impl ChangeKey {
 					muted: call.muted,
 					deafened: call.deafened,
 					camera: call.camera,
-					streaming: messaging.screen.busy,
+					streaming: messaging.screen.busy(),
 					participants: participants.finish(),
 				}
 			}),

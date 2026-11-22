@@ -39,6 +39,8 @@ thread_local! {
 	// Synthetic UI fixtures must not share locale changes with parallel tests.
 	#[cfg(test)]
 	static TEST_CURRENT: std::cell::Cell<Language> = const { std::cell::Cell::new(Language::English) };
+	// Lazily keep one bounded English bundle for untranslated messages, with English plural rules.
+	static ENGLISH_FALLBACK: ActiveBundle = Language::English.load();
 	static ACTIVE_BUNDLE: RefCell<Option<ActiveBundle>> = const { RefCell::new(None) };
 }
 
@@ -212,21 +214,17 @@ impl Language {
 			{
 				*active = Some(language.load());
 			}
-			let bundle = &active.as_ref()?.bundle;
-			let pattern = if let Some((message, attribute)) = key.split_once('.') {
-				bundle
-					.get_message(message)?
-					.attributes()
-					.find(|value| value.id() == attribute)?
-					.value()
-			} else {
-				bundle.get_message(key)?.value()?
-			};
-			let mut errors = Vec::new();
-			let value = bundle
-				.format_pattern(pattern, args, &mut errors)
-				.into_owned();
-			errors.is_empty().then_some(value)
+			let result = render(&active.as_ref()?.bundle, key, args);
+			result.or_else(|| {
+				if language == Language::English
+					|| !key
+						.bytes()
+						.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+				{
+					return None;
+				}
+				ENGLISH_FALLBACK.with(|fallback| render(&fallback.bundle, key, args))
+			})
 		})
 	}
 
@@ -323,6 +321,27 @@ pub(crate) fn current() -> Language {
 		.into_iter()
 		.find(|language| *language as u8 == value)
 		.unwrap_or_default()
+}
+
+fn render(
+	bundle: &FluentBundle<FluentResource>,
+	key: &str,
+	args: Option<&FluentArgs<'_>>,
+) -> Option<String> {
+	let pattern = if let Some((message, attribute)) = key.split_once('.') {
+		bundle
+			.get_message(message)?
+			.attributes()
+			.find(|value| value.id() == attribute)?
+			.value()
+	} else {
+		bundle.get_message(key)?.value()?
+	};
+	let mut errors = Vec::new();
+	let value = bundle
+		.format_pattern(pattern, args, &mut errors)
+		.into_owned();
+	errors.is_empty().then_some(value)
 }
 
 fn language_from_tag(tag: &str) -> Language {
@@ -596,6 +615,25 @@ mod tests {
 		}
 	}
 
+	#[test]
+	fn incomplete_catalog_falls_back_to_english_without_rewriting_user_text() {
+		// A fixture remains valid even after all production catalogs reach parity.
+		ACTIVE_BUNDLE.with_borrow_mut(|active| {
+			*active = Some(ActiveBundle {
+				language: Language::German,
+				bundle: FluentBundle::new_concurrent(vec![GERMAN.clone()]),
+			});
+		});
+		assert_eq!(
+			Language::German.text("page-general"),
+			Language::English.text("page-general")
+		);
+		assert!(
+			Language::German
+				.try_text("A friend's custom status")
+				.is_none()
+		);
+	}
 	#[test]
 	fn keeps_only_the_last_requested_catalog_loaded() {
 		ACTIVE_BUNDLE.with_borrow_mut(|active| *active = None);
