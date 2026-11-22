@@ -124,18 +124,20 @@ jobs:
           echo "FFMPEG_WORK=$ffmpeg_root/build" >> "$GITHUB_ENV"
           echo "FFMPEG_CACHE=$ffmpeg_root/sources" >> "$GITHUB_ENV"
       - name: Build pinned FFmpeg media libraries
+        id: ffmpeg_unix
         if: runner.os != 'Windows'
         run: python3 scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
       - name: Build pinned FFmpeg media libraries (MSVC)
+        id: ffmpeg_msvc
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: python scripts/build-ffmpeg.py --prefix "$FFMPEG_DIR" --work-dir "$FFMPEG_WORK" --cache-dir "$FFMPEG_CACHE"
       - name: Preserve FFmpeg configure diagnostics
-        if: failure()
+        if: failure() && (steps.ffmpeg_unix.outcome == 'failure' || steps.ffmpeg_msvc.outcome == 'failure')
         uses: actions/upload-artifact@v7.0.1
         with:
           name: ffmpeg-configure-${{ runner.os }}-${{ runner.arch }}
-          path: ${{ env.FFMPEG_WORK }}/**/ffbuild/config.log
+          path: ${{ runner.temp }}/serein-ffmpeg/build/**/ffbuild/config.log
           if-no-files-found: ignore
           retention-days: 7
       - name: Driver capability query regression fixtures (offline)
