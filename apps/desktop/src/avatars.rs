@@ -1123,7 +1123,10 @@ fn disk_key(key: &str) -> Option<String> {
 		|| key.starts_with("nameplate-")
 		|| key.starts_with("badge-art:")
 	{
-		Some(format!("embed-{:x}", Sha256::digest(url.as_bytes())))
+		Some(format!(
+			"embed-{}",
+			hex::encode(Sha256::digest(url.as_bytes()))
+		))
 	} else {
 		Some(key.to_owned())
 	}
@@ -3772,7 +3775,10 @@ mod tests {
 		assert!(!transformed.contains("fit=cover"));
 		assert_ne!(
 			disk_key(embed_key).unwrap(),
-			format!("embed-{:x}", Sha256::digest(embed_key.as_bytes()))
+			format!(
+				"embed-{}",
+				hex::encode(Sha256::digest(embed_key.as_bytes()))
+			)
 		);
 		assert_eq!(disk_key(embed_key).unwrap().len(), 70);
 		assert!(

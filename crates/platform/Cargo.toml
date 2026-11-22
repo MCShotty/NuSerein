@@ -28,6 +28,7 @@ pollster = "=1.0.3"
 ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "load-dynamic", "api-23"] }
 rustfft = "=6.4.1"
 sha2 = "=0.11.1"
+hex = "=0.4.3"
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal", "wayland"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
 

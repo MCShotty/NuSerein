@@ -1591,7 +1591,7 @@ fn decode_preview(bytes: &[u8], preview: &Preview) -> Option<eframe::egui::Color
 }
 
 fn digest(bytes: &[u8]) -> String {
-	format!("{:x}", Sha256::digest(bytes))
+	hex::encode(Sha256::digest(bytes))
 }
 
 fn download(raw: &str, limit: usize, gate: &Gate, timeout: Duration) -> Result<Vec<u8>, String> {
@@ -1714,6 +1714,14 @@ fn public_ip(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn catalog_digest_matches_standard_sha256_hex() {
+		assert_eq!(
+			digest(b"abc"),
+			"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+		);
+	}
 
 	#[test]
 	fn extended_input_is_trimmed_after_storage_is_loaded() {

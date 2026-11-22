@@ -111,7 +111,7 @@ impl Assets {
 				}
 				hash.update(&buffer[..read]);
 			}
-			if count != size || format!("{:x}", hash.finalize()) != expected {
+			if count != size || hex::encode(hash.finalize()) != expected {
 				return Err("LavaSRv2 model verification failed");
 			}
 		}
