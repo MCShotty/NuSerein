@@ -856,8 +856,11 @@ impl MessageDto {
 			.filter(|id| id.0 > 0 && id.0 < self.id.0);
 		let unsupported_reference =
 			self.message_reference.is_some() && reply_to.is_none() && !forwarded;
-		let reply_deleted =
-			reply_to.is_some() && matches!(self.referenced_message, model::Patch::Null);
+		// Poll results can link to the poll, but are not replies. A missing poll preview
+		// must not generate a reply-deletion marker or invalidate its history page.
+		let reply_deleted = matches!(self.kind, 19 | 23)
+			&& reply_to.is_some()
+			&& matches!(self.referenced_message, model::Patch::Null);
 		let reply_preview = match (reply_to, self.referenced_message) {
 			(Some(target), model::Patch::Value(preview)) => {
 				preview.into_model(self.channel_id, target)
@@ -1391,6 +1394,16 @@ mod tests {
 				assert_eq!(deleted.reply_to, Some(Id(50)));
 				assert!(deleted.reply_deleted && !deleted.unsupported);
 			}
+			let mut result = wire();
+			result["type"] = 46.into();
+			result["referenced_message"] = serde_json::Value::Null;
+			let result = read(result);
+			assert_eq!(
+				result.reply_to,
+				Some(Id(50)),
+				"Keep the poll navigation target"
+			);
+			assert!(!result.reply_deleted && result.reply_preview.is_none());
 			let mut value = wire();
 			// An incomplete preview is discarded; nested reply chains are never decoded.
 			value["referenced_message"] = serde_json::json!({"content":"nested secret marker", "referenced_message":{"content":"nested"}});
