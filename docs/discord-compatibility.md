@@ -3665,7 +3665,10 @@ examined paths and scenarios. AMF/Nix work tracked in PR #43 is separate.
 An unsupported embed object no longer invalidates the rest of its message or a history page.
 It retains a limited placeholder with no actionable media. The wire-size and card-count limits,
 message identity checks and channel permissions still apply. A stale empty timeline offers an
-explicit reload rather than claiming cached messages are on screen.
+explicit reload rather than claiming cached messages are on screen. For display-only history, a
+malformed reaction list stays unknown, and a malformed nested reply preview stays unavailable
+rather than marking its target deleted. Exact-message readbacks keep their strict decoder. Other
+rejections report fixed local categories without exposing field paths, message content, or IDs.
 
 Guild role colors are presentation only. If member data is absent on the signed-in user's
 message, the current guild's own member snapshot can supply its roles. Missing sidebar presence

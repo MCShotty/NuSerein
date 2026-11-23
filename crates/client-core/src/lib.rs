@@ -2826,7 +2826,10 @@ mod tests {
 				},
 			);
 			assert_eq!(state.freshness, Freshness::Stale); // before boundary cannot repeat itself
-			assert_eq!(state.history_failure(), Some(auth::Failure::Protocol));
+			assert_eq!(
+				state.history_failure(),
+				Some(auth::Failure::ProtocolAt("history-page-scope"))
+			);
 			state.history(None);
 			let request = state.request;
 			assert_eq!(state.history_failure(), None);

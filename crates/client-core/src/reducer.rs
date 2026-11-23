@@ -1420,7 +1420,10 @@ impl State {
 						return;
 					}
 					self.cancel_history();
-					self.record_history_failure(channel, auth::Failure::Protocol);
+					self.record_history_failure(
+						channel,
+						auth::Failure::ProtocolAt("history-page-scope"),
+					);
 					self.fail(auth::Failure::Protocol);
 					return;
 				}
