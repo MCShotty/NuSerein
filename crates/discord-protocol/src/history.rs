@@ -164,23 +164,23 @@ mod tests {
 			let mut bad = row.clone();
 			bad[field] = value;
 			assert_eq!(
-				page(&serde_json::to_vec(&[reply(), bad]).unwrap()).unwrap_err(),
-				why
+				page(&serde_json::to_vec(&[reply(), bad]).unwrap()).err(),
+				Some(why)
 			);
 		}
 	}
 	#[test]
 	fn recovery_preserves_wire_limits_duplicates_and_page_shape() {
 		for bad in [b"{}".as_slice(), b"[] []", b"[{", b"null"] {
-			assert_eq!(page(bad).unwrap_err(), PageError::Page);
+			assert_eq!(page(bad).err(), Some(PageError::Page));
 		}
 		assert_eq!(
-			page(&serde_json::to_vec(&vec![reply(); 51]).unwrap()).unwrap_err(),
-			PageError::Limit
+			page(&serde_json::to_vec(&vec![reply(); 51]).unwrap()).err(),
+			Some(PageError::Limit)
 		);
 		assert_eq!(
-			page(&vec![b' '; crate::MAX_WIRE + 1]).unwrap_err(),
-			PageError::Limit
+			page(&vec![b' '; crate::MAX_WIRE + 1]).err(),
+			Some(PageError::Limit)
 		);
 		for pair in [
 			r#""reactions":[],"reactions":null"#,
@@ -190,7 +190,7 @@ mod tests {
 			let body = format!(
 				r#"[{{"id":"1","channel_id":"7","author":{{"id":"2","username":"test"}},{pair}}}]"#
 			);
-			assert_eq!(page(body.as_bytes()).unwrap_err(), PageError::Message);
+			assert_eq!(page(body.as_bytes()).err(), Some(PageError::Message));
 		}
 	}
 }
