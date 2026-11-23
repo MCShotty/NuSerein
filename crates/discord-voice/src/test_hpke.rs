@@ -3,8 +3,13 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::{OpenMlsProvider, crypto::OpenMlsCrypto, types::*};
 
 fn bytes(s: &str) -> Vec<u8> {
-	s.as_bytes()
-		.chunks_exact(2)
+	let (pairs, remainder) = s.as_bytes().as_chunks::<2>();
+	assert!(
+		remainder.is_empty(),
+		"RFC vector must contain complete hex bytes"
+	);
+	pairs
+		.iter()
 		.map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
 		.collect()
 }
