@@ -2827,6 +2827,14 @@ impl TimelineView {
 		}
 		let history_error = match state.history_failure() {
 			Some(Failure::Network) => Some("history-connection-failed"),
+			Some(Failure::ProtocolAt(
+				key @ ("history-page-format"
+				| "history-message-format"
+				| "history-people-format"
+				| "history-media-format"
+				| "history-feature-format"
+				| "history-page-scope"),
+			)) => Some(key),
 			Some(Failure::Protocol | Failure::ProtocolAt(_)) => Some("history-response-rejected"),
 			Some(Failure::ResponseLimit) => Some("history-response-too-large"),
 			Some(Failure::RateLimited) => Some("history-rate-limited"),

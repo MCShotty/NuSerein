@@ -24,6 +24,7 @@ pub mod gif_favorites;
 pub mod gifs;
 pub mod group_actions;
 pub mod guild_folders;
+pub mod history;
 pub mod inbox;
 pub mod invites;
 mod lossy;

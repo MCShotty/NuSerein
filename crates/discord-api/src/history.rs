@@ -2,6 +2,18 @@
 use super::{DiscordApi, Event, Failure, Id, Method, safe_delay};
 use discord_protocol::{MessageDto, decode, pins, search};
 
+fn history_page(bytes: &[u8]) -> Result<Vec<model::Message>, Failure> {
+	use discord_protocol::history::{PageError, page};
+	page(bytes).map_err(|error| match error {
+		PageError::Limit => Failure::ResponseLimit,
+		PageError::Page => Failure::ProtocolAt("history-page-format"),
+		PageError::Message => Failure::ProtocolAt("history-message-format"),
+		PageError::People => Failure::ProtocolAt("history-people-format"),
+		PageError::Media => Failure::ProtocolAt("history-media-format"),
+		PageError::Features => Failure::ProtocolAt("history-feature-format"),
+	})
+}
+
 impl DiscordApi {
 	/// One bounded 50-message history page, before or after a cursor or at the latest message.
 	pub(super) async fn history_around(&self, channel: Id, target: Id, request: u64) -> Event {
@@ -12,18 +24,13 @@ impl DiscordApi {
 				None,
 			)
 			.await
-			.and_then(|bytes| decode::<Vec<MessageDto>>(&bytes).map_err(|_| Failure::Protocol));
+			.and_then(|bytes| history_page(&bytes));
 		match result {
-			Ok(messages) if messages.len() <= 50 => Event::History {
+			Ok(messages) => Event::History {
 				channel,
 				request,
 				older: false,
-				messages: messages.into_iter().map(MessageDto::into_model).collect(),
-			},
-			Ok(_) => Event::HistoryFailed {
-				channel,
-				request,
-				failure: Failure::ResponseLimit,
+				messages,
 			},
 			Err(failure) if failure.ends_session() => Event::Failure(failure),
 			Err(failure) => Event::HistoryFailed {
@@ -86,18 +93,13 @@ impl DiscordApi {
 		match self
 			.request(Method::GET, &path, None)
 			.await
-			.and_then(|bytes| decode::<Vec<MessageDto>>(&bytes).map_err(|_| Failure::Protocol))
+			.and_then(|bytes| history_page(&bytes))
 		{
-			Ok(messages) if messages.len() <= 50 => Event::History {
+			Ok(messages) => Event::History {
 				channel,
 				request,
 				older: before.is_some(),
-				messages: messages.into_iter().map(MessageDto::into_model).collect(),
-			},
-			Ok(_) => Event::HistoryFailed {
-				channel,
-				request,
-				failure: Failure::ResponseLimit,
+				messages,
 			},
 			Err(Failure::Forbidden) => Event::Unavailable(channel),
 			Err(f) => Event::Failure(f),
