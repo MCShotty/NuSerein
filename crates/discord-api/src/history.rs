@@ -102,6 +102,11 @@ impl DiscordApi {
 				messages,
 			},
 			Err(Failure::Forbidden) => Event::Unavailable(channel),
+			Err(Failure::ResponseLimit) => Event::HistoryFailed {
+				channel,
+				request,
+				failure: Failure::ResponseLimit,
+			},
 			Err(f) => Event::Failure(f),
 		}
 	}
