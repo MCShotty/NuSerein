@@ -1022,6 +1022,28 @@ impl MessagingUi {
 			self.account_menu(&anchor, state, commands);
 		}
 	}
+	fn can_reload_history(state: &State) -> bool {
+		state.selected.is_some_and(|id| {
+			if state.is_forum(id) {
+				state.can_load_posts(id) && !state.posts.loading
+			} else {
+				state.freshness != Freshness::Loading && state.can_read_history(id)
+			}
+		})
+	}
+
+	fn can_reconnect_gateway(state: &State) -> bool {
+		state.auth == client_core::auth::AuthState::Authenticated && !state.gateway_connected
+	}
+
+	pub(super) fn reload_history(&mut self, state: &mut State, commands: &mut Vec<Command>) {
+		self.reconnect_requested |= Self::can_reconnect_gateway(state);
+		if Self::can_reload_history(state) {
+			commands.push(state.history(None));
+			self.timeline.follow_latest(state);
+		}
+	}
+
 	/// Conversation header: channel identity on the left, tools and search on the right.
 	#[allow(clippy::too_many_arguments)]
 	pub(super) fn channel_header(
@@ -1284,17 +1306,10 @@ impl MessagingUi {
 							}
 						}
 					}
-					let can_reload = state.selected.is_some_and(|id| {
-						if state.is_forum(id) {
-							state.can_load_posts(id) && !state.posts.loading
-						} else {
-							state.freshness != Freshness::Loading && state.can_read_history(id)
-						}
-					});
-					let can_reconnect = state.auth == client_core::auth::AuthState::Authenticated
-						&& !state.gateway_connected;
+					let enabled =
+						Self::can_reload_history(state) || Self::can_reconnect_gateway(state);
 					let reload = ui
-						.add_enabled_ui(can_reload || can_reconnect, |ui| {
+						.add_enabled_ui(enabled, |ui| {
 							icons::button(
 								ui,
 								icons::Icon::Reload,
@@ -1304,13 +1319,7 @@ impl MessagingUi {
 						})
 						.inner;
 					if reload.clicked() {
-						if can_reconnect {
-							self.reconnect_requested = true;
-						}
-						if can_reload {
-							commands.push(state.history(None));
-							self.timeline.follow_latest(state);
-						}
+						self.reload_history(state, commands);
 					}
 				}
 				if let Some(channel) = state.selected.filter(|_| {

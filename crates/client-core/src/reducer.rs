@@ -1420,6 +1420,7 @@ impl State {
 						return;
 					}
 					self.cancel_history();
+					self.record_history_failure(channel, auth::Failure::Protocol);
 					self.fail(auth::Failure::Protocol);
 					return;
 				}
@@ -1537,6 +1538,7 @@ impl State {
 					self.freshness = Freshness::Unavailable;
 					self.status = "Channel unavailable or permission denied";
 				} else {
+					self.record_history_failure(channel, failure);
 					self.fail(failure);
 				}
 				Ok(())

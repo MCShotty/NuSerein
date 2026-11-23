@@ -1,7 +1,7 @@
 mod row;
 use crate::design::LazyHover;
 use crate::markdown::{FormatCache, Formatted, discord_url};
-use client_core::State;
+use client_core::{State, auth::Failure};
 use egui::RichText;
 use model::{Id, Message};
 use std::{
@@ -159,6 +159,7 @@ pub struct TimelineView {
 	language: Option<crate::i18n::Language>,
 	scale: f32,
 	pub(super) load_older: bool,
+	pub(super) reload_requested: bool,
 	pub(super) latest: bool,
 	pub(super) visible_authors: Vec<Id>,
 	jump: bool,
@@ -2823,6 +2824,21 @@ impl TimelineView {
 				}
 			}
 			return;
+		}
+		let history_error = match state.history_failure() {
+			Some(Failure::Network) => Some("history-connection-failed"),
+			Some(Failure::Protocol | Failure::ProtocolAt(_)) => Some("history-response-rejected"),
+			Some(Failure::ResponseLimit) => Some("history-response-too-large"),
+			Some(Failure::RateLimited) => Some("history-rate-limited"),
+			Some(Failure::Busy) => Some("history-queue-busy"),
+			_ => None,
+		};
+		if empty
+			&& history_available
+			&& state.freshness == model::Freshness::Stale
+			&& let Some(key) = history_error
+		{
+			ui.label(crate::i18n::translate(key));
 		} else if empty && history_available && !welcome && !matches!(intro, Some(Intro::Direct(_)))
 		{
 			ui.label(crate::i18n::translate_if_key(match state.freshness {
@@ -2846,8 +2862,7 @@ impl TimelineView {
 				.button(crate::i18n::translate("reload-history"))
 				.clicked()
 		{
-			self.latest = true;
-			self.follow_latest(state);
+			self.reload_requested = true;
 		}
 		let area = ui.available_rect_before_wrap().intersect(ui.clip_rect());
 		let autoscroll_delta =

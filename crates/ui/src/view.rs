@@ -1134,7 +1134,9 @@ impl MessagingUi {
 							self.focus_switched_composer = true;
 							ctx.request_repaint();
 						}
-						if let Some(target) = self.timeline.reply_target.take() {
+						if std::mem::take(&mut self.timeline.reload_requested) {
+							self.reload_history(state, &mut commands);
+						} else if let Some(target) = self.timeline.reply_target.take() {
 							crate::scroll::reset_wheel(&ctx);
 							self.timeline.remember_position(state);
 							if let Some(command) = state.open_reply_target(target) {

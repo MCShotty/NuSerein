@@ -415,8 +415,9 @@ the one-second PCM queue, cancellation and audio preview limits remain enforced.
 This playback selection is independent of outgoing video encoding settings. Still images and animated GIFs keep their existing image decoders.
 Direct embed videos use the same bounded decoder, including extensionless Discord proxy
 URLs and WebM/Matroska containers. Unknown dimensions reserve a usable 16:9 stage;
-decoded pictures retain their aspect ratio within it. Small servers that ignore a range probe can supply
-one complete file of at most 256 KiB; larger files still require validated range support.
+decoded pictures retain their aspect ratio within it. On explicit Play, servers that ignore Range can supply
+one complete clip of at most 2 MiB; larger clips still require validated range support. Background posters
+retain their 256 KiB whole-response limit.
 Explicit Play accepts signed Discord CDN attachment links, including MOV links whose
 embed omits video metadata. Media attachment hosts resolve to the original CDN without
 changing signed parameters. Proxy and approved original candidates remain available for

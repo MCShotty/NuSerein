@@ -58,15 +58,18 @@ fn click(
 	view: &mut MessagingUi,
 	state: &mut State,
 	label: &str,
+	occurrence: usize,
 ) -> Vec<Command> {
 	for _ in 0..3 {
 		frame(ctx, view, state, vec![]);
 	}
-	let (_, nodes) = frame(ctx, view, state, vec![]);
+	let (_, mut nodes) = frame(ctx, view, state, vec![]);
+	// AccessKit node order is not visual order. The header is above the inline retry.
+	nodes.retain(|(name, _, _)| name == label);
+	nodes.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
 	let (_, pos, disabled) = nodes
-		.iter()
-		.find(|(name, _, _)| name == label)
-		.unwrap_or_else(|| panic!("Missing {label}"));
+		.get(occurrence)
+		.unwrap_or_else(|| panic!("Missing {label} control at index {occurrence}"));
 	assert!(!disabled, "{label} must remain enabled during recovery");
 	let mut commands = vec![];
 	for pressed in [true, false] {
@@ -125,21 +128,45 @@ pub fn check(mut state: State) {
 		frame(&ctx, &mut view, &mut state, vec![]);
 	}
 	// Recovery remains reachable even on platforms without a custom title bar.
-	let commands = click(&ctx, &mut view, &mut state, "Reconnect now");
+	let commands = click(&ctx, &mut view, &mut state, "Reconnect now", 0);
 	assert!(view.reconnect_requested && commands.is_empty());
-	view.reconnect_requested = false;
-	// Refresh wakes Gateway recovery and independently reloads readable REST history.
-	let commands = click(&ctx, &mut view, &mut state, "Reload history");
-	assert!(view.reconnect_requested);
-	let histories: Vec<_> = commands
-		.iter()
-		.filter(|command| matches!(command, Command::History { .. }))
-		.collect();
-	assert_eq!(histories.len(), 1);
-	assert!(matches!(histories[0], Command::History { channel: id, .. } if *id == channel));
+	// Both the header and inline reload wake Gateway recovery and request REST history once.
+	for (occurrence, location) in ["header", "empty timeline"].into_iter().enumerate() {
+		view.reconnect_requested = false;
+		let commands = click(&ctx, &mut view, &mut state, "Reload history", occurrence);
+		assert!(
+			view.reconnect_requested,
+			"The {location} must wake Gateway recovery"
+		);
+		let histories: Vec<_> = commands
+			.iter()
+			.filter(|command| matches!(command, Command::History { .. }))
+			.collect();
+		assert_eq!(
+			histories.len(),
+			1,
+			"The {location} must reload history once"
+		);
+		assert!(matches!(histories[0], Command::History { channel: id, .. } if *id == channel));
+		assert_eq!(state.freshness, Freshness::Loading);
+		if occurrence == 0 {
+			let request = state.request;
+			apply(
+				&mut state,
+				Event::History {
+					channel,
+					request,
+					older: false,
+					messages: vec![],
+				},
+			);
+			assert_eq!(state.freshness, Freshness::Stale);
+		}
+	}
 	let request = state.request;
-	assert_eq!(state.freshness, Freshness::Loading);
-	let commands = click(&ctx, &mut view, &mut state, "Reload history");
+	view.reconnect_requested = false;
+	let commands = click(&ctx, &mut view, &mut state, "Reload history", 0);
+	assert!(view.reconnect_requested);
 	assert!(
 		!commands
 			.iter()
@@ -160,7 +187,7 @@ pub fn check(mut state: State) {
 	state
 		.drafts
 		.insert(channel, "Synthetic message after wake".into());
-	let commands = click(&ctx, &mut view, &mut state, "Send message");
+	let commands = click(&ctx, &mut view, &mut state, "Send message", 0);
 	let sends: Vec<_> = commands
 		.iter()
 		.filter(|command| matches!(command, Command::Send { .. }))

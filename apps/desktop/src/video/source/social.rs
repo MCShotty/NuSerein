@@ -10,7 +10,7 @@ const MAX_METADATA: usize = 192 * 1024;
 fn reddit(url: &Url) -> bool {
 	matches!(
 		url.host_str(),
-		Some("v.redd.it" | "reddit.com" | "www.reddit.com" | "old.reddit.com")
+		Some("v.redd.it" | "redd.it" | "reddit.com" | "www.reddit.com" | "old.reddit.com")
 	)
 }
 fn media(page: &Url, raw: &str) -> Option<Url> {
@@ -41,8 +41,11 @@ fn reddit_post(page: &Url) -> Option<&str> {
 		return None;
 	}
 	let mut parts = page.path_segments()?;
+	if page.host_str() == Some("redd.it") {
+		return parts.next();
+	}
 	match parts.next()? {
-		"mediaembed" => parts.next(),
+		"mediaembed" | "comments" => parts.next(),
 		"r" => {
 			parts.next()?;
 			(parts.next()? == "comments")
@@ -242,7 +245,18 @@ mod tests {
 	fn reddit_listing_must_match_the_selected_post_and_video_origin() {
 		let page = ui::social_video_page("https://www.reddit.com/r/example/comments/abc/my_clip/")
 			.unwrap();
-		assert_eq!(reddit_post(&page), Some("abc"));
+		for raw in [
+			page.as_str(),
+			"https://redd.it/abc?tracking=unused",
+			"https://www.reddit.com/comments/abc/title/",
+		] {
+			assert_eq!(
+				reddit_post(&ui::social_video_page(raw).unwrap()),
+				Some("abc")
+			);
+		}
+		assert!(reddit_post(&ui::social_video_page("https://v.redd.it/abc").unwrap()).is_none());
+		assert!(ui::social_video_page("https://redd.it/abc/other").is_none());
 		let raw = br#"{"data":{"children":[{"kind":"t3","data":{"id":"abc","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/clip/DASH_720.mp4?sig=a%2Fb"}}}}]}}"#;
 		assert_eq!(
 			listing(&page, "abc", raw).unwrap().query(),
