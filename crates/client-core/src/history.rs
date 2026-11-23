@@ -1,7 +1,18 @@
 //! History requests, reading positions and pagination.
-use super::{Command, Freshness, Id, ReadingCursor, State};
+use super::{Command, Freshness, Id, ReadingCursor, State, auth::Failure};
 
 impl State {
+	/// Latest classified failure for the visible history request, not a global app error.
+	pub fn history_failure(&self) -> Option<Failure> {
+		let (channel, request, failure) = self.history_failure?;
+		(!self.history_pending && self.selected == Some(channel) && self.request == request)
+			.then_some(failure)
+	}
+
+	pub(super) fn record_history_failure(&mut self, channel: Id, failure: Failure) {
+		self.history_failure = Some((channel, self.request, failure));
+	}
+
 	pub fn history(&mut self, before: Option<Id>) -> Command {
 		if let Some(parent) = self.selected.filter(|id| self.is_forum(*id)) {
 			self.reload_forum_posts(parent);
@@ -47,6 +58,7 @@ impl State {
 		}
 	}
 	pub(super) fn history_range(&mut self, before: Option<Id>, after: Option<Id>) -> Command {
+		self.history_failure = None;
 		self.reply_previews.cancel_pending();
 		if self.selected.is_some_and(|channel| {
 			self.history_navigation
@@ -135,6 +147,7 @@ impl State {
 		Some(self.history(Some(before)))
 	}
 	pub(super) fn cancel_history(&mut self) {
+		self.history_failure = None;
 		self.history_navigation.clear();
 		self.typing.clear();
 		self.reactions.reset();
