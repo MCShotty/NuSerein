@@ -1,0 +1,38 @@
+name: Isolated history media trace
+on:
+  push:
+    branches: [diagnostics/history-media-2f88109a]
+permissions:
+  contents: read
+jobs:
+  trace:
+    if: github.repository == 'MCShotty/NuSerein'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Trace synthetic history pages on Windows x64
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ARCH -ne 'X64') { throw 'Expected x64 runner' }
+          $out = @(cargo test --locked -p discord-protocol --test history_media_trace -- --nocapture)
+          $code = $LASTEXITCODE
+          $out | Write-Output
+          if ($code -ne 0) { exit $code }
+          $rows = @($out | ForEach-Object { $_ -replace '^test \S+ \.\.\. ', '' } | Where-Object { $_ -match '^[^:]{1,64}: strict=' })
+          $labels = @($rows | ForEach-Object { ($_ -split ':',2)[0] } | Sort-Object -Unique)
+          if ($rows.Count -ne 21 -or $labels.Count -ne 21) { throw 'Expected 21 distinct synthetic trace cases' }
+          $rows | Set-Content -Encoding utf8 history-media-results.txt
+          '## Synthetic history media trace (Windows x64)' >> $env:GITHUB_STEP_SUMMARY
+          '```text' >> $env:GITHUB_STEP_SUMMARY
+          $rows >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: synthetic-history-media-trace-x64
+          path: history-media-results.txt
+          if-no-files-found: error
+          retention-days: 7
