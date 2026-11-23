@@ -6,6 +6,7 @@
 
 use std::fmt::Debug;
 
+use ed25519_dalek::Signer as Ed25519Signer;
 use openmls_traits::{
     signatures::{Signer, SignerError},
     storage::{self, StorageProvider, CURRENT_VERSION},
@@ -49,13 +50,15 @@ impl Signer for SignatureKeyPair {
             SignatureScheme::ECDSA_SECP256R1_SHA256 => {
                 let k = SigningKey::from_slice(&self.private)
                     .map_err(|_| SignerError::SigningError)?;
-                let signature: Signature = k.sign(payload);
+                let signature: Signature =
+                    P256Signer::try_sign(&k, payload).map_err(|_| SignerError::SigningError)?;
                 Ok(signature.to_der().to_bytes().into())
             }
             SignatureScheme::ED25519 => {
                 let k = ed25519_dalek::SigningKey::try_from(self.private.as_slice())
                     .map_err(|_| SignerError::SigningError)?;
-                let signature = k.sign(payload);
+                let signature = Ed25519Signer::try_sign(&k, payload)
+                    .map_err(|_| SignerError::SigningError)?;
                 Ok(signature.to_bytes().into())
             }
             _ => Err(SignerError::SigningError),
