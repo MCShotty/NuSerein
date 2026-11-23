@@ -1236,9 +1236,14 @@ pub fn social_video_page(raw: &str) -> Option<url::Url> {
 			| "m.instagram.com"
 			| "oginstagram.com"
 			| "www.oginstagram.com",
-			["reel" | "reels" | "tv", code],
+			["reel" | "reels" | "tv" | "p", code],
 		) => id(code),
 		("v.redd.it", [code]) => id(code),
+		("redd.it", [code])
+		| (
+			"reddit.com" | "www.reddit.com" | "old.reddit.com",
+			["comments", code] | ["comments", code, _],
+		) => id(code) && code.bytes().all(|b| b.is_ascii_alphanumeric()),
 		("reddit.com" | "www.reddit.com" | "old.reddit.com", ["mediaembed", code]) => id(code),
 		(
 			"reddit.com" | "www.reddit.com" | "old.reddit.com",

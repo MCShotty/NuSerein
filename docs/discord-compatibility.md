@@ -3393,7 +3393,11 @@ are admitted after explicit Play, with at most three redirects between approved 
 Both media metadata fields are considered, including extensionless endpoints;
 the decoder validates the actual container. Play is explicit. Unknown lengths require
 a one-byte range probe with a nonzero total at most 100 MiB, or one complete response
-of at most 256 KiB when a small server ignores Range. Unknown dimensions reserve a
+of at most 2 MiB on explicit Play when a server ignores Range. Attachment and embed requests use
+the configured HTTP proxy. Instagram `/p/` cards with video metadata can use the same anonymous
+public metadata lookup as Reels; plain photo cards do not initiate it. Reddit video cards with a
+`redd.it/<post-id>` or `/comments/<post-id>` link use the exact-post lookup, not the shortlink redirect.
+Unknown dimensions reserve a
 normal 16:9 player instead of a 16 × 9 pixel control strip.
 Anonymous bounded range reads feed the existing FFmpeg-first decoder and native
 HDR/GPU presentation. Other redirects and all credentials are refused. Suppressed/spoiler

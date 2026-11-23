@@ -1597,6 +1597,8 @@ mod tests {
 				false,
 			),
 			("https://v.redd.it/fixture", false, false, false),
+			("https://www.instagram.com/p/fixture/", false, true, true),
+			("https://redd.it/abc123", false, true, true),
 		] {
 			let mut message = test_support::message(1, model::Id(2));
 			message.embeds = vec![Embed {
@@ -1726,6 +1728,7 @@ mod tests {
 		}
 		for raw in [
 			"https://www.instagram.com/p/fixture",
+			"https://redd.it/abc123",
 			"https://www.reddit.com/r/synthetic/comments/fixture/album/",
 			"https://oginstagram.com.example/reel/fixture",
 			"https://www.oginstagram.com:444/reel/fixture",
