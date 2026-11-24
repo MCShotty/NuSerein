@@ -1177,6 +1177,10 @@ impl Calls {
 						Secret::new(token.expose().to_owned())?,
 						server.endpoint.clone(),
 					));
+				} else if self.session_confirmed {
+					// A repeat of the confirmed allocation is not a server migration.
+					// The desktop tears down live media on an actual replacement.
+					return Ok(());
 				}
 				emit(Event::Voice(voice::Event::Server {
 					request,
@@ -1913,6 +1917,21 @@ mod tests {
 					)
 					.unwrap();
 				assert_eq!(calls.negotiation_revision, revision); // Duplicate state does not invalidate the handshake.
+				events.lock().unwrap().clear();
+				calls
+					.dispatch("VOICE_SERVER_UPDATE", &server, Some(Id(1)), &emit)
+					.unwrap();
+				assert!(
+					events.lock().unwrap().is_empty(),
+					"duplicate allocation would disconnect the established call"
+				);
+				let replacement = serde_json::to_vec(&json!({"guild_id": guild, "channel_id":Id(20), "token":"synthetic-rotated", "endpoint":"synthetic.discord.media"})).unwrap();
+				calls
+					.dispatch("VOICE_SERVER_UPDATE", &replacement, Some(Id(1)), &emit)
+					.unwrap();
+				assert!(
+					matches!(events.lock().unwrap().as_slice(), [Event::Voice(voice::Event::Server { negotiation_revision: Some(new), .. })] if *new != revision)
+				);
 				events.lock().unwrap().clear();
 				calls
 					.dispatch(

@@ -5704,7 +5704,8 @@ force-sync-error-unsupported = Discord 傳回此版本無法安全使用的資�
 force-sync-error-storage = 無法更新本機快取，已保留現有資料。
 force-sync-error-stale = 這些資料在同步期間多次變更。請重試以取得較新的資料。
 
-watch-short = 觀看
+watch-camera-on = { $name } 的攝影機已開啟
+watch-camera-focus = 查看 { $name } 的攝影機畫面
 watch-owner = 觀看 { $name } 的直播
 watch-join-muted = 以靜音加入 { $channel } 並觀看 { $name } 的直播
 watch-switch-muted = 切換至 { $channel } 觀看 { $name } 的直播…

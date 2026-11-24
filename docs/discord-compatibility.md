@@ -1,5 +1,19 @@
 # Discord compatibility — checked 2026-09-10
 
+## Voice joining and participant media (November 24, 2026)
+
+Voice and Go Live use the documented UDP IP discovery exchange. The client may send the same
+74-byte probe up to four times on the same allocated socket within eight seconds. Only a reply
+matching the expected format and SSRC advances protocol selection. This retries no Gateway
+join, ring, camera, or share action and does not change the encryption requirements. An exact
+repeat of a confirmed Gateway server allocation is not a migration; a changed token or endpoint
+still invalidates it. If an unconfirmed transport fails, its local failure reason survives the
+wait for replacement credentials. Live normal-account interoperability remains unverified.
+
+In the guild roster, the monitor action watches a Go Live share. The camera icon instead reports
+camera state and can focus an available camera picture in the currently joined call. It never
+starts capture or opens a second stream connection.
+
 ## Explicit Force Sync (October 30, 2026)
 
 **Force Sync This Server** refreshes the selected server. **Settings → Storage & Sync →

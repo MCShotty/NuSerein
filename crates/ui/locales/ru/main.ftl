@@ -5615,7 +5615,8 @@ force-sync-error-unsupported = Discord вернул данные, которые
 force-sync-error-storage = Локальный кэш не обновлён. Существующие данные сохранены.
 force-sync-error-stale = Эти данные неоднократно менялись во время синхронизации. Повторите попытку для получения актуальных данных.
 
-watch-short = Смотреть
+watch-camera-on = Камера включена: { $name }
+watch-camera-focus = Показать видео с камеры: { $name }
 watch-owner = Смотреть трансляцию { $name }
 watch-join-muted = Войти в { $channel } с выключенным микрофоном и смотреть { $name }
 watch-switch-muted = Перейти в { $channel }, чтобы смотреть { $name }…

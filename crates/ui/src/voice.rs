@@ -684,15 +684,17 @@ impl MessagingUi {
 		})
 	}
 
+	/// True when the camera action asks the sidebar to show the already joined channel.
 	pub(super) fn voice_participant(
 		&mut self,
 		ui: &mut egui::Ui,
 		state: &State,
 		entry: &RosterEntry,
-	) {
+	) -> bool {
 		if !state.can_view(entry.channel) {
-			return;
+			return false;
 		}
+		let mut show_camera = false;
 		let colors = design::palette(ui);
 		let (user, name) = resolve_member(state, entry);
 		ui.push_id(
@@ -790,6 +792,34 @@ impl MessagingUi {
 							"voice-voice-participant-muted-for-you-on-this-device",
 						);
 					}
+					if shown.video {
+						// Cameras arrive on the call transport, not through Go Live. Outside
+						// the joined call this is a status, never an implicit join or subscription.
+						let available = state.voice.active.as_ref().is_some_and(|call| {
+							call.channel == entry.channel
+								&& matches!(call.phase, Phase::Connected | Phase::Waiting)
+						}) && self.tile_has_video(
+							state,
+							entry.channel,
+							&Tile::Participant(entry),
+						);
+						let key = if available {
+							"watch-camera-focus"
+						} else {
+							"watch-camera-on"
+						};
+						let label = crate::i18n::translate_args(key, &[("name", name)]);
+						if available {
+							if crate::icons::button(ui, crate::icons::Icon::Video, 26.0, &label)
+								.clicked()
+							{
+								self.voice_focus = Some(StageFocus::Participant(shown.user));
+								show_camera = true;
+							}
+						} else {
+							status_icon(ui, crate::icons::Icon::Video, colors.muted, &label);
+						}
+					}
 					if entry.participant.streaming {
 						let label = watch_label(state, entry.channel, name);
 						let (enabled, reason) = stream_preview_watch_state(
@@ -798,18 +828,15 @@ impl MessagingUi {
 							entry.participant.user,
 						);
 						let watch = ui
-							.add_enabled(
-								enabled,
-								egui::Button::new(crate::i18n::translate("watch-short")),
-							)
-							.accessible_name(&label)
-							.on_hover_ui(|ui| {
-								// A streamer or channel name can exceed a narrow viewport.
-								let width =
-									(ui.ctx().content_rect().width() - 32.0).clamp(1.0, 300.0);
-								ui.set_max_width(width);
-								ui.add(egui::Label::new(&label).wrap());
+							.add_enabled_ui(enabled, |ui| {
+								crate::icons::button(
+									ui,
+									crate::icons::Icon::ScreenShare,
+									26.0,
+									&label,
+								)
 							})
+							.inner
 							.on_disabled_hover_text(crate::i18n::translate_if_key(reason));
 						if watch.clicked() {
 							self.stream_preview_watch =
@@ -839,6 +866,7 @@ impl MessagingUi {
 				}
 			},
 		);
+		show_camera
 	}
 
 	fn stream_preview_popup(
@@ -7634,7 +7662,9 @@ mod tests {
 						events,
 						..Default::default()
 					},
-					|ui| view.voice_participant(ui, &state, &entry),
+					|ui| {
+						view.voice_participant(ui, &state, &entry);
+					},
 				);
 				let button = output.shapes.iter().find_map(|shape| match &shape.shape {
 					egui::Shape::Text(text) if text.galley.job.text == label => {
@@ -8950,6 +8980,102 @@ mod tests {
 			messaging.stream_preview_request.is_none(),
 			"An uninterrupted hover requests only once"
 		);
+	}
+
+	#[test]
+	fn camera_and_share_icons_expose_separate_actions_without_opening_devices() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		for camera_ready in [false, true] {
+			let state = test_support::voice_demo_state();
+			let mut entry = state.voice.roster[2].clone();
+			entry.participant.video = true;
+			let user = entry.participant.user;
+			let name = resolve_member(&state, &entry).1;
+			let watch = watch_label(&state, entry.channel, name);
+			let camera = crate::i18n::translate_args(
+				if camera_ready {
+					"watch-camera-focus"
+				} else {
+					"watch-camera-on"
+				},
+				&[("name", name)],
+			);
+			let mut view = MessagingUi::default();
+			let ctx = egui::Context::default();
+			ctx.enable_accesskit();
+			let texture = ctx.load_texture(
+				"fixture",
+				egui::ColorImage::filled([2, 2], egui::Color32::BLUE),
+				Default::default(),
+			);
+			if camera_ready {
+				view.voice_remote_video
+					.push((user, egui::load::SizedTexture::from_handle(&texture)));
+			}
+			let mut selected = false;
+			let mut frame = |events| {
+				ctx.run_ui(
+					egui::RawInput {
+						events,
+						..Default::default()
+					},
+					|ui| {
+						ui.set_width(200.0);
+						selected |= view.voice_participant(ui, &state, &entry);
+					},
+				)
+			};
+			let mut output = frame(vec![]);
+			output.textures_delta.clear();
+			let nodes = &output
+				.platform_output
+				.accesskit_update
+				.as_ref()
+				.unwrap()
+				.nodes;
+			let node = |s: &str| {
+				&nodes
+					.iter()
+					.find(|(_, n)| n.label() == Some(s) || n.value() == Some(s))
+					.expect("named media control")
+					.1
+			};
+			assert_eq!(node(&watch).role(), egui::Role::Button);
+			let target = if camera_ready {
+				assert_eq!(node(&camera).role(), egui::Role::Button);
+				node(&camera)
+			} else {
+				assert_ne!(node(&camera).role(), egui::Role::Button);
+				node(&watch)
+			};
+			let rect = target.bounds().unwrap();
+			let pos = egui::pos2(
+				((rect.x0 + rect.x1) * 0.5) as f32,
+				((rect.y0 + rect.y1) * 0.5) as f32,
+			);
+			for pressed in [true, false] {
+				frame(vec![
+					egui::Event::PointerMoved(pos),
+					egui::Event::PointerButton {
+						pos,
+						button: egui::PointerButton::Primary,
+						pressed,
+						modifiers: egui::Modifiers::NONE,
+					},
+				])
+				.drop_without_applying_deltas();
+			}
+			assert_eq!(selected, camera_ready);
+			assert_eq!(
+				view.voice_focus,
+				camera_ready.then_some(StageFocus::Participant(user))
+			);
+			assert_eq!(
+				view.stream_preview_watch,
+				(!camera_ready).then_some((entry.channel, user))
+			);
+			assert!(view.profile.open_user().is_none());
+		}
 	}
 
 	#[test]

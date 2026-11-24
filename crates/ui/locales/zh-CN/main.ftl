@@ -5704,7 +5704,8 @@ force-sync-error-unsupported = Discord 返回了此版本无法安全使用的�
 force-sync-error-storage = 无法更新本地缓存，已保留现有数据。
 force-sync-error-stale = 这些数据在同步期间多次更改。请重试以获取较新的数据。
 
-watch-short = 观看
+watch-camera-on = { $name } 的摄像头已开启
+watch-camera-focus = 查看 { $name } 的摄像头画面
 watch-owner = 观看 { $name } 的直播
 watch-join-muted = 静音加入 { $channel } 并观看 { $name } 的直播
 watch-switch-muted = 切换到 { $channel } 观看 { $name } 的直播…

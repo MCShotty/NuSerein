@@ -5598,7 +5598,8 @@ force-sync-error-unsupported = Discord, bu sürümün güvenle kullanamadığı 
 force-sync-error-storage = Yerel önbellek güncellenemedi; mevcut veriler korundu.
 force-sync-error-stale = Bu veriler eşitleme sırasında tekrar tekrar değişti. Daha güncel veri için yeniden deneyin.
 
-watch-short = İzle
+watch-camera-on = { $name } adlı kişinin kamerası açık
+watch-camera-focus = { $name } adlı kişinin kamerasını görüntüle
 watch-owner = { $name } yayınını izle
 watch-join-muted = { $name } yayınını izlemek için { $channel } kanalına mikrofon kapalı katıl
 watch-switch-muted = { $name } yayınını izlemek için { $channel } kanalına geç…

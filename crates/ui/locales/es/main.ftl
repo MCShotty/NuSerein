@@ -5619,7 +5619,8 @@ force-sync-error-unsupported = Discord devolvió datos que esta versión no pudo
 force-sync-error-storage = No se pudo actualizar la caché local; se conservaron los datos existentes.
 force-sync-error-stale = Estos datos cambiaron varias veces durante la sincronización. Reintenta para obtener una versión más reciente.
 
-watch-short = Ver
+watch-camera-on = La cámara de { $name } está encendida
+watch-camera-focus = Ver la cámara de { $name }
 watch-owner = Ver a { $name }
 watch-join-muted = Unirse a { $channel } con el micrófono silenciado para ver a { $name }
 watch-switch-muted = Cambiar a { $channel } para ver a { $name }…
