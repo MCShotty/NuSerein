@@ -215,3 +215,34 @@ impl DiscordApi {
 			.map_err(|_| Failure::Protocol)
 	}
 }
+
+#[cfg(test)]
+mod media_tests {
+	use super::*;
+	use client_core::{Envelope, State};
+	use serde_json::json;
+
+	#[tokio::test]
+	async fn damaged_media_does_not_hide_neighbors_in_the_selected_timeline() {
+		tokio::time::timeout(std::time::Duration::from_secs(10), async {
+			let mut rows: Vec<_> = [13,12,11].into_iter().map(|id| json!({"id":id.to_string(),"channel_id":"7","author":{"id":"2","username":"fixture"},"content":"retained"})).collect();
+			rows[1]["attachments"] = json!([{"id":"21","width":-1,"filename":"clip.mp4","url":"https://example.invalid/clip"}]);
+			let (api, captured, server) = crate::community_admin::tests::fixture(vec![("200 OK", serde_json::to_string(&rows).unwrap())]).await;
+			let mut state = State::default();
+			state.apply(Envelope { generation: state.generation, event: Event::Ready {
+				permissions: Default::default(), guilds: vec![], user: decode::<discord_protocol::UserDto>(br#"{"id":"3","username":"fixture"}"#).unwrap().into_model(),
+				channels: vec![model::Channel {id:Id(7),kind:1,name:"fixture".into(),guild:None,parent_id:None,position:0,recipients:vec![],icon:None,member_list_id:None,tags:None,message_count:None,last_message:None}],
+			}});
+			state.select(Id(7));
+			let event = api.execute(state.history(None)).await;
+			state.apply(Envelope {generation: state.generation, event});
+			server.await.unwrap();
+			assert_eq!(captured.lock().unwrap()[0].0,"GET /channels/7/messages?limit=50 HTTP/1.1");
+			assert_eq!(state.history_failure(),None); assert_eq!(state.freshness,model::Freshness::Fresh);
+			assert_eq!(state.timeline.len(),3);
+			let middle = state.timeline.get(Id(12)).unwrap();
+			assert_eq!(middle.content,"retained"); assert_eq!(middle.attachments[0].id,Id(21));
+			assert!(middle.attachments[0].media.url.is_none() && !middle.attachments[0].is_video());
+		}).await.unwrap();
+	}
+}

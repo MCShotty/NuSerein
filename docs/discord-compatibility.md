@@ -3667,7 +3667,12 @@ It retains a limited placeholder with no actionable media. The wire-size and car
 message identity checks and channel permissions still apply. A stale empty timeline offers an
 explicit reload rather than claiming cached messages are on screen. For display-only history, a
 malformed reaction list stays unknown, and a malformed nested reply preview stays unavailable
-rather than marking its target deleted. Exact-message readbacks keep their strict decoder. Other
+rather than marking its target deleted. In ordinary and forwarded history, a file with a valid
+identity but unreadable display metadata retains an inert slot (no URL, thumbnail, playback or
+download). Spoiler evidence is preserved; unreadable visibility text is treated as concealed.
+Invalid file IDs, malformed flags, duplicate fields on a recovered file, and malformed or
+over-limit media lists are still rejected. This is synthetic-tested behavior, not a claim about
+any particular live channel. Exact-message readbacks keep their strict decoder. Other
 rejections report fixed local categories without exposing field paths, message content, or IDs.
 
 Guild role colors are presentation only. If member data is absent on the signed-in user's

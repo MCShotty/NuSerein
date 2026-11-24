@@ -526,8 +526,10 @@ fn mention_roles<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Id>, D::E
 pub struct RecentMentions(
 	#[serde(deserialize_with = "search::list::<_,_,25>")] pub Vec<MessageDto>,
 );
+/// Ordinary reads and mutations use the strict attachment decoder.
+pub type MessageDto = WireMessage<false>;
 #[derive(Deserialize)]
-pub struct MessageDto {
+pub struct WireMessage<const HISTORY: bool> {
 	#[serde(default)]
 	pub guild_id: Option<Id>,
 	#[serde(default)]
@@ -569,11 +571,11 @@ pub struct MessageDto {
 	#[serde(default)]
 	pub interaction_metadata: Option<InteractionDto>,
 	#[serde(default)]
-	pub message_snapshots: Snapshots,
+	pub message_snapshots: Snapshots<HISTORY>,
 	#[serde(default, deserialize_with = "reply_preview_field")]
 	pub referenced_message: model::Patch<ReplyPreviewDto>,
 	#[serde(default)]
-	pub attachments: AttachmentList,
+	pub attachments: AttachmentList<HISTORY>,
 	#[serde(default)]
 	pub embeds: EmbedList,
 	#[serde(default)]
@@ -769,20 +771,20 @@ pub struct Reference {
 	pub kind: u64,
 }
 #[derive(Default)]
-pub struct Snapshots(Option<Snapshot>);
-impl<'de> Deserialize<'de> for Snapshots {
+pub struct Snapshots<const HISTORY: bool = false>(Option<Snapshot<HISTORY>>);
+impl<'de, const HISTORY: bool> Deserialize<'de> for Snapshots<HISTORY> {
 	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-		struct Visitor;
-		impl<'de> serde::de::Visitor<'de> for Visitor {
-			type Value = Snapshots;
+		struct Visitor<const HISTORY: bool>;
+		impl<'de, const HISTORY: bool> serde::de::Visitor<'de> for Visitor<HISTORY> {
+			type Value = Snapshots<HISTORY>;
 			fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 				f.write_str("a bounded message snapshot array")
 			}
 			fn visit_seq<A: serde::de::SeqAccess<'de>>(
 				self,
 				mut seq: A,
-			) -> Result<Snapshots, A::Error> {
-				let first = seq.next_element::<Snapshot>()?;
+			) -> Result<Self::Value, A::Error> {
+				let first = seq.next_element::<Snapshot<HISTORY>>()?;
 				let mut extra = false;
 				for _ in 0..100 {
 					if seq.next_element::<serde::de::IgnoredAny>()?.is_none() {
@@ -793,21 +795,21 @@ impl<'de> Deserialize<'de> for Snapshots {
 				Err(serde::de::Error::custom("Too many message snapshots"))
 			}
 		}
-		d.deserialize_seq(Visitor)
+		d.deserialize_seq(Visitor::<HISTORY>)
 	}
 }
 #[derive(Deserialize)]
-struct Snapshot {
-	message: SnapshotBody,
+struct Snapshot<const HISTORY: bool> {
+	message: SnapshotBody<HISTORY>,
 }
 #[derive(Deserialize)]
-struct SnapshotBody {
+struct SnapshotBody<const HISTORY: bool> {
 	#[serde(rename = "type")]
 	kind: u8,
 	#[serde(default)]
 	content: String,
 	#[serde(default)]
-	attachments: AttachmentList,
+	attachments: AttachmentList<HISTORY>,
 	#[serde(default)]
 	embeds: EmbedList,
 	#[serde(default)]
@@ -821,7 +823,7 @@ struct SnapshotBody {
 	#[serde(default)]
 	components: Option<model::ComponentList>,
 }
-impl MessageDto {
+impl<const HISTORY: bool> WireMessage<HISTORY> {
 	pub fn into_model(mut self) -> Message {
 		let snapshot = self.message_snapshots.0.take().filter(|snapshot| {
 			self.kind == 0
