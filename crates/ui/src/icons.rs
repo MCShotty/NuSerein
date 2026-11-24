@@ -532,8 +532,16 @@ fn button_with_tooltip(
 	if immediate {
 		immediate_tooltip(response, &label)
 	} else {
-		response.on_hover_text(&label)
+		response.on_hover_ui(|ui| wrapped_tooltip(ui, &label))
 	}
+}
+
+/// Icon labels can include a full participant or channel name. Keep the full
+/// text accessible; wrap the visible hint inside the viewport's padded width.
+pub(crate) fn wrapped_tooltip(ui: &mut egui::Ui, label: &str) {
+	let width = (ui.ctx().content_rect().width() - 32.0).max(1.0);
+	ui.set_max_width(width.min(ui.spacing().tooltip_width));
+	ui.add(egui::Label::new(label).wrap());
 }
 
 /// Toggleable variant: `active` keeps the icon in the strong text colour.

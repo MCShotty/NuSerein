@@ -5904,7 +5904,7 @@ fn status_icon(ui: &mut egui::Ui, icon: crate::icons::Icon, color: egui::Color32
 	let (rect, response) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
 	crate::icons::paint(ui.painter(), icon, rect.shrink(1.0), color);
 	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &label));
-	response.on_hover_text(label);
+	response.on_hover_ui(|ui| crate::icons::wrapped_tooltip(ui, &label));
 }
 
 /// Discord's LIVE pill, sized for the channel list row rather than a stage tile.
