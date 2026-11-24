@@ -318,6 +318,7 @@ attachments-open-original-open-original = Open original…
 # Context: pending_card
 attachments-pending-card-remove-attachment = Remove attachment
 attachments-loading-card-preparing = Preparing…
+attachments-media-unavailable = Media unavailable
 # Context: show_status
 attachments-show-status-cancel-download = Cancel download
 # Context: show_status

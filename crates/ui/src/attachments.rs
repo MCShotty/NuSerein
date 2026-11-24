@@ -265,6 +265,12 @@ fn file_card(
 	surface: &mut crate::select::Surface,
 	card_surface: design::MessageCardSurface,
 ) {
+	// A history placeholder has neither a usable file nor a trusted name. Never
+	// offer a download (or display a fabricated byte count) without a source.
+	if attachment.media.url.is_none() && attachment.media.proxy_url.is_none() {
+		ui.label(crate::i18n::translate("attachments-media-unavailable"));
+		return;
+	}
 	let colors = design::palette(ui);
 	let kind = file_kind(&attachment.filename, attachment.content_type.as_deref());
 	egui::Frame::new()
