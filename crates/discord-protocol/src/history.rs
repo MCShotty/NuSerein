@@ -1,5 +1,5 @@
 //! Display-only history projection. Mutation readbacks still require a strict MessageDto.
-use crate::{MessageDto, reactions::ReactionList, reply_preview_field};
+use crate::{WireMessage, reactions::ReactionList, reply_preview_field};
 use model::Message;
 use serde::{
 	Deserializer,
@@ -36,7 +36,7 @@ pub fn page(bytes: &[u8]) -> Result<Vec<Message>, PageError> {
 					*self.0 = PageError::Limit;
 					return Err(A::Error::custom("history page limit"));
 				}
-				let message = match serde_json::from_str::<MessageDto>(raw.get()) {
+				let message = match serde_json::from_str::<WireMessage<true>>(raw.get()) {
 					Ok(dto) => dto.into_model(),
 					Err(_) => {
 						let mut why = PageError::Message;
@@ -95,7 +95,7 @@ impl<'de> Visitor<'de> for Recover<'_> {
 				fields.push((key, value));
 			}
 		}
-		let dto: MessageDto = serde_path_to_error::deserialize(MapDeserializer::<
+		let dto: WireMessage<true> = serde_path_to_error::deserialize(MapDeserializer::<
 			_,
 			serde_json::Error,
 		>::new(fields.into_iter()))
@@ -127,6 +127,7 @@ impl<'de> Visitor<'de> for Recover<'_> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::MessageDto;
 	use serde_json::json;
 	fn reply() -> serde_json::Value {
 		json!({"id":"11","type":19,"channel_id":"7","author":{"id":"2","username":"fixture"},"content":"body","message_reference":{"channel_id":"7","message_id":"8"}})
@@ -166,6 +167,102 @@ mod tests {
 			assert_eq!(
 				page(&serde_json::to_vec(&[reply(), bad]).unwrap()).err(),
 				Some(why)
+			);
+		}
+	}
+	#[test]
+	fn unreadable_file_is_inert_with_good_siblings_in_history_and_forwards() {
+		let good = json!({"id":"20","filename":"kept.png","width":null});
+		let mut damaged = json!({"id":"21","filename":"secret.mp4","content_type":"video/mp4","url":"https://example.invalid/file","proxy_url":"https://example.invalid/proxy","placeholder":"AAECAwQ=","placeholder_version":1,"duration_secs":1,"waveform":"AQID"});
+		for (field, value, hidden) in [
+			("width", json!("unknown"), false),
+			("width", json!(-1), false),
+			("size", json!(null), false),
+			("filename", json!(null), true),
+			("description", json!({}), true),
+		] {
+			let mut bad = damaged.clone();
+			bad[field] = value;
+			let files = json!([good, bad, {"id":"22","filename":"kept.ogg"}]);
+			for forward in [false, true] {
+				let mut middle = reply();
+				middle["id"] = json!("12");
+				if forward {
+					middle["type"] = json!(0);
+					middle["message_reference"]["type"] = json!(1);
+					middle["message_snapshots"] =
+						json!([{"message":{"type":0,"content":"body","attachments":files}}]);
+				} else {
+					middle["attachments"] = files.clone();
+				}
+				let mut last = reply();
+				last["id"] = json!("13");
+				let bytes = serde_json::to_vec(&[reply(), middle, last]).unwrap();
+				assert!(crate::decode::<Vec<MessageDto>>(&bytes).is_err());
+				let rows = page(&bytes).unwrap();
+				assert_eq!(
+					rows.iter().map(|r| r.id.0).collect::<Vec<_>>(),
+					[11, 12, 13]
+				);
+				let row = &rows[1];
+				assert_eq!(row.forwarded, forward);
+				assert_eq!(row.content, "body");
+				let [left, slot, right] = &row.attachments[..] else {
+					panic!("lost a file slot")
+				};
+				assert!(left.is_image() && right.is_audio());
+				assert_eq!((slot.id.0, slot.spoiler), (21, hidden));
+				assert_eq!(slot.media, model::EmbedMedia::default());
+				assert_eq!(slot.filename, "Attachment");
+				assert!(
+					slot.content_type.is_none()
+						&& slot.description.is_none()
+						&& slot.waveform.is_empty()
+						&& slot.duration_ms.is_none()
+				);
+				assert!(!slot.is_video() && !slot.is_image() && !slot.is_audio());
+			}
+		}
+		damaged["width"] = json!(-1);
+		for (key, value) in [
+			("filename", json!("SPOILER_x.png")),
+			("flags", json!(64)),
+			("description", json!("||hidden||")),
+		] {
+			let mut file = damaged.clone();
+			file[key] = value;
+			let mut row = reply();
+			row["attachments"] = json!([file]);
+			row["reactions"] = json!(false);
+			let rows = page(&serde_json::to_vec(&[row]).unwrap()).unwrap();
+			assert!(rows[0].attachments[0].spoiler && rows[0].reactions.is_none());
+		}
+	}
+	#[test]
+	fn file_recovery_keeps_identity_visibility_and_list_limits_strict() {
+		for fields in [
+			r#""id":"0""#,
+			r#""id":4"#,
+			r#""name":null"#,
+			r#""id":"4","flags":"8""#,
+			r#""id":"4","id":"5""#,
+			r#""id":"4","height":2,"height":3"#,
+		] {
+			let wire = format!(
+				r#"[{{"id":"1","channel_id":"7","author":{{"id":"2","username":"test"}},"attachments":[{{"width":-1,{fields}}}]}}]"#
+			);
+			assert_eq!(page(wire.as_bytes()).err(), Some(PageError::Media));
+		}
+		for (field, list) in [
+			("attachments", json!(null)),
+			("attachments", json!(vec![json!({"id":"4","width":-1}); 11])),
+			("embeds", json!(vec![json!({}); 11])),
+		] {
+			let mut row = reply();
+			row[field] = list;
+			assert_eq!(
+				page(&serde_json::to_vec(&[row]).unwrap()).err(),
+				Some(PageError::Media)
 			);
 		}
 	}

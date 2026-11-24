@@ -1,7 +1,8 @@
 //! Attachment objects are bounded metadata; image decoding and URL authorization live elsewhere.
 use base64::Engine;
 use model::{Attachment, EmbedMedia, Id};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
+use serde_json::value::RawValue;
 
 #[derive(Deserialize)]
 struct AttachmentDto {
@@ -56,6 +57,10 @@ pub(crate) fn placeholder(value: Option<String>, version: Option<u32>) -> Vec<u8
 fn url(value: Option<String>) -> Option<String> {
 	value.filter(|value| value.len() <= 2048 && !value.chars().any(char::is_control))
 }
+fn concealed_flags(flags: u64) -> bool {
+	// Bit 3 is documented IS_SPOILER. Bits 4/6/7 are unofficial sensitive-media flags.
+	flags & ((1 << 3) | (1 << 4) | (1 << 6) | (1 << 7)) != 0
+}
 impl AttachmentDto {
 	fn into_model(self) -> Attachment {
 		// Discord supplies at most 256 amplitude samples encoded as base64.
@@ -84,10 +89,7 @@ impl AttachmentDto {
 		if filename.is_empty() {
 			filename = "Attachment".into();
 		}
-		// Bit 3 is documented IS_SPOILER. Bits 4/6/7 are unofficial explicit/gore/self-harm
-		// flags from discord.py-self flags.py AttachmentFlags; conceal them until deliberate reveal.
-		let spoiler = self.flags & ((1 << 3) | (1 << 4) | (1 << 6) | (1 << 7)) != 0
-			|| self.filename.starts_with("SPOILER_");
+		let spoiler = concealed_flags(self.flags) || self.filename.starts_with("SPOILER_");
 		let mut attachment = Attachment {
 			duration_ms: self
 				.duration_secs
@@ -138,12 +140,12 @@ impl AttachmentDto {
 
 /// Normalize each item as it is decoded, rather than retaining a raw attachment array.
 #[derive(Default)]
-pub struct AttachmentList(pub Vec<Attachment>);
-impl<'de> Deserialize<'de> for AttachmentList {
+pub struct AttachmentList<const HISTORY: bool = false>(pub Vec<Attachment>);
+impl<'de, const HISTORY: bool> Deserialize<'de> for AttachmentList<HISTORY> {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-		struct List;
-		impl<'de> serde::de::Visitor<'de> for List {
-			type Value = AttachmentList;
+		struct List<const HISTORY: bool>;
+		impl<'de, const HISTORY: bool> serde::de::Visitor<'de> for List<HISTORY> {
+			type Value = AttachmentList<HISTORY>;
 			fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 				f.write_str("at most ten attachments")
 			}
@@ -153,8 +155,17 @@ impl<'de> Deserialize<'de> for AttachmentList {
 			) -> Result<Self::Value, A::Error> {
 				let mut items = Vec::new();
 				for _ in 0..model::MAX_ATTACHMENTS {
-					match seq.next_element::<AttachmentDto>()? {
-						Some(item) => items.push(item.into_model()),
+					let next = if HISTORY {
+						seq.next_element::<&RawValue>()?
+							.map(history_item)
+							.transpose()
+							.map_err(A::Error::custom)?
+					} else {
+						seq.next_element::<AttachmentDto>()?
+							.map(AttachmentDto::into_model)
+					};
+					match next {
+						Some(item) => items.push(item),
 						None => {
 							items.shrink_to_fit();
 							return Ok(AttachmentList(items));
@@ -168,8 +179,66 @@ impl<'de> Deserialize<'de> for AttachmentList {
 				Ok(AttachmentList(items))
 			}
 		}
-		deserializer.deserialize_seq(List)
+		deserializer.deserialize_seq(List::<HISTORY>)
 	}
+}
+
+/// History may represent a damaged file by its real ID but never use its URLs,
+/// MIME, name or decoded data. Every key is checked so recovery cannot mask a
+/// duplicate (including one appearing *after* an unreadable display field).
+fn history_item(raw: &RawValue) -> Result<Attachment, serde_json::Error> {
+	if let Ok(item) = serde_json::from_str::<AttachmentDto>(raw.get()) {
+		return Ok(item.into_model());
+	}
+	struct Unavailable;
+	impl<'de> serde::de::Visitor<'de> for Unavailable {
+		type Value = Attachment;
+		fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+			f.write_str("a bounded attachment object")
+		}
+		fn visit_map<A: serde::de::MapAccess<'de>>(
+			self,
+			mut map: A,
+		) -> Result<Attachment, A::Error> {
+			let mut keys = std::collections::BTreeSet::new();
+			let mut id = None;
+			let mut spoiler = false;
+			while let Some(key) = map.next_key::<String>()? {
+				if keys.len() >= 64 || key.len() > 128 || keys.contains(&key) {
+					return Err(A::Error::custom("invalid attachment fields"));
+				}
+				match key.as_str() {
+					"id" => id = Some(map.next_value::<Id>()?),
+					"flags" => spoiler |= concealed_flags(map.next_value::<u64>()?),
+					"filename" | "description" => {
+						let value: &RawValue = map.next_value()?;
+						spoiler |= match serde_json::from_str::<Option<String>>(value.get()) {
+							Ok(Some(s)) if key == "filename" => s.starts_with("SPOILER_"),
+							Ok(Some(s)) => s.contains("||"),
+							Ok(None) => key == "filename",
+							Err(_) => true,
+						};
+					}
+					_ => {
+						map.next_value::<serde::de::IgnoredAny>()?;
+					}
+				}
+				keys.insert(key);
+			}
+			Ok(Attachment {
+				id: id.ok_or_else(|| A::Error::missing_field("id"))?,
+				filename: "Attachment".into(),
+				spoiler,
+				size: 0,
+				media: Default::default(),
+				description: None,
+				content_type: None,
+				duration_ms: None,
+				waveform: Vec::new(),
+			})
+		}
+	}
+	raw.deserialize_map(Unavailable)
 }
 
 #[cfg(test)]
