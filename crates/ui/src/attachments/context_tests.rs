@@ -435,6 +435,47 @@ fn composer_upload_cards_keep_their_surface_at_every_chat_transparency() {
 }
 
 #[test]
+fn unavailable_file_card_names_the_file_without_offering_a_download() {
+	let ctx = egui::Context::default();
+	ctx.enable_accesskit();
+	let file = Attachment {
+		filename: "synthetic-report.pdf".into(),
+		content_type: Some("application/pdf".into()),
+		..attachment(false)
+	};
+	let output = ctx.run_ui(Default::default(), |ui| {
+		let mut select = crate::select::Surface::new(ui, "unavailable-file-test");
+		file_card(
+			ui,
+			&file,
+			&mut DownloadUi::default(),
+			false,
+			&mut select,
+			design::MessageCardSurface::Opaque,
+		);
+	});
+	let unavailable = crate::i18n::translate("attachments-media-unavailable");
+	let nodes = &output
+		.platform_output
+		.accesskit_update
+		.as_ref()
+		.unwrap()
+		.nodes;
+	let has_text = |s: &str| {
+		nodes
+			.iter()
+			.any(|(_, n)| n.value() == Some(s) || n.label() == Some(s))
+	};
+	let (named, explained, button) = (
+		has_text(&file.filename),
+		has_text(&unavailable),
+		nodes.iter().any(|(_, n)| n.role() == egui::Role::Button),
+	);
+	output.drop_without_applying_deltas();
+	assert!(named && explained && !button);
+}
+
+#[test]
 fn search_preview_cards_keep_their_surface_while_chat_cards_use_tint() {
 	let original = design::default_window_effects();
 	let mut message = test_support::message(1, Id(2));
