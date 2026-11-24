@@ -1,5 +1,7 @@
 //! Display-only history projection. Mutation readbacks still require a strict MessageDto.
+mod media;
 use crate::{WireMessage, reactions::ReactionList, reply_preview_field};
+pub use media::MediaIssue;
 use model::Message;
 use serde::{
 	Deserializer,
@@ -14,7 +16,7 @@ pub enum PageError {
 	Page,
 	Message,
 	People,
-	Media,
+	Media(MediaIssue),
 	Features,
 }
 
@@ -95,6 +97,11 @@ impl<'de> Visitor<'de> for Recover<'_> {
 				fields.push((key, value));
 			}
 		}
+		// Keep only two borrowed slices for the probe. Do not alter the recovery
+		// deserializer (including how it treats duplicate and escaped keys).
+		let field_wire = |name: &str| fields.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
+		let attachments = field_wire("attachments");
+		let embeds = field_wire("embeds");
 		let dto: WireMessage<true> = serde_path_to_error::deserialize(MapDeserializer::<
 			_,
 			serde_json::Error,
@@ -104,7 +111,15 @@ impl<'de> Visitor<'de> for Recover<'_> {
 			if let Some(serde_path_to_error::Segment::Map { key }) = error.path().iter().next() {
 				*self.0 = match key.as_str() {
 					"author" | "member" | "mentions" | "mention_roles" => PageError::People,
-					"attachments" | "embeds" => PageError::Media,
+					"attachments" | "embeds" => PageError::Media(if key == "attachments" {
+						attachments.map_or(MediaIssue::AttachmentContext, |raw| {
+							media::Field::Attachments.rejected(raw)
+						})
+					} else {
+						embeds.map_or(MediaIssue::EmbedContext, |raw| {
+							media::Field::Embeds.rejected(raw)
+						})
+					}),
 					"poll" | "sticker_items" | "stickers" | "components" | "message_snapshots" => {
 						PageError::Features
 					}
@@ -159,7 +174,11 @@ mod tests {
 			("flags", json!("64"), PageError::Message),
 			("author", json!({"username":"unknown"}), PageError::People),
 			("member", json!({"roles":["0"]}), PageError::People),
-			("attachments", json!([{"id":0}]), PageError::Media),
+			(
+				"attachments",
+				json!([{"id":0}]),
+				PageError::Media(MediaIssue::AttachmentId),
+			),
 			("message_snapshots", json!(false), PageError::Features),
 		] {
 			let mut bad = row.clone();
@@ -240,30 +259,63 @@ mod tests {
 	}
 	#[test]
 	fn file_recovery_keeps_identity_visibility_and_list_limits_strict() {
-		for fields in [
-			r#""id":"0""#,
-			r#""id":4"#,
-			r#""name":null"#,
-			r#""id":"4","flags":"8""#,
-			r#""id":"4","id":"5""#,
-			r#""id":"4","height":2,"height":3"#,
+		use MediaIssue::*;
+		for (fields, reason) in [
+			(r#""id":"0""#, AttachmentId),
+			(r#""id":4"#, AttachmentId),
+			(r#""name":null"#, AttachmentId),
+			(r#""id":"4","flags":"private-value""#, AttachmentFlags),
+			(r#""id":"4","id":"5""#, AttachmentDuplicate),
+			(r#""id":"4","height":2,"height":3"#, AttachmentDuplicate),
+			(
+				r#""id":"4","private-field":0,"private-field":1"#,
+				AttachmentDuplicate,
+			),
 		] {
 			let wire = format!(
-				r#"[{{"id":"1","channel_id":"7","author":{{"id":"2","username":"test"}},"attachments":[{{"width":-1,{fields}}}]}}]"#
+				r#"[{{"id":"1","channel_id":"7","author":{{"id":"2","username":"test"}},"attachments":[{{"width":-1,{fields}}},{{"id":"5"}}]}}]"#
 			);
-			assert_eq!(page(wire.as_bytes()).err(), Some(PageError::Media));
+			assert_eq!(page(wire.as_bytes()).err(), Some(PageError::Media(reason)));
 		}
-		for (field, list) in [
-			("attachments", json!(null)),
-			("attachments", json!(vec![json!({"id":"4","width":-1}); 11])),
-			("embeds", json!(vec![json!({}); 11])),
+		let mut many_fields = json!({"id":"8","width":-1});
+		for i in 0..63 {
+			many_fields[format!("key{i}")] = json!(0);
+		}
+		let mut long_field = json!({"id":"8","width":-1});
+		long_field["z".repeat(129)] = json!(0);
+		for (field, list, reason) in [
+			("attachments", json!(null), AttachmentList),
+			("attachments", json!({}), AttachmentList),
+			("attachments", json!([5]), AttachmentObject),
+			("attachments", json!([many_fields]), AttachmentFieldLimit),
+			("attachments", json!([long_field]), AttachmentFieldLimit),
+			(
+				"attachments",
+				json!(vec![json!({"id":"4","width":-1}); 12]),
+				AttachmentCount,
+			),
+			("embeds", json!(false), EmbedList),
+			("embeds", json!(vec![json!({}); 12]), EmbedCount),
 		] {
 			let mut row = reply();
 			row[field] = list;
 			assert_eq!(
-				page(&serde_json::to_vec(&[row]).unwrap()).err(),
-				Some(PageError::Media)
+				page(&serde_json::to_vec(&[reply(), row]).unwrap()).err(),
+				Some(PageError::Media(reason))
 			);
+		}
+		// A re-read that cannot reproduce the original field failure must say so,
+		// not invent a diagnosis or admit the rejected row.
+		for (field, raw, reason) in [
+			(
+				media::Field::Attachments,
+				r#"[{"id":"8"}]"#,
+				AttachmentContext,
+			),
+			(media::Field::Embeds, "null", EmbedContext),
+			(media::Field::Embeds, "[{}]", EmbedContext),
+		] {
+			assert_eq!(field.rejected(serde_json::from_str(raw).unwrap()), reason);
 		}
 	}
 	#[test]

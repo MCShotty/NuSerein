@@ -2832,6 +2832,17 @@ impl TimelineView {
 				| "history-message-format"
 				| "history-people-format"
 				| "history-media-format"
+				| "history-attachment-list"
+				| "history-attachment-count"
+				| "history-attachment-object"
+				| "history-attachment-id"
+				| "history-attachment-flags"
+				| "history-attachment-duplicate"
+				| "history-attachment-fields"
+				| "history-attachment-context"
+				| "history-embed-list"
+				| "history-embed-count"
+				| "history-embed-context"
 				| "history-feature-format"
 				| "history-page-scope"),
 			)) => Some(key),
@@ -4086,6 +4097,43 @@ mod pending_tests;
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn failed_history_renders_only_allowlisted_media_probe_text() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		for (key, expected) in [
+			("history-attachment-flags", "(H-A05)"),
+			("history-embed-count", "(H-E02)"),
+			(
+				"private-synthetic-detail",
+				"NuSerein couldn’t read Discord’s history response.",
+			),
+		] {
+			let mut state = loading_unread_channel(false);
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::HistoryFailed {
+					channel: Id(20),
+					request: state.request,
+					failure: Failure::ProtocolAt(key),
+				},
+			});
+			let ctx = egui::Context::default();
+			let labels = banner_frame(
+				&ctx,
+				&mut TimelineView::default(),
+				&mut state,
+				vec![],
+				false,
+			);
+			assert!(labels.iter().any(|(text, _)| text.contains(expected)));
+			assert!(
+				!labels
+					.iter()
+					.any(|(text, _)| text.contains("private-synthetic-detail"))
+			);
+		}
+	}
 
 	#[test]
 	fn resizing_call_stage_keeps_latest_message_at_the_composer() {
