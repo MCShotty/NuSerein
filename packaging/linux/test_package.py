@@ -134,7 +134,7 @@ class NativePackageTest(unittest.TestCase):
                 (staged / "licenses" / name).write_text("synthetic license\n")
             for name in ["licenses/files", "licenses/notifications", "licenses/login",
                          "licenses/voice", "licenses/audio", "licenses/dependencies", "source/hpke-rs"]:
-                source = Path("vendor/hpke-rs") if name.startswith("source/") else Path("assets") / name
+                source = Path("vendor/hpke-rs-0.8") if name.startswith("source/") else Path("assets") / name
                 shutil.copytree(source, staged / name)
                 (staged / name / "stale-nested.log").write_text("synthetic private marker\n")
             # Simulate a dirty dist directory: none of these belong to the archive.
@@ -197,7 +197,7 @@ class NativePackageTest(unittest.TestCase):
             for excluded in ["debug.log", "stale.log", "stale.deb", "previous.deb", "stale-nested.log"]:
                 self.assertNotIn(excluded, listing)
             self.assertNotIn("usr/share/doc/serein/docs/", listing)
-            self.assertNotIn("source/hpke-rs/", listing)
+            self.assertIn("usr/share/doc/serein/source/hpke-rs/src/kem.rs", listing)
             self.assertIn("licenses/dependencies/PROVENANCE.md", listing)
             self.assertIn("licenses/notification-sounds.md", listing)
             self.assertIn("licenses/voice/", listing)

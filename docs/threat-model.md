@@ -39,13 +39,11 @@ still require them. These are maintenance warnings, not ignored vulnerabilities.
 Reassess these exceptions when the upstream dependency stack migrates to zbus 6;
 all vulnerability advisories remain enforced.
 
-The voice dependency chain still needs a compatible fix for
-[RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html).
-DAVE, OpenMLS credentials and the HPKE provider use RustCrypto curves on the
-`elliptic-curve` 0.13 line, which requires `crypto-bigint` 0.5. The advisory's
-first patched version is 0.7.6. Updating a different copy of `crypto-bigint`
-would not fix those consumers. Keep the audit failing rather than exempting
-this advisory or dropping encrypted voice.
+The voice provider migration for [RUSTSEC-2026-0387](https://rustsec.org/advisories/RUSTSEC-2026-0387.html)
+selects P-256 0.14 and HPKE 0.8 with `crypto-bigint` 0.7.11, removing the affected
+0.5 dependency throughout the lockfile. It preserves the MLS ciphersuite and
+required encryption. Synthetic interoperability checks do not establish live
+Discord voice compatibility or constitute an independent cryptographic audit.
 
 Explicit public attachment hosting adds Catbox as a third-party recipient of one
 user-selected file only after per-file consent. Anyone with its returned link can

@@ -99,7 +99,7 @@ jobs:
           cmp assets/twemoji/LICENSE-UNICODE "$docs/licenses/Unicode-LICENSE.txt"
           cmp assets/icons/LICENSE "$docs/licenses/Phosphor-Icons-MIT.txt"
           cmp assets/icons/LICENSE-SIMPLE-ICONS "$docs/licenses/Simple-Icons-CC0.txt"
-          diff -r vendor/hpke-rs "$docs/source/hpke-rs"
+          diff -r vendor/hpke-rs-0.8 "$docs/source/hpke-rs"
           cmp scripts/build-ffmpeg.py "$docs/ffmpeg-source/build-ffmpeg.py"
           cmp crates/platform/src/video/denoise.rs "$docs/ffmpeg-source/camera-filter/denoise.rs"
           cmp crates/platform/src/video/denoise/gpu.rs "$docs/ffmpeg-source/camera-filter/gpu.rs"
