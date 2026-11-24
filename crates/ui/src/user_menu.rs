@@ -167,7 +167,7 @@ pub(super) fn application_menu(
 		crate::icons::Icon::Activities,
 		|ui| {
 			if state.application_commands.loading {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 			}
 			if let Some(error) = state.application_commands.error {
 				ui.weak(error);

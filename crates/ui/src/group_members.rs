@@ -68,7 +68,7 @@ impl Dialog {
 					ui.weak(crate::i18n::translate_if_key(status));
 				}
 				if busy {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 				}
 				if state.group_members(channel).is_none() {
 					ui.weak(crate::i18n::translate("group-members-refresh-help"));

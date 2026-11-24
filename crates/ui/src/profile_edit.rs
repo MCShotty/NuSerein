@@ -206,7 +206,7 @@ impl Editor {
 		let colors = design::palette(ui);
 		if state.own_profile.loading {
 			ui.horizontal(|ui| {
-				ui.add(egui::Spinner::new().size(14.0));
+				ui.add(crate::design::Busy::new().size(14.0));
 				ui.label(
 					egui::RichText::new(crate::i18n::translate(
 						"profile-edit-show-loading-your-profile",
@@ -360,7 +360,7 @@ impl Editor {
 				ui.vertical(|ui| {
 					ui.spacing_mut().item_spacing.x = 12.0;
 					if state.own_profile.saving {
-						ui.add(egui::Spinner::new().size(14.0));
+						ui.add(crate::design::Busy::new().size(14.0));
 						ui.label(
 							egui::RichText::new(crate::i18n::translate(
 								"profile-edit-show-saving-profile",
@@ -512,7 +512,7 @@ fn form(
 				action = Some(AvatarAction::Remove);
 			}
 			if choosing {
-				ui.add(egui::Spinner::new().size(14.0));
+				ui.add(crate::design::Busy::new().size(14.0));
 			}
 		},
 	);

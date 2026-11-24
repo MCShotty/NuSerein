@@ -958,7 +958,7 @@ impl MessagingUi {
 					let size = rect.width().min(rect.height()).min(24.0);
 					let response = ui.put(
 						egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(size)),
-						egui::Spinner::new().color(colors.muted),
+						crate::design::Busy::new().color(colors.muted),
 					);
 					response.widget_info(|| {
 						egui::WidgetInfo::labeled(
@@ -1663,7 +1663,7 @@ impl MessagingUi {
 							rect.center() - egui::vec2(0.0, 18.0),
 							egui::Vec2::splat(24.0),
 						);
-						ui.put(spinner, egui::Spinner::new().color(STAGE_MUTED));
+						ui.put(spinner, crate::design::Busy::new().color(STAGE_MUTED));
 						ui.painter().text(
 							rect.center() + egui::vec2(0.0, 18.0),
 							egui::Align2::CENTER_CENTER,
@@ -3194,7 +3194,7 @@ impl MessagingUi {
 		);
 		if checking {
 			ui.horizontal_wrapped(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.label(
 					RichText::new(crate::i18n::translate("voice-video-hardware-checking"))
 						.size(12.0)
@@ -3301,7 +3301,7 @@ impl MessagingUi {
 		let selected_testing = testing && active_codec == Some(selected);
 		if testing && let Some(codec) = active_codec {
 			ui.horizontal_wrapped(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.label(
 					RichText::new(crate::i18n::translate_args(
 						"voice-video-encoder-test-running",

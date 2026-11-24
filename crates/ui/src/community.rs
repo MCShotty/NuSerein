@@ -388,8 +388,8 @@ impl CommunityUi {
 			.id(egui::Id::unique("community-events"))
 			.open(&mut open)
 			.default_width(620.0)
-			.min_width(240.0)
-			.max_width((ctx.content_rect().width() - 32.0).max(240.0))
+			.min_width((ctx.content_rect().width() - 32.0).clamp(1.0, 240.0))
+			.max_width((ctx.content_rect().width() - 32.0).max(1.0))
 			.max_height((ctx.content_rect().height() - 64.0).max(180.0))
 			.resizable(true)
 			.show(ctx, |ui| {
@@ -422,7 +422,7 @@ impl CommunityUi {
 							self.selected = None;
 						}
 						if state.community.pending() {
-							ui.spinner();
+							ui.add(crate::design::Busy::new());
 							ui.label("Loading…");
 						}
 					});
@@ -1256,7 +1256,7 @@ impl CommunityUi {
 					} else {
 						"stage-start"
 					},
-					true,
+					topic.is_none(),
 				) {
 				self.open_stage_editor(
 					state,
@@ -1507,8 +1507,8 @@ impl CommunityUi {
 		.id(egui::Id::unique("stage-topic-editor"))
 		.open(&mut open)
 		.default_width(420.0)
-		.min_width(240.0)
-		.max_width((ctx.content_rect().width() - 32.0).max(240.0))
+		.min_width((ctx.content_rect().width() - 32.0).clamp(1.0, 240.0))
+		.max_width((ctx.content_rect().width() - 32.0).max(1.0))
 		.show(ctx, |ui| {
 			ui.label(crate::i18n::translate("channel-menu-overview-topic"));
 			if let Some(event) = self.stage_event.and_then(|id| {

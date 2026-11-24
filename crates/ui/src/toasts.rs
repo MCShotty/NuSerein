@@ -22,6 +22,7 @@ fn lifetime(level: design::Level) -> f64 {
 const FADE: f64 = 0.45;
 /// Older notices are dropped past this. A stack of toasts is just a status line again.
 const MAX: usize = 3;
+const MAX_TEXT_BYTES: usize = 2048;
 const WIDTH: f32 = 360.0;
 const GAP: f32 = 8.0;
 
@@ -44,7 +45,14 @@ impl Toasts {
 	/// States `text` briefly. Repeating a notice that is still on screen restarts its
 	/// deadline rather than stacking a copy, so a repeated failure reads as one event.
 	pub fn push(&mut self, level: design::Level, text: impl Into<String>) {
-		let text = text.into();
+		let mut text = text.into();
+		if text.len() > MAX_TEXT_BYTES {
+			text.truncate(text.floor_char_boundary(MAX_TEXT_BYTES - '…'.len_utf8()));
+			text.push('…');
+		}
+		if text.capacity() > MAX_TEXT_BYTES {
+			text = text.into_boxed_str().into_string();
+		}
 		if let Some(shown) = self
 			.items
 			.iter_mut()
@@ -74,6 +82,12 @@ impl Toasts {
 		let colors = design::palette_for(ctx);
 		let shadow = ctx.style_of(ctx.theme()).visuals.window_shadow;
 		let mut offset = top;
+		let width = WIDTH.min((ctx.content_rect().width() - 44.0).max(1.0));
+		let fade = if ctx.style_of(ctx.theme()).animation_time > 0.0 {
+			FADE
+		} else {
+			0.0
+		};
 		for toast in &mut self.items {
 			let deadline = *toast.deadline.get_or_insert(now + lifetime(toast.level));
 			let remaining = deadline - now;
@@ -91,7 +105,9 @@ impl Toasts {
 				.anchor(Align2::CENTER_TOP, egui::vec2(0.0, offset))
 				.order(egui::Order::Foreground)
 				.show(ctx, |ui| {
-					ui.set_opacity((remaining / FADE).clamp(0.0, 1.0) as f32);
+					if fade > 0.0 {
+						ui.set_opacity((remaining / fade).clamp(0.0, 1.0) as f32);
+					}
 					egui::Frame::new()
 						.fill(colors.raised.to_opaque())
 						.stroke(Stroke::new(1.0, tint.gamma_multiply(0.55)))
@@ -99,7 +115,7 @@ impl Toasts {
 						.shadow(shadow)
 						.inner_margin(egui::Margin::symmetric(12, 8))
 						.show(ui, |ui| {
-							ui.set_width(WIDTH);
+							ui.set_width(width);
 							ui.horizontal_top(|ui| {
 								ui.spacing_mut().item_spacing.x = 9.0;
 								let (rect, _) = ui.allocate_exact_size(
@@ -153,12 +169,28 @@ impl Toasts {
 			.items
 			.iter()
 			.filter_map(|toast| toast.deadline)
-			.map(|deadline| deadline - FADE - now)
+			.map(|deadline| deadline - fade - now)
 			.fold(f64::INFINITY, f64::min);
 		if fade_in <= 0.0 {
 			ctx.request_repaint();
 		} else if fade_in.is_finite() {
 			ctx.request_repaint_after(std::time::Duration::from_secs_f64(fade_in));
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn long_notices_stay_valid_utf8_and_repeats_reuse_a_slot() {
+		let mut notices = Toasts::default();
+		let text = "界".repeat(MAX_TEXT_BYTES);
+		notices.push(design::Level::Warning, &text);
+		notices.push(design::Level::Warning, &text);
+		assert_eq!(notices.items.len(), 1);
+		let retained = &notices.items[0].text;
+		assert!(retained.ends_with('…') && retained.len() <= MAX_TEXT_BYTES);
+		assert!(retained.capacity() <= MAX_TEXT_BYTES);
 	}
 }

@@ -2189,7 +2189,7 @@ fn status_row(ui: &mut egui::Ui, colors: &crate::design::Palette, spinner: bool,
 	ui.add_space(24.0);
 	ui.vertical_centered(|ui| {
 		if spinner {
-			ui.add(egui::Spinner::new().size(22.0).color(colors.muted));
+			ui.add(crate::design::Busy::new().size(22.0).color(colors.muted));
 			ui.add_space(8.0);
 		}
 		ui.label(egui::RichText::new(text).color(colors.muted));
@@ -2421,7 +2421,7 @@ fn gif_home(
 						.layout(egui::Layout::left_to_right(egui::Align::Center)),
 					|ui| {
 						ui.spacing_mut().item_spacing.x = 8.0;
-						ui.add(egui::Spinner::new().size(16.0).color(colors.muted));
+						ui.add(crate::design::Busy::new().size(16.0).color(colors.muted));
 						ui.label(
 							egui::RichText::new(crate::i18n::translate(
 								"emoji-picker-gif-home-loading-trending-categories",

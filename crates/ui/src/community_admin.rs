@@ -179,7 +179,7 @@ impl CommunityUi {
 		}
 		if state.server_admin.pending {
 			ui.horizontal(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.label(i18n::translate("community-loading"));
 			});
 		}
@@ -295,7 +295,7 @@ impl CommunityUi {
 				));
 			}
 			if self.artwork_pending {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 			}
 			ui.horizontal_wrapped(|ui| {
 				if ui

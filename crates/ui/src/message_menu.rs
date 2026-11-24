@@ -113,7 +113,7 @@ impl crate::MessagingUi {
 		.show(ctx, |dialog| {
 			dialog.content(|ui| {
 				if state.reporting.loading {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 				}
 				if state.reporting.sent.is_some() {
 					ui.label(crate::i18n::translate(if state.demo {
@@ -867,6 +867,7 @@ pub(crate) fn quick_button(
 	{
 		image.paint_at(ui, target);
 	}
+	design::focus_outline(ui, &response, 7);
 	response.widget_info(|| {
 		egui::WidgetInfo::labeled(
 			egui::Role::Button,

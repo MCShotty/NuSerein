@@ -99,7 +99,7 @@ impl Dialog {
 							.filter(|members| members.channel == thread)
 						{
 							if members.freshness == model::Freshness::Loading {
-								ui.spinner();
+								ui.add(crate::design::Busy::new());
 							}
 							for member in members
 								.slots

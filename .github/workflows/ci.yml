@@ -181,6 +181,24 @@ jobs:
             export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           fi
           cargo xtask check
+      - name: Capture offline native design gallery
+        if: runner.os == 'Linux' && github.event_name == 'pull_request' && startsWith(github.head_ref, 'design/')
+        timeout-minutes: 25
+        env:
+          LD_LIBRARY_PATH: ${{ env.FFMPEG_DIR }}/lib
+          WGPU_BACKEND: vulkan
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          cargo build --locked -p serein --features demo --example profile_preview
+          xvfb-run -a python3 scripts/capture-design-gallery.py target/debug/examples/profile_preview "$RUNNER_TEMP/signal-desk-gallery"
+      - name: Preserve synthetic native frames and capture manifest
+        if: ${{ !cancelled() && runner.os == 'Linux' && github.event_name == 'pull_request' && startsWith(github.head_ref, 'design/') }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: offline-native-design-gallery
+          path: ${{ runner.temp }}/signal-desk-gallery/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Windows capture surfaces and retirement (synthetic, no screen capture)
         if: runner.os == 'Windows'
         shell: pwsh

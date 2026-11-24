@@ -781,7 +781,7 @@ impl VideoUi {
 			VideoState::Loading => {
 				ui.put(
 					egui::Rect::from_center_size(center, egui::Vec2::splat(36.0)),
-					egui::Spinner::new().size(36.0).color(white),
+					crate::design::Busy::new().size(36.0).color(white),
 				);
 				false
 			}

@@ -1125,7 +1125,7 @@ impl ExtensionUi {
 								.desired_width((ui.available_width() - trailing).max(60.0)),
 						);
 						if working {
-							ui.add(egui::Spinner::new().size(16.0).color(colors.muted))
+							ui.add(crate::design::Busy::new().size(16.0).color(colors.muted))
 								.on_hover_text(crate::i18n::translate_if_key(
 									&(if self.catalog_refreshing {
 										crate::i18n::translate(

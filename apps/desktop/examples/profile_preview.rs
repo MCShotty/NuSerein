@@ -1140,11 +1140,82 @@ fn prime_mfa(state: &mut client_core::State) -> client_core::mfa::Target {
 	target
 }
 
+const PREVIEW_PAGES: &[&str] = &[
+	"profile",
+	"events",
+	"event-detail",
+	"event-edit",
+	"stage",
+	"stickers",
+	"slash-commands",
+	"slash-command-search",
+	"slash-command-options",
+	"profile-card",
+	"collectibles",
+	"member-tags",
+	"conversation",
+	"channels",
+	"markdown",
+	"embeds",
+	"channel-links",
+	"channel-link-replies",
+	"dm-tags",
+	"dm-intro",
+	"channel-intro",
+	"post-intro",
+	"account",
+	"appearance",
+	"voice",
+	"storage",
+	"general",
+	"chat",
+	"language",
+	"keybinds",
+	"extensions",
+	"server",
+	"server-engagement",
+	"server-stickers",
+	"server-safety",
+	"server-emoji",
+	"server-members",
+	"server-roles",
+	"server-invites",
+	"server-integrations",
+	"server-audit-log",
+	"server-soundboard",
+	"server-automod",
+	"server-moderation",
+	"server-applications",
+	"server-access",
+	"server-bans",
+	"server-mfa",
+	"mod-view",
+	"force-sync",
+	"forum",
+	"forum-post",
+	"forum-gallery",
+	"forum-settings",
+	"friends",
+	"screen-share",
+	"emoji",
+	"gif-favorites",
+];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<_> = std::env::args().skip(1).collect();
 	let value = |prefix: &str| args.iter().find_map(|arg| arg.strip_prefix(prefix));
 	if !args.iter().any(|arg| arg == "--demo") {
 		return Err("Usage: profile_preview --demo [--output=PATH.png | --smoke | --interactive] [--page=events|event-detail|event-edit|stage|stickers|slash-commands|slash-command-search|slash-command-options|profile|conversation|markdown|embeds|channel-links|channel-link-replies|profile-card|collectibles|member-tags|dm-tags|account|appearance|storage|voice|general|chat|language|keybinds|extensions|server|server-engagement|server-safety|server-emoji|server-stickers|server-members|server-roles|server-invites|server-integrations|server-audit-log|server-soundboard|server-automod|server-moderation|server-applications|server-access|server-bans|server-mfa|mod-view|force-sync|channels|screen-share|emoji|gif-favorites] [--screen-audio-controls] [--video-backend=ffmpeg] [--video-codec=h264|h265|av1] [--camera-resolution=480p|720p|1080p|1440p|4k|8k] [--camera-fps=15|30|60] [--command=help|weather] [--themes] [--extension=ID] [--thumbnail] [--voice-debug | --voice-connection] [--voice-channel-status] [--lavasr] [--width=1120] [--height=760] [--scroll=PIXELS] [--light] [--compact] [--inline-media] [--conversation-qol] [--reaction-history] [--metrics=PATH.json] [--timeline-churn] [--media-embeds] [--provider-embed] [--transparency=0..100]".into());
+	}
+	if args.iter().any(|arg| arg == "--list-pages") {
+		println!(
+			"{}",
+			PREVIEW_PAGES.join(
+				"
+"
+			)
+		);
+		return Ok(());
 	}
 	let smoke = args.iter().any(|arg| arg == "--smoke");
 	let interactive = args.iter().any(|arg| arg == "--interactive");
@@ -1154,63 +1225,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			.ok_or("Missing --output=PATH.png")?,
 	);
 	let page = value("--page=").unwrap_or("profile").to_owned();
-	if !matches!(
-		page.as_str(),
-		"profile"
-			| "events"
-			| "event-detail"
-			| "event-edit"
-			| "stage" | "stickers"
-			| "slash-commands"
-			| "slash-command-search"
-			| "slash-command-options"
-			| "profile-card"
-			| "collectibles"
-			| "member-tags"
-			| "conversation"
-			| "channels"
-			| "markdown"
-			| "embeds"
-			| "channel-links"
-			| "channel-link-replies"
-			| "dm-tags"
-			| "dm-intro"
-			| "channel-intro"
-			| "post-intro"
-			| "account"
-			| "appearance"
-			| "voice" | "storage"
-			| "general"
-			| "chat" | "language"
-			| "keybinds"
-			| "extensions"
-			| "server"
-			| "server-engagement"
-			| "server-stickers"
-			| "server-safety"
-			| "server-emoji"
-			| "server-members"
-			| "server-roles"
-			| "server-invites"
-			| "server-integrations"
-			| "server-audit-log"
-			| "server-soundboard"
-			| "server-automod"
-			| "server-moderation"
-			| "server-applications"
-			| "server-access"
-			| "server-bans"
-			| "server-mfa"
-			| "mod-view"
-			| "force-sync"
-			| "forum" | "forum-post"
-			| "forum-gallery"
-			| "forum-settings"
-			| "friends"
-			| "screen-share"
-			| "emoji" | "gif-favorites"
-	) {
-		return Err("Page must be events, event-detail, event-edit, stage, profile, conversation, markdown, embeds, channel-links, channel-link-replies, profile-card, collectibles, member-tags, dm-tags, account, appearance, storage, voice, general, chat, language, keybinds, extensions, slash-commands, slash-command-search, slash-command-options, server, server-engagement, server-safety, server-emoji, server-stickers, server-members, server-roles, server-invites, server-integrations, server-audit-log, server-soundboard, server-automod, server-moderation, server-applications, server-access, server-bans, server-mfa, mod-view, force-sync, screen-share, emoji or gif-favorites".into());
+	if !PREVIEW_PAGES.contains(&page.as_str()) {
+		return Err(format!(
+			"Unknown preview page. Valid pages: {}",
+			PREVIEW_PAGES.join(", ")
+		)
+		.into());
 	}
 	let slash_command = value("--command=").unwrap_or("help").to_owned();
 	if !matches!(slash_command.as_str(), "help" | "weather") {

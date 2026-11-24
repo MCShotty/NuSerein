@@ -1227,7 +1227,7 @@ impl Dialog {
 		if !self.loaded {
 			if pending {
 				ui.horizontal(|ui| {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 					ui.label(crate::i18n::translate(
 						"channel-menu-show-loading-channel-settings",
 					));

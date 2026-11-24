@@ -450,7 +450,7 @@ impl RolesUi {
 		}
 		if state.server_admin.pending {
 			ui.horizontal(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.weak(crate::i18n::translate_if_key(
 					if state.server_admin.saving {
 						"server-roles-show-saving"
@@ -1476,7 +1476,7 @@ impl RolesUi {
 				&& request.query == self.member_query.search
 		}) {
 			if !lookup.finished {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 			}
 			if let Some(error) = lookup.error {
 				ui.weak(error);

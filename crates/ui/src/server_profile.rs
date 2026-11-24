@@ -256,7 +256,7 @@ impl Editor {
 		}
 		if state.own_server_profile.pending {
 			ui.horizontal(|ui| {
-				ui.add(egui::Spinner::new().size(14.0));
+				ui.add(crate::design::Busy::new().size(14.0));
 				ui.label(if state.own_server_profile.saving {
 					"Saving server profile…"
 				} else {

@@ -931,7 +931,11 @@ fn header_tab(
 		.layout_no_wrap(title.to_owned(), font, Color32::WHITE);
 	let badge = count.map(|count| {
 		ui.painter().layout_no_wrap(
-			count.min(99).to_string(),
+			if count > 99 {
+				"99+".to_owned()
+			} else {
+				count.to_string()
+			},
 			egui::FontId::new(11.0, design::semibold_family(ui.ctx())),
 			Color32::WHITE,
 		)

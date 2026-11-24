@@ -1022,7 +1022,7 @@ pub(super) fn preference_feedback(
 	match state.channel_preference_status(guild, channel) {
 		Some(Status::Saving) => {
 			ui.horizontal(|ui| {
-				ui.add(egui::Spinner::new().size(12.0));
+				ui.add(crate::design::Busy::new().size(12.0));
 				ui.label(
 					RichText::new(i18n::translate("contact-editor-show-saving"))
 						.size(12.0)

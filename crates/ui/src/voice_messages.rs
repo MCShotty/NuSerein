@@ -232,7 +232,7 @@ impl VoiceMessages {
 						}
 					}
 					Phase::Finalizing | Phase::Sending => {
-						ui.spinner();
+						ui.add(crate::design::Busy::new());
 					}
 				}
 				if dialog::action(ui, "voice-message-discard", dialog::Action::Neutral).clicked() {

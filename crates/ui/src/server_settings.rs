@@ -1804,7 +1804,7 @@ impl Editor {
 		if self.draft.is_none() {
 			if state.server_settings.pending {
 				ui.horizontal(|ui| {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 					ui.label(crate::i18n::translate(
 						"server-settings-page-body-loading-server-settings",
 					));
