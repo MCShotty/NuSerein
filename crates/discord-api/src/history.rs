@@ -19,7 +19,6 @@ fn history_page(bytes: &[u8]) -> Result<Vec<model::Message>, Failure> {
 			MediaIssue::AttachmentFieldLimit => "history-attachment-fields",
 			MediaIssue::AttachmentContext => "history-attachment-context",
 			MediaIssue::EmbedList => "history-embed-list",
-			MediaIssue::EmbedCount => "history-embed-count",
 			MediaIssue::EmbedContext => "history-embed-context",
 		}),
 		PageError::Features => Failure::ProtocolAt("history-feature-format"),
@@ -262,6 +261,7 @@ mod media_tests {
 		tokio::time::timeout(std::time::Duration::from_secs(10), async {
 			let mut rows: Vec<_> = [13,12,11].into_iter().map(|id| json!({"id":id.to_string(),"channel_id":"7","author":{"id":"2","username":"fixture"},"content":"retained"})).collect();
 			rows[1]["attachments"] = json!([{"id":"21","width":-1,"filename":"clip.mp4","url":"https://example.invalid/clip"}]);
+			rows[1]["embeds"] = json!(vec![json!({"title":"card"}); model::MAX_EMBEDS + 1]);
 			let (api, captured, server) = crate::community_admin::tests::fixture(vec![("200 OK", serde_json::to_string(&rows).unwrap())]).await;
 			let mut state = State::default();
 			state.apply(Envelope { generation: state.generation, event: Event::Ready {
@@ -278,6 +278,8 @@ mod media_tests {
 			let middle = state.timeline.get(Id(12)).unwrap();
 			assert_eq!(middle.content,"retained"); assert_eq!(middle.attachments[0].id,Id(21));
 			assert!(middle.attachments[0].media.url.is_none() && !middle.attachments[0].is_video());
+			assert_eq!(middle.embeds.len(), model::MAX_EMBEDS);
+			assert!(middle.embeds.last().unwrap().limited);
 		}).await.unwrap();
 	}
 }

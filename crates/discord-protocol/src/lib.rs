@@ -577,7 +577,7 @@ pub struct WireMessage<const HISTORY: bool> {
 	#[serde(default)]
 	pub attachments: AttachmentList<HISTORY>,
 	#[serde(default)]
-	pub embeds: EmbedList,
+	pub embeds: EmbedList<HISTORY>,
 	#[serde(default)]
 	pub flags: u64,
 	#[serde(rename = "type", default)]
@@ -811,7 +811,7 @@ struct SnapshotBody<const HISTORY: bool> {
 	#[serde(default)]
 	attachments: AttachmentList<HISTORY>,
 	#[serde(default)]
-	embeds: EmbedList,
+	embeds: EmbedList<HISTORY>,
 	#[serde(default)]
 	flags: u64,
 	#[serde(default)]

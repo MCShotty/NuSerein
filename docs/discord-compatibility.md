@@ -8,7 +8,12 @@ within the original wire and item limits. The `09` suffix means the probe could 
 the rejection to a narrower check. These are client diagnostics, not Discord error codes.
 The probe changes neither admission nor mutation readbacks. It logs, stores and uploads nothing;
 no message, ID, field name from the response, filename, URL or raw error enters the banner.
-The live cause of a private-channel failure cannot be inferred from synthetic pages.
+Older builds reported `H-E02` when one message exceeded the ten-card display limit. Display
+history now retains at most the first ten embed slots, including for forwarded messages. It
+skips extra cards without retaining their content or URLs and marks the last retained card
+as limited. The existing 64 KiB embed budget can limit the display further. The message and
+its neighbors still count toward pagination. Non-list, non-null embed fields still fail, and
+exact readbacks keep their previous count checks. Live behavior with this change is unverified.
 
 ## Explicit Force Sync (October 30, 2026)
 

@@ -110,7 +110,6 @@ history-attachment-duplicate = Couldn’t load this history page. An attachment 
 history-attachment-fields = Couldn’t load this history page. An attachment exceeds the field count or field-name length limit. (H-A07)
 history-attachment-context = Couldn’t load this history page. The message decoder rejected the attachments field; no more specific check was identified. (H-A09)
 history-embed-list = Couldn’t load this history page. The embeds field is not a list or null. (H-E01)
-history-embed-count = Couldn’t load this history page. The embed list exceeds the supported count. (H-E02)
 history-embed-context = Couldn’t load this history page. The message decoder rejected the embeds field; no more specific check was identified. (H-E09)
 history-feature-format = NuSerein couldn’t read a poll, sticker, component, or forwarded message in this history page.
 history-page-scope = NuSerein couldn’t verify that this page matched the requested conversation and message range.

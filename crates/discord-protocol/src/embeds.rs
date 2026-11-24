@@ -257,24 +257,28 @@ mod tests {
 }
 
 #[derive(Default)]
-pub struct EmbedList(pub Vec<EmbedDto>);
-impl<'de> Deserialize<'de> for EmbedList {
+pub struct EmbedList<const HISTORY: bool = false>(pub Vec<EmbedDto>);
+impl<'de, const HISTORY: bool> Deserialize<'de> for EmbedList<HISTORY> {
 	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-		// A card is optional presentation, not the message envelope. Keep its slot but
-		// discard all of its links/content if its shape cannot be represented.
-		let slots =
-			crate::lossy::Slots::<EmbedDto, { model::MAX_EMBEDS }>::deserialize(deserializer)?;
-		Ok(Self(
-			slots
-				.items
-				.into_iter()
-				.map(|card| {
-					card.unwrap_or_else(|| EmbedDto {
-						limited: true,
-						..Default::default()
-					})
+		// Only display history skips overflow cards. Exact readbacks still reject overflow.
+		let slots = crate::lossy::Slots::<EmbedDto, { model::MAX_EMBEDS }, HISTORY>::deserialize(
+			deserializer,
+		)?;
+		let mut cards: Vec<_> = slots
+			.items
+			.into_iter()
+			.map(|card| {
+				card.unwrap_or_else(|| EmbedDto {
+					limited: true,
+					..Default::default()
 				})
-				.collect(),
-		))
+			})
+			.collect();
+		if slots.truncated
+			&& let Some(last) = cards.last_mut()
+		{
+			last.limited = true;
+		}
+		Ok(Self(cards))
 	}
 }

@@ -258,6 +258,51 @@ mod tests {
 		}
 	}
 	#[test]
+	fn history_caps_embed_slots_without_losing_messages_or_relaxing_exact_reads() {
+		let limit = model::MAX_EMBEDS;
+		for count in [limit, limit + 1, limit * 10] {
+			let cards: Vec<_> = (0..count).map(|i| json!({"title":i.to_string()})).collect();
+			for forward in [false, true] {
+				let mut middle =
+					json!({"id":"12","channel_id":"7","author":{"id":"2","username":"fixture"}});
+				let body = json!({"type":0,"flags":4,"content":"retained","embeds":cards});
+				if forward {
+					middle["message_reference"] =
+						json!({"type":1,"channel_id":"7","message_id":"8"});
+					middle["message_snapshots"] = json!([{"message":body}]);
+				} else if let serde_json::Value::Object(fields) = body {
+					middle.as_object_mut().unwrap().extend(fields);
+				}
+				let mut last = reply();
+				last["id"] = json!("13");
+				let bytes = serde_json::to_vec(&[reply(), middle.clone(), last]).unwrap();
+				assert_eq!(
+					crate::decode::<Vec<MessageDto>>(&bytes).is_ok(),
+					count == limit
+				);
+				let rows = page(&bytes).unwrap();
+				assert_eq!(
+					rows.iter().map(|r| r.id.0).collect::<Vec<_>>(),
+					[11, 12, 13]
+				);
+				let row = &rows[1];
+				assert_eq!(row.content, "retained");
+				assert_eq!(row.forwarded, forward);
+				assert!(row.embeds_suppressed && model::valid_embeds(&row.embeds));
+				assert_eq!(row.embeds.len(), limit);
+				for (i, card) in row.embeds.iter().enumerate() {
+					assert_eq!(card.title.as_ref(), Some(&i.to_string()));
+					assert_eq!(card.limited, count > limit && i + 1 == limit);
+				}
+				middle["channel_id"] = json!(0);
+				assert_eq!(
+					page(&serde_json::to_vec(&[reply(), middle]).unwrap()).err(),
+					Some(PageError::Message)
+				);
+			}
+		}
+	}
+	#[test]
 	fn file_recovery_keeps_identity_visibility_and_list_limits_strict() {
 		use MediaIssue::*;
 		for (fields, reason) in [
@@ -295,7 +340,6 @@ mod tests {
 				AttachmentCount,
 			),
 			("embeds", json!(false), EmbedList),
-			("embeds", json!(vec![json!({}); 12]), EmbedCount),
 		] {
 			let mut row = reply();
 			row[field] = list;

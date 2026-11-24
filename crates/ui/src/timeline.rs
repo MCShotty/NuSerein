@@ -2841,7 +2841,6 @@ impl TimelineView {
 				| "history-attachment-fields"
 				| "history-attachment-context"
 				| "history-embed-list"
-				| "history-embed-count"
 				| "history-embed-context"
 				| "history-feature-format"
 				| "history-page-scope"),
@@ -4103,7 +4102,7 @@ mod tests {
 		crate::i18n::set_current(crate::i18n::Language::English);
 		for (key, expected) in [
 			("history-attachment-flags", "(H-A05)"),
-			("history-embed-count", "(H-E02)"),
+			("history-embed-list", "(H-E01)"),
 			(
 				"private-synthetic-detail",
 				"NuSerein couldn’t read Discord’s history response.",
