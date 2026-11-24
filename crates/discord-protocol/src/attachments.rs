@@ -1,4 +1,5 @@
 //! Attachment objects are bounded metadata; image decoding and URL authorization live elsewhere.
+use crate::history::MediaIssue;
 use base64::Engine;
 use model::{Attachment, EmbedMedia, Id};
 use serde::{Deserialize, Deserializer, de::Error as _};
@@ -159,7 +160,7 @@ impl<'de, const HISTORY: bool> Deserialize<'de> for AttachmentList<HISTORY> {
 						seq.next_element::<&RawValue>()?
 							.map(history_item)
 							.transpose()
-							.map_err(A::Error::custom)?
+							.map_err(|_| A::Error::custom("invalid history attachment"))?
 					} else {
 						seq.next_element::<AttachmentDto>()?
 							.map(AttachmentDto::into_model)
@@ -186,12 +187,12 @@ impl<'de, const HISTORY: bool> Deserialize<'de> for AttachmentList<HISTORY> {
 /// History may represent a damaged file by its real ID but never use its URLs,
 /// MIME, name or decoded data. Every key is checked so recovery cannot mask a
 /// duplicate (including one appearing *after* an unreadable display field).
-fn history_item(raw: &RawValue) -> Result<Attachment, serde_json::Error> {
+pub(crate) fn history_item(raw: &RawValue) -> Result<Attachment, MediaIssue> {
 	if let Ok(item) = serde_json::from_str::<AttachmentDto>(raw.get()) {
 		return Ok(item.into_model());
 	}
-	struct Unavailable;
-	impl<'de> serde::de::Visitor<'de> for Unavailable {
+	struct Unavailable<'a>(&'a mut MediaIssue);
+	impl<'de> serde::de::Visitor<'de> for Unavailable<'_> {
 		type Value = Attachment;
 		fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 			f.write_str("a bounded attachment object")
@@ -204,12 +205,27 @@ fn history_item(raw: &RawValue) -> Result<Attachment, serde_json::Error> {
 			let mut id = None;
 			let mut spoiler = false;
 			while let Some(key) = map.next_key::<String>()? {
-				if keys.len() >= 64 || key.len() > 128 || keys.contains(&key) {
-					return Err(A::Error::custom("invalid attachment fields"));
+				if keys.len() >= 64 || key.len() > 128 {
+					*self.0 = MediaIssue::AttachmentFieldLimit;
+					return Err(A::Error::custom("attachment field limit"));
+				}
+				if keys.contains(&key) {
+					*self.0 = MediaIssue::AttachmentDuplicate;
+					return Err(A::Error::custom("duplicate attachment field"));
 				}
 				match key.as_str() {
-					"id" => id = Some(map.next_value::<Id>()?),
-					"flags" => spoiler |= concealed_flags(map.next_value::<u64>()?),
+					"id" => {
+						id = Some(
+							map.next_value::<Id>()
+								.inspect_err(|_| *self.0 = MediaIssue::AttachmentId)?,
+						)
+					}
+					"flags" => {
+						spoiler |= concealed_flags(
+							map.next_value::<u64>()
+								.inspect_err(|_| *self.0 = MediaIssue::AttachmentFlags)?,
+						)
+					}
 					"filename" | "description" => {
 						let value: &RawValue = map.next_value()?;
 						spoiler |= match serde_json::from_str::<Option<String>>(value.get()) {
@@ -226,7 +242,10 @@ fn history_item(raw: &RawValue) -> Result<Attachment, serde_json::Error> {
 				keys.insert(key);
 			}
 			Ok(Attachment {
-				id: id.ok_or_else(|| A::Error::missing_field("id"))?,
+				id: id.ok_or_else(|| {
+					*self.0 = MediaIssue::AttachmentId;
+					A::Error::missing_field("id")
+				})?,
 				filename: "Attachment".into(),
 				spoiler,
 				size: 0,
@@ -238,7 +257,13 @@ fn history_item(raw: &RawValue) -> Result<Attachment, serde_json::Error> {
 			})
 		}
 	}
-	raw.deserialize_map(Unavailable)
+	let mut issue = if raw.get().starts_with('{') {
+		MediaIssue::AttachmentContext
+	} else {
+		MediaIssue::AttachmentObject
+	};
+	raw.deserialize_map(Unavailable(&mut issue))
+		.map_err(|_| issue)
 }
 
 #[cfg(test)]

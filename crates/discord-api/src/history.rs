@@ -3,13 +3,25 @@ use super::{DiscordApi, Event, Failure, Id, Method, safe_delay};
 use discord_protocol::{MessageDto, decode, pins, search};
 
 fn history_page(bytes: &[u8]) -> Result<Vec<model::Message>, Failure> {
-	use discord_protocol::history::{PageError, page};
+	use discord_protocol::history::{MediaIssue, PageError, page};
 	page(bytes).map_err(|error| match error {
 		PageError::Limit => Failure::ResponseLimit,
 		PageError::Page => Failure::ProtocolAt("history-page-format"),
 		PageError::Message => Failure::ProtocolAt("history-message-format"),
 		PageError::People => Failure::ProtocolAt("history-people-format"),
-		PageError::Media => Failure::ProtocolAt("history-media-format"),
+		PageError::Media(reason) => Failure::ProtocolAt(match reason {
+			MediaIssue::AttachmentList => "history-attachment-list",
+			MediaIssue::AttachmentCount => "history-attachment-count",
+			MediaIssue::AttachmentObject => "history-attachment-object",
+			MediaIssue::AttachmentId => "history-attachment-id",
+			MediaIssue::AttachmentFlags => "history-attachment-flags",
+			MediaIssue::AttachmentDuplicate => "history-attachment-duplicate",
+			MediaIssue::AttachmentFieldLimit => "history-attachment-fields",
+			MediaIssue::AttachmentContext => "history-attachment-context",
+			MediaIssue::EmbedList => "history-embed-list",
+			MediaIssue::EmbedCount => "history-embed-count",
+			MediaIssue::EmbedContext => "history-embed-context",
+		}),
 		PageError::Features => Failure::ProtocolAt("history-feature-format"),
 	})
 }
@@ -221,6 +233,29 @@ mod media_tests {
 	use super::*;
 	use client_core::{Envelope, State};
 	use serde_json::json;
+
+	#[test]
+	fn rejected_history_media_exposes_only_a_fixed_local_key() {
+		for (field, value, key) in [
+			(
+				"attachments",
+				json!([{"id":"7", "filename":"private-filename", "flags":"private-value", "url":"https://example.invalid/private"}]),
+				"history-attachment-flags",
+			),
+			(
+				"embeds",
+				json!({"private-field":"private-content"}),
+				"history-embed-list",
+			),
+		] {
+			let mut row = json!({"id":"13", "channel_id":"7", "author":{"id":"2","username":"fixture"},"content":"private-body"});
+			row[field] = value;
+			assert_eq!(
+				history_page(&serde_json::to_vec(&[row]).unwrap()).err(),
+				Some(Failure::ProtocolAt(key))
+			);
+		}
+	}
 
 	#[tokio::test]
 	async fn damaged_media_does_not_hide_neighbors_in_the_selected_timeline() {

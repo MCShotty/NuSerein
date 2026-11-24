@@ -14,6 +14,16 @@ In the guild roster, the monitor action watches a Go Live share. The camera icon
 camera state and can focus an available camera picture in the currently joined call. It never
 starts capture or opens a second stream connection.
 
+## History media diagnostics (November 24, 2026)
+
+When display history rejects an attachment or embed list, the failure banner includes a fixed
+local code (`H-A…` for attachments, `H-E…` for embeds). Only the rejected field is examined,
+within the original wire and item limits. The `09` suffix means the probe could not attribute
+the rejection to a narrower check. These are client diagnostics, not Discord error codes.
+The probe changes neither admission nor mutation readbacks. It logs, stores and uploads nothing;
+no message, ID, field name from the response, filename, URL or raw error enters the banner.
+The live cause of a private-channel failure cannot be inferred from synthetic pages.
+
 ## Explicit Force Sync (October 30, 2026)
 
 **Force Sync This Server** refreshes the selected server. **Settings → Storage & Sync →
