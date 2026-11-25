@@ -109,11 +109,18 @@ struct Pending {
 	negotiation_revision: Option<u64>,
 	server: Option<(Secret, String)>,
 	started: Instant,
-	failed_candidate: bool,
+	candidate_error: Option<&'static str>,
 }
 impl Pending {
+	fn timeout_reason(&self) -> &'static str {
+		self.candidate_error.unwrap_or(if self.server.is_some() && self.session.is_some() {
+			"Voice transport negotiation timed out; rejoin the call"
+		} else {
+			"Discord did not provide voice connection details; check Connect permission and channel capacity"
+		})
+	}
 	fn confirm_transport(&self, revision: u64) -> Option<Command> {
-		(!self.failed_candidate
+		(self.candidate_error.is_none()
 			&& self.session.is_some()
 			&& self.server.is_some()
 			&& self.negotiation_revision == Some(revision)
@@ -534,7 +541,7 @@ impl Voice {
 			negotiation_revision: None,
 			server: None,
 			started: Instant::now(),
-			failed_candidate: false,
+			candidate_error: None,
 		});
 		Ok(())
 	}
@@ -734,7 +741,7 @@ impl Voice {
 		}
 		let changed = pending.changed(event);
 		if changed {
-			pending.failed_candidate = false;
+			pending.candidate_error = None;
 		}
 		match event {
 			voice::Event::State {
@@ -1081,10 +1088,8 @@ impl Voice {
 				.and_then(|live| live.negotiation.as_ref())
 		}) {
 			if pending.started.elapsed() >= Duration::from_secs(30) {
-				return self.fail_or_rejoin(
-                    state,
-                    "Discord did not provide voice connection details; check Connect permission and channel capacity",
-                );
+				let reason = pending.timeout_reason();
+				return self.fail_or_rejoin(state, reason);
 			}
 			ctx.request_repaint_after(
 				Duration::from_secs(30).saturating_sub(pending.started.elapsed()),
@@ -1092,7 +1097,7 @@ impl Voice {
 		}
 		if self.retiring.is_none()
 			&& self.pending.as_ref().is_some_and(|p| {
-				!p.failed_candidate
+				p.candidate_error.is_none()
 					&& p.session.is_some()
 					&& p.negotiation_revision.is_some()
 					&& p.server.is_some()
@@ -1459,14 +1464,14 @@ impl Voice {
 		if failure == Some(discord_voice::DISCONNECTED_BY_DISCORD) && self.rejoin.is_some() {
 			return self.give_up_rejoin(state, discord_voice::DISCONNECTED_BY_DISCORD, true);
 		}
-		if failure.is_some()
+		if let Some(error) = failure
 			&& self
 				.live
 				.as_ref()
 				.is_some_and(|live| live.negotiation.is_some())
 		{
 			let mut pending = self.live.as_mut().unwrap().negotiation.take().unwrap();
-			pending.failed_candidate = true;
+			pending.candidate_error = Some(error);
 			self.stop();
 			self.pending = Some(pending);
 			// Only new service credentials can retry. Do not hang up another client's candidate.
@@ -3070,13 +3075,13 @@ mod tests {
 				.is_none()
 		);
 		manager.pending.as_mut().unwrap().generation = state.generation;
-		manager.pending.as_mut().unwrap().failed_candidate = true;
+		manager.pending.as_mut().unwrap().candidate_error = Some("Voice TLS connection failed");
 		assert!(
 			manager
 				.observe(&state, &mut failure(Id(22), request, 2))
 				.is_none()
 		);
-		manager.pending.as_mut().unwrap().failed_candidate = false;
+		manager.pending.as_mut().unwrap().candidate_error = None;
 		manager.pending.as_mut().unwrap().started = Instant::now() - Duration::from_secs(31);
 		assert!(
 			manager
@@ -3283,15 +3288,21 @@ mod tests {
 				assert!(manager.observe(&state, &mut server()).is_none());
 			}
 			// An attempted but unconfirmed old candidate failed; duplicates must not retry it.
-			manager.pending.as_mut().unwrap().failed_candidate = true;
+			manager.pending.as_mut().unwrap().candidate_error = Some("Voice TLS connection failed");
 			assert!(
 				manager
 					.observe(&state, &mut session("existing-client", 1))
 					.is_none()
 			);
-			assert!(manager.pending.as_ref().unwrap().failed_candidate);
+			assert_eq!(
+				manager.pending.as_ref().unwrap().timeout_reason(),
+				"Voice TLS connection failed"
+			);
 			assert!(manager.observe(&state, &mut server()).is_none());
-			assert!(manager.pending.as_ref().unwrap().failed_candidate);
+			assert_eq!(
+				manager.pending.as_ref().unwrap().timeout_reason(),
+				"Voice TLS connection failed"
+			);
 			assert!(manager.pending.as_ref().unwrap().changed(
 				match &session("local-candidate", 2) {
 					Event::Voice(event) => event,
@@ -3304,7 +3315,7 @@ mod tests {
 					.is_none()
 			);
 			let pending = manager.pending.as_ref().unwrap();
-			assert!(!pending.failed_candidate);
+			assert!(pending.candidate_error.is_none());
 			assert_eq!(pending.started, started); // Candidate replacement does not extend the 30s attempt.
 			assert_eq!(
 				pending.session.as_ref().unwrap().expose(),

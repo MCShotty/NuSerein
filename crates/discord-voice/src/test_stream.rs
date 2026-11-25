@@ -28,6 +28,15 @@ async fn message(ws: &mut TestSocket) -> Message {
 	}
 }
 
+// During discovery and before MLS proposals the only expected text on this
+// socket is a heartbeat. Don't hide early video or consume a real signal.
+async fn ack_heartbeat(ws: &mut TestSocket, frame: Message) {
+	let value: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+	assert_eq!(value["op"], 3);
+	let nonce = value["d"]["t"].as_u64().unwrap();
+	event(ws, json!({"op":6,"d":{"t":nonce}})).await;
+}
+
 async fn connect(
 	listener: &TcpListener,
 	delivery: &crate::test_mls::Delivery,
@@ -51,8 +60,14 @@ async fn connect(
 	.await;
 	event(&mut ws, json!({"op":2,"d":{"ssrc":40+user,"ip":"127.0.0.1","port":udp.local_addr().unwrap().port(),"modes":[MODE],"streams":[{"ssrc":50+user}]}})).await;
 	let mut probe = [0; 74];
-	let (length, client) = udp.recv_from(&mut probe).await.unwrap();
+	let (length, client) = loop {
+		tokio::select! {
+			probe = udp.recv_from(&mut probe) => break probe.unwrap(),
+			frame = ws.next() => ack_heartbeat(&mut ws, frame.unwrap().unwrap()).await,
+		}
+	};
 	assert_eq!(length, 74);
+	assert_eq!(&probe[..4], &[0, 1, 0, 70]);
 	probe[..4].copy_from_slice(&[0, 2, 0, 70]);
 	probe[8..17].copy_from_slice(b"127.0.0.1");
 	probe[72..].copy_from_slice(&client.port().to_be_bytes());
@@ -397,8 +412,18 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 		)
 		.await
 	});
-	let (mut view_ws, view_udp, view_addr, package, _) =
-		connect(&listener, &delivery, 2, codec, pending).await;
+	let (mut view_ws, view_udp, view_addr, package, _) = {
+		// The mock server owns two live sockets. Keep servicing the sender
+		// while the viewer opens UDP and generates its MLS key package.
+		let handshake = connect(&listener, &delivery, 2, codec, pending);
+		tokio::pin!(handshake);
+		loop {
+			tokio::select! {
+				result = &mut handshake => break result,
+				frame = send_ws.next() => ack_heartbeat(&mut send_ws, frame.unwrap().unwrap()).await,
+			}
+		}
+	};
 	// An external MLS Add needs only the existing group ID and epoch; both clients
 	// negotiate their actual commit/welcome rather than receiving precomputed media keys.
 	let mut group = Dave::new(1, Some(2), 3).unwrap();
@@ -437,9 +462,7 @@ async fn exchange(rekey_timeout: bool, picture_case: TestPicture) {
 			.unwrap()
 			.unwrap()
 			.unwrap();
-		let heartbeat: Value = serde_json::from_str(heartbeat.to_text().unwrap()).unwrap();
-		assert_eq!(heartbeat["op"], 3);
-		event(&mut send_ws, json!({"op":6,"d":{"t":heartbeat["d"]["t"]}})).await;
+		ack_heartbeat(&mut send_ws, heartbeat).await;
 		assert!(!ready.load(Ordering::Acquire));
 		if matches!(picture_case, TestPicture::CancelledPicker) {
 			sender.abort();

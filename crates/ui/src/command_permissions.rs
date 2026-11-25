@@ -104,7 +104,7 @@ impl PermissionsUi {
 				self.error = None;
 			}
 			if state.server_admin.pending {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 			}
 		});
 		if !self.loaded && snapshot.is_none() && !state.server_admin.pending {
@@ -299,7 +299,7 @@ impl PermissionsUi {
 						if let Some(active)=active {
 							let lookup=&state.member_search[0];
 							if lookup.request.as_ref().is_some_and(|request|request.guild==guild && request.channel==active && request.query==self.member_query){
-								if !lookup.finished{ui.spinner();}
+								if !lookup.finished{ui.add(crate::design::Busy::new());}
 								if let Some(error)=lookup.error{ui.weak(error);if ui.button("Retry member search").clicked(){self.member_due=Some(0.0);}}
 							}
 							egui::ScrollArea::vertical().max_height(260.0).show(ui,|ui|{

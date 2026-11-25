@@ -52,7 +52,7 @@ impl MessagingUi {
 		}
 		if state.account_settings.overview_pending {
 			ui.horizontal(|ui| {
-				ui.add(egui::Spinner::new().size(14.0));
+				ui.add(crate::design::Busy::new().size(14.0));
 				ui.label("Loading account details…");
 			});
 		}
@@ -146,7 +146,7 @@ impl MessagingUi {
 		}
 		if state.account_settings.connections_pending {
 			ui.horizontal(|ui| {
-				ui.add(egui::Spinner::new().size(14.0));
+				ui.add(crate::design::Busy::new().size(14.0));
 				ui.label(if state.account_settings.connections_saving {
 					"Saving connection…"
 				} else {

@@ -499,9 +499,7 @@ pub(crate) fn immediate_tooltip(response: Response, label: &str) -> Response {
 		&& !response.ctx.input(|input| input.pointer.any_down())
 		&& !egui::Popup::is_any_open(&response.ctx)
 	{
-		egui::Tooltip::for_widget(&response).show(|ui| {
-			ui.label(label);
-		});
+		egui::Tooltip::for_widget(&response).show(|ui| wrapped_tooltip(ui, label));
 	}
 	response
 }
@@ -532,8 +530,16 @@ fn button_with_tooltip(
 	if immediate {
 		immediate_tooltip(response, &label)
 	} else {
-		response.on_hover_text(&label)
+		response.on_hover_ui(|ui| wrapped_tooltip(ui, &label))
 	}
+}
+
+/// Icon labels can include a full participant or channel name. Keep the full
+/// text accessible; wrap the visible hint inside the viewport's padded width.
+pub(crate) fn wrapped_tooltip(ui: &mut egui::Ui, label: &str) {
+	let width = (ui.ctx().content_rect().width() - 32.0).max(1.0);
+	ui.set_max_width(width.min(ui.spacing().tooltip_width));
+	ui.add(egui::Label::new(label).wrap());
 }
 
 /// Toggleable variant: `active` keeps the icon in the strong text colour.
@@ -543,6 +549,9 @@ pub fn toggle(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, label: &st
 	let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
 	if response.hovered() || response.has_focus() {
 		ui.painter().rect_filled(rect, 6, colors.hover);
+	}
+	if active {
+		design::selection_surface(ui, rect);
 	}
 	let color = if active || response.hovered() || response.has_focus() {
 		colors.text_strong
@@ -554,7 +563,7 @@ pub fn toggle(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, label: &st
 	response.widget_info(|| {
 		egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), active, &label)
 	});
-	response.on_hover_text(&label)
+	response.on_hover_ui(|ui| wrapped_tooltip(ui, &label))
 }
 
 /// Composer tray: a 22-point glyph in a 32-point target, with legible idle contrast.

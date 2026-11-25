@@ -476,6 +476,64 @@ mod tests {
 	}
 
 	#[test]
+	fn compact_navigation_gives_the_workspace_back_without_resizing_saved_navigation() {
+		let ctx = egui::Context::default();
+		let mut view = MessagingUi::default();
+		let mut state = test_support::demo_state();
+		let saved = view.reading_preferences.sidebar_width;
+		let mut draw = |events| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(560.0, 580.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|ui| {
+					view.show(ui, &mut state);
+				},
+			);
+			let mut labels = Vec::new();
+			for s in &output.shapes {
+				crate::test_ui::logical_text(&s.shape, &mut labels);
+			}
+			output.drop_without_applying_deltas();
+			labels
+		};
+		let _ = draw(vec![]);
+		let frame = draw(vec![]);
+		let button = frame
+			.iter()
+			.find(|(s, _)| s == "Navigation")
+			.unwrap()
+			.1
+			.center();
+		let click = |p, pressed| {
+			vec![
+				egui::Event::PointerMoved(p),
+				egui::Event::PointerButton {
+					pos: p,
+					button: egui::PointerButton::Primary,
+					pressed,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]
+		};
+		draw(click(button, true));
+		draw(click(button, false));
+		let nav = draw(vec![]);
+		let back = nav.iter().find(|(s, _)| s == "Back").unwrap().1.center();
+		assert!(nav.iter().any(|(s, _)| s == "Inbox"));
+		draw(click(back, true));
+		draw(click(back, false));
+		let restored = draw(vec![]);
+		assert!(restored.iter().any(|(s, _)| s == "Navigation"));
+		assert!(!restored.iter().any(|(s, _)| s == "Inbox"));
+		assert_eq!(view.reading_preferences.sidebar_width, saved);
+	}
+	#[test]
 	fn sidebar_constraints_do_not_replace_saved_width_and_zoom_is_bounded() {
 		let ctx = egui::Context::default();
 		let mut view = MessagingUi::default();

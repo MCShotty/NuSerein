@@ -168,7 +168,7 @@ impl MfaUi {
 					});
 					if !ready {
 						ui.horizontal(|ui| {
-							ui.spinner();
+							ui.add(crate::design::Busy::new());
 							ui.label(crate::i18n::translate(
 								if matches!(phase, Phase::Verified | Phase::Resuming) {
 									"admin-mfa-completing"

@@ -155,7 +155,7 @@ impl Settings {
 		let colors = design::palette(ui);
 		let Some(families) = &self.families else {
 			ui.horizontal(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.label(
 					egui::RichText::new(crate::i18n::translate("fonts-show-loading"))
 						.color(colors.muted),

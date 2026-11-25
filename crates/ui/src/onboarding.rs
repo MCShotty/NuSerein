@@ -174,7 +174,7 @@ impl OnboardingUi {
 		}
 		let Some(form) = flow.form.as_ref().filter(|_| !flow.loading) else {
 			ui.horizontal(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.label(translate("onboarding-body-loading"));
 			});
 			return;

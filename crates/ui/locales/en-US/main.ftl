@@ -6076,8 +6076,9 @@ force-sync-error-unsupported = Discord returned data this version could not safe
 force-sync-error-storage = The local cache could not be updated; existing data was kept.
 force-sync-error-stale = This data changed repeatedly while syncing. Retry for a newer snapshot.
 
-watch-short = Watch
-watch-owner = Watch { $name }
+watch-camera-on = { $name }’s camera is on
+watch-camera-focus = View { $name }’s camera
+watch-owner = Watch { $name }’s screen share
 watch-join-muted = Join { $channel } muted to watch { $name }
 watch-switch-muted = Switch to { $channel } to watch { $name }…
 watch-confirm-switch = Leave this call and join { $channel } with your mic muted to watch { $name }?
@@ -6097,3 +6098,4 @@ archive-public = Public
 archive-joined-private = Joined private
 archive-private = Private
 tray-show-app = Show NuSerein
+workspace-navigation = Navigation

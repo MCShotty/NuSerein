@@ -318,7 +318,7 @@ impl SoundsUi {
 				}
 				if busy {
 					ui.horizontal(|ui| {
-						ui.spinner();
+						ui.add(crate::design::Busy::new());
 						ui.weak(crate::i18n::translate(if encoding {
 							"server-sounds-preparing"
 						} else {
@@ -451,7 +451,7 @@ impl SoundsUi {
 		}
 		if state.server_admin.pending {
 			ui.horizontal(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.weak(crate::i18n::translate(if state.server_admin.saving {
 					"server-sounds-saving"
 				} else {

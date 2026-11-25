@@ -84,6 +84,22 @@ layout stay put. The first visible frame is settled, and the motion stops on foc
 Accessibility → Motion and scrolling → Reduce interface motion uses the settled treatment and
 skips chrome fades. This device setting is independent of artwork playback and scrolling.
 
+### Compact forms and feedback
+
+Below 620 logical points, Navigation opens the real channel list, server rail and account/call
+controls as a separate pane. Back returns to the workspace without resizing the saved sidebar.
+Selecting a new destination returns to its workspace. Wider windows retain the split view.
+
+At compact content widths, setting labels and their descriptions precede their controls instead
+of competing for the same line. Multi-action dialog footers wrap, and forwarding destinations
+keep separate single-line names and server labels with the full text in their accessible name.
+The current toolbar toggle uses the same selected surface as navigation; focus remains separate.
+
+Waiting is a three-tick signal, not a percentage. Only a visible, focused interface with
+motion enabled advances it. Reduce interface motion keeps its shape still, holds restore-screen
+artwork still, and removes the toast fade without changing how long a notice can be read.
+Pending feedback must never announce a completed action or enable a permission-gated control.
+
 ### Stream controls
 
 Sharing requires choosing a source; refreshing a missing window never substitutes a display.

@@ -764,7 +764,9 @@ impl MessagingUi {
 							let entry = &state.voice.roster[entry];
 							let response = ui.horizontal(|ui| {
 								ui.add_space(28.0);
-								self.voice_participant(ui, state, entry);
+								if self.voice_participant(ui, state, entry) {
+									selected = Some(entry.channel);
+								}
 							});
 							paint_shelf_rule(
 								ui,

@@ -2346,7 +2346,7 @@ fn full_panel(
 	ui.push_id(("full-profile-tab", *tab as u8), |ui| {
 		ui.spacing_mut().item_spacing.y = 12.0;
 		if *tab != FullTab::Activity && view.is_none_or(|view| view.loading) && data.is_none() {
-			ui.spinner();
+			ui.add(crate::design::Busy::new());
 			return;
 		}
 		match tab {
@@ -2812,7 +2812,7 @@ fn message_input(
 				);
 				let label = crate::i18n::translate("profiles-message-send");
 				if session.message_pending {
-					egui::Spinner::new()
+					crate::design::Busy::new()
 						.size(16.0)
 						.color(theme.muted)
 						.paint_at(ui, rect.shrink(7.0));
@@ -3677,7 +3677,7 @@ pub fn show_with_session(
 						if !user.webhook && view.is_none_or(|v| v.loading) {
 							ui.add_space(4.0);
 							ui.horizontal(|ui| {
-								ui.spinner();
+								ui.add(crate::design::Busy::new());
 								ui.label(
 									RichText::new(crate::i18n::translate(
 										"profiles-show-loading-profile",

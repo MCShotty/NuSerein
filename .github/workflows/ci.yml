@@ -66,6 +66,10 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, windows-11-arm, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # The Windows ARM64 runner's PowerShell can crash extracting Bun. Its preinstalled
+      # Node runs these dependency-free CommonJS fixtures without an archive install.
+      FIXTURE_JS: ${{ matrix.os == 'windows-11-arm' && 'node' || 'bun' }}
     steps:
       - uses: actions/checkout@v7.0.1
       # Steps in one parallel group must not share a Cargo target directory.
@@ -87,6 +91,7 @@ jobs:
               components: rustfmt, clippy
       # Parallel actions both open the runner event file; Windows can fail on the shared lock.
       - uses: oven-sh/setup-bun@v2.2.0
+        if: env.FIXTURE_JS == 'bun'
         with:
           bun-version: 1.4.2
       - name: Verify Linux native H.264 plugins
@@ -181,6 +186,24 @@ jobs:
             export DYLD_LIBRARY_PATH="$FFMPEG_DIR/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           fi
           cargo xtask check
+      - name: Capture offline native design gallery
+        if: runner.os == 'Linux' && github.event_name == 'pull_request' && startsWith(github.head_ref, 'design/')
+        timeout-minutes: 25
+        env:
+          LD_LIBRARY_PATH: ${{ env.FFMPEG_DIR }}/lib
+          WGPU_BACKEND: vulkan
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          cargo build --locked -p serein --features demo --example profile_preview
+          xvfb-run -a python3 scripts/capture-design-gallery.py target/debug/examples/profile_preview "$RUNNER_TEMP/signal-desk-gallery"
+      - name: Preserve synthetic native frames and capture manifest
+        if: ${{ !cancelled() && runner.os == 'Linux' && github.event_name == 'pull_request' && startsWith(github.head_ref, 'design/') }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: offline-native-design-gallery
+          path: ${{ runner.temp }}/signal-desk-gallery/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Windows capture surfaces and retirement (synthetic, no screen capture)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -199,9 +222,9 @@ jobs:
             run: xvfb-run -a cargo test --locked -p platform --features winit/x11,winit/wayland --lib flatpak_locale_tests::post_gtk_flatpak_encoding_preflight -- --exact --ignored
             env:
               LD_LIBRARY_PATH: ${{ env.FFMPEG_DIR }}/lib
-          - run: bun tests/login-handoff.cjs
-          - run: bun tests/embed-player.cjs
-          - run: bun tests/xtask-workspace.cjs
+          - run: ${{ env.FIXTURE_JS }} tests/login-handoff.cjs
+          - run: ${{ env.FIXTURE_JS }} tests/embed-player.cjs
+          - run: ${{ env.FIXTURE_JS }} tests/xtask-workspace.cjs
           - name: FFmpeg native libraries and packaging regression (offline)
             run: python packaging/ffmpeg/test_bundle.py
           - name: Speech assets and runtime packaging regression (offline)

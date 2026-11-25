@@ -271,7 +271,7 @@ impl MessagingUi {
 		match &self.running_processes {
 			None => {
 				ui.horizontal(|ui| {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 					ui.label(
 						RichText::new(tr("settings-activity-reading-programs")).color(p.muted),
 					);

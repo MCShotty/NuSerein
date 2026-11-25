@@ -73,7 +73,7 @@ impl ContactEditor {
 				if !self.loaded {
 					if busy {
 						ui.horizontal(|ui| {
-							ui.spinner();
+							ui.add(crate::design::Busy::new());
 							ui.label(crate::i18n::translate("contact-editor-show-loading-note"));
 						});
 					} else {

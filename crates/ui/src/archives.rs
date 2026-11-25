@@ -175,7 +175,7 @@ impl ArchivesUi {
 					}
 					if view.loading {
 						ui.horizontal(|ui| {
-							ui.spinner();
+							ui.add(crate::design::Busy::new());
 							ui.label(crate::i18n::translate(
 								"archives-show-loading-older-threads",
 							));

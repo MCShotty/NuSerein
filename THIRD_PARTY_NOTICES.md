@@ -306,8 +306,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 # Community extension runtime (September 12, 2026)
 
-Wasmi 2.0.2 and its core, collections and IR crates are MIT OR Apache-2.0.
-The license texts at release commit `05d2de3057c323a3f807ef23eb19e0c2ab58d2a8`
+Wasmi 2.0.3 and its core, collections and IR crates are MIT OR Apache-2.0.
+The license texts at release commit `91fdeee6df6d289b58c96274aeaca0d48b7bf467`
 are unchanged from the bundled `assets/licenses/files/wasmi-2.0.0-LICENSE-*`.
 Wasmparser 0.228.0 is used under its MIT option; its upstream license at
 `e66235859a6ec0502bf6f9dcc358953eda4cafcc` is bundled alongside it.
