@@ -366,6 +366,7 @@ impl MessagingUi {
 			}
 		}
 		if self.navigation_channel != state.selected {
+			self.compact_navigation_open = false;
 			self.focus_switched_composer = state.selected.is_some();
 			self.navigation_channel = state.selected;
 			self.guild = state
@@ -386,101 +387,154 @@ impl MessagingUi {
 		// Server rail and channel list share one resizable column so the account card can
 		// span both, like Discord's bottom-left user pill.
 		let rail = notifications::RAIL_WIDTH;
-		let sidebar_max = self.prepare_reading_sidebar(ui, "navigation", rail);
+		// At narrow widths choose a pane instead of clipping both. The navigation page
+		// contains the real rail, channel list and account/call controls, not copies.
+		let compact = ui.available_width() < 620.0;
+		if compact {
+			egui::Panel::top("compact-workspace-bar")
+				.exact_size(34.0)
+				.resizable(false)
+				.frame(
+					egui::Frame::new()
+						.fill(background.base)
+						.inner_margin(egui::Margin::symmetric(8, 0)),
+				)
+				.show(ui, |ui| {
+					ui.horizontal_centered(|ui| {
+						let key = if self.compact_navigation_open {
+							"menu-back"
+						} else {
+							"workspace-navigation"
+						};
+						if ui.button(language.text(key)).clicked() {
+							self.compact_navigation_open = !self.compact_navigation_open;
+						}
+						ui.add(egui::Label::new(design::medium(ui, &title, 13.0)).truncate());
+					})
+				});
+		} else {
+			self.compact_navigation_open = false;
+		}
+		let navigation_page = compact && self.compact_navigation_open;
+		let origin = (state.selected, state.browse_channels, state.request);
+		let panel = if navigation_page {
+			Some(
+				egui::Panel::left("compact-navigation-page")
+					.resizable(false)
+					.exact_size(ui.available_width()),
+			)
+		} else if !compact {
+			let sidebar_max = self.prepare_reading_sidebar(ui, "navigation", rail);
+			Some(
+				egui::Panel::left("navigation")
+					.resizable(true)
+					.default_size(
+						rail + f32::from(self.reading_preferences.sidebar_width).min(sidebar_max),
+					)
+					.size_range(rail + 190.0..=rail + sidebar_max),
+			)
+		} else {
+			None
+		};
 		// See-through chrome paints each section once; a shared column coat would stack under
 		// the rail and account strip and make them denser than the title bar.
 		let layered = design::layered_sections(ui);
-		let navigation = egui::Panel::left("navigation")
-			.resizable(true)
-			.show_separator_line(!design::has_window_background(ui))
-			.default_size(rail + f32::from(self.reading_preferences.sidebar_width).min(sidebar_max))
-			.size_range(rail + 190.0..=rail + sidebar_max)
-			.frame(
-				egui::Frame::new()
-					.fill(if layered {
-						egui::Color32::TRANSPARENT
-					} else {
-						background.base
-					})
-					.inner_margin(0),
-			)
-			.show(ui, |ui| {
-				let footer = egui::Panel::bottom("account-footer")
-					.show_separator_line(false)
-					.frame(
-						egui::Frame::new()
-							// Over a window image the card's strip continues the channel list;
-							// over desktop transparency it is the rail's material, like the title bar.
-							.fill(if design::has_window_background(ui) {
-								design::section_surface(
-									ui,
-									background.sidebar,
-									design::ImageSection::ChannelList,
-								)
-							} else if layered {
-								design::section_surface(
-									ui,
-									background.base,
-									design::ImageSection::ServerList,
-								)
-							} else {
-								egui::Color32::TRANSPARENT
-							})
-							.inner_margin(egui::Margin {
-								left: 8,
-								right: 8,
-								top: 8,
-								bottom: 8,
-							}),
-					)
-					.show(ui, |ui| self.account_card(ui, state, &mut commands));
-				// Nested panels use their parent's full cross-axis. Limit subsequent
-				// navigation painting so the rail/list cannot cover the account controls.
-				let navigation_clip = egui::Rect::from_min_max(
-					ui.clip_rect().min,
-					egui::pos2(ui.clip_rect().right(), footer.response.rect.top()),
-				);
-				ui.shrink_clip_rect(navigation_clip);
-				self.notification_rail(ui, state, &mut commands);
-				// The lists sit on their own rounded surface beside the rail, above the card.
-				let lists = ui.available_rect_before_wrap();
-				// A window image continues the lists into the card strip, so only it stays square.
-				let rounded = !design::has_window_background(ui);
-				ui.painter().rect_filled(
-					lists,
-					if rounded {
-						egui::CornerRadius {
-							nw: 8,
-							sw: 8,
-							..Default::default()
-						}
-					} else {
-						egui::CornerRadius::ZERO
-					},
-					design::section_surface(
-						ui,
-						background.sidebar,
-						design::ImageSection::ChannelList,
-					),
-				);
-				if rounded && layered {
-					// No column coat sits under the corners, so the rail's material fills the
-					// notches and the curve still reads from the title bar into the account strip.
-					let notch = design::section_surface(
-						ui,
-						background.base,
-						design::ImageSection::ServerList,
+		if let Some(panel) = panel {
+			let navigation = panel
+				.show_separator_line(!design::has_window_background(ui))
+				.frame(
+					egui::Frame::new()
+						.fill(if layered {
+							egui::Color32::TRANSPARENT
+						} else {
+							background.base
+						})
+						.inner_margin(0),
+				)
+				.show(ui, |ui| {
+					let footer = egui::Panel::bottom("account-footer")
+						.show_separator_line(false)
+						.frame(
+							egui::Frame::new()
+								// Over a window image the card's strip continues the channel list;
+								// over desktop transparency it is the rail's material, like the title bar.
+								.fill(if design::has_window_background(ui) {
+									design::section_surface(
+										ui,
+										background.sidebar,
+										design::ImageSection::ChannelList,
+									)
+								} else if layered {
+									design::section_surface(
+										ui,
+										background.base,
+										design::ImageSection::ServerList,
+									)
+								} else {
+									egui::Color32::TRANSPARENT
+								})
+								.inner_margin(egui::Margin {
+									left: 8,
+									right: 8,
+									top: 8,
+									bottom: 8,
+								}),
+						)
+						.show(ui, |ui| self.account_card(ui, state, &mut commands));
+					// Nested panels use their parent's full cross-axis. Limit subsequent
+					// navigation painting so the rail/list cannot cover the account controls.
+					let navigation_clip = egui::Rect::from_min_max(
+						ui.clip_rect().min,
+						egui::pos2(ui.clip_rect().right(), footer.response.rect.top()),
 					);
-					for (corner, inward) in [
-						(lists.left_top(), egui::vec2(1.0, 1.0)),
-						(lists.left_bottom(), egui::vec2(1.0, -1.0)),
-					] {
-						design::paint_corner_notch(ui.painter(), corner, inward, 8.0, notch);
+					ui.shrink_clip_rect(navigation_clip);
+					self.notification_rail(ui, state, &mut commands);
+					// The lists sit on their own rounded surface beside the rail, above the card.
+					let lists = ui.available_rect_before_wrap();
+					// A window image continues the lists into the card strip, so only it stays square.
+					let rounded = !design::has_window_background(ui);
+					ui.painter().rect_filled(
+						lists,
+						if rounded {
+							egui::CornerRadius {
+								nw: 8,
+								sw: 8,
+								..Default::default()
+							}
+						} else {
+							egui::CornerRadius::ZERO
+						},
+						design::section_surface(
+							ui,
+							background.sidebar,
+							design::ImageSection::ChannelList,
+						),
+					);
+					if rounded && layered {
+						// No column coat sits under the corners, so the rail's material fills the
+						// notches and the curve still reads from the title bar into the account strip.
+						let notch = design::section_surface(
+							ui,
+							background.base,
+							design::ImageSection::ServerList,
+						);
+						for (corner, inward) in [
+							(lists.left_top(), egui::vec2(1.0, 1.0)),
+							(lists.left_bottom(), egui::vec2(1.0, -1.0)),
+						] {
+							design::paint_corner_notch(ui.painter(), corner, inward, 8.0, notch);
+						}
 					}
-				}
-				self.sidebar(ui, state, &title, &mut commands);
-			});
-		self.record_reading_sidebar(navigation.response.rect.width() - rail);
+					self.sidebar(ui, state, &title, &mut commands);
+				});
+			if !compact {
+				self.record_reading_sidebar(navigation.response.rect.width() - rail);
+			}
+		}
+		if navigation_page && origin != (state.selected, state.browse_channels, state.request) {
+			self.compact_navigation_open = false;
+			ctx.request_repaint();
+		}
 		if self.channel_preferences_changed {
 			self.channel_cache.invalidate();
 		}
@@ -613,11 +667,13 @@ impl MessagingUi {
 			self.browse_channels.focus_search();
 		}
 		self.search.sync(&ctx, state, &mut commands);
-		let search_open = !browsing_channels
+		let search_open = !navigation_page
+			&& !browsing_channels
 			&& self.search.results_visible(state)
 			&& state.selected.is_some()
 			&& !selected_voice;
-		let show_members = !browsing_channels
+		let show_members = !navigation_page
+			&& !browsing_channels
 			&& !selected_voice
 			&& !search_open
 			&& state.selected.is_some()
@@ -730,6 +786,9 @@ impl MessagingUi {
 					.inner_margin(0),
 			)
 			.show(ui, |ui| {
+				if navigation_page {
+					return;
+				}
 				if browsing_channels {
 					let browse_shortcuts = shortcuts::ShortcutView::new(
 						&self.channel_preferences,

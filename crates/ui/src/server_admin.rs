@@ -276,7 +276,7 @@ impl Admin {
 		}
 		if state.server_admin.pending {
 			ui.horizontal(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.weak(crate::i18n::translate_if_key(
 					if state.server_admin.saving {
 						"server-admin-show-saving-changes"

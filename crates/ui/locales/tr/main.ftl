@@ -5623,3 +5623,4 @@ tray-show-app = NuSerein’i göster
 announcement-follow-title = Duyuru kanalını takip et
 channel-voice-video-quality = Video kalitesi
 community-approve-pending = Bekleyen başvuruları onayla
+workspace-navigation = Gezinme

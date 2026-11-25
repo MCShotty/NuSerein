@@ -362,7 +362,7 @@ impl MessagingUi {
 						});
 					}
 					if self.updates.busy {
-						ui.add(egui::Spinner::new().size(16.0));
+						ui.add(crate::design::Busy::new().size(16.0));
 					}
 					// Reserve the action's width before laying out the status beside it.
 					ui.vertical(|ui| {

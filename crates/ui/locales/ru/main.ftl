@@ -5640,3 +5640,4 @@ tray-show-app = Показать NuSerein
 announcement-follow-title = Подписаться на канал объявлений
 channel-voice-video-quality = Качество видео
 community-approve-pending = Одобрить ожидающие заявки
+workspace-navigation = Навигация

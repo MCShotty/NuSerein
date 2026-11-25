@@ -5727,3 +5727,4 @@ tray-show-app = Zobrazit NuSerein
 announcement-follow-title = Sledovat kanál oznámení
 channel-voice-video-quality = Kvalita videa
 community-approve-pending = Schválit čekající žádosti
+workspace-navigation = Navigace

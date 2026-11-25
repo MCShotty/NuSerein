@@ -561,7 +561,7 @@ fn menu_row(
 		let response = ui.add_sized(
 			[ui.available_width(), 36.0],
 			egui::Button::new(())
-				.left_text(design::medium(ui, label, 14.0).color(color))
+				.left_text(design::medium(ui, &label, 14.0).color(color))
 				.frame_when_inactive(false)
 				.corner_radius(4),
 		);
@@ -578,7 +578,8 @@ fn menu_row(
 				color.gamma_multiply(0.5)
 			},
 		);
-		response
+		design::focus_outline(ui, &response, 4);
+		response.accessible_name(label)
 	})
 	.inner
 }

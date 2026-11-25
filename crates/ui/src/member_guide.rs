@@ -109,7 +109,7 @@ pub(super) fn show(
 					dialog::notice(ui, dialog::Level::Error, error);
 				}
 				if state.member_guide.pending {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 				}
 				if let Some(snapshot) = &snapshot {
 					if !snapshot.guide.enabled {

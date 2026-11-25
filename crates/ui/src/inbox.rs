@@ -167,7 +167,7 @@ impl MessagingUi {
 				body.scroll(270.0, |ui| {
 					let colors = design::palette(ui);
 					if state.inbox.loading {
-						ui.spinner();
+						ui.add(crate::design::Busy::new());
 						ui.label(i18n::translate("inbox-loading"));
 					}
 					if let Some(error) = state.inbox.error {

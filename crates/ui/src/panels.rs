@@ -1388,48 +1388,81 @@ impl MessagingUi {
 					} else {
 						subtitle_height
 					};
-					ui.vertical(|ui| {
-						ui.add_space(
-							((ui.available_height() - name_height - subtitle_height) / 2.0)
-								.max(0.0),
-						);
-						ui.spacing_mut().item_spacing.y = 1.0;
-						// Keep the status row at its text height so the measured centring holds.
-						ui.spacing_mut().interact_size.y = 0.0;
-						ui.add(
-							egui::Label::new(design::workspace_title(ui, name.as_str())).truncate(),
+					let status_label = language.text("in-a-call");
+					let status_width = ui
+						.painter()
+						.layout_no_wrap(
+							status_label.clone(),
+							egui::FontId::new(14.0, design::medium_family(ui.ctx())),
+							colors.positive,
 						)
-						.on_hover_text(name);
-						{
-							if subtitle.is_some() || in_voice {
-								ui.horizontal(|ui| {
-									ui.spacing_mut().item_spacing.x = 4.0;
-									profiles::voice_badge(ui, in_voice, subtitle.is_some());
-									if let Some(text) = subtitle {
-										ui.add(
-											egui::Label::new(
-												RichText::new(&text)
-													.size(design::METADATA_SIZE)
-													.color(colors.muted),
-											)
-											.truncate(),
-										)
-										.on_hover_text(text);
-									}
-								});
-							}
-						}
-					});
-					if in_call {
-						ui.add_space(4.0);
-						icons::inline(ui, icons::Icon::InCall, 16.0, colors.positive);
-						ui.add(
-							egui::Label::new(
-								design::medium(ui, language.text("in-a-call"), 14.0)
-									.color(colors.positive),
+						.size()
+						.x;
+					let show_status_label = in_call && ui.available_width() >= status_width + 128.0;
+					let reserve = if !in_call {
+						0.0
+					} else if show_status_label {
+						16.0 + 2.0 * ui.spacing().item_spacing.x + status_width
+					} else {
+						16.0 + ui.spacing().item_spacing.x
+					};
+					let title_width = (ui.available_width() - reserve).max(1.0);
+					ui.allocate_ui_with_layout(
+						egui::vec2(title_width, ui.available_height()),
+						egui::Layout::top_down(egui::Align::Min),
+						|ui| {
+							ui.set_width(title_width);
+							ui.add_space(
+								((ui.available_height() - name_height - subtitle_height) / 2.0)
+									.max(0.0),
+							);
+							ui.spacing_mut().item_spacing.y = 1.0;
+							// Keep the status row at its text height so the measured centring holds.
+							ui.spacing_mut().interact_size.y = 0.0;
+							ui.add(
+								egui::Label::new(design::workspace_title(ui, name.as_str()))
+									.truncate(),
 							)
-							.selectable(false),
-						);
+							.on_hover_text(name);
+							{
+								if subtitle.is_some() || in_voice {
+									ui.horizontal(|ui| {
+										ui.spacing_mut().item_spacing.x = 4.0;
+										profiles::voice_badge(ui, in_voice, subtitle.is_some());
+										if let Some(text) = subtitle {
+											ui.add(
+												egui::Label::new(
+													RichText::new(&text)
+														.size(design::METADATA_SIZE)
+														.color(colors.muted),
+												)
+												.truncate(),
+											)
+											.on_hover_text(text);
+										}
+									});
+								}
+							}
+						},
+					);
+					if in_call {
+						let badge = icons::inline(ui, icons::Icon::InCall, 16.0, colors.positive);
+						if !show_status_label {
+							ui.interact(
+								badge,
+								ui.scope_id().with("call-status"),
+								egui::Sense::hover(),
+							)
+							.accessible_name(status_label.clone())
+							.on_hover_text(status_label);
+						} else {
+							ui.add(
+								egui::Label::new(
+									design::medium(ui, status_label, 14.0).color(colors.positive),
+								)
+								.selectable(false),
+							);
+						}
 					}
 				});
 			});

@@ -499,9 +499,7 @@ pub(crate) fn immediate_tooltip(response: Response, label: &str) -> Response {
 		&& !response.ctx.input(|input| input.pointer.any_down())
 		&& !egui::Popup::is_any_open(&response.ctx)
 	{
-		egui::Tooltip::for_widget(&response).show(|ui| {
-			ui.label(label);
-		});
+		egui::Tooltip::for_widget(&response).show(|ui| wrapped_tooltip(ui, label));
 	}
 	response
 }
@@ -552,6 +550,9 @@ pub fn toggle(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, label: &st
 	if response.hovered() || response.has_focus() {
 		ui.painter().rect_filled(rect, 6, colors.hover);
 	}
+	if active {
+		design::selection_surface(ui, rect);
+	}
 	let color = if active || response.hovered() || response.has_focus() {
 		colors.text_strong
 	} else {
@@ -562,7 +563,7 @@ pub fn toggle(ui: &mut egui::Ui, icon: Icon, size: f32, active: bool, label: &st
 	response.widget_info(|| {
 		egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), active, &label)
 	});
-	response.on_hover_text(&label)
+	response.on_hover_ui(|ui| wrapped_tooltip(ui, &label))
 }
 
 /// Composer tray: a 22-point glyph in a 32-point target, with legible idle contrast.

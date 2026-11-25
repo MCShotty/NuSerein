@@ -148,7 +148,7 @@ pub fn loading_card(ui: &mut egui::Ui) {
 	let (_, preview_rect) = pending_card_frame(ui);
 	ui.put(
 		Rect::from_center_size(preview_rect.center(), egui::Vec2::splat(28.0)),
-		egui::Spinner::new().size(28.0).color(colors.muted),
+		crate::design::Busy::new().size(28.0).color(colors.muted),
 	);
 	ui.put(
 		Rect::from_min_size(

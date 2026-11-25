@@ -5729,3 +5729,4 @@ tray-show-app = 显示 NuSerein
 announcement-follow-title = 关注公告频道
 channel-voice-video-quality = 视频画质
 community-approve-pending = 批准待处理的申请
+workspace-navigation = 导航

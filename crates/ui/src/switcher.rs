@@ -388,7 +388,7 @@ fn result_row(
 		let painter = ui.painter();
 		let hovered = enabled && (response.hovered() || response.has_focus());
 		if selected {
-			painter.rect_filled(rect, 8, colors.selected);
+			design::selection_surface(ui, rect);
 		} else if hovered {
 			painter.rect_filled(rect, 8, colors.hover);
 		}
@@ -598,7 +598,7 @@ impl Switcher {
 		);
 		let response = modal.show(ctx, |ui| {
 			ui.set_width(
-				(ctx.content_rect().width() - f32::from(margin) * 2.0 - 32.0).clamp(200.0, 560.0),
+				(ctx.content_rect().width() - f32::from(margin) * 2.0 - 32.0).clamp(1.0, 560.0),
 			);
 			ui.spacing_mut().item_spacing.y = 8.0;
 			ui.label(

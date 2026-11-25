@@ -273,7 +273,7 @@ impl PermissionsUi {
 									&& !query.is_empty()
 								{
 									if !state.member_search[0].finished {
-										ui.spinner();
+										ui.add(crate::design::Busy::new());
 									}
 									if let Some(error) = state.member_search[0].error {
 										ui.weak(error);
