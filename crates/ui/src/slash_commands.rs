@@ -1592,7 +1592,7 @@ fn argument(
 			let picker = ui.menu_button("▾", |ui| {
 				if let Some(view) = suggestions {
 					if view.loading {
-						ui.spinner();
+						ui.add(crate::design::Busy::new());
 					}
 					if let Some(error) = view.error {
 						ui.weak(error);

@@ -447,8 +447,14 @@ impl Desktop {
 							);
 						});
 					});
-				let time = ui.input(|i| i.time) as f32;
-				ui.ctx().request_repaint();
+				let moving = ui.style().animation_time > 0.0 && ui.input(|i| i.focused);
+				let time = if moving {
+					ui.ctx()
+						.request_repaint_after(std::time::Duration::from_millis(33));
+					ui.input(|i| i.time) as f32
+				} else {
+					1.0
+				};
 				ui.vertical_centered(|ui| {
 					ui.add_space((ui.available_height() * 0.5 - 150.0).max(12.0));
 					// App mark with a slow breathing halo; the only motion besides the bar.
@@ -962,7 +968,7 @@ impl Desktop {
 							p.warning,
 						);
 					} else if busy {
-						ui.put(icon, egui::Spinner::new().size(14.0).color(p.muted));
+						ui.put(icon, ui::design::Busy::new().size(14.0).color(p.muted));
 					}
 					ui.vertical(|ui| {
 						ui.spacing_mut().item_spacing.y = 3.0;

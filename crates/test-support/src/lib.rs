@@ -4,6 +4,119 @@ use model::*;
 mod community;
 pub use community::community_state;
 
+/// Synthetic People rows with presence; never a Discord member directory.
+pub fn demo_members(
+	state: &State,
+	guild: Option<model::Id>,
+	channel: model::Id,
+	request: u64,
+) -> model::MemberList {
+	let mut members = vec![
+		model::Member {
+			user: message(2, channel).author,
+			nick: None,
+			roles: if guild.is_some() {
+				vec![model::Id(9001)]
+			} else {
+				vec![]
+			},
+			status: Some("idle".into()),
+			custom_status: None,
+			clients: model::ClientPlatforms::default(),
+			activities: vec![],
+		},
+		model::Member {
+			user: message(1, channel).author,
+			nick: None,
+			roles: if guild.is_some() {
+				vec![model::Id(9002)]
+			} else {
+				vec![]
+			},
+			status: Some("online".into()),
+			custom_status: Some("🌙 semifluent in synthetic data".into()),
+			clients: model::ClientPlatforms::default(),
+			activities: vec![model::RichActivity {
+				kind: 0,
+				name: "Stardew Valley".into(),
+				details: Some("Tending the synthetic farm".into()),
+				state: Some("Spring - Day 12".into()),
+				image: Some(model::ActivityImage::Asset {
+					application: model::Id(9001),
+					asset: model::Id(9002),
+				}),
+				small_image: None,
+				ends_at: None,
+				started_at: None,
+			}],
+		},
+	];
+	if guild.is_none() {
+		let mut users = state
+			.channel(channel)
+			.map(|channel| channel.recipients.clone())
+			.unwrap_or_default();
+		if let Some(user) = &state.user
+			&& !users.iter().any(|recipient| recipient.id == user.id)
+		{
+			users.push(user.clone());
+		}
+		members = users
+			.into_iter()
+			.map(|user| {
+				let mut member = members
+					.iter()
+					.find(|member| member.user.id == user.id)
+					.cloned()
+					.unwrap_or(model::Member {
+						user: user.clone(),
+						nick: None,
+						roles: vec![],
+						status: None,
+						custom_status: None,
+						clients: model::ClientPlatforms::default(),
+						activities: vec![],
+					});
+				member.user = user;
+				member
+			})
+			.collect();
+	} else {
+		for (id, name, status) in [
+			(9003, "Alex (synthetic)", "online"),
+			(9004, "Sam (synthetic)", "offline"),
+		] {
+			let mut member = members[0].clone();
+			member.user.id = model::Id(id);
+			member.user.name = name.into();
+			member.user.kind = if id == 9003 {
+				model::AccountKind::VerifiedBot
+			} else {
+				model::AccountKind::Bot
+			};
+			member.roles.clear();
+			member.status = Some(status.into());
+			members.push(member);
+		}
+	}
+	model::MemberList {
+		missing_identity: vec![],
+		guild,
+		channel,
+		request,
+		total: members.len() as u64,
+		start: 0,
+		slots: members
+			.into_iter()
+			.map(|m| Some(model::MemberSlot::Person(m)))
+			.collect(),
+		lazy: false,
+		groups: vec![],
+		ranges: vec![],
+		freshness: model::Freshness::Fresh,
+	}
+}
+
 /// Entirely offline report adapter. It never reaches Discord's reporting service.
 pub fn report_demo(request: client_core::reporting::Request) -> client_core::Event {
 	use model::reporting::{Button, Menu, Node};

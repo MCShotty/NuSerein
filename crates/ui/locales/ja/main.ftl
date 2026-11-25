@@ -5595,7 +5595,8 @@ force-sync-error-unsupported = Discordから、このバージョンでは安全
 force-sync-error-storage = ローカルキャッシュを更新できませんでした。既存のデータは保持されています。
 force-sync-error-stale = 同期中にこのデータが繰り返し変更されました。新しいデータを取得するには再試行してください。
 
-watch-short = 視聴
+watch-camera-on = { $name } のカメラはオンです
+watch-camera-focus = { $name } のカメラを表示
 watch-owner = { $name } の配信を視聴
 watch-join-muted = マイクをミュートして { $channel } に参加し、{ $name } の配信を視聴
 watch-switch-muted = { $channel } に移動して { $name } の配信を視聴…
@@ -5619,3 +5620,4 @@ tray-show-app = NuSerein を表示
 announcement-follow-title = アナウンスチャンネルをフォロー
 channel-voice-video-quality = 映像の画質
 community-approve-pending = 保留中の申請を承認
+workspace-navigation = ナビゲーション

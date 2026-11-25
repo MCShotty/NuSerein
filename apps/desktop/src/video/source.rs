@@ -1,4 +1,5 @@
 //! Decoder-driven attachment ranges. No file cache or eager whole-video download.
+mod social;
 use std::{
 	collections::VecDeque,
 	io::{self, Read, Seek, SeekFrom},
@@ -122,13 +123,16 @@ pub(super) fn source_until(
 		if !url.username().is_empty() || url.password().is_some() {
 			return Err(INVALID);
 		}
+		let page = (expected == 0)
+			.then(|| ui::social_video_page(url.as_str()))
+			.flatten();
+		// Use reqwest's configured proxy for direct clips as well as provider lookups.
 		let client = reqwest::Client::builder()
 			.user_agent(concat!(
 				"Serein/",
 				env!("CARGO_PKG_VERSION"),
 				" (+https://github.com/ViceVerse-cz/Serein)"
 			))
-			.no_proxy()
 			.no_gzip()
 			.no_brotli()
 			.no_deflate()
@@ -147,6 +151,16 @@ pub(super) fn source_until(
 			.timeout(Duration::from_secs(15))
 			.build()
 			.map_err(|_| INVALID)?;
+		let url = if let Some(page) = page {
+			runtime.block_on(async {
+				tokio::select! { biased;
+					error = interruption(&cancelled, startup.as_ref()) => Err(error),
+					url = social::resolve(page) => url,
+				}
+			})?
+		} else {
+			url
+		};
 		let len = if expected == 0 {
 			let (len, whole) = probe(&client, &url, &cancelled, &runtime, startup.as_ref())?;
 			if let Some(bytes) = whole {
@@ -189,8 +203,57 @@ pub(super) fn source_until(
 	}))
 }
 
-/// Probe an unknown length. A small server that ignores Range may return its whole file;
-/// retain that one bounded chunk instead of rejecting a valid clip or downloading it twice.
+// Only an explicit player (with a startup deadline) can spend its entire range-cache budget
+// on a single 200 response. Keep opportunistic posters at their previous single-chunk limit.
+fn whole_limit(startup: Option<&Startup>) -> usize {
+	if startup.is_some() {
+		CHUNK * CACHE_CHUNKS
+	} else {
+		CHUNK
+	}
+}
+
+async fn read_whole(
+	mut response: reqwest::Response,
+	known: Option<usize>,
+	limit: usize,
+) -> Result<Vec<u8>, &'static str> {
+	if response
+		.headers()
+		.contains_key(reqwest::header::CONTENT_RANGE)
+	{
+		return Err(INVALID);
+	}
+	let declared = response.content_length();
+	if declared.is_some_and(|n| n > limit as u64) || known.is_some_and(|n| n > limit) {
+		return Err(UNSUPPORTED);
+	}
+	if known.zip(declared).is_some_and(|(a, b)| a as u64 != b) {
+		return Err(INVALID);
+	}
+	let expected = known.or(declared.map(|n| n as usize));
+	let cap = expected.unwrap_or(limit);
+	let mut bytes = Vec::with_capacity(cap);
+	while let Some(chunk) = response.chunk().await.map_err(|_| INVALID)? {
+		if chunk.len() > cap - bytes.len() {
+			return Err(if expected.is_some() {
+				INVALID
+			} else {
+				UNSUPPORTED
+			});
+		}
+		bytes.extend_from_slice(&chunk);
+	}
+	if html_bytes(&bytes) {
+		return Err(WEB_PAGE);
+	}
+	if bytes.is_empty() || expected.is_some_and(|n| n != bytes.len()) {
+		return Err(INVALID);
+	}
+	Ok(bytes)
+}
+
+/// Probe an unknown length, retaining a small complete response if Range was ignored.
 fn probe(
 	client: &reqwest::Client,
 	url: &url::Url,
@@ -201,7 +264,7 @@ fn probe(
 	runtime.block_on(async {
 		let cancelled = interruption(cancelled, startup);
 		let transfer = async {
-			let mut response = client
+			let response = client
 				.get(url.clone())
 				.header(reqwest::header::ACCEPT_ENCODING, "identity")
 				.header(reqwest::header::RANGE, "bytes=0-0")
@@ -219,29 +282,7 @@ fn probe(
 				return Err(INVALID);
 			}
 			if response.status() == reqwest::StatusCode::OK {
-				if response
-					.headers()
-					.contains_key(reqwest::header::CONTENT_RANGE)
-				{
-					return Err(INVALID);
-				}
-				let expected = response.content_length();
-				if expected.is_some_and(|len| len > CHUNK as u64) {
-					return Err(UNSUPPORTED);
-				}
-				let mut bytes = Vec::with_capacity(expected.map_or(CHUNK, |len| len as usize));
-				while let Some(chunk) = response.chunk().await.map_err(|_| INVALID)? {
-					if chunk.len() > CHUNK - bytes.len() {
-						return Err(UNSUPPORTED);
-					}
-					bytes.extend_from_slice(&chunk);
-				}
-				if html_bytes(&bytes) {
-					return Err(WEB_PAGE);
-				}
-				if bytes.is_empty() || expected.is_some_and(|len| len != bytes.len() as u64) {
-					return Err(INVALID);
-				}
+				let bytes = read_whole(response, None, whole_limit(startup)).await?;
 				return Ok((bytes.len(), Some(bytes)));
 			}
 			if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
@@ -321,7 +362,7 @@ impl Source {
 		let start = self.position / CHUNK * CHUNK;
 		let count = CHUNK.min(self.len - start);
 		let end = start + count - 1;
-		let bytes = runtime.block_on(async {
+		let (start, bytes) = runtime.block_on(async {
 			let cancelled = interruption(&self.cancelled, self.startup.as_ref());
 			let transfer = async {
 				let mut response = client
@@ -334,25 +375,35 @@ impl Source {
 				if web_page(response.headers()) {
 					return Err(io::Error::new(io::ErrorKind::Unsupported, WEB_PAGE));
 				}
-				if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-					let range = format!("bytes {start}-{end}/{}", self.len);
-					if response
-						.headers()
-						.get(reqwest::header::CONTENT_RANGE)
-						.and_then(|value| value.to_str().ok())
-						!= Some(range.as_str())
-					{
-						return Err(invalid());
-					}
-				} else if !(response.status() == reqwest::StatusCode::OK
-					&& start == 0 && count == self.len)
-				{
-					return Err(io::Error::new(io::ErrorKind::Unsupported, UNSUPPORTED));
-				}
 				if response
 					.headers()
 					.get(reqwest::header::CONTENT_ENCODING)
 					.is_some_and(|value| value != "identity")
+				{
+					return Err(invalid());
+				}
+				if response.status() == reqwest::StatusCode::OK && self.cache.is_empty() {
+					let bytes =
+						read_whole(response, Some(self.len), whole_limit(self.startup.as_ref()))
+							.await
+							.map_err(|error| {
+								if error == INVALID {
+									invalid()
+								} else {
+									io::Error::new(io::ErrorKind::Unsupported, error)
+								}
+							})?;
+					return Ok((0, bytes));
+				}
+				if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+					return Err(io::Error::new(io::ErrorKind::Unsupported, UNSUPPORTED));
+				}
+				let range = format!("bytes {start}-{end}/{}", self.len);
+				if response
+					.headers()
+					.get(reqwest::header::CONTENT_RANGE)
+					.and_then(|value| value.to_str().ok())
+					!= Some(range.as_str())
 					|| response
 						.content_length()
 						.is_some_and(|len| len != count as u64)
@@ -369,7 +420,7 @@ impl Source {
 				if bytes.len() != count {
 					return Err(invalid());
 				}
-				Ok(bytes)
+				Ok((start, bytes))
 			};
 			tokio::select! { biased;
 				error = cancelled => Err(io::Error::new(io::ErrorKind::ConnectionAborted, error)),
@@ -610,7 +661,26 @@ mod tests {
 			.enable_all()
 			.build()
 			.unwrap();
-		for (ranges, length_header) in [(true, true), (false, true), (false, false)] {
+		// A valid top-level MOV free box pads the real synthetic movie past one range.
+		let mut movie = include_bytes!("../../tests/fixtures/video.mov").to_vec();
+		let padded = CACHE_CHUNKS * CHUNK;
+		let free = u32::try_from(padded - movie.len()).unwrap();
+		movie.extend_from_slice(&free.to_be_bytes());
+		movie.extend_from_slice(b"free");
+		movie.resize(padded, 0);
+		for (ranges, length_header, known) in [
+			(true, true, false),
+			(false, true, false),
+			(false, false, false),
+			(false, true, true),
+			(false, false, true),
+		] {
+			let movie = if ranges {
+				include_bytes!("../../tests/fixtures/video.mov").to_vec()
+			} else {
+				movie.clone()
+			};
+			let size = movie.len();
 			let listener = TcpListener::bind("127.0.0.1:0").unwrap();
 			listener.set_nonblocking(true).unwrap();
 			let url = url::Url::parse(&format!(
@@ -619,8 +689,6 @@ mod tests {
 			))
 			.unwrap();
 			let server = std::thread::spawn(move || {
-				let movie = include_bytes!("../../tests/fixtures/video.mov");
-				assert!(movie.len() < CHUNK);
 				let deadline = std::time::Instant::now() + Duration::from_secs(10);
 				for request in 0..if ranges { 2 } else { 1 } {
 					let mut socket = loop {
@@ -664,7 +732,15 @@ mod tests {
 						)
 						.unwrap();
 					} else {
-						assert!(header.contains("range: bytes=0-0\r\n"));
+						if known {
+							assert!(header.contains(&format!(
+								"range: bytes={}-{}\r\n",
+								size - CHUNK,
+								size - 1
+							)));
+						} else {
+							assert!(header.contains("range: bytes=0-0\r\n"));
+						}
 						write!(socket, "HTTP/1.1 200 OK\r\n").unwrap();
 					}
 					if length_header {
@@ -678,17 +754,23 @@ mod tests {
 					socket.write_all(&movie[..=end]).unwrap();
 				}
 			});
-			let mut input = source(
+			let mut input = source_until(
 				Some(url),
-				0,
+				if known { size } else { 0 },
 				Arc::new(AtomicBool::new(false)),
 				runtime.handle().clone(),
+				Some(Startup::new(
+					std::time::Instant::now() + Duration::from_secs(15),
+				)),
 			)
 			.unwrap();
-			assert_eq!(
-				input.seek(SeekFrom::End(0)).unwrap(),
-				include_bytes!("../../tests/fixtures/video.mov").len() as u64
-			);
+			assert_eq!(input.seek(SeekFrom::End(0)).unwrap(), size as u64);
+			if known {
+				input.seek(SeekFrom::End(-1)).unwrap();
+				let mut byte = [1];
+				input.read_exact(&mut byte).unwrap();
+				assert_eq!(byte, [0]);
+			}
 			input.seek(SeekFrom::Start(0)).unwrap();
 			let mut decoder =
 				platform::video::ffmpeg::AttachmentDecoder::open(input, None).unwrap();
@@ -715,14 +797,31 @@ mod tests {
 			.enable_all()
 			.build()
 			.unwrap();
-		for (headers, body) in [
-			(format!("Content-Length: {}\r\n", CHUNK + 1), Vec::new()),
+		let limit = CHUNK * CACHE_CHUNKS;
+		for (play, known, headers, body) in [
 			(
+				false,
+				0,
+				format!("Content-Length: {}\r\n", CHUNK + 1),
+				Vec::new(),
+			),
+			(
+				true,
+				0,
+				format!("Content-Length: {}\r\n", limit + 1),
+				Vec::new(),
+			),
+			(true, 0, String::new(), vec![0; limit + 1]),
+			(true, CHUNK + 10, "Content-Length: 1\r\n".into(), vec![0]),
+			(true, CHUNK + 10, String::new(), vec![0]),
+			(
+				true,
+				0,
 				"Content-Encoding: gzip\r\nContent-Length: 1\r\n".into(),
 				vec![0],
 			),
-			("Content-Length: 0\r\n".into(), Vec::new()),
-			("".into(), vec![0; CHUNK + 1]),
+			(true, 0, "Content-Length: 0\r\n".into(), Vec::new()),
+			(false, 0, String::new(), vec![0; CHUNK + 1]),
 		] {
 			let listener = TcpListener::bind("127.0.0.1:0").unwrap();
 			let url = url::Url::parse(&format!("http://{}/video", listener.local_addr().unwrap()))
@@ -746,15 +845,21 @@ mod tests {
 				.unwrap();
 				let _ = socket.write_all(&body); // A rejected response can close before its body.
 			});
-			assert!(
-				source(
-					Some(url),
-					0,
-					Arc::new(AtomicBool::new(false)),
-					runtime.handle().clone()
-				)
-				.is_err()
+			let input = source_until(
+				Some(url),
+				known,
+				Arc::new(AtomicBool::new(false)),
+				runtime.handle().clone(),
+				play.then(|| Startup::new(std::time::Instant::now() + Duration::from_secs(15))),
 			);
+			if known == 0 {
+				assert!(input.is_err());
+			} else {
+				assert_eq!(
+					input.unwrap().read(&mut [0]).unwrap_err().kind(),
+					io::ErrorKind::InvalidData
+				);
+			}
 			server.join().unwrap();
 		}
 	}

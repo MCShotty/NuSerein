@@ -44,6 +44,7 @@ time = { workspace = true, features = ["local-offset"] }
 sha2 = "=0.11.1"
 hex = "=0.4.3"
 md4 = "=0.11.0"
+html5ever = "=0.39.0"
 semver = "=1.0.28"
 zip = { version = "=9.8.1", default-features = false, features = ["deflate-flate2"] }
 cpal = { version = "=0.18.2", default-features = false }

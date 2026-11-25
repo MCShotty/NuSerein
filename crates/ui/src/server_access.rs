@@ -162,7 +162,7 @@ impl AccessUi {
 			}
 		});
 		if state.server_admin.pending {
-			ui.spinner();
+			ui.add(crate::design::Busy::new());
 		}
 		if let Some(error) = self.error.or(state.server_admin.error) {
 			dialog::notice(ui, dialog::Level::Error, error);

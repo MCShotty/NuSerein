@@ -2,6 +2,29 @@
 use super::{DiscordApi, Event, Failure, Id, Method, safe_delay};
 use discord_protocol::{MessageDto, decode, pins, search};
 
+fn history_page(bytes: &[u8]) -> Result<Vec<model::Message>, Failure> {
+	use discord_protocol::history::{MediaIssue, PageError, page};
+	page(bytes).map_err(|error| match error {
+		PageError::Limit => Failure::ResponseLimit,
+		PageError::Page => Failure::ProtocolAt("history-page-format"),
+		PageError::Message => Failure::ProtocolAt("history-message-format"),
+		PageError::People => Failure::ProtocolAt("history-people-format"),
+		PageError::Media(reason) => Failure::ProtocolAt(match reason {
+			MediaIssue::AttachmentList => "history-attachment-list",
+			MediaIssue::AttachmentCount => "history-attachment-count",
+			MediaIssue::AttachmentObject => "history-attachment-object",
+			MediaIssue::AttachmentId => "history-attachment-id",
+			MediaIssue::AttachmentFlags => "history-attachment-flags",
+			MediaIssue::AttachmentDuplicate => "history-attachment-duplicate",
+			MediaIssue::AttachmentFieldLimit => "history-attachment-fields",
+			MediaIssue::AttachmentContext => "history-attachment-context",
+			MediaIssue::EmbedList => "history-embed-list",
+			MediaIssue::EmbedContext => "history-embed-context",
+		}),
+		PageError::Features => Failure::ProtocolAt("history-feature-format"),
+	})
+}
+
 impl DiscordApi {
 	/// One bounded 50-message history page, before or after a cursor or at the latest message.
 	pub(super) async fn history_around(&self, channel: Id, target: Id, request: u64) -> Event {
@@ -12,18 +35,13 @@ impl DiscordApi {
 				None,
 			)
 			.await
-			.and_then(|bytes| decode::<Vec<MessageDto>>(&bytes).map_err(|_| Failure::Protocol));
+			.and_then(|bytes| history_page(&bytes));
 		match result {
-			Ok(messages) if messages.len() <= 50 => Event::History {
+			Ok(messages) => Event::History {
 				channel,
 				request,
 				older: false,
-				messages: messages.into_iter().map(MessageDto::into_model).collect(),
-			},
-			Ok(_) => Event::HistoryFailed {
-				channel,
-				request,
-				failure: Failure::ResponseLimit,
+				messages,
 			},
 			Err(failure) if failure.ends_session() => Event::Failure(failure),
 			Err(failure) => Event::HistoryFailed {
@@ -86,20 +104,20 @@ impl DiscordApi {
 		match self
 			.request(Method::GET, &path, None)
 			.await
-			.and_then(|bytes| decode::<Vec<MessageDto>>(&bytes).map_err(|_| Failure::Protocol))
+			.and_then(|bytes| history_page(&bytes))
 		{
-			Ok(messages) if messages.len() <= 50 => Event::History {
+			Ok(messages) => Event::History {
 				channel,
 				request,
 				older: before.is_some(),
-				messages: messages.into_iter().map(MessageDto::into_model).collect(),
+				messages,
 			},
-			Ok(_) => Event::HistoryFailed {
+			Err(Failure::Forbidden) => Event::Unavailable(channel),
+			Err(Failure::ResponseLimit) => Event::HistoryFailed {
 				channel,
 				request,
 				failure: Failure::ResponseLimit,
 			},
-			Err(Failure::Forbidden) => Event::Unavailable(channel),
 			Err(f) => Event::Failure(f),
 		}
 	}
@@ -206,5 +224,62 @@ impl DiscordApi {
 			)
 			.map(client_core::search::Outcome::Page)
 			.map_err(|_| Failure::Protocol)
+	}
+}
+
+#[cfg(test)]
+mod media_tests {
+	use super::*;
+	use client_core::{Envelope, State};
+	use serde_json::json;
+
+	#[test]
+	fn rejected_history_media_exposes_only_a_fixed_local_key() {
+		for (field, value, key) in [
+			(
+				"attachments",
+				json!([{"id":"7", "filename":"private-filename", "flags":"private-value", "url":"https://example.invalid/private"}]),
+				"history-attachment-flags",
+			),
+			(
+				"embeds",
+				json!({"private-field":"private-content"}),
+				"history-embed-list",
+			),
+		] {
+			let mut row = json!({"id":"13", "channel_id":"7", "author":{"id":"2","username":"fixture"},"content":"private-body"});
+			row[field] = value;
+			assert_eq!(
+				history_page(&serde_json::to_vec(&[row]).unwrap()).err(),
+				Some(Failure::ProtocolAt(key))
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn damaged_media_does_not_hide_neighbors_in_the_selected_timeline() {
+		tokio::time::timeout(std::time::Duration::from_secs(10), async {
+			let mut rows: Vec<_> = [13,12,11].into_iter().map(|id| json!({"id":id.to_string(),"channel_id":"7","author":{"id":"2","username":"fixture"},"content":"retained"})).collect();
+			rows[1]["attachments"] = json!([{"id":"21","width":-1,"filename":"clip.mp4","url":"https://example.invalid/clip"}]);
+			rows[1]["embeds"] = json!(vec![json!({"title":"card"}); model::MAX_EMBEDS + 1]);
+			let (api, captured, server) = crate::community_admin::tests::fixture(vec![("200 OK", serde_json::to_string(&rows).unwrap())]).await;
+			let mut state = State::default();
+			state.apply(Envelope { generation: state.generation, event: Event::Ready {
+				permissions: Default::default(), guilds: vec![], user: decode::<discord_protocol::UserDto>(br#"{"id":"3","username":"fixture"}"#).unwrap().into_model(),
+				channels: vec![model::Channel {id:Id(7),kind:1,name:"fixture".into(),guild:None,parent_id:None,position:0,recipients:vec![],icon:None,member_list_id:None,tags:None,message_count:None,last_message:None}],
+			}});
+			state.select(Id(7));
+			let event = api.execute(state.history(None)).await;
+			state.apply(Envelope {generation: state.generation, event});
+			server.await.unwrap();
+			assert_eq!(captured.lock().unwrap()[0].0,"GET /channels/7/messages?limit=50 HTTP/1.1");
+			assert_eq!(state.history_failure(),None); assert_eq!(state.freshness,model::Freshness::Fresh);
+			assert_eq!(state.timeline.len(),3);
+			let middle = state.timeline.get(Id(12)).unwrap();
+			assert_eq!(middle.content,"retained"); assert_eq!(middle.attachments[0].id,Id(21));
+			assert!(middle.attachments[0].media.url.is_none() && !middle.attachments[0].is_video());
+			assert_eq!(middle.embeds.len(), model::MAX_EMBEDS);
+			assert!(middle.embeds.last().unwrap().limited);
+		}).await.unwrap();
 	}
 }

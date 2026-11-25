@@ -33,6 +33,8 @@ try {
     fs.copyFileSync(path.join(repo, 'assets/fonts', name), path.join(fixture, 'assets/fonts', name));
   }
   fs.cpSync(path.join(repo, 'assets/licenses'), path.join(fixture, 'assets/licenses'), { recursive: true });
+  const hpkeSource = 'vendor/hpke-rs-0.8';
+  fs.cpSync(path.join(repo, hpkeSource), path.join(fixture, hpkeSource), { recursive: true });
   const source = path.join(fixture, 'configured target', 'x86_64-unknown-linux-gnu', 'release', 'serein');
   fs.mkdirSync(path.dirname(source), { recursive: true });
   fs.writeFileSync(source, 'CURRENT Cargo-reported executable');
@@ -82,6 +84,10 @@ try {
     for (const name of fontLicenses) {
       assert.deepEqual(fs.readFileSync(path.join(fixture, 'dist/licenses', name)),
         fs.readFileSync(path.join(repo, 'assets/fonts', name)), name);
+    }
+    for (const name of ['Cargo.toml', 'LICENSE-MPL-2.0.txt', 'src/lib.rs']) {
+      assert.deepEqual(fs.readFileSync(path.join(fixture, 'dist/source/hpke-rs', name)),
+        fs.readFileSync(path.join(repo, hpkeSource, name)), name);
     }
     assert.match(fs.readFileSync(pythonLog, 'utf8'), /lavasr\/bundle\.py dist/);
     assert.match(fs.readFileSync(pythonLog, 'utf8'), /package\.py dist 9\.8\.7 --format dir/);

@@ -256,7 +256,7 @@ impl Body<'_> {
 				let size = egui::vec2(ui.available_width(), design::BUTTON_HEIGHT);
 				ui.allocate_ui_with_layout(
 					size,
-					egui::Layout::right_to_left(egui::Align::Center),
+					egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
 					add,
 				)
 				.inner

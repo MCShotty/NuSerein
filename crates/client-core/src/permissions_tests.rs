@@ -868,6 +868,8 @@ fn author_gradients_follow_role_hierarchy_and_reject_invalid_stops() {
 		},
 	);
 	let mut chat = message(100, Id(20));
+	// This author is known from the message, not from our own membership in READY.
+	chat.author.id = Id(7);
 	chat.author_roles = vec![role_id];
 	assert_eq!(state.message_author_colors(&chat), Some(colors));
 	assert_eq!(
@@ -2610,7 +2612,11 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 			activities: vec![],
 			clients: model::ClientPlatforms::default(),
 			roles: vec![Id(13), Id(12), Id(11), Id(10)],
-			user: user(),
+			// Exercise another member's history fallback; READY knows our own assignments.
+			user: User {
+				id: Id(7),
+				..user()
+			},
 			nick: None,
 			status: Some("online".into()),
 			custom_status: None,
@@ -2646,6 +2652,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 		};
 		assert_eq!(resolved(&state, &member), (Some(Id(11)), Some(0x112233)));
 		let mut chat = message(100, Id(20));
+		chat.author = member.user.clone();
 		chat.author_roles = member.roles.clone();
 		assert_eq!(state.message_author_color(&chat), Some(0x112233));
 		chat.author.webhook = true;
@@ -3176,6 +3183,45 @@ fn partial_member_snapshot_across_subscriptions_preserves_labels_but_explicit_cl
 		panic!("member")
 	};
 	assert!(sidebar.nick.is_none() && sidebar.roles.is_empty());
+}
+
+#[test]
+fn own_message_without_member_uses_current_guild_roles_only() {
+	let mut state = state();
+	let mut role = state.guild_roles(Id(10)).unwrap()[1].clone();
+	role.color = 0x123456;
+	permission(
+		&mut state,
+		PermissionEvent::Role {
+			guild: Id(10),
+			role,
+		},
+	);
+	permission(
+		&mut state,
+		PermissionEvent::Member {
+			guild: Id(10),
+			roles: Patch::Value(vec![Id(11)]),
+			timeout_until: Patch::Absent,
+		},
+	);
+	let mut row = message(101, Id(20));
+	row.author = state.user.clone().unwrap();
+	row.author_roles.clear();
+	assert_eq!(state.message_author_color(&row), Some(0x123456));
+	row.author.id = Id(8765);
+	assert_eq!(state.message_author_color(&row), None);
+	row.author = state.user.clone().unwrap();
+	row.author_roles = vec![Id(11)];
+	permission(
+		&mut state,
+		PermissionEvent::Member {
+			guild: Id(10),
+			roles: Patch::Value(vec![]),
+			timeout_until: Patch::Absent,
+		},
+	);
+	assert_eq!(state.message_author_color(&row), None);
 }
 
 #[test]

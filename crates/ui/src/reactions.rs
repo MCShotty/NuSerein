@@ -431,7 +431,7 @@ pub fn show_users(
 		dialog.scroll(190.0, |ui| {
 			if details.users.is_empty() && details.loading {
 				ui.horizontal(|ui| {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 					ui.label(crate::i18n::translate(
 						"reactions-show-users-loading-reactions",
 					));
@@ -465,7 +465,7 @@ pub fn show_users(
 				}
 			} else if !details.exhausted {
 				if details.loading {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 				} else if crate::dialog::action(
 					ui,
 					"reactions-show-users-load-more",

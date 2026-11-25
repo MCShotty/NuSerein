@@ -394,7 +394,14 @@ impl Video {
 			(None, None)
 		} else if attachment.size == 0 {
 			// Embed videos have no declared size; the worker probes it before decoding.
-			let mut candidates = ui::embedded_video_candidates(&attachment.media).into_iter();
+			let page = attachment
+				.media
+				.url
+				.as_deref()
+				.and_then(ui::social_video_page);
+			let mut candidates = ui::embedded_video_candidates(&attachment.media)
+				.into_iter()
+				.chain(page);
 			let url = candidates.next().ok_or("Video embed unavailable")?;
 			(Some(url), candidates.next())
 		} else {

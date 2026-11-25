@@ -388,8 +388,8 @@ impl CommunityUi {
 			.id(egui::Id::unique("community-events"))
 			.open(&mut open)
 			.default_width(620.0)
-			.min_width(240.0)
-			.max_width((ctx.content_rect().width() - 32.0).max(240.0))
+			.min_width((ctx.content_rect().width() - 32.0).clamp(1.0, 240.0))
+			.max_width((ctx.content_rect().width() - 32.0).max(1.0))
 			.max_height((ctx.content_rect().height() - 64.0).max(180.0))
 			.resizable(true)
 			.show(ctx, |ui| {
@@ -422,7 +422,7 @@ impl CommunityUi {
 							self.selected = None;
 						}
 						if state.community.pending() {
-							ui.spinner();
+							ui.add(crate::design::Busy::new());
 							ui.label("Loading…");
 						}
 					});
@@ -1230,7 +1230,7 @@ impl CommunityUi {
 		let ready = !state.community.pending()
 			&& !state.community.stage_stale
 			&& !state.community.needs_refresh;
-		ui.horizontal_wrapped(|ui| {
+		stage_action_row(ui, |ui| {
 			if stage_button(ui, !state.community.pending(), "stage-refresh", false) {
 				submit(
 					state,
@@ -1256,7 +1256,7 @@ impl CommunityUi {
 					} else {
 						"stage-start"
 					},
-					true,
+					topic.is_none(),
 				) {
 				self.open_stage_editor(
 					state,
@@ -1284,7 +1284,7 @@ impl CommunityUi {
 				return;
 			}
 			let mut action = None;
-			ui.horizontal_wrapped(|ui| {
+			stage_action_row(ui, |ui| {
 				match stage {
 					StageParticipation::Speaker => {
 						ui.label(crate::i18n::translate("stage-you-are-speaker"));
@@ -1381,7 +1381,7 @@ impl CommunityUi {
 				&[("count", &total.to_string())],
 			))
 			.show(ui, |ui| {
-				ui.horizontal_wrapped(|ui| {
+				stage_action_row(ui, |ui| {
 					if stage_button(
 						ui,
 						self.audience_page > 0,
@@ -1410,7 +1410,7 @@ impl CommunityUi {
 					.max_height(140.0)
 					.show(ui, |ui| {
 						for (p, name) in participants {
-							ui.horizontal_wrapped(|ui| {
+							stage_action_row(ui, |ui| {
 								ui.label(name);
 								ui.small(crate::i18n::translate(match p.stage {
 									StageParticipation::Speaker => "stage-speaker",
@@ -1507,8 +1507,8 @@ impl CommunityUi {
 		.id(egui::Id::unique("stage-topic-editor"))
 		.open(&mut open)
 		.default_width(420.0)
-		.min_width(240.0)
-		.max_width((ctx.content_rect().width() - 32.0).max(240.0))
+		.min_width((ctx.content_rect().width() - 32.0).clamp(1.0, 240.0))
+		.max_width((ctx.content_rect().width() - 32.0).max(1.0))
 		.show(ctx, |ui| {
 			ui.label(crate::i18n::translate("channel-menu-overview-topic"));
 			if let Some(event) = self.stage_event.and_then(|id| {
@@ -1637,6 +1637,16 @@ impl CommunityUi {
 		if !open {
 			self.stage_channel = None;
 		}
+	}
+}
+
+// An enabled scope gets only the remainder of a wrapping row. On a narrow
+// stage that can be one glyph wide after the audience label.
+fn stage_action_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+	if ui.available_width() < 400.0 {
+		ui.vertical(add);
+	} else {
+		ui.horizontal_wrapped(add);
 	}
 }
 

@@ -5616,7 +5616,8 @@ force-sync-error-unsupported = Discord hat Daten geliefert, die diese Version ni
 force-sync-error-storage = Der lokale Cache konnte nicht aktualisiert werden. Vorhandene Daten wurden beibehalten.
 force-sync-error-stale = Diese Daten haben sich während der Synchronisierung mehrfach geändert. Versuche es erneut, um einen neueren Stand abzurufen.
 
-watch-short = Ansehen
+watch-camera-on = Die Kamera von { $name } ist eingeschaltet
+watch-camera-focus = Kamera von { $name } ansehen
 watch-owner = Stream von { $name } ansehen
 watch-join-muted = { $channel } stumm beitreten und { $name } ansehen
 watch-switch-muted = Zu { $channel } wechseln und { $name } ansehen…
@@ -5640,3 +5641,4 @@ tray-show-app = NuSerein anzeigen
 announcement-follow-title = Ankündigungskanal folgen
 channel-voice-video-quality = Videoqualität
 community-approve-pending = Ausstehende Anträge genehmigen
+workspace-navigation = Navigation

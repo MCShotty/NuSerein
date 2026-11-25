@@ -148,7 +148,7 @@ pub fn loading_card(ui: &mut egui::Ui) {
 	let (_, preview_rect) = pending_card_frame(ui);
 	ui.put(
 		Rect::from_center_size(preview_rect.center(), egui::Vec2::splat(28.0)),
-		egui::Spinner::new().size(28.0).color(colors.muted),
+		crate::design::Busy::new().size(28.0).color(colors.muted),
 	);
 	ui.put(
 		Rect::from_min_size(
@@ -265,6 +265,7 @@ fn file_card(
 	surface: &mut crate::select::Surface,
 	card_surface: design::MessageCardSurface,
 ) {
+	let has_source = attachment.media.url.is_some() || attachment.media.proxy_url.is_some();
 	let colors = design::palette(ui);
 	let kind = file_kind(&attachment.filename, attachment.content_type.as_deref());
 	egui::Frame::new()
@@ -274,6 +275,13 @@ fn file_card(
 		.inner_margin(egui::Margin::symmetric(12, 10))
 		.show(ui, |ui| {
 			ui.set_width(ui.available_width().min(432.0));
+			// A missing source changes the contents, not the chat/search card surface.
+			// Keep the display name but do not invent a size or offer a transfer.
+			if !has_source {
+				ui.add(egui::Label::new(attachment.filename.as_str()).truncate());
+				ui.label(crate::i18n::translate("attachments-media-unavailable"));
+				return;
+			}
 			ui.horizontal(|ui| {
 				ui.spacing_mut().item_spacing.x = 10.0;
 				icons::inline(ui, kind.icon(), 32.0, kind.tint(&colors));

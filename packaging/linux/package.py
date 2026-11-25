@@ -100,6 +100,7 @@ def stage_payload(root, stage, prefix="usr"):
         copy(root / "licenses" / name, doc / "licenses" / name)
     for name in ["files", "notifications", "login", "audio", "voice", "dependencies"]:
         copy(root / "licenses" / name, doc / "licenses" / name, Path("assets/licenses") / name)
+    copy(root / "source/hpke-rs", doc / "source/hpke-rs", Path("vendor/hpke-rs-0.8"))
     for path in [stage, *stage.rglob("*")]:
         path.chmod(0o755 if path.is_dir() or path == stage / prefix / "bin/serein" else 0o644)
 

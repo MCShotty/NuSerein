@@ -41,7 +41,7 @@ impl MessagingUi {
 				if let Some(command)=state.load_owned_cosmetics(nav.guild){commands.push(command);}
 				nav.requested=true;
 			}
-			if state.owned_cosmetics.pending {ui.horizontal(|ui|{ui.add(egui::Spinner::new().size(14.0));ui.label(if state.owned_cosmetics.saving{"Applying cosmetic…"}else{"Loading owned cosmetics…"});});}
+			if state.owned_cosmetics.pending {ui.horizontal(|ui|{ui.add(crate::design::Busy::new().size(14.0));ui.label(if state.owned_cosmetics.saving{"Applying cosmetic…"}else{"Loading owned cosmetics…"});});}
 			if let Some(error)=state.owned_cosmetics.error {
 				design::notice(ui,design::Level::Error,error);
 			}

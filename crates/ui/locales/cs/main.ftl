@@ -5702,7 +5702,8 @@ force-sync-error-unsupported = Discord vrátil údaje, které tato verze nemůž
 force-sync-error-storage = Místní mezipaměť se nepodařilo aktualizovat. Stávající údaje byly zachovány.
 force-sync-error-stale = Tyto údaje se během synchronizace opakovaně změnily. Zkuste načíst novější stav.
 
-watch-short = Sledovat
+watch-camera-on = Zapnutá kamera: { $name }
+watch-camera-focus = Zobrazit kameru: { $name }
 watch-owner = Sledovat { $name }
 watch-join-muted = Připojit se k { $channel } s vypnutým mikrofonem a sledovat { $name }
 watch-switch-muted = Přejít do { $channel } a sledovat { $name }…
@@ -5726,3 +5727,4 @@ tray-show-app = Zobrazit NuSerein
 announcement-follow-title = Sledovat kanál oznámení
 channel-voice-video-quality = Kvalita videa
 community-approve-pending = Schválit čekající žádosti
+workspace-navigation = Navigace

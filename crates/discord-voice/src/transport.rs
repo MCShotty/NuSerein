@@ -307,6 +307,38 @@ pub(super) fn announce_video(
 	retain_sources(decoder, receivers);
 	Ok(())
 }
+// Discovery is UDP too. Repeat only the address probe on the already connected socket;
+// never replay Identify, Select Protocol, or a media packet. A delayed tick never bursts.
+struct DiscoveryWindow {
+	deadline: Instant,
+	next_probe: Instant,
+}
+impl DiscoveryWindow {
+	fn new(now: Instant) -> Self {
+		Self {
+			deadline: now + Duration::from_secs(8),
+			next_probe: now,
+		}
+	}
+	fn due(&mut self, now: Instant, timeout: &'static str) -> Result<bool, &'static str> {
+		if now >= self.deadline {
+			return Err(timeout);
+		}
+		if now < self.next_probe {
+			return Ok(false);
+		}
+		self.next_probe = now + Duration::from_secs(2);
+		Ok(true)
+	}
+}
+fn probe_address(socket: &UdpSocket, ssrc: u32, totals: &mut PacketTotals) {
+	let mut probe = [0; 74];
+	probe[..4].copy_from_slice(&[0, 1, 0, 70]);
+	probe[4..8].copy_from_slice(&ssrc.to_be_bytes());
+	if let Ok(sent) = socket.try_send(&probe) {
+		totals.add(sent);
+	}
+}
 fn discovery(packet: &[u8], ssrc: u32) -> Result<(IpAddr, u16), &'static str> {
 	if packet.len() != 74 || packet[..4] != [0, 2, 0, 70] || packet[4..8] != ssrc.to_be_bytes() {
 		return Err("Invalid voice UDP discovery reply");
@@ -453,8 +485,7 @@ async fn run_inner(
 	let mut next_udp_ping = Instant::now();
 	let mut udp_ping_sequence = 0;
 	let mut udp_failures = UdpFailures::default();
-	let mut discovering = false;
-	let mut discovery_deadline = Instant::now();
+	let mut probing: Option<DiscoveryWindow> = None;
 	let mut ssrc = 0u32;
 	let mut video = crate::camera_video::Sender::new(video_settings);
 	let mut mixer = crate::mixer::Mixer::default();
@@ -550,7 +581,7 @@ async fn run_inner(
 				let Some(frame)=frame else {camera=None;video.clear();continue;};
 				let now=Instant::now();
 				let control=*controls.borrow();
-				let enabled=(stage || (dave.ready && dave.pending.is_none() && dave.session.is_ready())) && encryption.is_some() && udp.is_some() && !discovering && !resuming
+				let enabled=(stage || (dave.ready && dave.pending.is_none() && dave.session.is_ready())) && encryption.is_some() && udp.is_some() && probing.is_none() && !resuming
 					&& video.available() && control.camera!=0 && (!stage || control.stage_speaker);
 				video.set_generation(control.camera);
 				video.set_ready(enabled);
@@ -581,8 +612,8 @@ async fn run_inner(
 			_=tick.tick()=>{
 				let now=Instant::now();
 				if deadline.is_some_and(|d|now>=d) {return Err(negotiation_timeout(heartbeat_ms.is_some(),udp.is_some(),encryption.is_some(),&dave,resuming));}
-				if discovering && now>=discovery_deadline {return Err("Discord voice UDP discovery timed out; check the network firewall");}
-				if !discovering && now>=next_udp_ping && let Some(socket)=&udp {
+				if let (Some(window),Some(socket))=(&mut probing,&udp) && window.due(now,"Discord voice UDP discovery timed out; check the network firewall")? {probe_address(socket,ssrc,&mut udp_failures.1);}
+				if probing.is_none() && now>=next_udp_ping && let Some(socket)=&udp {
 					let sent = udp_failures.1.packets;
 					let sent_at = std::time::Instant::now();
 					udp_keepalive(socket,&mut udp_failures,&mut udp_ping_sequence)?;
@@ -602,9 +633,9 @@ async fn run_inner(
 					connection.websocket_sent(heartbeat_nonce, sent_at);
 					awaiting_ack=Some(heartbeat_nonce);heartbeat_at=now+Duration::from_millis(interval);
 				}
-				if !stage && secured_at.is_some_and(|at| now>=at+PEER_GRACE) && !discovering && !resuming && dave.should_wait_for_peer() {dave.enter_sole_member_waiting()?;}
-				let enabled=(stage || dave.ready) && encryption.is_some() && !discovering && !resuming;
-				let waiting=!stage && dave.waiting && encryption.is_some() && !discovering && !resuming;
+				if !stage && secured_at.is_some_and(|at| now>=at+PEER_GRACE) && probing.is_none() && !resuming && dave.should_wait_for_peer() {dave.enter_sole_member_waiting()?;}
+				let enabled=(stage || dave.ready) && encryption.is_some() && probing.is_none() && !resuming;
+				let waiting=!stage && dave.waiting && encryption.is_some() && probing.is_none() && !resuming;
 				let configuration = (controls.borrow().camera != 0 && video.available()).then(|| {
 					let (width, height) = video_settings.camera_resolution.camera_dimensions();
 					VideoConfiguration { codec: outgoing_codec, width, height, fps: video_settings.camera_frame_rate.fps(), target_bitrate: video_settings.bandwidth.rates(width, height, video_settings.camera_frame_rate.fps()).average }
@@ -722,12 +753,13 @@ async fn run_inner(
 			result=async {match &udp {Some(socket)=>socket.recv(&mut packet).await,None=>std::future::pending().await}}=>{
 				let length=match result {Ok(length)=>length,Err(error) if transient_receive(&error)=>continue,Err(_)=>return Err("Voice UDP receive failed")};
 				connection.received(length);
-				if !discovering && connection.udp_echo(&packet[..length], std::time::Instant::now()) { continue; }
+				if probing.is_none() && connection.udp_echo(&packet[..length], std::time::Instant::now()) { continue; }
 				if length>MAX_PACKET {continue;}
-				if discovering {
-					let (address,port)=discovery(&packet[..length],ssrc)?;
+				if probing.is_some() {
+					// RTP, stale probes, and keepalives cannot select a route or extend the deadline.
+					let Ok((address,port))=discovery(&packet[..length],ssrc) else {continue;};
 					json_send(&mut ws,json!({"op":1,"d":{"protocol":"udp","data":{"address":address.to_string(),"port":port,"mode":MODE},"codecs":offered_codecs(camera.as_ref().map(|_|outgoing_codec),decoder.is_some())}})).await?;
-					discovering=false;continue;
+					probing=None;continue;
 				}
 				let Some(crypto)=&encryption else{continue;};
 				if video.media_ssrc()!=0 && let Some(feedback)=crypto.feedback(&packet[..length],video.media_ssrc()) {
@@ -816,12 +848,11 @@ async fn run_inner(
 								if !data["modes"].as_array().is_some_and(|m|m.iter().any(|m|m.as_str()==Some(MODE))){return Err("Required voice transport encryption is unavailable");}
 								let socket=UdpSocket::bind(if address.is_ipv4(){"0.0.0.0:0"}else{"[::]:0"}).await.map_err(|_|"Could not bind voice UDP socket")?;
 								socket.connect(SocketAddr::new(address,port)).await.map_err(|_|"Could not connect voice UDP socket")?;
-								let mut probe=[0;74];probe[..4].copy_from_slice(&[0,1,0,70]);probe[4..8].copy_from_slice(&ssrc.to_be_bytes());let sent=socket.send(&probe).await.map_err(|_|"Voice UDP discovery failed")?;udp_failures.1.add(sent);
-								udp=Some(socket);discovering=true;discovery_deadline=Instant::now()+Duration::from_secs(8);
+								udp=Some(socket);probing=Some(DiscoveryWindow::new(Instant::now()));
 								emit(Status::Discovering).map_err(|_|"Call interface closed")?;
 							},
 							4=>{
-								if encryption.is_some() || udp.is_none() || discovering {return Err("Unexpected voice session description");}
+								if encryption.is_some() || udp.is_none() || probing.is_some() {return Err("Unexpected voice session description");}
 								if !accepted_media_mode(credentials.mode,data) {return Err("The channel did not negotiate its required encrypted media mode");}
 								let values=data["secret_key"].take();let values=values.as_array().ok_or("Missing voice transport key")?;
 								if values.len()!=32{return Err("Invalid voice transport key");}
@@ -1593,8 +1624,7 @@ async fn run_stream_inner(
 	let mut next_udp_ping = Instant::now();
 	let mut udp_ping_sequence = 0;
 	let mut udp_failures = UdpFailures::default();
-	let mut discovering = false;
-	let mut discovery_deadline = Instant::now();
+	let mut probing: Option<DiscoveryWindow> = None;
 	let mut audio_ssrc = 0u32;
 	let mut video_ssrc = 0u32;
 	let mut rtx_ssrc = 0u32;
@@ -1721,8 +1751,8 @@ async fn run_stream_inner(
 				let now=Instant::now();
 				history.expire(now);
 				if deadline.is_some_and(|at| now>=at) {return Err(negotiation_timeout(heartbeat_ms.is_some(),udp.is_some(),encryption.is_some(),&dave,false));}
-				if discovering && now>=discovery_deadline {return Err("Discord stream UDP discovery timed out");}
-				if !discovering && now>=next_udp_ping && let Some(socket)=&udp {
+				if let (Some(window),Some(socket))=(&mut probing,&udp) && window.due(now,"Discord stream UDP discovery timed out")? {probe_address(socket,audio_ssrc,&mut udp_failures.1);}
+				if probing.is_none() && now>=next_udp_ping && let Some(socket)=&udp {
 					let sent = udp_failures.1.packets;
 					let sent_at = std::time::Instant::now();
 					udp_keepalive(socket,&mut udp_failures,&mut udp_ping_sequence)?;
@@ -1740,16 +1770,16 @@ async fn run_stream_inner(
 					connection.websocket_sent(heartbeat_nonce, sent_at);
 					awaiting_ack=Some(heartbeat_nonce); heartbeat_at=now+Duration::from_millis(interval);
 				}
-				if secured_at.is_some_and(|at| now>=at+PEER_GRACE) && !discovering && dave.should_wait_for_peer() {dave.enter_sole_member_waiting()?;}
-				let waiting=dave.waiting && !dave.transitioning() && encryption.is_some() && !discovering;
+				if secured_at.is_some_and(|at| now>=at+PEER_GRACE) && probing.is_none() && dave.should_wait_for_peer() {dave.enter_sole_member_waiting()?;}
+				let waiting=dave.waiting && !dave.transitioning() && encryption.is_some() && probing.is_none();
 				let configuration = video.as_ref().and_then(|video| video.output()).map(|output| VideoConfiguration { codec: outgoing_codec, width: output.settings.width, height: output.settings.height, fps: output.settings.fps, target_bitrate: output.rates.limited_to(rate.target).average });
-				if let Some(mut snapshot) = connection.snapshot(now.into_std(), udp_failures.1, udp_failures.2, metrics.connection_counters(), configuration, dave.ready && dave.session.is_ready() && !dave.transitioning() && encryption.is_some() && !discovering && announced) { snapshot.participants = connection.participants(&mixer, &receivers, decoder.as_ref(), now.into_std()); let _ = emit(Status::Diagnostics(Arc::new(snapshot))); }
+				if let Some(mut snapshot) = connection.snapshot(now.into_std(), udp_failures.1, udp_failures.2, metrics.connection_counters(), configuration, dave.ready && dave.session.is_ready() && !dave.transitioning() && encryption.is_some() && probing.is_none() && announced) { snapshot.participants = connection.participants(&mixer, &receivers, decoder.as_ref(), now.into_std()); let _ = emit(Status::Diagnostics(Arc::new(snapshot))); }
 				if waiting {deadline=None;}
 				if waiting!=waiting_announced {
 					emit(if waiting {Status::WaitingForPeer} else {Status::Securing}).map_err(|_|"Stream interface closed")?;
 					waiting_announced=waiting;
 				}
-				let secure=dave.ready&&dave.session.is_ready()&&!dave.transitioning()&&encryption.is_some()&&!discovering;
+				let secure=dave.ready&&dave.session.is_ready()&&!dave.transitioning()&&encryption.is_some()&&probing.is_none();
 				let resolved=video.as_ref().and_then(|video|video.output());
 				if announced && video.is_some() && resolved!=announced_output {
 					announced=false; awaiting_keyframe=true; outgoing.clear(); history.clear(); outgoing_keyframe=false;outgoing_generation=None;
@@ -1795,7 +1825,7 @@ async fn run_stream_inner(
 				let progress=progress.filter(|progress|video.as_ref().is_some_and(|video|progress.generation==video.audio_epoch.load(Ordering::Acquire)));
 				send_watch.check(encoder_enabled,awaiting_keyframe,progress,!outgoing.is_empty(),Instant::now())?;
 				metrics.stream_state([
-					encryption.is_some() && !discovering, dave.ready, dave.session.is_ready(),
+					encryption.is_some() && probing.is_none(), dave.ready, dave.session.is_ready(),
 					dave.transitioning(), waiting, announced,
 					video.as_ref().is_some_and(|video|video.ready.load(Ordering::Acquire)),
 					share_audio.is_some() || audio.is_some(),
@@ -1857,7 +1887,7 @@ async fn run_stream_inner(
 				let Some(frame)=frame else {return Ok(());};
 				if frame.codec!=outgoing_codec {return Err("Stream encoder codec differs from the negotiated codec");}
 				if frame.data.len()>2*1024*1024 {return Err("Encoded stream frame exceeds the sharing limit");}
-				let secure=announced&&dave.ready&&dave.session.is_ready()&&!dave.transitioning()&&encryption.is_some()&&!discovering&&video.as_ref().is_some_and(|video|video.ready.load(Ordering::Acquire));
+				let secure=announced&&dave.ready&&dave.session.is_ready()&&!dave.transitioning()&&encryption.is_some()&&probing.is_none()&&video.as_ref().is_some_and(|video|video.ready.load(Ordering::Acquire));
 				if !secure {awaiting_keyframe=true;invalidate_stream(&mut video, &mut share_audio);continue;}
 				if !screen_frame_current(video.as_ref().expect("outgoing screen video"), &frame) {continue;}
 				if minimum_encoder_epoch.is_some_and(|epoch|frame.epoch<epoch)
@@ -1879,13 +1909,14 @@ async fn run_stream_inner(
 			result=async {match &udp {Some(socket)=>socket.recv(&mut packet).await,_=>std::future::pending().await}}=>{
 				let length=match result {Ok(length)=>length,Err(error) if transient_receive(&error)=>continue,Err(_)=>return Err("Stream UDP receive failed")};
 				connection.received(length);
-				if discovering {
-					let (address,port)=discovery(&packet[..length],audio_ssrc)?;
+				if probing.is_some() {
+					// RTP, stale probes, and keepalives cannot select a route or extend the deadline.
+					let Ok((address,port))=discovery(&packet[..length],audio_ssrc) else {continue;};
 					json_send(&mut ws,json!({"op":1,"d":{"protocol":"udp","data":{"address":address.to_string(),"port":port,"mode":MODE},"codecs":offered_codecs(video.as_ref().map(|_|outgoing_codec),decoder.is_some())}})).await?;
-					discovering=false;
+					probing=None;
 					continue;
 				}
-				if !discovering && connection.udp_echo(&packet[..length], std::time::Instant::now()) { continue; }
+				if probing.is_none() && connection.udp_echo(&packet[..length], std::time::Instant::now()) { continue; }
 				if length>MAX_PACKET {continue;}
 				let Some(crypto)=&encryption else {continue;};
 				if let Some(feedback)=crypto.feedback(&packet[..length],video_ssrc) {
@@ -1977,11 +2008,10 @@ async fn run_stream_inner(
 								if !data["modes"].as_array().is_some_and(|m|m.iter().any(|mode|mode.as_str()==Some(MODE))){return Err("Required stream transport encryption is unavailable");}
 								let socket=UdpSocket::bind(if address.is_ipv4(){"0.0.0.0:0"}else{"[::]:0"}).await.map_err(|_|"Could not bind stream UDP socket")?;
 								socket.connect(SocketAddr::new(address,port)).await.map_err(|_|"Could not connect stream UDP socket")?;
-								let mut probe=[0;74];probe[..4].copy_from_slice(&[0,1,0,70]);probe[4..8].copy_from_slice(&audio_ssrc.to_be_bytes());let sent=socket.send(&probe).await.map_err(|_|"Stream UDP discovery failed")?;udp_failures.1.add(sent);
-								udp=Some(socket);discovering=true;discovery_deadline=Instant::now()+Duration::from_secs(8);emit(Status::Discovering).map_err(|_|"Stream interface closed")?;
+								udp=Some(socket);probing=Some(DiscoveryWindow::new(Instant::now()));emit(Status::Discovering).map_err(|_|"Stream interface closed")?;
 							},
 							4=>{
-								if encryption.is_some()||udp.is_none()||discovering{return Err("Unexpected stream session description");}
+								if encryption.is_some()||udp.is_none()||probing.is_some(){return Err("Unexpected stream session description");}
 								let negotiated=if video.is_some(){video_negotiated(data,outgoing_codec)}else{VideoCodec::ALL.into_iter().any(|codec|video_negotiated(data,codec))};
 								if data["mode"].as_str()!=Some(MODE)||data["dave_protocol_version"].as_u64()!=Some(1)||!negotiated{return Err(codec_negotiation_error(outgoing_codec));}
 								let values=data["secret_key"].take();let values=values.as_array().ok_or("Missing stream transport key")?;if values.len()!=32{return Err("Invalid stream transport key");}
@@ -3036,6 +3066,28 @@ mod tests {
 		}
 	}
 	#[test]
+	fn discovery_probes_have_a_fixed_budget_without_catch_up() {
+		let start = Instant::now();
+		let mut w = DiscoveryWindow::new(start);
+		for (ms, expected) in [
+			(0, true),
+			(1, false),
+			(2000, true),
+			(5999, true),
+			(6000, false),
+			(7999, true),
+		] {
+			assert_eq!(
+				w.due(start + Duration::from_millis(ms), "timeout"),
+				Ok(expected)
+			);
+		}
+		assert_eq!(
+			w.due(start + Duration::from_secs(8), "timeout"),
+			Err("timeout")
+		);
+	}
+	#[test]
 	fn validated_endpoints_discovery_and_real_opus() {
 		assert!(endpoint("voice-1.discord.media:443").is_ok());
 		for bad in [
@@ -3181,6 +3233,13 @@ mod tests {
 			let mut probe = [0; 4096];
 			let (n, client) = udp.recv_from(&mut probe).await.unwrap();
 			assert_eq!(n, 74);
+			if guild {
+				// Drop the first discovery request and race unrelated UDP ahead of the reply.
+				let original = probe[..74].to_vec();
+				udp.send_to(&[0; 8], client).await.unwrap();
+				let (n, peer) = udp.recv_from(&mut probe).await.unwrap();
+				assert_eq!((peer, &probe[..n]), (client, original.as_slice()));
+			}
 			probe[..4].copy_from_slice(&[0, 2, 0, 70]);
 			probe[8..17].copy_from_slice(b"127.0.0.1");
 			probe[72..74].copy_from_slice(&client.port().to_be_bytes());

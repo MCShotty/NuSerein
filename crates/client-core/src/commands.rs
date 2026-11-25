@@ -964,6 +964,7 @@ impl State {
 				return;
 			}
 			self.cancel_history();
+			self.record_history_failure(*channel, auth::Failure::Busy);
 			self.status = "Work queue full; action was not sent";
 			self.freshness = Freshness::Stale;
 			return;

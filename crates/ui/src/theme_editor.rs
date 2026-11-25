@@ -423,7 +423,7 @@ impl ThemeEditor {
 		if busy {
 			ui.horizontal(|ui| {
 				ui.spacing_mut().item_spacing.x = 8.0;
-				ui.add(egui::Spinner::new().size(14.0));
+				ui.add(crate::design::Busy::new().size(14.0));
 				ui.label(
 					egui::RichText::new(crate::i18n::translate("theme-editor-toolbar-working"))
 						.size(12.0)

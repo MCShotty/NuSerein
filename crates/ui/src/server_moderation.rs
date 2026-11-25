@@ -104,7 +104,7 @@ impl ModerationUi {
 			ui.colored_label(design::palette(ui).danger, error);
 		}
 		if state.server_admin.pending {
-			ui.spinner();
+			ui.add(crate::design::Busy::new());
 		}
 		if !self.bans_only {
 			if !self.actions_only {

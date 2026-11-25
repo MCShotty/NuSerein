@@ -105,7 +105,7 @@ impl AutoModUi {
 			ui.colored_label(design::palette(ui).danger, error);
 		}
 		if state.server_admin.pending {
-			ui.spinner();
+			ui.add(crate::design::Busy::new());
 		}
 		let available = !state.server_admin.pending && (state.demo || state.gateway_connected);
 		if state.server_admin.needs_refresh

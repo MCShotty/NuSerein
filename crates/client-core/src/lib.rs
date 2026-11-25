@@ -293,6 +293,9 @@ pub struct State {
 	pub newer_cursor: Option<Id>,
 	pub newer_may_have_more: bool,
 	pub history_pending: bool,
+	/// Only a classified outcome of the active history request, never a response body.
+	#[doc(hidden)]
+	pub history_failure: Option<(Id, u64, auth::Failure)>,
 	pub older_exhausted: bool,
 	pub gateway_connected: bool,
 	pub revision: u64,
@@ -536,6 +539,7 @@ impl Default for State {
 			newer_cursor: None,
 			newer_may_have_more: false,
 			history_pending: false,
+			history_failure: None,
 			older_exhausted: false,
 			gateway_connected: false,
 			revision: 0,
@@ -2822,6 +2826,34 @@ mod tests {
 				},
 			);
 			assert_eq!(state.freshness, Freshness::Stale); // before boundary cannot repeat itself
+			assert_eq!(
+				state.history_failure(),
+				Some(auth::Failure::ProtocolAt("history-page-scope"))
+			);
+			state.history(None);
+			let request = state.request;
+			assert_eq!(state.history_failure(), None);
+			for (channel, request) in [(Id(1), request - 1), (Id(9), request)] {
+				apply(
+					&mut state,
+					Event::HistoryFailed {
+						channel,
+						request,
+						failure: auth::Failure::Network,
+					},
+				);
+				assert_eq!(state.history_failure(), None);
+				assert!(state.history_pending);
+			}
+			apply(
+				&mut state,
+				Event::HistoryFailed {
+					channel: Id(1),
+					request,
+					failure: auth::Failure::RateLimited,
+				},
+			);
+			assert_eq!(state.history_failure(), Some(auth::Failure::RateLimited));
 			state.history(None);
 			let request = state.request;
 			apply(
@@ -2832,6 +2864,7 @@ mod tests {
 					failure: auth::Failure::Forbidden,
 				},
 			);
+			assert_eq!(state.history_failure(), None);
 			assert_eq!(state.freshness, Freshness::Unavailable);
 			assert!(state.timeline.is_empty());
 			apply(&mut state, Event::Message(message(200)));

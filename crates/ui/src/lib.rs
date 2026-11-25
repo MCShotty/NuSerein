@@ -25,6 +25,7 @@ pub use audio::{AudioCommand, AudioState, AudioUi};
 mod video;
 pub use video::{
 	MediaView, VideoCommand, VideoState, VideoUi, embedded_video_candidates, embedded_video_url,
+	social_video_page,
 };
 mod attachments;
 pub mod external_upload;
@@ -427,6 +428,7 @@ pub struct MessagingUi {
 	friend_removal: Option<(u64, model::User)>,
 	user_direct: Option<user_direct::Pending>,
 	members_narrow_open: bool,
+	compact_navigation_open: bool,
 	/// Only the open member request's revealed prefix; member data stays in the bounded core cache.
 	member_extent: Option<((u64, Id, u64), usize)>,
 	guild: Option<Id>,

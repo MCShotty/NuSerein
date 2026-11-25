@@ -1,5 +1,34 @@
 # Discord compatibility — checked 2026-09-10
 
+## Voice joining and participant media (November 24, 2026)
+
+Voice and Go Live use the documented UDP IP discovery exchange. The client may send the same
+74-byte probe up to four times on the same allocated socket within eight seconds. Only a reply
+matching the expected format and SSRC advances protocol selection. This retries no Gateway
+join, ring, camera, or share action and does not change the encryption requirements. An exact
+repeat of a confirmed Gateway server allocation is not a migration; a changed token or endpoint
+still invalidates it. If an unconfirmed transport fails, its local failure reason survives the
+wait for replacement credentials. Live normal-account interoperability remains unverified.
+
+In the guild roster, the monitor action watches a Go Live share. The camera icon instead reports
+camera state and can focus an available camera picture in the currently joined call. It never
+starts capture or opens a second stream connection.
+
+## History media diagnostics (November 24, 2026)
+
+When display history rejects an attachment or embed list, the failure banner includes a fixed
+local code (`H-A…` for attachments, `H-E…` for embeds). Only the rejected field is examined,
+within the original wire and item limits. The `09` suffix means the probe could not attribute
+the rejection to a narrower check. These are client diagnostics, not Discord error codes.
+The probe changes neither admission nor mutation readbacks. It logs, stores and uploads nothing;
+no message, ID, field name from the response, filename, URL or raw error enters the banner.
+Older builds reported `H-E02` when one message exceeded the ten-card display limit. Display
+history now retains at most the first ten embed slots, including for forwarded messages. It
+skips extra cards without retaining their content or URLs and marks the last retained card
+as limited. The existing 64 KiB embed budget can limit the display further. The message and
+its neighbors still count toward pagination. Non-list, non-null embed fields still fail, and
+exact readbacks keep their previous count checks. Live behavior with this change is unverified.
+
 ## Explicit Force Sync (October 30, 2026)
 
 **Force Sync This Server** refreshes the selected server. **Settings → Storage & Sync →
@@ -3393,7 +3422,11 @@ are admitted after explicit Play, with at most three redirects between approved 
 Both media metadata fields are considered, including extensionless endpoints;
 the decoder validates the actual container. Play is explicit. Unknown lengths require
 a one-byte range probe with a nonzero total at most 100 MiB, or one complete response
-of at most 256 KiB when a small server ignores Range. Unknown dimensions reserve a
+of at most 2 MiB on explicit Play when a server ignores Range. Attachment and embed requests use
+the configured HTTP proxy. Instagram `/p/` cards with video metadata can use the same anonymous
+public metadata lookup as Reels; plain photo cards do not initiate it. Reddit video cards with a
+`redd.it/<post-id>` or `/comments/<post-id>` link use the exact-post lookup, not the shortlink redirect.
+Unknown dimensions reserve a
 normal 16:9 player instead of a 16 × 9 pixel control strip.
 Anonymous bounded range reads feed the existing FFmpeg-first decoder and native
 HDR/GPU presentation. Other redirects and all credentials are refused. Suppressed/spoiler
@@ -3654,3 +3687,31 @@ Discord session, account mutation, message, call, microphone or native device ac
 performed for this coverage. The review also examined administration, extension runtime
 and storage paths without demonstrating another fix there. Coverage is limited to the
 examined paths and scenarios. AMF/Nix work tracked in PR #43 is separate.
+
+
+### Signal Desk: channel history, role presentation and social video
+
+An unsupported embed object no longer invalidates the rest of its message or a history page.
+It retains a limited placeholder with no actionable media. The wire-size and card-count limits,
+message identity checks and channel permissions still apply. A stale empty timeline offers an
+explicit reload rather than claiming cached messages are on screen. For display-only history, a
+malformed reaction list stays unknown, and a malformed nested reply preview stays unavailable
+rather than marking its target deleted. In ordinary and forwarded history, a file with a valid
+identity but unreadable display metadata retains an inert slot (no URL, thumbnail, playback or
+download). Spoiler evidence is preserved; unreadable visibility text is treated as concealed.
+Invalid file IDs, malformed flags, duplicate fields on a recovered file, and malformed or
+over-limit media lists are still rejected. This is synthetic-tested behavior, not a claim about
+any particular live channel. Exact-message readbacks keep their strict decoder. Other
+rejections report fixed local categories without exposing field paths, message content, or IDs.
+
+Guild role colors are presentation only. If member data is absent on the signed-in user's
+message, the current guild's own member snapshot can supply its roles. Missing sidebar presence
+no longer suppresses known role colors; explicitly offline members keep the muted treatment.
+
+Unofficial, unverified with live providers: for supported Reel and Reddit video pages, explicit
+Play can resolve public Open Graph video metadata or a single Reddit post's `reddit_video`
+fallback file. No account token, cookies, webview, arbitrary player or script is used. A lookup
+is limited to three anonymous requests and 192 KiB of metadata per response, is cancelled with
+the player, and feeds only a validated media origin to the existing bounded range reader.
+Authentication walls, missing media and unsupported streams retain Open original. A Reddit
+fallback file need not contain the separate adaptive audio track.

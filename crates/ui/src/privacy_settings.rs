@@ -39,7 +39,7 @@ impl MessagingUi {
 		}
 		if state.messaging_permissions.pending {
 			ui.horizontal(|ui| {
-				ui.add(egui::Spinner::new().size(14.0));
+				ui.add(crate::design::Busy::new().size(14.0));
 				ui.label(tr("privacy-prefs-updating"));
 			});
 		}

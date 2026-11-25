@@ -24,6 +24,7 @@ pub mod gif_favorites;
 pub mod gifs;
 pub mod group_actions;
 pub mod guild_folders;
+pub mod history;
 pub mod inbox;
 pub mod invites;
 mod lossy;
@@ -525,8 +526,10 @@ fn mention_roles<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Id>, D::E
 pub struct RecentMentions(
 	#[serde(deserialize_with = "search::list::<_,_,25>")] pub Vec<MessageDto>,
 );
+/// Ordinary reads and mutations use the strict attachment decoder.
+pub type MessageDto = WireMessage<false>;
 #[derive(Deserialize)]
-pub struct MessageDto {
+pub struct WireMessage<const HISTORY: bool> {
 	#[serde(default)]
 	pub guild_id: Option<Id>,
 	#[serde(default)]
@@ -568,13 +571,13 @@ pub struct MessageDto {
 	#[serde(default)]
 	pub interaction_metadata: Option<InteractionDto>,
 	#[serde(default)]
-	pub message_snapshots: Snapshots,
+	pub message_snapshots: Snapshots<HISTORY>,
 	#[serde(default, deserialize_with = "reply_preview_field")]
 	pub referenced_message: model::Patch<ReplyPreviewDto>,
 	#[serde(default)]
-	pub attachments: AttachmentList,
+	pub attachments: AttachmentList<HISTORY>,
 	#[serde(default)]
-	pub embeds: EmbedList,
+	pub embeds: EmbedList<HISTORY>,
 	#[serde(default)]
 	pub flags: u64,
 	#[serde(rename = "type", default)]
@@ -768,20 +771,20 @@ pub struct Reference {
 	pub kind: u64,
 }
 #[derive(Default)]
-pub struct Snapshots(Option<Snapshot>);
-impl<'de> Deserialize<'de> for Snapshots {
+pub struct Snapshots<const HISTORY: bool = false>(Option<Snapshot<HISTORY>>);
+impl<'de, const HISTORY: bool> Deserialize<'de> for Snapshots<HISTORY> {
 	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-		struct Visitor;
-		impl<'de> serde::de::Visitor<'de> for Visitor {
-			type Value = Snapshots;
+		struct Visitor<const HISTORY: bool>;
+		impl<'de, const HISTORY: bool> serde::de::Visitor<'de> for Visitor<HISTORY> {
+			type Value = Snapshots<HISTORY>;
 			fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 				f.write_str("a bounded message snapshot array")
 			}
 			fn visit_seq<A: serde::de::SeqAccess<'de>>(
 				self,
 				mut seq: A,
-			) -> Result<Snapshots, A::Error> {
-				let first = seq.next_element::<Snapshot>()?;
+			) -> Result<Self::Value, A::Error> {
+				let first = seq.next_element::<Snapshot<HISTORY>>()?;
 				let mut extra = false;
 				for _ in 0..100 {
 					if seq.next_element::<serde::de::IgnoredAny>()?.is_none() {
@@ -792,23 +795,23 @@ impl<'de> Deserialize<'de> for Snapshots {
 				Err(serde::de::Error::custom("Too many message snapshots"))
 			}
 		}
-		d.deserialize_seq(Visitor)
+		d.deserialize_seq(Visitor::<HISTORY>)
 	}
 }
 #[derive(Deserialize)]
-struct Snapshot {
-	message: SnapshotBody,
+struct Snapshot<const HISTORY: bool> {
+	message: SnapshotBody<HISTORY>,
 }
 #[derive(Deserialize)]
-struct SnapshotBody {
+struct SnapshotBody<const HISTORY: bool> {
 	#[serde(rename = "type")]
 	kind: u8,
 	#[serde(default)]
 	content: String,
 	#[serde(default)]
-	attachments: AttachmentList,
+	attachments: AttachmentList<HISTORY>,
 	#[serde(default)]
-	embeds: EmbedList,
+	embeds: EmbedList<HISTORY>,
 	#[serde(default)]
 	flags: u64,
 	#[serde(default)]
@@ -820,7 +823,7 @@ struct SnapshotBody {
 	#[serde(default)]
 	components: Option<model::ComponentList>,
 }
-impl MessageDto {
+impl<const HISTORY: bool> WireMessage<HISTORY> {
 	pub fn into_model(mut self) -> Message {
 		let snapshot = self.message_snapshots.0.take().filter(|snapshot| {
 			self.kind == 0
@@ -856,8 +859,11 @@ impl MessageDto {
 			.filter(|id| id.0 > 0 && id.0 < self.id.0);
 		let unsupported_reference =
 			self.message_reference.is_some() && reply_to.is_none() && !forwarded;
-		let reply_deleted =
-			reply_to.is_some() && matches!(self.referenced_message, model::Patch::Null);
+		// Poll results can link to the poll, but are not replies. A missing poll preview
+		// must not generate a reply-deletion marker or invalidate its history page.
+		let reply_deleted = matches!(self.kind, 19 | 23)
+			&& reply_to.is_some()
+			&& matches!(self.referenced_message, model::Patch::Null);
 		let reply_preview = match (reply_to, self.referenced_message) {
 			(Some(target), model::Patch::Value(preview)) => {
 				preview.into_model(self.channel_id, target)
@@ -1391,6 +1397,16 @@ mod tests {
 				assert_eq!(deleted.reply_to, Some(Id(50)));
 				assert!(deleted.reply_deleted && !deleted.unsupported);
 			}
+			let mut result = wire();
+			result["type"] = 46.into();
+			result["referenced_message"] = serde_json::Value::Null;
+			let result = read(result);
+			assert_eq!(
+				result.reply_to,
+				Some(Id(50)),
+				"Keep the poll navigation target"
+			);
+			assert!(!result.reply_deleted && result.reply_preview.is_none());
 			let mut value = wire();
 			// An incomplete preview is discarded; nested reply chains are never decoded.
 			value["referenced_message"] = serde_json::json!({"content":"nested secret marker", "referenced_message":{"content":"nested"}});

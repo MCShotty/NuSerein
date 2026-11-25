@@ -185,6 +185,17 @@ fn native_media(embed: &Embed) -> Option<model::Attachment> {
 				.as_deref()
 				.and_then(crate::video::embedded_video_candidate)
 		})
+		.or_else(|| {
+			// Only offer page resolution for video cards or an unambiguous Reel/media URL.
+			web_video(embed)
+				.then(|| {
+					[original, embed.url.as_deref()]
+						.into_iter()
+						.flatten()
+						.find_map(crate::video::social_video_page)
+				})
+				.flatten()
+		})
 		.map(String::from);
 	let proxy_url = video
 		.and_then(|video| video.proxy_url.as_deref())
@@ -1327,7 +1338,8 @@ pub fn show(
 									"embeds-show-embed-display-limited",
 								));
 							}
-							if !matches!(
+							if !playable
+								&& provider.is_none() && !matches!(
 								embed.kind.as_str(),
 								"rich" | "article" | "link" | "image" | "video" | "gifv"
 							) {
@@ -1585,6 +1597,8 @@ mod tests {
 				false,
 			),
 			("https://v.redd.it/fixture", false, false, false),
+			("https://www.instagram.com/p/fixture/", false, true, true),
+			("https://redd.it/abc123", false, true, true),
 		] {
 			let mut message = test_support::message(1, model::Id(2));
 			message.embeds = vec![Embed {
@@ -1659,6 +1673,9 @@ mod tests {
 				);
 				assert!(video.provider.as_ref().unwrap().start_requested);
 				assert!(video.active.is_none());
+			} else if crate::video::social_video_page(source).is_some() {
+				assert!(opening.is_none());
+				assert!(matches!(video.command, Some(crate::VideoCommand::Play(_))));
 			} else {
 				assert_eq!(opening.as_deref(), Some(source));
 				assert!(video.provider.is_none());
@@ -1711,6 +1728,7 @@ mod tests {
 		}
 		for raw in [
 			"https://www.instagram.com/p/fixture",
+			"https://redd.it/abc123",
 			"https://www.reddit.com/r/synthetic/comments/fixture/album/",
 			"https://oginstagram.com.example/reel/fixture",
 			"https://www.oginstagram.com:444/reel/fixture",

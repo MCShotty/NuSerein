@@ -1,7 +1,7 @@
 mod row;
 use crate::design::LazyHover;
 use crate::markdown::{FormatCache, Formatted, discord_url};
-use client_core::State;
+use client_core::{State, auth::Failure};
 use egui::RichText;
 use model::{Id, Message};
 use std::{
@@ -159,6 +159,7 @@ pub struct TimelineView {
 	language: Option<crate::i18n::Language>,
 	scale: f32,
 	pub(super) load_older: bool,
+	pub(super) reload_requested: bool,
 	pub(super) latest: bool,
 	pub(super) visible_authors: Vec<Id>,
 	jump: bool,
@@ -2823,6 +2824,39 @@ impl TimelineView {
 				}
 			}
 			return;
+		}
+		let history_error = match state.history_failure() {
+			Some(Failure::Network) => Some("history-connection-failed"),
+			Some(Failure::ProtocolAt(
+				key @ ("history-page-format"
+				| "history-message-format"
+				| "history-people-format"
+				| "history-media-format"
+				| "history-attachment-list"
+				| "history-attachment-count"
+				| "history-attachment-object"
+				| "history-attachment-id"
+				| "history-attachment-flags"
+				| "history-attachment-duplicate"
+				| "history-attachment-fields"
+				| "history-attachment-context"
+				| "history-embed-list"
+				| "history-embed-context"
+				| "history-feature-format"
+				| "history-page-scope"),
+			)) => Some(key),
+			Some(Failure::Protocol | Failure::ProtocolAt(_)) => Some("history-response-rejected"),
+			Some(Failure::ResponseLimit) => Some("history-response-too-large"),
+			Some(Failure::RateLimited) => Some("history-rate-limited"),
+			Some(Failure::Busy) => Some("history-queue-busy"),
+			_ => None,
+		};
+		if empty
+			&& history_available
+			&& state.freshness == model::Freshness::Stale
+			&& let Some(key) = history_error
+		{
+			ui.label(crate::i18n::translate(key));
 		} else if empty && history_available && !welcome && !matches!(intro, Some(Intro::Direct(_)))
 		{
 			ui.label(crate::i18n::translate_if_key(match state.freshness {
@@ -2837,6 +2871,16 @@ impl TimelineView {
 					"timeline-show-with-scroll-no-messages-yet-start-the-conversation-below"
 				}
 			}));
+		}
+		if empty
+			&& history_available
+			&& state.freshness == model::Freshness::Stale
+			&& !state.history_pending
+			&& ui
+				.button(crate::i18n::translate("reload-history"))
+				.clicked()
+		{
+			self.reload_requested = true;
 		}
 		let area = ui.available_rect_before_wrap().intersect(ui.clip_rect());
 		let autoscroll_delta =
@@ -4052,6 +4096,43 @@ mod pending_tests;
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn failed_history_renders_only_allowlisted_media_probe_text() {
+		crate::i18n::set_current(crate::i18n::Language::English);
+		for (key, expected) in [
+			("history-attachment-flags", "(H-A05)"),
+			("history-embed-list", "(H-E01)"),
+			(
+				"private-synthetic-detail",
+				"NuSerein couldn’t read Discord’s history response.",
+			),
+		] {
+			let mut state = loading_unread_channel(false);
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::HistoryFailed {
+					channel: Id(20),
+					request: state.request,
+					failure: Failure::ProtocolAt(key),
+				},
+			});
+			let ctx = egui::Context::default();
+			let labels = banner_frame(
+				&ctx,
+				&mut TimelineView::default(),
+				&mut state,
+				vec![],
+				false,
+			);
+			assert!(labels.iter().any(|(text, _)| text.contains(expected)));
+			assert!(
+				!labels
+					.iter()
+					.any(|(text, _)| text.contains("private-synthetic-detail"))
+			);
+		}
+	}
 
 	#[test]
 	fn resizing_call_stage_keeps_latest_message_at_the_composer() {

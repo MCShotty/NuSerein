@@ -1662,8 +1662,9 @@ Native video decoding is memory-only. One lazy worker handles the latest request
 with a replaceable pending request and cancellation fencing. The network source retains
 up to eight 256 KiB ranges (2 MiB, including an in-flight range); responses are checked for exact range/total/body lengths and reject
 content encoding. Attachment reads refuse redirects. Encoded attachment size is capped at 100 MiB.
-An explicitly played embed with unknown length may accept one complete response when
-the server ignores Range, capped at 256 KiB and retained inside the same source cache.
+On explicit Play, an attachment or embed can use one complete response when the server ignores Range,
+up to 2 MiB instead of eight separate ranges. Known attachment sizes must still match exactly.
+Background poster reads keep their 256 KiB whole-response limit.
 Larger responses still require range support. This fallback has the same cancellation
 checks and request timeout; it does not create a file cache. Explicit embed playback prefers
 Discord's external media proxy and retains at most two validated candidates for one

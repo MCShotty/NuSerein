@@ -13,3 +13,5 @@ Upstream provenance is retained in `Cargo.toml.orig` and `.cargo_vcs_info.json`.
 - License: <https://github.com/Snazzah/davey/blob/a1e2e741bea06bc3b7167a5c3792844b8975993c/LICENSE>
 
 Validation belongs to the consuming workspace: run the existing two-party DAVE/MLS encryption, tampering, and transition tests, the voice suite, and the strict dependency audit after lockfile resolution. This manifest change is not evidence of live Discord compatibility or an independent cryptographic audit.
+
+The native crypto migration additionally selects P-256 0.14 and uses its published key-generation and SEC1 interfaces in `src/signing_key_pair.rs`. It retains the same key formats and DAVE ciphersuite, with no changes to the MLS state machine. The consuming OpenMLS adapters select the compatible HPKE provider. The earlier native-only description above records the original patch.

@@ -319,7 +319,7 @@ impl IntegrationsUi {
 		}
 		if state.server_admin.pending {
 			ui.horizontal(|ui| {
-				ui.spinner();
+				ui.add(crate::design::Busy::new());
 				ui.weak(crate::i18n::translate_if_key(
 					if state.server_admin.saving {
 						"server-integrations-show-updating-integrations"
@@ -913,7 +913,7 @@ impl IntegrationsUi {
 					self.avatar_texture = None;
 				}
 				if self.avatar_pending {
-					ui.spinner();
+					ui.add(crate::design::Busy::new());
 				}
 			});
 			if !matches!(self.avatar, model::Patch::Absent) {

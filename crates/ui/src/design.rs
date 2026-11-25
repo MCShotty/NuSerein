@@ -3,6 +3,9 @@
 //! The palette is resolved from egui's light/dark mode plus a process-wide [`Variant`]
 //! (the cool Serein neutrals, deep black, blue-grey, or a gradient recolour). Gradient
 //! variants paint a backdrop under translucent surfaces; see [`paint_backdrop`].
+mod busy;
+pub use busy::Busy;
+
 use egui::{Color32, FontFamily, FontId, RichText, Stroke, epaint::FontColorTransferFunction};
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
@@ -1600,8 +1603,19 @@ fn wide_button(
 ) -> egui::Response {
 	let label = crate::i18n::translate_if_key(label);
 	let p = palette(ui);
-	let (rect, response) =
-		ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+	let width = ui.available_width();
+	let icon_size = if icon.is_some() { 20.0 } else { 0.0 };
+	let gap = if icon.is_some() { 10.0 } else { 0.0 };
+	let galley = ui.painter().layout(
+		label.to_owned(),
+		FontId::new(15.0, medium_family(ui.ctx())),
+		text,
+		(width - icon_size - gap - 20.0).max(1.0),
+	);
+	let (rect, response) = ui.allocate_exact_size(
+		egui::vec2(width, 44.0_f32.max(galley.size().y + 12.0)),
+		egui::Sense::click(),
+	);
 	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label));
 	let enabled = ui.is_enabled();
 	let fill = if !enabled {
@@ -1628,13 +1642,6 @@ fn wide_button(
 			egui::StrokeKind::Outside,
 		);
 	}
-	let galley = painter.layout_no_wrap(
-		label.to_owned(),
-		FontId::new(15.0, medium_family(ui.ctx())),
-		text,
-	);
-	let icon_size = if icon.is_some() { 20.0 } else { 0.0 };
-	let gap = if icon.is_some() { 10.0 } else { 0.0 };
 	let total = icon_size + gap + galley.size().x;
 	let mut x = rect.center().x - total * 0.5;
 	if let Some(icon) = icon {
@@ -1645,7 +1652,7 @@ fn wide_button(
 		crate::icons::paint(painter, icon, icon_rect, text);
 		x += icon_size + gap;
 	}
-	painter.galley(
+	painter.galley_with_override_text_color(
 		egui::pos2(x, rect.center().y - galley.size().y * 0.5),
 		galley,
 		text,
@@ -1897,6 +1904,33 @@ mod tests {
 			let text = super::readable_tint(p.accent, p.selected);
 			assert!(super::contrast(text, p.selected) >= 4.5);
 			assert!(super::contrast(text, p.sidebar) >= 4.5);
+		}
+	}
+	#[test]
+	fn compact_actions_keep_long_labels_inside_their_hit_targets() {
+		let ctx = egui::Context::default();
+		let label = "Eine sehr lange lokalisierte Beschriftung für diese Aktion";
+		for wide in [false, true] {
+			let mut hit = egui::Rect::NOTHING;
+			let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+				ui.set_width(144.0);
+				hit = if wide {
+					primary_button(ui, label)
+				} else {
+					button(ui, label, ButtonKind::Outline)
+				}
+				.rect;
+			});
+			let mut labels = Vec::new();
+			for shape in &out.shapes {
+				crate::test_ui::logical_text(&shape.shape, &mut labels);
+			}
+			let (_, bounds) = labels
+				.iter()
+				.find(|(text, _)| text == label)
+				.expect("full label");
+			assert!(hit.width() <= 144.5 && hit.expand(1.0).contains_rect(*bounds));
+			out.drop_without_applying_deltas();
 		}
 	}
 	#[test]
@@ -2380,16 +2414,21 @@ pub fn button(ui: &mut egui::Ui, label: &str, kind: ButtonKind) -> egui::Respons
 		),
 	};
 	let font = FontId::new(14.0, medium_family(ui.ctx()));
-	let galley = ui
-		.painter()
-		.layout_no_wrap(label.to_owned(), font, Color32::WHITE);
-	let width = (galley.size().x + 32.0).max(if kind == ButtonKind::Neutral {
+	let max_width = ui.max_rect().width().max(1.0);
+	let galley = ui.painter().layout(
+		label.to_owned(),
+		font,
+		Color32::WHITE,
+		(max_width - 32.0).max(1.0),
+	);
+	let min_width = if kind == ButtonKind::Neutral {
 		72.0
 	} else {
 		92.0
-	});
-	let (rect, response) =
-		ui.allocate_exact_size(egui::vec2(width, BUTTON_HEIGHT), egui::Sense::click());
+	};
+	let width = (galley.size().x + 32.0).max(min_width).min(max_width);
+	let height = BUTTON_HEIGHT.max(galley.size().y + 12.0);
+	let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
 	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label));
 	let enabled = ui.is_enabled();
 	let hot = response.hovered() || response.has_focus();
@@ -2612,18 +2651,20 @@ pub fn empty_state(ui: &mut egui::Ui, icon: crate::icons::Icon, title: &str, det
 	let detail = crate::i18n::translate_if_key(detail);
 	let p = palette(ui);
 	egui::Frame::new()
-		.inner_margin(egui::Margin::symmetric(24, 40))
+		.inner_margin(if ui.available_width() < 360.0 {
+			egui::Margin::symmetric(12, 18)
+		} else {
+			egui::Margin::symmetric(24, 32)
+		})
 		.show(ui, |ui| {
 			ui.set_width(ui.available_width());
 			ui.vertical_centered(|ui| {
 				ui.spacing_mut().item_spacing.y = 6.0;
 				let (rect, _) =
-					ui.allocate_exact_size(egui::Vec2::splat(56.0), egui::Sense::hover());
-				ui.painter()
-					.circle_filled(rect.center(), 28.0, p.muted.gamma_multiply(0.3));
-				crate::icons::paint(ui.painter(), icon, rect.shrink(16.0), p.text);
+					ui.allocate_exact_size(egui::Vec2::splat(32.0), egui::Sense::hover());
+				crate::icons::paint(ui.painter(), icon, rect.shrink(2.0), p.muted);
 				ui.add_space(8.0);
-				ui.add(egui::Label::new(semibold(ui, title, 15.0).color(p.text_strong)).wrap());
+				ui.add(egui::Label::new(semibold(ui, title, 18.0).color(p.text_strong)).wrap());
 				ui.add(egui::Label::new(RichText::new(detail).size(13.0).color(p.muted)).wrap());
 			});
 		});
@@ -2828,28 +2869,34 @@ pub fn selection_row(
 	}
 	let left = rect.left() + 52.0;
 	let right = marker.left() - 12.0;
-	let text_width = (right - left).max(40.0);
+	let text_width = (right - left).max(1.0);
 	let title_color = if ui.is_enabled() {
 		p.text_strong
 	} else {
 		p.muted
 	};
-	let title = ui.painter().layout(
-		title.to_owned(),
+	let line = |value: &str, font, color| {
+		let mut job = egui::text::LayoutJob::simple_singleline(value.to_owned(), font, color);
+		job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+		ui.painter().layout_job(job)
+	};
+	let name = line(
+		title,
 		FontId::new(15.0, semibold_family(ui.ctx())),
 		title_color,
-		text_width,
 	);
-	let detail = ui.painter().layout(
-		detail.to_owned(),
-		FontId::proportional(12.0),
-		p.muted,
-		text_width,
-	);
+	let scope = line(detail, FontId::proportional(12.0), p.muted);
+	let elided = name.elided || scope.elided;
 	ui.painter()
-		.galley(egui::pos2(left, rect.top() + 9.0), title, title_color);
+		.galley(egui::pos2(left, rect.top() + 9.0), name, title_color);
 	ui.painter()
-		.galley(egui::pos2(left, rect.top() + 30.0), detail, p.muted);
+		.galley(egui::pos2(left, rect.top() + 30.0), scope, p.muted);
+	if elided {
+		return response.on_hover_ui(|ui| {
+			crate::icons::wrapped_tooltip(ui, title);
+			crate::icons::wrapped_tooltip(ui, detail);
+		});
+	}
 	response
 }
 
@@ -2866,26 +2913,34 @@ pub fn row<R>(
 	let detail = detail.map(crate::i18n::translate_if_key);
 	let p = palette(ui);
 	let width = ui.available_width();
-	let text_width = (width * 0.55).max(120.0);
-	ui.horizontal(|ui| {
-		ui.spacing_mut().item_spacing.x = 12.0;
-		ui.allocate_ui_with_layout(
-			egui::vec2(text_width, 0.0),
-			egui::Layout::top_down(egui::Align::Min),
-			|ui| {
-				ui.spacing_mut().item_spacing.y = 2.0;
-				ui.add(egui::Label::new(medium(ui, &title, 15.0).color(p.text_strong)).wrap());
-				if let Some(detail) = detail {
-					ui.add(
-						egui::Label::new(RichText::new(detail).size(13.0).color(p.muted)).wrap(),
-					);
-				}
-			},
-		);
-		ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control)
-			.inner
-	})
-	.inner
+	let text = |ui: &mut egui::Ui| {
+		ui.spacing_mut().item_spacing.y = 2.0;
+		ui.add(egui::Label::new(medium(ui, &title, 15.0).color(p.text_strong)).wrap());
+		if let Some(detail) = &detail {
+			ui.add(
+				egui::Label::new(RichText::new(detail.as_str()).size(13.0).color(p.muted)).wrap(),
+			);
+		}
+	};
+	if width < 360.0 {
+		ui.vertical(|ui| {
+			ui.scope(text);
+			ui.horizontal_wrapped(control).inner
+		})
+		.inner
+	} else {
+		ui.horizontal(|ui| {
+			ui.spacing_mut().item_spacing.x = 12.0;
+			ui.allocate_ui_with_layout(
+				egui::vec2(width * 0.55, 0.0),
+				egui::Layout::top_down(egui::Align::Min),
+				text,
+			);
+			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control)
+				.inner
+		})
+		.inner
+	}
 }
 
 /// Quiet inline action for secondary verbs such as "Reset" or "Try again": muted text that
