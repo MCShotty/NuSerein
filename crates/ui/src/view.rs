@@ -366,6 +366,7 @@ impl MessagingUi {
 			}
 		}
 		if self.navigation_channel != state.selected {
+			self.compact_navigation_open = false;
 			self.focus_switched_composer = state.selected.is_some();
 			self.navigation_channel = state.selected;
 			self.guild = state

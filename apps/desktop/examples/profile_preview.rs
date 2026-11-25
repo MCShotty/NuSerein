@@ -1481,6 +1481,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 								"Great, thanks",
 							][n as usize]
 								.into();
+							if page == "dm-tags"
+								&& n % 2 == 0 && let Some(peer) =
+								state.channel(channel).and_then(|c| c.recipients.first())
+							{
+								message.author = peer.clone();
+								style_name(&mut message.author);
+							}
 							message.attachments.clear();
 							message.embeds.clear();
 							message.reactions = Some(vec![]);
