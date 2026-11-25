@@ -428,6 +428,7 @@ pub struct MessagingUi {
 	friend_removal: Option<(u64, model::User)>,
 	user_direct: Option<user_direct::Pending>,
 	members_narrow_open: bool,
+	compact_navigation_open: bool,
 	/// Only the open member request's revealed prefix; member data stays in the bounded core cache.
 	member_extent: Option<((u64, Id, u64), usize)>,
 	guild: Option<Id>,

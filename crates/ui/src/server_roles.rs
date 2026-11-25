@@ -546,7 +546,7 @@ impl RolesUi {
 							&role.name,
 							egui::FontId::proportional(16.0),
 							Some(role.colors),
-							colors.base,
+							colors.chat,
 							colors.text,
 							name_width - 32.0,
 						);

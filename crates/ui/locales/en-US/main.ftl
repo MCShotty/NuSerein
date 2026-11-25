@@ -6099,3 +6099,4 @@ archive-public = Public
 archive-joined-private = Joined private
 archive-private = Private
 tray-show-app = Show NuSerein
+workspace-navigation = Navigation

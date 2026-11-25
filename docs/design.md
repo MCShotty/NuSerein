@@ -86,6 +86,10 @@ skips chrome fades. This device setting is independent of artwork playback and s
 
 ### Compact forms and feedback
 
+Below 620 logical points, Navigation opens the real channel list, server rail and account/call
+controls as a separate pane. Back returns to the workspace without resizing the saved sidebar.
+Selecting a new destination returns to its workspace. Wider windows retain the split view.
+
 At compact content widths, setting labels and their descriptions precede their controls instead
 of competing for the same line. Multi-action dialog footers wrap, and forwarding destinations
 keep separate single-line names and server labels with the full text in their accessible name.

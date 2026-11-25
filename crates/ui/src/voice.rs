@@ -1157,6 +1157,8 @@ impl MessagingUi {
 		if state.is_stage(channel) {
 			body_ui.scope(|ui| {
 				*ui.visuals_mut() = egui::Visuals::dark();
+				ui.visuals_mut().override_text_color = Some(STAGE_TEXT);
+				ui.visuals_mut().panel_fill = STAGE_FILL;
 				egui::ScrollArea::vertical()
 					.id_salt("stage-community-controls")
 					.max_height((body.height() * 0.55).max(80.0))

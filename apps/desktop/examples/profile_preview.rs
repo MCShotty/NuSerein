@@ -52,6 +52,10 @@ impl eframe::App for Preview {
 	}
 
 	fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
+		if !self.interactive && self.scroll.is_none() {
+			// A screenshot has no operator: the Xvfb pointer must not open hover tools.
+			raw_input.events.push(egui::Event::PointerGone);
+		}
 		if let Some((distance, at)) = self.scroll.filter(|_| (1..=3).contains(&self.frames)) {
 			raw_input.events.push(egui::Event::PointerMoved(at));
 			raw_input.events.push(egui::Event::MouseWheel {
@@ -124,6 +128,17 @@ impl eframe::App for Preview {
 					};
 					event
 				}
+				client_core::Command::Members {
+					guild,
+					channel: Some(channel),
+					request,
+					..
+				} => client_core::Event::Members(test_support::demo_members(
+					&self.state,
+					guild,
+					channel,
+					request,
+				)),
 				client_core::Command::EditProfile {
 					user,
 					request,
@@ -757,8 +772,12 @@ fn seed_catalog(extensions: &mut ui::ExtensionUi, themes: bool) {
 			.collect(),
 	);
 	let previews = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../extensions/previews");
-	{
-		let (id, filename) = ("serein-ocean", "ocean.png");
+	for (id, filename) in [
+		("api-proxy", "api-proxy.png"),
+		("custom-rpc", "custom-rpc.png"),
+		("message-delete-protector", "message-delete-protector.png"),
+		("serein-ocean", "ocean.png"),
+	] {
 		let image = image::open(previews.join(filename))
 			.expect("valid fixture preview")
 			.to_rgba8();
@@ -1440,10 +1459,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 						},
 					}))],
 				});
-			} else if page == "dm-tags" {
-				let _ = state.select(model::Id(22));
 			} else if let Some(channel) = match page.as_str() {
-				"dm-intro" => Some(model::Id(22)),
+				"dm-intro" | "dm-tags" => Some(model::Id(22)),
 				"channel-intro" => Some(model::Id(21)),
 				"post-intro" => Some(model::Id(27)),
 				_ => None,
@@ -1640,6 +1657,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 			} else if page == "profile-card" {
 				state.demo = false;
+				state.auth = client_core::auth::AuthState::Authenticated;
 				state.gateway_connected = true;
 				let mut user = test_support::message(1, model::Id(20)).author;
 				style_name(&mut user);
@@ -1670,15 +1688,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				});
 				// `--private` serves the card a private profile, as Discord sends a non-friend.
 				let guild = Some(model::Id(10));
-				if private_profile
-					&& let Some(client_core::Command::Profile { request, .. }) =
-						state.request_profile(user.id, guild)
+				if let Some(client_core::Command::Profile { request, .. }) =
+					state.request_profile(user.id, guild)
 				{
 					let mut profile = ui::synthetic_own_profile(&user);
-					profile.private = true;
-					profile.bio.clear();
-					profile.badges.clear();
-					profile.connections.clear();
+					profile.private = private_profile;
+					if private_profile {
+						profile.bio.clear();
+						profile.badges.clear();
+						profile.connections.clear();
+					}
 					state.apply(client_core::Envelope {
 						generation: state.generation,
 						event: client_core::Event::Profile {

@@ -1352,6 +1352,8 @@ impl Editor {
 			}
 		}
 
+		let can_delete = self.navigation_search.is_empty() && state.can_delete_server(guild);
+		let mut delete_clicked = false;
 		if compact {
 			egui::ComboBox::from_id_salt(("server-settings-page-picker", guild))
 				.width(ui.available_width())
@@ -1364,7 +1366,18 @@ impl Editor {
 						&results,
 						search.has_focus(),
 						&mut chosen,
-					)
+					);
+					if can_delete {
+						ui.separator();
+						delete_clicked = dialog::danger_nav_item(
+							ui,
+							"server-settings-delete-server-button-delete-server",
+						)
+						.clicked();
+						if delete_clicked {
+							ui.close();
+						}
+					}
 				});
 		} else if self.page == Page::Roles
 			&& self.roles.editing()
@@ -1401,16 +1414,17 @@ impl Editor {
 		if let Some(error) = self.navigation_error {
 			dialog::notice(ui, dialog::Level::Warning, error);
 		}
-		if self.navigation_search.is_empty() && state.can_delete_server(guild) {
+		if !compact && can_delete {
 			ui.add_space(10.0);
 			ui.separator();
-			if dialog::danger_nav_item(ui, "server-settings-delete-server-button-delete-server")
-				.clicked()
-			{
-				state.clear_server_action_result(guild);
-				self.delete = true;
-				self.delete_name.clear();
-			}
+			delete_clicked =
+				dialog::danger_nav_item(ui, "server-settings-delete-server-button-delete-server")
+					.clicked();
+		}
+		if delete_clicked {
+			state.clear_server_action_result(guild);
+			self.delete = true;
+			self.delete_name.clear();
 		}
 	}
 	fn destination_rows(

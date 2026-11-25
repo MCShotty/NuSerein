@@ -13,6 +13,19 @@ Base: `c4c0e2b6` (includes separate Watch and webcam indicators). This is a sour
 | Feedback and empty states | Shorter empty-state stacks on compact panels; a single glyph without a decorative backing disc. Toasts respect reduced motion, available width, item count and UTF-8 byte limits. |
 | Tray, OS menus, notifications, temp webviews and extension definitions | Included in the source inventory. Platform-owned presentation and authentication handoffs were not redesigned or exercised against a live session. |
 
+## Review of the first native gallery
+
+All 66 PNGs from [artifact 14951333879](https://github.com/MCShotty/NuSerein/actions/runs/45455045166/artifacts/14951333879) were visually inspected. It was built from `02366843`; the manifest and GitHub archive digest matched. These are synthetic UI fixtures, not live Discord data.
+
+| Original frame | Finding | Correction |
+| --- | --- | --- |
+| [Conversation](conversation-narrow-before.png), [forum](forum-narrow-before.png), [Stage](stage-narrow-before.png) at 560 × 580 | A 300-point sidebar left too little width for the active task: messages and forum cards ran beyond the screen, and Stage status collided with actions. | Below 620 logical points, Navigation and the workspace take turns using the full width. The real account, call and server controls stay in Navigation. Desktop sidebar width is not saved from this mode. Stage action groups stack when their own content area is narrow; the call header reserves its status badge. |
+| Stage and server roles | Stage labels were faint against the dark stage; some role names were contrast-adjusted against a darker surface than their table. | Give Stage text an explicit light foreground and measure role-name contrast against the table background; keep the original role swatches. |
+| Compact server settings | Delete Server was permanently above unrelated settings pages. | Keep it inside the compact page picker, with the original permission gate and confirmation. |
+| DM tags, profiles, extension catalog, member lists and screenshots with hover labels | Discarded or unhandled synthetic reads left placeholders in settled captures. A resting Xvfb pointer also opened unrelated hover controls. | Serve the existing offline roster, seed the profile and DM history, supply the bundled plugin artwork, and clear incidental pointer hover in non-interactive captures. |
+
+Replacement screenshots are generated on the fork. The reviewed originals are before evidence, not proof of the corrected rendering.
+
 ## Native verification
 
 The `profile_preview` example exposes its actual accepted routes via `--demo --list-pages`. Linux CI on design PRs requests all 58 routes at their default dimensions, plus eight narrow/light versions (560 × 580 logical points). The `offline-native-design-gallery` artifact contains PNGs and a per-frame manifest. A manifest records capture, not a visual approval. Sign-in, OS-owned dialogs, externally hosted verification and hardware-specific states are not covered by those 58 routes. No live account or device is needed.

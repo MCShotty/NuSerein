@@ -5620,3 +5620,4 @@ tray-show-app = NuSerein を表示
 announcement-follow-title = アナウンスチャンネルをフォロー
 channel-voice-video-quality = 映像の画質
 community-approve-pending = 保留中の申請を承認
+workspace-navigation = ナビゲーション

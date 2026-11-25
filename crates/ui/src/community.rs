@@ -1230,7 +1230,7 @@ impl CommunityUi {
 		let ready = !state.community.pending()
 			&& !state.community.stage_stale
 			&& !state.community.needs_refresh;
-		ui.horizontal_wrapped(|ui| {
+		stage_action_row(ui, |ui| {
 			if stage_button(ui, !state.community.pending(), "stage-refresh", false) {
 				submit(
 					state,
@@ -1284,7 +1284,7 @@ impl CommunityUi {
 				return;
 			}
 			let mut action = None;
-			ui.horizontal_wrapped(|ui| {
+			stage_action_row(ui, |ui| {
 				match stage {
 					StageParticipation::Speaker => {
 						ui.label(crate::i18n::translate("stage-you-are-speaker"));
@@ -1381,7 +1381,7 @@ impl CommunityUi {
 				&[("count", &total.to_string())],
 			))
 			.show(ui, |ui| {
-				ui.horizontal_wrapped(|ui| {
+				stage_action_row(ui, |ui| {
 					if stage_button(
 						ui,
 						self.audience_page > 0,
@@ -1410,7 +1410,7 @@ impl CommunityUi {
 					.max_height(140.0)
 					.show(ui, |ui| {
 						for (p, name) in participants {
-							ui.horizontal_wrapped(|ui| {
+							stage_action_row(ui, |ui| {
 								ui.label(name);
 								ui.small(crate::i18n::translate(match p.stage {
 									StageParticipation::Speaker => "stage-speaker",
@@ -1637,6 +1637,16 @@ impl CommunityUi {
 		if !open {
 			self.stage_channel = None;
 		}
+	}
+}
+
+// An enabled scope gets only the remainder of a wrapping row. On a narrow
+// stage that can be one glyph wide after the audience label.
+fn stage_action_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+	if ui.available_width() < 400.0 {
+		ui.vertical(add);
+	} else {
+		ui.horizontal_wrapped(add);
 	}
 }
 

@@ -5639,3 +5639,4 @@ tray-show-app = Pokaż NuSerein
 announcement-follow-title = Obserwuj kanał ogłoszeń
 channel-voice-video-quality = Jakość wideo
 community-approve-pending = Zatwierdź oczekujące zgłoszenia
+workspace-navigation = Nawigacja

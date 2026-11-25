@@ -5641,3 +5641,4 @@ tray-show-app = Afficher NuSerein
 announcement-follow-title = Suivre le salon d’annonces
 channel-voice-video-quality = Qualité vidéo
 community-approve-pending = Approuver les demandes en attente
+workspace-navigation = Navigation
