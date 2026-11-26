@@ -90,12 +90,14 @@ impl Decoder {
 		source.seek(SeekFrom::Start(0)).map_err(|_| INVALID)?;
 		let mut header = [0_u8; 8];
 		source.read_exact(&mut header).map_err(|_| INVALID)?;
-		// Same container gate as the other platforms: only MPEG-4/QuickTime attachments.
-		if length < 8
-			|| !matches!(
-				&header[4..],
-				b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide"
-			) {
+		// Admit the same WebM/Matroska header as the Windows reader. GStreamer still
+		// verifies the container/codecs and only reads from the bounded caller source.
+		let mp4 = matches!(
+			&header[4..],
+			b"ftyp" | b"moov" | b"mdat" | b"free" | b"skip" | b"wide"
+		);
+		let ebml = header[..4] == [0x1a, 0x45, 0xdf, 0xa3];
+		if length < 8 || !(mp4 || ebml) {
 			return Err(UNSUPPORTED);
 		}
 		gst::init().map_err(|_| UNSUPPORTED)?;
@@ -836,5 +838,24 @@ mod tests {
 		assert!(wait_for_sample(&mut decoder, Decoder::poll_audio).is_none());
 		assert!(wait_for_sample(&mut decoder, Decoder::poll_video).is_some());
 		assert!(Decoder::open(Box::new(std::io::Cursor::new(vec![0_u8; 64]))).is_err());
+	}
+
+	#[test]
+	fn webm_attachment_decodes_and_seeks() {
+		let bytes = include_bytes!("../../../../apps/desktop/tests/fixtures/video.webm");
+		let mut decoder = Decoder::open(Box::new(std::io::Cursor::new(bytes.as_slice()))).unwrap();
+		assert_eq!((decoder.info().width, decoder.info().height), (320, 180));
+		let Some(Sample::Video { picture, .. }) =
+			wait_for_sample(&mut decoder, Decoder::poll_video)
+		else {
+			panic!("no frame");
+		};
+		assert!(picture.is_valid());
+		decoder.seek(1.0).unwrap();
+		let Some(Sample::Video { pts, .. }) = wait_for_sample(&mut decoder, Decoder::poll_video)
+		else {
+			panic!("no frame after seek");
+		};
+		assert!((0.9..1.2).contains(&pts), "{pts}");
 	}
 }

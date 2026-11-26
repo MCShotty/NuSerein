@@ -421,6 +421,9 @@ historical “Stage unsupported” statements below; historical measurements rem
 
 ## Desktop parity inventory — October 17, 2026
 
+The [desktop behavior parity matrix](desktop-parity.md) tracks the current fork comparison
+separately; entries here preserve their historical status and verification context.
+
 Scope: the full desktop roadmap, including server administration. The implementation
 baseline is fork `f9e39f7`; personal-controls work is separately reviewed in
 [MCShotty/Serein#8](https://github.com/MCShotty/Serein/pull/8), and the FFmpeg media
@@ -2545,8 +2548,20 @@ flag `IS_SPAM` (`1 << 5`), come from the
 [docs.discord.food channel object](https://docs.discord.food/resources/channel#channel-object).
 READY, CHANNEL_CREATE, and CHANNEL_UPDATE fill the channel inbox sets.
 RELATIONSHIP_ADD, RELATIONSHIP_UPDATE, and RELATIONSHIP_REMOVE update the
-incoming friend-request spam set. This change does not add a Message Requests
+incoming friend-request spam set. The original badge change did not add a Message Requests
 or Spam inbox.
+
+The later native Spam review exposes Accept and Ignore only if Gateway classification confirms
+both `is_message_request` and spam for the selected, admitted one-to-one DM. The [unofficial
+channel reference](https://docs.discord.food/resources/channel) describes the ordinary recipient
+consent transport (PUT with `consent_status: 2`, or DELETE, at `/channels/{id}/recipients/@me`).
+A spam-specific action reuses that transport; service acceptance in this case is unverified.
+Independent sparse spam/consent fields are reconciled before reclassification. Accept waits
+for non-spam/non-pending channel state, and Ignore waits for the exact `CHANNEL_DELETE`.
+An ambiguous result does not trigger a write retry. The existing read-only preview remains
+available for spam-marked DMs without a confirmed pending request. Report remains an official
+client handoff: the unofficial `first_dm` submission requires the actual first message ID,
+which is not established from the newest history page.
 
 Unread private conversations on the rail sort by latest known activity, newest first.
 An active DM call stays visible and pinned at the top. The rail keeps at most 15 rows
@@ -3191,6 +3206,27 @@ eight-scalar marker allowance while the effective outgoing text retains its full
 2,000-scalar limit. The allowance is separately bounded; edits treat the marker
 literally. Existing per-draft byte ceilings and the session input budget remain
 in force. A quiet forwarding note affects only that separately sent note.
+
+## Saving a blank edit
+
+The composer asks before deleting a text-only message when the owner saves a blank edit.
+The existing delete confirmation rechecks the session, channel, message revision and current
+access. Cancel preserves the editor and the independent draft; the first Save never deletes.
+Messages with attachments or other non-text content never enter this delete path. The interaction
+was adapted from [upstream Serein](https://github.com/ViceVerse-cz/Serein/commit/789d8300); current
+Discord behavior and visual output are not verified by the added synthetic regressions.
+
+## Staged attachment spoilers
+
+The chat and forum trays offer a per-file toggle based on
+[Discord’s desktop spoiler guide](https://support.discord.com/hc/en-us/articles/360022320632-Spoiler-Tags),
+adapted from [upstream #1096](https://github.com/ViceVerse-cz/Serein/pull/1096) by chhinoo.
+The worker applies the change only to the current conversation and selection key. An explicit
+mark sets `is_spoiler` in message creation, as described in the [attachment object](https://docs.discord.com/developers/resources/message#attachment-object).
+Legacy `SPOILER_` names start marked; unmarking strips the prefix from the outgoing name only.
+The staged and pending cards do not reveal marked thumbnails. Public hosting is disabled for
+marked files; a spoiler must be cleared before starting that separate action. No live delivery
+or new visual evidence is claimed here.
 
 ## Public Catbox attachment links (October 2, 2026)
 

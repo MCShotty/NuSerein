@@ -2421,12 +2421,11 @@ async fn run_observed_inner(
 										let mut message_spams = Vec::new();
 										inbox.reset();
 										for channel in &ready.private_channels {
-											inbox.observe(channel);
-											if channel.is_obfuscated() {
+											if !inbox.observe(channel) || channel.is_obfuscated() {
 												continue;
 											}
 											if channel.pending_spam_direct() {
-												message_spams.push(channel.id);
+												message_spams.push((channel.id, channel.is_message_request));
 											} else if channel.pending_message_request() {
 												message_requests.push(channel.id);
 											}
@@ -2699,21 +2698,18 @@ async fn run_observed_inner(
 									"MESSAGE_DELETE_BULK" => { let d: BulkDeleted = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; if d.ids.len() > 100 { return Err(Failure::Capacity); } emit(Event::DeleteBulk { channel:d.channel_id, ids: d.ids })?; }
 									// Only the auth-session hash changed; revocation arrives as HTTP 401 or close 4004.
 									"AUTH_SESSION_CHANGE" => {}
-									"CHANNEL_DELETE" => { let c: ChannelDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; inbox.forget(c.id); calls.invalidate(c.id); emit(Event::Unavailable(c.id))?; }
+									"CHANNEL_DELETE" => { let c: ChannelDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; inbox.forget(c.id); calls.invalidate(c.id); if c.guild_id.is_none() && c.kind == 1 { emit(Event::UserAction(client_core::user_actions::Event::DirectDeleted(c.id)))?; } emit(Event::Unavailable(c.id))?; }
 									"CHANNEL_CREATE" => {
 										let permissions=owner_id.map(|owner|channel_events::permission_metadata(packet.d.get().as_bytes(),owner)).transpose()?.flatten();
-										let (event, request, spam)=channel_events::create(packet.d.get().as_bytes(),&mut inbox)?;
+										let (event, inbox_update)=channel_events::create(packet.d.get().as_bytes(),&mut inbox)?;
 										match &event {
 											Event::ChannelCreated(c) => channel_events::admit_call(c,&known_guilds,&mut calls),
 											Event::Unavailable(id) => calls.invalidate(*id),
 											_=>{}
 										}
 										emit(event)?;
-										if let Some(channel) = request {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageRequest { channel, pending: true }))?;
-										}
-										if let Some(channel) = spam {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageSpam { channel, spam: true }))?;
+										if let Some((channel, pending, spam)) = inbox_update {
+											emit(Event::UserAction(client_core::user_actions::Event::DirectInbox { channel, pending, spam }))?;
 										}
 										if let Some(permissions)=permissions {emit(permissions)?;}
 									}
@@ -2724,11 +2720,8 @@ async fn run_observed_inner(
 										if let Event::Unavailable(id)=&update.event {calls.invalidate(*id);}
 										if let Event::ChannelChanged(patch)=&update.event && let model::Patch::Value(kind)=patch.kind && !matches!(kind,1..=3) {calls.invalidate(patch.id);}
 										emit(update.event)?;
-										if let Some((channel, pending)) = update.message_request {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageRequest { channel, pending }))?;
-										}
-										if let Some((channel, spam)) = update.spam_direct {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageSpam { channel, spam }))?;
+										if let Some((channel, pending, spam)) = update.inbox {
+											emit(Event::UserAction(client_core::user_actions::Event::DirectInbox { channel, pending, spam }))?;
 										}
 										if let Some(permissions)=permissions {emit(permissions)?;}
 									}

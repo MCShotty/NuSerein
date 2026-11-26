@@ -3,6 +3,8 @@ use crate::{design, dialog, icons, invites::input_code};
 use client_core::{Command, State};
 use model::Id;
 
+pub(super) const PUBLIC_SERVER_DIRECTORY: &str = "https://discord.com/servers";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Page {
 	#[default]
@@ -764,7 +766,7 @@ impl JoinDialog {
 					))
 					.size(13.0)
 					.color(colors.link),
-					"https://discord.com/servers",
+					PUBLIC_SERVER_DIRECTORY,
 				);
 			});
 		(ready, member, loading, accepted, parsed)

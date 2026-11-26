@@ -24,7 +24,7 @@ pub(super) struct ServerMenu {
 	pub force_sync_requested: Option<Id>,
 	pub browse_requested: Option<Id>,
 	pub channel_preferences_requested: Option<(Id, client_core::channel_actions::Action)>,
-	pub settings_requested: Option<Id>,
+	pub settings_requested: Option<(u64, Id)>,
 	pub events_requested: Option<Id>,
 	pub mark_read_requested: Option<Id>,
 	pub mark_all_read_requested: bool,
@@ -216,13 +216,7 @@ impl ServerMenu {
 		}
 	}
 	pub fn settings_item(&mut self, ui: &mut egui::Ui, state: &State, guild: Id) -> bool {
-		if (state.can_manage_guild(guild)
-			|| state.can_open_role_settings(guild)
-			|| state.can_open_emoji_settings(guild)
-			|| state.can_open_integration_settings(guild)
-			|| state.can_open_audit_log_settings(guild)
-			|| state.can_open_member_settings(guild)
-			|| state.can_open_moderation(guild))
+		if crate::server_settings::Editor::available(state, guild)
 			&& menu_row(
 				ui,
 				icons::Icon::Gear,
@@ -231,7 +225,7 @@ impl ServerMenu {
 			)
 			.clicked()
 		{
-			self.settings_requested = Some(guild);
+			self.settings_requested = Some((state.generation, guild));
 			ui.close();
 			return true;
 		}

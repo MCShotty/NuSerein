@@ -47,7 +47,14 @@ impl BulkUi {
 			self.confirmation = None;
 			self.query = Some(query.clone());
 		}
-		let available = !state.server_admin.pending && !state.server_admin.needs_refresh;
+		if state.server_admin.guild != Some(guild) {
+			return;
+		}
+		let roster = state.server_admin.member_page(guild, query);
+		let available = roster.is_some()
+			&& !state.server_admin.pending
+			&& !state.server_admin.needs_refresh
+			&& !state.server_settings.saving;
 		let previous_finished = state
 			.server_admin
 			.bulk_report
@@ -67,10 +74,8 @@ impl BulkUi {
 					.add_enabled(available, egui::Button::new("Select this page"))
 					.clicked()
 				{
-					self.selected = state
-						.server_admin
-						.members
-						.iter()
+					self.selected = roster
+						.into_iter()
 						.flat_map(|page| page.items.iter())
 						.filter(|member| state.can_ban_guild_member(guild, member.user.id))
 						.map(|member| member.user.id)

@@ -940,6 +940,7 @@ impl MessagingUi {
 								})
 								.inner;
 							let row = rect.shrink2(egui::vec2(0.0, 1.0));
+							let settings_row = row;
 							if draggable && response.drag_started_by(egui::PointerButton::Primary) {
 								response.dnd_set_drag_payload(ChannelDrag(channel.id));
 							}
@@ -984,6 +985,13 @@ impl MessagingUi {
 									colors.text_strong,
 								);
 							}
+							// Unread badges and access marks must not share the gear's hit box.
+							let mut row = row;
+							row.max.x -= crate::channel_menu::ChannelMenu::settings_lane(
+								state,
+								channel.id,
+								row.width(),
+							);
 							let name_color = channel_marks::tint(
 								&colors,
 								access,
@@ -1149,7 +1157,7 @@ impl MessagingUi {
 								(dm_list && channel.kind == 3).then(|| {
 									format!(
 										"{} {}",
-										channel.recipients.len().max(1),
+										channel.recipients.len() + 1,
 										language.text("members-count")
 									)
 								})
@@ -1377,6 +1385,13 @@ impl MessagingUi {
 								self.group_menu.context(&response, state, channel, view);
 							}
 							if channel.guild.is_some() {
+								self.channel_menu.row_settings(
+									ui,
+									state,
+									channel,
+									settings_row,
+									response.id,
+								);
 								self.channel_menu.context(&response, state, channel, view);
 							}
 							if enabled {

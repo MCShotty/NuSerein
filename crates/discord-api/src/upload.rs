@@ -27,6 +27,7 @@ pub struct Source {
 	path: PathBuf,
 	bytes: Option<std::sync::Arc<[u8]>>,
 	filename: String,
+	spoiler: Option<bool>,
 	size: u64,
 	modified: SystemTime,
 }
@@ -60,6 +61,7 @@ impl Source {
 		Ok(Self {
 			bytes: None,
 			filename: filename.into(),
+			spoiler: None,
 			path,
 			size: metadata.len(),
 			modified: metadata
@@ -75,6 +77,7 @@ impl Source {
 		Ok(Self {
 			path: PathBuf::new(),
 			filename: "pasted-image.png".into(),
+			spoiler: None,
 			size: bytes.len() as u64,
 			modified: SystemTime::UNIX_EPOCH,
 			bytes: Some(bytes.into()),
@@ -88,6 +91,7 @@ impl Source {
 		Ok(Self {
 			path: PathBuf::new(),
 			filename: "message.txt".into(),
+			spoiler: None,
 			size: text.len() as u64,
 			modified: SystemTime::UNIX_EPOCH,
 			bytes: Some(text.into_bytes().into()),
@@ -110,12 +114,30 @@ impl Source {
 		Ok(Self {
 			path: PathBuf::new(),
 			filename,
+			spoiler: None,
 			size: bytes.len() as u64,
 			modified: SystemTime::UNIX_EPOCH,
 			bytes: Some(bytes.into()),
 		})
 	}
 	pub fn filename(&self) -> &str {
+		&self.filename
+	}
+	pub fn spoiler(&self) -> bool {
+		self.spoiler
+			.unwrap_or_else(|| self.filename.starts_with("SPOILER_"))
+	}
+	pub fn set_spoiler(&mut self, spoiler: bool) {
+		self.spoiler = Some(spoiler);
+	}
+	fn outgoing_filename(&self) -> &str {
+		if self.spoiler == Some(false) {
+			let name = self.filename.trim_start_matches("SPOILER_");
+			if name.trim().is_empty() || matches!(name, "." | "..") {
+				return "attachment";
+			}
+			return name;
+		}
 		&self.filename
 	}
 	pub fn size(&self) -> u64 {
@@ -451,7 +473,7 @@ impl DiscordApi {
 					.map_err(|_| Failure::ProtocolAt(CHANGED))?;
 				(Box::new(file), Some(original))
 			};
-		let body = serde_json::json!({"files":[{"id":id.to_string(),"filename":source.filename(),"file_size":source.size(),"is_clip":false}]});
+		let body = serde_json::json!({"files":[{"id":id.to_string(),"filename":source.outgoing_filename(),"file_size":source.size(),"is_clip":false}]});
 		let response = self
 			.request_limited(
 				Method::POST,
@@ -583,9 +605,11 @@ impl DiscordApi {
 		if self.stopped() {
 			return Err(Failure::Expired);
 		}
-		Ok(
-			serde_json::json!({"id":id.to_string(),"filename":source.filename(),"uploaded_filename":target.upload_filename}),
-		)
+		let mut attachment = serde_json::json!({"id": id.to_string(), "filename": source.outgoing_filename(), "uploaded_filename": target.upload_filename});
+		if source.spoiler == Some(true) {
+			attachment["is_spoiler"] = true.into();
+		}
+		Ok(attachment)
 	}
 
 	fn upload_url(&self, value: &str) -> Result<Url, Failure> {
@@ -1015,6 +1039,14 @@ mod tests {
 	            let fixture = Fixture::new(&vec![b'x'; CHUNK_BYTES * 2 + 9]).await;
 	            let source = Source::inspect(fixture.0.clone()).await.unwrap();
 	            let filename = source.filename().to_owned();
+            let mut clear_legacy = source.clone();
+            clear_legacy.filename = format!("SPOILER_{filename}");
+            assert!(clear_legacy.spoiler());
+            clear_legacy.set_spoiler(false);
+            assert_eq!(clear_legacy.outgoing_filename(), filename);
+            assert!(clear_legacy.filename().starts_with("SPOILER_"));
+            let mut marked = source;
+            marked.set_spoiler(true);
 	            let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	            let storage = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	            let mut api = api();
@@ -1049,14 +1081,14 @@ mod tests {
 	                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 	                assert_eq!(body["content"], "");
 	                assert_eq!(body["nonce"], "synthetic-upload");
-	                assert_eq!(body["attachments"], serde_json::json!([{"id":"0","filename":filename,"uploaded_filename":"synthetic-upload/0/file.txt"},{"id":"1","filename":filename,"uploaded_filename":"synthetic-upload/1/file.txt"}]));
+	                assert_eq!(body["attachments"], serde_json::json!([{"id":"0","filename":filename,"uploaded_filename":"synthetic-upload/0/file.txt"},{"id":"1","filename":filename,"uploaded_filename":"synthetic-upload/1/file.txt","is_spoiler":true}]));
 	                assert_eq!(body["allowed_mentions"], serde_json::json!({"parse":[],"users":[],"roles":[],"replied_user":true}));
 	                assert_eq!(body["message_reference"], serde_json::json!({"message_id":"2","channel_id":"1"}));
 	                respond(&mut socket, "200 OK", r#"{"id":"3","channel_id":"1","author":{"id":"4","username":"Synthetic"},"nonce":"synthetic-upload"}"#).await;
 	            });
 	            let (progress, status) = watch::channel(Status::Preparing);
 	            let (_cancel, cancelled) = watch::channel(false);
-	            assert!(matches!(api.upload_messages(command(), vec![source.clone(), source], progress, cancelled).await, Event::SendResult { result: Ok(message), .. } if message.id == model::Id(3)));
+	            assert!(matches!(api.upload_messages(command(), vec![clear_legacy, marked], progress, cancelled).await, Event::SendResult { result: Ok(message), .. } if message.id == model::Id(3)));
 	            assert_eq!(*status.borrow(), Status::Finished);
 	            server.await.unwrap();
 	        }).await.unwrap();

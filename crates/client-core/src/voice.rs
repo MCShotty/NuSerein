@@ -628,6 +628,7 @@ impl ClientState {
 		!self.demo
 			&& self.auth == AuthState::Authenticated
 			&& self.gateway_connected
+			&& !self.spam_direct(channel)
 			&& self.has_voice_access(channel)
 	}
 	pub(crate) fn has_voice_access(&self, channel: Id) -> bool {

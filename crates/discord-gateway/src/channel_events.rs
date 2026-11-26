@@ -2,10 +2,22 @@
 use super::voice::Calls;
 use client_core::{Event, auth::Failure};
 use discord_protocol::{ChannelDto, ChannelPatchDto, Ready, decode};
-use model::{Channel, Id};
+use model::{Channel, Id, Patch};
 use std::collections::{BTreeMap, BTreeSet};
 
-type InboxEvent = Option<(Id, bool)>;
+type InboxEvent = Option<(Id, bool, bool)>;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct InboxMark {
+	request: bool,
+	spam_field: bool,
+	spam_flag: bool,
+}
+impl InboxMark {
+	fn spam(self) -> bool {
+		self.spam_field || self.spam_flag
+	}
+}
 
 pub(super) fn private_call(kind: u8, recipients: usize) -> bool {
 	(kind == 1 && recipients == 1)
@@ -14,7 +26,7 @@ pub(super) fn private_call(kind: u8, recipients: usize) -> bool {
 
 #[derive(Default)]
 pub(super) struct Inbox {
-	marks: BTreeMap<Id, (bool, bool)>,
+	marks: BTreeMap<Id, InboxMark>,
 }
 
 impl Inbox {
@@ -33,43 +45,59 @@ impl Inbox {
 		}
 		self.store(
 			channel.id,
-			channel.is_message_request,
-			channel.pending_spam_direct(),
+			InboxMark {
+				request: channel.is_message_request,
+				spam_field: channel.is_spam,
+				spam_flag: channel.flags & discord_protocol::CHANNEL_FLAG_SPAM != 0,
+			},
 		)
 	}
 
-	pub fn classify_update(&mut self, patch: &ChannelPatchDto) -> (InboxEvent, InboxEvent) {
-		let prior = self.marks.get(&patch.id).copied().unwrap_or((false, false));
-		if patch.is_obfuscated() {
+	pub fn classify_update(&mut self, patch: &ChannelPatchDto) -> InboxEvent {
+		let prior = self.marks.get(&patch.id).copied().unwrap_or_default();
+		if patch.is_obfuscated() || matches!(patch.kind, Patch::Value(kind) if kind != 1) {
 			self.marks.remove(&patch.id);
-			return (
-				(prior.0 && !prior.1).then_some((patch.id, false)),
-				prior.1.then_some((patch.id, false)),
-			);
+			return None;
 		}
-		let (request, spam) = patch.merged_inbox(prior);
-		if !self.store(patch.id, request, spam) {
-			return (None, None);
+		let mark = InboxMark {
+			request: match patch.is_message_request {
+				Patch::Value(request) => request,
+				Patch::Null => false,
+				Patch::Absent => prior.request,
+			},
+			spam_field: match patch.is_spam {
+				Patch::Value(spam) => spam,
+				Patch::Null => false,
+				Patch::Absent => prior.spam_field,
+			},
+			spam_flag: match patch.flags {
+				Patch::Value(flags) => flags & discord_protocol::CHANNEL_FLAG_SPAM != 0,
+				Patch::Null => false,
+				Patch::Absent => prior.spam_flag,
+			},
+		};
+		if !self.store(patch.id, mark) {
+			return None;
 		}
-		let new_req = request && !spam;
-		let old_req = prior.0 && !prior.1;
-		(
-			(new_req != old_req).then_some((patch.id, new_req)),
-			(spam != prior.1).then_some((patch.id, spam)),
-		)
+		(mark.request != prior.request || mark.spam() != prior.spam()).then_some((
+			patch.id,
+			mark.request,
+			mark.spam(),
+		))
 	}
 
-	fn store(&mut self, id: Id, request: bool, spam: bool) -> bool {
-		if !(request || spam) {
+	fn store(&mut self, id: Id, mark: InboxMark) -> bool {
+		if !(mark.request || mark.spam()) {
 			self.marks.remove(&id);
 			return true;
 		}
-		if self.marks.len() >= client_core::user_actions::MAX_RELATIONSHIPS
-			&& !self.marks.contains_key(&id)
+		if id.0 == 0
+			|| (self.marks.len() >= client_core::user_actions::MAX_RELATIONSHIPS
+				&& !self.marks.contains_key(&id))
 		{
 			return false;
 		}
-		self.marks.insert(id, (request, spam));
+		self.marks.insert(id, mark);
 		true
 	}
 }
@@ -133,18 +161,16 @@ pub(super) fn admit_call(channel: &Channel, guilds: &BTreeSet<Id>, calls: &mut C
 	}
 }
 
-pub(super) fn create(
-	bytes: &[u8],
-	inbox: &mut Inbox,
-) -> Result<(Event, Option<Id>, Option<Id>), Failure> {
+pub(super) fn create(bytes: &[u8], inbox: &mut Inbox) -> Result<(Event, InboxEvent), Failure> {
 	let channel: ChannelDto = decode(bytes).map_err(|_| Failure::Protocol)?;
-	if !inbox.observe(&channel) {
-		return Ok((created(channel), None, None));
-	}
-	let visible = !channel.is_obfuscated();
-	let request = (visible && channel.pending_message_request()).then_some(channel.id);
-	let spam = (visible && channel.pending_spam_direct()).then_some(channel.id);
-	Ok((created(channel), request, spam))
+	let marked = inbox.observe(&channel) && !channel.is_obfuscated();
+	let observed = (marked && (channel.pending_message_request() || channel.pending_spam_direct()))
+		.then_some((
+			channel.id,
+			channel.is_message_request,
+			channel.pending_spam_direct(),
+		));
+	Ok((created(channel), observed))
 }
 
 pub(super) fn permission_metadata(bytes: &[u8], user: Id) -> Result<Option<Event>, Failure> {
@@ -170,19 +196,17 @@ pub(super) fn created(channel: ChannelDto) -> Event {
 pub(super) struct Update {
 	pub restored: Option<Channel>,
 	pub event: Event,
-	pub message_request: Option<(Id, bool)>,
-	pub spam_direct: Option<(Id, bool)>,
+	pub inbox: InboxEvent,
 }
 
 pub(super) fn update(bytes: &[u8], inbox: &mut Inbox) -> Result<Update, Failure> {
 	let patch: ChannelPatchDto = decode(bytes).map_err(|_| Failure::Protocol)?;
-	let (message_request, spam_direct) = inbox.classify_update(&patch);
+	let inbox = inbox.classify_update(&patch);
 	if patch.is_obfuscated() {
 		return Ok(Update {
 			restored: None,
 			event: Event::Unavailable(patch.id),
-			message_request,
-			spam_direct,
+			inbox,
 		});
 	}
 	let restored = decode::<ChannelDto>(bytes)
@@ -201,8 +225,7 @@ pub(super) fn update(bytes: &[u8], inbox: &mut Inbox) -> Result<Update, Failure>
 	Ok(Update {
 		restored,
 		event: Event::ChannelChanged(patch.into_model()),
-		message_request,
-		spam_direct,
+		inbox,
 	})
 }
 
@@ -251,12 +274,41 @@ mod tests {
 	}
 
 	#[test]
+	fn sparse_updates_keep_independent_spam_and_consent_evidence() {
+		let mut inbox = Inbox::default();
+		let (_, initial) = create(
+			br#"{"id":"6","type":1,"flags":32,"is_spam":true,"is_message_request":true}"#,
+			&mut inbox,
+		)
+		.unwrap();
+		assert_eq!(initial, Some((Id(6), true, true)));
+		for body in [
+			br#"{"id":"6","flags":0}"#.as_slice(),
+			br#"{"id":"6","last_message_id":"9"}"#.as_slice(),
+		] {
+			assert_eq!(update(body, &mut inbox).unwrap().inbox, None);
+		}
+		assert_eq!(
+			update(br#"{"id":"6","is_spam":false}"#, &mut inbox)
+				.unwrap()
+				.inbox,
+			Some((Id(6), true, false))
+		);
+		assert_eq!(
+			update(br#"{"id":"6","is_message_request":false}"#, &mut inbox)
+				.unwrap()
+				.inbox,
+			Some((Id(6), false, false))
+		);
+	}
+
+	#[test]
 	fn obfuscation_revokes_and_restoration_preserves_partial_updates() {
 		let hidden =
 			br#"{"id":"3","guild_id":"1","type":0,"flags":131072,"name":"not-a-placeholder"}"#;
 		assert!(matches!(
 			create(hidden, &mut Inbox::default()).unwrap(),
-			(Event::Unavailable(Id(3)), None, None)
+			(Event::Unavailable(Id(3)), None)
 		));
 		let update = super::update(hidden, &mut Inbox::default()).unwrap();
 		assert!(matches!(update.event, Event::Unavailable(Id(3))));
@@ -267,7 +319,7 @@ mod tests {
 				&mut Inbox::default()
 			)
 			.unwrap(),
-			(Event::ChannelCreated(_), None, None)
+			(Event::ChannelCreated(_), None)
 		));
 		for flags in ["", ",\"flags\":0", ",\"flags\":16"] {
 			let body = format!(r#"{{"id":"3","guild_id":"1","type":0,"name":"Restored"{flags}}}"#);

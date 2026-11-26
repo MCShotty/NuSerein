@@ -33,8 +33,32 @@ struct Draft {
 	tags: Vec<Id>,
 	focus: bool,
 	submitted: bool,
-	/// The hover tray showing every chosen file is open.
-	media_open: bool,
+	media_tray: MediaTray,
+}
+
+#[derive(Clone, Copy, Default)]
+enum MediaTray {
+	#[default]
+	Closed,
+	Open(egui::Id),
+	// Escape closes the tray even while the anchor is still hovered or focused.
+	Dismissed,
+}
+
+impl MediaTray {
+	fn is_open(self) -> bool {
+		matches!(self, Self::Open(_))
+	}
+
+	fn dismiss(&mut self, ctx: &egui::Context) -> bool {
+		if let Self::Open(anchor) = *self {
+			*self = Self::Dismissed;
+			ctx.memory_mut(|memory| memory.request_focus(anchor));
+			true
+		} else {
+			false
+		}
+	}
 }
 
 #[derive(Default)]
@@ -70,6 +94,10 @@ pub(crate) fn body_id() -> egui::Id {
 pub struct Staged<'a> {
 	pub files: &'a [(String, u64)],
 	pub textures: &'a [Option<egui::TextureHandle>],
+	pub spoilers: &'a [(u64, bool)],
+	pub toggle_spoiler: &'a mut Option<usize>,
+	/// Stable attachment key and the summary control to focus on return.
+	pub preview: &'a mut Option<(u64, egui::Id)>,
 	/// Set to ask the desktop shell for the native file chooser.
 	pub choose: &'a mut bool,
 	/// Set to the index of a card the user removed.
@@ -86,6 +114,10 @@ enum Open {
 }
 
 impl ForumUi {
+	pub(crate) fn can_preview_draft(&self, forum: Id) -> bool {
+		self.forum == Some(forum) && self.draft.as_ref().is_some_and(|draft| !draft.submitted)
+	}
+
 	pub(crate) fn paste_text(&self, field: egui::Id) -> Option<&str> {
 		let draft = self.draft.as_ref()?;
 		if field == title_id() {
@@ -131,10 +163,26 @@ impl ForumUi {
 		{
 			self.draft = None;
 		}
-		if self.draft.is_some()
-			&& ui
-				.ctx()
-				.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+		// Escape belongs to a picker or modal before it can discard a post. Holding
+		// the key must not close the tray and then discard the draft on auto-repeat.
+		if let Some(draft) = &mut self.draft
+			&& ui.is_enabled()
+			&& !egui::Popup::is_any_open(ui.ctx())
+			&& ui.ctx().memory(|memory| memory.top_modal_layer().is_none())
+			&& ui.input_mut(|input| {
+				input.events.iter().any(|event| {
+					matches!(
+						event,
+						egui::Event::Key {
+							key: egui::Key::Escape,
+							pressed: true,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+							..
+						}
+					)
+				}) && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+			}) && !draft.media_tray.dismiss(ui.ctx())
 		{
 			self.discard_draft(staged);
 		}
@@ -396,7 +444,7 @@ impl ForumUi {
 				.collect(),
 			focus: true,
 			submitted: false,
-			media_open: false,
+			media_tray: MediaTray::default(),
 		});
 	}
 
@@ -741,7 +789,7 @@ impl ForumUi {
 									staged,
 									enabled,
 									files_allowed,
-									&mut draft.media_open,
+									&mut draft.media_tray,
 								);
 							});
 						});
@@ -851,7 +899,7 @@ fn media_box(
 	staged: &mut Staged<'_>,
 	enabled: bool,
 	files_allowed: bool,
-	open: &mut bool,
+	tray: &mut MediaTray,
 ) {
 	let colors = design::palette(ui);
 	let hint = if files_allowed {
@@ -860,7 +908,7 @@ fn media_box(
 		crate::i18n::translate("forum-composer-attaching-files-is-unavailable-in-this-forum")
 	};
 	if staged.files.is_empty() {
-		*open = false;
+		*tray = MediaTray::Closed;
 		let response = add_tile(ui, enabled);
 		if response.clicked() {
 			*staged.choose = true;
@@ -868,7 +916,12 @@ fn media_box(
 		response.on_hover_text(hint);
 		return;
 	}
-	let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(THUMB), egui::Sense::click());
+	let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(THUMB), egui::Sense::hover());
+	let response = ui.interact(
+		rect,
+		ui.id().with("forum-media-summary"),
+		egui::Sense::click(),
+	);
 	media_tile(ui, rect, staged, 0);
 	let count = staged.files.len().to_string();
 	let badge = egui::Rect::from_center_size(
@@ -892,14 +945,21 @@ fn media_box(
 	response.widget_info(|| {
 		egui::WidgetInfo::labeled(
 			egui::Role::Button,
-			true,
+			ui.is_enabled(),
 			crate::i18n::translate_count("forum-composer-attached-files", staged.files.len(), &[]),
 		)
 	});
-	if response.hovered() || response.has_focus() || response.clicked() {
-		*open = true;
+	// This tray is a separate foreground area, so it cannot inherit a modal's disabled UI.
+	if !ui.is_enabled() {
+		return;
 	}
-	if !*open {
+	let engaged = response.hovered() || response.has_focus();
+	if response.clicked() || (!matches!(tray, MediaTray::Dismissed) && engaged) {
+		*tray = MediaTray::Open(response.id);
+	} else if matches!(tray, MediaTray::Dismissed) && !engaged {
+		*tray = MediaTray::Closed;
+	}
+	if !tray.is_open() {
 		return;
 	}
 	const GAP: f32 = 8.0;
@@ -929,10 +989,41 @@ fn media_box(
 								egui::Sense::hover(),
 							);
 							media_tile(ui, tile, staged, index);
+							if let Some(&(key, false)) = staged.spoilers.get(index)
+								&& files_allowed && !staged.busy
+								&& staged.textures.get(index).is_some_and(Option::is_some)
+							{
+								let preview = crate::attachments::staged_preview_button(
+									ui,
+									tile,
+									tray_id.with(("preview", key)),
+									&staged.files[index].0,
+								);
+								tray_focused |= preview.has_focus();
+								if preview.clicked() {
+									*staged.preview = Some((key, response.id));
+								}
+							}
 							let remove = egui::Rect::from_min_size(
 								tile.right_top() + egui::vec2(-26.0, 4.0),
 								egui::Vec2::splat(22.0),
 							);
+							if let Some(&(key, spoiler)) = staged.spoilers.get(index) {
+								let mut control = ui.new_child(
+									egui::UiBuilder::new()
+										.scope_id(tray_id.with(("spoiler", key)))
+										.max_rect(remove.translate(egui::vec2(-24.0, 0.0))),
+								);
+								if staged.busy {
+									control.disable();
+								}
+								let toggle =
+									crate::attachments::spoiler_toggle(&mut control, 22.0, spoiler);
+								tray_focused |= toggle.has_focus();
+								if toggle.clicked() {
+									*staged.toggle_spoiler = Some(index);
+								}
+							}
 							let button = ui.interact(
 								remove,
 								tray_id.with(("remove", index)),
@@ -996,7 +1087,7 @@ fn media_box(
 	}) || response.has_focus()
 		|| tray_focused;
 	if !kept {
-		*open = false;
+		*tray = MediaTray::Closed;
 	}
 }
 
@@ -1048,6 +1139,13 @@ fn add_tile(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
 /// One chosen file: its image, or its file-type icon.
 fn media_tile(ui: &egui::Ui, rect: egui::Rect, staged: &Staged<'_>, index: usize) {
 	let colors = design::palette(ui);
+	if staged.spoilers.get(index).map_or_else(
+		|| staged.files[index].0.starts_with("SPOILER_"),
+		|(_, spoiler)| *spoiler,
+	) {
+		crate::attachments::spoiler_cover(ui, rect);
+		return;
+	}
 	match staged.textures.get(index).and_then(Option::as_ref) {
 		Some(texture) => {
 			crate::emoji_picker::paint_cover(ui, rect, (texture.id(), texture.size()), 10);
@@ -2049,6 +2147,7 @@ mod tests {
 	/// Nothing is staged in these fixtures; the tray lives in the messaging view.
 	#[derive(Default)]
 	struct Scratch {
+		toggle_spoiler: Option<usize>,
 		choose: bool,
 		remove: Option<usize>,
 		clear: bool,
@@ -2057,6 +2156,9 @@ mod tests {
 		Staged {
 			files: &[],
 			textures: &[],
+			spoilers: &[],
+			toggle_spoiler: &mut scratch.toggle_spoiler,
+			preview: &mut None,
 			choose: &mut scratch.choose,
 			remove: &mut scratch.remove,
 			clear: &mut scratch.clear,
@@ -2127,6 +2229,57 @@ mod tests {
 			paste_frame(&ctx, &mut view, &mut state, vec![]);
 		}
 		(ctx, view, state)
+	}
+
+	fn escape(repeat: bool) -> egui::Event {
+		egui::Event::Key {
+			key: egui::Key::Escape,
+			physical_key: None,
+			pressed: true,
+			repeat,
+			modifiers: egui::Modifiers::NONE,
+		}
+	}
+
+	#[test]
+	fn preview_and_tray_escape_preserve_the_post_and_selection() {
+		let (ctx, mut view, mut state) = paste_fixture();
+		view.preview_attachment(
+			"trip.png",
+			10,
+			Some(egui::ColorImage::filled([32, 24], egui::Color32::WHITE)),
+		);
+		view.preview_staged_image(&ctx, &state, 0);
+		let target = view
+			.staged_image_target(&state)
+			.expect("permitted forum attachment");
+		for _ in 0..2 {
+			paste_frame(&ctx, &mut view, &mut state, vec![]);
+		}
+		paste_frame(&ctx, &mut view, &mut state, vec![escape(false)]);
+		assert!(view.staged_image_target(&state).is_none());
+		assert_eq!(view.forum.paste_text(title_id()), Some("Title"));
+		assert!(!view.remove_attachment_requested);
+		paste_frame(&ctx, &mut view, &mut state, vec![]);
+
+		view.forum.draft.as_mut().unwrap().media_tray =
+			MediaTray::Open(egui::Id::unique("forum-test-anchor"));
+		paste_frame(&ctx, &mut view, &mut state, vec![escape(false)]);
+		assert!(!view.forum.draft.as_ref().unwrap().media_tray.is_open());
+		// The older fixture clears keys_down between frames; seed a held Escape so
+		// egui derives repeat=true from the key state rather than the event field.
+		ctx.input_mut(|input| {
+			input.keys_down.insert(egui::Key::Escape);
+		});
+		paste_frame(&ctx, &mut view, &mut state, vec![escape(true)]);
+		assert_eq!(view.forum.paste_text(body_id()), Some("Body"));
+		assert_eq!(view.attachment_files, [("trip.png".to_owned(), 10)]);
+		assert!(!view.remove_attachment_requested);
+
+		view.preview_staged_image(&ctx, &state, 0);
+		assert_eq!(view.staged_image_target(&state), Some(target));
+		view.forum.draft = None;
+		assert!(view.staged_image_target(&state).is_none());
 	}
 
 	#[test]
@@ -2414,6 +2567,9 @@ mod tests {
 					let mut staged = Staged {
 						files: &files,
 						textures: &textures,
+						spoilers: &[],
+						toggle_spoiler: &mut None,
+						preview: &mut None,
 						choose: &mut scratch.choose,
 						remove: &mut scratch.remove,
 						clear: &mut scratch.clear,
@@ -2738,7 +2894,7 @@ mod tests {
 		ctx: &egui::Context,
 		pointer: Option<egui::Pos2>,
 		click: bool,
-		open: &mut bool,
+		tray: &mut MediaTray,
 	) -> (egui::Rect, Vec<String>, Option<usize>) {
 		let files = vec![("a.png".to_owned(), 10), ("a.png".to_owned(), 10)];
 		let textures = vec![None, None];
@@ -2760,6 +2916,9 @@ mod tests {
 		let mut staged = Staged {
 			files: &files,
 			textures: &textures,
+			spoilers: &[],
+			toggle_spoiler: &mut None,
+			preview: &mut None,
 			choose: &mut choose,
 			remove: &mut remove,
 			clear: &mut clear,
@@ -2778,7 +2937,7 @@ mod tests {
 			|ui| {
 				ui.add_space(100.0);
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-					media_box(ui, &mut staged, true, true, open);
+					media_box(ui, &mut staged, true, true, tray);
 					rect = ui.min_rect();
 				});
 			},
@@ -2791,24 +2950,106 @@ mod tests {
 	#[test]
 	fn post_media_box_counts_files_and_hover_shows_each_with_remove() {
 		let ctx = egui::Context::default();
-		let mut open = false;
-		let (area, text, _) = media_frame(&ctx, None, false, &mut open);
+		let mut tray = MediaTray::default();
+		let (area, text, _) = media_frame(&ctx, None, false, &mut tray);
 		assert!(text.iter().any(|text| text == "2"), "count badge: {text:?}");
-		assert!(!open);
+		assert!(!tray.is_open());
 		let center = area.center();
 		for _ in 0..2 {
-			media_frame(&ctx, Some(center), false, &mut open);
+			media_frame(&ctx, Some(center), false, &mut tray);
 		}
-		assert!(open, "hovering the box opens the tray");
+		assert!(tray.is_open(), "hovering the box opens the tray");
 		// The tray grows leftwards from the box: two files, then the add button.
 		let first = area.right() - 3.0 * THUMB - 2.0 * 8.0;
 		let remove = egui::pos2(first + THUMB - 15.0, area.top() + 15.0);
-		media_frame(&ctx, Some(remove), false, &mut open);
-		let (_, _, removed) = media_frame(&ctx, Some(remove), true, &mut open);
+		media_frame(&ctx, Some(remove), false, &mut tray);
+		let (_, _, removed) = media_frame(&ctx, Some(remove), true, &mut tray);
 		assert_eq!(removed, Some(0));
-		assert!(open);
-		media_frame(&ctx, Some(egui::pos2(5.0, 390.0)), false, &mut open);
-		assert!(!open, "leaving both closes the tray");
+		assert!(tray.is_open());
+		media_frame(&ctx, Some(egui::pos2(5.0, 390.0)), false, &mut tray);
+		assert!(!tray.is_open(), "leaving both closes the tray");
+	}
+
+	#[test]
+	fn forum_tray_keyboard_preview_names_the_selection_by_key_and_respects_spoilers() {
+		for (spoiler, allowed, busy) in [
+			(false, true, false),
+			(true, true, false),
+			(false, false, false),
+			(false, true, true),
+		] {
+			let ctx = egui::Context::default();
+			let texture = ctx.load_texture(
+				"forum-local-image",
+				egui::ColorImage::filled([12, 8], egui::Color32::WHITE),
+				egui::TextureOptions::default(),
+			);
+			let files = [
+				("same-name.png".to_owned(), 10),
+				("same-name.png".to_owned(), 10),
+			];
+			let textures = [None, Some(texture)];
+			let mut tray = MediaTray::default();
+			let mut preview = None;
+			let mut remove = None;
+			let draw = |ui: &mut egui::Ui,
+			            preview: &mut Option<(u64, egui::Id)>,
+			            remove: &mut Option<usize>,
+			            tray: &mut MediaTray,
+			            focus_preview: bool| {
+				ui.add_space(100.0);
+				ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+					let id = if focus_preview {
+						ui.scope_id()
+							.with("post-media-tray")
+							.with(("preview", 42_u64))
+					} else {
+						ui.id().with("forum-media-summary")
+					};
+					ui.memory_mut(|memory| memory.request_focus(id));
+					media_box(
+						ui,
+						&mut Staged {
+							files: &files,
+							textures: &textures,
+							spoilers: &[(3, false), (42, spoiler)],
+							toggle_spoiler: &mut None,
+							preview,
+							remove,
+							choose: &mut false,
+							clear: &mut false,
+							busy,
+						},
+						false,
+						allowed,
+						tray,
+					);
+				});
+			};
+			frame(&ctx, |ui| {
+				draw(ui, &mut preview, &mut remove, &mut tray, false)
+			});
+			assert!(tray.is_open());
+			ctx.run_ui(
+				egui::RawInput {
+					events: vec![egui::Event::Key {
+						key: egui::Key::Enter,
+						physical_key: None,
+						pressed: true,
+						repeat: false,
+						modifiers: egui::Modifiers::NONE,
+					}],
+					..Default::default()
+				},
+				|ui| draw(ui, &mut preview, &mut remove, &mut tray, true),
+			)
+			.drop_without_applying_deltas();
+			assert_eq!(
+				preview.map(|(key, _)| key),
+				(!spoiler && allowed && !busy).then_some(42)
+			);
+			assert_eq!(remove, None);
+		}
 	}
 
 	#[test]
@@ -2818,12 +3059,12 @@ mod tests {
 				let ctx = egui::Context::default();
 				let files = vec![("file.png".to_owned(), 10); count];
 				let textures = vec![None; count];
-				let mut open = true;
+				let mut tray = MediaTray::Open(egui::Id::NULL);
 				let mut tray_id = egui::Id::NULL;
 				let mut choose = false;
 				let mut frame = |events: Vec<egui::Event>, reopen: bool| {
 					if reopen {
-						open = true;
+						tray = MediaTray::Open(egui::Id::NULL);
 					}
 					let (mut remove, mut clear) = (None, false);
 					let output = ctx.run_ui(
@@ -2845,6 +3086,9 @@ mod tests {
 									&mut Staged {
 										files: &files,
 										textures: &textures,
+										spoilers: &[],
+										toggle_spoiler: &mut None,
+										preview: &mut None,
 										choose: &mut choose,
 										remove: &mut remove,
 										clear: &mut clear,
@@ -2852,13 +3096,13 @@ mod tests {
 									},
 									count < 10,
 									true,
-									&mut open,
+									&mut tray,
 								);
 							});
 						},
 					);
 					output.drop_without_applying_deltas();
-					(remove, tray_id, open)
+					(remove, tray_id, tray.is_open())
 				};
 				let (_, tray, _) = frame(vec![], true);
 				ctx.memory_mut(|memory| memory.request_focus(tray.with(("remove", 0))));

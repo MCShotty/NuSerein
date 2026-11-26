@@ -452,11 +452,15 @@ pub struct MessagingUi {
 	reply_author: Option<(Id, String)>,
 	pub attachment: Option<(String, u64)>,
 	pub attachment_files: Vec<(String, u64)>,
+	/// Native selection key and spoiler flag, in the same order as the composer files.
+	pub attachment_spoilers: Vec<(u64, bool)>,
+	pub attachment_spoiler_request: Option<(u64, Id, u64, bool)>,
 	pub remove_attachment_index: Option<usize>,
 	/// Downscaled pixels per selected file (`None` for non-images), produced off the render thread.
 	pub attachment_previews: Vec<Option<std::sync::Arc<egui::ColorImage>>>,
 	/// GPU copies of `attachment_previews`, keyed by the pixel buffer they were uploaded from.
 	attachment_textures: Vec<Option<(usize, egui::TextureHandle)>>,
+	staged_image: Option<composer::StagedImage>,
 	pub attach_requested: bool,
 	pub host_attachment_requested: Option<usize>,
 	pub attachment_paste_requested: Option<AttachmentPaste>,
@@ -501,9 +505,15 @@ pub struct MessagingUi {
 	pub camera_test_texture: Option<egui::TextureHandle>,
 	/// Decoded remote cameras by user; the desktop owns, bounds and replaces the textures.
 	pub voice_remote_video: Vec<(Id, egui::load::SizedTexture)>,
+	/// The joined media request that owns the camera textures.
+	pub voice_call_picture_scope: Option<(u64, Id, u64)>,
 	/// Latest picture of the screen share this device chose to watch; desktop-owned texture.
 	pub voice_stream_view: Option<egui::load::SizedTexture>,
 	pub voice_stream_hdr: Option<MediaView>,
+	/// Owner of the current receive texture, supplied by the desktop watch transport.
+	pub voice_stream_picture_scope: Option<(u64, Id, u64, Id)>,
+	pub voice_popout_available: bool,
+	voice_popout: Option<voice::VoicePopout>,
 	pub voice_remote_hdr: Vec<(Id, MediaView)>,
 	pub voice_stream_status: &'static str,
 	/// Session-only stream playback level; unset is 100%. Mute preserves the level.
@@ -514,7 +524,7 @@ pub struct MessagingUi {
 	/// Enlarged stage tile; cleared when it stops showing video or on Escape.
 	pub voice_focus: Option<voice::StageFocus>,
 	/// Screen share currently owning the client surface, its prior window mode and focus target.
-	voice_fullscreen: Option<(voice::StageFocus, egui::Context, bool, egui::Id)>,
+	voice_fullscreen: Option<voice::Fullscreen>,
 	/// Native window transition for the desktop to apply after this UI frame.
 	voice_fullscreen_request: Option<bool>,
 	/// Whether the other participants stay visible as a strip under the enlarged tile.
@@ -600,6 +610,8 @@ pub struct MessagingUi {
 	composer_edit: Option<(Id, Id)>,
 	edit_sent: Option<SubmittedEdit>,
 	deleting: Option<(Id, Id)>,
+	/// A blank edit can prompt for deletion only for this exact text-only revision.
+	empty_edit_delete: Option<(message_menu::Owner, u64)>,
 	publishing: Option<(u64, Id, Id)>,
 	ime_active: bool,
 	/// The composer claimed Tab last frame, so egui left it in the input for a suggestion menu.
@@ -973,6 +985,10 @@ impl MessagingUi {
 		if self.attachment.is_none() {
 			self.attachment = Some((filename.to_owned(), bytes));
 		}
+		self.attachment_spoilers.push((
+			self.attachment_files.len() as u64,
+			filename.starts_with("SPOILER_"),
+		));
 		self.attachment_files.push((filename.to_owned(), bytes));
 		self.attachment_previews
 			.resize(self.attachment_files.len() - 1, None);
@@ -985,6 +1001,12 @@ impl MessagingUi {
 			self.attachment.iter().cloned().collect()
 		} else {
 			self.attachment_files.clone()
+		}
+	}
+	fn toggle_attachment_spoiler(&mut self, index: usize, generation: u64, channel: Id) {
+		if let Some((key, spoiler)) = self.attachment_spoilers.get_mut(index) {
+			*spoiler = !*spoiler;
+			self.attachment_spoiler_request = Some((generation, channel, *key, *spoiler));
 		}
 	}
 	/// Textures for `attachment_previews`, uploaded once per pixel buffer and reused per frame.
@@ -1028,12 +1050,24 @@ impl MessagingUi {
 				files: files
 					.into_iter()
 					.zip(textures)
-					.map(|((_, bytes), preview)| pending::UploadFile { bytes, preview })
+					.enumerate()
+					.map(|(index, ((name, bytes), preview))| {
+						let spoiler = self
+							.attachment_spoilers
+							.get(index)
+							.map_or_else(|| name.starts_with("SPOILER_"), |(_, spoiler)| *spoiler);
+						pending::UploadFile {
+							bytes,
+							preview: preview.filter(|_| !spoiler),
+							spoiler,
+						}
+					})
 					.collect(),
 				progress: None,
 			});
 			self.attachment = None;
 			self.attachment_files.clear();
+			self.attachment_spoilers.clear();
 			self.attachment_previews.clear();
 			self.attachment_textures.clear();
 			self.upload_busy = true;
@@ -1587,7 +1621,7 @@ mod composer_tests {
 						focused: true,
 						..Default::default()
 					},
-					|ui| view.attachment_tray(ui, false, 500_000_000),
+					|ui| view.attachment_tray(ui, false, 500_000_000, None),
 				);
 				let remove = output
 					.shapes
@@ -2327,7 +2361,9 @@ mod composer_tests {
 		let mut view = MessagingUi::default();
 		view.preview_attachment("synthetic.pdf", 100, None);
 		for _ in 0..2 {
-			let output = ctx.run_ui(Default::default(), |ui| view.attachment_tray(ui, true, 0));
+			let output = ctx.run_ui(Default::default(), |ui| {
+				view.attachment_tray(ui, true, 0, None)
+			});
 			let text_rect = |label: &str| {
 				output
 					.shapes
@@ -2409,6 +2445,136 @@ mod composer_tests {
 					));
 				}
 			}
+		}
+	}
+
+	#[test]
+	fn saving_blank_text_asks_before_deleting_and_keep_returns_to_the_edit() {
+		let ctx = egui::Context::default();
+		let mut state = edit_state();
+		let mut view = MessagingUi {
+			editing: Some((Id(10), Id(20), "  ".into())),
+			..Default::default()
+		};
+		let dialog_frame = |view: &mut MessagingUi, state: &mut State, events| {
+			let mut commands = Vec::new();
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(900.0, 600.0),
+					)),
+					focused: true,
+					events,
+					..Default::default()
+				},
+				|ui| view.show_message_delete_confirmation(ui.ctx(), state, &mut commands),
+			);
+			output.drop_without_applying_deltas();
+			ctx.input_mut(|i| i.keys_down.clear());
+			commands
+		};
+		for (choice, expected_delete) in [(egui::Key::Escape, false), (egui::Key::Enter, true)] {
+			edit_frame(&ctx, &mut view, &mut state, vec![]);
+			let commands = edit_frame(
+				&ctx,
+				&mut view,
+				&mut state,
+				vec![edit_key(egui::Key::Enter)],
+			);
+			assert!(
+				commands.iter().all(|command| !matches!(
+					command,
+					Command::Delete { .. } | Command::Edit { .. }
+				))
+			);
+			let (owner, _) = view
+				.empty_edit_delete
+				.expect("the first Enter opens a confirmation");
+			assert_eq!((owner.channel, owner.message), (Id(10), Id(20)));
+			assert!(
+				dialog_frame(&mut view, &mut state, vec![edit_key(egui::Key::Enter)]).is_empty(),
+				"the opening Enter cannot confirm deletion"
+			);
+			let commands = dialog_frame(&mut view, &mut state, vec![edit_key(choice)]);
+			if expected_delete {
+				assert!(matches!(
+					commands.as_slice(),
+					[Command::Delete {
+						channel: Id(10),
+						message: Id(20)
+					}]
+				));
+				assert!(view.editing.is_none());
+			} else {
+				assert!(commands.is_empty());
+				assert_eq!(view.editing.as_ref().unwrap().2, "  ");
+			}
+			assert!(view.empty_edit_delete.is_none());
+			assert_eq!(state.drafts[&Id(10)], "Unsent draft 👋");
+			assert_eq!(state.timeline.get(Id(20)).unwrap().content, "Original");
+			assert!(dialog_frame(&mut view, &mut state, vec![]).is_empty());
+		}
+	}
+
+	#[test]
+	fn blank_edit_does_not_confirm_for_attachments_or_a_stale_target() {
+		for changed in ["attachment", "generation", "revision", "permission"] {
+			let ctx = egui::Context::default();
+			let mut state = edit_state();
+			let mut view = MessagingUi {
+				editing: Some((Id(10), Id(20), String::new())),
+				..Default::default()
+			};
+			if changed == "attachment" {
+				let mut row = state.timeline.get(Id(20)).unwrap().clone();
+				row.attachments.push(model::Attachment {
+					id: Id(99),
+					filename: "keep.txt".into(),
+					description: None,
+					content_type: None,
+					size: 12,
+					media: Default::default(),
+					spoiler: false,
+					duration_ms: None,
+					waveform: Vec::new(),
+				});
+				state.timeline.clear();
+				state.timeline.insert(row, false, false).unwrap();
+			}
+			edit_frame(&ctx, &mut view, &mut state, vec![]);
+			let commands = edit_frame(
+				&ctx,
+				&mut view,
+				&mut state,
+				vec![edit_key(egui::Key::Enter)],
+			);
+			assert!(
+				!commands.iter().any(|command| matches!(
+					command,
+					Command::Delete { .. } | Command::Edit { .. }
+				))
+			);
+			if changed == "attachment" {
+				assert!(view.empty_edit_delete.is_none());
+			} else {
+				assert!(view.empty_edit_delete.is_some());
+				match changed {
+					"generation" => state.generation += 1,
+					"permission" => state.gateway_connected = false,
+					_ => {
+						let mut row = state.timeline.get(Id(20)).unwrap().clone();
+						row.revision += 1;
+						state.timeline.clear();
+						state.timeline.insert(row, false, false).unwrap();
+					}
+				}
+				let mut commands = Vec::new();
+				view.show_message_delete_confirmation(&ctx, &mut state, &mut commands);
+				assert!(view.empty_edit_delete.is_none() && commands.is_empty());
+			}
+			assert!(view.has_edit());
+			assert_eq!(state.drafts[&Id(10)], "Unsent draft 👋");
 		}
 	}
 
@@ -3883,6 +4049,127 @@ mod composer_tests {
 		assert!(view.timeline.opening.is_some());
 		frame(&mut view, &mut state, vec![edit_key(egui::Key::Escape)]);
 		assert!(view.timeline.opening.is_none());
+	}
+
+	#[test]
+	fn staged_spoiler_follows_the_selected_file_and_hides_its_pending_thumbnail() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::chat_demo_state();
+		let channel = state.selected.unwrap();
+		let mut view = MessagingUi::default();
+		let preview = || Some(egui::ColorImage::filled([4, 3], egui::Color32::WHITE));
+		view.preview_attachment("SPOILER_unmarked.png", 40, preview());
+		view.preview_attachment("marked.png", 60, preview());
+		view.toggle_attachment_spoiler(0, state.generation, channel);
+		assert_eq!(
+			view.attachment_spoiler_request.take(),
+			Some((state.generation, channel, 0, false))
+		);
+		view.toggle_attachment_spoiler(1, state.generation, channel);
+		assert_eq!(
+			view.attachment_spoiler_request.take(),
+			Some((state.generation, channel, 1, true))
+		);
+		view.preview_sending(&ctx, &mut state);
+		let files = &view.pending_upload.as_ref().expect("prepared upload").files;
+		assert_eq!(files.len(), 2);
+		assert!(!files[0].spoiler && files[0].preview.is_some());
+		assert!(files[1].spoiler && files[1].preview.is_none());
+	}
+
+	#[test]
+	fn context_menu_opens_reaction_picker_on_the_activation_frame() {
+		fn locate(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {
+			match shape {
+				egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| locate(shape, label)),
+				egui::Shape::Text(text) if text.galley.text() == label => {
+					Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+				}
+				_ => None,
+			}
+		}
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		let mut view = MessagingUi::default();
+		let mut state = test_support::chat_demo_state();
+		let channel = state.selected.unwrap();
+		state.timeline.clear();
+		let mut message = test_support::message(777, channel);
+		message.content = "Synthetic reaction anchor".into();
+		message.reactions = Some(Vec::new());
+		let id = message.id;
+		state.timeline.insert(message, false, false).unwrap();
+		state.drafts.insert(channel, "Keep this draft".into());
+		let frame = |view: &mut MessagingUi, state: &mut State, events, label| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(1200.0, 850.0),
+					)),
+					focused: true,
+					events,
+					..Default::default()
+				},
+				|ui| {
+					assert!(!view.show(ui, state).iter().any(|command| matches!(
+						command,
+						Command::Reactions(client_core::reactions::Command::Set { .. })
+							| Command::Send { .. }
+					)));
+				},
+			);
+			let pos = output
+				.shapes
+				.iter()
+				.find_map(|shape| locate(&shape.shape, label));
+			output.drop_without_applying_deltas();
+			pos
+		};
+		for _ in 0..5 {
+			frame(&mut view, &mut state, vec![], "");
+		}
+		let body = frame(&mut view, &mut state, vec![], "Synthetic reaction anchor").unwrap();
+		let click = |button, pos, pressed| {
+			vec![
+				egui::Event::PointerMoved(pos),
+				egui::Event::PointerButton {
+					pos,
+					button,
+					pressed,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]
+		};
+		for pressed in [true, false] {
+			frame(
+				&mut view,
+				&mut state,
+				click(egui::PointerButton::Secondary, body, pressed),
+				"",
+			);
+		}
+		for _ in 0..3 {
+			frame(&mut view, &mut state, vec![], "");
+		}
+		let add = frame(&mut view, &mut state, vec![], "Add Reaction").expect("message menu");
+		frame(
+			&mut view,
+			&mut state,
+			click(egui::PointerButton::Primary, add, true),
+			"",
+		);
+		assert_eq!(view.reaction_picker.reaction_message(), None);
+		frame(
+			&mut view,
+			&mut state,
+			click(egui::PointerButton::Primary, add, false),
+			"",
+		);
+		assert_eq!(view.reaction_picker.reaction_message(), Some(id));
+		frame(&mut view, &mut state, vec![edit_key(egui::Key::Escape)], "");
+		assert_eq!(view.reaction_picker.reaction_message(), None);
+		assert_eq!(state.drafts[&channel], "Keep this draft");
 	}
 
 	#[test]

@@ -325,7 +325,7 @@ impl crate::MessagingUi {
 #[derive(Default)]
 pub(crate) struct Controls {
 	pub reaction: Option<(Id, model::ReactionEmoji)>,
-	pub picker: Option<(Id, egui::Rect, egui::Id)>,
+	pub picker: Option<(Owner, egui::Rect, egui::Id)>,
 	pub save: Option<client_core::inbox::Action>,
 	pub custom_reminder: Option<Owner>,
 	pub speech: Option<Owner>,
@@ -472,6 +472,17 @@ impl Controls {
 			self.custom_reminder = None;
 		}
 	}
+	pub(crate) fn take_picker(
+		&mut self,
+		state: &client_core::State,
+	) -> Option<(Id, egui::Rect, egui::Id)> {
+		let (owner, anchor, trigger) = self.picker.take()?;
+		(valid_owner(state, owner)
+			&& state.can_open_reaction_picker(owner.message)
+			&& !state.reactions.busy())
+		.then_some((owner.message, anchor, trigger))
+	}
+
 	pub(crate) fn record(&mut self, emoji: &model::ReactionEmoji) {
 		if !emoji.valid() {
 			return;
@@ -1060,6 +1071,44 @@ mod tests {
 			ctx.data(|data| data.get_temp::<OpenMenu>(egui::Id::unique("message-menu-active")))
 				.is_none()
 		);
+	}
+
+	#[test]
+	fn picker_request_is_one_shot_and_rechecks_the_message_owner() {
+		let mut state = test_support::chat_demo_state();
+		let mut controls = Controls::default();
+		let channel = state.selected.unwrap();
+		let mut message = test_support::message(777, channel);
+		message.reactions = Some(vec![]);
+		let id = message.id;
+		state.timeline.insert(message, false, false).unwrap();
+		let owner = Owner {
+			generation: state.generation,
+			channel,
+			message: id,
+		};
+		let rect = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(200.0, 36.0));
+		let trigger = egui::Id::unique("synthetic-menu-reaction");
+		controls.picker = Some((owner, rect, trigger));
+		assert_eq!(controls.take_picker(&state), Some((id, rect, trigger)));
+		assert_eq!(controls.take_picker(&state), None);
+		controls.picker = Some((owner, rect, trigger));
+		state.reactions.writing = Some((id, 1));
+		assert_eq!(controls.take_picker(&state), None);
+		state.reactions.writing = None;
+		controls.picker = Some((owner, rect, trigger));
+		state.generation += 1;
+		assert_eq!(controls.take_picker(&state), None);
+		controls.picker = Some((
+			Owner {
+				generation: state.generation,
+				..owner
+			},
+			rect,
+			trigger,
+		));
+		state.timeline.set_reactions(id, None).unwrap();
+		assert_eq!(controls.take_picker(&state), None);
 	}
 
 	#[test]

@@ -745,6 +745,12 @@ fn user_action_notice(event: &Event) -> Option<(ui::design::Level, &'static str)
 	else {
 		return None;
 	};
+	if matches!(
+		action,
+		client_core::user_actions::Action::SpamRequest { .. }
+	) {
+		return None; // The scoped review owns feedback; HTTP acceptance is not a success notice.
+	}
 	Some(match result {
 		Ok(()) if matches!(action, client_core::user_actions::Action::OpenDm(_)) => {
 			(ui::design::Level::Error, action.completion_label())
@@ -941,6 +947,9 @@ impl eframe::App for Desktop {
 		false
 	}
 	fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+		if raw_input.viewport_id != egui::ViewportId::ROOT {
+			return;
+		}
 		// Before the pass begins, so the whole frame resolves System to the same theme.
 		self.sync_system_theme(ctx);
 		if self.maximize_after_show && self.window.is_visible() == Some(true) {

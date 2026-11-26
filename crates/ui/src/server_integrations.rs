@@ -21,6 +21,22 @@ enum Page {
 	App(Id),
 	Editor,
 }
+/// List destinations shared with Server Settings search, not channel settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ServerTab {
+	Overview,
+	Webhooks,
+	Follows,
+}
+impl ServerTab {
+	pub(super) fn allowed(self, state: &State, guild: Id) -> bool {
+		match self {
+			Self::Overview => state.can_open_integration_settings(guild),
+			Self::Webhooks | Self::Follows => state.can_manage_guild_webhooks(guild),
+		}
+	}
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct Draft {
 	id: Option<Id>,
@@ -116,6 +132,31 @@ impl IntegrationsUi {
 		} else {
 			Page::Overview
 		};
+	}
+	pub(super) fn open_server_tab(&mut self, state: &mut State, guild: Id, tab: ServerTab) -> bool {
+		if self.channel.is_some()
+			|| !tab.allowed(state, guild)
+			|| self.has_changes()
+			|| self.overlay_open()
+			|| state.server_admin.saving
+			|| state.server_settings.saving
+		{
+			return false;
+		}
+		let page = match tab {
+			ServerTab::Overview => Page::Overview,
+			ServerTab::Webhooks => Page::Webhooks,
+			ServerTab::Follows => Page::Follows,
+		};
+		if self.page != page {
+			self.page = page;
+			self.draft = None;
+			self.baseline = None;
+			self.copy_requested = None;
+			self.copied = None;
+			state.clear_webhook_url();
+		}
+		true
 	}
 	pub fn has_changes(&self) -> bool {
 		if self.command_permissions.has_changes()
@@ -1284,6 +1325,70 @@ mod tests {
 		state.permissions.clear_cache();
 		state
 	}
+	#[test]
+	fn server_tab_changes_keep_a_webhook_draft_and_retire_stale_copy_reads() {
+		let mut state = state();
+		let guild = state.guilds[0].id;
+		let mut view = IntegrationsUi {
+			page: Page::Editor,
+			draft: Some(Draft {
+				id: Some(Id(900)),
+				name: "Unsaved webhook".into(),
+				channel: None,
+			}),
+			..Default::default()
+		};
+		assert!(!view.open_server_tab(&mut state, guild, ServerTab::Follows));
+		assert!(view.page == Page::Editor);
+		assert_eq!(view.draft.as_ref().unwrap().name, "Unsaved webhook");
+
+		view = IntegrationsUi {
+			page: Page::Webhooks,
+			..Default::default()
+		};
+		let channel = state
+			.channels
+			.iter()
+			.find(|channel| channel.guild == Some(guild) && channel.kind == 0)
+			.unwrap()
+			.id;
+		state.server_admin.guild = Some(guild);
+		state.server_admin.integrations = Some(Snapshot {
+			guild,
+			channel: None,
+			integrations: None,
+			webhooks: Some(vec![Webhook {
+				id: Id(900),
+				guild,
+				channel: Some(channel),
+				kind: 1,
+				name: None,
+				avatar: None,
+				application_id: None,
+				user: None,
+				source_guild: None,
+				source_channel: None,
+			}]),
+		});
+		let action = server_admin::Action::Integrations(Action::CopyWebhookUrl {
+			scope: None,
+			webhook: Id(900),
+			channel,
+		});
+		let Some(Command::ServerAdmin { request, .. }) =
+			state.request_server_admin(guild, action.clone())
+		else {
+			panic!("synthetic webhook copy read")
+		};
+		assert!(state.server_admin_command_allowed(guild, request, &action));
+		assert!(view.open_server_tab(&mut state, guild, ServerTab::Follows));
+		assert!(view.page == Page::Follows);
+		assert!(!state.server_admin.pending);
+		assert!(!state.server_admin_command_allowed(guild, request, &action));
+		assert!(view.open_server_tab(&mut state, guild, ServerTab::Overview));
+		assert!(view.page == Page::Overview);
+	}
+
 	#[test]
 	fn webhook_cards_copy_once_in_both_settings_scopes_and_fit_small_widths() {
 		fn labels(shape: &egui::epaint::Shape, found: &mut Vec<(String, egui::Rect)>) {

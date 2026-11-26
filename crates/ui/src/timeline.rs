@@ -1438,28 +1438,31 @@ fn message_actions(
 				ui.horizontal(|ui| {
 					ui.spacing_mut().item_spacing.x = 6.0;
 					for emoji in quick {
-						if menu_ui::quick_button(ui, state, &emoji, images).clicked()
-							&& !state.reactions.busy()
+						if ui
+							.add_enabled_ui(!state.reactions.busy(), |ui| {
+								menu_ui::quick_button(ui, state, &emoji, images)
+							})
+							.inner
+							.clicked()
 						{
-							controls.record(&emoji);
 							controls.reaction = Some((message.id, emoji));
 							ui.close();
 						}
 					}
 				});
-				if menu_ui::row(
+				let add_reaction = menu_ui::row(
 					ui,
 					"menu-add-reaction",
 					Icon::Smile,
 					state.can_open_reaction_picker(message.id) && !state.reactions.busy(),
 					false,
-				)
-				.clicked()
-				{
+				);
+				if add_reaction.clicked() {
+					// Distinct proxy ID: the menu item still exists in the opening pass.
 					controls.picker = Some((
-						message.id,
-						ui.min_rect(),
-						ui.scope_id().with("menu-reaction-picker"),
+						owner,
+						add_reaction.rect,
+						add_reaction.id.with("reaction-picker-anchor"),
 					));
 					ui.close();
 				}

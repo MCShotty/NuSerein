@@ -303,6 +303,9 @@ attachments-media-menu-unavailable-for-synthetic-attachments = Sentetik ataşman
 # Context: open_original
 attachments-open-original-open-original = Orijinali aç…
 # Context: pending_card
+attachments-mark-spoiler = Eki spoiler olarak işaretle
+attachments-remove-spoiler = Spoiler işaretini kaldır
+attachments-spoiler-label = Spoiler
 attachments-pending-card-remove-attachment = Eki kaldır
 attachments-loading-card-preparing = Hazırlanıyor…
 # Context: show_status

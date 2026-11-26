@@ -6,9 +6,88 @@ use super::{
 };
 
 impl MessagingUi {
+	pub(super) fn show_message_delete_confirmation(
+		&mut self,
+		ctx: &egui::Context,
+		state: &mut State,
+		commands: &mut Vec<Command>,
+	) {
+		// Keeping an edit open must not keep its earlier delete intent alive after a
+		// channel, account, message revision or authorization change.
+		if self.empty_edit_delete.is_some_and(|(owner, revision)| {
+			owner.generation != state.generation
+				|| !self.editing.as_ref().is_some_and(|(c, m, text)| {
+					(*c, *m) == (owner.channel, owner.message) && text.trim().is_empty()
+				}) || Self::empty_edit_delete_revision(state, owner.channel, owner.message)
+				!= Some(revision)
+		}) {
+			self.empty_edit_delete = None;
+			self.focus_switched_composer = true;
+		}
+		if self.deleting.is_some_and(|(channel, message)| {
+			state.selected != Some(channel) || state.timeline.get(message).is_none()
+		}) {
+			self.deleting = None;
+		}
+		let empty_edit = self.empty_edit_delete;
+		let Some((channel, message)) = empty_edit
+			.map(|(owner, _)| (owner.channel, owner.message))
+			.or(self.deleting)
+		else {
+			return;
+		};
+		let allowed = state.can_delete(channel, message);
+		let conversation = state
+			.channel(channel)
+			.map_or("this conversation", |c| c.name.as_str());
+		let mut confirm = dialog::Confirm::new(
+			(
+				"delete-message",
+				state.generation,
+				channel,
+				message,
+				empty_edit.map(|(_, revision)| revision),
+			),
+			"Delete message?",
+			format!(
+				"This permanently removes the selected message from {conversation} for everyone."
+			),
+		)
+		.danger()
+		.confirm_label("Delete")
+		.cancel_label("Keep Message")
+		.enabled(allowed);
+		if !allowed {
+			confirm = confirm.note(
+				dialog::Level::Warning,
+				"Deleting this message is unavailable.",
+			);
+		}
+		if let Some(choice) = confirm.show(ctx) {
+			let issued = if choice == dialog::Choice::Confirmed
+				&& let Some(command) = state.prepare_delete(channel, message)
+			{
+				commands.push(command);
+				true
+			} else {
+				false
+			};
+			if empty_edit.is_some() {
+				self.empty_edit_delete = None;
+				if issued {
+					self.editing = None;
+					self.edit_sent = None;
+				}
+				self.focus_switched_composer = true;
+			}
+			self.deleting = None;
+		}
+	}
+
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
 		self.retire_watch_mute(state);
 		self.retire_menu_paste(state);
+		self.sync_spam_review(state);
 		message_menu::set_owner(
 			ui.ctx(),
 			message_menu::Owner {
@@ -283,6 +362,13 @@ impl MessagingUi {
 			}
 			ui.disable();
 		}
+		if settings_open || self.switcher.is_open() || self.compact_navigation_open {
+			self.staged_image = None;
+		}
+		let image_open = self.show_staged_image(&ctx, state);
+		if image_open {
+			ui.disable();
+		}
 		// Foreground confirmation handles Escape before background search/archive shortcuts.
 		self.confirm_friend_removal(&ctx, state, &mut commands);
 		if let Some(link) = self
@@ -321,6 +407,7 @@ impl MessagingUi {
 		let colors = crate::design::palette(ui);
 		let background = crate::design::window_palette(ui);
 		if !settings_open
+			&& !image_open
 			&& !self.switcher.is_open()
 			&& !self.ime_active
 			&& ctx.input(|input| {
@@ -598,10 +685,8 @@ impl MessagingUi {
 			self.focus_switched_composer =
 				state.browse_channels.is_none() && state.selected.is_some();
 		}
-		if let Some(guild) = self.server_menu.settings_requested.take()
-			&& let Some(command) = self.preview_server_settings(state, guild)
-		{
-			commands.push(command);
+		if let Some(request) = self.server_menu.settings_requested.take() {
+			commands.extend(self.open_server_settings_request(state, request));
 		}
 		if let Some(guild) = self.server_menu.mark_read_requested.take()
 			&& let Some(command) = state.prepare_mark_guild_read(guild)
@@ -845,6 +930,11 @@ impl MessagingUi {
 					self.friends_page(ui, state, &mut commands);
 					return;
 				}
+				if let Some(channel) = state.selected.filter(|channel| state.spam_direct(*channel))
+				{
+					self.show_spam_direct(ui, state, channel, &mut commands);
+					return;
+				}
 				// In a DM call the header moves onto the call stage, shown while hovered.
 				let header_in_call = !search_open && self.dm_call_stage(state).is_some();
 				if !search_open && !header_in_call {
@@ -863,10 +953,8 @@ impl MessagingUi {
 					.and_then(|id| state.channel(id))
 					.and_then(|channel| channel.guild)
 					&& crate::server_access::AccessUi::banner(ui, state, guild)
-					&& let Some(command) = self.preview_server_settings(state, guild)
 				{
-					self.preview_server_safety();
-					commands.push(command);
+					commands.extend(self.open_server_safety(state, guild));
 				}
 				let message_fill = (design::has_section_background(ui)
 					&& state.selected.is_some()
@@ -923,13 +1011,14 @@ impl MessagingUi {
 					if let Some(field) = self.forum.paste.take() {
 						self.menu_paste = Some(field);
 					}
-					if let Some(field) =
-						[forum::title_id(), forum::body_id()]
-							.into_iter()
-							.find(|id| {
-								self.menu_paste.is_some_and(|(_, _, field)| field == *id)
-									|| ui.ctx().memory(|m| m.has_focus(*id))
-							}) {
+					if !image_open
+						&& let Some(field) =
+							[forum::title_id(), forum::body_id()]
+								.into_iter()
+								.find(|id| {
+									self.menu_paste.is_some_and(|(_, _, field)| field == *id)
+										|| ui.ctx().memory(|m| m.has_focus(*id))
+								}) {
 						let ctx = ui.ctx().clone();
 						self.clipboard_paste(
 							&ctx,
@@ -946,9 +1035,14 @@ impl MessagingUi {
 						&self.channel_preferences,
 						self.shortcuts_available(state),
 					);
+					let mut toggle_spoiler = None;
+					let mut preview = None;
 					let mut staged = forum::Staged {
 						files: &files,
 						textures: &textures,
+						spoilers: &self.attachment_spoilers,
+						toggle_spoiler: &mut toggle_spoiler,
+						preview: &mut preview,
 						choose: &mut self.attach_requested,
 						remove: &mut self.remove_attachment_index,
 						clear: &mut self.remove_attachment_requested,
@@ -962,6 +1056,28 @@ impl MessagingUi {
 						(&mut self.scroll, &mut staged, &mut self.avatars),
 						(&mut self.channel_menu, view),
 					);
+					if let Some(index) = toggle_spoiler {
+						self.toggle_attachment_spoiler(index, state.generation, channel);
+						ui.ctx().request_repaint();
+					}
+					if let Some((key, trigger)) = preview
+						&& !self.remove_attachment_requested
+						&& self.forum.can_preview_draft(channel)
+						&& state.selected == Some(channel)
+						&& let Some(index) = self
+							.attachment_spoilers
+							.iter()
+							.position(|entry| *entry == (key, false))
+						&& self.remove_attachment_index != Some(index)
+						&& let Some(Some(texture)) = textures.get(index)
+					{
+						self.open_staged_image(
+							ui.ctx(),
+							(state.generation, channel, key),
+							trigger,
+							texture,
+						);
+					}
 					return;
 				}
 				egui::Panel::bottom("composer")
@@ -1090,9 +1206,18 @@ impl MessagingUi {
 							self.extensions
 								.invoke_message(action, text, state, ui.ctx());
 						}
-						if let Some((message, anchor, trigger)) =
-							self.timeline.reaction_picker.take()
-						{
+						// Both entry points can have been activated by the timeline above. Open the
+						// picker in this pass, before drawing overlays or moving on to the composer.
+						let toolbar_picker =
+							self.timeline
+								.reaction_picker
+								.take()
+								.filter(|(message, _, _)| {
+									state.can_open_reaction_picker(*message)
+										&& !state.reactions.busy()
+								});
+						let menu_picker = self.timeline.menu.take_picker(state);
+						if let Some((message, anchor, trigger)) = menu_picker.or(toolbar_picker) {
 							self.emoji_picker.dismiss(state, &mut commands);
 							self.reaction_picker
 								.open_reaction(state, message, anchor, trigger);
@@ -1499,9 +1624,6 @@ impl MessagingUi {
 		if let Some((message, emoji)) = self.timeline.menu.reaction.take() {
 			self.timeline.reaction = Some((message, Some(emoji)));
 		}
-		if let Some(picker) = self.timeline.menu.picker.take() {
-			self.timeline.reaction_picker = Some(picker);
-		}
 		if let Some(url) = ctx
 			.data_mut(|data| data.remove_temp::<String>(egui::Id::unique("message-menu-open-link")))
 		{
@@ -1800,44 +1922,7 @@ impl MessagingUi {
 				}
 			}
 		}
-		if self.deleting.is_some_and(|(channel, message)| {
-			state.selected != Some(channel) || state.timeline.get(message).is_none()
-		}) {
-			self.deleting = None;
-		}
-		if let Some((channel, message)) = self.deleting {
-			let allowed = state.can_delete(channel, message);
-			let conversation = state
-				.channel(channel)
-				.map_or("this conversation", |c| c.name.as_str());
-			let mut confirm = dialog::Confirm::new(
-				"delete-message",
-				"Delete message?",
-				format!(
-					"This permanently removes the selected message from {conversation} for everyone."
-				),
-			)
-			.danger()
-			.confirm_label("Delete")
-			.cancel_label("Keep Message")
-			.enabled(allowed);
-			if !allowed {
-				confirm = confirm.note(
-					dialog::Level::Warning,
-					"Deleting this message is unavailable.",
-				);
-			}
-			match confirm.show(&ctx) {
-				Some(dialog::Choice::Confirmed) => {
-					if let Some(command) = state.prepare_delete(channel, message) {
-						commands.push(command);
-					}
-					self.deleting = None;
-				}
-				Some(dialog::Choice::Cancelled) => self.deleting = None,
-				None => {}
-			}
-		}
+		self.show_message_delete_confirmation(&ctx, state, &mut commands);
 		self.apply_stream_preview_watch(state, &mut commands);
 		self.show_call_switch(&ctx, state, &mut commands);
 		self.mentions_inbox(&ctx, state, &mut commands);

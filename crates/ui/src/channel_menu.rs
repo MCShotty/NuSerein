@@ -92,6 +92,61 @@ impl ChannelMenu {
 		self.dialog.is_some()
 	}
 
+	/// Keep the trailing hit box and label space stable through a row hover or press.
+	pub(super) fn settings_lane(state: &State, channel: Id, width: f32) -> f32 {
+		if width >= 116.0 && state.can_view(channel) && state.can_open_channel_settings(channel) {
+			30.0
+		} else {
+			0.0
+		}
+	}
+
+	fn edit_available(state: &State, channel: Id) -> bool {
+		(state.demo || state.gateway_connected)
+			&& (!state.channel_action_pending() || state.channel_description_pending())
+			&& state.can_view(channel)
+			&& state.can_open_channel_settings(channel)
+	}
+
+	pub(super) fn row_settings(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &State,
+		channel: &Channel,
+		row: egui::Rect,
+		row_id: egui::Id,
+	) {
+		if Self::settings_lane(state, channel.id, row.width()) == 0.0 {
+			return;
+		}
+		let rect = egui::Rect::from_center_size(
+			row.right_center() - egui::vec2(16.0, 0.0),
+			egui::Vec2::splat(26.0),
+		);
+		let label =
+			crate::i18n::translate_args("channel-menu-row-settings", &[("channel", &channel.name)]);
+		let mut control = ui.new_child(
+			egui::UiBuilder::new()
+				.scope_id(row_id.with("edit-channel"))
+				.max_rect(rect)
+				.layout(egui::Layout::left_to_right(egui::Align::Center)),
+		);
+		if !Self::edit_available(state, channel.id) {
+			control.disable();
+		}
+		let button = icons::button(&mut control, icons::Icon::Gear, 26.0, &label);
+		if button.clicked() {
+			self.settings_requested(state, channel.id);
+		}
+	}
+
+	fn settings_requested(&mut self, state: &State, channel: Id) {
+		if Self::edit_available(state, channel) {
+			self.generation = state.generation;
+			self.requested = Some((channel, Intent::Dialog(Kind::Edit)));
+		}
+	}
+
 	/// Fixture-only: open the settings dialog for `channel`, as its context menu would.
 	#[cfg(feature = "demo")]
 	pub fn preview_settings(&mut self, channel: Id, generation: u64) {
@@ -536,6 +591,7 @@ impl ChannelMenu {
 					commands.extend(state.request_channel_action(id, action));
 					self.feedback = Some(id);
 				}
+				Intent::Dialog(Kind::Edit) if !Self::edit_available(state, id) => {}
 				Intent::Dialog(kind) => {
 					let name = if matches!(kind, Kind::Create | Kind::CreateCategory) {
 						String::new()
@@ -1672,6 +1728,100 @@ mod tests {
 			}
 		}
 	}
+	#[test]
+	fn gear_opens_each_eligible_row_without_activating_it_or_dispatching_a_write() {
+		for id in [Id(20), Id(25), Id(26)] {
+			let ctx = egui::Context::default();
+			let mut state = test_support::chat_demo_state();
+			let mut permissions = test_support::permission_snapshot(&state);
+			for guild in &mut permissions.guilds {
+				guild.owner = state.user.as_ref().map(|user| user.id);
+			}
+			state.permissions.replace(permissions).unwrap();
+			let channel = state.channel(id).unwrap().clone();
+			let mut menu = ChannelMenu::default();
+			let mut activated = false;
+			let mut frame = |events| {
+				let mut rect = Rect::NOTHING;
+				ctx.run_ui(
+					egui::RawInput {
+						events,
+						..Default::default()
+					},
+					|ui| {
+						let (row, response) =
+							ui.allocate_exact_size(egui::vec2(190.0, 34.0), egui::Sense::click());
+						menu.row_settings(ui, &state, &channel, row, response.id);
+						activated |= response.clicked();
+						rect = row;
+					},
+				)
+				.drop_without_applying_deltas();
+				rect
+			};
+			let rect = frame(vec![]);
+			let gear = rect.right_center() - egui::vec2(16.0, 0.0);
+			for pressed in [true, false] {
+				frame(pointer(gear, PointerButton::Primary, pressed));
+			}
+			assert!(!activated);
+			assert!(
+				matches!(menu.requested, Some((target, Intent::Dialog(Kind::Edit))) if target == id)
+			);
+			let mut commands = Vec::new();
+			ctx.run_ui(egui::RawInput::default(), |ui| {
+				menu.show(
+					ui.ctx(),
+					&mut state,
+					channel.guild,
+					&mut crate::avatars::Avatars::default(),
+					&mut commands,
+				);
+			})
+			.drop_without_applying_deltas();
+			assert!(menu.is_open());
+			assert!(matches!(
+				commands.as_slice(),
+				[Command::ChannelAction {
+					action: Action::Load,
+					..
+				}]
+			));
+		}
+	}
+
+	#[test]
+	fn queued_settings_open_rechecks_permission_and_conversation_scope() {
+		for revoke in [false, true] {
+			let ctx = egui::Context::default();
+			let mut state = test_support::chat_demo_state();
+			let mut permissions = test_support::permission_snapshot(&state);
+			for guild in &mut permissions.guilds {
+				guild.owner = state.user.as_ref().map(|user| user.id);
+			}
+			state.permissions.replace(permissions).unwrap();
+			let mut menu = ChannelMenu::default();
+			menu.settings_requested(&state, Id(20));
+			assert!(menu.requested.is_some());
+			if revoke {
+				state.permissions.replace(Default::default()).unwrap();
+			}
+			let mut commands = Vec::new();
+			ctx.run_ui(egui::RawInput::default(), |ui| {
+				menu.show(
+					ui.ctx(),
+					&mut state,
+					revoke.then_some(Id(10)),
+					&mut crate::avatars::Avatars::default(),
+					&mut commands,
+				);
+			})
+			.drop_without_applying_deltas();
+			assert!(!menu.is_open());
+			assert!(commands.is_empty());
+		}
+	}
+
 	#[test]
 	fn leaving_channel_settings_retires_its_inflight_read() {
 		let ctx = egui::Context::default();

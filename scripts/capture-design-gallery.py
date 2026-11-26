@@ -20,7 +20,7 @@ def capture(binary, output):
         raise ValueError('invalid preview page list')
     output.mkdir(parents=True, exist_ok=False)
     runs = [(page, page, []) for page in pages]
-    for page in ('appearance', 'forum', 'stage', 'screen-share', 'server-roles', 'mod-view', 'conversation', 'extensions'):
+    for page in ('appearance', 'forum', 'forum-staged-image', 'stage', 'screen-share', 'server-roles', 'server-members', 'server-settings-search', 'composer-spoilers', 'composer-staged-image', 'mod-view', 'conversation', 'extensions'):
         runs.append((page+'-light-narrow', page, ['--light', '--width=560', '--height=580']))
     manifest = []
     for name, page, options in runs:

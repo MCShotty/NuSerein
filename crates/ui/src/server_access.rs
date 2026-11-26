@@ -33,7 +33,7 @@ pub(super) struct AccessUi {
 	transfer_name: String,
 	confirmation: Option<Confirmation>,
 	submitted: bool,
-	open_interview: bool,
+	open_interview: Option<Id>,
 	pub opened_channel: Option<Id>,
 	invites: bool,
 	dms: bool,
@@ -48,7 +48,10 @@ impl AccessUi {
 		}
 	}
 	pub fn has_changes(&self) -> bool {
-		self.confirmation.is_some() || self.submitted || self.draft != self.baseline
+		self.confirmation.is_some()
+			|| self.submitted
+			|| self.open_interview.is_some()
+			|| self.draft != self.baseline
 	}
 	pub fn overlay_open(&self) -> bool {
 		self.confirmation.is_some()
@@ -65,6 +68,7 @@ impl AccessUi {
 	pub fn load(&mut self, state: &mut State, guild: Id, page: Page) -> Option<Command> {
 		self.scope(state, guild);
 		if !Self::allowed(state, guild, page)
+			|| (page == Page::Applications && self.open_interview.is_some())
 			|| state.server_admin.pending
 			|| state.server_admin.error.is_some()
 		{
@@ -72,7 +76,12 @@ impl AccessUi {
 		}
 		let needed = state.server_admin.guild != Some(guild)
 			|| match page {
-				Page::Applications => state.server_admin.access.applications.is_none(),
+				Page::Applications => state
+					.server_admin
+					.access
+					.applications
+					.as_ref()
+					.is_none_or(|rows| rows.guild != guild || rows.status != self.status),
 				Page::Safety | Page::Access => state.server_admin.access.settings.is_none(),
 			};
 		if !needed {
@@ -120,17 +129,25 @@ impl AccessUi {
 				self.transfer_name.clear();
 			}
 		}
-		if self.open_interview && !state.server_admin.pending {
-			self.open_interview = false;
-			if state.server_admin.error.is_none() {
-				self.opened_channel = state.server_admin.access.interview;
-			}
-		}
-		if let Some(channel) = self.opened_channel.take()
-			&& state.channel(channel).is_some()
-			&& let Some(command) = state.select(channel)
+		if page == Page::Applications
+			&& !state.server_admin.pending
+			&& let Some(request) = self.open_interview.take()
+			&& state.server_admin.guild == Some(guild)
+			&& state.server_admin.error.is_none()
+			&& let Some(channel) = state.server_admin.access.interview
+			&& state
+				.server_admin
+				.access
+				.detail
+				.as_ref()
+				.is_some_and(|row| {
+					row.guild == guild && row.id == request && row.interview == Some(channel)
+				}) && state
+			.channel(channel)
+			.is_some_and(|row| row.guild.is_none() && row.kind == 3)
+			&& state.can_view(channel)
 		{
-			commands.push(command);
+			self.opened_channel = Some(channel);
 		}
 		if matches!(self.confirmation,Some(Confirmation::Decision{request,..}) if state.server_admin.access.removed_application==Some(request))
 			|| matches!(self.confirmation,Some(Confirmation::Transfer{..}) if !state.owns_guild(guild))
@@ -184,7 +201,10 @@ impl AccessUi {
 		commands: &mut Vec<Command>,
 	) {
 		let write = action.write();
-		let interview = matches!(action, Action::Interview { .. });
+		let interview = match &action {
+			Action::Interview { request } => Some(*request),
+			_ => None,
+		};
 		if let Some(command) =
 			state.request_server_admin(guild, server_admin::Action::Access(action))
 		{
@@ -266,7 +286,9 @@ impl AccessUi {
 			.as_ref()
 			.filter(|v| v.guild == guild && v.status == self.status)
 		else {
-			ui.weak("Applications are available only when this server supports manual approval. Reload to request the current list.");
+			if !state.server_admin.pending && action.is_none() {
+				ui.weak("No application list is loaded for this tab. Reload to try again.");
+			}
 			return;
 		};
 		if let Some(total) = page.total {
@@ -318,7 +340,7 @@ impl AccessUi {
 				.access
 				.detail
 				.as_ref()
-				.filter(|v| v.id == id && v.guild == guild)
+				.filter(|v| v.id == id && v.guild == guild && v.status == self.status)
 		}) else {
 			return;
 		};
@@ -983,6 +1005,34 @@ mod tests {
 			}
 		);
 	}
+	#[test]
+	fn applications_load_does_not_reuse_a_snapshot_from_another_tab() {
+		let mut state = test_support::demo_state();
+		let guild = state.guilds[0].id;
+		let actor = state.user.as_ref().unwrap().id;
+		let mut permissions = test_support::permission_snapshot(&state);
+		permissions
+			.guilds
+			.iter_mut()
+			.find(|row| row.id == guild)
+			.unwrap()
+			.owner = Some(actor);
+		state.permissions.replace(permissions).unwrap();
+		state.server_admin.guild = Some(guild);
+		state.server_admin.access.applications = Some(model::server_access::Applications {
+			guild,
+			status: Status::Approved,
+			items: vec![],
+			total: Some(0),
+			next: None,
+		});
+		let mut editor = AccessUi::default();
+		assert!(matches!(editor.load(&mut state, guild, Page::Applications),
+			Some(Command::ServerAdmin { guild: target, action, .. }) if target == guild
+			&& matches!(*action, server_admin::Action::Access(Action::Applications { status: Status::Pending, before: None }))));
+		assert!(editor.load(&mut state, guild, Page::Applications).is_none());
+	}
+
 	#[test]
 	fn application_selection_and_confirmation_do_not_survive_an_account_generation_change() {
 		let state = test_support::demo_state();

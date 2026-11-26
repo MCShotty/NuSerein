@@ -13,7 +13,9 @@ pub(super) struct Friends {
 	tab: Tab,
 	query: String,
 	username: String,
-	outgoing: bool,
+	requests: RequestView,
+	direct_requests: Option<(u64, bool)>,
+	spam_confirm: Option<(u64, model::Id)>,
 	list_key: Option<ListKey>,
 	list_query: String,
 	list: Box<[model::Id]>,
@@ -35,6 +37,37 @@ enum Tab {
 	Pending,
 	Restricted,
 	Add,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+enum RequestView {
+	#[default]
+	Incoming,
+	Outgoing,
+	Spam,
+}
+impl RequestView {
+	const ALL: [Self; 3] = [Self::Incoming, Self::Outgoing, Self::Spam];
+	fn for_row(incoming: bool, spam: bool) -> Self {
+		match (incoming, spam) {
+			(false, _) => Self::Outgoing,
+			(true, true) => Self::Spam,
+			(true, false) => Self::Incoming,
+		}
+	}
+	fn label(self) -> &'static str {
+		match self {
+			Self::Incoming => "friends-incoming",
+			Self::Outgoing => "friends-outgoing",
+			Self::Spam => "friends-requests-spam",
+		}
+	}
+	fn empty(self) -> &'static str {
+		match self {
+			Self::Incoming => "friends-no-incoming",
+			Self::Outgoing => "friends-no-outgoing",
+			Self::Spam => "friends-no-spam-requests",
+		}
+	}
 }
 impl Friends {
 	fn matches(&self, state: &State, user: &model::User, query: &str) -> bool {
@@ -90,6 +123,332 @@ impl Friends {
 	}
 }
 impl MessagingUi {
+	pub(super) fn direct_requests_open(&self, state: &State) -> bool {
+		self.guild.is_none()
+			&& state.selected.is_none()
+			&& self
+				.friends
+				.direct_requests
+				.is_some_and(|(generation, _)| generation == state.generation)
+	}
+	pub(super) fn close_direct_requests(&mut self) {
+		self.friends.direct_requests = None;
+	}
+	pub(super) fn open_direct_requests(&mut self, state: &mut State) {
+		if self.guild.is_some() || self.direct_requests_open(state) {
+			return;
+		}
+		let spam = state.direct_request_channels(false).next().is_none();
+		if spam && state.direct_request_channels(true).next().is_none() {
+			return;
+		}
+		state.open_home();
+		self.search.open = false;
+		self.friends.direct_requests = Some((state.generation, spam));
+	}
+	fn direct_requests_page(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		commands: &mut Vec<Command>,
+	) {
+		let Some((generation, mut spam)) = self.friends.direct_requests else {
+			return;
+		};
+		let mut selected = None;
+		egui::Frame::new()
+			.inner_margin(egui::Margin::symmetric(design::WORKSPACE_INSET, 12))
+			.show(ui, |ui| {
+				ui.horizontal_wrapped(|ui| {
+					ui.label(design::workspace_title(
+						ui,
+						crate::i18n::translate("channel-list-heading-message-requests"),
+					));
+					if design::text_action(ui, "dm-requests-back-to-friends").clicked() {
+						self.close_direct_requests();
+					}
+				});
+				if self.friends.direct_requests.is_none() {
+					return;
+				}
+				if let Some(index) = design::segmented(
+					ui,
+					&["dm-requests-pending", "dm-requests-spam"],
+					usize::from(spam),
+				) {
+					spam = index == 1;
+					self.friends.direct_requests = Some((generation, spam));
+					crate::scroll::reset_wheel(ui.ctx());
+				}
+				ui.separator();
+				if spam {
+					ui.weak(crate::i18n::translate("dm-requests-spam-read-only"));
+				}
+				let mut rows: Vec<_> = state.direct_request_channels(spam).collect();
+				rows.sort_unstable_by_key(|channel| {
+					std::cmp::Reverse((state.channel_activity(channel), channel.id))
+				});
+				if rows.is_empty() {
+					let label = if spam {
+						"dm-requests-no-spam"
+					} else {
+						"dm-requests-no-pending"
+					};
+					design::empty_state(ui, Icon::People, label, "");
+					return;
+				}
+				self.scroll
+					.attach(
+						ui,
+						("direct-request-inbox", generation, spam),
+						egui::ScrollArea::vertical(),
+					)
+					.show_rows(ui, 36.0, rows.len(), |ui, range| {
+						for channel in &rows[range] {
+							ui.push_id(channel.id, |ui| {
+								let label = if channel.kind == 1 {
+									channel
+										.recipients
+										.first()
+										.map(|user| state.user_display_name(user))
+										.unwrap_or(channel.name.as_str())
+								} else {
+									channel.name.as_str()
+								};
+								if ui
+									.add_sized(
+										[ui.available_width(), 36.0],
+										egui::Button::new(label).truncate(),
+									)
+									.on_hover_text(label)
+									.clicked()
+								{
+									selected = Some(channel.id);
+								}
+							});
+						}
+					});
+			});
+		if let Some(channel) = selected {
+			self.open_direct_request(state, channel, spam, commands);
+		}
+	}
+	fn open_direct_request(
+		&mut self,
+		state: &mut State,
+		channel: model::Id,
+		spam: bool,
+		commands: &mut Vec<Command>,
+	) {
+		if !self.direct_requests_open(state)
+			|| self.friends.direct_requests != Some((state.generation, spam))
+		{
+			return;
+		}
+		if spam {
+			if state.can_review_spam_direct(channel) {
+				commands.extend(state.select(channel));
+			}
+		} else if state.message_request(channel) && !state.spam_direct(channel) {
+			self.close_direct_requests();
+			commands.extend(state.select(channel));
+		}
+	}
+	pub(super) fn sync_spam_review(&mut self, state: &mut State) {
+		if self
+			.friends
+			.spam_confirm
+			.is_some_and(|(generation, channel)| {
+				generation != state.generation || !state.spam_request_is_resolvable(channel)
+			}) {
+			self.friends.spam_confirm = None;
+		}
+		if let Some(channel) = state.take_ignored_spam()
+			&& state.channel(channel).is_none()
+			&& state.selected.is_none_or(|selected| selected == channel)
+		{
+			state.arrived_home();
+			self.guild = None;
+			self.search.open = false;
+			self.friends.direct_requests = Some((state.generation, true));
+		}
+	}
+	pub(super) fn show_spam_direct(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		channel: model::Id,
+		commands: &mut Vec<Command>,
+	) {
+		use client_core::Freshness;
+		let allowed = state.selected == Some(channel) && state.can_review_spam_direct(channel);
+		egui::Frame::new()
+			.inner_margin(egui::Margin::symmetric(design::WORKSPACE_INSET, 12))
+			.show(ui, |ui| {
+				ui.horizontal_wrapped(|ui| {
+					ui.label(design::workspace_title(
+						ui,
+						crate::i18n::translate("dm-requests-spam"),
+					));
+					if design::text_action(ui, "dm-requests-back-to-requests").clicked() {
+						state.open_home();
+						self.guild = None;
+						self.search.open = false;
+						self.friends.direct_requests = Some((state.generation, true));
+					}
+				});
+				if state.selected != Some(channel) {
+					return;
+				}
+				if !allowed {
+					ui.weak(crate::i18n::translate("dm-requests-review-unavailable"));
+					return;
+				}
+				ui.weak(crate::i18n::translate("dm-requests-review-text-only"));
+				if state.spam_request_is_resolvable(channel) {
+					self.spam_request_actions(ui, state, channel, commands);
+				}
+				if state.spam_request_waiting(channel) {
+					ui.horizontal(|ui| {
+						ui.add(design::Busy::new());
+						ui.label(crate::i18n::translate("dm-requests-review-confirming"));
+					});
+				} else if let Some(failure) = state.spam_request_failure(channel) {
+					let colors = design::palette(ui);
+					ui.colored_label(
+						colors.danger,
+						crate::i18n::translate_if_key(failure.label()),
+					);
+				}
+				ui.weak(crate::i18n::translate(
+					if state.spam_request_is_resolvable(channel) {
+						"dm-requests-review-report-in-discord"
+					} else {
+						"dm-requests-review-manage-in-discord"
+					},
+				));
+				ui.hyperlink_to(
+					crate::i18n::translate("dm-requests-review-manage-guide"),
+					"https://support.discord.com/hc/en-us/articles/7924992471191-Message-Requests",
+				);
+				if state.freshness == Freshness::Loading {
+					ui.add(design::Busy::new());
+				} else if ui
+					.add_enabled(
+						state.demo || state.gateway_connected,
+						egui::Button::new(crate::i18n::translate("dm-requests-reload-history")),
+					)
+					.clicked()
+				{
+					commands.push(state.history(None));
+					return;
+				}
+				if state.freshness == Freshness::Unavailable {
+					ui.weak(crate::i18n::translate("dm-requests-review-unavailable"));
+					return;
+				}
+				let rows: Vec<_> = state
+					.timeline
+					.display_iter()
+					.rev()
+					.filter(|message| {
+						message.channel == channel
+							&& !message.ephemeral && !state.timeline.is_deleted(message.id)
+					})
+					.take(50)
+					.collect();
+				if rows.is_empty() && state.freshness != Freshness::Loading {
+					ui.weak(crate::i18n::translate("dm-requests-review-no-history"));
+				}
+				self.scroll
+					.attach(
+						ui,
+						("spam-direct-review", state.generation, channel),
+						egui::ScrollArea::vertical(),
+					)
+					.show(ui, |ui| {
+						for message in rows.into_iter().rev() {
+							if state.user_blocked(message.author.id) == Some(true)
+								|| state.user_ignored(message.author.id) == Some(true)
+							{
+								ui.weak(crate::i18n::translate("dm-requests-review-hidden"));
+							} else {
+								ui.strong(&message.author.name);
+								if message.content.is_empty()
+									|| crate::embeds::has_spoilers(message)
+								{
+									ui.weak(crate::i18n::translate("dm-requests-review-hidden"));
+								} else {
+									let mut text: String =
+										message.content.chars().take(1200).collect();
+									if text.len() < message.content.len() {
+										text.push('…');
+									}
+									ui.add(egui::Label::new(text).wrap());
+								}
+							}
+							ui.separator();
+						}
+					});
+			});
+	}
+	fn spam_request_actions(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+		channel: model::Id,
+		commands: &mut Vec<Command>,
+	) {
+		let scope = (state.generation, channel);
+		let enabled = state.can_resolve_spam_request(channel);
+		let ignore = ui
+			.push_id(("spam-request-actions", scope), |ui| {
+				ui.horizontal_wrapped(|ui| {
+					ui.add_enabled_ui(enabled, |ui| {
+						if design::primary_button(
+							ui,
+							&crate::i18n::translate("dm-requests-review-accept"),
+						)
+						.clicked() && self.friends.spam_confirm.is_none()
+							&& let Some(command) = state.resolve_spam_request(channel, true)
+						{
+							commands.push(command);
+							ui.ctx().request_repaint();
+						}
+						design::secondary_button(
+							ui,
+							&crate::i18n::translate("dm-requests-review-ignore"),
+						)
+					})
+					.inner
+				})
+				.inner
+			})
+			.inner;
+		if ignore.clicked() {
+			self.friends.spam_confirm = Some(scope);
+		}
+		if self.friends.spam_confirm == Some(scope)
+			&& let Some(choice) = crate::dialog::Confirm::new(
+				("ignore-spam-request", scope),
+				"dm-requests-review-ignore-title",
+				"dm-requests-review-ignore-description",
+			)
+			.confirm_label("dm-requests-review-ignore")
+			.danger()
+			.enabled(state.can_resolve_spam_request(channel))
+			.show(ui.ctx())
+		{
+			self.friends.spam_confirm = None;
+			ignore.request_focus();
+			if choice == crate::dialog::Choice::Confirmed
+				&& let Some(command) = state.resolve_spam_request(channel, false)
+			{
+				commands.push(command);
+				ui.ctx().request_repaint();
+			}
+		}
+	}
 	#[cfg(feature = "demo")]
 	pub fn prepare_friends_sample(&mut self) {
 		self.friends.tab = Tab::Online;
@@ -209,7 +568,7 @@ impl MessagingUi {
 			ui.add_space(8.0);
 			ui.hyperlink_to(
 				language.text("friends-explore-servers"),
-				"https://discord.com/servers",
+				crate::join_server::PUBLIC_SERVER_DIRECTORY,
 			);
 		});
 	}
@@ -225,55 +584,77 @@ impl MessagingUi {
 		egui::Frame::new()
 			.inner_margin(egui::Margin::symmetric(24, 16))
 			.show(ui, |ui| {
-				let [incoming, outgoing] = [false, true].map(|outgoing| {
-					state
-						.pending_friends()
-						.filter(|(_, _, incoming)| *incoming != outgoing)
-						.count()
+				let known = state.friend_requests_known();
+				let mut counts = [0; 3];
+				if known {
+					for (user, _, incoming) in state.pending_friends() {
+						let request =
+							RequestView::for_row(*incoming, state.friend_request_is_spam(user.id));
+						counts[request as usize] += 1;
+					}
+				}
+				let labels = RequestView::ALL.map(|view| {
+					let label = language.text(view.label());
+					if known {
+						format!("{label} — {}", counts[view as usize])
+					} else {
+						label
+					}
 				});
-				let labels = [
-					format!("{} — {incoming}", language.text("friends-incoming")),
-					format!("{} — {outgoing}", language.text("friends-outgoing")),
-				];
-				if let Some(index) = design::segmented(
-					ui,
-					&[&labels[0], &labels[1]],
-					usize::from(self.friends.outgoing),
-				) {
-					self.friends.outgoing = index == 1;
+				let mut reset_scroll = false;
+				let shown = if counts[RequestView::Spam as usize] != 0
+					|| self.friends.requests == RequestView::Spam
+				{
+					3
+				} else {
+					2
+				};
+				let tabs = [&labels[0][..], &labels[1][..], &labels[2][..]];
+				if let Some(index) =
+					design::segmented(ui, &tabs[..shown], self.friends.requests as usize)
+				{
+					let next = RequestView::ALL[index];
+					if next != self.friends.requests {
+						self.friends.requests = next;
+						reset_scroll = true;
+					}
 				}
 				ui.add_space(12.0);
-				search(
+				let search = search(
 					ui,
 					&mut self.friends.query,
-					egui::Id::unique("friend-requests-search"),
+					egui::Id::unique(("friend-requests-search", state.generation)),
 					&language.text("friends-search-requests"),
 				);
+				reset_scroll |= search.changed();
+				if reset_scroll {
+					crate::scroll::reset_wheel(ui.ctx());
+				}
 				ui.add_space(16.0);
 				let query = self.friends.query.trim().to_lowercase();
 				let mut rows: Vec<_> = state
 					.pending_friends()
 					.filter(|(user, name, incoming)| {
-						*incoming != self.friends.outgoing
+						RequestView::for_row(*incoming, state.friend_request_is_spam(user.id))
+							== self.friends.requests
 							&& (user.name.to_lowercase().contains(&query)
-								|| name.to_lowercase().contains(&query))
+								|| state
+									.user_display_name(user)
+									.to_lowercase()
+									.contains(&query) || name.to_lowercase().contains(&query))
 					})
 					.collect();
 				rows.sort_unstable_by(|a, b| a.0.name.cmp(&b.0.name).then(a.0.id.cmp(&b.0.id)));
 				if rows.is_empty() {
-					let title = if !state.friend_requests_known() {
-						language.text("friends-requests-unavailable")
+					let (title, detail) = if !known {
+						(language.text("friends-requests-unavailable"), String::new())
 					} else if !query.is_empty() {
-						language.text("friends-no-request-search")
-					} else if self.friends.outgoing {
-						language.text("friends-no-outgoing")
+						(
+							language.text("friends-no-request-search"),
+							language.text("friends-try-different"),
+						)
 					} else {
-						language.text("friends-no-incoming")
-					};
-					let detail = if query.is_empty() {
-						language.text("friends-new-requests")
-					} else {
-						language.text("friends-try-different")
+						(language.text(self.friends.requests.empty()), String::new())
 					};
 					design::empty_state(ui, Icon::People, &title, &detail);
 					return;
@@ -284,11 +665,7 @@ impl MessagingUi {
 						ui,
 						format!(
 							"{} — {}",
-							if self.friends.outgoing {
-								language.text("friends-outgoing")
-							} else {
-								language.text("friends-incoming")
-							},
+							language.text(self.friends.requests.label()),
 							rows.len()
 						),
 						colors.muted,
@@ -296,106 +673,109 @@ impl MessagingUi {
 				);
 				ui.add_space(8.0);
 				ui.spacing_mut().item_spacing.y = 0.0;
-				let enabled =
-					!state.user_action_pending() && (state.demo || state.gateway_connected);
+				let enabled = known
+					&& !state.user_action_pending()
+					&& (state.demo || state.gateway_connected);
 				let mut after_hot = false;
-				self.scroll
-					.attach(
-						ui,
-						"friend-requests",
-						egui::ScrollArea::vertical().auto_shrink([false, false]),
-					)
-					.show_rows(ui, ROW, rows.len(), |ui, range| {
-						for (user, name, incoming) in &rows[range] {
-							ui.push_id(user.id.0, |ui| {
-								// Requests have no conversation to open, so the row opens the
-								// profile like member lists; the round buttons stay on top.
-								let (rect, response, hot) =
-									person_row(ui, after_hot, egui::Sense::click());
-								after_hot = hot;
-								let response =
-									response.on_hover_cursor(egui::CursorIcon::PointingHand);
-								response.widget_info(|| {
-									egui::WidgetInfo::labeled(egui::Role::Button, true, &user.name)
-								});
-								self.profile.person_click(ui, &response, None, user);
-								user_menu::show(
-									&response,
-									state,
-									user,
-									&mut self.profile,
-									&mut self.user_action,
-								);
-								let actions = if *incoming { 2 } else { 1 };
-								let layout = RowLayout::new(rect, actions);
-								self.avatars.show_plain(
-									&mut ui
-										.new_child(egui::UiBuilder::new().max_rect(layout.avatar)),
-									user,
-									40.0,
-									state.demo,
-								);
-								let mut text =
-									ui.new_child(egui::UiBuilder::new().max_rect(layout.text));
-								text.spacing_mut().item_spacing.y = 1.0;
-								text.add(
-									egui::Label::new(
-										design::semibold(ui, state.user_display_name(user), 15.0)
-											.color(colors.text_strong),
-									)
-									.truncate(),
-								);
-								text.add(
-									egui::Label::new(
-										RichText::new(if *incoming {
-											format!(
-												"{name} · {}",
-												language.text("friends-incoming-request")
-											)
-										} else {
-											format!(
-												"{name} · {}",
-												language.text("friends-outgoing-request")
-											)
-										})
-										.size(13.0)
-										.color(colors.muted),
-									)
-									.truncate(),
-								);
-								let mut row = ui.new_child(
-									egui::UiBuilder::new()
-										.max_rect(layout.actions)
-										.layout(egui::Layout::left_to_right(egui::Align::Center)),
-								);
-								row.spacing_mut().item_spacing.x = ACTION_GAP;
-								row.add_enabled_ui(enabled, |ui| {
-									ui.spacing_mut().item_spacing.x = ACTION_GAP;
-									let reject_label = language.text(if *incoming {
-										"friends-decline-request"
-									} else {
-										"friends-cancel-request"
-									});
-									if *incoming
-										&& round_action(
-											ui,
-											Icon::Check,
-											&language.text("friends-accept-request"),
-											colors.positive,
-										)
-										.clicked()
-									{
-										resolve = Some((user.id, true));
-									}
-									if round_action(ui, Icon::Close, &reject_label, colors.danger)
-										.clicked()
-									{
-										resolve = Some((user.id, false));
-									}
-								});
+				let scroll = self.scroll.attach(
+					ui,
+					("friend-requests", state.generation, self.friends.requests),
+					egui::ScrollArea::vertical().auto_shrink([false, false]),
+				);
+				let scroll = if reset_scroll {
+					scroll.vertical_scroll_offset(0.0)
+				} else {
+					scroll
+				};
+				scroll.show_rows(ui, ROW, rows.len(), |ui, range| {
+					for (user, name, incoming) in &rows[range] {
+						ui.push_id(user.id.0, |ui| {
+							// Requests have no conversation to open, so the row opens the
+							// profile like member lists; the round buttons stay on top.
+							let (rect, response, hot) =
+								person_row(ui, after_hot, egui::Sense::click());
+							after_hot = hot;
+							let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+							response.widget_info(|| {
+								egui::WidgetInfo::labeled(egui::Role::Button, true, &user.name)
 							});
-						}
-					});
+							self.profile.person_click(ui, &response, None, user);
+							user_menu::show(
+								&response,
+								state,
+								user,
+								&mut self.profile,
+								&mut self.user_action,
+							);
+							let actions = if *incoming { 2 } else { 1 };
+							let layout = RowLayout::new(rect, actions);
+							self.avatars.show_plain(
+								&mut ui.new_child(egui::UiBuilder::new().max_rect(layout.avatar)),
+								user,
+								40.0,
+								state.demo,
+							);
+							let mut text =
+								ui.new_child(egui::UiBuilder::new().max_rect(layout.text));
+							text.spacing_mut().item_spacing.y = 1.0;
+							text.add(
+								egui::Label::new(
+									design::semibold(ui, state.user_display_name(user), 15.0)
+										.color(colors.text_strong),
+								)
+								.truncate(),
+							);
+							text.add(
+								egui::Label::new(
+									RichText::new(if *incoming {
+										format!(
+											"{name} · {}",
+											language.text("friends-incoming-request")
+										)
+									} else {
+										format!(
+											"{name} · {}",
+											language.text("friends-outgoing-request")
+										)
+									})
+									.size(13.0)
+									.color(colors.muted),
+								)
+								.truncate(),
+							);
+							let mut row = ui.new_child(
+								egui::UiBuilder::new()
+									.max_rect(layout.actions)
+									.layout(egui::Layout::left_to_right(egui::Align::Center)),
+							);
+							row.spacing_mut().item_spacing.x = ACTION_GAP;
+							row.add_enabled_ui(enabled, |ui| {
+								ui.spacing_mut().item_spacing.x = ACTION_GAP;
+								let reject_label = language.text(if *incoming {
+									"friends-decline-request"
+								} else {
+									"friends-cancel-request"
+								});
+								if *incoming
+									&& round_action(
+										ui,
+										Icon::Check,
+										&language.text("friends-accept-request"),
+										colors.positive,
+									)
+									.clicked()
+								{
+									resolve = Some((user.id, true));
+								}
+								if round_action(ui, Icon::Close, &reject_label, colors.danger)
+									.clicked()
+								{
+									resolve = Some((user.id, false));
+								}
+							});
+						});
+					}
+				});
 			});
 		if let Some((user, accept)) = resolve
 			&& let Some(command) = state.resolve_friend_request(user, accept)
@@ -409,6 +789,10 @@ impl MessagingUi {
 		state: &mut State,
 		commands: &mut Vec<Command>,
 	) {
+		if self.direct_requests_open(state) {
+			self.direct_requests_page(ui, state, commands);
+			return;
+		}
 		let colors = design::palette(ui);
 		let language = self.language;
 		egui::Frame::new()
@@ -432,11 +816,13 @@ impl MessagingUi {
 						(Tab::Restricted, language.text("friends-blocked-ignored")),
 						(Tab::Add, language.text("friends-add")),
 					] {
-						let count = (tab == Tab::Pending)
+						let count = (tab == Tab::Pending && state.friend_requests_known())
 							.then(|| {
 								state
 									.pending_friends()
-									.filter(|(_, _, incoming)| *incoming)
+									.filter(|(user, _, incoming)| {
+										*incoming && !state.friend_request_is_spam(user.id)
+									})
 									.count()
 							})
 							.filter(|count| *count > 0);
@@ -1012,7 +1398,7 @@ fn search(ui: &mut egui::Ui, query: &mut String, id: egui::Id, hint: &str) -> eg
 		.inner_margin(egui::Margin::symmetric(12, 6))
 		.show(ui, |ui| {
 			ui.horizontal(|ui| {
-				let edit = ui.add(
+				let mut edit = ui.add(
 					egui::TextEdit::singleline(query)
 						.align(egui::Align2::LEFT_CENTER)
 						.id(id)
@@ -1033,6 +1419,8 @@ fn search(ui: &mut egui::Ui, query: &mut String, id: egui::Id, hint: &str) -> eg
 					.clicked()
 					{
 						query.clear();
+						edit.mark_changed();
+						edit.request_focus();
 					}
 				});
 				edit
@@ -1123,6 +1511,80 @@ mod tests {
 	}
 
 	// Keep the pre-cache selection algorithm as a behavioral oracle.
+	#[test]
+	fn spam_dm_inbox_lists_known_metadata_without_selecting_or_dispatching() {
+		let mut state = test_support::demo_state();
+		let mut pending = state.channels[0].clone();
+		pending.id = model::Id(900_001);
+		pending.kind = 1;
+		pending.guild = None;
+		let mut sender = state.user.as_ref().unwrap().clone();
+		sender.id = model::Id(900_002);
+		sender.name = "Synthetic requester".into();
+		pending.recipients = vec![sender];
+		let mut spam = pending.clone();
+		spam.id = model::Id(900_003);
+		let (pending_id, spam_id) = (pending.id, spam.id);
+		state.channels.extend([pending, spam]);
+		for event in [
+			client_core::user_actions::Event::MessageRequests(Some(vec![pending_id])),
+			client_core::user_actions::Event::MessageSpams(Some(vec![(spam_id, false)])),
+		] {
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::UserAction(event),
+			});
+		}
+		assert_eq!(
+			state
+				.direct_request_channels(false)
+				.map(|row| row.id)
+				.collect::<Vec<_>>(),
+			[pending_id]
+		);
+		assert_eq!(
+			state
+				.direct_request_channels(true)
+				.map(|row| row.id)
+				.collect::<Vec<_>>(),
+			[spam_id]
+		);
+		let mut view = MessagingUi::default();
+		view.open_direct_requests(&mut state);
+		assert!(view.direct_requests_open(&state));
+		view.friends.direct_requests = Some((state.generation, true));
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut commands = Vec::new();
+		ctx.run_ui(egui::RawInput::default(), |ui| {
+			view.friends_page(ui, &mut state, &mut commands)
+		})
+		.drop_without_applying_deltas();
+		assert!(commands.is_empty() && state.selected.is_none());
+		view.open_direct_request(&mut state, pending_id, true, &mut commands);
+		assert!(commands.is_empty() && state.selected.is_none());
+		view.open_direct_request(&mut state, spam_id, true, &mut commands);
+		assert_eq!(state.selected, Some(spam_id));
+		assert!(
+			matches!(commands.as_slice(), [Command::History { channel, .. }] if *channel == spam_id)
+		);
+		assert!(!state.can_compose(spam_id));
+		assert!(state.prepare_mark_read(model::Id(42)).is_none());
+		assert!(state.prepare_mark_channel_read(spam_id).is_none());
+		assert!(state.resolve_message_request(spam_id, true).is_none());
+		state.open_home();
+		state.generation = state.generation.wrapping_add(1);
+		assert!(!view.direct_requests_open(&state));
+	}
+
+	#[test]
+	fn spam_friend_requests_are_distinct_from_other_pending_requests() {
+		assert_eq!(RequestView::for_row(true, true), RequestView::Spam);
+		assert_eq!(RequestView::for_row(true, false), RequestView::Incoming);
+		assert_eq!(RequestView::for_row(false, false), RequestView::Outgoing);
+		assert_eq!(RequestView::for_row(false, true), RequestView::Outgoing);
+	}
+
 	fn uncached(friends: &Friends, state: &State) -> Vec<Id> {
 		let query = friends.query.trim().to_lowercase();
 		let filter = |user: &&model::User| {

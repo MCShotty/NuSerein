@@ -154,6 +154,28 @@ friends-incoming = Incoming
 friends-outgoing = Outgoing
 friends-search-requests = Search requests
 friends-requests-unavailable = Friend requests are not available yet.
+friends-requests-spam = Spam
+friends-no-spam-requests = No spam friend requests.
+dm-requests-back-to-friends = Back to Friends
+dm-requests-pending = Pending
+dm-requests-spam = Spam
+dm-requests-spam-read-only = Discord flagged these conversations. Open one to review its recent text without marking it as read.
+dm-requests-back-to-requests = Back to Message Requests
+dm-requests-reload-history = Reload messages
+dm-requests-review-unavailable = This conversation’s history is unavailable.
+dm-requests-review-text-only = Read-only review. Links in messages aren’t clickable, media is hidden, and you can’t reply or call here.
+dm-requests-review-manage-in-discord = To manage this request, open Discord and go to Home → Message Requests → Spam.
+dm-requests-review-report-in-discord = To report this request, open Discord and go to Home → Message Requests → Spam.
+dm-requests-review-accept = Accept request
+dm-requests-review-ignore = Ignore request
+dm-requests-review-ignore-title = Ignore this message request?
+dm-requests-review-ignore-description = This removes the request from your Spam list if Discord confirms. It does not report or block the sender.
+dm-requests-review-confirming = Waiting for Discord to confirm…
+dm-requests-review-manage-guide = How to manage message requests (opens browser)
+dm-requests-review-no-history = No recent messages are available to review.
+dm-requests-review-hidden = Message content hidden.
+dm-requests-no-pending = No pending message requests
+dm-requests-no-spam = No known spam conversations
 friends-no-request-search = No requests match your search.
 friends-no-outgoing = No outgoing friend requests.
 friends-no-incoming = No incoming friend requests.
@@ -326,7 +348,13 @@ attachments-media-menu-unavailable-for-synthetic-attachments = Unavailable for s
 # Context: open_original
 attachments-open-original-open-original = Open original…
 # Context: pending_card
+attachments-mark-spoiler = Mark attachment as spoiler
+attachments-remove-spoiler = Remove attachment spoiler
+attachments-spoiler-label = Spoiler
 attachments-pending-card-remove-attachment = Remove attachment
+attachments-pending-viewer-open = Preview { $file }
+attachments-pending-viewer-full-size-unavailable = Full-size preview unavailable. Close and reopen to try again.
+attachments-pending-viewer-loading = Loading full-size image…
 attachments-loading-card-preparing = Preparing…
 attachments-media-unavailable = Media unavailable
 # Context: show_status
@@ -435,6 +463,7 @@ channel-menu-context-create-channel = Create Channel
 channel-menu-context-edit-category = Edit Category
 # Context: context
 channel-menu-context-edit-channel = Edit Channel
+channel-menu-row-settings = Edit channel: { $channel }
 # Context: context
 channel-menu-context-favorites-are-saved-on-this-device = Favorites are saved on this device.
 # Context: context
@@ -1832,6 +1861,7 @@ notification-settings-tab-sounds = Sounds
 ## crates/ui/src/notifications.rs
 # Context: notification_rail
 notifications-notification-rail-add-a-server = Add a Server
+notifications-rail-discover-servers = Discover servers (opens browser)
 # Context: notification_rail
 notifications-notification-rail-in-a-call = , in a call
 # Context: notification_rail
@@ -2606,6 +2636,11 @@ server-admin-member-menu-roles = Roles
 # Context: member_menu
 server-admin-member-menu-unblock = Unblock
 # Context: members
+server-admin-members-filter-members = Filter members
+server-admin-members-clear-filters = Clear filters
+server-admin-members-any-join-method = Any join method
+server-admin-members-query-not-loaded = Could not load this member search. Check your connection and filters, then reload.
+server-admin-members-updating-results = Updating member results…
 server-admin-members-first-page = First page
 # Context: members
 server-admin-members-joined-in-the-last-7-days = Joined in the last 7 days
@@ -4271,6 +4306,7 @@ voice-mute-toggle-with-settings-input-settings = Input settings
 voice-mute-toggle-with-settings-output-settings = Output settings
 # Context: soundboard_panel
 voice-soundboard-title = Soundboard
+voice-soundboard-back-to-more = Back to call options
 # Context: soundboard_panel
 voice-soundboard-open = Play a sound in this voice channel
 # Context: soundboard_panel
@@ -4451,6 +4487,9 @@ voice-voice-settings-content-voice-processing-input-mode = Voice processing & in
 voice-voice-settings-output-settings = Output settings
 # Context: voice_settings_popup
 voice-voice-settings-popup-all-voice-settings = All voice settings
+voice-popout-reset-input = Reset microphone gain
+voice-popout-reset-output = Reset speaker volume
+voice-popout-choose-input = Choose input device
 # Context: voice_settings_popup
 voice-voice-settings-popup-input = Input
 # Context: voice_settings_popup
@@ -5372,6 +5411,9 @@ inbox-include-muted = Include muted conversations
 inbox-current-place = Current server or direct messages
 inbox-open-conversation = Open conversation
 inbox-mark-read = Mark as read
+inbox-mark-shown-read = Mark shown as read
+search-pins-not-loaded = Pinned messages aren’t loaded. Use Reload pins to try again.
+owned-cosmetics-reset-selection = Reset choices
 inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
 inbox-dismiss = Dismiss
 inbox-bookmark = Bookmark message
@@ -5605,6 +5647,7 @@ server-audit-view-role = View role
 server-audit-copy-target-id = Copy target ID
 
 server-settings-page-applications = Applications
+server-settings-applications-back-to-members = Back to Members
 server-settings-page-access = Access & Ownership
 server-settings-page-bans = Bans
 server-settings-page-events = Events
@@ -5746,6 +5789,20 @@ voice-stream-participant = Participant
 voice-stream-owner-screen = { $name }’s screen
 voice-stream-fullscreen-hint = View this screen share in fullscreen
 voice-stream-connecting = Connecting to the stream…
+voice-stream-popout-open = Pop out stream
+voice-stream-popout-show = Show stream window
+voice-stream-popout-title = NuSerein · Stream
+voice-stream-popout-pin = Stay on top
+voice-stream-popout-unpin = Remove from top
+voice-stream-popout-close = Close pop-out
+voice-stream-popout-waiting = Waiting for a stream picture…
+voice-stream-popout-playing = Stream is playing in a separate window
+voice-call-popout-open = Pop out call
+voice-call-popout-show = Show call window
+voice-call-popout-title = NuSerein · Call
+voice-call-popout-playing = Call video is in a separate window
+voice-call-popout-empty = No participants to display
+voice-call-popout-more = Showing the first { $count } participants
 accessibility-text-and-display = Text and display
 accessibility-compact-description = Use tighter spacing between message groups.
 accessibility-motion-and-scrolling = Motion and scrolling
@@ -6099,3 +6156,39 @@ archive-joined-private = Joined private
 archive-private = Private
 tray-show-app = Show NuSerein
 workspace-navigation = Navigation
+
+search-date-heading = Date
+search-date-help = When the message was sent (UTC)
+search-date-before = Before
+search-date-after = After
+search-date-during = During
+search-date-remove = Remove date
+search-date-previous-month = Previous month
+search-date-next-month = Next month
+search-date-invalid = Choose a date after January 1, 2015.
+search-date-invalid-range = After must be earlier than Before.
+search-date-month-year =
+    { $count ->
+        [1] January { $year }
+        [2] February { $year }
+        [3] March { $year }
+        [4] April { $year }
+        [5] May { $year }
+        [6] June { $year }
+        [7] July { $year }
+        [8] August { $year }
+        [9] September { $year }
+        [10] October { $year }
+        [11] November { $year }
+        *[12] December { $year }
+    }
+search-date-weekday =
+    { $count ->
+        [0] Su
+        [1] Mo
+        [2] Tu
+        [3] We
+        [4] Th
+        [5] Fr
+        *[6] Sa
+    }

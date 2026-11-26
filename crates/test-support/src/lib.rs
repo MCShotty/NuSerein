@@ -867,7 +867,7 @@ pub fn demo_state() -> State {
 	state.apply(Envelope {
 		generation: state.generation,
 		event: Event::UserAction(client_core::user_actions::Event::MessageSpams(Some(vec![
-			Id(43),
+			(Id(43), true),
 		]))),
 	});
 	state.apply(Envelope {

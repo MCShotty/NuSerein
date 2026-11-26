@@ -50,7 +50,7 @@ impl Admin {
 		self.preparing || self.uploading
 	}
 	pub fn has_changes(&self) -> bool {
-		self.preparing || !self.uploads.is_empty() || self.dialog_submitted
+		self.preparing || !self.uploads.is_empty() || self.dialog.is_some() || self.dialog_submitted
 	}
 	pub fn queue_files(&mut self, paths: Vec<std::path::PathBuf>) {
 		if self.preparing() {
@@ -118,16 +118,19 @@ impl Admin {
 	}
 	pub fn load(&mut self, state: &mut State, guild: Id, members: bool) -> Option<Command> {
 		if members && !self.query_initialized {
-			if state.server_admin.guild == Some(guild) {
-				self.query.clone_from(&state.server_admin.query);
+			if let Some(query) = state.server_admin.confirmed_member_query(guild) {
+				self.query.clone_from(query);
 			}
 			self.query_initialized = true;
 		}
 		if state.server_admin.pending
+			|| (members
+				&& (self.query_changed.is_some()
+					|| self.error == Some("server-admin-members-query-not-loaded")))
 			|| (state.server_admin.guild == Some(guild)
 				&& (state.server_admin.error.is_some()
 					|| if members {
-						state.server_admin.members.is_some()
+						state.server_admin.member_page(guild, &self.query).is_some()
 					} else {
 						state.server_admin.emojis.is_some()
 					})) {
@@ -272,6 +275,9 @@ impl Admin {
 			) {
 				commands.push(command);
 				self.error = None;
+				if members {
+					self.query_changed = None;
+				}
 			}
 		}
 		if state.server_admin.pending {
@@ -569,8 +575,7 @@ impl Admin {
 		let mut action = None;
 		if let Some(mut enabled) = state
 			.server_admin
-			.members
-			.as_ref()
+			.member_page(guild, &self.query)
 			.and_then(|members| members.show_in_channel_list)
 			&& state.can_show_members_in_channel_list(guild)
 		{
@@ -653,7 +658,22 @@ impl Admin {
 			}
 		});
 		let before_filters = self.query.filters.clone();
-		egui::CollapsingHeader::new("Filter members").show(ui, |ui| {
+		if (self.query.recent || self.query.filters != Default::default())
+			&& ui
+				.button(crate::i18n::translate("server-admin-members-clear-filters"))
+				.clicked()
+		{
+			self.query.recent = false;
+			self.query.filters = Default::default();
+			self.query.after = None;
+			self.query_changed = Some(ui.input(|input| input.time));
+		}
+		egui::CollapsingHeader::new(crate::i18n::translate(
+			"server-admin-members-filter-members",
+		))
+		.id_salt(("member-filters", state.generation, guild))
+		.default_open(self.query.filters != Default::default())
+		.show(ui, |ui| {
 			ui.horizontal_wrapped(|ui| {
 				egui::ComboBox::from_id_salt("member-filter-role")
 					.selected_text(
@@ -705,27 +725,20 @@ impl Admin {
 				}
 				egui::ComboBox::from_id_salt("member-source-filter")
 					.selected_text(self.query.filters.join_source.map_or_else(
-						|| "Any join method".into(),
-						|source| format!("Join method: {source}"),
+						|| crate::i18n::translate("server-admin-members-any-join-method"),
+						|source| crate::i18n::translate(join_method_key(Some(source))),
 					))
 					.show_ui(ui, |ui| {
 						ui.selectable_value(
 							&mut self.query.filters.join_source,
 							None,
-							"Any join method",
+							crate::i18n::translate("server-admin-members-any-join-method"),
 						);
-						for (source, label) in [
-							(1, "Bot"),
-							(2, "Integration"),
-							(3, "Discovery"),
-							(5, "Invite"),
-							(6, "Custom invite link"),
-							(7, "Application"),
-						] {
+						for source in [1, 2, 3, 5, 6, 7] {
 							ui.selectable_value(
 								&mut self.query.filters.join_source,
 								Some(source),
-								label,
+								crate::i18n::translate(join_method_key(Some(source))),
 							);
 						}
 					});
@@ -770,12 +783,19 @@ impl Admin {
 		if self
 			.query_changed
 			.is_some_and(|at| ui.input(|input| input.time) - at >= 0.3)
+			&& action.is_none()
 			&& !state.server_admin.saving
+			&& !state.server_settings.saving
 		{
 			action = Some(Action::LoadMembers(self.query.clone()));
 			self.query_changed = None;
 		}
 		if self.query_changed.is_some() {
+			if !state.server_admin.pending {
+				ui.weak(crate::i18n::translate(
+					"server-admin-members-updating-results",
+				));
+			}
 			ui.ctx()
 				.request_repaint_after(std::time::Duration::from_millis(300));
 		}
@@ -788,7 +808,7 @@ impl Admin {
 				std::time::Duration::from_secs(30).saturating_sub(started.elapsed()),
 			);
 		}
-		if let Some(members) = &state.server_admin.members {
+		if let Some(members) = state.server_admin.member_page(guild, &self.query) {
 			if ui.available_width() < 820.0 {
 				for member in &members.items {
 					ui.push_id(member.user.id, |ui| {
@@ -1003,7 +1023,9 @@ impl Admin {
 				if self.query.after.is_some()
 					&& ui
 						.add_enabled(
-							!state.server_admin.pending,
+							action.is_none()
+								&& !state.server_admin.pending
+								&& !state.server_settings.saving,
 							egui::Button::new(crate::i18n::translate(
 								"server-admin-members-first-page",
 							)),
@@ -1016,7 +1038,9 @@ impl Admin {
 				if let Some(cursor) = members.next
 					&& ui
 						.add_enabled(
-							!state.server_admin.pending,
+							action.is_none()
+								&& !state.server_admin.pending
+								&& !state.server_settings.saving,
 							egui::Button::new(crate::i18n::translate(
 								"server-admin-members-next-page",
 							)),
@@ -1028,10 +1052,16 @@ impl Admin {
 				}
 			});
 		}
-		if let Some(action) = action
-			&& let Some(command) = state.request_server_admin(guild, action)
-		{
-			commands.push(command);
+		if let Some(action) = action {
+			let roster_read = matches!(&action, Action::LoadMembers(_));
+			if let Some(command) = state.request_server_admin(guild, action) {
+				commands.push(command);
+				if roster_read {
+					self.error = None;
+				}
+			} else if roster_read {
+				self.error = Some("server-admin-members-query-not-loaded");
+			}
 		}
 	}
 	#[allow(clippy::too_many_arguments)]
@@ -1544,7 +1574,10 @@ fn join_method(member: &Member) -> String {
 	if member.invite_code.is_some() {
 		return crate::i18n::translate("server-admin-join-method-invite");
 	}
-	crate::i18n::translate_if_key(match member.join_source {
+	crate::i18n::translate(join_method_key(member.join_source))
+}
+fn join_method_key(source: Option<u8>) -> &'static str {
+	match source {
 		Some(1) => "server-admin-join-method-bot",
 		Some(2) => "server-admin-join-method-integration",
 		Some(3) => "server-admin-join-method-discovery",
@@ -1554,7 +1587,7 @@ fn join_method(member: &Member) -> String {
 		Some(7) => "server-admin-join-method-application",
 		Some(8) => "server-admin-join-method-linked-lobby",
 		_ => "server-admin-join-method-unknown",
-	})
+	}
 }
 fn date(millis: Option<i128>) -> String {
 	millis

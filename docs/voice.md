@@ -214,7 +214,8 @@ implementation pass does not establish production readiness or physical media be
 ## Soundboard
 
 In a connected server voice channel, the call bar's **Soundboard** button opens a panel with
-that server's sounds and Discord's default sounds. Selecting a sound sends one explicit play
+that server's sounds and Discord's default sounds. On a narrow call bar, choose **More options →
+Soundboard**. Selecting a sound sends one explicit play
 request; nothing plays or loads until the panel is opened. Sounds played by other participants
 are audible: the service announces each one, and Serein downloads that sound and mixes it into
 the call's playback. Your own sound is heard locally once the service accepts the request, so a

@@ -716,7 +716,7 @@ impl MessagingUi {
 						if find.clicked() {
 							self.switcher.open(&ctx);
 						}
-						let friends = state.selected.is_none();
+						let friends = state.selected.is_none() && !self.direct_requests_open(state);
 						let (rect, response) =
 							ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
 						let hovered = response.hovered() || response.has_focus();
@@ -750,6 +750,7 @@ impl MessagingUi {
 							)
 						});
 						if response.on_hover_text(language.text("friends")).clicked() {
+							self.close_direct_requests();
 							state.open_home();
 							self.guild = None;
 							self.search.open = false;
@@ -757,16 +758,31 @@ impl MessagingUi {
 					});
 					ui.add_space(8.0);
 				}
+				if self.guild.is_none()
+					&& (self.direct_requests_open(state)
+						|| state.direct_request_channels(false).next().is_some()
+						|| state.direct_request_channels(true).next().is_some())
+					&& ui
+						.add_sized(
+							[ui.available_width(), 32.0],
+							egui::Button::new(
+								language.text("channel-list-heading-message-requests"),
+							)
+							.selected(self.direct_requests_open(state))
+							.truncate(),
+						)
+						.clicked()
+				{
+					self.open_direct_requests(state);
+				}
 				if let Some(guild) = self.guild
-					&& state.can_open_member_settings(guild)
 					&& state.server_members_shortcut(guild)
 					&& ui
 						.add_sized(
 							[ui.available_width(), 32.0],
 							egui::Button::new(language.text("members")).frame(false),
 						)
-						.clicked() && let Some(command) =
-					self.preview_server_admin(state, guild, "members")
+						.clicked() && let Some(command) = self.open_member_sidebar(state, guild)
 				{
 					commands.push(command);
 				}
@@ -1281,6 +1297,9 @@ impl MessagingUi {
 					}
 					self.pins_anchor =
 						(self.search.open && self.search.pins()).then_some(pins.rect);
+					if self.pins_anchor.is_some() {
+						self.search.remember_pins_trigger(state, pins.id);
+					}
 					if let Some(c) = channel
 						.as_ref()
 						.filter(|c| c.guild.is_some() && matches!(c.kind, 0 | 5 | 15 | 16))

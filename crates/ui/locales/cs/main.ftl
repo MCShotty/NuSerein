@@ -302,6 +302,9 @@ attachments-media-menu-unavailable-for-synthetic-attachments = Nedostupné pro s
 # Context: open_original
 attachments-open-original-open-original = Otevřít originál…
 # Context: pending_card
+attachments-mark-spoiler = Označit přílohu jako spoiler
+attachments-remove-spoiler = Zrušit označení spoileru
+attachments-spoiler-label = Spoiler
 attachments-pending-card-remove-attachment = Odstraňte přílohu
 attachments-loading-card-preparing = Připravuje se…
 # Context: show_status

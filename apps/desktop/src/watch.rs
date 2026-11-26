@@ -179,6 +179,7 @@ impl Watch {
 		audio: Option<std::sync::mpsc::SyncSender<discord_voice::Frame>>,
 	) -> Option<Command> {
 		// Project only this frame's still-owned connection; early returns retire old data.
+		ui.voice_stream_picture_scope = None;
 		if !state.demo {
 			ui.voice_diagnostics
 				.remove(model::voice_diagnostics::ConnectionKind::ScreenReceive);
@@ -343,6 +344,13 @@ impl Watch {
 			}
 		}
 		if let Some(live) = &mut self.live {
+			let picture = live.context;
+			ui.voice_stream_picture_scope = Some((
+				picture.generation,
+				picture.channel,
+				picture.request,
+				picture.streamer,
+			));
 			if let Some(snapshot) = live.diagnostics.borrow_and_update().as_ref() {
 				ui.voice_diagnostics.update(
 					(

@@ -122,7 +122,7 @@ impl MessagingUi {
 		design::group(ui, "Account security and billing", |ui| {
 			design::hint(
 				ui,
-				"Use Discord for password and email changes, multi-factor setup, account recovery, purchases and subscription management.",
+				"Use Discord for password and email changes, multi-factor setup, account recovery and subscription management.",
 			);
 			if design::button(ui, "Open official Discord", design::ButtonKind::Outline).clicked() {
 				self.settings.account.opening = Some("https://discord.com/app".into());

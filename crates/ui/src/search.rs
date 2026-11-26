@@ -6,23 +6,10 @@ use model::Id;
 /// Width of the results pane when the window is wide enough to keep the timeline readable.
 pub const PANE_WIDTH: f32 = 420.0;
 const FILTER_WIDTH: f32 = 380.0;
+#[path = "search_date_picker.rs"]
+mod date_picker;
 #[path = "search_filters.rs"]
 mod filters;
-
-fn date_id(value: &str) -> Result<Option<u64>, ()> {
-	if value.is_empty() {
-		return Ok(None);
-	}
-	let format =
-		time::format_description::parse_borrowed::<2>("[year]-[month]-[day]").map_err(|_| ())?;
-	let date = time::Date::parse(value, &format).map_err(|_| ())?;
-	let millis = date.midnight().assume_utc().unix_timestamp_nanos() / 1_000_000;
-	let delta = u64::try_from(millis - 1_420_070_400_000).map_err(|_| ())?;
-	if delta == 0 || delta > (u64::MAX >> 22) {
-		return Err(());
-	}
-	Ok(Some(delta << 22))
-}
 
 #[derive(Default)]
 pub struct SearchUi {
@@ -46,6 +33,7 @@ pub struct SearchUi {
 	/// Replace IDs in an externally supplied query with names on the next frame.
 	relabel: bool,
 	search_anchor: Option<egui::Rect>,
+	pins_trigger: Option<(u64, Id, egui::Id)>,
 	suggestion_index: usize,
 	/// The last searches as sent, with IDs rather than names, newest first; session only, like
 	/// the rest of search.
@@ -130,6 +118,20 @@ impl SearchUi {
 	pub fn pins(&self) -> bool {
 		self.pins
 	}
+	pub(super) fn remember_pins_trigger(&mut self, state: &State, trigger: egui::Id) {
+		self.pins_trigger = state
+			.selected
+			.map(|channel| (state.generation, channel, trigger));
+	}
+	fn restore_pins_focus(&self, ctx: &egui::Context, state: &State) {
+		if let Some((generation, channel, trigger)) = self.pins_trigger
+			&& generation == state.generation
+			&& self.channel == Some(channel)
+			&& state.selected == Some(channel)
+		{
+			ctx.memory_mut(|memory| memory.request_focus(trigger));
+		}
+	}
 	/// Per-frame bookkeeping: Escape closes, navigation resets and closed views cancel requests.
 	pub fn sync(&mut self, ctx: &egui::Context, state: &mut State, commands: &mut Vec<Command>) {
 		if self.open
@@ -137,6 +139,9 @@ impl SearchUi {
 			&& self.viewing.is_none()
 			&& ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
 		{
+			if self.pins {
+				self.restore_pins_focus(ctx, state);
+			}
 			self.open = false;
 			self.filters_open = false;
 		}
@@ -423,7 +428,11 @@ impl SearchUi {
 					self.filter_draft = None;
 					submit = true;
 				}
-				filters::Action::Cancel => self.filter_draft = None,
+				filters::Action::Cancel => {
+					self.filter_draft = None;
+					self.focus = true;
+					ctx.request_repaint();
+				}
 				filters::Action::None => {}
 			}
 		} else if self.filters_open
@@ -839,6 +848,13 @@ impl SearchUi {
 		if !(self.open && self.pins) {
 			return;
 		}
+		let Some(channel) = self
+			.channel
+			.filter(|channel| Some(*channel) == state.selected)
+		else {
+			self.open = false;
+			return;
+		};
 		if std::mem::take(&mut self.pending_submit)
 			&& let Some(command) = state.request_pins()
 		{
@@ -854,7 +870,7 @@ impl SearchUi {
 			.min(bounds.right() - width)
 			.max(bounds.left());
 		let y = (anchor.bottom() + 8.0).min(bounds.bottom() - 120.0);
-		let area = egui::Area::new(egui::Id::unique("pins-popout"))
+		let area = egui::Area::new(egui::Id::unique(("pins-popout", state.generation, channel)))
 			.kind(egui::UiKind::Popup)
 			.order(egui::Order::Foreground)
 			.fixed_pos(egui::pos2(x, y))
@@ -911,6 +927,7 @@ impl SearchUi {
 											)
 											.clicked()
 											{
+												self.restore_pins_focus(&ctx, state);
 												self.open = false;
 											}
 											let reload = ui
@@ -943,16 +960,7 @@ impl SearchUi {
 							ui.cursor().top(),
 							egui::Stroke::new(1.0, colors.border),
 						);
-						let view = state.search.as_ref().filter(|view| view.pins);
-						let empty = view.map_or(state.can_search(), |view| {
-							!view.changed
-								&& view.error.is_none() && view.page.as_ref().is_some_and(|page| {
-								page.hits
-									.iter()
-									.all(|hit| !state.is_pinned(hit.channel, hit.id))
-							})
-						});
-						if empty {
+						if Self::known_empty_pins(state, channel) {
 							Self::pins_empty(ui, dm);
 						} else {
 							egui::Frame::new()
@@ -978,6 +986,24 @@ impl SearchUi {
 			self.open = false;
 		}
 		self.viewer(ui, state, avatars, media.download);
+	}
+	fn known_empty_pins(state: &State, channel: Id) -> bool {
+		state.can_search()
+			&& state.search.as_ref().is_some_and(|view| {
+				view.pins
+					&& view.channel == channel
+					&& !view.loading
+					&& !view.changed
+					&& view.error.is_none()
+					&& view.page.as_ref().is_some_and(|page| {
+						!page.partial
+							&& page.pin_cursor.is_none()
+							&& page
+								.hits
+								.iter()
+								.all(|hit| !state.is_pinned(hit.channel, hit.id))
+					})
+			})
 	}
 	fn pins_empty(ui: &mut egui::Ui, dm: bool) {
 		let colors = design::palette(ui);
@@ -1037,7 +1063,11 @@ impl SearchUi {
 				.color(colors.muted),
 			);
 		}
-		if let Some(view) = state.search.as_ref().filter(|view| view.pins) {
+		if let Some(view) = state
+			.search
+			.as_ref()
+			.filter(|view| view.pins && Some(view.channel) == state.selected)
+		{
 			if view.loading {
 				ui.label(
 					RichText::new(crate::i18n::translate_if_key(
@@ -1128,6 +1158,8 @@ impl SearchUi {
 					);
 				}
 			}
+		} else if allowed {
+			ui.weak(crate::i18n::translate("search-pins-not-loaded"));
 		}
 		if older_pins && let Some(command) = state.request_older_pins() {
 			commands.push(command);
@@ -1219,8 +1251,16 @@ impl SearchUi {
 			|| self.wire(state).unwrap_or_default(),
 			|view| view.query.clone(),
 		);
-		let filter_count =
-			model::search_terms(&active_query).map_or(0, |(_, filters)| filters.len());
+		let filter_count = model::search_terms(&active_query).map_or(0, |(_, filters)| {
+			if date_picker::during_date(&active_query).is_some() {
+				1 + filters
+					.iter()
+					.filter(|(key, _)| !matches!(*key, "min_id" | "max_id"))
+					.count()
+			} else {
+				filters.len()
+			}
+		});
 		let compact_header = ui.available_width() < 310.0;
 		if compact_header {
 			ui.label(design::semibold(ui, &title, 14.0).color(colors.text_strong));
@@ -2832,6 +2872,37 @@ mod tests {
 			assert!(!view.open);
 			assert!(state.search.is_none());
 			assert!(matches!(commands.last(), Some(Command::CancelSearch)));
+			assert!(
+				!SearchUi::known_empty_pins(&state, Id(1)),
+				"not loaded is not empty"
+			);
+			state.request_pins().unwrap();
+			assert!(
+				!SearchUi::known_empty_pins(&state, Id(1)),
+				"loading is not empty"
+			);
+			let page = state.search.as_mut().unwrap();
+			page.loading = false;
+			page.page = Some(model::SearchPage {
+				hits: vec![],
+				total: 0,
+				partial: false,
+				pin_cursor: None,
+			});
+			assert!(SearchUi::known_empty_pins(&state, Id(1)));
+			assert!(!SearchUi::known_empty_pins(&state, Id(2)));
+			state
+				.search
+				.as_mut()
+				.unwrap()
+				.page
+				.as_mut()
+				.unwrap()
+				.partial = true;
+			assert!(
+				!SearchUi::known_empty_pins(&state, Id(1)),
+				"partial is not empty"
+			);
 			let cursor = 1_700_000_000_000_000_000i128;
 			for (loading, continuation, available, retry, expected) in [
 				(false, Some(cursor), true, false, true),

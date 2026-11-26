@@ -110,7 +110,8 @@ fn decode_limited<T: serde::de::DeserializeOwned>(
 	}
 	serde_json::from_slice(bytes).map_err(|_| DecodeError)
 }
-const CHANNEL_FLAG_SPAM: u64 = 1 << 5;
+/// User-account DM spam classification; independent of pending request consent.
+pub const CHANNEL_FLAG_SPAM: u64 = 1 << 5;
 #[cfg(test)]
 mod channel_tests {
 	use super::*;
