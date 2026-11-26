@@ -31,6 +31,7 @@ struct Preview {
 	interactive: bool,
 	metrics: Option<NativeMetrics>,
 	timeline_churn: bool,
+	call_soundboard: bool,
 	smoke: bool,
 	messaging: ui::MessagingUi,
 	state: client_core::State,
@@ -96,7 +97,11 @@ impl eframe::App for Preview {
 				.count()
 		});
 		let measured = Instant::now();
-		let mut commands = self.messaging.show(ui, &mut self.state);
+		let mut commands = if self.call_soundboard {
+			self.messaging.preview_call_soundboard(ui, &mut self.state)
+		} else {
+			self.messaging.show(ui, &mut self.state)
+		};
 		commands.extend(self.state.poll_channel_preferences(Instant::now()));
 		if let Some(deadline) = self.state.next_channel_preference_deadline() {
 			ctx.request_repaint_after(deadline.saturating_duration_since(Instant::now()));
@@ -1220,6 +1225,8 @@ const PREVIEW_PAGES: &[&str] = &[
 	"forum-settings",
 	"friends",
 	"screen-share",
+	"call-soundboard",
+	"spam-review",
 	"emoji",
 	"gif-favorites",
 ];
@@ -1346,6 +1353,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				test_support::friends_demo_state()
 			} else if page == "screen-share" {
 				test_support::call_demo_state()
+			} else if page == "call-soundboard" {
+				let mut state = test_support::voice_demo_state();
+				if let Some(sound) = state.soundboard.sound(model::Id(9200)).cloned() {
+					state.toggle_soundboard_favorite(&sound);
+				}
+				state
+			} else if page == "spam-review" {
+				test_support::spam_review_demo_state()
 			} else {
 				test_support::demo_state()
 			};
@@ -2018,6 +2033,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			Ok(Box::new(Preview {
 				inbox_demo: inbox_demo::Store::default(),
 				mfa_fixture_target,
+				call_soundboard: page == "call-soundboard",
 				timeline_churn: args.iter().any(|arg| arg == "--timeline-churn"),
 				interactive,
 				metrics: args

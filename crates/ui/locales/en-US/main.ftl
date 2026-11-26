@@ -172,6 +172,10 @@ dm-requests-review-ignore-title = Ignore this message request?
 dm-requests-review-ignore-description = This removes the request from your Spam list if Discord confirms. It does not report or block the sender.
 dm-requests-review-confirming = Waiting for Discord to confirm…
 dm-requests-review-manage-guide = How to manage message requests (opens browser)
+dm-requests-review-open-discord = Continue in Discord
+dm-requests-review-open-discord-title = Open Discord in your browser?
+dm-requests-review-open-discord-description = This opens Discord Home. Go to Message Requests → Spam to manage or report the request. NuSerein won’t send the conversation ID or take any action on the request.
+dm-requests-review-open-discord-confirm = Open Discord
 dm-requests-review-no-history = No recent messages are available to review.
 dm-requests-review-hidden = Message content hidden.
 dm-requests-no-pending = No pending message requests
@@ -4315,6 +4319,16 @@ voice-soundboard-server-only = Soundboard is available in server voice channels
 voice-soundboard-server-sounds = Server sounds
 # Context: soundboard_panel
 voice-soundboard-default-sounds = Default sounds
+voice-soundboard-source-current = This server and defaults
+voice-soundboard-favorites = Favorites from this session only
+voice-soundboard-favorites-empty = No favorite sounds in this catalog.
+voice-soundboard-favorites-full = 32 favorites saved for this session. Remove one to add another.
+voice-soundboard-favorite = Favorite { $sound }
+voice-soundboard-unfavorite = Remove { $sound } from favorites
+voice-soundboard-source-other = Sounds from this server
+voice-soundboard-external-permission = This channel does not allow sounds from other servers.
+voice-soundboard-external-tier = Sounds from other servers require an eligible Nitro account.
+voice-soundboard-external-stale = Sounds have changed. Reload this server’s catalog.
 # Context: soundboard_panel
 voice-soundboard-loading = Loading sounds…
 # Context: soundboard_panel

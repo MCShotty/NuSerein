@@ -381,8 +381,8 @@ impl Connection {
                 let mut autocomplete:Option<AbortTask>=None;
                 let mut sticker_packs:Option<AbortTask>=None;
                 let mut sticker_detail:Option<AbortTask>=None;
-                // Default catalog, server catalog and the one unanswered play request.
-                let mut soundboard:[Option<AbortTask>;3]=[None,None,None];
+                // Default, current and external catalogs, plus the one unanswered play request.
+                let mut soundboard:[Option<AbortTask>;4]=[None,None,None,None];
                 let mut reaction_read:Option<AbortTask>=None;
                 let mut ringing:Option<AbortTask>=None;
                 let mut recipient_ringing:Option<(client_core::voice::Command,AbortTask)>=None;
@@ -710,7 +710,7 @@ impl Connection {
 									emit(Event::Soundboard(E::Sent {request,channel,sound,result:Err(Failure::ProtocolAt("Call changed; the sound was not sent"))}))?;
 									continue;
 								}
-                                let task=&mut soundboard[match request {R::Default{..}=>0,R::Guild{..}=>1,R::Send{..}=>2}];
+                                let task=&mut soundboard[match request {R::Default{..}=>0,R::Guild{..}=>1,R::Send{..}=>2,R::ExternalGuild{..}=>3}];
                                 drop(task.take());
                                 let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
 								let owner=soundboard_owner_changed.clone();let lifecycle=lifecycle_changed.clone();let revision=current_lifecycle.interruption;

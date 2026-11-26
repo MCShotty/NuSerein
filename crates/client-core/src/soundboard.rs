@@ -10,11 +10,16 @@ use std::time::{Duration, Instant};
 pub const MAX_PLAYBACK_LATENESS: Duration = Duration::from_secs(3);
 /// Largest accepted catalog response.
 pub const MAX_WIRE_BYTES: usize = 256 * 1024;
+pub const MAX_FAVORITES: usize = 32;
 pub enum Request {
 	Default {
 		request: u64,
 	},
 	Guild {
+		guild: Id,
+		request: u64,
+	},
+	ExternalGuild {
 		guild: Id,
 		request: u64,
 	},
@@ -119,6 +124,13 @@ pub struct Pending {
 	sound: Id,
 	call: u64,
 	requested: Instant,
+	source_guild: Option<Id>,
+}
+struct ExternalCatalog {
+	guild: Id,
+	channel: Id,
+	call: u64,
+	catalog: Catalog,
 }
 #[derive(Default)]
 pub struct Soundboard {
@@ -127,6 +139,10 @@ pub struct Soundboard {
 	pub default: Catalog,
 	/// Sounds of the one server whose voice channel was last shown.
 	pub guild: Option<(Id, Catalog)>,
+	// An explicitly chosen source for this call only. No catalog fan-out.
+	external: Option<ExternalCatalog>,
+	// This account session only: no audio, display metadata, or service write.
+	favorites: Vec<(Option<Id>, Id)>,
 	/// One unanswered play request; another waits for its outcome.
 	pub sending: Option<Pending>,
 	pub error: Option<&'static str>,
@@ -135,6 +151,12 @@ impl Soundboard {
 	fn next_request(&mut self) -> u64 {
 		self.sequence = self.sequence.wrapping_add(1).max(1);
 		self.sequence
+	}
+	pub fn is_favorite(&self, sound: &Sound) -> bool {
+		self.favorites.contains(&(sound.guild, sound.id))
+	}
+	pub fn favorites_full(&self) -> bool {
+		self.favorites.len() == MAX_FAVORITES
 	}
 	pub fn sound(&self, id: Id) -> Option<&Sound> {
 		self.default
@@ -146,6 +168,7 @@ impl Soundboard {
 }
 impl State {
 	pub(crate) fn interrupt_soundboard(&mut self) {
+		self.soundboard.external = None;
 		self.soundboard.default.interrupt();
 		if let Some((_, catalog)) = &mut self.soundboard.guild {
 			catalog.interrupt();
@@ -183,8 +206,111 @@ impl State {
 			None
 		}
 	}
+	/// The service-reported full Nitro tier and the destination permission are both needed.
+	pub fn external_soundboard_unavailable(&self) -> Option<&'static str> {
+		self.soundboard_unavailable().or_else(|| {
+			let (channel, _) = self.soundboard_channel()?;
+			if self.permission(channel, p::USE_EXTERNAL_SOUNDS) != Some(true) {
+				Some("voice-soundboard-external-permission")
+			} else if self.premium_type != 2 {
+				Some("voice-soundboard-external-tier")
+			} else {
+				None
+			}
+		})
+	}
+	fn external_soundboard_scope(&self, source: Id) -> Option<(Id, u64)> {
+		let (channel, destination) = self.soundboard_channel()?;
+		(source != destination
+			&& self.external_soundboard_unavailable().is_none()
+			&& self.guild(source).is_some())
+		.then_some((channel, self.voice.active.as_ref()?.request))
+	}
+	pub fn external_soundboard(&self) -> Option<(Id, &Catalog)> {
+		let entry = self.soundboard.external.as_ref()?;
+		(self.external_soundboard_scope(entry.guild) == Some((entry.channel, entry.call)))
+			.then_some((entry.guild, &entry.catalog))
+	}
+	/// Called by an explicit source selection or retry, never by opening the picker.
+	pub fn choose_soundboard_source(&mut self, source: Option<Id>) -> Option<Command> {
+		let Some(guild) = source else {
+			self.soundboard.external = None;
+			return None;
+		};
+		let (channel, call) = self.external_soundboard_scope(guild)?;
+		if self.external_soundboard().map(|(id, _)| id) != Some(guild) {
+			self.soundboard.external = Some(ExternalCatalog {
+				guild,
+				channel,
+				call,
+				catalog: Catalog::default(),
+			});
+		}
+		let catalog = &mut self.soundboard.external.as_mut()?.catalog;
+		catalog.error = None;
+		if !catalog.begin() {
+			return None;
+		}
+		let request = self.soundboard.next_request();
+		self.soundboard.external.as_mut()?.catalog.request = request;
+		Some(Command::Soundboard(Request::ExternalGuild {
+			guild,
+			request,
+		}))
+	}
+	pub(crate) fn retire_external_soundboard(&mut self) {
+		if self.external_soundboard().is_none() {
+			self.soundboard.external = None;
+		}
+	}
+	fn external_sound(&self, guild: Id, sound: Id) -> Option<&Sound> {
+		let (source, catalog) = self.external_soundboard()?;
+		if source != guild || !catalog.loaded {
+			return None;
+		}
+		catalog
+			.sounds
+			.iter()
+			.find(|entry| entry.id == sound && entry.available)
+	}
+	/// Favorite only a current catalog entry. This never sends a service command.
+	pub fn toggle_soundboard_favorite(&mut self, sound: &Sound) -> bool {
+		let Some((_, destination)) = self.soundboard_channel() else {
+			return false;
+		};
+		let key = (sound.guild, sound.id);
+		if let Some(index) = self
+			.soundboard
+			.favorites
+			.iter()
+			.position(|item| *item == key)
+		{
+			self.soundboard.favorites.remove(index);
+			return true;
+		}
+		let current = match sound.guild {
+			None => {
+				self.soundboard.default.loaded && self.soundboard.default.sounds.contains(sound)
+			}
+			Some(source) if source == destination => {
+				self.soundboard
+					.guild
+					.as_ref()
+					.is_some_and(|(guild, catalog)| {
+						*guild == source && catalog.loaded && catalog.sounds.contains(sound)
+					})
+			}
+			Some(source) => self.external_sound(source, sound.id) == Some(sound),
+		};
+		if !current || self.soundboard.favorites_full() {
+			return false;
+		}
+		self.soundboard.favorites.push(key);
+		true
+	}
 	/// Load the catalogs for the connected channel once; at most two bounded reads.
 	pub fn request_soundboard(&mut self) -> [Option<Command>; 2] {
+		self.retire_external_soundboard();
 		let Some((_, guild)) = self.soundboard_channel() else {
 			return [None, None];
 		};
@@ -232,7 +358,7 @@ impl State {
 		})
 	}
 	pub fn can_play_sound(&self, sound: &Sound) -> bool {
-		let Some((channel, guild)) = self.soundboard_channel() else {
+		let Some((_, guild)) = self.soundboard_channel() else {
 			return false;
 		};
 		sound.valid()
@@ -244,7 +370,10 @@ impl State {
 			}) && self.soundboard_unavailable().is_none()
 			&& (sound.guild.is_none()
 				|| sound.guild == Some(guild)
-				|| self.permission(channel, p::USE_EXTERNAL_SOUNDS) == Some(true))
+				|| sound
+					.guild
+					.and_then(|source| self.external_sound(source, sound.id))
+					== Some(sound))
 	}
 	pub fn play_sound(&mut self, sound: &Sound) -> Option<Command> {
 		if !self.can_play_sound(sound) {
@@ -253,12 +382,14 @@ impl State {
 		let (channel, guild) = self.soundboard_channel()?;
 		let call = self.voice.active.as_ref()?.request;
 		let request = self.soundboard.next_request();
+		let source_guild = sound.guild.filter(|owner| *owner != guild);
 		self.soundboard.sending = Some(Pending {
 			channel,
 			sound: sound.id,
 			request,
 			call,
 			requested: Instant::now(),
+			source_guild,
 		});
 		self.soundboard.error = None;
 		Some(Command::Soundboard(Request::Send {
@@ -266,7 +397,7 @@ impl State {
 			call,
 			channel,
 			sound: sound.id,
-			source_guild: sound.guild.filter(|owner| *owner != guild),
+			source_guild,
 		}))
 	}
 	/// Recheck queued requests against the active call and current permissions.
@@ -289,6 +420,12 @@ impl State {
 						id == guild && catalog.loading && catalog.request == *request
 					})
 			}
+			Request::ExternalGuild { guild, request } => {
+				*request != 0
+					&& self.external_soundboard().is_some_and(|(id, catalog)| {
+						id == *guild && catalog.loading && catalog.request == *request
+					})
+			}
 			Request::Send {
 				request,
 				call,
@@ -303,14 +440,21 @@ impl State {
 							&& pending.call == *call
 							&& pending.channel == *channel
 							&& pending.sound == *sound
+							&& pending.source_guild == *source_guild
 							&& self.voice.active.as_ref().is_some_and(|call| {
 								call.channel == *channel && call.request == pending.call
 							})
-					}) && source_guild.is_none_or(|id| {
-					id.0 != 0 && self.permission(*channel, p::USE_EXTERNAL_SOUNDS) == Some(true)
-				})
+					}) && source_guild.is_none_or(|id| self.external_sound(id, *sound).is_some())
 			}
 		}
+	}
+	pub fn sent_soundboard_volume(&self, sound: Id) -> f32 {
+		self.soundboard
+			.sending
+			.and_then(|pending| pending.source_guild)
+			.and_then(|source| self.external_sound(source, sound))
+			.or_else(|| self.soundboard.sound(sound))
+			.map_or(1.0, |sound| sound.volume)
 	}
 	/// Called before reducing an acknowledgement, so an old call cannot play into a new one.
 	pub fn soundboard_playback_current(&self, event: &Event) -> bool {
@@ -336,6 +480,9 @@ impl State {
 					&& pending.call == call.request
 					&& call.channel == *channel
 					&& pending.requested.elapsed() <= MAX_PLAYBACK_LATENESS
+					&& pending
+						.source_guild
+						.is_none_or(|id| self.external_sound(id, *sound).is_some())
 			}),
 			_ => false,
 		}
@@ -346,6 +493,15 @@ impl State {
 			Request::Default { request } if self.soundboard.default.request == *request => {
 				self.soundboard.default.loading = false;
 				self.soundboard.default.error = Some(MESSAGE);
+			}
+			Request::ExternalGuild { guild, request } => {
+				if let Some(entry) = &mut self.soundboard.external
+					&& entry.guild == *guild
+					&& entry.catalog.request == *request
+				{
+					entry.catalog.loading = false;
+					entry.catalog.error = Some(MESSAGE);
+				}
 			}
 			Request::Guild { guild, request } => {
 				if let Some((id, catalog)) = &mut self.soundboard.guild
@@ -374,6 +530,12 @@ impl State {
 	}
 	/// Mark the call panel's copy of a server's sounds for another read.
 	pub(crate) fn call_sounds_changed(&mut self, guild: Id) {
+		if let Some(entry) = &mut self.soundboard.external
+			&& entry.guild == guild
+		{
+			entry.catalog.stale = entry.catalog.loading;
+			entry.catalog.loaded = false;
+		}
 		if let Some((id, catalog)) = &mut self.soundboard.guild
 			&& *id == guild
 		{
@@ -383,6 +545,7 @@ impl State {
 		}
 	}
 	pub(crate) fn apply_soundboard(&mut self, event: Event) {
+		self.retire_external_soundboard();
 		match event {
 			Event::Default { request, result } => {
 				self.soundboard.default.finish(request, result, None)
@@ -392,7 +555,12 @@ impl State {
 				request,
 				result,
 			} => {
-				if let Some((id, catalog)) = &mut self.soundboard.guild
+				if let Some(entry) = &mut self.soundboard.external
+					&& entry.guild == guild
+					&& entry.catalog.request == request
+				{
+					entry.catalog.finish(request, result, Some(guild));
+				} else if let Some((id, catalog)) = &mut self.soundboard.guild
 					&& *id == guild
 				{
 					catalog.finish(request, result, Some(guild));
@@ -731,6 +899,81 @@ mod tests {
 		assert!(state.soundboard_unavailable().is_some());
 	}
 	#[test]
+	fn favorites_are_bounded_and_do_not_queue_playback() {
+		let mut state = connected(ALLOWED);
+		let count = u64::try_from(MAX_FAVORITES).unwrap();
+		state.soundboard.default.sounds = (1..=count + 1).map(|id| sound(id, None)).collect();
+		state.soundboard.default.loaded = true;
+		assert!(!state.toggle_soundboard_favorite(&sound(count + 2, None)));
+		for id in 1..=count {
+			assert!(state.toggle_soundboard_favorite(&sound(id, None)));
+		}
+		assert!(state.soundboard.favorites_full());
+		assert!(!state.toggle_soundboard_favorite(&sound(count + 1, None)));
+		assert!(state.toggle_soundboard_favorite(&sound(1, None)));
+		assert!(state.toggle_soundboard_favorite(&sound(count + 1, None)));
+		assert!(!state.soundboard.is_favorite(&sound(1, None)));
+		assert!(state.soundboard.is_favorite(&sound(count + 1, None)));
+		assert!(state.soundboard.sending.is_none());
+	}
+	#[test]
+	fn external_sound_sources_require_membership_entitlement_and_a_fresh_catalog() {
+		let mut state = connected(ALLOWED | p::USE_EXTERNAL_SOUNDS);
+		let extend = |state: &mut State, id| {
+			let mut source = state.guilds[0].clone();
+			source.id = Id(id);
+			state.guilds.push(source);
+		};
+		extend(&mut state, 8);
+		extend(&mut state, 7);
+		assert!(state.choose_soundboard_source(Some(Id(8))).is_none());
+		state.premium_type = 2;
+		assert!(state.choose_soundboard_source(Some(Id(6))).is_none());
+		let Some(Command::Soundboard(first @ Request::ExternalGuild { request, .. })) =
+			state.choose_soundboard_source(Some(Id(8)))
+		else {
+			panic!()
+		};
+		assert!(state.soundboard_command_allowed(&first));
+		let Some(Command::Soundboard(
+			second @ Request::ExternalGuild {
+				request: second_id, ..
+			},
+		)) = state.choose_soundboard_source(Some(Id(7)))
+		else {
+			panic!()
+		};
+		assert!(!state.soundboard_command_allowed(&first));
+		assert!(state.soundboard_command_allowed(&second));
+		state.apply_soundboard(Event::Guild {
+			guild: Id(8),
+			request,
+			result: Ok(vec![sound(4, Some(8))]),
+		});
+		assert!(state.play_sound(&sound(4, Some(8))).is_none());
+		assert!(state.play_sound(&sound(5, Some(7))).is_none());
+		state.apply_soundboard(Event::Guild {
+			guild: Id(7),
+			request: second_id,
+			result: Ok(vec![sound(5, Some(7))]),
+		});
+		let Some(Command::Soundboard(
+			send @ Request::Send {
+				source_guild: Some(Id(7)),
+				..
+			},
+		)) = state.play_sound(&sound(5, Some(7)))
+		else {
+			panic!()
+		};
+		assert!(state.soundboard_command_allowed(&send));
+		assert!(state.play_sound(&sound(5, Some(7))).is_none());
+		state.guilds.retain(|guild| guild.id != Id(7));
+		assert!(!state.soundboard_command_allowed(&send));
+		state.retire_external_soundboard();
+		assert!(state.soundboard.external.is_none());
+	}
+	#[test]
 	fn playing_requires_permission_an_undeafened_call_and_one_request_at_a_time() {
 		let quack = sound(1, None);
 		// Missing SPEAK or USE_SOUNDBOARD never authorizes a write.
@@ -756,13 +999,7 @@ mod tests {
 		// Another server's sound needs the external-sounds permission and names its source.
 		assert!(state.play_sound(&sound(4, Some(8))).is_none());
 		let mut external = connected(ALLOWED | p::USE_EXTERNAL_SOUNDS);
-		assert!(matches!(
-			external.play_sound(&sound(4, Some(8))),
-			Some(Command::Soundboard(Request::Send {
-				source_guild: Some(Id(8)),
-				..
-			}))
-		));
+		assert!(external.play_sound(&sound(4, Some(8))).is_none());
 
 		assert!(matches!(
 			state.play_sound(&sound(3, Some(9))),

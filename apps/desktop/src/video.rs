@@ -51,7 +51,7 @@ struct Request {
 	output: Option<String>,
 	session: Arc<Session>,
 	url: Option<url::Url>,
-	fallback: Option<url::Url>,
+	fallbacks: [Option<url::Url>; 2],
 	size: usize,
 	adapter: Option<model::VideoAdapter>,
 }
@@ -350,9 +350,10 @@ impl Video {
 	) {
 		match command {
 			VideoCommand::Stop => self.stop(),
-			VideoCommand::Play(attachment) => {
+			VideoCommand::Play(attachment, post) => {
 				self.stop();
-				if let Err(error) = self.start(attachment, player.volume, runtime, ctx, demo) {
+				if let Err(error) = self.start(attachment, post, player.volume, runtime, ctx, demo)
+				{
 					player.state = VideoState::Failed(error);
 				}
 			}
@@ -382,6 +383,7 @@ impl Video {
 	fn start(
 		&mut self,
 		attachment: model::Attachment,
+		post: Option<url::Url>,
 		volume: f32,
 		runtime: &tokio::runtime::Handle,
 		ctx: &eframe::egui::Context,
@@ -390,27 +392,19 @@ impl Video {
 		if !attachment.is_video() || attachment.size > 100 * 1024 * 1024 {
 			return Err("Video preview limit: 100 MiB");
 		}
-		let (url, fallback) = if demo {
-			(None, None)
+		let (url, fallbacks) = if demo {
+			(None, [None, None])
 		} else if attachment.size == 0 {
-			// Embed videos have no declared size; the worker probes it before decoding.
-			let page = attachment
-				.media
-				.url
-				.as_deref()
-				.and_then(ui::social_video_page);
-			let mut candidates = ui::embedded_video_candidates(&attachment.media)
-				.into_iter()
-				.chain(page);
-			let url = candidates.next().ok_or("Video embed unavailable")?;
-			(Some(url), candidates.next())
+			// Keep the exact public post as an alternative when both media URLs expire.
+			let (url, fallbacks) = embed_sources(&attachment.media, post)?;
+			(Some(url), fallbacks)
 		} else {
 			(
 				Some(
 					crate::downloads::original_url(&attachment)
 						.ok_or("Video attachment unavailable")?,
 				),
-				None,
+				[None, None],
 			)
 		};
 		if self.requests.is_none() {
@@ -448,7 +442,7 @@ impl Video {
 			output: self.output.clone(),
 			session: session.clone(),
 			url,
-			fallback,
+			fallbacks,
 			size: attachment.size as usize,
 			adapter: self.adapter,
 		}));
@@ -681,41 +675,62 @@ impl Drop for Video {
 	}
 }
 
+type EmbedSources = (url::Url, [Option<url::Url>; 2]);
+fn embed_sources(
+	media: &model::EmbedMedia,
+	post: Option<url::Url>,
+) -> Result<EmbedSources, &'static str> {
+	let page = post
+		.as_ref()
+		.and_then(|url| ui::social_video_page(url.as_str()))
+		.or_else(|| media.url.as_deref().and_then(ui::social_video_page));
+	let mut sources = ui::embedded_video_candidates(media);
+	if let Some(page) = page
+		&& !sources.contains(&page)
+	{
+		sources.push(page);
+	}
+	let mut sources = sources.into_iter();
+	let primary = sources.next().ok_or("Video embed unavailable")?;
+	Ok((primary, [sources.next(), sources.next()]))
+}
 fn play(
 	request: &Request,
 	runtime: &tokio::runtime::Handle,
 	ctx: &eframe::egui::Context,
 ) -> Result<(), &'static str> {
-	let result = play_candidate(request, runtime, ctx);
-	if result.is_ok() || request.session.cancelled.load(Ordering::Acquire) {
-		return result;
+	let mut result = play_candidate(request, runtime, ctx);
+	for fallback in request.fallbacks.iter().flatten() {
+		if result.is_ok()
+			|| request.session.cancelled.load(Ordering::Acquire)
+			|| request.session.startup.expired()
+		{
+			break;
+		}
+		let mut retry = request.clone();
+		retry.url = Some(fallback.clone());
+		retry.fallbacks = [None, None];
+		let resume = if let Ok(mut update) = request.session.update.lock() {
+			update.state = VideoState::Loading;
+			update.position
+		} else {
+			0.0
+		};
+		if resume > 0.0 {
+			let _ = request.session.seek.compare_exchange(
+				u64::MAX,
+				(resume * 1000.0) as u64,
+				Ordering::AcqRel,
+				Ordering::Acquire,
+			);
+		}
+		ctx.request_repaint();
+		result = play_candidate(&retry, runtime, ctx);
 	}
-	if request.session.startup.expired() {
-		return Err(request.session.startup.timeout_error());
-	}
-	let Some(fallback) = &request.fallback else {
-		return result;
-	};
-	let mut retry = request.clone();
-	retry.url = Some(fallback.clone());
-	retry.fallback = None;
-	let resume = if let Ok(mut update) = request.session.update.lock() {
-		update.state = VideoState::Loading;
-		update.position
-	} else {
-		0.0
-	};
-	if resume > 0.0 {
-		let _ = request.session.seek.compare_exchange(
-			u64::MAX,
-			(resume * 1000.0) as u64,
-			Ordering::AcqRel,
-			Ordering::Acquire,
-		);
-	}
-	ctx.request_repaint();
-	let result = play_candidate(&retry, runtime, ctx);
-	if request.session.startup.expired() && !request.session.cancelled.load(Ordering::Acquire) {
+	if result.is_err()
+		&& request.session.startup.expired()
+		&& !request.session.cancelled.load(Ordering::Acquire)
+	{
 		Err(request.session.startup.timeout_error())
 	} else {
 		result
@@ -1139,7 +1154,35 @@ mod tests {
 	}
 
 	#[test]
-	fn failed_proxy_retries_the_original_once_through_the_production_player() {
+	fn exact_social_post_is_kept_after_two_media_candidates() {
+		let proxy = "https://media.discordapp.net/external/hash/video.mp4";
+		for (direct, post) in [
+			(
+				"https://scontent.cdninstagram.com/video.mp4",
+				"https://www.instagram.com/reel/Fixture/",
+			),
+			(
+				"https://v.redd.it/fixture/DASH_720.mp4",
+				"https://www.reddit.com/comments/fixture/",
+			),
+		] {
+			let media = model::EmbedMedia {
+				url: Some(direct.into()),
+				proxy_url: Some(proxy.into()),
+				..Default::default()
+			};
+			let (first, [second, third]) =
+				embed_sources(&media, Some(url::Url::parse(post).unwrap())).unwrap();
+			assert_eq!(first.as_str(), proxy);
+			assert_eq!(second.unwrap().as_str(), direct);
+			assert_eq!(third.unwrap().as_str(), post);
+			let unrelated = url::Url::parse("https://example.org/reel/Fixture/").unwrap();
+			assert!(embed_sources(&media, Some(unrelated)).unwrap().1[1].is_none());
+		}
+	}
+
+	#[test]
+	fn failed_proxy_and_expired_original_try_one_final_candidate() {
 		use std::{
 			io::{Read, Write},
 			net::TcpListener,
@@ -1177,7 +1220,7 @@ mod tests {
 				assert!(!headers.contains("authorization:") && !headers.contains("cookie:"));
 				assert!(headers.contains("user-agent: serein/"));
 				count += 1;
-				if headers.starts_with("get /proxy ") {
+				if headers.starts_with("get /proxy ") || headers.starts_with("get /expired.mov ") {
 					write!(
 						socket,
 						"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -1207,9 +1250,12 @@ mod tests {
 			output: None,
 			session: session.clone(),
 			url: Some(url::Url::parse(&format!("{base}/proxy")).unwrap()),
-			fallback: Some(
-				url::Url::parse(&format!("{base}/original.mov?sig=synthetic%2Fvalue")).unwrap(),
-			),
+			fallbacks: [
+				Some(url::Url::parse(&format!("{base}/expired.mov")).unwrap()),
+				Some(
+					url::Url::parse(&format!("{base}/original.mov?sig=synthetic%2Fvalue")).unwrap(),
+				),
+			],
 			size: 0,
 			adapter: None,
 		};
@@ -1221,8 +1267,8 @@ mod tests {
 		stop.store(true, Ordering::Release);
 		assert_eq!(
 			server.join().unwrap(),
-			3,
-			"one failed proxy and two bounded original ranges"
+			4,
+			"one failed proxy, one expired original and two final candidate ranges"
 		);
 		assert_eq!(result, Ok(()));
 		assert_eq!(session.update.lock().unwrap().state, VideoState::Ended);
@@ -1458,7 +1504,7 @@ mod tests {
 			output: None,
 			session: session.clone(),
 			url: None,
-			fallback: None,
+			fallbacks: [None, None],
 			size: 120000,
 			adapter: None,
 		};

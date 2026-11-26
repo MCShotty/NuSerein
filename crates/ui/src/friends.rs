@@ -16,6 +16,7 @@ pub(super) struct Friends {
 	requests: RequestView,
 	direct_requests: Option<(u64, bool)>,
 	spam_confirm: Option<(u64, model::Id)>,
+	spam_handoff: Option<(u64, model::Id)>,
 	list_key: Option<ListKey>,
 	list_query: String,
 	list: Box<[model::Id]>,
@@ -257,6 +258,16 @@ impl MessagingUi {
 	pub(super) fn sync_spam_review(&mut self, state: &mut State) {
 		if self
 			.friends
+			.spam_handoff
+			.is_some_and(|(generation, channel)| {
+				generation != state.generation
+					|| state.selected != Some(channel)
+					|| !state.can_review_spam_direct(channel)
+			}) {
+			self.friends.spam_handoff = None;
+		}
+		if self
+			.friends
 			.spam_confirm
 			.is_some_and(|(generation, channel)| {
 				generation != state.generation || !state.spam_request_is_resolvable(channel)
@@ -327,10 +338,7 @@ impl MessagingUi {
 						"dm-requests-review-manage-in-discord"
 					},
 				));
-				ui.hyperlink_to(
-					crate::i18n::translate("dm-requests-review-manage-guide"),
-					"https://support.discord.com/hc/en-us/articles/7924992471191-Message-Requests",
-				);
+				self.spam_request_handoff(ui, state, channel);
 				if state.freshness == Freshness::Loading {
 					ui.add(design::Busy::new());
 				} else if ui
@@ -392,6 +400,39 @@ impl MessagingUi {
 					});
 			});
 	}
+	fn spam_request_handoff(&mut self, ui: &mut egui::Ui, state: &State, channel: model::Id) {
+		let scope = (state.generation, channel);
+		let button = ui
+			.add_enabled_ui(self.friends.spam_confirm.is_none(), |ui| {
+				design::secondary_button(
+					ui,
+					&crate::i18n::translate("dm-requests-review-open-discord"),
+				)
+			})
+			.inner;
+		if button.clicked() {
+			self.friends.spam_handoff = Some(scope);
+		}
+		if self.friends.spam_handoff == Some(scope)
+			&& let Some(choice) = crate::dialog::Confirm::new(
+				("spam-request-handoff", scope),
+				"dm-requests-review-open-discord-title",
+				"dm-requests-review-open-discord-description",
+			)
+			.confirm_label("dm-requests-review-open-discord-confirm")
+			.show(ui.ctx())
+		{
+			self.friends.spam_handoff = None;
+			button.request_focus();
+			if choice == crate::dialog::Choice::Confirmed
+				&& state.selected == Some(channel)
+				&& state.can_review_spam_direct(channel)
+			{
+				ui.ctx()
+					.open_url(egui::OpenUrl::new_tab("https://discord.com/app"));
+			}
+		}
+	}
 	fn spam_request_actions(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -400,7 +441,8 @@ impl MessagingUi {
 		commands: &mut Vec<Command>,
 	) {
 		let scope = (state.generation, channel);
-		let enabled = state.can_resolve_spam_request(channel);
+		let enabled =
+			self.friends.spam_handoff.is_none() && state.can_resolve_spam_request(channel);
 		let ignore = ui
 			.push_id(("spam-request-actions", scope), |ui| {
 				ui.horizontal_wrapped(|ui| {
@@ -1572,7 +1614,12 @@ mod tests {
 		assert!(state.prepare_mark_read(model::Id(42)).is_none());
 		assert!(state.prepare_mark_channel_read(spam_id).is_none());
 		assert!(state.resolve_message_request(spam_id, true).is_none());
+		view.friends.spam_handoff = Some((state.generation, spam_id));
+		view.sync_spam_review(&mut state);
+		assert!(view.friends.spam_handoff.is_some());
 		state.open_home();
+		view.sync_spam_review(&mut state);
+		assert!(view.friends.spam_handoff.is_none());
 		state.generation = state.generation.wrapping_add(1);
 		assert!(!view.direct_requests_open(&state));
 	}

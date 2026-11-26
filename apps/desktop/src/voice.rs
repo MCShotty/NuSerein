@@ -581,10 +581,7 @@ impl Voice {
 				*channel,
 				live.user,
 				*sound,
-				state
-					.soundboard
-					.sound(*sound)
-					.map_or(1.0, |sound| sound.volume),
+				state.sent_soundboard_volume(*sound),
 			),
 			_ => return,
 		};

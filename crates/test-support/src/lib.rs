@@ -1783,6 +1783,31 @@ pub fn video_demo_state() -> State {
 }
 
 /// Offline friends overview using existing synthetic relationship data.
+pub fn spam_review_demo_state() -> State {
+	let mut state = demo_state();
+	let channel = Id(900_003);
+	let mut dm = state.channels[0].clone();
+	dm.id = channel;
+	dm.guild = None;
+	dm.parent_id = None;
+	dm.kind = 1;
+	dm.name = "Synthetic request".into();
+	let mut sender = state.user.as_ref().expect("synthetic viewer").clone();
+	sender.id = Id(900_002);
+	sender.name = "Synthetic sender".into();
+	dm.recipients = vec![sender];
+	state.channels.push(dm);
+	state.invalidate_navigation();
+	state.apply(Envelope {
+		generation: state.generation,
+		event: Event::UserAction(client_core::user_actions::Event::MessageSpams(Some(vec![
+			(channel, true),
+		]))),
+	});
+	state.select(channel);
+	load_page(&mut state, None);
+	state
+}
 pub fn friends_demo_state() -> State {
 	let mut state = demo_state();
 	state.apply(Envelope {

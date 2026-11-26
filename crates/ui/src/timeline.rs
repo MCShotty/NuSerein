@@ -7623,6 +7623,15 @@ mod tests {
 		assert_eq!(view.reaction.take(), Some((id, Some(rocket.clone()))));
 		assert_eq!(view.quick_reaction_used.take(), Some("🚀"));
 
+		// An account preference changes the first glyph between press and release.
+		clock.set(clock.get() + 1.0);
+		let [press, release] = click(toolbar.left_center() + egui::vec2(14.0, 0.0), none);
+		render(&mut view, &mut state, press, none);
+		view.quick_reactions = Some(["👍", "🚀", "❤️"]);
+		render(&mut view, &mut state, vec![], none);
+		render(&mut view, &mut state, release, none);
+		assert!(view.reaction.is_none() && view.quick_reaction_used.is_none());
+
 		// Shift hides quick reactions, adds direct actions and swaps the menu for quick delete.
 		let shift = egui::Modifiers::SHIFT;
 		render(

@@ -1675,7 +1675,7 @@ mod tests {
 				assert!(video.active.is_none());
 			} else if crate::video::social_video_page(source).is_some() {
 				assert!(opening.is_none());
-				assert!(matches!(video.command, Some(crate::VideoCommand::Play(_))));
+				assert!(matches!(video.command, Some(crate::VideoCommand::Play(..))));
 			} else {
 				assert_eq!(opening.as_deref(), Some(source));
 				assert!(video.provider.is_none());
@@ -2138,7 +2138,7 @@ mod tests {
 				}]);
 			}
 			assert!(
-				matches!(video.command, Some(crate::video::VideoCommand::Play(ref a)) if *a == clip)
+				matches!(video.command, Some(crate::video::VideoCommand::Play(ref a, _)) if *a == clip)
 			);
 		}
 	}

@@ -5036,6 +5036,26 @@ impl MessagingUi {
 		self.voice_soundboard_volume.unwrap_or(100).min(100)
 	}
 
+	#[cfg(feature = "demo")]
+	pub fn preview_call_soundboard(
+		&mut self,
+		ui: &mut egui::Ui,
+		state: &mut State,
+	) -> Vec<Command> {
+		let mut commands = Vec::new();
+		if state.demo {
+			ui.add_space(16.0);
+			ui.horizontal(|ui| {
+				ui.add_space(16.0);
+				egui::Frame::popup(ui.style())
+					.inner_margin(16)
+					.show(ui, |ui| {
+						self.soundboard_panel(ui, state, &mut commands);
+					});
+			});
+		}
+		commands
+	}
 	/// Sounds of the connected server voice channel plus Discord's defaults. Loading starts
 	/// only once this panel is shown; playing sends one explicit request per click.
 	fn soundboard_panel(
@@ -5056,28 +5076,94 @@ impl MessagingUi {
 		if let Some(reason) = state.soundboard_unavailable() {
 			design::hint(ui, &crate::i18n::translate_if_key(reason));
 		}
+		let external = state.external_soundboard();
+		let source = external.map(|(guild, _)| guild);
+		let mut source_choice = None;
+		if let Some((_, destination)) = state.soundboard_channel() {
+			let reason = state.external_soundboard_unavailable();
+			let selected = source.and_then(|id| state.guild(id));
+			let home = crate::i18n::translate("voice-soundboard-source-current");
+			ui.add_enabled_ui(reason.is_none(), |ui| {
+				egui::ComboBox::from_id_salt("soundboard-source")
+					.width(ui.available_width().min(280.0))
+					.height(200.0)
+					.selected_text(selected.map_or(home.as_str(), |guild| guild.name.as_str()))
+					.show_ui(ui, |ui| {
+						if ui.selectable_label(source.is_none(), &home).clicked() {
+							source_choice = Some(None);
+						}
+						for guild in state.guilds.iter().filter(|guild| guild.id != destination) {
+							if ui
+								.push_id(guild.id, |ui| {
+									ui.selectable_label(source == Some(guild.id), &guild.name)
+								})
+								.inner
+								.clicked()
+							{
+								source_choice = Some(Some(guild.id));
+							}
+						}
+					});
+			});
+			if let Some(reason) = reason.filter(|_| state.soundboard_unavailable().is_none()) {
+				design::hint(ui, &crate::i18n::translate_if_key(reason));
+			}
+		}
 		let board = &state.soundboard;
 		let guild = board.guild.as_ref().map(|(_, catalog)| catalog);
-		let loading = board.default.loading || guild.is_some_and(|catalog| catalog.loading);
-		let error = board
-			.error
-			.or(board.default.error)
-			.or(guild.and_then(|catalog| catalog.error));
-		let groups = [
-			(
-				"voice-soundboard-server-sounds",
-				guild.map_or(&[][..], |catalog| &catalog.sounds[..]),
-			),
-			("voice-soundboard-default-sounds", &board.default.sounds[..]),
-		];
+		let external_catalog = external.map(|(_, catalog)| catalog);
+		let loading = external_catalog.map_or_else(
+			|| board.default.loading || guild.is_some_and(|catalog| catalog.loading),
+			|catalog| catalog.loading,
+		);
+		let stale = external_catalog.is_some_and(|catalog| !catalog.loading && !catalog.loaded);
+		let catalog_error = external_catalog.map_or_else(
+			|| {
+				board
+					.default
+					.error
+					.or(guild.and_then(|catalog| catalog.error))
+			},
+			|catalog| catalog.error,
+		);
+		let error = board.error.or(catalog_error);
+		let groups: &[(&str, &[model::soundboard::Sound])] = if let Some(catalog) = external_catalog
+		{
+			&[("voice-soundboard-source-other", &catalog.sounds)]
+		} else {
+			&[
+				(
+					"voice-soundboard-server-sounds",
+					guild.map_or(&[][..], |catalog| &catalog.sounds[..]),
+				),
+				("voice-soundboard-default-sounds", &board.default.sounds),
+			]
+		};
+		let filter_id = egui::Id::unique("soundboard-session-favorites");
+		let mut favorites_only = ui.ctx().data(|data| {
+			data.get_temp::<(u64, bool)>(filter_id)
+				.is_some_and(|(generation, value)| generation == state.generation && value)
+		});
+		if ui
+			.checkbox(
+				&mut favorites_only,
+				crate::i18n::translate("voice-soundboard-favorites"),
+			)
+			.changed()
+		{
+			ui.ctx()
+				.data_mut(|data| data.insert_temp(filter_id, (state.generation, favorites_only)));
+		}
+		let shown = |sound: &model::soundboard::Sound| !favorites_only || board.is_favorite(sound);
 		let mut play = None;
+		let mut favorite = None;
 		egui::ScrollArea::vertical()
-			.max_height(264.0_f32.min((viewport.height() - 160.0).max(32.0)))
+			.max_height(232.0_f32.min((viewport.height() - 160.0).max(32.0)))
 			.auto_shrink([false, true])
 			.show(ui, |ui| {
 				crate::scroll::claim_wheel_content(ui);
-				for (title, sounds) in groups {
-					if sounds.is_empty() {
+				for &(title, sounds) in groups {
+					if !sounds.iter().any(&shown) {
 						continue;
 					}
 					ui.label(
@@ -5087,32 +5173,81 @@ impl MessagingUi {
 					);
 					ui.horizontal_wrapped(|ui| {
 						ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-						for sound in sounds {
-							let sending = state.soundboard_sending(sound.id);
-							if sound_button(ui, sound, state.can_play_sound(sound), sending)
-								.clicked()
-							{
-								play = Some(sound.clone());
-							}
+						for sound in sounds.iter().filter(|sound| shown(sound)) {
+							ui.push_id((sound.guild, sound.id), |ui| {
+								ui.horizontal(|ui| {
+									let sending = state.soundboard_sending(sound.id);
+									if sound_button(ui, sound, state.can_play_sound(sound), sending)
+										.clicked()
+									{
+										play = Some(sound.clone());
+									}
+									let starred = board.is_favorite(sound);
+									let available = starred || !board.favorites_full();
+									let label = crate::i18n::translate_args(
+										if starred {
+											"voice-soundboard-unfavorite"
+										} else {
+											"voice-soundboard-favorite"
+										},
+										&[("sound", &sound.name)],
+									);
+									let button = ui.add_enabled(
+										available,
+										egui::Button::new(if starred { "★" } else { "☆" }).small(),
+									);
+									button.widget_info(|| {
+										egui::WidgetInfo::labeled(
+											egui::Role::Button,
+											available,
+											&label,
+										)
+									});
+									if button.on_hover_text(label).clicked() {
+										favorite = Some(sound.clone());
+									}
+								})
+							});
 						}
 					});
 				}
 			});
 		if loading {
 			design::hint(ui, &crate::i18n::translate("voice-soundboard-loading"));
-		} else if error.is_none() && groups.iter().all(|(_, sounds)| sounds.is_empty()) {
-			design::hint(ui, &crate::i18n::translate("voice-soundboard-empty"));
+		} else if !stale
+			&& error.is_none()
+			&& groups.iter().all(|(_, sounds)| !sounds.iter().any(&shown))
+		{
+			design::hint(
+				ui,
+				&crate::i18n::translate(if favorites_only {
+					"voice-soundboard-favorites-empty"
+				} else {
+					"voice-soundboard-empty"
+				}),
+			);
 		}
-		let mut retry = false;
+		if board.favorites_full() {
+			design::hint(
+				ui,
+				&crate::i18n::translate("voice-soundboard-favorites-full"),
+			);
+		}
 		if let Some(error) = error {
 			ui.label(
 				RichText::new(crate::i18n::translate_if_key(error))
 					.size(13.0)
 					.color(colors.danger),
 			);
-			retry = design::secondary_button(ui, &crate::i18n::translate("voice-soundboard-retry"))
-				.clicked();
+		} else if stale {
+			design::hint(
+				ui,
+				&crate::i18n::translate("voice-soundboard-external-stale"),
+			);
 		}
+		let retry = (error.is_some() || stale)
+			&& design::secondary_button(ui, &crate::i18n::translate("voice-soundboard-retry"))
+				.clicked();
 		ui.separator();
 		ui.scope(|ui| {
 			ui.spacing_mut().item_spacing.y = 4.0;
@@ -5129,8 +5264,18 @@ impl MessagingUi {
 			)
 			.labelled_by(label.id);
 		});
+		if let Some(choice) = source_choice {
+			commands.extend(state.choose_soundboard_source(choice));
+			return;
+		}
 		if retry {
 			state.retry_soundboard();
+			if source.is_some() {
+				commands.extend(state.choose_soundboard_source(source));
+			}
+		}
+		if let Some(sound) = favorite {
+			state.toggle_soundboard_favorite(&sound);
 		}
 		if let Some(sound) = play
 			&& let Some(command) = state.play_sound(&sound)

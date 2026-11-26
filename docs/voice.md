@@ -222,12 +222,15 @@ the call's playback. Your own sound is heard locally once the service accepts th
 rejected request stays silent and shows its reason in the panel.
 
 Playing requires SPEAK and USE_SOUNDBOARD in the channel and is unavailable while deafened or
-server muted/deafened, matching the documented service rules. A sound owned by another server
-additionally needs USE_EXTERNAL_SOUNDS and names its source server; the panel currently lists
-only the connected server's sounds and the defaults, so there is no cross-server picker and no
-favorites. One play request is outstanding at a time. Private and group DM calls show the
-button disabled. Entrance sounds, emoji-only voice effects and animations are not
-implemented. Server sounds are managed in [Server Settings](#managing-server-sounds).
+server muted/deafened, matching the documented service rules. The source picker can show
+one other joined server at a time, gated by USE_EXTERNAL_SOUNDS and the service-reported full
+Nitro tier. An explicit selection reads that catalog; an exact available entry emits one play
+request naming its source server. Switching sources, losing membership or changing calls
+invalidates old results. Favorites are local to the account session, up to 32 sound/source
+pairs; they do not play audio, persist across restarts, or sync to Discord. Private and group
+DM calls show the button disabled. Entrance sounds, emoji-only voice effects and animations
+remain unimplemented. Live acceptance is unverified. Server sounds are managed in
+[Server Settings](#managing-server-sounds).
 
 Sound audio is local playback only: it is never encoded into the microphone stream, and the
 service does not relay it as voice. Clips enter the same mix as participant voices, after
@@ -239,10 +242,11 @@ sounds they play, and sounds from blocked users are skipped. These controls are 
 while a sound plays, so muting, blocking or turning someone down also affects a sound that is
 already playing or still downloading. Sounds also play while waiting alone in a channel.
 
-Limits: catalogs are session-only and bounded to 256 sounds and 128 KiB per catalog (one
-server's catalog plus the defaults; responses over 256 KiB are rejected). A server sound
-change marks that catalog stale and it reloads the next time the panel is shown; a change
-that arrives while the catalog is loading triggers one more read. An open **Server Settings >
+Limits: catalogs are session-only and bounded to 256 sounds and 128 KiB per catalog (the
+current server, defaults, and at most one selected other server; responses over 256 KiB are
+rejected). Reads of the two server catalogs have separate bounded slots. A server sound
+change marks its catalog stale. The current server’s catalog reloads while the board is
+shown; an external catalog needs an explicit reload before another play. An open **Server Settings >
 Soundboard** page reloads its list the same way. Sound files
 are fetched without credentials from `cdn.discordapp.com/soundboard-sounds/{id}`, limited to
 1 MiB and a 10-second transfer, decoded off the UI and audio threads (MP3, Ogg Vorbis or Ogg

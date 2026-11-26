@@ -828,7 +828,7 @@ impl DiscordApi {
 									.map_err(|_| Failure::Protocol)
 							}),
 					},
-					R::Guild { guild, request } => E::Guild {
+					R::Guild { guild, request } | R::ExternalGuild { guild, request } => E::Guild {
 						request,
 						guild,
 						result: if guild.0 == 0 {

@@ -3462,6 +3462,9 @@ of at most 2 MiB on explicit Play when a server ignores Range. Attachment and em
 the configured HTTP proxy. Instagram `/p/` cards with video metadata can use the same anonymous
 public metadata lookup as Reels; plain photo cards do not initiate it. Reddit video cards with a
 `redd.it/<post-id>` or `/comments/<post-id>` link use the exact-post lookup, not the shortlink redirect.
+An exact eligible Instagram or Reddit post can remain a final fallback after both an
+admitted proxy and a direct media URL fail. Playback attempts share the original startup
+budget and stop on cancellation. No new origins, credentials or redirect rules are added.
 Unknown dimensions reserve a
 normal 16:9 player instead of a 16 × 9 pixel control strip.
 Anonymous bounded range reads feed the existing FFmpeg-first decoder and native

@@ -797,7 +797,7 @@ impl Desktop {
 					player.active = Some((message.channel, message.id, attachment.clone()));
 					player.state = ui::VideoState::Loading;
 					player.seen = true;
-					player.command = Some(ui::VideoCommand::Play(attachment));
+					player.command = Some(ui::VideoCommand::Play(attachment, None));
 				} else if player.state == ui::VideoState::Playing && player.position > 1.0 {
 					if pause {
 						player.command = Some(ui::VideoCommand::Pause(true));
