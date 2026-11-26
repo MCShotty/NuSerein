@@ -258,7 +258,7 @@ pub fn pending_card(
 					.fit_to_exact_size(fitted.size())
 					.corner_radius(4),
 			);
-			let id = ui.id().with("staged-image");
+			let id = ui.scope_id().with("staged-image");
 			if can_open && staged_preview_button(ui, preview_rect, id, filename).clicked() {
 				open = PendingAction::OpenPreview(id);
 			}

@@ -280,7 +280,7 @@ impl MessagingUi {
 		channel: model::Id,
 		commands: &mut Vec<Command>,
 	) {
-		use client_core::Freshness;
+		use model::Freshness;
 		let allowed = state.selected == Some(channel) && state.can_review_spam_direct(channel);
 		egui::Frame::new()
 			.inner_margin(egui::Margin::symmetric(design::WORKSPACE_INSET, 12))

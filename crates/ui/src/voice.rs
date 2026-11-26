@@ -100,7 +100,7 @@ type StreamScope = (u64, Id, u64, Id);
 type CallScope = (u64, Id, u64);
 const POPOUT_ROSTER_LIMIT: usize = 24;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum PopoutTarget {
 	Stream(Id),
 	Call,

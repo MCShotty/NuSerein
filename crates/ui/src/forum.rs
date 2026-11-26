@@ -919,7 +919,7 @@ fn media_box(
 	let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(THUMB), egui::Sense::hover());
 	let response = ui.interact(
 		rect,
-		ui.id().with("forum-media-summary"),
+		ui.scope_id().with("forum-media-summary"),
 		egui::Sense::click(),
 	);
 	media_tile(ui, rect, staged, 0);
@@ -3004,7 +3004,7 @@ mod tests {
 							.with("post-media-tray")
 							.with(("preview", 42_u64))
 					} else {
-						ui.id().with("forum-media-summary")
+						ui.scope_id().with("forum-media-summary")
 					};
 					ui.memory_mut(|memory| memory.request_focus(id));
 					media_box(

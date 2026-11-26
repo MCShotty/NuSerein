@@ -454,7 +454,7 @@ fn staged_thumbnail_is_keyboard_activatable_but_spoilers_are_not() {
 					..Default::default()
 				},
 				|ui| {
-					let id = ui.id().with("staged-image");
+					let id = ui.scope_id().with("staged-image");
 					if focus {
 						ui.memory_mut(|memory| memory.request_focus(id));
 					}
