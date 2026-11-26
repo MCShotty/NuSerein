@@ -2148,6 +2148,7 @@ mod tests {
 	#[derive(Default)]
 	struct Scratch {
 		toggle_spoiler: Option<usize>,
+		preview: Option<(u64, egui::Id)>,
 		choose: bool,
 		remove: Option<usize>,
 		clear: bool,
@@ -2158,7 +2159,7 @@ mod tests {
 			textures: &[],
 			spoilers: &[],
 			toggle_spoiler: &mut scratch.toggle_spoiler,
-			preview: &mut None,
+			preview: &mut scratch.preview,
 			choose: &mut scratch.choose,
 			remove: &mut scratch.remove,
 			clear: &mut scratch.clear,

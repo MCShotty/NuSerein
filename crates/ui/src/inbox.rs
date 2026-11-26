@@ -656,7 +656,7 @@ mod tests {
 		let mut commands = Vec::new();
 		let mut view = MessagingUi::default();
 		view.inbox_controls.reminder = Some(ReminderDraft {
-			popup: egui::Id::new("old-reminder"),
+			popup: egui::Id::unique("old-reminder"),
 			custom: "2030-01-01 12:00".into(),
 		});
 		view.mentions_inbox(&ctx, &mut state, &mut commands);
