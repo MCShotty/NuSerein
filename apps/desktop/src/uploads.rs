@@ -2511,6 +2511,8 @@ mod tests {
 			selected: vec![],
 			next_key: 0,
 			previewing: vec![],
+			view_target: None,
+			viewing: None,
 			parked: vec![],
 			uploading: None,
 			last: None,
