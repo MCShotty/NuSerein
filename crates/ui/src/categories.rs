@@ -2841,8 +2841,13 @@ mod tests {
 		assert!(state.select(Id(7)).is_none());
 		let ctx = egui::Context::default();
 		let mut picked = None;
-		// The forum row itself is a destination; the second Tab reaches the loaded post.
-		for key in [egui::Key::Tab, egui::Key::Tab, egui::Key::Enter] {
+		// Focus moves through the forum row and its settings gear before the loaded post.
+		for key in [
+			egui::Key::Tab,
+			egui::Key::Tab,
+			egui::Key::Tab,
+			egui::Key::Enter,
+		] {
 			ctx.run_ui(
 				egui::RawInput {
 					events: vec![egui::Event::Key {
@@ -2995,7 +3000,15 @@ mod tests {
 						&& near(*rect) && rect.width() <= 6.0
 						&& rect.height() <= 12.0
 				});
-				let label = labels.iter().find(|label| label.contains(name)).cloned();
+				// Match the row's accessible name and notification suffix, not the settings gear.
+				let label = labels
+					.iter()
+					.find(|label| {
+						label
+							.strip_prefix(name)
+							.is_some_and(|suffix| suffix.contains("; "))
+					})
+					.unwrap_or_else(|| panic!("missing accessible channel row for {name}"));
 				format!(
 					"name={name} painted={} strong={} accent={} badge={badge} pill={pill} label={label:?}",
 					name_row.is_some(),
