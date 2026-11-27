@@ -9,7 +9,7 @@ use time::{Date, Duration, Month, OffsetDateTime};
 const ROW_HEIGHT: f32 = 40.0;
 const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 
-pub(super) fn parse_date(value: &str) -> Option<Date> {
+pub(crate) fn parse_date(value: &str) -> Option<Date> {
 	let format = time::format_description::parse_borrowed::<2>("[year]-[month]-[day]").ok()?;
 	Date::parse(value, &format).ok()
 }
