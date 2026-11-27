@@ -422,7 +422,7 @@ impl Event {
 				Self::GroupAction(group_actions::Event::Written {
 					result: Ok(Some(patch)),
 					..
-				}) => [&patch.name, &patch.icon, &patch.banner]
+				}) => [&patch.name, &patch.icon]
 					.into_iter()
 					.map(|p| match p {
 						Patch::Value(s) => s.capacity(),
