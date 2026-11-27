@@ -125,8 +125,8 @@ impl ChannelMenu {
 		);
 		let label =
 			crate::i18n::translate_args("channel-menu-row-settings", &[("channel", &channel.name)]);
-		// Keep the row geometry stable and avoid registering an invisible pointer target.
-		// Its Edit Channel context action remains the keyboard path before focus enters the row.
+		// Register the reserved lane before a pointer can enter and press in the same frame.
+		// Only its paint is hidden; keyboard focus can also reveal the control.
 		let scope = row_id.with("edit-channel");
 		let mut control = ui.new_child(
 			egui::UiBuilder::new()
@@ -138,7 +138,7 @@ impl ChannelMenu {
 		if !ui.rect_contains_pointer(row)
 			&& !ui.memory(|memory| memory.has_focus(row_id) || memory.has_focus(control_id))
 		{
-			return;
+			control.set_opacity(0.0);
 		}
 		if !Self::edit_available(state, channel.id) {
 			control.disable();

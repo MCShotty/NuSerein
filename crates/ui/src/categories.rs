@@ -2841,29 +2841,35 @@ mod tests {
 		assert!(state.select(Id(7)).is_none());
 		let ctx = egui::Context::default();
 		let mut picked = None;
-		// Focus moves through the forum row and its settings gear before the loaded post.
+		// Establish the focus order before keyboard input, including the reserved gear lane.
+		ctx.run_ui(egui::RawInput::default(), |ui| {
+			assert!(view.channel_list(ui, &mut state).is_none());
+		})
+		.drop_without_applying_deltas();
 		for key in [
 			egui::Key::Tab,
 			egui::Key::Tab,
 			egui::Key::Tab,
 			egui::Key::Enter,
 		] {
-			ctx.run_ui(
-				egui::RawInput {
-					events: vec![egui::Event::Key {
-						key,
-						physical_key: None,
-						pressed: true,
-						repeat: false,
-						modifiers: egui::Modifiers::NONE,
-					}],
-					..Default::default()
-				},
-				|ui| {
-					picked = view.channel_list(ui, &mut state).or(picked);
-				},
-			)
-			.drop_without_applying_deltas();
+			for pressed in [true, false] {
+				ctx.run_ui(
+					egui::RawInput {
+						events: vec![egui::Event::Key {
+							key,
+							physical_key: None,
+							pressed,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+						}],
+						..Default::default()
+					},
+					|ui| {
+						picked = view.channel_list(ui, &mut state).or(picked);
+					},
+				)
+				.drop_without_applying_deltas();
+			}
 		}
 		assert_eq!(picked, Some(Id(8)));
 		assert!(view.archive_parent.is_none());

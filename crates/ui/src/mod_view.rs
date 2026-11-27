@@ -827,13 +827,9 @@ mod tests {
 		let (output, _) = render(&ctx, &mut view, &mut state, vec![]);
 		let refresh = position(&output, "Refresh");
 		assert!(ctx.memory(|memory| memory.top_modal_layer().is_none()));
-		assert_eq!(
-			ctx.layer_id_at(refresh),
-			Some(egui::LayerId::new(
-				egui::Order::Middle,
-				egui::Id::unique("member-mod-view")
-			))
-		);
+		// Wide Mod View is docked in the root UI, not in a floating Area.
+		let screen = ctx.content_rect();
+		assert!(screen.contains(refresh) && refresh.x > screen.left() + screen.width() * 0.65);
 		output.drop_without_applying_deltas();
 		let (output, commands) = render(
 			&ctx,

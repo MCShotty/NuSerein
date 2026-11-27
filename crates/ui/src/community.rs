@@ -2703,7 +2703,8 @@ mod tests {
 		}
 		let name = view.draft.as_ref().unwrap().inputs.id("name");
 		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_some());
-		assert!(ctx.data(|d| d.count::<egui::text_edit::TextEditState>()) <= 5);
+		// Name, description, optional location, and three inputs per clock row.
+		assert!(ctx.data(|d| d.count::<egui::text_edit::TextEditState>()) <= 9);
 		drop(view.draft.take());
 		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_none());
 		view.draft = Some(Editor::new(guild, None));

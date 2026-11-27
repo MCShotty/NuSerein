@@ -575,13 +575,21 @@ fn an_uncertain_notification_save_requires_an_explicit_refresh() {
 
 #[test]
 fn notification_modal_can_edit_channel_overrides_without_management_permissions() {
-	let mut h = Harness::new(800.0, 850.0, false);
+	let mut h = Harness::new(800.0, 1200.0, false);
 	h.open();
 	h.click("Select a channel or category");
 	h.click("getting-started");
 	assert!(!egui::Popup::is_any_open(&h.ctx));
 	assert!(h.commands.is_empty(), "selecting a channel never writes");
-	h.click("Nothing");
+	let override_top = h.point("Use default").y;
+	let point = h
+		.settle()
+		.into_iter()
+		.find(|(label, rect)| label == "Nothing" && rect.center().y > override_top)
+		.expect("visible channel override, not the identically named server setting")
+		.1
+		.center();
+	h.click_at(point, egui::PointerButton::Primary);
 	assert_eq!(h.state.channel_notification_level(Id(20)), Some(2));
 	assert!(h.commands.is_empty());
 	let request = h.write();

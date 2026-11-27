@@ -8132,6 +8132,7 @@ mod tests {
 			}
 			let channel = state.voice.active.as_ref().unwrap().channel;
 			for width in [280.0, 900.0] {
+				let load_stage = state.is_stage(channel) && !state.community.pending();
 				let ctx = egui::Context::default();
 				design::apply(&ctx);
 				let mut view = MessagingUi::default();
@@ -8180,7 +8181,15 @@ mod tests {
 					}
 					output.drop_without_applying_deltas();
 				}
-				assert!(commands.is_empty());
+				// Opening a Stage can load its metadata once; painting or tabbing never acts on the call.
+				if load_stage {
+					assert!(
+						matches!(commands.as_slice(), [Command::Community { action, .. }]
+						if matches!(action.as_ref(), model::community::Action::GetStage { channel: target, .. } if *target == channel))
+					);
+				} else {
+					assert!(commands.is_empty());
+				}
 			}
 		}
 	}

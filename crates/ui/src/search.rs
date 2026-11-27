@@ -2063,49 +2063,54 @@ impl SearchUi {
 						ui.spacing_mut().item_spacing.y = 2.0;
 						let width = ui.available_width().max(0.0);
 						let compact = width < 250.0;
-						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-							if jumpable {
-								let label = crate::i18n::translate("search-result-jump");
-								let jump = if compact {
-									icons::button(ui, icons::Icon::ArrowRight, 24.0, &label)
-								} else {
-									ui.small_button(label)
-								};
-								if jump.clicked() {
-									*target = Some(hit.id);
+						// The header reserves one row, not the remaining height of the result.
+						ui.allocate_ui_with_layout(
+							egui::vec2(width, 24.0),
+							egui::Layout::right_to_left(egui::Align::Center),
+							|ui| {
+								if jumpable {
+									let label = crate::i18n::translate("search-result-jump");
+									let jump = if compact {
+										icons::button(ui, icons::Icon::ArrowRight, 24.0, &label)
+									} else {
+										ui.small_button(label)
+									};
+									if jump.clicked() {
+										*target = Some(hit.id);
+									}
 								}
-							}
-							ui.with_layout(
-								egui::Layout::left_to_right(egui::Align::Center),
-								|ui| {
-									crate::name_styles::in_row(
-										background
-											.as_ref()
-											.is_some_and(egui::Response::contains_pointer),
-										|| {
-											crate::account_badge::name(
-												ui,
-												&hit.author,
-												author_name,
-												14.0,
-												(
-													colors.text_strong,
-													state.forum_author_colors(
-														hit.channel,
-														hit.author.id,
-														hit.author.webhook,
-														&[],
+								ui.with_layout(
+									egui::Layout::left_to_right(egui::Align::Center),
+									|ui| {
+										crate::name_styles::in_row(
+											background
+												.as_ref()
+												.is_some_and(egui::Response::contains_pointer),
+											|| {
+												crate::account_badge::name(
+													ui,
+													&hit.author,
+													author_name,
+													14.0,
+													(
+														colors.text_strong,
+														state.forum_author_colors(
+															hit.channel,
+															hit.author.id,
+															hit.author.webhook,
+															&[],
+														),
+														colors.base,
 													),
-													colors.base,
-												),
-												egui::Sense::hover(),
-												0.0,
-											)
-										},
-									);
-								},
-							);
-						});
+													egui::Sense::hover(),
+													0.0,
+												)
+											},
+										);
+									},
+								);
+							},
+						);
 						if hit.id.0 >= (1 << 22) {
 							let seconds = ((hit.id.0 >> 22) + 1_420_070_400_000) / 1000;
 							if let Ok(utc) =
@@ -3452,32 +3457,39 @@ mod tests {
 			..SearchUi::default()
 		};
 		let mut render = |hit: &model::SearchHit| {
-			let mut output = ctx.run_ui(Default::default(), |ui| {
-				view.result_card(
-					ui,
-					&state,
-					hit,
-					"",
-					&mut crate::avatars::Avatars::default(),
-					&mut MediaUi {
-						download: &mut crate::attachments::DownloadUi::default(),
-						audio: &mut crate::audio::AudioUi::default(),
-						video: &mut crate::video::VideoUi::default(),
-					},
-					&mut crate::profiles::ProfileSession::default(),
-					&mut None,
-				);
-			});
-			let text = output
-				.shapes
-				.iter()
-				.filter_map(|shape| match &shape.shape {
-					egui::Shape::Text(text) => Some(text.galley.text()),
-					_ => None,
-				})
-				.collect::<String>();
+			let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 540.0));
+			let mut output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(screen),
+					..Default::default()
+				},
+				|ui| {
+					view.result_card(
+						ui,
+						&state,
+						hit,
+						"",
+						&mut crate::avatars::Avatars::default(),
+						&mut MediaUi {
+							download: &mut crate::attachments::DownloadUi::default(),
+							audio: &mut crate::audio::AudioUi::default(),
+							video: &mut crate::video::VideoUi::default(),
+						},
+						&mut crate::profiles::ProfileSession::default(),
+						&mut None,
+					);
+				},
+			);
+			let mut labels = Vec::new();
+			for shape in &output.shapes {
+				let mut text = Vec::new();
+				crate::test_ui::visual_text(&shape.shape, &mut text);
+				labels.extend(text.into_iter().filter_map(|(text, rect)| {
+					(screen.intersects(rect) && shape.clip_rect.intersects(rect)).then_some(text)
+				}));
+			}
 			output.textures_delta.clear();
-			text
+			labels.concat()
 		};
 		let text = render(&hit);
 		assert!(text.contains("@Mentioned"), "rendered text: {text}");
