@@ -628,6 +628,7 @@ mod tests {
 				notice: "",
 				texture: Default::default(),
 				output: None,
+				output_start_failed: false,
 				retiring_output: None,
 			};
 			for phase in [

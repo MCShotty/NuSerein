@@ -2259,15 +2259,6 @@ impl<'a> Chip<'a> {
 			height: CHIP_HEIGHT,
 		}
 	}
-	fn text(label: &'a str) -> Self {
-		Self {
-			icon: None,
-			label: Some(label),
-			tooltip: label,
-			trailing: false,
-			height: CHIP_HEIGHT,
-		}
-	}
 }
 fn chip(ui: &mut egui::Ui, chip: Chip<'_>) -> egui::Response {
 	let colors = design::palette(ui);
