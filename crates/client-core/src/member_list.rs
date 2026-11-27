@@ -66,7 +66,7 @@ impl State {
 	}
 	fn current_roster_load(&self, channel: Id) -> Option<FullRosterLoad> {
 		let list = self.members.as_ref()?;
-		self.full_roster_load.filter(|load| {
+		self.member_chunks.full_roster_load.filter(|load| {
 			load.channel == channel
 				&& Some(channel) == self.selected
 				&& load.generation == self.generation
@@ -106,7 +106,7 @@ impl State {
 		{
 			return false;
 		}
-		if let Some(load) = &mut self.full_roster_load {
+		if let Some(load) = &mut self.member_chunks.full_roster_load {
 			load.deadline = std::time::Instant::now();
 		}
 		true
@@ -117,7 +117,7 @@ impl State {
 		}
 		let list = self.members.as_mut()?;
 		let ranges = FULL_SERVER_RANGES.to_vec();
-		self.full_roster_load = Some(FullRosterLoad {
+		self.member_chunks.full_roster_load = Some(FullRosterLoad {
 			generation: self.generation,
 			channel,
 			request: list.request,
@@ -271,6 +271,7 @@ impl State {
 		Some(command)
 	}
 	pub fn close_members(&mut self) -> Command {
+		self.member_chunks.full_roster_load = None;
 		self.member_request = self.member_request.wrapping_add(1);
 		let list_id = self
 			.members
@@ -378,7 +379,6 @@ impl State {
 		})
 	}
 	pub(super) fn invalidate_members(&mut self) {
-		self.full_roster_load = None;
 		self.parked_members = None;
 		self.member_search = Default::default();
 		self.member_labels.clear();

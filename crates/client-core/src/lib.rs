@@ -244,7 +244,6 @@ pub struct State {
 	#[doc(hidden)]
 	pub direct_presence_lossy: bool,
 	pub member_request: u64,
-	full_roster_load: Option<member_list::FullRosterLoad>,
 	pub guilds: Vec<Guild>,
 	#[doc(hidden)]
 	pub server_display: server_display::Displays,
@@ -317,6 +316,7 @@ pub struct MemberChunks {
 	viewport: usize,
 	anchor: Option<usize>,
 	chunks: BTreeMap<usize, Vec<Option<MemberSlot>>>,
+	full_roster_load: Option<member_list::FullRosterLoad>,
 }
 
 impl MemberChunks {
@@ -508,7 +508,6 @@ impl Default for State {
 			direct_presence_epoch: 0,
 			direct_presence_lossy: false,
 			member_request: 0,
-			full_roster_load: None,
 			guilds: vec![],
 			server_display: Default::default(),
 			force_sync_banners: Default::default(),

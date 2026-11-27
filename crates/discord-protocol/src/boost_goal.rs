@@ -309,7 +309,7 @@ fn parse_filter(key: u32, raw: &RawValue) -> Option<Filter> {
 			return None;
 		}
 		let key: u32 = hash.parse().ok()?;
-		if hash.chars().len() != key.to_string().len() {
+		if hash.len() != key.to_string().len() {
 			return None;
 		}
 		return Some(Filter::Hash { key, limit: target });
@@ -373,6 +373,20 @@ mod tests {
 			value(json!([entry(p, json!([]), json!([]), 1)]), guild),
 			Some(false)
 		);
+	}
+	#[test]
+	fn guild_hash_filter_requires_canonical_ascii_digits() {
+		let parse = |hash: &str| {
+			let params = json!([[murmur3(b"hash_key"), hash], [murmur3(b"target"), 100]]);
+			let raw = RawValue::from_string(params.to_string()).unwrap();
+			parse_filter(murmur3(b"guild_in_range_by_hash"), &raw)
+		};
+		assert!(matches!(
+			parse("1"),
+			Some(Filter::Hash { key: 1, limit: 100 })
+		));
+		assert!(parse("01").is_none());
+		assert!(parse("１").is_none());
 	}
 	#[test]
 	fn unknown_or_conflicting_inputs_never_get_a_number() {
