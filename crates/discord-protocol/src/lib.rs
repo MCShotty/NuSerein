@@ -398,28 +398,48 @@ pub struct GuildProperties {
 	#[serde(default)]
 	pub icon: Patch<String>,
 }
+// Unlike nested READY properties, GUILD_UPDATE fields are read directly from the JSON map.
+// Serde's flatten buffer cannot deserialize the raw JSON used by the bounded field parsers.
 #[derive(Deserialize)]
 pub struct GuildPatchDto {
 	pub id: Id,
-	#[serde(flatten)]
-	pub properties: GuildProperties,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	banner: Patch<String>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	premium_subscription_count: Patch<u32>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	premium_tier: Patch<u8>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	premium_progress_bar_enabled: Patch<bool>,
+	#[serde(
+		default,
+		rename = "features",
+		deserialize_with = "boost_goal::tier_override"
+	)]
+	boost_tier_override: Patch<bool>,
+	#[serde(default)]
+	default_message_notifications: Patch<u8>,
+	#[serde(default)]
+	name: Patch<String>,
+	#[serde(default)]
+	icon: Patch<String>,
 }
 impl GuildPatchDto {
 	pub fn into_model(self) -> model::GuildPatch {
 		model::GuildPatch {
-			banner: match self.properties.banner {
+			banner: match self.banner {
 				Patch::Value(hash) if !model::valid_avatar_hash(&hash) => Patch::Null,
 				value => value,
 			},
-			boost_count: self.properties.premium_subscription_count,
-			boost_tier: self.properties.premium_tier,
-			boost_progress_visible: self.properties.premium_progress_bar_enabled,
-			boost_tier_override: self.properties.boost_tier_override,
+			boost_count: self.premium_subscription_count,
+			boost_tier: self.premium_tier,
+			boost_progress_visible: self.premium_progress_bar_enabled,
+			boost_tier_override: self.boost_tier_override,
 			boost_game_servers: Patch::Absent,
-			default_message_notifications: self.properties.default_message_notifications,
+			default_message_notifications: self.default_message_notifications,
 			id: self.id,
-			name: self.properties.name,
-			icon: self.properties.icon,
+			name: self.name,
+			icon: self.icon,
 		}
 	}
 }
@@ -2214,8 +2234,17 @@ mod member_tests {
 		let partial = decode::<GuildPatchDto>(br#"{"id":"2","premium_subscription_count":8}"#)
 			.unwrap()
 			.into_model();
+		assert_eq!(partial.boost_count, Patch::Value(8));
 		assert_eq!(partial.boost_tier_override, Patch::Absent);
 		assert_eq!(partial.boost_game_servers, Patch::Absent);
+		let complete = decode::<GuildPatchDto>(br#"{"id":"2","premium_subscription_count":8,"premium_tier":1,"premium_progress_bar_enabled":false,"features":["PREMIUM_TIER_3_OVERRIDE"],"banner":null,"name":"Synthetic"}"#).unwrap().into_model();
+		assert_eq!(complete.name, Patch::Value("Synthetic".into()));
+		assert_eq!(complete.banner, Patch::Null);
+		assert_eq!(complete.boost_count, Patch::Value(8));
+		assert_eq!(complete.boost_tier, Patch::Value(1));
+		assert_eq!(complete.boost_progress_visible, Patch::Value(false));
+		assert_eq!(complete.boost_tier_override, Patch::Value(true));
+		assert_eq!(complete.boost_game_servers, Patch::Absent);
 		let malformed = decode::<GuildPatchDto>(br#"{"id":"2","features":[1]}"#)
 			.unwrap()
 			.into_model();

@@ -909,6 +909,7 @@ async fn older_dispatch_cannot_rewind_cursor_or_replace_a_newer_note() {
 		.run(async {
 			let mut socket = gateway.socket(false, Some(2)).await;
 			send(&mut socket, ready(40, "synthetic-recovery-session")).await;
+			acknowledge(&mut socket, 40).await;
 			for (sequence, note) in [(42, "new"), (41, "old"), (42, "duplicate")] {
 				send(
 					&mut socket,
@@ -916,15 +917,9 @@ async fn older_dispatch_cannot_rewind_cursor_or_replace_a_newer_note() {
 				)
 				.await;
 			}
-			send(&mut socket, json!({"op":1,"d":null})).await;
-			loop {
-				let value = packet(&mut socket).await;
-				if value["op"] == 1 {
-					assert_eq!(value["d"], 42);
-					send(&mut socket, json!({"op":11,"d":null})).await;
-					break;
-				}
-			}
+			// A single timer heartbeat can race the dispatches; it cannot satisfy both probes.
+			acknowledge(&mut socket, 42).await;
+			acknowledge(&mut socket, 42).await;
 			gateway.stop(socket).await;
 		})
 		.await;
