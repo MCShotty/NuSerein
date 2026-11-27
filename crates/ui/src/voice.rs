@@ -8066,8 +8066,10 @@ mod tests {
 		let call = state.voice.active.as_mut().unwrap();
 		let channel = call.channel;
 		call.watching = Some(Id(501));
-		let mut view = MessagingUi::default();
-		view.stop_watch_scope = watched_stream_scope(&state);
+		let mut view = MessagingUi {
+			stop_watch_scope: watched_stream_scope(&state),
+			..Default::default()
+		};
 		assert!(view.stop_watch_scope.is_some());
 		state.voice.active.as_mut().unwrap().watching = Some(Id(502));
 		view.apply_watch_request(&mut state);

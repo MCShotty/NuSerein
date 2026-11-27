@@ -101,6 +101,7 @@ mod linux {
 			tray::VoiceState::Unmuted,
 			tray::VoiceState::Speaking,
 			tray::VoiceState::Muted,
+			tray::VoiceState::TemporarilyMuted,
 			tray::VoiceState::Deafened,
 		] {
 			tray.set_voice_state(state);
