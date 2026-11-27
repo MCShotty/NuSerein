@@ -1124,6 +1124,36 @@ impl Avatars {
 			.max_by_key(|[width, height]| u64::from(*width) * u64::from(*height))
 	}
 
+	/// Paint only an already retained still. The stage must not fan out preview requests.
+	pub(crate) fn paint_retained_stream_preview(
+		&mut self,
+		ui: &egui::Ui,
+		raw: &str,
+		rect: egui::Rect,
+	) -> bool {
+		let Some(source) = self.media.canonical.get(raw).and_then(Clone::clone) else {
+			return false;
+		};
+		let Some(index) = self.media.slots.get(&source).and_then(|slot| {
+			slot.held
+				.iter()
+				.position(|image| image.motion == Motion::Still)
+		}) else {
+			return false;
+		};
+		let Some(texture) = self.media.texture(
+			&source,
+			index,
+			ui.ctx(),
+			false,
+			ui.ctx().cumulative_pass_nr(),
+		) else {
+			return false;
+		};
+		paint_texture(ui, &texture, rect, 8, true, Color32::WHITE);
+		true
+	}
+
 	pub(crate) fn show_media(
 		&mut self,
 		ui: &mut egui::Ui,

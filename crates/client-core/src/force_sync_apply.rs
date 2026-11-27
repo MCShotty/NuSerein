@@ -53,7 +53,7 @@ impl State {
 	pub(crate) fn force_sync_banner_bytes(&self) -> usize {
 		self.force_sync_banners.bytes
 	}
-	fn observe_force_sync_banner(&mut self, guild: Id, banner: Patch<String>) -> bool {
+	pub(crate) fn observe_force_sync_banner(&mut self, guild: Id, banner: Patch<String>) -> bool {
 		let value = match banner {
 			Patch::Absent => return true,
 			Patch::Null => None,
@@ -815,6 +815,12 @@ mod tests {
 		assert!(state.apply_force_sync_result(ReadResult::Guild(Box::new(
 			crate::force_sync_read::GuildRead {
 				display: model::GuildPatch {
+					banner: model::Patch::Absent,
+					boost_count: model::Patch::Absent,
+					boost_tier: model::Patch::Absent,
+					boost_progress_visible: model::Patch::Absent,
+					boost_tier_override: model::Patch::Absent,
+					boost_game_servers: model::Patch::Absent,
 					id: Id(10),
 					name: Patch::Value("Renamed".into()),
 					icon: Patch::Absent,
@@ -894,6 +900,12 @@ mod tests {
 		};
 		ReadResult::Guild(Box::new(crate::force_sync_read::GuildRead {
 			display: model::GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				id: Id(10),
 				name: Patch::Value("Fresh server name".into()),
 				icon: Patch::Absent,

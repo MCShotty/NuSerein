@@ -73,6 +73,8 @@ impl Desktop {
 				.is_some_and(|own| self.messaging.voice_speaking.contains(&own.id));
 			let voice_state = if deafened {
 				platform::tray::VoiceState::Deafened
+			} else if self.messaging.voice_temporarily_muted(&self.state) {
+				platform::tray::VoiceState::TemporarilyMuted
 			} else if muted {
 				platform::tray::VoiceState::Muted
 			} else if speaking {

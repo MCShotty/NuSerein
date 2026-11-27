@@ -261,7 +261,7 @@ impl ForumUi {
 								ui.label(
 									RichText::new(crate::i18n::translate_if_key(
 										if !query.is_empty() {
-											"forum-show-press-enter-to-start-a-post-with-this-title"
+											"forum-no-loaded-titles-match"
 										} else if filtered {
 											"forum-show-no-loaded-post-carries-the-selected-tags-load-more-or"
 										} else {
@@ -270,6 +270,13 @@ impl ForumUi {
 									))
 									.color(colors.muted),
 								);
+								if filtered
+									&& design::text_action(ui, "forum-clear-post-filters").clicked()
+								{
+									self.query.clear();
+									self.tags.clear();
+									ui.ctx().request_repaint();
+								}
 							});
 						}
 						let active: Vec<&Channel> = active
@@ -389,28 +396,16 @@ impl ForumUi {
 						}
 						ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
 							icons::inline(ui, icons::Icon::Search, 20.0, colors.muted);
-							let input = ui.add(
+							ui.add(
 								egui::TextEdit::singleline(&mut self.query)
 									.align(egui::Align2::LEFT_CENTER)
 									.char_limit(MAX_TITLE)
 									.frame(egui::Frame::NONE)
-									.hint_text(crate::i18n::translate(
-										"forum-toolbar-search-or-create-a-post",
-									))
+									.hint_text(crate::i18n::translate("forum-toolbar-search-posts"))
 									.font(egui::TextStyle::Body)
 									.desired_width(ui.available_width().max(60.0)),
-							);
-							let input = input.accessible_name(crate::i18n::translate(
-								"forum-toolbar-search-or-create-a-post",
-							));
-							if input.lost_focus()
-								&& ui.input(|i| i.key_pressed(egui::Key::Enter))
-								&& !self.query.trim().is_empty()
-								&& allowed
-							{
-								let title = std::mem::take(&mut self.query);
-								self.start_draft(title);
-							}
+							)
+							.accessible_name(crate::i18n::translate("forum-toolbar-search-posts"));
 						});
 					});
 				});
@@ -1695,11 +1690,9 @@ fn latest_row(ui: &mut egui::Ui, state: &State, post: &Channel) {
 		.and_then(|summary| summary.latest.as_ref());
 	let Some(latest) = latest else {
 		ui.label(
-			RichText::new(crate::i18n::translate(
-				"forum-latest-row-latest-message-unavailable",
-			))
-			.size(14.0)
-			.color(colors.muted),
+			RichText::new(crate::i18n::translate("forum-post-no-message-preview"))
+				.size(14.0)
+				.color(colors.muted),
 		);
 		return;
 	};
@@ -2143,6 +2136,80 @@ fn ago(id: Id, now: time::OffsetDateTime) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn search_enter_keeps_the_filter_and_new_post_is_explicit() {
+		let state = test_support::demo_state();
+		let forum = state
+			.channels
+			.iter()
+			.find(|channel| state.is_forum(channel.id))
+			.unwrap()
+			.id;
+		assert!(state.can_create_post(forum));
+		let ctx = egui::Context::default();
+		let mut view = ForumUi {
+			query: "synthetic topic".into(),
+			..Default::default()
+		};
+		let render = |view: &mut ForumUi, events| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					events,
+					focused: true,
+					..Default::default()
+				},
+				|ui| {
+					view.toolbar(ui, &state, forum);
+				},
+			);
+			let mut text = vec![];
+			for shape in &output.shapes {
+				crate::test_ui::logical_text(&shape.shape, &mut text);
+			}
+			output.drop_without_applying_deltas();
+			text
+		};
+		let click = |view: &mut ForumUi, label: &str| {
+			let pos = render(view, vec![])
+				.into_iter()
+				.find(|(s, _)| s == label)
+				.unwrap()
+				.1
+				.center();
+			for pressed in [true, false] {
+				render(
+					view,
+					vec![
+						egui::Event::PointerMoved(pos),
+						egui::Event::PointerButton {
+							pos,
+							button: egui::PointerButton::Primary,
+							pressed,
+							modifiers: egui::Modifiers::NONE,
+						},
+					],
+				);
+			}
+		};
+		click(&mut view, "synthetic topic");
+		assert!(ctx.memory(|memory| memory.focused().is_some()));
+		render(
+			&mut view,
+			vec![egui::Event::Key {
+				key: egui::Key::Enter,
+				physical_key: None,
+				pressed: true,
+				repeat: false,
+				modifiers: egui::Modifiers::NONE,
+			}],
+		);
+		assert!(view.draft.is_none());
+		assert_eq!(view.query, "synthetic topic");
+		click(&mut view, &crate::i18n::translate("forum-toolbar-new-post"));
+		assert!(view.draft.is_some());
+		assert_eq!(view.query, "synthetic topic");
+	}
 
 	/// Nothing is staged in these fixtures; the tray lives in the messaging view.
 	#[derive(Default)]

@@ -275,8 +275,17 @@ impl MissingMemberFields {
 	}
 }
 
+#[derive(Clone, Copy)]
+pub struct ServerRosterEvidence {
+	pub count: u16,
+	/// This same Gateway packet synchronized every reported position.
+	pub full_sync: bool,
+}
+
 #[derive(Clone)]
 pub struct MemberList {
+	/// Exact headcount only when admitted public-list group metadata agrees with the wire count.
+	pub server_member_count: Option<ServerRosterEvidence>,
 	pub guild: Option<Id>,
 	pub channel: Id,
 	pub request: u64,

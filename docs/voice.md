@@ -226,10 +226,18 @@ server muted/deafened, matching the documented service rules. The source picker 
 one other joined server at a time, gated by USE_EXTERNAL_SOUNDS and the service-reported full
 Nitro tier. An explicit selection reads that catalog; an exact available entry emits one play
 request naming its source server. Switching sources, losing membership or changing calls
-invalidates old results. Favorites are local to the account session, up to 32 sound/source
-pairs; they do not play audio, persist across restarts, or sync to Discord. Private and group
-DM calls show the button disabled. Entrance sounds, emoji-only voice effects and animations
-remain unimplemented. Live acceptance is unverified. Server sounds are managed in
+invalidates old results. Favorites store up to 32 sound/source pairs per saved account on
+this device. Restoring or starring a sound never loads a catalog or plays it; favorites do not
+sync to Discord, and unavailable storage leaves changes in the session only. The separately
+labeled **Discord favorites** mode explicitly loads or refreshes the account's list and writes
+only the sound you star or unstar. Local favorites are not merged or uploaded automatically.
+**Settings → Voice & Video → Entrance Sound for All Servers** lets full-Nitro users load,
+set or remove the account default without joining a call. Choose built-in sounds or load one
+joined server’s catalog. **Entrance sound for this server** sets a server override; removing
+it reveals the global default if present. These unofficial preference operations do not send
+an entrance sound when joining a call. Actual join playback, emoji-only voice effects and
+animations remain outside this change. Private and group DMs cannot use Soundboard.
+Discord acceptance and the desktop UI are not yet verified. Server sounds are managed in
 [Server Settings](#managing-server-sounds).
 
 Sound audio is local playback only: it is never encoded into the microphone stream, and the

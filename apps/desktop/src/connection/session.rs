@@ -381,8 +381,8 @@ impl Connection {
                 let mut autocomplete:Option<AbortTask>=None;
                 let mut sticker_packs:Option<AbortTask>=None;
                 let mut sticker_detail:Option<AbortTask>=None;
-                // Default, current and external catalogs, plus the one unanswered play request.
-                let mut soundboard:[Option<AbortTask>;4]=[None,None,None,None];
+                // Default, current and external catalogs, playback, and one preference transaction.
+                let mut soundboard:[Option<AbortTask>;5]=[None,None,None,None,None];
                 let mut reaction_read:Option<AbortTask>=None;
                 let mut ringing:Option<AbortTask>=None;
                 let mut recipient_ringing:Option<(client_core::voice::Command,AbortTask)>=None;
@@ -710,15 +710,32 @@ impl Connection {
 									emit(Event::Soundboard(E::Sent {request,channel,sound,result:Err(Failure::ProtocolAt("Call changed; the sound was not sent"))}))?;
 									continue;
 								}
-                                let task=&mut soundboard[match request {R::Default{..}=>0,R::Guild{..}=>1,R::Send{..}=>2,R::ExternalGuild{..}=>3}];
+                                let settings=match request {R::Settings(work)=>Some(*work),_=>None};
+                                if let Some(work)=settings && (work.generation!=generation || work.call_owner().is_some_and(|owner| *soundboard_owner.borrow()!=Some(owner))) {
+                                    emit(Event::Soundboard(E::Settings {work,result:Err(Failure::ProtocolAt("voice-soundboard-settings-interrupted"))}))?;
+                                    wake.request_repaint();
+                                    continue;
+                                }
+                                let task=&mut soundboard[match request {R::Default{..}=>0,R::Guild{..}=>1,R::Send{..}=>2,R::ExternalGuild{..}=>3,R::Settings(..)=>4}];
                                 drop(task.take());
                                 let api=api.clone();let emit=emit.clone();let finished=finished.clone();let wake=wake.clone();
 								let owner=soundboard_owner_changed.clone();let lifecycle=lifecycle_changed.clone();let revision=current_lifecycle.interruption;
                                 *task=Some(AbortTask(tokio::spawn(async move {
 									let event=if let Some((request,channel,sound,call))=scope {
 										scoped_soundboard_event(api.execute(command),owner,(channel,call),lifecycle,revision).await.unwrap_or(Event::Soundboard(E::Sent {request,channel,sound,result:Err(Failure::Ambiguous)}))
-									} else {api.execute(command).await};
-                                    let failure=match &event {Event::Soundboard(E::Default{result:Err(f),..}|E::Guild{result:Err(f),..}|E::Sent{result:Err(f),..}) if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
+									} else if let Some(work)=settings {
+                                            let result = if let Some(call_owner)=work.call_owner() {
+                                                scoped_soundboard_event(api.execute(command),owner,call_owner,lifecycle,revision).await
+                                            } else {
+                                                tokio::select! {
+                                                    biased;
+                                                    _ = super::voice::wait_for_voice_interruption(lifecycle, revision) => None,
+                                                    event = api.execute(command) => Some(event),
+                                                }
+                                            };
+                                            result.unwrap_or(Event::Soundboard(E::Settings {work,result:Err(Failure::Ambiguous)}))
+                                        } else {api.execute(command).await};
+                                    let failure=match &event {Event::Soundboard(E::Default{result:Err(f),..}|E::Guild{result:Err(f),..}|E::Sent{result:Err(f),..}|E::Settings{result:Err(f),..}) if f.ends_session() && *f!=Failure::Capacity=>Some(*f),_=>None};
                                     let error=emit(event).err().or(failure);
                                     if let Some(error)=error {api.stop();let _=finished.send(Some(error));}
                                     wake.request_repaint();

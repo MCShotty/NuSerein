@@ -34,7 +34,7 @@ pub enum VideoState {
 	Failed(&'static str),
 }
 pub enum VideoCommand {
-	Play(Attachment, Option<url::Url>),
+	Play(Box<Attachment>, Option<url::Url>),
 	Pause(bool),
 	Seek(f64),
 	Volume(f32),
@@ -541,7 +541,7 @@ impl VideoUi {
 				let post = is_embedded(attachment)
 					.then(|| original.and_then(social_video_page))
 					.flatten();
-				VideoCommand::Play(attachment.clone(), post)
+				VideoCommand::Play(Box::new(attachment.clone()), post)
 			}
 		});
 	}
@@ -1915,7 +1915,7 @@ mod tests {
 				frame(&mut video, Some(key));
 			}
 			assert!(
-				matches!(video.command.take(), Some(VideoCommand::Play(file, None)) if file == attachment)
+				matches!(video.command.take(), Some(VideoCommand::Play(file, None)) if *file == attachment)
 			);
 			assert!(video.seen);
 			assert!(!video.accept_frame(&ctx, 1921, 1080, &[]));

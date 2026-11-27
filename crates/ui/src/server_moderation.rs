@@ -109,20 +109,22 @@ impl ModerationUi {
 		if !self.bans_only {
 			if !self.actions_only {
 				ui.horizontal_wrapped(|ui| {
-					ui.label(i18n::translate("moderation-member"));
+					let label = ui.label(i18n::translate("moderation-user-id"));
 					ui.add(
 						egui::TextEdit::singleline(&mut self.target)
 							.char_limit(20)
 							.desired_width(200.0),
-					);
+					)
+					.labelled_by(label.id);
+					let target = self.target.parse::<Id>().ok().filter(|user| user.0 != 0);
 					if ui
 						.add_enabled(
-							available && self.target.parse::<Id>().is_ok_and(|user| user.0 != 0),
+							available && target.is_some(),
 							egui::Button::new(i18n::translate("moderation-lookup")),
 						)
 						.clicked()
 					{
-						action = self.target.parse().ok().map(Action::Member);
+						action = target.map(Action::Member);
 					}
 				});
 				if let Some(channel) = state.selected.filter(|id| {
@@ -130,26 +132,32 @@ impl ModerationUi {
 						.channel(*id)
 						.is_some_and(|row| row.guild == Some(guild))
 				}) {
-					ui.menu_button(i18n::translate("moderation-choose-member"), |ui| {
-						egui::ScrollArea::vertical()
-							.max_height(220.0)
-							.show(ui, |ui| {
-								for user in crate::mentions::known_users(state, channel)
-									.into_iter()
-									.filter(|user| {
-										state.user.as_ref().is_none_or(|actor| actor.id != user.id)
-									}) {
-									if ui
-										.add_enabled(available, egui::Button::new(&user.name))
-										.clicked()
-									{
-										self.target = user.id.to_string();
-										action = Some(Action::Member(user.id));
-										ui.close();
+					ui.menu_button(
+						i18n::translate("moderation-choose-conversation-member"),
+						|ui| {
+							egui::ScrollArea::vertical()
+								.max_height(220.0)
+								.show(ui, |ui| {
+									for user in crate::mentions::known_users(state, channel)
+										.into_iter()
+										.filter(|user| {
+											state
+												.user
+												.as_ref()
+												.is_none_or(|actor| actor.id != user.id)
+										}) {
+										if ui
+											.add_enabled(available, egui::Button::new(&user.name))
+											.clicked()
+										{
+											self.target = user.id.to_string();
+											action = Some(Action::Member(user.id));
+											ui.close();
+										}
 									}
-								}
-							});
-					});
+								});
+						},
+					);
 				}
 				ui.weak(i18n::translate("moderation-lookup-help"));
 			}
@@ -294,7 +302,7 @@ impl ModerationUi {
 			if !self.bans_only {
 				ui.heading(i18n::translate("moderation-bans"));
 			}
-			ui.horizontal(|ui| {
+			ui.horizontal_wrapped(|ui| {
 				ui.add(
 					egui::TextEdit::singleline(&mut self.ban_search)
 						.char_limit(32)
@@ -322,9 +330,45 @@ impl ModerationUi {
 			{
 				action = Some(Action::Bans { after: None });
 			}
-			if let Some(page) = &state.server_admin.bans {
-				if page.items.is_empty() {
-					ui.weak(i18n::translate("moderation-no-bans"));
+			let page = state
+				.server_admin
+				.bans
+				.as_ref()
+				.filter(|page| page.guild == guild);
+			let query = page.and(state.server_admin.bans_query.as_deref());
+			let loading = state.server_admin.ban_read_pending(guild);
+			if loading {
+				design::hint(ui, "moderation-bans-loading");
+			} else if !state.demo && !state.gateway_connected {
+				design::hint(ui, "moderation-bans-offline");
+			} else if page.is_none() {
+				let failed =
+					state.server_admin.guild == Some(guild) && state.server_admin.error.is_some();
+				design::hint(
+					ui,
+					if failed {
+						"moderation-bans-unavailable"
+					} else {
+						"moderation-bans-unloaded"
+					},
+				);
+			}
+			if let Some(page) = page {
+				if let Some(query) = query {
+					design::hint(
+						ui,
+						&i18n::translate_args("moderation-bans-matches-for", &[("query", query)]),
+					);
+				}
+				if !loading && page.items.is_empty() {
+					design::hint(
+						ui,
+						if query.is_some() {
+							"moderation-bans-no-matches"
+						} else {
+							"moderation-no-bans"
+						},
+					);
 				}
 				for ban in &page.items {
 					ui.push_id(ban.user.id.0, |ui| {
@@ -348,6 +392,7 @@ impl ModerationUi {
 					});
 				}
 				if let Some(after) = page.next
+					&& query.is_none()
 					&& ui
 						.add_enabled(
 							available,
@@ -378,11 +423,21 @@ impl ModerationUi {
 						.map(|ban| ban.user.name.clone())
 				})
 				.unwrap_or_else(|| user.to_string());
-			let title = match confirmation {
-				Confirmation::Unban(_) => "moderation-confirm-unban",
-				Confirmation::Change(_, Change::Kick) => "moderation-confirm-kick",
-				Confirmation::Change(_, Change::Ban { .. }) => "moderation-confirm-ban",
-				Confirmation::Change(_, Change::Timeout { .. }) => "moderation-confirm-timeout",
+			let (title, verb) = match confirmation {
+				Confirmation::Unban(_) => ("moderation-confirm-unban", "moderation-unban"),
+				Confirmation::Change(_, Change::Kick) => {
+					("moderation-confirm-kick", "moderation-kick")
+				}
+				Confirmation::Change(_, Change::Ban { .. }) => {
+					("moderation-confirm-ban", "moderation-ban")
+				}
+				Confirmation::Change(_, Change::Timeout { until: Some(_) }) => {
+					("moderation-confirm-timeout", "moderation-timeout")
+				}
+				Confirmation::Change(_, Change::Timeout { until: None }) => (
+					"moderation-confirm-remove-timeout",
+					"moderation-remove-timeout",
+				),
 			};
 			let request = match confirmation {
 				Confirmation::Unban(user) => Action::Unban {
@@ -402,25 +457,59 @@ impl ModerationUi {
 					&server_admin::Action::Moderation(request.clone()),
 				);
 			let mut confirm = false;
+			let mut cancel = false;
 			let response = dialog::Dialog::new("moderation-confirm", i18n::translate(title))
 				.danger()
 				.width(440.0)
 				.show(ui.ctx(), |body| {
 					body.content(|ui| {
 						ui.strong(&name);
-						ui.label(i18n::translate("moderation-confirm-description"));
+						design::hint(
+							ui,
+							&i18n::translate_args(
+								"moderation-confirm-target",
+								&[("id", &user.to_string())],
+							),
+						);
+						match confirmation {
+							Confirmation::Change(_, Change::Ban { delete_seconds: 0 }) => {
+								ui.label(i18n::translate("moderation-keep-messages"));
+							}
+							Confirmation::Change(_, Change::Ban { delete_seconds }) => {
+								ui.label(i18n::translate_args(
+									"moderation-confirm-delete-history",
+									&[("duration", &duration(delete_seconds))],
+								));
+							}
+							Confirmation::Change(_, Change::Timeout { until: Some(at) }) => {
+								let until = i64::try_from(at / 1_000_000_000)
+									.ok()
+									.and_then(|s| crate::local_time::discord_timestamp(s, b'f'))
+									.unwrap_or_else(|| {
+										i18n::translate("moderation-confirm-expiry-unavailable")
+									});
+								ui.label(i18n::translate_args(
+									"moderation-confirm-expires",
+									&[("expiry", &until)],
+								));
+							}
+							_ => {}
+						}
 						crate::server_automod::reason(ui, &mut self.reason);
 					});
 					body.footer(|ui| {
+						cancel =
+							dialog::action(ui, "dialog-module-cancel", dialog::Action::Neutral)
+								.clicked();
 						confirm = ui
-							.add_enabled(
-								allowed,
-								egui::Button::new(i18n::translate("moderation-confirm")),
-							)
+							.add_enabled_ui(allowed, |ui| {
+								dialog::action(ui, verb, dialog::Action::Danger)
+							})
+							.inner
 							.clicked();
 					});
 				});
-			if response.close && !state.server_admin.pending {
+			if (response.close || cancel) && !state.server_admin.pending {
 				self.confirmation = None;
 			}
 			if confirm {
@@ -462,6 +551,138 @@ fn duration(seconds: u32) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn bans_distinguish_unloaded_results_and_submitted_search() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::community_state(false);
+		let guild = state.guilds[0].id;
+		let render = |state: &mut State, editor: &mut ModerationUi| {
+			let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+				let mut commands = vec![];
+				editor.show_bans(ui, state, guild, &mut commands);
+				assert!(commands.is_empty());
+			});
+			let mut text = Vec::new();
+			for shape in &output.shapes {
+				crate::test_ui::logical_text(&shape.shape, &mut text);
+			}
+			output.drop_without_applying_deltas();
+			text
+		};
+		let contains = |text: &[(String, egui::Rect)], key| {
+			let label = i18n::translate(key);
+			text.iter().any(|(s, _)| s == &label)
+		};
+		let mut editor = ModerationUi::default();
+		assert!(contains(
+			&render(&mut state, &mut editor),
+			"moderation-bans-unloaded"
+		));
+		let read = |state: &mut State, action| {
+			let Some(Command::ServerAdmin { request, .. }) =
+				state.request_server_admin(guild, server_admin::Action::Moderation(action))
+			else {
+				panic!("synthetic ban read should be admitted");
+			};
+			request
+		};
+		let finish = |state: &mut State, request| {
+			state.apply(client_core::Envelope {
+				generation: state.generation,
+				event: client_core::Event::ServerAdmin(client_core::server_admin::Event {
+					guild,
+					request,
+					result: Ok(server_admin::Result::Moderation(
+						model::moderation::Outcome::Bans(model::moderation::Bans {
+							guild,
+							items: vec![],
+							next: None,
+						}),
+					)),
+				}),
+			});
+		};
+		let unfiltered = read(&mut state, Action::Bans { after: None });
+		assert!(contains(
+			&render(&mut state, &mut editor),
+			"moderation-bans-loading"
+		));
+		finish(&mut state, unfiltered);
+		assert!(contains(
+			&render(&mut state, &mut editor),
+			"moderation-no-bans"
+		));
+		let filtered = read(
+			&mut state,
+			Action::BanSearch {
+				query: "prior query".into(),
+			},
+		);
+		editor.ban_search = "unsubmitted query".into();
+		finish(&mut state, filtered);
+		let text = render(&mut state, &mut editor);
+		let label =
+			i18n::translate_args("moderation-bans-matches-for", &[("query", "prior query")]);
+		assert!(contains(&text, "moderation-bans-no-matches"));
+		assert!(text.iter().any(|(s, _)| s == &label));
+	}
+	#[test]
+	fn moderation_lookup_sends_only_the_entered_user_id() {
+		let mut state = test_support::community_state(false);
+		let guild = state.guilds[0].id;
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let mut editor = ModerationUi::default();
+		let label = i18n::translate("moderation-lookup");
+		for (input, expected) in [("Robin", None), ("0", None), ("77", Some(Id(77)))] {
+			editor.scope = Some((state.generation, guild));
+			editor.target = input.into();
+			let mut commands = Vec::new();
+			let mut frame = |events| {
+				ctx.run_ui(
+					egui::RawInput {
+						events,
+						focused: true,
+						..Default::default()
+					},
+					|ui| editor.show(ui, &mut state, guild, &mut commands),
+				)
+			};
+			let output = frame(vec![]);
+			let mut text = Vec::new();
+			for shape in &output.shapes {
+				crate::test_ui::logical_text(&shape.shape, &mut text);
+			}
+			let pos = text
+				.iter()
+				.find(|(text, _)| text == &label)
+				.unwrap()
+				.1
+				.center();
+			output.drop_without_applying_deltas();
+			for pressed in [true, false] {
+				frame(vec![
+					egui::Event::PointerMoved(pos),
+					egui::Event::PointerButton {
+						pos,
+						button: egui::PointerButton::Primary,
+						pressed,
+						modifiers: egui::Modifiers::NONE,
+					},
+				])
+				.drop_without_applying_deltas();
+			}
+			if let Some(expected) = expected {
+				assert!(
+					matches!(commands.as_slice(), [Command::ServerAdmin { guild: target, action, .. }]
+					if *target == guild && matches!(action.as_ref(), server_admin::Action::Moderation(Action::Member(id)) if *id == expected))
+				);
+			} else {
+				assert!(commands.is_empty());
+			}
+		}
+	}
+
 	#[test]
 	fn offline_moderation_confirmation_can_be_cancelled_without_a_write() {
 		let mut state = test_support::demo_state();

@@ -15,7 +15,7 @@ pub use presence::{
 mod members;
 pub use members::{
 	GlobalNameUpdate, Member, MemberDisplay, MemberIdentity, MemberList, MemberSlot,
-	MissingMemberFields,
+	MissingMemberFields, ServerRosterEvidence,
 };
 use presence::valid_presence_text;
 pub mod account;

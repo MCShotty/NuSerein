@@ -101,6 +101,13 @@ impl State {
 	pub fn needs_onboarding(&self, guild: Id) -> bool {
 		self.verification_pending(guild) || self.onboarding_incomplete(guild)
 	}
+	pub fn has_member_onboarding(&self, guild: Id) -> bool {
+		self.guild(guild).is_some()
+			&& self
+				.gate(guild)
+				.is_some_and(|gate| gate.features.onboarding)
+	}
+
 	pub fn open_onboarding(&mut self, guild: Id) {
 		if self
 			.onboarding

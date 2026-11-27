@@ -71,6 +71,8 @@ impl Editor {
 				egui::ScrollArea::vertical()
 					.max_height(max_height)
 					.show(ui, |ui| {
+						ui.heading(translate("server-notifications-personal-defaults"));
+						dialog::hint(ui, "server-notifications-save-immediately");
 						ui.add_enabled_ui(available, |ui| {
 							let level = self.edits.level.or(current.level);
 							let default = match state
@@ -155,7 +157,6 @@ impl Editor {
 									});
 							});
 						}
-						self.override_controls(ui, state, guild, commands);
 						if !known {
 							dialog::notice(
 								ui,
@@ -179,6 +180,7 @@ impl Editor {
 						crate::browse_channels::preference_feedback(
 							ui, state, guild, None, commands,
 						);
+						self.override_controls(ui, state, guild, commands);
 						if state.demo {
 							dialog::hint(ui, "server-menu-show-offline-preview-no-server-changes");
 						}
@@ -211,7 +213,8 @@ impl Editor {
 		commands: &mut Vec<Command>,
 	) {
 		design::card_divider(ui);
-		ui.label(translate("qol-notification-overrides"));
+		ui.heading(translate("qol-notification-overrides"));
+		dialog::hint(ui, "server-notifications-overrides-scope");
 		dialog::hint(ui, "qol-choose-channel-category");
 		if self.channel.is_some_and(|id| {
 			state.channel(id).is_none_or(|c| c.guild != Some(guild)) || !state.can_view(id)

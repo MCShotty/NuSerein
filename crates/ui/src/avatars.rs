@@ -442,6 +442,7 @@ impl Avatars {
 			|| key.starts_with("banner-")
 			|| key.starts_with("member-banner-")
 			|| key.starts_with("guide-header-")
+			|| key.starts_with("guild-banner-")
 		{
 			EMBED_EDGE as usize
 		} else if key.starts_with("emoji-unicode-") {
@@ -984,6 +985,23 @@ impl Avatars {
 			.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, ui.is_enabled(), label));
 		response
 	}
+	pub fn paint_guild_banner(
+		&mut self,
+		ui: &mut egui::Ui,
+		guild: model::Id,
+		hash: &str,
+		rect: egui::Rect,
+		demo: bool,
+	) {
+		if !ui.is_rect_visible(rect) || !model::valid_avatar_hash(hash) {
+			return;
+		}
+		let key = format!("guild-banner-{guild}-{hash}");
+		if !self.paint_fitted(ui, &key, rect, 0, true) && !demo {
+			self.request(key);
+		}
+	}
+
 	/// Server Guide welcome artwork uses the same bounded, credential-free image worker.
 	pub fn show_guide_header(
 		&mut self,

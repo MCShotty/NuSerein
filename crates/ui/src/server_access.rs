@@ -35,9 +35,13 @@ pub(super) struct AccessUi {
 	submitted: bool,
 	open_interview: Option<Id>,
 	pub opened_channel: Option<Id>,
-	invites: bool,
-	dms: bool,
+	invites: Option<bool>,
+	dms: Option<bool>,
+	pub open_safety_requirements: bool,
+	preserve_configuration: bool,
 	duration: u32,
+	change_invite_expiry: bool,
+	change_dm_expiry: bool,
 	error: Option<&'static str>,
 }
 impl AccessUi {
@@ -124,8 +128,10 @@ impl AccessUi {
 			if state.server_admin.error.is_none() {
 				self.confirmation = None;
 				self.reason.clear();
-				self.baseline = None;
-				self.draft = None;
+				if !self.preserve_configuration {
+					self.baseline = None;
+					self.draft = None;
+				}
 				self.transfer_name.clear();
 			}
 		}
@@ -201,6 +207,7 @@ impl AccessUi {
 		commands: &mut Vec<Command>,
 	) {
 		let write = action.write();
+		let preserve_configuration = !matches!(action, Action::Configure { .. });
 		let interview = match &action {
 			Action::Interview { request } => Some(*request),
 			_ => None,
@@ -210,6 +217,7 @@ impl AccessUi {
 		{
 			commands.push(command);
 			self.submitted = write;
+			self.preserve_configuration = preserve_configuration;
 			self.open_interview = interview;
 			self.error = None;
 		} else {
@@ -436,12 +444,10 @@ impl AccessUi {
 		let now = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
 		if self.revision != state.server_admin.access.revision {
 			self.revision = state.server_admin.access.revision;
-			self.invites = settings
-				.incident
-				.is_some_and(|v| v.invites_until.is_some_and(|until| until > now));
-			self.dms = settings
-				.incident
-				.is_some_and(|v| v.dms_until.is_some_and(|until| until > now));
+			self.change_invite_expiry = false;
+			self.change_dm_expiry = false;
+			self.invites = None;
+			self.dms = None;
 		}
 		if settings
 			.features
@@ -473,8 +479,34 @@ impl AccessUi {
 			));
 		}
 		ui.add_enabled_ui(available && !state.server_admin.needs_refresh, |ui| {
-			ui.checkbox(&mut self.invites, "Pause invitations");
-			ui.checkbox(&mut self.dms, "Pause DMs between non-friend server members");
+			let invites_active = before.invites_until.is_some_and(|at| at > now);
+			let dms_active = before.dms_until.is_some_and(|at| at > now);
+			let mut invites = self.invites.unwrap_or(invites_active);
+			let mut dms = self.dms.unwrap_or(dms_active);
+			if ui.checkbox(&mut invites, "Pause invitations").changed() {
+				self.invites = (invites != invites_active).then_some(invites);
+				self.change_invite_expiry = false;
+			}
+			if ui
+				.checkbox(&mut dms, "Pause DMs between non-friend server members")
+				.changed()
+			{
+				self.dms = (dms != dms_active).then_some(dms);
+				self.change_dm_expiry = false;
+			}
+			if invites && invites_active {
+				ui.checkbox(
+					&mut self.change_invite_expiry,
+					crate::i18n::translate("safety-change-invite-expiry"),
+				);
+			}
+			if dms && dms_active {
+				ui.checkbox(
+					&mut self.change_dm_expiry,
+					crate::i18n::translate("safety-change-dm-expiry"),
+				);
+			}
+			crate::design::hint(ui, "safety-duration-scope");
 			egui::ComboBox::from_id_salt("incident-duration")
 				.selected_text(duration(self.duration))
 				.show_ui(ui, |ui| {
@@ -485,10 +517,22 @@ impl AccessUi {
 			if ui.button("Apply security actions").clicked() {
 				let until = now + i128::from(self.duration) * 1_000_000_000;
 				let after = Incident {
-					invites_until: self.invites.then_some(until),
-					dms_until: self.dms.then_some(until),
+					invites_until: incident_choice(
+						before.invites_until,
+						self.invites,
+						self.change_invite_expiry,
+						now,
+						until,
+					),
+					dms_until: incident_choice(
+						before.dms_until,
+						self.dms,
+						self.change_dm_expiry,
+						now,
+						until,
+					),
 				};
-				if after != before {
+				if after != active_incident(before, now) {
 					self.confirmation = Some(Confirmation::Incident { before, after });
 				}
 			}
@@ -607,8 +651,19 @@ impl AccessUi {
 		if self.baseline == Some(before) {
 			self.draft = Some(after);
 		}
-		if after.community && (settings.verification_level < 1 || settings.content_filter != 2) {
+		let prerequisites =
+			!after.community || settings.verification_level >= 1 && settings.content_filter == 2;
+		if !prerequisites {
 			ui.colored_label(design::palette(ui).danger,"Community requires verification level Low or higher and the content filter for all members. Set these in Safety Setup first.");
+			if ui
+				.add_enabled(
+					available,
+					egui::Button::new(crate::i18n::translate("access-fix-prerequisites")),
+				)
+				.clicked()
+			{
+				self.open_safety_requirements = true;
+			}
 		}
 		if before != after {
 			ui.horizontal_wrapped(|ui| {
@@ -616,7 +671,11 @@ impl AccessUi {
 					.add_enabled(
 						available
 							&& !state.server_admin.needs_refresh
-							&& !conflicted && after.valid(),
+							&& !conflicted && after.valid()
+							&& prerequisites && state.server_admin_action_allowed(
+							guild,
+							&server_admin::Action::Access(Action::Configure { before, after }),
+						),
 						egui::Button::new("Save changes"),
 					)
 					.clicked()
@@ -709,7 +768,15 @@ impl AccessUi {
 			.width(420.0)
 			.show(ctx, |body| {
 				body.content(|ui| match &confirmation {
-					Confirmation::Decision { status, .. } => {
+					Confirmation::Decision { request, status } => {
+						let detail = state.server_admin.access.detail.as_ref().filter(|row| row.guild == guild && row.id == *request);
+						if let Some(user) = detail.and_then(|row| row.user.as_ref()) {
+							ui.strong(&user.name);
+							if let Some(handle) = &user.username { ui.label(format!("@{handle}")); }
+						}
+						let target = detail.map_or_else(|| crate::i18n::translate_args("access-confirm-application-id", &[("id", &request.to_string())]),
+							|row| crate::i18n::translate_args("moderation-confirm-target", &[("id", &row.user_id.to_string())]));
+						ui.weak(target);
 						ui.label(if *status == Status::Approved {
 							"Approve this member application?"
 						} else {
@@ -724,21 +791,16 @@ impl AccessUi {
 							);
 						}
 					}
-					Confirmation::Incident { after, .. } => {
-						ui.label("Apply these server security actions?");
+					Confirmation::Incident { before, after } => {
+							let before = active_incident(*before, time::OffsetDateTime::now_utc().unix_timestamp_nanos());
+							ui.label("Apply these server security actions?");
 						ui.label(format!(
 							"Invitations: {}",
-							after.invites_until.map_or_else(
-								|| "resume".into(),
-								|at| format!("pause until {}", date(Some(at)))
-							)
+							incident_change(before.invites_until, after.invites_until)
 						));
 						ui.label(format!(
 							"Non-friend DMs: {}",
-							after.dms_until.map_or_else(
-								|| "resume".into(),
-								|at| format!("pause until {}", date(Some(at)))
-							)
+							incident_change(before.dms_until, after.dms_until)
 						));
 					}
 					Confirmation::Mfa { after, .. } => {
@@ -749,9 +811,13 @@ impl AccessUi {
 						});
 					}
 					Confirmation::Transfer { recipient, .. } => {
-						ui.label(format!(
-							"Transfer this server to the verified member {recipient}?"
-						));
+						if let Some(server) = state.guild(guild) { ui.strong(&server.name); }
+						if let Some(member) = state.server_admin.access.recipient.as_ref().filter(|member| member.user.id == *recipient) {
+							ui.label(&member.user.name);
+							if let Some(handle) = &member.user.username { ui.label(format!("@{handle}")); }
+						}
+						ui.weak(crate::i18n::translate_args("moderation-confirm-target", &[("id", &recipient.to_string())]));
+						dialog::hint(ui, "access-confirm-transfer-impact");
 						ui.label("Type the server name to confirm.");
 						ui.add(egui::TextEdit::singleline(&mut self.transfer_name).char_limit(100));
 					}
@@ -766,12 +832,17 @@ impl AccessUi {
 						.server_admin
 						.access
 						.applications_changed);
+					let incident_ready = !matches!(confirmation, Confirmation::Incident { before, after }
+						if !state.server_admin_action_allowed(guild, &server_admin::Action::Access(Action::Incident { before, after })));
+					if !incident_ready {
+						design::hint(ui, "access-incident-review-again");
+					}
 					let name_matches = !matches!(confirmation, Confirmation::Transfer { .. })
 						|| state
 							.guild(guild)
 							.is_some_and(|g| g.name == self.transfer_name);
 					if ui
-						.add_enabled_ui(ready && name_matches, |ui| {
+						.add_enabled_ui(ready && name_matches && incident_ready, |ui| {
 							dialog::action(ui, "Confirm", dialog::Action::Primary)
 						})
 						.inner
@@ -860,6 +931,78 @@ impl AccessUi {
 		review
 	}
 }
+fn active_incident(incident: Incident, now: i128) -> Incident {
+	Incident {
+		invites_until: incident.invites_until.filter(|at| *at > now),
+		dms_until: incident.dms_until.filter(|at| *at > now),
+	}
+}
+
+fn incident_choice(
+	before: Option<i128>,
+	edit: Option<bool>,
+	length: bool,
+	now: i128,
+	until: i128,
+) -> Option<i128> {
+	let active = before.filter(|at| *at > now);
+	if edit.is_none() && (!length || active.is_none()) {
+		return active;
+	}
+	edited_expiry(active, edit.unwrap_or(true), length, now, until)
+}
+
+#[test]
+fn untouched_pause_never_renews_on_expiry() {
+	assert_eq!(incident_choice(Some(110), None, false, 120, 200), None);
+	assert_eq!(incident_choice(Some(110), None, true, 120, 200), None);
+	assert_eq!(
+		incident_choice(None, Some(true), false, 120, 200),
+		Some(200)
+	);
+}
+
+fn edited_expiry(
+	before: Option<i128>,
+	paused: bool,
+	change_expiry: bool,
+	now: i128,
+	until: i128,
+) -> Option<i128> {
+	if !paused {
+		return None;
+	}
+	Some(
+		before
+			.filter(|at| *at > now && !change_expiry)
+			.unwrap_or(until),
+	)
+}
+
+fn incident_change(before: Option<i128>, after: Option<i128>) -> String {
+	use crate::i18n::{translate, translate_args};
+	match (before, after) {
+		(Some(old), Some(at)) if old == at => {
+			translate_args("safety-unchanged-until", &[("expiry", &date(Some(at)))])
+		}
+		(Some(_), Some(at)) => {
+			translate_args("safety-change-until", &[("expiry", &date(Some(at)))])
+		}
+		(None, Some(at)) => translate_args("safety-pause-until", &[("expiry", &date(Some(at)))]),
+		(Some(_), None) => translate("safety-resume-now"),
+		(None, None) => translate("safety-unchanged-open"),
+	}
+}
+
+#[cfg(test)]
+#[test]
+fn editing_one_pause_preserves_the_other_expiry() {
+	assert_eq!(edited_expiry(Some(200), true, false, 100, 150), Some(200));
+	assert_eq!(edited_expiry(Some(200), true, true, 100, 150), Some(150));
+	assert_eq!(edited_expiry(None, true, false, 100, 150), Some(150));
+	assert_eq!(edited_expiry(Some(200), false, false, 100, 150), None);
+}
+
 fn resume_incident(before: Incident, invitations: bool, dms: bool, now: i128) -> Incident {
 	Incident {
 		invites_until: before

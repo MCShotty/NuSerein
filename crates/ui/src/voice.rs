@@ -121,7 +121,14 @@ struct VoicePopoutDisplay {
 	pinned: bool,
 	picture: Option<StreamPicture>,
 	grid: Option<PopoutGrid>,
+	stream_controls: Option<PopoutStreamControls>,
 	control: Option<PopoutControl>,
+}
+
+struct PopoutStreamControls {
+	scope: StreamScope,
+	muted: bool,
+	volume: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +136,10 @@ enum PopoutControl {
 	Microphone,
 	Deafen,
 	Disconnect,
+	StreamMute(StreamScope, bool),
+	StreamVolume(StreamScope, u16),
+	StopWatching(StreamScope),
+	StreamOutputSettings(StreamScope),
 }
 
 struct PopoutGrid {
@@ -237,6 +248,7 @@ impl VoicePopoutDisplay {
 	fn close(&mut self) {
 		self.picture = None;
 		self.grid = None;
+		self.stream_controls = None;
 		self.control = None;
 		self.closed = true;
 	}
@@ -288,6 +300,50 @@ impl VoicePopoutDisplay {
 							}
 						}
 					});
+					if !close && let Some(stream) = &self.stream_controls {
+						ui.add_enabled_ui(self.control.is_none(), |ui| {
+							ui.horizontal_wrapped(|ui| {
+								let mut muted = stream.muted;
+								if labels.output_issue {
+									ui.label(
+										RichText::new(crate::i18n::translate(
+											"voice-stream-audio-output-failed",
+										))
+										.color(STAGE_TEXT),
+									);
+									if ui
+										.button(crate::i18n::translate(
+											"voice-stream-open-output-settings",
+										))
+										.clicked()
+									{
+										self.control =
+											Some(PopoutControl::StreamOutputSettings(stream.scope));
+									}
+								}
+								if self.control.is_none()
+									&& ui.checkbox(&mut muted, &labels.stream_mute).changed()
+								{
+									self.control =
+										Some(PopoutControl::StreamMute(stream.scope, muted));
+								} else if self.control.is_none()
+									&& ui.button(&labels.stream_stop).clicked()
+								{
+									self.control = Some(PopoutControl::StopWatching(stream.scope));
+								}
+							});
+							let mut volume = stream.volume;
+							if self.control.is_none()
+								&& gain_slider(ui, &mut volume, &labels.stream_volume).changed()
+							{
+								self.control =
+									Some(PopoutControl::StreamVolume(stream.scope, volume));
+							}
+						});
+						if self.control.is_some() {
+							ctx.request_repaint_of(egui::ViewportId::ROOT);
+						}
+					}
 					ui.add_space(8.0);
 					let rect = ui.available_rect_before_wrap();
 					if close || rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -332,6 +388,10 @@ struct VoicePopoutLabels {
 	unpin: String,
 	close: String,
 	status: String,
+	stream_mute: String,
+	stream_volume: String,
+	stream_stop: String,
+	output_issue: bool,
 }
 
 pub(super) struct Fullscreen {
@@ -407,25 +467,49 @@ impl MessagingUi {
 		trigger.ctx.request_repaint();
 	}
 
-	/// Consume at most one intent, against the exact still-connected main call.
+	/// Consume at most one child intent, checking the current call and watch separately.
 	pub fn apply_popout_control(
 		&mut self,
 		ctx: &egui::Context,
 		state: &mut State,
 	) -> Option<Command> {
 		self.sync_voice_popout(ctx, state);
-		let popout = self
-			.voice_popout
-			.as_ref()
-			.filter(|popout| popout.target == PopoutTarget::Call)?;
+		let popout = self.voice_popout.as_ref()?;
 		let control = popout.display.lock().ok()?.control.take()?;
 		let channel = popout.scope.1;
-		if state.demo {
-			return None;
-		}
+		let call_controls = popout.target == PopoutTarget::Call && !state.demo;
+		let current_stream = match popout.target {
+			PopoutTarget::Call => watched_stream_scope(state),
+			PopoutTarget::Stream(user) => {
+				watched_stream_scope(state).filter(|scope| scope.3 == user)
+			}
+		};
 		let result = match control {
-			PopoutControl::Disconnect => state.leave_call(),
-			PopoutControl::Microphone | PopoutControl::Deafen => {
+			PopoutControl::StreamMute(scope, muted) if current_stream == Some(scope) => {
+				self.voice_stream_muted = muted;
+				None
+			}
+			PopoutControl::StreamVolume(scope, volume) if current_stream == Some(scope) => {
+				self.voice_stream_volume = Some(volume.min(200));
+				None
+			}
+			PopoutControl::StreamOutputSettings(scope) if current_stream == Some(scope) => {
+				self.exit_voice_fullscreen();
+				self.open_voice_settings();
+				ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+				None
+			}
+			PopoutControl::StopWatching(scope) if current_stream == Some(scope) => {
+				if matches!(popout.target, PopoutTarget::Stream(_))
+					&& state.selected == Some(channel)
+				{
+					ctx.memory_mut(|memory| memory.request_focus(popout.trigger));
+				}
+				self.stop_current_watch(state, scope);
+				None
+			}
+			PopoutControl::Disconnect if call_controls => state.leave_call(),
+			PopoutControl::Microphone | PopoutControl::Deafen if call_controls => {
 				let deafen = matches!(control, PopoutControl::Deafen);
 				if !self.controls_enabled(state)
 					|| !state.can_call(channel)
@@ -436,6 +520,7 @@ impl MessagingUi {
 				let (muted, deafened) = self.toggle_voice(deafen);
 				state.set_call_mute(muted, deafened)
 			}
+			_ => None,
 		};
 		self.sync_voice_popout(ctx, state);
 		result
@@ -468,6 +553,22 @@ impl MessagingUi {
 			}
 			self.voice_popout = None;
 		}
+	}
+
+	fn stream_audio_issue(&self, scope: Option<StreamScope>) -> bool {
+		scope.is_some() && self.voice_stream_audio_issue_scope == scope
+	}
+
+	fn current_stream_status(&self, scope: Option<StreamScope>, demo: bool) -> String {
+		let key = if scope.is_some()
+			&& (self.voice_stream_status_scope == scope || demo)
+			&& !self.voice_stream_status.is_empty()
+		{
+			self.voice_stream_status
+		} else {
+			"voice-stream-connecting"
+		};
+		crate::i18n::translate_if_key(key)
 	}
 
 	fn stream_picture(&self, scope: StreamScope) -> Option<StreamPicture> {
@@ -554,12 +655,24 @@ impl MessagingUi {
 		let muted = self.voice_muted || self.voice_deafened || !can_speak || call.server_muted;
 		PopoutGrid {
 			tiles,
-			footer: truncated.then(|| {
-				crate::i18n::translate_args(
+			footer: match (self.voice_temporarily_muted(state), truncated) {
+				(true, more) => {
+					let mut text = crate::i18n::translate("voice-mic-temporarily-muted");
+					if more {
+						text.push_str(" · ");
+						text.push_str(&crate::i18n::translate_args(
+							"voice-call-popout-more",
+							&[("count", &POPOUT_ROSTER_LIMIT.to_string())],
+						));
+					}
+					Some(text)
+				}
+				(false, true) => Some(crate::i18n::translate_args(
 					"voice-call-popout-more",
 					&[("count", &POPOUT_ROSTER_LIMIT.to_string())],
-				)
-			}),
+				)),
+				(false, false) => None,
+			},
 			controls: [
 				(
 					PopoutControl::Microphone,
@@ -605,6 +718,12 @@ impl MessagingUi {
 				return;
 			};
 			display.picture = stream.and_then(|scope| self.stream_picture(scope));
+			display.stream_controls =
+				watched_stream_scope(state).map(|scope| PopoutStreamControls {
+					scope,
+					muted: self.voice_stream_muted,
+					volume: self.voice_stream_volume.unwrap_or(100),
+				});
 			display.grid = (popout.target == PopoutTarget::Call)
 				.then(|| self.popout_grid(state, popout.scope));
 			display.level()
@@ -613,15 +732,15 @@ impl MessagingUi {
 			pin: crate::i18n::translate("voice-stream-popout-pin"),
 			unpin: crate::i18n::translate("voice-stream-popout-unpin"),
 			close: crate::i18n::translate("voice-stream-popout-close"),
-			status: crate::i18n::translate_if_key(if stream.is_none() {
-				"voice-call-popout-empty"
-			} else if self.voice_stream_picture_scope == stream
-				&& !self.voice_stream_status.is_empty()
-			{
-				self.voice_stream_status
+			stream_mute: crate::i18n::translate("voice-stream-audio-controls-mute-stream-audio"),
+			stream_volume: crate::i18n::translate("voice-stream-audio-controls-stream-volume"),
+			stream_stop: crate::i18n::translate("voice-stream-stop-watching"),
+			output_issue: self.stream_audio_issue(watched_stream_scope(state)),
+			status: if stream.is_none() {
+				crate::i18n::translate("voice-call-popout-empty")
 			} else {
-				"voice-stream-popout-waiting"
-			}),
+				self.current_stream_status(stream, state.demo)
+			},
 		};
 		let title = crate::i18n::translate(if stream.is_some() {
 			"voice-stream-popout-title"
@@ -1829,13 +1948,13 @@ impl MessagingUi {
 			rect.right_bottom(),
 		);
 		if full {
-			chrome_shade(ui, rect, 96.0, false, reveal);
+			chrome_shade(ui, rect, 96.0, false, 1.0);
 		}
 		let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar).layout(
 			egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
 		));
 		if connected {
-			bar_ui.set_opacity(reveal);
+			// Mute, Leave and keyboard focus must remain visible with the pointer elsewhere.
 			self.call_controls(&mut bar_ui, state, channel, commands);
 		} else {
 			bar_ui.horizontal_centered(|ui| {
@@ -2117,20 +2236,8 @@ impl MessagingUi {
 			}
 			Tile::Stream(streamer) if has_video => {
 				self.stream_tile(ui, state, rect, channel, *streamer, false);
-				if focused && rect.height() >= 96.0 {
-					let label = crate::i18n::translate("voice-stream-stop-watching");
-					let size = ui
-						.painter()
-						.layout_no_wrap(label.clone(), egui::FontId::proportional(14.0), STAGE_TEXT)
-						.size();
-					let stop = egui::Rect::from_min_size(
-						rect.min + egui::vec2(8.0, 8.0),
-						egui::vec2((size.x + 24.0).min(rect.width() - 16.0), 32.0),
-					);
-					if ui.put(stop, egui::Button::new(label)).clicked() {
-						self.watch_request = Some(None);
-						return None;
-					}
+				if focused {
+					self.stream_overlay_controls(ui, rect, state);
 				}
 				egui::Popup::context_menu(&response)
 					.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -2141,7 +2248,7 @@ impl MessagingUi {
 							.button(crate::i18n::translate("voice-stream-stop-watching"))
 							.clicked()
 						{
-							self.watch_request = Some(None);
+							self.stop_watch_scope = watched_stream_scope(state);
 							ui.close();
 						}
 					});
@@ -2152,7 +2259,18 @@ impl MessagingUi {
 				let name = participant_user(state, channel, *streamer)
 					.map_or_else(|| streamer.to_string(), |u| u.name.clone());
 				let label = watch_label(state, channel, &name);
-				self.stream_invite_tile(ui, &response, rect, &label, can_watch, compact);
+				let preview = state
+					.voice
+					.preview
+					.as_ref()
+					.filter(|preview| {
+						preview.channel == channel
+							&& preview.user == *streamer
+							&& state.channel(channel).and_then(|entry| entry.guild)
+								== Some(preview.guild)
+					})
+					.and_then(|preview| preview.url.as_deref());
+				self.stream_invite_tile(ui, &response, rect, &name, can_watch, compact, preview);
 				response.widget_info(|| {
 					egui::WidgetInfo::labeled(egui::Role::Button, can_watch, &label)
 				});
@@ -2165,7 +2283,10 @@ impl MessagingUi {
 						.as_ref()
 						.is_some_and(|call| call.channel == channel)
 					{
-						self.watch_request = Some(Some(*streamer));
+						self.watch_request =
+							state.voice.active.as_ref().map(|call| {
+								(state.generation, call.channel, call.request, *streamer)
+							});
 					} else {
 						self.stream_preview_watch = Some((channel, *streamer));
 					}
@@ -2264,44 +2385,38 @@ impl MessagingUi {
 			|| crate::i18n::translate("voice-stream-participant"),
 			|user| user.name.clone(),
 		);
-		let content = if let Some(media) = &self.voice_stream_hdr {
+		let scope =
+			watched_stream_scope(state).filter(|scope| scope.1 == channel && scope.3 == streamer);
+		let current_picture =
+			scope.is_some() && (state.demo || self.voice_stream_picture_scope == scope);
+		let content = if current_picture && let Some(media) = &self.voice_stream_hdr {
 			let content = fit_rect(rect, media.size);
 			media.paint(ui, content);
 			content
+		} else if current_picture && let Some(texture) = self.voice_stream_view {
+			let content = fit_rect(rect, texture.size);
+			ui.put(
+				content,
+				egui::Image::from_texture((texture.id, content.size())).corner_radius(8),
+			);
+			content
 		} else {
-			match &self.voice_stream_view {
-				Some(texture) => {
-					let content = fit_rect(rect, texture.size);
-					ui.put(
-						content,
-						egui::Image::from_texture((texture.id, content.size())).corner_radius(8),
-					);
-					content
-				}
-				None => {
-					ui.painter().rect_filled(rect, 8, TILE_FILL);
-					if rect.height() >= 132.0 {
-						let status = if self.voice_stream_status.is_empty() {
-							crate::i18n::translate("voice-stream-connecting")
-						} else {
-							crate::i18n::translate_if_key(self.voice_stream_status)
-						};
-						let spinner = egui::Rect::from_center_size(
-							rect.center() - egui::vec2(0.0, 18.0),
-							egui::Vec2::splat(24.0),
-						);
-						ui.put(spinner, crate::design::Busy::new().color(STAGE_MUTED));
-						ui.painter().text(
-							rect.center() + egui::vec2(0.0, 18.0),
-							egui::Align2::CENTER_CENTER,
-							status,
-							egui::FontId::proportional(13.0),
-							STAGE_MUTED,
-						);
-					}
-					rect
-				}
+			ui.painter().rect_filled(rect, 8, TILE_FILL);
+			let status = self.current_stream_status(scope, state.demo);
+			let label = egui::WidgetText::from(status).into_galley(
+				ui,
+				Some(egui::TextWrapMode::Truncate),
+				(rect.width() - 20.0).max(1.0),
+				egui::TextStyle::Body,
+			);
+			if rect.height() >= label.size().y + 12.0 {
+				ui.painter().with_clip_rect(rect).galley(
+					rect.center() - label.size() * 0.5,
+					label,
+					STAGE_MUTED,
+				);
 			}
+			rect
 		};
 		// Even a small strip-sized share names whose screen it is.
 		if content.height() >= 72.0 {
@@ -2313,23 +2428,50 @@ impl MessagingUi {
 				self.badge_opacity(),
 			);
 		}
+		if self.stream_audio_issue(scope) && rect.width() >= 100.0 && rect.height() >= 34.0 {
+			let width = (rect.width() - 16.0).min(270.0);
+			let warning = ui.put(
+				egui::Rect::from_min_size(
+					rect.left_top() + egui::vec2(8.0, 7.0),
+					egui::vec2(width, 26.0),
+				),
+				egui::Button::new(crate::i18n::translate("voice-stream-audio-output-failed"))
+					.truncate(),
+			);
+			if warning
+				.on_hover_text(crate::i18n::translate("voice-stream-open-output-settings"))
+				.clicked()
+			{
+				self.exit_voice_fullscreen();
+				self.open_voice_settings();
+			}
+		}
 		// Fullscreen has no call bar, so it keeps its own small audio and stop actions.
 		if overlay {
-			self.stream_overlay_controls(ui, content);
+			self.stream_overlay_controls(ui, content, state);
 		}
 	}
 
 	/// Bottom-right actions over a fullscreen share: stream audio and Stop watching.
-	fn stream_overlay_controls(&mut self, ui: &mut egui::Ui, content: egui::Rect) {
+	fn stream_overlay_controls(&mut self, ui: &mut egui::Ui, content: egui::Rect, state: &State) {
+		if content.width() < 96.0 || content.height() < 54.0 {
+			return;
+		}
 		let height = 40.0;
 		let stop_label = crate::i18n::translate("voice-stream-stop-watching");
 		let font = egui::FontId::new(13.0, design::medium_family(ui.ctx()));
 		let galley = ui
 			.painter()
 			.layout_no_wrap(stop_label.clone(), font, egui::Color32::WHITE);
+		let compact = content.width() < galley.size().x + 104.0;
+		let width = if compact {
+			36.0
+		} else {
+			galley.size().x + 24.0
+		};
 		let stop = egui::Rect::from_min_size(
-			content.right_bottom() - egui::vec2(16.0 + galley.size().x + 24.0, 16.0 + height),
-			egui::vec2(galley.size().x + 24.0, height),
+			content.right_bottom() - egui::vec2(8.0 + width, 8.0 + height),
+			egui::vec2(width, height),
 		);
 		let audio = egui::Rect::from_min_size(
 			stop.left_top() - egui::vec2(8.0 + height, 0.0),
@@ -2372,55 +2514,115 @@ impl MessagingUi {
 				egui::Color32::from_black_alpha(170)
 			},
 		);
-		ui.painter().galley(
-			stop.center() - galley.size() * 0.5,
-			galley,
-			egui::Color32::WHITE,
-		);
+		if compact {
+			crate::icons::paint(
+				ui.painter(),
+				crate::icons::Icon::Close,
+				stop.shrink(10.0),
+				egui::Color32::WHITE,
+			);
+		} else {
+			ui.painter().galley(
+				stop.center() - galley.size() * 0.5,
+				galley,
+				egui::Color32::WHITE,
+			);
+		}
+		design::focus_outline(ui, &response, 8);
 		response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &stop_label));
 		if response
 			.on_hover_text(crate::i18n::translate("voice-stream-stop-receiving"))
 			.clicked()
 		{
-			self.watch_request = Some(None);
+			self.stop_watch_scope = watched_stream_scope(state);
 		}
 	}
 
-	/// One focusable target per stream. Keep the owner and action even in a filmstrip.
+	/// Separate stream identity, live state, and the primary action.
+	#[allow(clippy::too_many_arguments)] // Geometry, identity and watch affordance for one tile.
 	fn stream_invite_tile(
-		&self,
+		&mut self,
 		ui: &egui::Ui,
 		response: &egui::Response,
 		rect: egui::Rect,
-		label: &str,
+		name: &str,
 		enabled: bool,
 		compact: bool,
+		preview: Option<&str>,
 	) {
 		let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-		painter.rect_filled(rect, 8, PILL_FILL);
-		let color = if enabled {
-			egui::Color32::WHITE
-		} else {
-			STAGE_MUTED
+		painter.rect_filled(rect, 8, TILE_FILL);
+		let card = fit_rect(rect, egui::vec2(16.0, 9.0));
+		let has_preview =
+			preview.is_some_and(|url| self.avatars.paint_retained_stream_preview(ui, url, card));
+		if has_preview {
+			painter.rect_filled(card, 8, egui::Color32::from_black_alpha(150));
+		}
+		let painter = painter.with_clip_rect(card.intersect(ui.clip_rect()));
+		let strong = if enabled { STAGE_TEXT } else { STAGE_MUTED };
+		let text = |label: String, width: f32, size: f32, color| {
+			let mut job = egui::text::LayoutJob::simple_singleline(
+				label,
+				egui::FontId::new(size, design::medium_family(ui.ctx())),
+				color,
+			);
+			job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
+			painter.layout_job(job)
 		};
-		let mut job = egui::text::LayoutJob::simple_singleline(
-			label.to_owned(),
-			egui::FontId::new(
-				if compact { 12.0 } else { 14.0 },
-				design::medium_family(ui.ctx()),
-			),
-			color,
+		if card.height() >= 54.0 {
+			let badge = text(
+				crate::i18n::translate("stream-card-live"),
+				48.0,
+				10.0,
+				egui::Color32::WHITE,
+			);
+			let badge_pos = card.right_top() + egui::vec2(-badge.size().x - 11.0, 9.0);
+			painter.rect_filled(
+				egui::Rect::from_min_size(badge_pos, badge.size()).expand2(egui::vec2(5.0, 2.0)),
+				4,
+				egui::Color32::from_rgb(152, 45, 56),
+			);
+			painter.galley(badge_pos, badge, egui::Color32::WHITE);
+			let owner = text(name.to_owned(), card.width() - 75.0, 13.0, STAGE_TEXT);
+			painter.galley(card.left_top() + egui::vec2(10.0, 8.0), owner, STAGE_TEXT);
+		}
+		let center = card.center();
+		if !has_preview && !compact && card.height() >= 124.0 {
+			let tile = egui::Rect::from_center_size(
+				center - egui::vec2(0.0, 16.0),
+				egui::Vec2::splat(44.0),
+			);
+			painter.rect_filled(tile, 10, PILL_FILL);
+			crate::icons::paint(
+				&painter,
+				crate::icons::Icon::ScreenShare,
+				tile.shrink(10.0),
+				STAGE_MUTED,
+			);
+		}
+		let action = text(
+			crate::i18n::translate("stream-card-watch"),
+			card.width() - 24.0,
+			13.0,
+			strong,
 		);
-		job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 16.0).max(1.0));
-		let galley = painter.layout_job(job);
+		let action_center = if card.height() >= 124.0 {
+			center + egui::vec2(0.0, 29.0)
+		} else {
+			card.center_bottom() - egui::vec2(0.0, 14.0)
+		};
 		let button =
-			egui::Rect::from_center_size(rect.center(), galley.size() + egui::vec2(12.0, 8.0));
+			egui::Rect::from_center_size(action_center, action.size() + egui::vec2(20.0, 8.0));
 		painter.rect_filled(
 			button,
-			6,
-			egui::Color32::from_white_alpha(if response.hovered() { 56 } else { 36 }),
+			7,
+			egui::Color32::from_white_alpha(if response.hovered() || response.has_focus() {
+				62
+			} else {
+				34
+			}),
 		);
-		painter.galley(rect.center() - galley.size() * 0.5, galley, color);
+		painter.galley(action_center - action.size() * 0.5, action, strong);
 		design::focus_outline(ui, response, 8);
 	}
 
@@ -2437,17 +2639,30 @@ impl MessagingUi {
 		);
 	}
 
+	fn stop_current_watch(&mut self, state: &mut State, scope: StreamScope) {
+		if watched_stream_scope(state) == Some(scope) {
+			state.stop_watching();
+			self.voice_focus = None;
+			self.voice_focus_participants = false;
+		}
+	}
+
 	/// Apply a tile's watch click once the stage has mutable state again.
 	pub(super) fn apply_watch_request(&mut self, state: &mut State) {
-		match self.watch_request.take() {
-			// Like Discord, a share opens enlarged as soon as you choose to watch it.
-			Some(Some(user)) => {
-				if state.watch_stream(user).is_some() {
-					self.voice_focus = Some(StageFocus::Stream(user));
-				}
-			}
-			Some(None) => state.stop_watching(),
-			None => {}
+		if let Some(scope) = self.stop_watch_scope.take() {
+			self.stop_current_watch(state, scope);
+		}
+		if let Some((generation, channel, request, user)) = self.watch_request.take()
+			&& generation == state.generation
+			&& state
+				.voice
+				.active
+				.as_ref()
+				.is_some_and(|call| call.channel == channel && call.request == request)
+			&& stream_live(state, channel, user)
+			&& state.watch_stream(user).is_some()
+		{
+			self.voice_focus = Some(StageFocus::Stream(user));
 		}
 	}
 	pub(super) fn apply_ring_request(&mut self, state: &mut State, commands: &mut Vec<Command>) {
@@ -4457,6 +4672,16 @@ impl MessagingUi {
 	/// A held push-to-mute on an otherwise live microphone shows the slashed
 	/// microphone in the neutral tone instead, so a momentary hold reads
 	/// differently from a latched mute.
+	/// Presentation only; held Push to Mute must not change what the click will do.
+	pub fn voice_temporarily_muted(&self, state: &State) -> bool {
+		self.voice_ptm_active
+			&& !self.voice_muted
+			&& !self.voice_deafened
+			&& state.voice.active.as_ref().is_some_and(|call| {
+				!call.muted && !call.server_muted && !call.deafened && !call.server_deafened
+			})
+	}
+
 	pub(super) fn mute_toggle(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -4513,7 +4738,7 @@ impl MessagingUi {
 			self.voice_muted || self.voice_deafened || !can_speak
 		};
 		// A momentary push-to-mute stays neutral unless mute/deafen is latched.
-		let ptm = !deafen && !active && self.voice_ptm_active;
+		let ptm = !deafen && !active && self.voice_temporarily_muted(state);
 		let enabled =
 			(self.controls_enabled(state) || state.demo) && (deafen || can_speak || state.demo);
 		let label = crate::i18n::translate_if_key(match (deafen, active) {
@@ -4596,6 +4821,7 @@ impl MessagingUi {
 		let can_speak = state.can_speak(channel);
 		let deafened = self.voice_deafened;
 		let muted = self.voice_muted || deafened || !can_speak;
+		let temporary_mute = self.voice_temporarily_muted(state);
 		let controls = self.controls_enabled(state);
 		let voice_toggles = controls || state.demo;
 		let focused = self.voice_focus.is_some();
@@ -4668,14 +4894,18 @@ impl MessagingUi {
 		pill(&mut row, media, |ui| {
 			let mic = control(
 				ui,
-				if muted {
+				if muted || temporary_mute {
 					crate::icons::Icon::MicrophoneSlash
 				} else {
 					crate::icons::Icon::Microphone
 				},
 				media_button,
 				voice_toggles && (can_speak || state.demo),
-				if muted { colors.danger } else { STAGE_TEXT },
+				if muted || temporary_mute {
+					colors.danger
+				} else {
+					STAGE_TEXT
+				},
 				if muted {
 					"voice-mute-toggle-unmute"
 				} else {
@@ -4683,6 +4913,8 @@ impl MessagingUi {
 				},
 				if !can_speak {
 					"voice-mute-toggle-speaking-is-unavailable-in-this-channel"
+				} else if temporary_mute {
+					"voice-mic-temporarily-muted"
 				} else if muted {
 					"voice-mic-on"
 				} else {
@@ -4899,12 +5131,10 @@ impl MessagingUi {
 						self.stream_audio_controls(ui);
 					}
 				}
-				if watched.is_some()
-					&& (!side_shown || !actions_shown)
+				if let Some(scope) = watched_stream_scope(state)
 					&& item(ui, "voice-stream-stop-watching", true)
 				{
-					// Stop this reception immediately, without disconnecting or affecting Go Live.
-					state.stop_watching();
+					self.stop_current_watch(state, scope);
 				}
 			});
 		let board_changed = show_board != board_open;
@@ -5068,6 +5298,8 @@ impl MessagingUi {
 		let viewport = ui.ctx().viewport_rect();
 		ui.set_width(300.0_f32.min((viewport.width() - 40.0).max(1.0)));
 		ui.spacing_mut().item_spacing.y = 8.0;
+		use client_core::soundboard::SettingsAction;
+		state.retire_soundboard_settings();
 		commands.extend(state.request_soundboard().into_iter().flatten());
 		ui.label(
 			design::semibold(ui, crate::i18n::translate("voice-soundboard-title"), 15.0)
@@ -5126,7 +5358,7 @@ impl MessagingUi {
 			},
 			|catalog| catalog.error,
 		);
-		let error = board.error.or(catalog_error);
+		let playback_error = board.error;
 		let groups: &[(&str, &[model::soundboard::Sound])] = if let Some(catalog) = external_catalog
 		{
 			&[("voice-soundboard-source-other", &catalog.sounds)]
@@ -5139,7 +5371,68 @@ impl MessagingUi {
 				("voice-soundboard-default-sounds", &board.default.sounds),
 			]
 		};
-		let filter_id = egui::Id::unique("soundboard-session-favorites");
+		let settings = &board.settings;
+		let settings_ready = state.can_read_soundboard_settings() && !settings.pending();
+		let mut settings_action = None;
+		let mode = egui::Id::unique("soundboard-favorites-source");
+		let mut synced = !state.demo
+			&& ui.ctx().data(|data| {
+				data.get_temp::<(u64, bool)>(mode)
+					.filter(|(generation, _)| *generation == state.generation)
+					.is_none_or(|(_, synced)| synced)
+			});
+		if !state.demo {
+			ui.horizontal_wrapped(|ui| {
+				if ui
+					.selectable_label(
+						synced,
+						crate::i18n::translate("voice-soundboard-discord-favorites"),
+					)
+					.clicked()
+				{
+					synced = true;
+				}
+				if ui
+					.selectable_label(
+						!synced,
+						crate::i18n::translate("voice-soundboard-device-favorites"),
+					)
+					.clicked()
+				{
+					synced = false;
+				}
+			});
+			ui.ctx()
+				.data_mut(|data| data.insert_temp(mode, (state.generation, synced)));
+		}
+		let remote = settings.favorites();
+		if synced {
+			if ui
+				.add_enabled(
+					settings_ready,
+					egui::Button::new(crate::i18n::translate(if remote.is_some() {
+						"voice-soundboard-refresh-favorites"
+					} else {
+						"voice-soundboard-load-favorites"
+					})),
+				)
+				.clicked()
+			{
+				settings_action = Some(SettingsAction::LoadFavorites);
+			}
+			if let Some(error) = settings.favorites_error {
+				crate::dialog::notice(ui, crate::dialog::Level::Warning, error);
+			} else if !state.can_read_soundboard_settings() {
+				design::hint(ui, "voice-soundboard-settings-offline");
+			}
+		}
+		if settings.pending() {
+			ui.horizontal(|ui| {
+				ui.add(design::Busy::new().size(14.0));
+				ui.label(crate::i18n::translate("voice-soundboard-settings-working"));
+			});
+		}
+		let filter_id = egui::Id::unique(("soundboard-favorites-filter", synced));
 		let mut favorites_only = ui.ctx().data(|data| {
 			data.get_temp::<(u64, bool)>(filter_id)
 				.is_some_and(|(generation, value)| generation == state.generation && value)
@@ -5147,16 +5440,24 @@ impl MessagingUi {
 		if ui
 			.checkbox(
 				&mut favorites_only,
-				crate::i18n::translate("voice-soundboard-favorites"),
+				crate::i18n::translate("voice-soundboard-favorites-filter"),
 			)
 			.changed()
 		{
 			ui.ctx()
 				.data_mut(|data| data.insert_temp(filter_id, (state.generation, favorites_only)));
 		}
-		let shown = |sound: &model::soundboard::Sound| !favorites_only || board.is_favorite(sound);
+		let is_starred = |sound: &model::soundboard::Sound| {
+			if synced {
+				remote.is_some_and(|ids| ids.contains(&sound.id))
+			} else {
+				board.is_favorite(sound)
+			}
+		};
+		let shown = |sound: &model::soundboard::Sound| !favorites_only || is_starred(sound);
 		let mut play = None;
 		let mut favorite = None;
+		let mut remove_saved = None;
 		egui::ScrollArea::vertical()
 			.max_height(232.0_f32.min((viewport.height() - 160.0).max(32.0)))
 			.auto_shrink([false, true])
@@ -5182,8 +5483,17 @@ impl MessagingUi {
 									{
 										play = Some(sound.clone());
 									}
-									let starred = board.is_favorite(sound);
-									let available = starred || !board.favorites_full();
+									let starred = is_starred(sound);
+									let available = if synced {
+										state.can_change_synced_soundboard_favorite(
+											(sound.guild, sound.id),
+											!starred,
+										)
+									} else {
+										(state.demo || board.favorites_storage.is_some())
+											&& (starred
+												|| state.can_add_device_soundboard_favorite(sound))
+									};
 									let label = crate::i18n::translate_args(
 										if starred {
 											"voice-soundboard-unfavorite"
@@ -5203,8 +5513,22 @@ impl MessagingUi {
 											&label,
 										)
 									});
-									if button.on_hover_text(label).clicked() {
-										favorite = Some(sound.clone());
+									let button = if available {
+										button.on_hover_text(label)
+									} else {
+										button.on_disabled_hover_text(crate::i18n::translate(
+											"voice-soundboard-favorite-unavailable",
+										))
+									};
+									if button.clicked() {
+										if synced {
+											settings_action = Some(SettingsAction::Favorite {
+												key: (sound.guild, sound.id),
+												enabled: !starred,
+											});
+										} else {
+											favorite = Some(sound.clone());
+										}
 									}
 								})
 							});
@@ -5212,10 +5536,65 @@ impl MessagingUi {
 					});
 				}
 			});
+		if !synced
+			&& (state.demo || board.favorites_storage.is_some())
+			&& board.favorites().iter().any(|key| {
+				!groups
+					.iter()
+					.any(|(_, sounds)| sounds.iter().any(|s| (s.guild, s.id) == *key))
+			}) {
+			egui::CollapsingHeader::new(crate::i18n::translate("voice-soundboard-saved-elsewhere"))
+				.show(ui, |ui| {
+					design::hint(ui, "voice-soundboard-saved-elsewhere-help");
+					egui::ScrollArea::vertical()
+						.id_salt("device-favorite-management")
+						.max_height(124.0)
+						.show(ui, |ui| {
+							for &(source, id) in board.favorites() {
+								if groups.iter().any(|(_, sounds)| {
+									sounds.iter().any(|s| (s.guild, s.id) == (source, id))
+								}) {
+									continue;
+								}
+								let scope = source.map_or_else(
+									|| crate::i18n::translate("voice-soundboard-default-sounds"),
+									|guild| {
+										state.guild(guild).map_or_else(
+											|| guild.to_string(),
+											|server| server.name.clone(),
+										)
+									},
+								);
+								let label = crate::i18n::translate_args(
+									"voice-soundboard-saved-key",
+									&[("source", &scope), ("id", &id.to_string())],
+								);
+								ui.push_id((source, id), |ui| {
+									ui.horizontal_wrapped(|ui| {
+										ui.label(&label);
+										if ui
+											.small_button(crate::i18n::translate(
+												"voice-soundboard-remove-device-favorite",
+											))
+											.accessible_name(crate::i18n::translate_args(
+												"voice-soundboard-unfavorite",
+												&[("sound", &label)],
+											))
+											.clicked()
+										{
+											remove_saved = Some((source, id));
+										}
+									});
+								});
+							}
+						});
+				});
+		}
 		if loading {
 			design::hint(ui, &crate::i18n::translate("voice-soundboard-loading"));
 		} else if !stale
-			&& error.is_none()
+			&& (!synced || !favorites_only || remote.is_some())
+			&& catalog_error.is_none()
 			&& groups.iter().all(|(_, sounds)| !sounds.iter().any(&shown))
 		{
 			design::hint(
@@ -5227,13 +5606,23 @@ impl MessagingUi {
 				}),
 			);
 		}
-		if board.favorites_full() {
+		if !state.demo && !synced {
+			design::hint(
+				ui,
+				match board.favorites_storage {
+					None => "voice-soundboard-favorites-restoring",
+					Some(false) => "voice-soundboard-favorites-session",
+					Some(true) => "voice-soundboard-favorites-device",
+				},
+			);
+		}
+		if !synced && board.favorites_full() {
 			design::hint(
 				ui,
 				&crate::i18n::translate("voice-soundboard-favorites-full"),
 			);
 		}
-		if let Some(error) = error {
+		if let Some(error) = catalog_error {
 			ui.label(
 				RichText::new(crate::i18n::translate_if_key(error))
 					.size(13.0)
@@ -5245,9 +5634,23 @@ impl MessagingUi {
 				&crate::i18n::translate("voice-soundboard-external-stale"),
 			);
 		}
-		let retry = (error.is_some() || stale)
-			&& design::secondary_button(ui, &crate::i18n::translate("voice-soundboard-retry"))
+		if !state.demo && settings_action.is_none() {
+			settings_action = soundboard_entrance_setting(
+				ui,
+				state,
+				groups,
+				!loading && !stale && catalog_error.is_none(),
+			);
+		}
+		let reload = (catalog_error.is_some() || stale)
+			&& design::secondary_button(ui, &crate::i18n::translate("voice-soundboard-reload"))
 				.clicked();
+		let dismiss_playback = if let Some(error) = playback_error {
+			crate::dialog::notice(ui, crate::dialog::Level::Warning, error);
+			design::text_action(ui, "voice-soundboard-dismiss-playback").clicked()
+		} else {
+			false
+		};
 		ui.separator();
 		ui.scope(|ui| {
 			ui.spacing_mut().item_spacing.y = 4.0;
@@ -5268,14 +5671,23 @@ impl MessagingUi {
 			commands.extend(state.choose_soundboard_source(choice));
 			return;
 		}
-		if retry {
-			state.retry_soundboard();
+		if dismiss_playback {
+			state.soundboard.error = None;
+		}
+		if reload {
 			if source.is_some() {
 				commands.extend(state.choose_soundboard_source(source));
+			} else {
+				state.retry_soundboard();
 			}
 		}
-		if let Some(sound) = favorite {
+		if let Some(key) = remove_saved {
+			state.remove_device_soundboard_favorite(key);
+		} else if let Some(sound) = favorite {
 			state.toggle_soundboard_favorite(&sound);
+		}
+		if let Some(action) = settings_action {
+			commands.extend(state.request_soundboard_settings(action));
 		}
 		if let Some(sound) = play
 			&& let Some(command) = state.play_sound(&sound)
@@ -5465,7 +5877,7 @@ impl MessagingUi {
 					self.voice_chrome_hidden = 0.0;
 					if self.voice_focus.is_some() {
 						chrome_shade(ui, rect, 72.0, true, reveal);
-						chrome_shade(ui, rect, 96.0, false, reveal);
+						chrome_shade(ui, rect, 96.0, false, 1.0);
 					}
 					if let Some((selected_voice, show_members, wide_members)) = header {
 						let mut header_ui = ui.new_child(
@@ -5497,7 +5909,6 @@ impl MessagingUi {
 							.max_rect(bar)
 							.layout(egui::Layout::left_to_right(egui::Align::Center)),
 					);
-					bar_ui.set_opacity(reveal);
 					self.call_controls(&mut bar_ui, state, channel, commands);
 				});
 			self.apply_watch_request(state);
@@ -6165,16 +6576,21 @@ fn chrome_shade(ui: &egui::Ui, stage: egui::Rect, height: f32, top: bool, reveal
 
 /// Discord's ringing seat: a grey ring breathing outward from the avatar.
 fn ringing_pulse(ui: &egui::Ui, avatar: egui::Rect) {
-	const PERIOD: f64 = 1.6;
-	let phase = (ui.input(|input| input.time) % PERIOD / PERIOD) as f32;
+	const PERIOD: f32 = 1.6;
+	let period = f64::from(design::motion_duration(ui, PERIOD));
+	let phase = if period > 0.0 {
+		// The pulse only needs 30 fps while someone is being rung.
+		ui.ctx()
+			.request_repaint_after(std::time::Duration::from_millis(33));
+		(ui.input(|input| input.time) % period / period) as f32
+	} else {
+		0.0
+	};
 	ui.painter().circle_stroke(
 		avatar.center(),
 		avatar.width() * 0.5 + 4.0 + phase * 14.0,
 		egui::Stroke::new(3.0, STAGE_MUTED.gamma_multiply(0.9 * (1.0 - phase))),
 	);
-	// The pulse only needs a smooth 30 fps while someone is being rung.
-	ui.ctx()
-		.request_repaint_after(std::time::Duration::from_millis(33));
 }
 
 fn speaking_avatar(ui: &egui::Ui, avatar: &egui::Response, name: &str) {
@@ -6627,6 +7043,284 @@ pub(super) fn participant_user(state: &State, channel: Id, user: Id) -> Option<&
 				.and_then(|e| e.member.as_ref())
 				.map(|m| &m.user)
 		})
+}
+
+pub(super) fn global_entrance_settings(
+	ui: &mut egui::Ui,
+	state: &mut State,
+	commands: &mut Vec<Command>,
+) {
+	use crate::i18n::{translate, translate_args};
+	use client_core::soundboard::SettingsAction as A;
+	state.retire_soundboard_settings();
+	let intent = design::group(ui, &translate("voice-soundboard-global-entrance"), |ui| {
+		if state.demo
+			|| !state.gateway_connected
+			|| state.auth != client_core::auth::AuthState::Authenticated
+		{
+			design::hint(ui, "voice-soundboard-settings-offline");
+			return None;
+		}
+		if !state.global_entrance_sound_eligible() {
+			design::hint(ui, "voice-soundboard-global-nitro");
+			return None;
+		}
+		let settings = &state.soundboard.settings;
+		let current = settings.global_entrance();
+		let catalog = settings
+			.catalog()
+			.filter(|(source, _)| source.is_none_or(|guild| state.guild(guild).is_some()));
+		let label = |source: Option<Id>| {
+			source.map_or_else(
+				|| translate("voice-soundboard-default-sounds"),
+				|id| {
+					state
+						.guild(id)
+						.map_or_else(|| id.to_string(), |guild| guild.name.clone())
+				},
+			)
+		};
+		let mut intent = None;
+		design::hint(ui, "voice-soundboard-global-scope");
+		if let Some(Some(key)) = current {
+			let name = catalog
+				.and_then(|(_, sounds)| sounds.iter().find(|sound| (sound.guild, sound.id) == key))
+				.map_or_else(|| key.1.to_string(), |sound| sound.name.clone());
+			ui.label(translate_args(
+				"voice-soundboard-current-entrance",
+				&[("sound", &name), ("source", &label(key.0))],
+			));
+		} else if current == Some(None) {
+			design::hint(ui, "voice-soundboard-no-global-entrance");
+		}
+		for error in [settings.global_error, settings.catalog_error]
+			.into_iter()
+			.flatten()
+		{
+			crate::dialog::notice(ui, crate::dialog::Level::Warning, error);
+		}
+		if settings.pending() {
+			design::hint(ui, "voice-soundboard-settings-pending");
+		}
+		ui.add_enabled_ui(!settings.pending(), |ui| {
+			ui.horizontal_wrapped(|ui| {
+				if ui
+					.button(translate(if current.is_none() {
+						"voice-soundboard-load-global-entrance"
+					} else {
+						"voice-soundboard-refresh-global-entrance"
+					}))
+					.clicked()
+				{
+					intent = Some(A::LoadGlobalEntrance);
+				}
+				if let Some(Some(sound)) = current
+					&& ui
+						.button(translate("voice-soundboard-clear-global"))
+						.clicked()
+				{
+					intent = Some(A::GlobalEntrance {
+						before: Some(sound),
+						after: None,
+					});
+				}
+			});
+			let Some(before) = current else { return };
+			egui::ComboBox::from_id_salt(("entrance-sound-catalog", state.generation))
+				.width(ui.available_width().min(300.0))
+				.height(200.0)
+				.selected_text(catalog.map_or_else(
+					|| translate("voice-soundboard-choose-catalog"),
+					|(source, _)| label(source),
+				))
+				.show_ui(ui, |ui| {
+					if ui
+						.selectable_label(matches!(catalog, Some((None, _))), label(None))
+						.clicked()
+					{
+						intent = Some(A::EntranceCatalog(None));
+					}
+					for guild in &state.guilds {
+						if ui
+							.push_id(guild.id, |ui| {
+								ui.selectable_label(
+									catalog.is_some_and(|(source, _)| source == Some(guild.id)),
+									&guild.name,
+								)
+							})
+							.inner
+							.clicked()
+						{
+							intent = Some(A::EntranceCatalog(Some(guild.id)));
+						}
+					}
+				});
+			if let Some((_, sounds)) = catalog {
+				if !sounds.iter().any(|sound| sound.available) {
+					design::hint(ui, "voice-soundboard-entrance-empty-catalog");
+					return;
+				}
+				egui::ComboBox::from_id_salt(("entrance-global-sound", state.generation))
+					.width(ui.available_width().min(300.0))
+					.height(200.0)
+					.selected_text(translate("voice-soundboard-set-entrance"))
+					.show_ui(ui, |ui| {
+						for sound in sounds.iter().filter(|sound| sound.available) {
+							let key = (sound.guild, sound.id);
+							if ui
+								.push_id(key, |ui| {
+									ui.selectable_label(before == Some(key), &sound.name)
+								})
+								.inner
+								.clicked() && before != Some(key)
+							{
+								intent = Some(A::GlobalEntrance {
+									before,
+									after: Some(key),
+								});
+								ui.close();
+							}
+						}
+					});
+			}
+		});
+		intent
+	});
+	if let Some(action) = intent
+		&& let Some(command) = state.request_soundboard_settings(action)
+	{
+		commands.push(command);
+	}
+}
+
+fn soundboard_entrance_setting(
+	ui: &mut egui::Ui,
+	state: &State,
+	groups: &[(&str, &[model::soundboard::Sound])],
+	catalogs_ready: bool,
+) -> Option<client_core::soundboard::SettingsAction> {
+	use crate::i18n::{translate, translate_args};
+	use client_core::soundboard::SettingsAction;
+	let (channel, guild) = state.soundboard_channel()?;
+	let scope = (
+		state.generation,
+		guild,
+		channel,
+		state.voice.active.as_ref()?.request,
+	);
+	let settings = &state.soundboard.settings;
+	let mut intent = None;
+	egui::CollapsingHeader::new(translate("voice-soundboard-entrance-title"))
+		.id_salt(scope)
+		.show(ui, |ui| {
+			if !state.can_read_soundboard_settings() {
+				design::hint(ui, "voice-soundboard-settings-offline");
+				return;
+			}
+			if !state.entrance_sound_eligible() {
+				design::hint(ui, "voice-soundboard-entrance-ineligible");
+				return;
+			}
+			if let Some(error) = settings.entrance_error {
+				crate::dialog::notice(ui, crate::dialog::Level::Warning, error);
+			}
+			let current = settings.entrance(guild);
+			let enabled = !settings.pending();
+			let source_name = |key: model::soundboard::Favorite| {
+				key.0.map_or_else(
+					|| translate("voice-soundboard-default-sounds"),
+					|guild| {
+						state
+							.guild(guild)
+							.map_or_else(|| guild.to_string(), |guild| guild.name.clone())
+					},
+				)
+			};
+			let sounds = || groups.iter().flat_map(|(_, sounds)| sounds.iter());
+			if let Some(Some(key)) = current {
+				let name = sounds()
+					.find(|sound| (sound.guild, sound.id) == key)
+					.map_or_else(|| key.1.to_string(), |sound| sound.name.clone());
+				ui.label(translate_args(
+					"voice-soundboard-current-entrance",
+					&[("sound", &name), ("source", &source_name(key))],
+				));
+			} else if current == Some(None) {
+				match settings.global_entrance() {
+					Some(Some(key)) => {
+						let name = sounds()
+							.find(|sound| (sound.guild, sound.id) == key)
+							.map_or_else(|| key.1.to_string(), |sound| sound.name.clone());
+						ui.label(translate_args(
+							"voice-soundboard-inherited-entrance",
+							&[("sound", &name), ("source", &source_name(key))],
+						));
+					}
+					Some(None) => design::hint(ui, "voice-soundboard-no-server-entrance"),
+					None => design::hint(ui, "voice-soundboard-unknown-global-entrance"),
+				}
+			}
+			ui.horizontal_wrapped(|ui| {
+				let load = if current.is_none() {
+					"voice-soundboard-load-entrance"
+				} else {
+					"voice-soundboard-refresh-entrance"
+				};
+				if ui
+					.add_enabled(enabled, egui::Button::new(translate(load)))
+					.clicked()
+				{
+					intent = Some(SettingsAction::LoadEntrance);
+				}
+				if let Some(Some(before)) = current
+					&& ui
+						.add_enabled(
+							enabled,
+							egui::Button::new(translate("voice-soundboard-clear-entrance")),
+						)
+						.clicked()
+				{
+					intent = Some(SettingsAction::Entrance {
+						before: Some(before),
+						after: None,
+					});
+				}
+			});
+			if let Some(before) = current {
+				ui.add_enabled_ui(
+					enabled && catalogs_ready && sounds().any(|sound| sound.available),
+					|ui| {
+						egui::ComboBox::from_id_salt(("entrance-sound", scope))
+							.width(ui.available_width().min(280.0))
+							.height(180.0)
+							.selected_text(translate("voice-soundboard-set-entrance"))
+							.show_ui(ui, |ui| {
+								for sound in sounds().filter(|sound| sound.available) {
+									let key = (sound.guild, sound.id);
+									let label = translate_args(
+										"voice-soundboard-entrance-choice",
+										&[("sound", &sound.name), ("source", &source_name(key))],
+									);
+									if ui
+										.push_id(key, |ui| {
+											ui.selectable_label(before == Some(key), label)
+										})
+										.inner
+										.clicked() && before != Some(key)
+									{
+										intent = Some(SettingsAction::Entrance {
+											before,
+											after: Some(key),
+										});
+										ui.close();
+									}
+								}
+							});
+					},
+				);
+			}
+		});
+	intent
 }
 
 /// Labelled percentage slider shared by the voice popout and the settings page.
@@ -7327,6 +8021,166 @@ mod tests {
 		frame(&mut view, &state, Default::default(), false).drop_without_applying_deltas();
 		assert!(view.voice_popout.is_none());
 		assert!(display.lock().unwrap().picture.is_none());
+	}
+
+	#[test]
+	fn detached_watch_actions_cannot_stop_or_change_audio_for_a_replacement() {
+		let ctx = egui::Context::default();
+		ctx.set_embed_viewports(false);
+		let mut state = test_support::voice_demo_state();
+		let mut view = MessagingUi {
+			voice_popout_available: true,
+			..Default::default()
+		};
+		let previous = Id(500);
+		let current = Id(501);
+		state.voice.active.as_mut().unwrap().watching = Some(previous);
+		let old = watched_stream_scope(&state).unwrap();
+		ctx.run_ui(Default::default(), |ui| {
+			let response = ui.button("Pop out call");
+			view.open_voice_popout(&state, PopoutTarget::Call, &response);
+		})
+		.drop_without_applying_deltas();
+		let display = view.voice_popout.as_ref().unwrap().display.clone();
+		state.voice.active.as_mut().unwrap().watching = Some(current);
+		display.lock().unwrap().control = Some(PopoutControl::StreamMute(old, true));
+		assert!(view.apply_popout_control(&ctx, &mut state).is_none());
+		assert!(!view.voice_stream_muted);
+		display.lock().unwrap().control = Some(PopoutControl::StopWatching(old));
+		assert!(view.apply_popout_control(&ctx, &mut state).is_none());
+		let scope = watched_stream_scope(&state).unwrap();
+		assert_eq!(scope.3, current);
+		display.lock().unwrap().control = Some(PopoutControl::StreamVolume(scope, 75));
+		assert!(view.apply_popout_control(&ctx, &mut state).is_none());
+		assert_eq!(view.voice_stream_volume, Some(75));
+		display.lock().unwrap().control = Some(PopoutControl::StopWatching(scope));
+		assert!(view.apply_popout_control(&ctx, &mut state).is_none());
+		assert!(view.voice_popout.is_some());
+		assert_eq!(state.voice.active.as_ref().unwrap().request, scope.2);
+		assert!(watched_stream_scope(&state).is_none());
+	}
+
+	#[test]
+	fn stale_stop_does_not_stop_a_replacement_stream_or_leave() {
+		let mut state = test_support::voice_demo_state();
+		let call = state.voice.active.as_mut().unwrap();
+		let channel = call.channel;
+		call.watching = Some(Id(501));
+		let mut view = MessagingUi::default();
+		view.stop_watch_scope = watched_stream_scope(&state);
+		assert!(view.stop_watch_scope.is_some());
+		state.voice.active.as_mut().unwrap().watching = Some(Id(502));
+		view.apply_watch_request(&mut state);
+		assert_eq!(state.voice.active.as_ref().unwrap().watching, Some(Id(502)));
+		view.stop_watch_scope = watched_stream_scope(&state);
+		view.apply_watch_request(&mut state);
+		let call = state.voice.active.as_ref().unwrap();
+		assert_eq!(call.channel, channel);
+		assert!(call.watching.is_none());
+	}
+
+	#[test]
+	fn reduced_motion_keeps_ringing_ring_still() {
+		let ctx = egui::Context::default();
+		let render = |time, motion| {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					time: Some(time),
+					..Default::default()
+				},
+				|ui| {
+					ui.style_mut().animation_time = if motion { 0.15 } else { 0.0 };
+					let rect = egui::Rect::from_center_size(
+						egui::pos2(100.0, 100.0),
+						egui::Vec2::splat(40.0),
+					);
+					ringing_pulse(ui, rect);
+				},
+			);
+			let radius = output
+				.shapes
+				.iter()
+				.find_map(|shape| match &shape.shape {
+					egui::Shape::Circle(circle) if circle.center == egui::pos2(100.0, 100.0) => {
+						Some(circle.radius)
+					}
+					_ => None,
+				})
+				.unwrap();
+			output.drop_without_applying_deltas();
+			radius
+		};
+		assert_eq!(render(0.2, false), render(0.8, false));
+		assert!(render(1.8, true) < render(2.4, true));
+	}
+
+	#[test]
+	fn connected_call_controls_remain_painted_without_a_pointer() {
+		for (mut state, direct) in [
+			(test_support::voice_demo_state(), false),
+			(test_support::community_state(true), false),
+			(test_support::voice_demo_state(), true),
+		] {
+			if direct {
+				let channel = state.channels.iter().find(|c| c.kind == 1).unwrap().id;
+				let call = state.voice.active.as_mut().unwrap();
+				call.channel = channel;
+				call.guild = None;
+				state.selected = Some(channel);
+			}
+			let channel = state.voice.active.as_ref().unwrap().channel;
+			for width in [280.0, 900.0] {
+				let ctx = egui::Context::default();
+				design::apply(&ctx);
+				let mut view = MessagingUi::default();
+				let mut commands = Vec::new();
+				let mut leave_fill = egui::Color32::TRANSPARENT;
+				for step in 0..4 {
+					let output = ctx.run_ui(
+						egui::RawInput {
+							screen_rect: Some(egui::Rect::from_min_size(
+								egui::Pos2::ZERO,
+								egui::vec2(width, 580.0),
+							)),
+							time: Some(f64::from(step) * 0.25),
+							focused: true,
+							events: vec![
+								egui::Event::PointerGone,
+								egui::Event::Key {
+									key: egui::Key::Tab,
+									physical_key: None,
+									pressed: step % 2 == 1,
+									repeat: false,
+									modifiers: egui::Modifiers::NONE,
+								},
+							],
+							..Default::default()
+						},
+						|ui| {
+							leave_fill = design::palette(ui).danger.gamma_multiply(0.45);
+							if direct {
+								view.call_bar(ui, &mut state, &mut commands, None);
+							} else {
+								view.voice_channel(ui, &mut state, channel, &mut commands);
+							}
+						},
+					);
+					if step == 3 {
+						assert!(
+							output.shapes.iter().any(|shape| matches!(
+								&shape.shape, egui::Shape::Rect(rect)
+									if rect.fill == leave_fill
+										&& (rect.rect.height() - CONTROL_HEIGHT).abs() < 0.5
+										&& shape.clip_rect.contains(rect.rect.center())
+							)),
+							"call exit must be visible for {channel:?} at {width} points"
+						);
+					}
+					output.drop_without_applying_deltas();
+				}
+				assert!(commands.is_empty());
+			}
+		}
 	}
 
 	#[test]
@@ -8533,6 +9387,17 @@ mod tests {
 			assert!(avatar <= size.x && avatar <= size.y.max(12.0));
 		}
 	}
+	#[test]
+	fn stream_audio_issue_follows_only_the_current_watch_scope() {
+		let mut view = MessagingUi::default();
+		let scope = (5, Id(11), 10, Id(12));
+		view.voice_stream_audio_issue_scope = Some(scope);
+		assert!(view.stream_audio_issue(Some(scope)));
+		assert!(!view.stream_audio_issue(Some((6, scope.1, scope.2, scope.3))));
+		assert!(!view.stream_audio_issue(Some((scope.0, scope.1, scope.2, Id(15)))));
+		assert!(!view.stream_audio_issue(None));
+	}
+
 	#[test]
 	fn local_preview_starts_from_visible_tiles_and_stays_live_in_fullscreen() {
 		let mut state = test_support::voice_demo_state();
@@ -10581,6 +11446,17 @@ mod tests {
 				.any(|(value, _)| value.contains("did not allow this sound")),
 			"A rejected sound must be reported"
 		);
+		let reload = crate::i18n::translate("voice-soundboard-reload");
+		assert!(!text.iter().any(|(value, _)| value == &reload));
+		click(
+			&ctx,
+			&mut messaging,
+			&mut state,
+			&mut commands,
+			&crate::i18n::translate("voice-soundboard-dismiss-playback"),
+		);
+		assert!(state.soundboard.error.is_none());
+		assert_eq!(commands.len(), 1, "dismissing must not send or reload");
 		click(
 			&ctx,
 			&mut messaging,

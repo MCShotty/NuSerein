@@ -76,6 +76,7 @@ struct Live {
 #[derive(Default)]
 pub(super) struct Watch {
 	output: Option<crate::media_output::StreamRoute>,
+	output_start_failed: bool,
 	retiring_output: Option<crate::media_output::StreamRoute>,
 	pending: Option<Pending>,
 	live: Option<Live>,
@@ -83,7 +84,7 @@ pub(super) struct Watch {
 	ended: Option<&'static str>,
 	sequence: u64,
 	status: &'static str,
-	/// Playback failure; visible even while video continues, until recovery or the next request.
+	/// Stream/transport notice, independent of audio output availability.
 	notice: &'static str,
 	/// GPU texture behind `ui.voice_stream_view`.
 	texture: crate::gpu_video::VideoTexture,
@@ -94,6 +95,7 @@ impl Watch {
 			output.cancel();
 			self.retiring_output = Some(output);
 		}
+		self.output_start_failed = false;
 		self.pending = None;
 		self.ended = None;
 		if let Some(live) = self.live.take() {
@@ -194,6 +196,12 @@ impl Watch {
 				streamer,
 			))
 		});
+		// Status is tied to the selected stream, even if no frame has been decoded yet.
+		if wanted.is_some() && wanted != ui.voice_stream_status_scope {
+			self.notice = "";
+		}
+		ui.voice_stream_status_scope = wanted;
+		ui.voice_stream_audio_issue_scope = None;
 		if self
 			.retiring_output
 			.as_ref()
@@ -213,11 +221,7 @@ impl Watch {
 				.is_some_and(|call| call.deafened || call.server_deafened);
 		if let Some(output) = &self.output {
 			output.configure(&ui.media_output, ui.voice_stream_volume(), deafened);
-			if output.failed() {
-				self.notice = "Stream media output unavailable; choose another device";
-			} else if self.notice == "Stream media output unavailable; choose another device" {
-				self.notice = "";
-			}
+			// Report device failure independently of the video/transport status below.
 		}
 		let current = self.context();
 		let mut command = None;
@@ -290,6 +294,7 @@ impl Watch {
 				streamer,
 			};
 			self.notice = "";
+			self.output_start_failed = false;
 			let audio = match audio {
 				Some(fallback) => match crate::media_output::StreamRoute::new(fallback) {
 					Ok(route) => {
@@ -298,8 +303,8 @@ impl Watch {
 						self.output = Some(route);
 						Some(sender)
 					}
-					Err(error) => {
-						self.notice = error;
+					Err(_) => {
+						self.output_start_failed = true;
 						None
 					}
 				},
@@ -399,6 +404,17 @@ impl Watch {
 			self.texture = Default::default();
 		}
 		ui.voice_stream_status = self.stage_status(wanted.is_some());
+		ui.voice_stream_audio_issue_scope = wanted.filter(|scope| {
+			self.context().is_some_and(|current| {
+				(
+					current.generation,
+					current.channel,
+					current.request,
+					current.streamer,
+				) == *scope
+			}) && (self.output_start_failed
+				|| self.output.as_ref().is_some_and(|output| output.failed()))
+		});
 		command
 	}
 	fn start(

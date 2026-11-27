@@ -1057,6 +1057,7 @@ fn prime_conversation(state: &mut client_core::State, inline_media: bool) {
 		})
 		.collect();
 	state.members = Some(model::MemberList {
+		server_member_count: None,
 		missing_identity: vec![],
 		channel,
 		guild: Some(model::Id(10)),
@@ -1454,6 +1455,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let mut user = test_support::message(1, model::Id(20)).author;
 				style_name(&mut user);
 				state.members = Some(model::MemberList {
+					server_member_count: None,
 					missing_identity: vec![],
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),
@@ -1688,6 +1690,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					}))
 				};
 				state.members = Some(model::MemberList {
+					server_member_count: None,
 					missing_identity: vec![],
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),
@@ -1727,6 +1730,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let mut user = test_support::message(1, model::Id(20)).author;
 				style_name(&mut user);
 				state.members = Some(model::MemberList {
+					server_member_count: None,
 					missing_identity: vec![],
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),

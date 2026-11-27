@@ -14,7 +14,7 @@ pub(super) struct ModViewUi {
 	scope: Option<(u64, Id, Id, Option<Id>)>,
 	actions: crate::server_moderation::ModerationUi,
 	nickname: String,
-	nickname_initialized: bool,
+	nickname_baseline: Option<String>,
 	role_search: String,
 	notice: Option<&'static str>,
 }
@@ -55,17 +55,35 @@ impl ModViewUi {
 		};
 		let command =
 			state.request_server_admin(guild, server_admin::Action::Moderation(action))?;
-		self.scope = Some((state.generation, guild, user, state.selected));
-		self.actions.select(state.generation, guild, user);
-		self.nickname_initialized = false;
-		self.role_search.clear();
+		let scope = (state.generation, guild, user, state.selected);
+		if self.scope != Some(scope) {
+			self.scope = Some(scope);
+			self.actions.select(state.generation, guild, user);
+			self.nickname.clear();
+			self.nickname_baseline = None;
+			self.role_search.clear();
+		}
 		Some(command)
 	}
 	pub fn take_notice(&mut self) -> Option<&'static str> {
 		self.notice.take()
 	}
+	pub(super) fn active(&self) -> bool {
+		self.scope.is_some()
+	}
+
 	pub fn show(
 		&mut self,
+		ctx: &egui::Context,
+		state: &mut State,
+		commands: &mut Vec<Command>,
+	) -> Option<Intent> {
+		self.show_in(None, ctx, state, commands)
+	}
+
+	pub(super) fn show_in(
+		&mut self,
+		host: Option<&mut egui::Ui>,
 		ctx: &egui::Context,
 		state: &mut State,
 		commands: &mut Vec<Command>,
@@ -83,53 +101,153 @@ impl ModViewUi {
 		let mut open = true;
 		let mut jump = None;
 		let mut member_action = None;
-		egui::Window::new("Mod View").id(egui::Id::unique("member-mod-view")).open(&mut open).collapsible(false).resizable(false).vscroll(true).default_width(420.0).max_width((ctx.content_rect().width()-32.0).max(1.0)).max_height((ctx.content_rect().height()-100.0).max(180.0)).anchor(egui::Align2::RIGHT_TOP,egui::vec2(-16.0,64.0)).show(ctx,|ui| {
+		let has_child = self.actions.has_changes();
+		let mut content = |ui: &mut egui::Ui| {
 			ui.horizontal(|ui| {
 				ui.weak("Member review");
-				if ui.add_enabled(!state.server_admin.pending,egui::Button::new("Refresh")).clicked()
-					&& let Some(command)=self.open(state,guild,user){commands.push(command);}
-			});
-			if state.server_admin.pending {ui.add(crate::design::Busy::new());}
-			if let Some(error)=state.server_admin.error {ui.colored_label(crate::design::palette(ui).danger,error);}
-			let Some(review)=state.server_admin.member_review.as_ref().filter(|review|review.guild==guild&&review.member.user.id==user) else {
-				ui.weak(if state.server_admin.pending {"Loading member information…"}else{"Member details are unavailable. Refresh to try again."});return;
-			};
-			let loading=state.server_admin.member_review_loading;
-			let member=&review.member;
-			ui.heading(member.nick.as_deref().unwrap_or(&member.user.name));
-			if let Some(username)=member.user.username.as_deref(){ui.weak(format!("@{username} · {user}"));}
-			else{ui.weak(format!("Account ID: {user}"));}
-			if let Some(joined)=member.joined_at.and_then(|at|crate::local_time::discord_timestamp((at/1000)as i64,b'f')) {ui.label(format!("Joined server: {joined}"));}
-			if let Some(created)=crate::local_time::discord_timestamp((((user.0>>22)+1_420_070_400_000)/1000)as i64,b'f') {ui.label(format!("Account created: {created}"));}
-			ui.label(format!("Join method: {}",member.join_source.map_or("Unknown",|source|match source {1=>"Bot",2=>"Integration",3=>"Discovery",4=>"Hub",5=>"Invite",6=>"Custom invite link",7=>"Application",8=>"Linked channel",_=>"Unknown"})));
-			ui.horizontal_wrapped(|ui| {
-				ui.label("Roles:");
-				if loading & REVIEW_ROLES != 0 {ui.add(crate::design::Busy::new());}
-
-				for role in state.guild_roles(guild).unwrap_or_default().iter().filter(|role|member.roles.contains(&role.id)) {ui.label(&role.name);}
-				if member.roles.is_empty(){ui.weak("No additional roles");}
-			});
-			let now=time::OffsetDateTime::now_utc().unix_timestamp_nanos()/1_000_000;
-			if member.unusual_dm_until.is_some_and(|until|until>now){ui.label("Discord signal: unusual DM activity");}
-			if member.flags.is_some_and(|flags|flags&(1<<7)!=0){ui.label("Discord signal: quarantined name");}
-			if member.flags.is_none()&&member.unusual_dm_until.is_none(){ui.weak("No safety information supplied.");}
-			ui.separator();
-			egui::CollapsingHeader::new("Recent server messages").default_open(true).show(ui,|ui| {
-				if ui.add_enabled(search_channel(state,guild).is_some(),egui::Button::new("Search messages from member"))
-					.on_disabled_hover_text("Open a text channel in this server to search its messages.").clicked(){jump=Some(Intent::Messages {guild,user});}
-				if state.user_content_restriction(user).is_some(){ui.weak("Messages are hidden for this blocked or ignored member.");return;}
-				if loading & REVIEW_MESSAGES != 0 {ui.horizontal(|ui|{ui.add(crate::design::Busy::new());ui.weak("Loading recent messages…");});}
-				if let Some(error)=review.messages_error {ui.weak(error);}
-				if review.messages.is_empty()&&review.messages_error.is_none()&&loading & REVIEW_MESSAGES == 0{ui.weak("No recent messages returned.");}
-				for row in &review.messages {
-					if !state.can_view(row.channel){continue;}
-					ui.separator();
-					ui.weak(state.channel(row.channel).map_or("Channel",|channel|channel.name.as_str()));
-					ui.label(visible_excerpt(&row.excerpt));
-					if ui.small_button("Open original").clicked(){jump=Some(Intent::Original(format!("https://discord.com/channels/{guild}/{}/{}",row.channel,row.id)));}
+				if ui
+					.add_enabled(!state.server_admin.pending, egui::Button::new("Refresh"))
+					.clicked() && let Some(command) = self.open(state, guild, user)
+				{
+					commands.push(command);
 				}
 			});
-			if state.guild_permission(guild,model::permissions::VIEW_AUDIT_LOG){
+			if state.server_admin.pending {
+				ui.add(crate::design::Busy::new());
+			}
+			if let Some(error) = state.server_admin.error {
+				ui.colored_label(crate::design::palette(ui).danger, error);
+			}
+			let Some(review) = state
+				.server_admin
+				.member_review
+				.as_ref()
+				.filter(|review| review.guild == guild && review.member.user.id == user)
+			else {
+				ui.weak(if state.server_admin.pending {
+					"Loading member information…"
+				} else {
+					"Member details are unavailable. Refresh to try again."
+				});
+				return;
+			};
+			let loading = state.server_admin.member_review_loading;
+			let member = &review.member;
+			ui.heading(member.nick.as_deref().unwrap_or(&member.user.name));
+			if let Some(username) = member.user.username.as_deref() {
+				ui.weak(format!("@{username} · {user}"));
+			} else {
+				ui.weak(format!("Account ID: {user}"));
+			}
+			if let Some(joined) = member
+				.joined_at
+				.and_then(|at| crate::local_time::discord_timestamp((at / 1000) as i64, b'f'))
+			{
+				ui.label(format!("Joined server: {joined}"));
+			}
+			if let Some(created) = crate::local_time::discord_timestamp(
+				(((user.0 >> 22) + 1_420_070_400_000) / 1000) as i64,
+				b'f',
+			) {
+				ui.label(format!("Account created: {created}"));
+			}
+			ui.label(format!(
+				"Join method: {}",
+				member.join_source.map_or("Unknown", |source| match source {
+					1 => "Bot",
+					2 => "Integration",
+					3 => "Discovery",
+					4 => "Hub",
+					5 => "Invite",
+					6 => "Custom invite link",
+					7 => "Application",
+					8 => "Linked channel",
+					_ => "Unknown",
+				})
+			));
+			ui.horizontal_wrapped(|ui| {
+				ui.label("Roles:");
+				if loading & REVIEW_ROLES != 0 {
+					ui.add(crate::design::Busy::new());
+				}
+
+				for role in state
+					.guild_roles(guild)
+					.unwrap_or_default()
+					.iter()
+					.filter(|role| member.roles.contains(&role.id))
+				{
+					ui.label(&role.name);
+				}
+				if member.roles.is_empty() {
+					ui.weak("No additional roles");
+				}
+			});
+			let now = time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+			if member.unusual_dm_until.is_some_and(|until| until > now) {
+				ui.label("Discord signal: unusual DM activity");
+			}
+			if member.flags.is_some_and(|flags| flags & (1 << 7) != 0) {
+				ui.label("Discord signal: quarantined name");
+			}
+			if member.flags.is_none() && member.unusual_dm_until.is_none() {
+				ui.weak("No safety information supplied.");
+			}
+			ui.separator();
+			egui::CollapsingHeader::new("Recent server messages")
+				.default_open(true)
+				.show(ui, |ui| {
+					if ui
+						.add_enabled(
+							search_channel(state, guild).is_some(),
+							egui::Button::new("Search messages from member"),
+						)
+						.on_disabled_hover_text(
+							"Open a text channel in this server to search its messages.",
+						)
+						.clicked()
+					{
+						jump = Some(Intent::Messages { guild, user });
+					}
+					if state.user_content_restriction(user).is_some() {
+						ui.weak("Messages are hidden for this blocked or ignored member.");
+						return;
+					}
+					if loading & REVIEW_MESSAGES != 0 {
+						ui.horizontal(|ui| {
+							ui.add(crate::design::Busy::new());
+							ui.weak("Loading recent messages…");
+						});
+					}
+					if let Some(error) = review.messages_error {
+						ui.weak(error);
+					}
+					if review.messages.is_empty()
+						&& review.messages_error.is_none()
+						&& loading & REVIEW_MESSAGES == 0
+					{
+						ui.weak("No recent messages returned.");
+					}
+					for row in &review.messages {
+						if !state.can_view(row.channel) {
+							continue;
+						}
+						ui.separator();
+						ui.weak(
+							state
+								.channel(row.channel)
+								.map_or("Channel", |channel| channel.name.as_str()),
+						);
+						ui.label(visible_excerpt(&row.excerpt));
+						if ui.small_button("Open original").clicked() {
+							jump = Some(Intent::Original(format!(
+								"https://discord.com/channels/{guild}/{}/{}",
+								row.channel, row.id
+							)));
+						}
+					}
+				});
+			if state.guild_permission(guild, model::permissions::VIEW_AUDIT_LOG) {
 				egui::CollapsingHeader::new("Recent audit activity").show(ui,|ui| {
 					if ui.add_enabled(!state.server_admin.pending,egui::Button::new("Open member audit log")).clicked(){jump=Some(Intent::Audit {guild,user});}
 					ui.weak("Matching entries from the latest 50 audit events; this is not a complete disciplinary history.");
@@ -150,26 +268,141 @@ impl ModViewUi {
 				});
 			}
 			ui.separator();
-			let available=!state.server_admin.pending&&!state.server_admin.needs_refresh;
-			if state.can_edit_guild_nickname(guild,user) {
-				if !self.nickname_initialized {self.nickname=member.nick.clone().unwrap_or_default();self.nickname_initialized=true;}
+			let available = !state.server_admin.pending && !state.server_admin.needs_refresh;
+			if state.can_edit_guild_nickname(guild, user) {
+				let actual = member.nick.as_deref().unwrap_or_default();
+				if self
+					.nickname_baseline
+					.as_deref()
+					.is_none_or(|before| self.nickname == before || self.nickname == actual)
+				{
+					self.nickname = actual.to_owned();
+					self.nickname_baseline = Some(actual.to_owned());
+				}
+				let conflict = self.nickname_baseline.as_deref() != Some(actual);
+				if conflict {
+					crate::design::hint(ui, "mod-nickname-conflict");
+					ui.label(crate::i18n::translate_args(
+						"mod-nickname-current",
+						&[(
+							"name",
+							if actual.is_empty() {
+								&member.user.name
+							} else {
+								actual
+							},
+						)],
+					));
+					ui.horizontal_wrapped(|ui| {
+						if crate::design::text_action(ui, "mod-nickname-use-current").clicked() {
+							self.nickname = actual.to_owned();
+							self.nickname_baseline = Some(actual.to_owned());
+						}
+						if crate::design::text_action(ui, "mod-nickname-keep-draft").clicked() {
+							self.nickname_baseline = Some(actual.to_owned());
+						}
+					});
+				}
 				ui.horizontal(|ui| {
-					ui.add(egui::TextEdit::singleline(&mut self.nickname).char_limit(32).hint_text("Server nickname"));
-					if ui.add_enabled(available,egui::Button::new("Save nickname")).clicked(){member_action=Some(server_admin::Action::SetNickname {user,nick:self.nickname.clone()});}
+					ui.add(
+						egui::TextEdit::singleline(&mut self.nickname)
+							.char_limit(32)
+							.hint_text("Server nickname"),
+					);
+					if ui
+						.add_enabled(
+							available && !conflict && self.nickname != actual,
+							egui::Button::new("Save nickname"),
+						)
+						.clicked()
+					{
+						member_action = Some(server_admin::Action::SetNickname {
+							user,
+							nick: self.nickname.clone(),
+						});
+					}
 				});
 			}
-			if review.roles.iter().any(|role|state.can_edit_member_role(guild,user,role.role.id)) {
-				ui.add_enabled_ui(available,|ui|ui.menu_button("Edit roles",|ui| {
-					ui.add(egui::TextEdit::singleline(&mut self.role_search).char_limit(100).hint_text("Search roles"));
-					let query=self.role_search.to_lowercase();
-					egui::ScrollArea::vertical().max_height(180.0).show(ui,|ui|for role in review.roles.iter().filter(|role|state.can_edit_member_role(guild,user,role.role.id)&&role.role.name.to_lowercase().contains(&query)) {
-						let mut assigned=member.roles.contains(&role.role.id);
-						if ui.checkbox(&mut assigned,&role.role.name).changed(){member_action=Some(server_admin::Action::SetRole {user,role:role.role.id,assigned});ui.close();}
-					});
-				}));
+			if review
+				.roles
+				.iter()
+				.any(|role| state.can_edit_member_role(guild, user, role.role.id))
+			{
+				ui.add_enabled_ui(available, |ui| {
+					ui.menu_button("Edit roles", |ui| {
+						ui.add(
+							egui::TextEdit::singleline(&mut self.role_search)
+								.char_limit(100)
+								.hint_text("Search roles"),
+						);
+						let query = self.role_search.to_lowercase();
+						egui::ScrollArea::vertical()
+							.max_height(180.0)
+							.show(ui, |ui| {
+								for role in review.roles.iter().filter(|role| {
+									state.can_edit_member_role(guild, user, role.role.id)
+										&& role.role.name.to_lowercase().contains(&query)
+								}) {
+									let mut assigned = member.roles.contains(&role.role.id);
+									if ui.checkbox(&mut assigned, &role.role.name).changed() {
+										member_action = Some(server_admin::Action::SetRole {
+											user,
+											role: role.role.id,
+											assigned,
+										});
+										ui.close();
+									}
+								}
+							});
+					})
+				});
 			}
-			self.actions.show_actions(ui,state,guild,user,commands);
-		});
+			self.actions.show_actions(ui, state, guild, user, commands);
+		};
+		if let Some(host) = host {
+			let colors = crate::design::palette(host);
+			let width = (host.available_width() * 0.38).clamp(300.0, 410.0);
+			egui::Panel::right(egui::Id::unique((
+				"member-mod-pane",
+				generation,
+				guild,
+				user,
+			)))
+			.exact_size(width)
+			.resizable(false)
+			.frame(egui::Frame::new().fill(colors.sidebar).inner_margin(12))
+			.show(host, |ui| {
+				ui.horizontal(|ui| {
+					ui.heading("Mod View");
+					ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+						if crate::icons::button(
+							ui,
+							crate::icons::Icon::Close,
+							28.0,
+							"search-pane-close",
+						)
+						.clicked() && !has_child
+						{
+							open = false;
+						}
+					});
+				});
+				egui::ScrollArea::vertical()
+					.auto_shrink([false, false])
+					.show(ui, &mut content);
+			});
+		} else {
+			let response = crate::dialog::Dialog::new(
+				("member-mod-view", generation, guild, user),
+				"Mod View",
+			)
+			.width(440.0)
+			.show(ctx, |d| {
+				d.scroll(142.0, &mut content);
+			});
+			open = !response.close || has_child;
+		}
+
 		if let Some(action) = member_action
 			&& let Some(command) = state.request_server_admin(guild, action)
 		{

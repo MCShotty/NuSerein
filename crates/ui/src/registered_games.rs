@@ -291,6 +291,13 @@ impl MessagingUi {
 					})
 					.take(MAX_PICKER_ROWS)
 					.collect();
+				if picker
+					.selected
+					.as_ref()
+					.is_some_and(|selected| !candidates.contains(&selected))
+				{
+					picker.selected = None;
+				}
 				if candidates.is_empty() {
 					design::hint(ui, "settings-activity-no-matching-programs");
 				}
@@ -318,14 +325,17 @@ impl MessagingUi {
 		let mut cancel = false;
 		ui.horizontal(|ui| {
 			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-				ui.add_enabled_ui(picker.selected.is_some(), |ui| {
-					add = design::button(
-						ui,
-						"settings-activity-add-game",
-						design::ButtonKind::Primary,
-					)
-					.clicked();
-				});
+				ui.add_enabled_ui(
+					self.running_processes.is_some() && picker.selected.is_some(),
+					|ui| {
+						add = design::button(
+							ui,
+							"settings-activity-add-game",
+							design::ButtonKind::Primary,
+						)
+						.clicked();
+					},
+				);
 				cancel = design::button(ui, "dialog-module-cancel", design::ButtonKind::Neutral)
 					.clicked();
 			});

@@ -81,6 +81,8 @@ pub enum Operation {
 	SaveMinimizeToTray(bool),
 	LoadDrafts,
 	LoadGifFavorites,
+	LoadSoundFavorites,
+	SaveSoundFavorites(Vec<model::soundboard::Favorite>),
 	SaveGifFavorites(Vec<model::Gif>),
 	LoadChannelPreferences,
 	SaveChannelPreferences(model::ChannelPreferences),
@@ -267,6 +269,8 @@ pub enum Outcome {
 	MinimizeToTraySaved(Result<(), StoreError>),
 	Drafts(BTreeMap<Id, String>),
 	GifFavorites(Vec<model::Gif>),
+	SoundFavorites(Id, Result<Vec<model::soundboard::Favorite>, StoreError>),
+	SoundFavoritesSaved(Id, bool),
 	ChannelPreferences(Result<model::ChannelPreferences, StoreError>),
 	ChannelPreferencesSaved(Result<(), StoreError>),
 	AccountPresences(Result<std::collections::BTreeMap<model::Id, model::OwnPresence>, StoreError>),
@@ -349,6 +353,7 @@ pub fn coalesced_retry(operation: &Operation) -> bool {
 	matches!(
 		operation,
 		Operation::SaveGifFavorites(_)
+			| Operation::SaveSoundFavorites(_)
 			| Operation::SaveServers { .. }
 			| Operation::SaveExpressions(_)
 			| Operation::SaveStickerPackHints(_)
@@ -971,6 +976,12 @@ impl Cache {
 				}
 				content.capacity()
 			}
+			Operation::SaveSoundFavorites(favorites) => {
+				if !model::soundboard::valid_favorites(favorites) {
+					return false;
+				}
+				favorites.capacity() * size_of::<model::soundboard::Favorite>()
+			}
 			Operation::SaveGifFavorites(favorites) => {
 				if favorites.len() > 100 {
 					return false;
@@ -1207,6 +1218,9 @@ fn outcome_bytes(outcome: &Outcome) -> usize {
 		}),
 		Outcome::ServersSaved { ids, .. } => ids.capacity() * size_of::<Id>(),
 		Outcome::Drafts(drafts) => drafts.values().map(String::capacity).sum(),
+		Outcome::SoundFavorites(_, Ok(favorites)) => {
+			favorites.capacity() * size_of::<model::soundboard::Favorite>()
+		}
 		Outcome::GifFavorites(favorites) => {
 			favorites.iter().map(model::Gif::bytes).sum::<usize>()
 				+ favorites.capacity() * size_of::<model::Gif>()
@@ -1299,6 +1313,9 @@ fn cache_write_reservation(operation: &Operation) -> Option<u64> {
 		Operation::SaveSyncCheckpoint(checkpoint) => checkpoint.payload.len(),
 		Operation::SaveDraft { content, .. } => content.len(),
 		Operation::SaveGifFavorites(rows) => rows.iter().map(model::Gif::bytes).sum(),
+		Operation::SaveSoundFavorites(rows) => {
+			rows.len() * size_of::<model::soundboard::Favorite>()
+		}
 		Operation::SaveCustomFont(font) => {
 			return Some(
 				font.as_ref()
@@ -2052,6 +2069,8 @@ fn execute(
 			| Operation::ClearExpressions { .. }
 			| Operation::RemoveServer { .. }
 	);
+	let reading_sound_favorites = matches!(&operation, Operation::LoadSoundFavorites);
+	let saving_sound_favorites = matches!(&operation, Operation::SaveSoundFavorites(_));
 	let failure_message = match &operation {
 		Operation::LoadAppearance => "Could not load saved appearance; using system theme",
 		Operation::SaveAppearance(_) | Operation::SaveThemeVariant(_) => {
@@ -2090,6 +2109,10 @@ fn execute(
 		}
 		Operation::LoadDrafts => "Could not restore drafts from local storage",
 		Operation::LoadGifFavorites => "Could not restore GIF favorites from local storage",
+		Operation::LoadSoundFavorites => {
+			"Could not restore Soundboard favorites from local storage"
+		}
+		Operation::SaveSoundFavorites(_) => "Could not save Soundboard favorites to local storage",
 		Operation::SaveGifFavorites(_) => {
 			"Could not save GIF favorites; the change exists only in this session"
 		}
@@ -2174,6 +2197,14 @@ fn execute(
 				.map(|_| Outcome::Saved),
 			Operation::LoadDrafts => store.load_drafts(account).map(Outcome::Drafts),
 			Operation::LoadGifFavorites => store.gif_favorites(account).map(Outcome::GifFavorites),
+			Operation::LoadSoundFavorites => Ok(Outcome::SoundFavorites(
+				account,
+				store.soundboard_favorites(account),
+			)),
+			Operation::SaveSoundFavorites(favorites) => Ok(Outcome::SoundFavoritesSaved(
+				account,
+				store.save_soundboard_favorites(account, &favorites).is_ok(),
+			)),
 			Operation::SaveGifFavorites(favorites) => store
 				.save_gif_favorites(account, &favorites)
 				.map(|_| Outcome::Saved),
@@ -2247,6 +2278,12 @@ fn execute(
 		Err(error) => Err(*error),
 	};
 	result.unwrap_or_else(|error| {
+		if reading_sound_favorites {
+			return Outcome::SoundFavorites(account, Err(error));
+		}
+		if saving_sound_favorites {
+			return Outcome::SoundFavoritesSaved(account, false);
+		}
 		if history_unsafe {
 			history.fail();
 		}

@@ -291,6 +291,35 @@ impl Row {
 	}
 }
 
+/// Same keyboard/popup calendar as search, with future days available for scheduling.
+pub(crate) fn event_pick(
+	ui: &mut egui::Ui,
+	scope: egui::Id,
+	key: &str,
+	date: Option<Date>,
+) -> Option<Date> {
+	let today = crate::local_time::local(time::OffsetDateTime::now_utc()).date();
+	let chosen = date.unwrap_or(today).max(earliest());
+	let limit = today.saturating_add(Duration::days(365 * 5)).max(chosen);
+	// Only one calendar per clock field; changing editor scope replaces this entry.
+	let slot = egui::Id::unique(("event-clock-month", key));
+	let mut row = Row::new(Kind::During, chosen);
+	if let Some((previous, current, month)) =
+		ui.data(|data| data.get_temp::<(egui::Id, Date, Date)>(slot))
+		&& previous == scope
+		&& current == chosen
+	{
+		row.month = month;
+	}
+	let picked = ui
+		.push_id(scope, |ui| {
+			row.date_button(ui, (ui.available_width() - 2.0).clamp(1.0, 180.0), limit)
+		})
+		.inner;
+	ui.data_mut(|data| data.insert_temp(slot, (scope, chosen, row.month)));
+	picked
+}
+
 fn day_cell(ui: &mut egui::Ui, width: f32, date: Date, selected: bool) -> egui::Response {
 	let colors = design::palette(ui);
 	let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 28.0), egui::Sense::click());

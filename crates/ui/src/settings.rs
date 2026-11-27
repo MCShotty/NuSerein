@@ -989,6 +989,7 @@ const SEARCH_TARGETS: &[SearchTarget] = &[
 	),
 	target(Page::Voice, "voice-voice-processing-controls-push-to-talk"),
 	target(Page::Voice, "voice-voice-settings-content-camera"),
+	target(Page::Voice, "voice-soundboard-global-entrance"),
 	target(Page::Voice, "voice-video-settings-title"),
 ];
 
@@ -1435,12 +1436,15 @@ impl MessagingUi {
 										self.notification_settings(ui, state.demo)
 									}
 									Page::Activity => self.activity_settings(ui, state),
-									Page::Voice => self.voice_settings_content(
-										ui,
-										state.demo,
-										state.voice.active.is_some(),
-										false,
-									),
+									Page::Voice => {
+										self.voice_settings_content(
+											ui,
+											state.demo,
+											state.voice.active.is_some(),
+											false,
+										);
+										crate::voice::global_entrance_settings(ui, state, commands);
+									}
 									Page::Storage => self.storage_page(ui, state),
 									Page::Updates => self.update_settings(ui, state.demo),
 									Page::Keybinds => crate::keybinds::show(
@@ -1852,6 +1856,7 @@ impl MessagingUi {
 									)
 									.clicked()
 									{
+										self.settings.server_profile = false;
 										self.settings.page = Page::Profile;
 									}
 								},

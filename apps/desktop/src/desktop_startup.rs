@@ -944,6 +944,7 @@ impl Desktop {
 			sticker_pack_cache_load: Default::default(),
 			sticker_pack_cache_save: Default::default(),
 			gif_cache: Default::default(),
+			sound_favorites_cache: Default::default(),
 			member_cache_saved: None,
 			member_cache_cleared: Default::default(),
 			server_cache_load: Default::default(),

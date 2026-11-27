@@ -428,6 +428,8 @@ pub struct MessagingUi {
 	friend_removal: Option<(u64, model::User)>,
 	user_direct: Option<user_direct::Pending>,
 	members_narrow_open: bool,
+	boost_overview: Option<(u64, Id)>,
+	guild_members_view: Option<(u64, Id, Id)>,
 	compact_navigation_open: bool,
 	/// Only the open member request's revealed prefix; member data stays in the bounded core cache.
 	member_extent: Option<((u64, Id, u64), usize)>,
@@ -516,6 +518,8 @@ pub struct MessagingUi {
 	voice_popout: Option<voice::VoicePopout>,
 	pub voice_remote_hdr: Vec<(Id, MediaView)>,
 	pub voice_stream_status: &'static str,
+	pub voice_stream_status_scope: Option<(u64, Id, u64, Id)>,
+	pub voice_stream_audio_issue_scope: Option<(u64, Id, u64, Id)>,
 	/// Session-only stream playback level; unset is 100%. Mute preserves the level.
 	voice_stream_volume: Option<u16>,
 	voice_stream_muted: bool,
@@ -534,7 +538,8 @@ pub struct MessagingUi {
 	/// Session-only visibility of the selected guild voice channel's chat.
 	pub voice_chat_open: bool,
 	/// Tile click to start (`Some(user)`) or stop (`None`) watching, applied by the stage.
-	watch_request: Option<Option<Id>>,
+	watch_request: Option<(u64, Id, u64, Id)>,
+	stop_watch_scope: Option<(u64, Id, u64, Id)>,
 	ring_request: Option<(Id, u64, Id, bool)>,
 	voice_moderation: Option<(Id, Id, Id, model::server_admin::VoiceChange)>,
 	stream_preview_open: Option<((Id, Id, Id), u64)>,
@@ -5394,6 +5399,7 @@ mod composer_tests {
 				icon: None,
 			}],
 			members: Some(model::MemberList {
+				server_member_count: None,
 				missing_identity: vec![],
 				channel: Id(1),
 				guild: Some(Id(2)),
@@ -5677,6 +5683,7 @@ mod composer_tests {
 			channel.last_message = None;
 		}
 		state.members = Some(model::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			channel,
 			guild: Some(guild),
@@ -5836,6 +5843,7 @@ mod composer_tests {
 				.guild;
 			let _ = state.request_members();
 			state.members = Some(model::MemberList {
+				server_member_count: None,
 				missing_identity: vec![],
 				guild,
 				channel,
@@ -6490,6 +6498,7 @@ pub fn debug_member_voice_status_check(mut state: State, mut private: State) {
 	state.selected = Some(text_channel);
 	state.gateway_connected = true;
 	state.members = Some(model::MemberList {
+		server_member_count: None,
 		missing_identity: vec![],
 		guild: Some(entry.guild),
 		channel: text_channel,
@@ -6566,6 +6575,7 @@ pub fn debug_member_voice_status_check(mut state: State, mut private: State) {
 	let user = private.channel(channel).unwrap().recipients[0].clone();
 	private.gateway_connected = true;
 	private.members = Some(model::MemberList {
+		server_member_count: None,
 		missing_identity: vec![],
 		guild: None,
 		channel,

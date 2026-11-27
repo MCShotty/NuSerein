@@ -1,5 +1,5 @@
 //! Saved-account roster and account-scoped GIF preferences.
-use super::{Id, LocalStore, Result, StoreError, params};
+use super::{Id, LocalStore, OptionalExtension, Result, StoreError, params};
 
 impl LocalStore {
 	/// Saved GIF favorites for one account, newest first. Rejected rows are skipped.
@@ -58,6 +58,45 @@ impl LocalStore {
 		transaction.commit()?;
 		Ok(())
 	}
+	/// A small ordered list of keys. Catalog membership is checked by the live client.
+	pub fn soundboard_favorites(&self, account: Id) -> Result<Vec<model::soundboard::Favorite>> {
+		let raw: Option<Option<String>> = self.0.query_row(
+			"SELECT CASE WHEN length(CAST(value AS BLOB))<=2048 THEN value END FROM soundboard_favorites WHERE account=?1",
+			[account.to_string()], |row| row.get(0),
+		).optional()?;
+		let favorites = match raw {
+			None => Vec::new(),
+			Some(Some(raw)) => serde_json::from_str(&raw).map_err(|_| StoreError::Incompatible)?,
+			Some(None) => return Err(StoreError::Incompatible),
+		};
+		if !model::soundboard::valid_favorites(&favorites) {
+			return Err(StoreError::Incompatible);
+		}
+		Ok(favorites)
+	}
+
+	pub fn save_soundboard_favorites(
+		&self,
+		account: Id,
+		favorites: &[model::soundboard::Favorite],
+	) -> Result<()> {
+		if account.0 == 0 || !model::soundboard::valid_favorites(favorites) {
+			return Err(StoreError::Capacity);
+		}
+		let value = serde_json::to_string(favorites).map_err(|_| StoreError::Incompatible)?;
+		if value.len() > 2048 {
+			return Err(StoreError::Capacity);
+		}
+		let saved = self.0.execute(
+			"INSERT INTO soundboard_favorites(account,value) SELECT account,?2 FROM accounts WHERE account=?1 ON CONFLICT(account) DO UPDATE SET value=excluded.value",
+			params![account.to_string(),value],
+		)?;
+		if saved == 0 {
+			return Err(StoreError::Incompatible);
+		}
+		Ok(())
+	}
+
 	/// Switcher roster, most recently used first. Damaged rows are skipped, never fatal.
 	pub fn accounts(&self) -> Result<Vec<model::SavedAccount>> {
 		Ok(self.ordered_accounts()?.0)
@@ -142,6 +181,7 @@ impl LocalStore {
 			}
 		}
 		for id in pruned.iter().map(Id::to_string).chain(damaged) {
+			transaction.execute("DELETE FROM soundboard_favorites WHERE account=?1", [&id])?;
 			transaction.execute("DELETE FROM accounts WHERE account=?1", [id])?;
 		}
 		transaction.commit()?;

@@ -465,6 +465,7 @@ struct ActiveMembers {
 	retries: u32,
 	/// Identity Discord actually replied with when it differs from the computed one.
 	wire_list: Option<String>,
+	server_member_count: Option<model::ServerRosterEvidence>,
 	total: u64,
 	groups: Vec<(String, u64)>,
 	pending_presence: BTreeMap<Id, model::MemberPresence>,
@@ -640,6 +641,7 @@ impl ActiveMembers {
 			awaiting_sync: true,
 			retries: 0,
 			wire_list: None,
+			server_member_count: None,
 			total: 0,
 			groups: vec![],
 			pending_presence: BTreeMap::new(),
@@ -816,6 +818,9 @@ impl ActiveMembers {
 	}
 	fn snapshot(&self, freshness: Freshness) -> MemberList {
 		MemberList {
+			server_member_count: self
+				.server_member_count
+				.filter(|_| freshness == Freshness::Fresh),
 			missing_identity: self.missing_identity.values().copied().collect(),
 			guild: Some(self.subscription.guild),
 			channel: self.subscription.channel,
@@ -902,8 +907,43 @@ impl ActiveMembers {
 		if update.ops.len() > MAX_MEMBER_OPS {
 			return Err(Failure::Capacity);
 		}
+		self.server_member_count = None;
 		if let Some(groups) = update.groups {
 			self.groups = Self::parse_groups(groups)?;
+			if self.subscription.list_id == "everyone"
+				&& update.id == "everyone"
+				&& let Some(count) = update
+					.member_count
+					.filter(|count| (1..=200).contains(count))
+				&& self
+					.groups
+					.iter()
+					.try_fold(0_u64, |sum, (_, size)| sum.checked_add(*size))
+					== Some(count)
+			{
+				let total = (count as usize).saturating_add(self.groups.len());
+				let mut synced = [false; 200];
+				let untouched = update.ops.iter().all(|op| match op {
+					MemberOp::Sync {
+						range: [start, end],
+						items,
+					} => {
+						let from = (*start).min(synced.len());
+						let to = start.saturating_add(items.len()).min(synced.len());
+						if *start <= *end {
+							synced[from..to].fill(true);
+						}
+						true
+					}
+					_ => false,
+				});
+				self.server_member_count = Some(model::ServerRosterEvidence {
+					count: count as u16,
+					full_sync: untouched
+						&& total <= synced.len()
+						&& synced[..total].iter().all(|synced| *synced),
+				});
+			}
 			// List positions include group headers and only the members visible in this list.
 			self.total = self.groups.iter().fold(0u64, |total, (_, count)| {
 				total.saturating_add(count.saturating_add(1))
@@ -4452,6 +4492,57 @@ mod member_tests {
 			_ => panic!("expected person at {index}"),
 		}
 	}
+	#[test]
+	fn public_roster_evidence_requires_matching_count_groups_and_full_sync() {
+		let mut list = ActiveMembers::new(MemberSubscription {
+			thread: false,
+			guild: Id(1),
+			channel: Id(2),
+			request: 7,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99]],
+		});
+		let mut wire = json!({"guild_id":"1","id":"everyone","member_count":1,"groups":[{"id":"offline","count":1}],"ops":[{"op":"SYNC","range":[0,99],"items":[{"group":{"id":"offline"}},{"member":{"user":{"id":"3","username":"Synthetic"}}}]}]});
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_some_and(|e| e.count == 1 && e.full_sync)
+		);
+		assert!(
+			list.snapshot(Freshness::Stale)
+				.server_member_count
+				.is_none()
+		);
+		wire["ops"] = json!([{"op":"SYNC","range":[0,99],"items":[{"group":{"id":"offline"}}]}]);
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_some_and(|e| !e.full_sync)
+		);
+		wire["member_count"] = json!(2);
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_none()
+		);
+		wire["member_count"] = json!(1);
+		list.subscription.list_id = "restricted".into();
+		list.wire_list = Some("everyone".into());
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_none()
+		);
+	}
+
 	#[test]
 	fn member_presence_burst_delivers_every_user() {
 		let mut list = ActiveMembers::new(MemberSubscription {

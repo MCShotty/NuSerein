@@ -2001,6 +2001,7 @@ mod tests {
 			activities: Vec::new(),
 		};
 		state.members = Some(model::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),

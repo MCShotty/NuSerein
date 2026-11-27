@@ -125,12 +125,21 @@ impl ChannelMenu {
 		);
 		let label =
 			crate::i18n::translate_args("channel-menu-row-settings", &[("channel", &channel.name)]);
+		// Keep the row geometry stable and avoid registering an invisible pointer target.
+		// Its Edit Channel context action remains the keyboard path before focus enters the row.
+		let scope = row_id.with("edit-channel");
 		let mut control = ui.new_child(
 			egui::UiBuilder::new()
-				.scope_id(row_id.with("edit-channel"))
+				.scope_id(scope)
 				.max_rect(rect)
 				.layout(egui::Layout::left_to_right(egui::Align::Center)),
 		);
+		let control_id = control.next_auto_id();
+		if !ui.rect_contains_pointer(row)
+			&& !ui.memory(|memory| memory.has_focus(row_id) || memory.has_focus(control_id))
+		{
+			return;
+		}
 		if !Self::edit_available(state, channel.id) {
 			control.disable();
 		}

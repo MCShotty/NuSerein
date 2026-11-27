@@ -2398,6 +2398,12 @@ impl TimelineView {
 			},
 		);
 	}
+	pub(super) fn refresh_anchor(&self) -> Option<Id> {
+		(!self.following)
+			.then(|| self.anchor.map(|(id, _)| id))
+			.flatten()
+	}
+
 	pub(super) fn remember_position(&self, state: &mut State) {
 		if let Some(channel) = self
 			.channel
@@ -2830,6 +2836,8 @@ impl TimelineView {
 		}
 		let history_error = match state.history_failure() {
 			Some(Failure::Network) => Some("history-connection-failed"),
+			Some(Failure::Forbidden) => Some("history-refresh-denied"),
+			Some(Failure::ProtocolAt("history-anchor-missing")) => Some("history-anchor-missing"),
 			Some(Failure::ProtocolAt(
 				key @ ("history-page-format"
 				| "history-message-format"
@@ -2854,6 +2862,30 @@ impl TimelineView {
 			Some(Failure::Busy) => Some("history-queue-busy"),
 			_ => None,
 		};
+		if !empty
+			&& history_available
+			&& (state.freshness == model::Freshness::Stale
+				|| history_error.is_some()
+				|| !state.gateway_connected)
+		{
+			ui.horizontal_wrapped(|ui| {
+				ui.strong(crate::i18n::translate("history-showing-saved"));
+				if let Some(key) = history_error {
+					ui.weak(crate::i18n::translate(key));
+				}
+				if !state.history_pending
+					&& ui
+						.small_button(crate::i18n::translate(if state.gateway_connected {
+							"reload-history"
+						} else {
+							"history-reconnect-action"
+						}))
+						.clicked()
+				{
+					self.reload_requested = true;
+				}
+			});
+		}
 		if empty
 			&& history_available
 			&& state.freshness == model::Freshness::Stale
@@ -2880,7 +2912,11 @@ impl TimelineView {
 			&& state.freshness == model::Freshness::Stale
 			&& !state.history_pending
 			&& ui
-				.button(crate::i18n::translate("reload-history"))
+				.button(crate::i18n::translate(if state.gateway_connected {
+					"reload-history"
+				} else {
+					"history-reconnect-action"
+				}))
 				.clicked()
 		{
 			self.reload_requested = true;

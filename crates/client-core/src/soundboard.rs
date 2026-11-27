@@ -7,11 +7,17 @@ use crate::{
 };
 use model::{Id, permissions as p, soundboard::Sound};
 use std::time::{Duration, Instant};
+#[path = "soundboard_settings.rs"]
+mod settings;
+pub use settings::{
+	MAX_SYNCED_FAVORITES, Settings, SettingsAction, SettingsResult, SettingsScope, SettingsWork,
+};
 pub const MAX_PLAYBACK_LATENESS: Duration = Duration::from_secs(3);
 /// Largest accepted catalog response.
 pub const MAX_WIRE_BYTES: usize = 256 * 1024;
-pub const MAX_FAVORITES: usize = 32;
+pub use model::soundboard::MAX_FAVORITES;
 pub enum Request {
+	Settings(SettingsWork),
 	Default {
 		request: u64,
 	},
@@ -33,6 +39,10 @@ pub enum Request {
 	},
 }
 pub enum Event {
+	Settings {
+		work: SettingsWork,
+		result: Result<SettingsResult, Failure>,
+	},
 	Default {
 		request: u64,
 		result: Result<Vec<Sound>, Failure>,
@@ -61,6 +71,9 @@ pub enum Event {
 impl Event {
 	pub fn bytes(&self) -> usize {
 		match self {
+			Self::Settings {
+				result: Ok(result), ..
+			} => result.bytes(),
 			Self::Default {
 				result: Ok(sounds), ..
 			}
@@ -134,6 +147,7 @@ struct ExternalCatalog {
 }
 #[derive(Default)]
 pub struct Soundboard {
+	pub settings: Settings,
 	/// Monotonic within the account generation, including interrupted requests.
 	pub sequence: u64,
 	pub default: Catalog,
@@ -141,8 +155,11 @@ pub struct Soundboard {
 	pub guild: Option<(Id, Catalog)>,
 	// An explicitly chosen source for this call only. No catalog fan-out.
 	external: Option<ExternalCatalog>,
-	// This account session only: no audio, display metadata, or service write.
-	favorites: Vec<(Option<Id>, Id)>,
+	// Per-account identities only. Restoring a favorite never admits audio playback.
+	favorites: Vec<model::soundboard::Favorite>,
+	pub favorites_changed: bool,
+	/// None until local storage resolves; false when changes are session-only.
+	pub favorites_storage: Option<bool>,
 	/// One unanswered play request; another waits for its outcome.
 	pub sending: Option<Pending>,
 	pub error: Option<&'static str>,
@@ -155,6 +172,18 @@ impl Soundboard {
 	pub fn is_favorite(&self, sound: &Sound) -> bool {
 		self.favorites.contains(&(sound.guild, sound.id))
 	}
+	pub fn favorites(&self) -> &[model::soundboard::Favorite] {
+		&self.favorites
+	}
+
+	pub fn restore_favorites(&mut self, favorites: Vec<model::soundboard::Favorite>) -> bool {
+		if self.favorites_changed || !model::soundboard::valid_favorites(&favorites) {
+			return false;
+		}
+		self.favorites = favorites;
+		true
+	}
+
 	pub fn favorites_full(&self) -> bool {
 		self.favorites.len() == MAX_FAVORITES
 	}
@@ -168,6 +197,7 @@ impl Soundboard {
 }
 impl State {
 	pub(crate) fn interrupt_soundboard(&mut self) {
+		self.soundboard.settings.interrupt();
 		self.soundboard.external = None;
 		self.soundboard.default.interrupt();
 		if let Some((_, catalog)) = &mut self.soundboard.guild {
@@ -273,22 +303,29 @@ impl State {
 			.iter()
 			.find(|entry| entry.id == sound && entry.available)
 	}
-	/// Favorite only a current catalog entry. This never sends a service command.
-	pub fn toggle_soundboard_favorite(&mut self, sound: &Sound) -> bool {
-		let Some((_, destination)) = self.soundboard_channel() else {
-			return false;
-		};
-		let key = (sound.guild, sound.id);
-		if let Some(index) = self
+	/// Removing a saved key needs no catalog or playback permission. The key is account-local.
+	pub fn remove_device_soundboard_favorite(&mut self, key: (Option<Id>, Id)) -> bool {
+		let Some(index) = self
 			.soundboard
 			.favorites
 			.iter()
 			.position(|item| *item == key)
-		{
-			self.soundboard.favorites.remove(index);
-			return true;
+		else {
+			return false;
+		};
+		self.soundboard.favorites.remove(index);
+		self.soundboard.favorites_changed = true;
+		true
+	}
+
+	pub fn can_add_device_soundboard_favorite(&self, sound: &Sound) -> bool {
+		let Some((_, destination)) = self.soundboard_channel() else {
+			return false;
+		};
+		if !sound.available || self.soundboard.favorites_full() {
+			return false;
 		}
-		let current = match sound.guild {
+		match sound.guild {
 			None => {
 				self.soundboard.default.loaded && self.soundboard.default.sounds.contains(sound)
 			}
@@ -301,11 +338,20 @@ impl State {
 					})
 			}
 			Some(source) => self.external_sound(source, sound.id) == Some(sound),
-		};
-		if !current || self.soundboard.favorites_full() {
+		}
+	}
+
+	/// Favorite only a current catalog entry. This never sends a service command.
+	pub fn toggle_soundboard_favorite(&mut self, sound: &Sound) -> bool {
+		let key = (sound.guild, sound.id);
+		if self.remove_device_soundboard_favorite(key) {
+			return true;
+		}
+		if !self.can_add_device_soundboard_favorite(sound) {
 			return false;
 		}
 		self.soundboard.favorites.push(key);
+		self.soundboard.favorites_changed = true;
 		true
 	}
 	/// Load the catalogs for the connected channel once; at most two bounded reads.
@@ -347,7 +393,6 @@ impl State {
 		if let Some((_, catalog)) = &mut self.soundboard.guild {
 			catalog.error = None;
 		}
-		self.soundboard.error = None;
 	}
 	pub fn soundboard_sending(&self, sound: Id) -> bool {
 		self.soundboard.sending.is_some_and(|pending| {
@@ -406,6 +451,7 @@ impl State {
 			return false;
 		}
 		match action {
+			Request::Settings(work) => self.soundboard_settings_allowed(*work),
 			Request::Default { request } => {
 				*request != 0
 					&& self.soundboard.default.loading
@@ -490,6 +536,7 @@ impl State {
 	pub(crate) fn soundboard_rejected(&mut self, request: &Request) {
 		const MESSAGE: &str = "Soundboard request was not queued; try again";
 		match request {
+			Request::Settings(work) => self.soundboard_settings_rejected(*work),
 			Request::Default { request } if self.soundboard.default.request == *request => {
 				self.soundboard.default.loading = false;
 				self.soundboard.default.error = Some(MESSAGE);
@@ -547,6 +594,7 @@ impl State {
 	pub(crate) fn apply_soundboard(&mut self, event: Event) {
 		self.retire_external_soundboard();
 		match event {
+			Event::Settings { work, result } => self.apply_soundboard_settings(work, result),
 			Event::Default { request, result } => {
 				self.soundboard.default.finish(request, result, None)
 			}
@@ -595,6 +643,7 @@ impl State {
 				}
 			}
 			Event::Changed(guild) => {
+				self.soundboard.settings.catalog_changed(guild);
 				self.call_sounds_changed(guild);
 				// The open management page reloads too, once its current request settles. A
 				// read in flight may predate the change, so its response keeps this marker.
@@ -718,6 +767,151 @@ mod tests {
 		});
 		state
 	}
+	#[test]
+	fn account_sound_settings_recheck_entitlement_and_never_enqueue_playback() {
+		let mut state = connected(ALLOWED);
+		assert!(
+			state
+				.request_soundboard_settings(SettingsAction::LoadEntrance)
+				.is_none()
+		);
+		state.premium_type = 2;
+		state.request_soundboard();
+		state.apply_soundboard(Event::Default {
+			request: state.soundboard.default.request,
+			result: Ok(vec![sound(1, None)]),
+		});
+		let Some(Command::Soundboard(Request::Settings(load))) =
+			state.request_soundboard_settings(SettingsAction::LoadEntrance)
+		else {
+			panic!("expected scoped entrance read");
+		};
+		state.apply_soundboard(Event::Settings {
+			work: load,
+			result: Ok(SettingsResult::Entrance(None, None)),
+		});
+		let action = SettingsAction::Entrance {
+			before: None,
+			after: Some((None, Id(1))),
+		};
+		let Some(Command::Soundboard(request @ Request::Settings(save))) =
+			state.request_soundboard_settings(action)
+		else {
+			panic!("expected settings-only save");
+		};
+		assert!(state.soundboard_command_allowed(&request));
+		state.premium_type = 0;
+		assert!(!state.soundboard_command_allowed(&request));
+		let result = Event::Settings {
+			work: save,
+			result: Ok(SettingsResult::Entrance(Some((None, Id(1))), None)),
+		};
+		assert!(!state.soundboard_playback_current(&result));
+		state.apply_soundboard(result);
+		assert_eq!(state.soundboard.settings.entrance(Id(9)), None);
+		assert!(state.soundboard.sending.is_none());
+	}
+
+	#[test]
+	fn global_entrance_settings_do_not_require_a_call_and_reject_stale_catalogs() {
+		let mut state = connected(ALLOWED);
+		state.voice.active = None;
+		assert!(
+			state
+				.request_soundboard_settings(SettingsAction::LoadGlobalEntrance)
+				.is_none()
+		);
+		state.premium_type = 2;
+		let Some(Command::Soundboard(Request::Settings(load))) =
+			state.request_soundboard_settings(SettingsAction::LoadGlobalEntrance)
+		else {
+			panic!("expected account read without a call")
+		};
+		assert_eq!(load.call_owner(), None);
+		state.apply_soundboard(Event::Settings {
+			work: load,
+			result: Ok(SettingsResult::Entrance(None, None)),
+		});
+		let Some(Command::Soundboard(Request::Settings(stale))) =
+			state.request_soundboard_settings(SettingsAction::EntranceCatalog(Some(Id(9))))
+		else {
+			panic!("expected guild catalog")
+		};
+		state.apply_soundboard(Event::Changed(Id(9)));
+		state.apply_soundboard(Event::Settings {
+			work: stale,
+			result: Ok(SettingsResult::Catalog(vec![sound(2, Some(9))])),
+		});
+		assert!(state.soundboard.settings.catalog().is_none());
+		let Some(Command::Soundboard(Request::Settings(catalog))) =
+			state.request_soundboard_settings(SettingsAction::EntranceCatalog(None))
+		else {
+			panic!("expected default catalog")
+		};
+		state.apply_soundboard(Event::Settings {
+			work: catalog,
+			result: Ok(SettingsResult::Catalog(vec![sound(1, None)])),
+		});
+		assert!(
+			state
+				.request_soundboard_settings(SettingsAction::GlobalEntrance {
+					before: None,
+					after: Some((Some(Id(9)), Id(1)))
+				})
+				.is_none()
+		);
+		let Some(Command::Soundboard(request @ Request::Settings(write))) = state
+			.request_soundboard_settings(SettingsAction::GlobalEntrance {
+				before: None,
+				after: Some((None, Id(1))),
+			})
+		else {
+			panic!("expected settings write, never a send")
+		};
+		assert!(state.soundboard_command_allowed(&request));
+		state.generation += 1;
+		assert!(!state.soundboard_command_allowed(&request));
+		let event = Event::Settings {
+			work: write,
+			result: Ok(SettingsResult::Entrance(Some((None, Id(1))), None)),
+		};
+		assert!(!state.soundboard_playback_current(&event));
+		state.apply_soundboard(event);
+		assert_ne!(
+			state.soundboard.settings.global_entrance(),
+			Some(Some((None, Id(1))))
+		);
+		assert!(state.soundboard.sending.is_none());
+	}
+
+	#[test]
+	fn synced_favorites_ignore_a_stale_call_or_account() {
+		let mut state = connected(ALLOWED);
+		let Some(Command::Soundboard(Request::Settings(stale))) =
+			state.request_soundboard_settings(SettingsAction::LoadFavorites)
+		else {
+			panic!("expected favorites read");
+		};
+		state.voice.active.as_mut().unwrap().request += 1;
+		let Some(Command::Soundboard(Request::Settings(current))) =
+			state.request_soundboard_settings(SettingsAction::LoadFavorites)
+		else {
+			panic!("expected replacement request");
+		};
+		state.apply_soundboard(Event::Settings {
+			work: stale,
+			result: Ok(SettingsResult::Favorites(vec![Id(9)])),
+		});
+		assert!(state.soundboard.settings.favorites().is_none());
+		state.generation += 1;
+		state.apply_soundboard(Event::Settings {
+			work: current,
+			result: Ok(SettingsResult::Favorites(vec![Id(10)])),
+		});
+		assert!(state.soundboard.settings.favorites().is_none());
+		assert!(!state.soundboard.settings.pending());
+	}
+
 	#[test]
 	fn soundboard_retries_reject_stale_catalogs_and_old_call_playbacks() {
 		let mut state = connected(ALLOWED);
@@ -898,6 +1092,31 @@ mod tests {
 		assert!(state.request_soundboard().iter().all(Option::is_none));
 		assert!(state.soundboard_unavailable().is_some());
 	}
+	#[test]
+	fn late_favorites_restore_never_replaces_an_edit_or_admits_playback() {
+		let mut board = Soundboard::default();
+		let restored = vec![(Some(Id(17)), Id(40))];
+		assert!(board.restore_favorites(restored.clone()));
+		assert!(board.sound(Id(40)).is_none());
+		assert!(board.sending.is_none());
+		board.favorites_changed = true;
+		assert!(!board.restore_favorites(vec![]));
+		assert_eq!(board.favorites(), restored.as_slice());
+	}
+
+	#[test]
+	fn an_orphaned_device_favorite_can_be_removed_without_a_call_or_catalog() {
+		let mut state = State::default();
+		let orphan = (Some(Id(17)), Id(40));
+		let retained = (None, Id(41));
+		assert!(state.soundboard.restore_favorites(vec![orphan, retained]));
+		assert!(state.remove_device_soundboard_favorite(orphan));
+		assert!(!state.remove_device_soundboard_favorite(orphan));
+		assert_eq!(state.soundboard.favorites(), &[retained]);
+		assert!(state.soundboard.favorites_changed);
+		assert!(state.soundboard.sending.is_none());
+	}
+
 	#[test]
 	fn favorites_are_bounded_and_do_not_queue_playback() {
 		let mut state = connected(ALLOWED);

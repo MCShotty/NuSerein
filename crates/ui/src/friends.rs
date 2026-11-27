@@ -270,7 +270,9 @@ impl MessagingUi {
 			.friends
 			.spam_confirm
 			.is_some_and(|(generation, channel)| {
-				generation != state.generation || !state.spam_request_is_resolvable(channel)
+				generation != state.generation
+					|| state.selected != Some(channel)
+					|| !state.spam_request_is_resolvable(channel)
 			}) {
 			self.friends.spam_confirm = None;
 		}
@@ -339,8 +341,11 @@ impl MessagingUi {
 					},
 				));
 				self.spam_request_handoff(ui, state, channel);
-				if state.freshness == Freshness::Loading {
-					ui.add(design::Busy::new());
+				if state.freshness == Freshness::Loading || state.history_pending {
+					ui.horizontal_wrapped(|ui| {
+						ui.add(design::Busy::new());
+						ui.label(crate::i18n::translate("dm-review-loading-history"));
+					});
 				} else if ui
 					.add_enabled(
 						state.demo || state.gateway_connected,
@@ -365,8 +370,29 @@ impl MessagingUi {
 					})
 					.take(50)
 					.collect();
-				if rows.is_empty() && state.freshness != Freshness::Loading {
-					ui.weak(crate::i18n::translate("dm-requests-review-no-history"));
+				if !state.history_pending {
+					if state.history_failure().is_some() {
+						design::notice(
+							ui,
+							design::Level::Warning,
+							if rows.is_empty() {
+								"dm-review-history-failed"
+							} else {
+								"dm-review-history-failed-cached"
+							},
+						);
+					} else if state.freshness == Freshness::Stale {
+						design::hint(
+							ui,
+							if rows.is_empty() {
+								"dm-review-history-stale-empty"
+							} else {
+								"dm-review-history-cached"
+							},
+						);
+					} else if rows.is_empty() && state.freshness == Freshness::Fresh {
+						ui.weak(crate::i18n::translate("dm-requests-review-no-history"));
+					}
 				}
 				self.scroll
 					.attach(

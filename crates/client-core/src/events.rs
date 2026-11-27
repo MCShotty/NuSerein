@@ -422,7 +422,7 @@ impl Event {
 				Self::GroupAction(group_actions::Event::Written {
 					result: Ok(Some(patch)),
 					..
-				}) => [&patch.name, &patch.icon]
+				}) => [&patch.name, &patch.icon, &patch.banner]
 					.into_iter()
 					.map(|p| match p {
 						Patch::Value(s) => s.capacity(),
@@ -651,7 +651,7 @@ impl Event {
 					patches.capacity() * size_of::<GuildPatch>()
 						+ patches
 							.iter()
-							.flat_map(|p| [&p.name, &p.icon])
+							.flat_map(|p| [&p.name, &p.icon, &p.banner])
 							.map(|p| match p {
 								Patch::Value(s) => s.capacity(),
 								_ => 0,

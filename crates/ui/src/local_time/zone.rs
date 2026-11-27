@@ -249,7 +249,7 @@ pub fn minute_deadline(at: time::OffsetDateTime) -> std::time::Duration {
 
 /// Resolve local input without guessing across a daylight-saving gap or fold.
 pub fn wall_time(value: &str) -> Vec<time::OffsetDateTime> {
-	if value.len() != 16 || timezone_status() == Some("timezone-updating") {
+	if !matches!(value.len(), 16 | 19) || timezone_status() == Some("timezone-updating") {
 		return Vec::new();
 	}
 	let Ok(civil) = value.replace(' ', "T").parse::<jiff::civil::DateTime>() else {

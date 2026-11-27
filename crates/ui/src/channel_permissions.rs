@@ -11,6 +11,7 @@ pub(super) struct PermissionsUi {
 	search_at: Option<f64>,
 	query_open: bool,
 	sync_review: bool,
+	private_before: Option<(Id, i8, bool)>,
 }
 
 impl PermissionsUi {
@@ -37,7 +38,7 @@ impl PermissionsUi {
 				} else {
 					"channel-permissions-show-only-selected-members-and-roles-can-view-this-channel-administrators"
 				}), &mut private).changed() {
-					set_permission(rows, (0, guild), p::VIEW_CHANNEL, if private { -1 } else { 1 });
+					set_private_view(rows, channel.id, guild, private, &mut self.private_before);
 				}
 			});
 		});
@@ -916,6 +917,45 @@ fn target_name(state: &State, guild: Id, key: (u8, Id)) -> String {
 		.chain(state.user.iter())
 		.find(|u| u.id == key.1);
 	user.map_or_else(|| format!("Member {}", key.1), |u| u.name.clone())
+}
+
+fn set_private_view(
+	rows: &mut Vec<p::Overwrite>,
+	channel: Id,
+	guild: Id,
+	private: bool,
+	previous: &mut Option<(Id, i8, bool)>,
+) {
+	let key = (0, guild);
+	if private {
+		let everyone = rows.iter().find(|row| (row.kind, row.id) == key);
+		let prior = everyone.is_some_and(|row| row.allow & p::VIEW_CHANNEL != 0);
+		*previous = Some((channel, if prior { 1 } else { 0 }, everyone.is_some()));
+		set_permission(rows, key, p::VIEW_CHANNEL, -1);
+	} else {
+		let (_, prior, existed) = previous
+			.take()
+			.filter(|saved| saved.0 == channel)
+			.unwrap_or((channel, 0, false));
+		set_permission(rows, key, p::VIEW_CHANNEL, prior);
+		if !existed {
+			rows.retain(|row| (row.kind, row.id) != key || row.allow != 0 || row.deny != 0);
+		}
+	}
+}
+
+#[test]
+fn private_round_trip_restores_inherited_view() {
+	let mut rows = Vec::new();
+	let mut previous = None;
+	set_private_view(&mut rows, Id(2), Id(1), true, &mut previous);
+	assert_eq!(rows[0].deny, p::VIEW_CHANNEL);
+	set_private_view(&mut rows, Id(2), Id(1), false, &mut previous);
+	assert!(rows.is_empty());
+	set_permission(&mut rows, (0, Id(1)), p::VIEW_CHANNEL, 1);
+	set_private_view(&mut rows, Id(2), Id(1), true, &mut previous);
+	set_private_view(&mut rows, Id(2), Id(1), false, &mut previous);
+	assert_eq!(rows[0].allow, p::VIEW_CHANNEL);
 }
 
 fn set_permission(rows: &mut Vec<p::Overwrite>, key: (u8, Id), bit: u128, value: i8) {

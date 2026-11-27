@@ -1655,17 +1655,7 @@ impl MessagingUi {
                                 } else if self.upload_busy || !state.can_send(channel) {
                                     self.composer_notice(state, "Sending is unavailable with the current connection or permissions", "composer-gif-unavailable", design::Level::Warning);
                                 } else {
-                                    let saved = state.drafts.insert(channel, url);
-                                    let command = state.prepare_send();
-                                    match saved {
-                                        Some(saved) => {
-                                            state.drafts.insert(channel, saved);
-                                        }
-                                        None => {
-                                            state.drafts.remove(&channel);
-                                        }
-                                    }
-                                    if let Some(command) = command {
+                                    if let Some(command) = state.prepare_text_send(&url) {
                                         self.timeline.follow_latest(state);
                                         commands.push(command);
                                     } else {
@@ -2331,6 +2321,7 @@ pub(crate) mod tests {
 		let guild = state.channel(channel).unwrap().guild.unwrap();
 		let user = state.user.as_ref().unwrap().clone();
 		state.members = Some(model::MemberList {
+			server_member_count: None,
 			guild: Some(guild),
 			channel,
 			request: 0,

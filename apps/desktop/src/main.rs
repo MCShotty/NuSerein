@@ -568,6 +568,7 @@ struct Desktop {
 	sticker_pack_cache_load: cache::HistoryLoad,
 	sticker_pack_cache_save: cache::HistoryLoad,
 	gif_cache: cache::GifCache,
+	sound_favorites_cache: cache::GifCache,
 	member_cache_saved: Option<(u64, model::Id, u64, u64)>,
 	member_cache_cleared: cache::MemberCacheClear,
 	server_cache_load: cache::HistoryLoad,
@@ -639,7 +640,7 @@ struct Desktop {
 	plaintext_save_pending: bool,
 	account_presences: std::collections::BTreeMap<model::Id, model::OwnPresence>,
 	presence_load_pending: bool,
-	deferred_connect: Option<(SessionSecret, bool)>,
+	deferred_connect: Option<(u64, SessionSecret, bool)>,
 	presence_authoritative: bool,
 	presence_saved: Option<(model::Id, model::OwnPresence)>,
 	/// Saved account awaiting the owner's confirmation before it is forgotten.

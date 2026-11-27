@@ -95,6 +95,7 @@ fn decode_edge(key: &str) -> u32 {
 		|| key.starts_with("banner-")
 		|| key.starts_with("member-banner-")
 		|| key.starts_with("guide-header-")
+		|| key.starts_with("guild-banner-")
 	{
 		ui::EMBED_EDGE
 	} else if key.starts_with("badge-art:") {
@@ -649,6 +650,7 @@ fn cdn_url(key: &str) -> Option<String> {
 	// Published CDN paths, constructed from typed IDs and hashes; no arbitrary host is accepted.
 	for (prefix, route, edge) in [
 		("guide-header-", "home-headers", 512),
+		("guild-banner-", "banners", 512),
 		("guide-action-", "new-member-actions", 128),
 		("guide-resource-", "resource-channels", 128),
 	] {

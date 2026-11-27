@@ -11,7 +11,7 @@ pub(super) const SIGN_IN_HEADER_HEIGHT: f32 = if cfg!(target_os = "windows") {
 impl Desktop {
 	pub(super) fn connect(&mut self, secret: SessionSecret, save: bool, ctx: &egui::Context) {
 		if self.presence_load_pending {
-			self.deferred_connect = Some((secret, save));
+			self.deferred_connect = Some((self.state.generation, secret, save));
 			self.credential_status = "Connecting to Discord…";
 			return;
 		}
@@ -93,12 +93,20 @@ impl Desktop {
 			ctx.clone(),
 		));
 	}
+	fn retire_saved_restore(&mut self) {
+		self.deferred_connect = None;
+		self.switching = None;
+		if let Some(store) = &mut self.store {
+			store.cancel_load();
+		}
+	}
 	pub(super) fn logout(&mut self, ctx: &egui::Context) {
 		self.end_session(ctx, SessionEnd::Logout);
 	}
 	/// Ends the current session. Only logging out removes this account's local data and
 	/// saved login; switching and adding keep both so the account stays in the switcher.
 	fn end_session(&mut self, ctx: &egui::Context, intent: SessionEnd) {
+		self.retire_saved_restore();
 		self.captcha.close();
 		self.notification_runtime.clear(&self.window);
 		self.messaging.image_share_requested = None;
@@ -116,9 +124,6 @@ impl Desktop {
 		self.notifications.clear();
 		self.uploads.cancel();
 		self.uploads.forget_parked();
-		if let Some(store) = &mut self.store {
-			store.cancel_load();
-		}
 		self.downloads.cancel();
 		self.audio.stop();
 		self.video.stop();
@@ -215,6 +220,7 @@ impl Desktop {
 		if self.fixture_only || self.state.demo {
 			return;
 		}
+		self.retire_saved_restore();
 		let started = self.store.as_mut().is_some_and(|store| {
 			store.load_account(self.state.generation, account, std::time::Instant::now())
 		});
@@ -399,6 +405,15 @@ impl Desktop {
 				"main-restoring-checking-your-saved-login",
 			));
 		}
+		if self
+			.deferred_connect
+			.as_ref()
+			.is_some_and(|(generation, _, _)| *generation == self.state.generation)
+		{
+			return Some(ui::i18n::translate(
+				"main-restoring-preparing-saved-account",
+			));
+		}
 		self.connection
 			.is_some()
 			.then(|| ui::i18n::translate("main-restoring-connecting-to-discord"))
@@ -516,9 +531,7 @@ impl Desktop {
 							)
 							.clicked()
 							{
-								if let Some(store) = &mut self.store {
-									store.cancel_load();
-								}
+								self.retire_saved_restore();
 								self.connection = None;
 								self.pending_save = None;
 								self.current_login = None;
@@ -733,9 +746,7 @@ impl Desktop {
 					})
 					.inner;
 				if button.clicked() && !self.fixture_only {
-					if let Some(store) = &mut self.store {
-						store.cancel_load();
-					}
+					self.retire_saved_restore();
 					self.credential_status = "Sign in through Discord; saved-login lookup stopped";
 					let wake = ctx.clone();
 					match platform::LoginView::open(self.window.clone(), move || {
@@ -1214,7 +1225,10 @@ impl Desktop {
 					if connect.clicked() && !self.fixture_only {
 						let input = std::mem::take(&mut *self.token_input);
 						match SessionSecret::from_owner_input(input) {
-							Ok(secret) => self.connect(secret, true, ctx),
+							Ok(secret) => {
+								self.retire_saved_restore();
+								self.connect(secret, true, ctx);
+							}
 							Err(failure) => self.state.status = failure.label(),
 						}
 					}

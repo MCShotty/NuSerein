@@ -210,6 +210,7 @@ mod tests {
 
 	fn member_list(user: User, guild: Id, nick: Option<&str>) -> model::MemberList {
 		model::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(guild),
 			channel: Id(20),

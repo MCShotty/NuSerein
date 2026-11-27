@@ -118,6 +118,8 @@ pub struct View {
 	pub community: Option<model::community_admin::Snapshot>,
 	pub automod: Option<model::automod::Snapshot>,
 	pub bans: Option<model::moderation::Bans>,
+	/// The admitted filter of the retained page, not the current search input.
+	pub bans_query: Option<String>,
 	pub moderation_target: Option<model::server_admin::Member>,
 	pub member_review: Option<model::moderation::Review>,
 	pub member_review_loading: u8,
@@ -160,6 +162,17 @@ pub struct View {
 	prune_days: Option<u8>,
 }
 impl View {
+	pub fn ban_read_pending(&self, guild: Id) -> bool {
+		self.guild == Some(guild)
+			&& self.pending
+			&& matches!(
+				self.action.as_ref(),
+				Some(Action::Moderation(
+					model::moderation::Action::Bans { .. }
+						| model::moderation::Action::BanSearch { .. }
+				))
+			)
+	}
 	pub fn confirmed_member_query(&self, guild: Id) -> Option<&Query> {
 		(self.guild == Some(guild) && self.member_page_current && self.members.is_some())
 			.then_some(&self.query)
@@ -244,6 +257,7 @@ impl View {
 			self.automod = None;
 			self.community = None;
 			self.bans = None;
+			self.bans_query = None;
 			self.moderation_target = None;
 			self.member_review = None;
 			self.member_review_loading = 0;
@@ -1555,7 +1569,15 @@ impl State {
 						current.accepted = true;
 					}
 				}
-				model::moderation::Outcome::Bans(page) => self.server_admin.bans = Some(page),
+				model::moderation::Outcome::Bans(page) => {
+					self.server_admin.bans_query = match action.as_ref() {
+						Some(Action::Moderation(model::moderation::Action::BanSearch {
+							query,
+						})) => Some(query.trim().to_owned()),
+						_ => None,
+					};
+					self.server_admin.bans = Some(page);
+				}
 				model::moderation::Outcome::Member(member) => {
 					self.server_admin.moderation_target = Some(*member)
 				}
@@ -1623,6 +1645,7 @@ impl State {
 						}))
 					) {
 						self.server_admin.bans = None;
+						self.server_admin.bans_query = None;
 					}
 				}
 			},

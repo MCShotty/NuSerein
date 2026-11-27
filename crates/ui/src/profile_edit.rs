@@ -369,15 +369,23 @@ impl Editor {
 							.color(colors.muted),
 						);
 					} else if self.saved {
-						ui.label(
-							egui::RichText::new(crate::i18n::translate_if_key(if state.demo {
-								"profile-edit-show-saved-in-preview"
-							} else {
-								"profile-edit-show-profile-saved"
-							}))
-							.size(13.0)
-							.color(colors.positive),
-						);
+						ui.horizontal_wrapped(|ui| {
+							crate::icons::inline(
+								ui,
+								crate::icons::Icon::Check,
+								14.0,
+								colors.text_strong,
+							);
+							ui.label(
+								egui::RichText::new(crate::i18n::translate_if_key(if state.demo {
+									"profile-edit-show-saved-in-preview"
+								} else {
+									"profile-edit-show-profile-saved"
+								}))
+								.size(13.0)
+								.color(colors.text_strong),
+							);
+						});
 					} else if changed {
 						ui.label(
 							egui::RichText::new(crate::i18n::translate(

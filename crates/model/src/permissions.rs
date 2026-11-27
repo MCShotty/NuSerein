@@ -154,7 +154,8 @@ pub fn everyone_can_view(everyone: u128, guild: Id, overwrites: &[Overwrite]) ->
 	}
 	Some(bits & VIEW_CHANNEL != 0)
 }
-fn murmur3(bytes: &[u8]) -> u32 {
+/// Non-cryptographic Murmur3 x86/32 with seed zero for Discord wire identifiers.
+pub fn murmur3(bytes: &[u8]) -> u32 {
 	let mix = |n: u32| {
 		n.wrapping_mul(0xcc9e2d51)
 			.rotate_left(15)

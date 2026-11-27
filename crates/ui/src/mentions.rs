@@ -2669,6 +2669,12 @@ mod tests {
 		state.apply(client_core::Envelope {
 			generation: state.generation,
 			event: client_core::Event::GuildChanged(model::GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				id: Id(10),
 				name: model::Patch::Value("Longer foreign server name".into()),
 				icon: model::Patch::Value("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
@@ -2751,6 +2757,7 @@ mod tests {
 		};
 		let target = Id(20199);
 		state.members = Some(model::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild,
 			channel,

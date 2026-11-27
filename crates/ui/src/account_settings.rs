@@ -106,23 +106,46 @@ impl MessagingUi {
 						None => "Unavailable",
 					},
 				);
+			});
+		}
+		if let Some(tier) = state
+			.account_settings
+			.overview
+			.as_ref()
+			.and_then(|overview| overview.premium_type)
+		{
+			design::group(ui, "account-subscription-heading", |ui| {
 				detail_row(
 					ui,
 					"Subscription",
-					match overview.premium_type {
-						Some(0) => "No Nitro subscription",
-						Some(1) => "Nitro Classic",
-						Some(2) => "Nitro",
-						Some(3) => "Nitro Basic",
+					match tier {
+						0 => "No Nitro subscription",
+						1 => "Nitro Classic",
+						2 => "Nitro",
+						3 => "Nitro Basic",
 						_ => "Managed in Discord",
 					},
 				);
+				if matches!(tier, 1..=3) {
+					design::hint(ui, "account-subscription-handoff-help");
+					if design::button(
+						ui,
+						"account-subscription-handoff",
+						design::ButtonKind::Outline,
+					)
+					.clicked()
+					{
+						self.settings.account.opening = Some("https://discord.com/app".into());
+					}
+				}
 			});
+		} else if state.account_settings.overview.is_some() {
+			design::hint(ui, "account-subscription-unavailable");
 		}
-		design::group(ui, "Account security and billing", |ui| {
+		design::group(ui, "Account security", |ui| {
 			design::hint(
 				ui,
-				"Use Discord for password and email changes, multi-factor setup, account recovery and subscription management.",
+				"Use Discord for password and email changes, multi-factor setup and account recovery.",
 			);
 			if design::button(ui, "Open official Discord", design::ButtonKind::Outline).clicked() {
 				self.settings.account.opening = Some("https://discord.com/app".into());

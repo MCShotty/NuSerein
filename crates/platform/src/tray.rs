@@ -19,6 +19,7 @@ pub enum VoiceState {
 	Speaking = 1,
 	Muted = 2,
 	Deafened = 3,
+	TemporarilyMuted = 4,
 }
 
 // Keep the desired state for Explorer recovery, and only remember a successful
@@ -271,8 +272,8 @@ mod native {
 				&self.state.applied_voice_state,
 				state,
 				|state| {
-					let hicon =
-						self.state.voice_icons[state as usize].unwrap_or(self.state.icon.hIcon);
+					let hicon = self.state.voice_icons[voice_icon_index(state)]
+						.unwrap_or(self.state.icon.hIcon);
 					let mut data = NOTIFYICONDATAW {
 						cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
 						hWnd: self.state.icon.hWnd,
@@ -295,11 +296,20 @@ mod native {
 		}
 	}
 
+	fn voice_icon_index(state: super::VoiceState) -> usize {
+		if state == super::VoiceState::TemporarilyMuted {
+			super::VoiceState::Muted as usize
+		} else {
+			state as usize
+		}
+	}
+
 	fn voice_state_tip(state: super::VoiceState) -> &'static str {
 		match state {
 			super::VoiceState::Unmuted => "NuSerein",
 			super::VoiceState::Speaking => "NuSerein (Speaking)",
 			super::VoiceState::Muted => "NuSerein (Muted)",
+			super::VoiceState::TemporarilyMuted => "NuSerein (Push to Mute held)",
 			super::VoiceState::Deafened => "NuSerein (Deafened)",
 		}
 	}
@@ -308,7 +318,7 @@ mod native {
 		fn add_icon(&self) -> bool {
 			let mut icon_data = self.icon;
 			let state = self.current_voice_state.get();
-			if let Some(hicon) = self.voice_icons[state as usize] {
+			if let Some(hicon) = self.voice_icons[voice_icon_index(state)] {
 				icon_data.hIcon = hicon;
 			}
 			icon_data.szTip = [0; 128];

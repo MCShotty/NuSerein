@@ -201,31 +201,40 @@ fn capture(ui: &mut egui::Ui, bindings: &mut Keybinds, capturing: &mut Option<Ke
 		if cancelled {
 			*capturing = None;
 		} else if let Some(chord) = captured {
-			if let Some(other) = KeybindAction::ALL
-				.into_iter()
-				.find(|other| *other != action && bindings.chord(*other) == &chord)
-			{
-				let now = ui.input(|input| input.time);
-				ui.data_mut(|data| {
-					data.insert_temp(
-						egui::Id::unique("keybind_conflict"),
-						ConflictNotice {
-							action,
-							conflicting_action: other,
-							time: now,
-						},
-					);
-				});
-				ui.ctx().request_repaint();
-				*capturing = None;
-			} else {
-				*bindings.chord_mut(action) = chord;
-				ui.data_mut(|data| {
-					data.remove_temp::<ConflictNotice>(egui::Id::unique("keybind_conflict"));
-				});
-				*capturing = None;
-			}
+			apply_binding(ui, bindings, action, chord);
+			*capturing = None;
 		}
+	}
+}
+
+fn binding_conflict(
+	bindings: &Keybinds,
+	action: KeybindAction,
+	chord: &KeyChord,
+) -> Option<KeybindAction> {
+	KeybindAction::ALL
+		.into_iter()
+		.find(|other| *other != action && bindings.chord(*other) == chord)
+}
+
+fn apply_binding(ui: &egui::Ui, bindings: &mut Keybinds, action: KeybindAction, chord: KeyChord) {
+	let id = egui::Id::unique("keybind_conflict");
+	if let Some(conflicting_action) = binding_conflict(bindings, action, &chord) {
+		let time = ui.input(|input| input.time);
+		ui.data_mut(|data| {
+			data.insert_temp(
+				id,
+				ConflictNotice {
+					action,
+					conflicting_action,
+					time,
+				},
+			)
+		});
+		ui.ctx().request_repaint();
+	} else {
+		*bindings.chord_mut(action) = chord;
+		ui.data_mut(|data| data.remove_temp::<ConflictNotice>(id));
 	}
 }
 
@@ -310,13 +319,15 @@ fn row(
 		);
 		ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
 			if design::text_action(ui, &crate::i18n::translate("keybinds-row-reset")).clicked() {
-				*bindings.chord_mut(action) = Keybinds::default().chord(action).clone();
+				apply_binding(
+					ui,
+					bindings,
+					action,
+					Keybinds::default().chord(action).clone(),
+				);
 				if *capturing == Some(action) {
 					*capturing = None;
 				}
-				ui.data_mut(|data| {
-					data.remove_temp::<ConflictNotice>(egui::Id::unique("keybind_conflict"));
-				});
 			}
 			if shortcut_button(ui, bindings.chord(action), active, blink_factor).clicked() {
 				*capturing = Some(action);
@@ -784,6 +795,22 @@ mod tests {
 		assert_eq!(key_name_to_egui("PageDown"), Some(Key::PageDown));
 		assert_eq!(key_name(Key::F13), Some("F13"));
 		assert_eq!(key_name_to_egui("F24"), Some(Key::F24));
+	}
+
+	#[test]
+	fn reset_rejects_a_default_chord_now_owned_by_another_action() {
+		let mut bindings = Keybinds::default();
+		let action = KeybindAction::ToggleMute;
+		let reassigned = KeybindAction::ToggleDeafen;
+		let old_default = bindings.chord(action).clone();
+		let replacement = KeyChord::new("F11", 0);
+		*bindings.chord_mut(action) = replacement.clone();
+		*bindings.chord_mut(reassigned) = old_default.clone();
+		assert_eq!(
+			binding_conflict(&bindings, action, &old_default),
+			Some(reassigned)
+		);
+		assert_eq!(bindings.chord(action), &replacement);
 	}
 
 	#[test]

@@ -2138,7 +2138,7 @@ mod tests {
 				}]);
 			}
 			assert!(
-				matches!(video.command, Some(crate::video::VideoCommand::Play(ref a, _)) if *a == clip)
+				matches!(video.command, Some(crate::video::VideoCommand::Play(ref a, _)) if **a == clip)
 			);
 		}
 	}

@@ -70,6 +70,7 @@ pub struct HistoryNavigation {
 	previous: Option<NavigationMetadata>,
 	back: Option<ReturnWindow>,
 	provisional: bool,
+	refreshing_anchor: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -95,10 +96,16 @@ impl HistoryNavigation {
 		self.target = None;
 		self.previous = None;
 		self.provisional = false;
+		self.refreshing_anchor = false;
 	}
 
 	fn start(&mut self, channel: Id, request: u64, target: Id) {
 		self.target = Some((channel, request, target));
+		self.refreshing_anchor = false;
+	}
+
+	pub(crate) fn mark_anchor_refresh(&mut self) {
+		self.refreshing_anchor = true;
 	}
 
 	pub(crate) fn target(&self, channel: Id, request: u64) -> Option<Id> {
@@ -269,11 +276,25 @@ impl State {
 		let Some(previous) = self.history_navigation.previous.take() else {
 			return false;
 		};
+		let refreshing = self.history_navigation.refreshing_anchor;
 		self.history_navigation.clear();
 		self.history_pending = false;
 		self.request = self.request.wrapping_add(1);
 		self.timeline.cancel_page();
 		self.restore_navigation_metadata(previous);
+		if refreshing && let Some(channel) = self.selected {
+			self.record_history_failure(
+				channel,
+				if failure == crate::auth::Failure::Capacity {
+					crate::auth::Failure::Busy
+				} else {
+					failure
+				},
+			);
+			self.status = "Could not refresh history; your reading position was kept";
+			self.revision += 1;
+			return true;
+		}
 		self.status = match failure {
 			crate::auth::Failure::Forbidden => {
 				"Original message is unavailable with the current permissions; your reading position was kept"
@@ -305,17 +326,41 @@ impl State {
 		let Some(target) = self.history_navigation.target(channel, request) else {
 			return Ok(());
 		};
+		if self.history_navigation.refreshing_anchor && provisional {
+			return Err("Waiting for refreshed history");
+		}
 		if !messages
 			.iter()
 			.any(|message| message.id == target && message.channel == channel)
 			|| self.timeline.is_deleted(target)
 		{
+			if self.history_navigation.refreshing_anchor {
+				self.fail_history_navigation(crate::auth::Failure::ProtocolAt(
+					"history-anchor-missing",
+				));
+				return Err("Refresh did not return the reading anchor");
+			}
 			if self.fail_history_navigation(crate::auth::Failure::Protocol) {
 				self.status = "Original message was not returned; your reading position was kept";
 			}
 			return Err("Original message was not returned");
 		}
 		let ids: Vec<_> = messages.iter().map(|message| message.id).collect();
+		if self.history_navigation.refreshing_anchor {
+			// Don't stage an offline cache swap or overwrite the existing Back stack for a refresh.
+			match self.timeline.history_range(&ids) {
+				Ok(fresh) => self.timeline = fresh,
+				Err(error) => {
+					self.fail_history_navigation(crate::auth::Failure::Protocol);
+					return Err(error);
+				}
+			}
+			self.history_navigation.previous = None;
+			self.history_targeted = true;
+			self.search_target = Some(target);
+			self.restore_scroll = true;
+			return Ok(());
+		}
 		if self.history_navigation.provisional {
 			let result = self
 				.history_navigation
@@ -821,6 +866,30 @@ mod tests {
 			generation: state.generation,
 			event,
 		});
+	}
+
+	#[test]
+	fn anchored_reload_failure_keeps_history_and_reports_a_history_error() {
+		let mut state = state();
+		let channel = Id(1);
+		let anchor = Id(100);
+		let Some(Command::HistoryAround { request, .. }) =
+			state.refresh_history_at(channel, anchor)
+		else {
+			panic!("retained anchor must be refreshable");
+		};
+		apply(
+			&mut state,
+			Event::HistoryFailed {
+				channel,
+				request,
+				failure: Failure::Network,
+			},
+		);
+		assert!(!state.history_pending);
+		assert_eq!(state.history_failure(), Some(Failure::Network));
+		assert!(state.timeline.get(anchor).is_some());
+		assert!(!state.status.contains("View original"));
 	}
 
 	#[test]
@@ -3016,6 +3085,24 @@ mod tests {
 		state.select(Id(1));
 		assert_eq!(state.reply, None);
 		assert_eq!(state.parked_replies.len(), 1);
+	}
+
+	#[test]
+	fn explicitly_sending_a_gif_link_preserves_the_reply_draft() {
+		let mut state = state();
+		let channel = state.selected.unwrap();
+		let reply = Reply::to(Id(100));
+		state.reply = Some(reply);
+		state.drafts.insert(channel, "Reply in progress".into());
+		let gif = "https://example.invalid/animation.gif";
+		assert!(matches!(state.prepare_text_send(gif), Some(Command::Send {
+			content, reply: None, channel: destination, ..
+		}) if destination == channel && content == gif));
+		assert_eq!(state.reply, Some(reply));
+		assert_eq!(
+			state.drafts.get(&channel).map(String::as_str),
+			Some("Reply in progress")
+		);
 	}
 
 	#[test]

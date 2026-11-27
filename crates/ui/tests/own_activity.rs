@@ -28,6 +28,7 @@ fn own_profile_and_server_member_render_local_updates_and_clear_without_changing
 				started_at: None,
 			};
 			state.members = Some(model::MemberList {
+				server_member_count: None,
 				missing_identity: vec![],
 				guild: Some(model::Id(10)),
 				channel: model::Id(20),

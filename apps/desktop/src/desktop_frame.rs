@@ -797,7 +797,7 @@ impl Desktop {
 					player.active = Some((message.channel, message.id, attachment.clone()));
 					player.state = ui::VideoState::Loading;
 					player.seen = true;
-					player.command = Some(ui::VideoCommand::Play(attachment, None));
+					player.command = Some(ui::VideoCommand::Play(Box::new(attachment), None));
 				} else if player.state == ui::VideoState::Playing && player.position > 1.0 {
 					if pause {
 						player.command = Some(ui::VideoCommand::Pause(true));
@@ -1475,6 +1475,7 @@ impl Desktop {
 			self.queue_cache_for(model::Id(0), cache::Operation::SaveAppearance(preference));
 		}
 		self.sync_gif_cache();
+		self.sync_sound_favorites_cache();
 		if !self.fixture_only
 			&& !self.state.demo
 			&& let Some(user) = &self.state.user

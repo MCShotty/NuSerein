@@ -793,6 +793,20 @@ fixtures and offline checks are not service-compatibility evidence.
 
 ## Soundboard — October 6, 2026
 
+Account sound preferences are **unofficial, implemented in source, and live-unverified**.
+The [pinned community protobuf schema](https://github.com/discord-userdoccers/discord-protos/tree/71b702ac90b90d6d75dbd29d67b209b6b2ba7c94/discord_protos/discord_users/v1) maps
+Frecency type 2 to `favorite_soundboard_sounds` (8), with packed or unpacked fixed64 sound IDs
+in fields 1 and 2. Preloaded type 1 maps `guilds` (3) to the guild map at 1, whose selected
+`GuildSettings.join_sound` (6) contains destination preference `sound_id` (1) and source
+`guild_id` (2). The [archived public Canary bundle (2026-11-26)](https://github.com/Discord-Datamining/Discord-Datamining/blob/9bb600ec1812e29aeb46c0165d99ecc5f3019124/current.js),
+module `984813`, reads an explicit server override first and falls back to guild-map key `0`.
+Modules `458976` and `594061` use the same map field for updates. The global editor is account
+scoped and checks Nitro without a call; settings in Soundboard remain scoped to the joined call.
+One explicit change uses a fresh bounded GET, then only the touched top-level protobuf subtree
+in a conditional PATCH with `required_data_version`, then exact readback. There is no uncertain
+write replay, local favorite upload, or automatic join effect. Module `572044` shows that the
+archived client has a separate trigger at RTC connect; saving settings is not playback proof.
+
 Server voice channels can list, play and hear soundboard sounds. The catalog uses the
 documented [`GET /soundboard-default-sounds` and `GET /guilds/{guild.id}/soundboard-sounds`](https://docs.discord.com/developers/resources/soundboard)
 routes, and playing uses `POST /channels/{channel.id}/send-soundboard-sound` with `sound_id`
@@ -3754,3 +3768,34 @@ is limited to three anonymous requests and 192 KiB of metadata per response, is 
 the player, and feeds only a validated media origin to the existing bounded range reader.
 Authentication walls, missing media and unsupported streams retain Open original. A Reddit
 fallback file need not contain the separate adaptive audio track.
+
+### Ordinary member roster coverage
+
+The [public client snapshot](https://github.com/Discord-Datamining/Discord-Datamining/blob/9bb600ec1812e29aeb46c0165d99ecc5f3019124/current.js)
+uses `GUILD_MEMBER_LIST_UPDATE.member_count` as a server count. The [normal-user client reference](https://github.com/dolfies/discord.py-self/blob/master/docs/migrating_from_dpy.rst#members)
+reports that the ordinary sidebar can contain the full roster for small guilds, but large guilds
+can omit offline members. NuSerein marks a roster complete only when the authorized `everyone`
+channel and wire list agree, one fresh response covers all reported positions, grouping agrees
+with the count, and the current window contains every unique member with no holes. An explicit
+load can request the existing two adjacent ranges (200 positions including group headings).
+No additional member store, background scan, or privileged full-list request is used. Native and
+live behavior remain unverified.
+
+### Sidebar Boost Goal (Canary 681713)
+
+This is an **unofficial, archive-version-specific** display rule, not a public Discord API.
+The [renderer](https://github.com/Wumpus-Central/discrapper-canary/blob/b6cf85b10e6042bdf6b5275ee28cf08004a93a11/chunks/616740.js#L597-L710)
+projects the guild's `premium_subscription_count`. The
+[perk table](https://github.com/Wumpus-Central/discrapper-canary/blob/b6cf85b10e6042bdf6b5275ee28cf08004a93a11/chunks/568065.js#L38-L49)
+contributes 19; add 14 without `PREMIUM_TIER_3_OVERRIDE` and 3 when the guild's
+`2025-08_portkey_enabled` rollout is on. At or above the target the bar fills and the
+count is displayed without a denominator. No purchase, boost slot, or allocation route is used.
+
+The two guild flags are presentation-only. NuSerein projects the one rollout from already
+received READY data (512 KiB table, 32 KiB target entry, bounded records/rules), recognizing
+explicit overrides and ordered immutable ID/hash-filtered or unfiltered populations. It does
+not retain the table, request experiments, send exposures, run debug overrides, or infer
+eligibility from mere presence of `GAME_SERVERS`. Missing, malformed, holdout-dependent or
+unsupported data leaves the target unknown; a newly joined guild without READY context shows
+only the known count. The sidebar respects the server visibility setting. Freshness and the
+scheduled test suite remain unverified against Discord on this patch.

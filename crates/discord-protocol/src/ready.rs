@@ -32,6 +32,8 @@ pub struct Envelope<'a> {
 	#[serde(default = "empty_array", borrow)]
 	guilds: &'a RawValue,
 	#[serde(default, borrow)]
+	guild_experiments: Option<&'a RawValue>,
+	#[serde(default, borrow)]
 	merged_members: Option<&'a RawValue>,
 	#[serde(default, borrow)]
 	presences: Option<&'a RawValue>,
@@ -65,7 +67,16 @@ impl Envelope<'_> {
 	}
 	pub fn navigation(self) -> Result<(Ready, Warnings), DecodeError> {
 		let mut warnings = Warnings::default();
-		let guilds: Guilds = crate::decode_gateway(self.guilds.get().as_bytes())?;
+		let mut guilds: Guilds = crate::decode_gateway(self.guilds.get().as_bytes())?;
+		let portkey = self
+			.guild_experiments
+			.and_then(crate::boost_goal::Portkey::parse);
+		for guild in guilds.items.iter_mut().take(4096) {
+			guild.boost_game_servers = portkey
+				.as_ref()
+				.and_then(|config| config.enabled(guild.id))
+				.map_or(model::Patch::Null, model::Patch::Value);
+		}
 		warnings.emojis = guilds.emojis;
 		warnings.stickers = guilds.stickers;
 		let skipped = guilds.skipped
@@ -264,6 +275,20 @@ fn checked_presences(raw: Option<&RawValue>, warning: &mut bool) -> Option<Box<R
 struct Guild<'a> {
 	#[serde(default, deserialize_with = "crate::server_access::incident_patch")]
 	incidents_data: model::Patch<model::server_access::Incident>,
+	#[serde(default, deserialize_with = "crate::sidebar_field")]
+	banner: model::Patch<String>,
+	#[serde(default, deserialize_with = "crate::sidebar_field")]
+	premium_subscription_count: model::Patch<u32>,
+	#[serde(default, deserialize_with = "crate::sidebar_field")]
+	premium_tier: model::Patch<u8>,
+	#[serde(default, deserialize_with = "crate::sidebar_field")]
+	premium_progress_bar_enabled: model::Patch<bool>,
+	#[serde(
+		default,
+		rename = "features",
+		deserialize_with = "crate::boost_goal::tier_override"
+	)]
+	boost_tier_override: model::Patch<bool>,
 	#[serde(default)]
 	default_message_notifications: model::Patch<u8>,
 	#[serde(default, borrow)]
@@ -332,6 +357,12 @@ impl<'de> Deserialize<'de> for Guilds {
 					}
 					out.items.push(crate::GuildDto {
 						incidents_data: guild.incidents_data,
+						banner: guild.banner,
+						premium_subscription_count: guild.premium_subscription_count,
+						premium_tier: guild.premium_tier,
+						premium_progress_bar_enabled: guild.premium_progress_bar_enabled,
+						boost_tier_override: guild.boost_tier_override,
+						boost_game_servers: model::Patch::Absent,
 						default_message_notifications: guild.default_message_notifications,
 						id: guild.id,
 						emojis: optional(guild.emojis, &mut unavailable),

@@ -259,35 +259,9 @@ impl ScreenUi {
 		))
 		.width(460.0)
 		.show(ctx, |d| {
-			d.scroll(260.0, |ui| self.body(ui, state));
-			d.content(|ui| {
-				if let Some(source) = self.sources.iter().find(|s| Some(s.id) == self.selected) {
-					let audio = if self.audio {
-						audio_control(self.selected).0
-					} else {
-						"share-audio-off"
-					};
-					let kind = match source.id.audio_scope() {
-						AudioScope::Application => "screen-source-kind-window",
-						AudioScope::System => "screen-source-kind-screen",
-						AudioScope::Pending => "screen-body-screen-or-window",
-					};
-					let summary = format!(
-						"{}: {} · {}",
-						crate::i18n::translate(kind),
-						source.name,
-						crate::i18n::translate(audio)
-					);
-					ui.add(egui::Label::new(&summary).truncate())
-						.on_hover_text(summary);
-				} else {
-					ui.label(crate::i18n::translate(if self.source_lost {
-						"share-source-lost"
-					} else {
-						"screen-source-status-choose"
-					}));
-				}
-			});
+			// Keep the source and audio confirmation outside the scroller, above the actions.
+			d.scroll(294.0, |ui| self.body(ui, state));
+			d.content(|ui| self.confirmation(ui));
 			d.footer(|ui| {
 				let allowed = !state.demo
 					&& self.supported
@@ -316,6 +290,40 @@ impl ScreenUi {
 		if cancel || share {
 			self.open = false;
 		}
+	}
+
+	fn confirmation(&self, ui: &mut egui::Ui) {
+		let Some(source) = self.sources.iter().find(|s| Some(s.id) == self.selected) else {
+			ui.label(crate::i18n::translate(if self.source_lost {
+				"share-source-lost"
+			} else {
+				"screen-source-status-choose"
+			}));
+			return;
+		};
+		let (kind, capture_audio) = match source.id.audio_scope() {
+			AudioScope::Application => (
+				"screen-source-kind-window",
+				"screen-confirmation-audio-application",
+			),
+			AudioScope::System => (
+				"screen-source-kind-screen",
+				"screen-confirmation-audio-system",
+			),
+			AudioScope::Pending => (
+				"screen-body-screen-or-window",
+				"screen-confirmation-audio-pending",
+			),
+		};
+		let source_label = format!("{}: {}", crate::i18n::translate(kind), source.name);
+		ui.add(egui::Label::new(&source_label).truncate())
+			.on_hover_text(&source_label);
+		let audio = if self.audio {
+			capture_audio
+		} else {
+			"share-audio-off"
+		};
+		ui.add(egui::Label::new(crate::i18n::translate(audio)).wrap());
 	}
 
 	/// Source list, then local output presets and capture options.
@@ -587,12 +595,38 @@ impl ScreenUi {
 			});
 			let response = response.on_hover_text(&source_name);
 			if response.clicked() {
+				if clears_audio_opt_in(
+					self.selected.map(|id| id.audio_scope()),
+					source.id.audio_scope(),
+				) {
+					self.audio = false;
+				}
 				self.selected = Some(source.id);
 				self.source_lost = false;
 			}
 			ui.add_space(4.0);
 		}
 	}
+}
+
+fn clears_audio_opt_in(previous: Option<AudioScope>, next: AudioScope) -> bool {
+	matches!(next, AudioScope::System) && !matches!(previous, Some(AudioScope::System))
+}
+
+#[test]
+fn screen_audio_opt_in_does_not_carry_to_system_audio() {
+	assert!(clears_audio_opt_in(
+		Some(AudioScope::Application),
+		AudioScope::System
+	));
+	assert!(!clears_audio_opt_in(
+		Some(AudioScope::System),
+		AudioScope::Application
+	));
+	assert!(!clears_audio_opt_in(
+		Some(AudioScope::System),
+		AudioScope::System
+	));
 }
 
 /// Compact segmented choice used by the quality and frame-rate rows.
@@ -739,6 +773,69 @@ mod tests {
 				assert_eq!(picker.selected, Some(SourceId::Window(2)));
 			}
 		}
+	}
+
+	#[test]
+	fn compact_capture_confirmation_keeps_audio_visible_and_escape_does_not_capture() {
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		ctx.set_pixels_per_point(2.0);
+		let state = test_support::voice_demo_state();
+		let id = SourceId::Window(17);
+		let mut picker = ScreenUi {
+			open: true,
+			selected: Some(id),
+			sources: vec![Source {
+				id,
+				name: "天気と共有のテスト🎞".repeat(24),
+				dimensions: Some((1920, 1080)),
+			}],
+			supported: true,
+			audio: true,
+			..Default::default()
+		};
+		let audio = crate::i18n::translate("screen-confirmation-audio-application");
+		let share = crate::i18n::translate("screen-show-share-screen");
+		let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 420.0));
+		for pass in 0..4 {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(viewport),
+					focused: true,
+					events: if pass == 3 {
+						vec![egui::Event::Key {
+							key: egui::Key::Escape,
+							physical_key: None,
+							pressed: true,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+						}]
+					} else {
+						vec![]
+					},
+					..Default::default()
+				},
+				|ui| picker.show(ui.ctx(), &state),
+			);
+			assert!(picker.request.is_none());
+			if pass == 2 {
+				let visible = |label: &str| {
+					output.shapes.iter().find_map(|shape| {
+						let mut text = Vec::new();
+						crate::test_ui::visual_text(&shape.shape, &mut text);
+						text.into_iter().find_map(|(s, rect)| {
+							(s == label && shape.clip_rect.intersect(viewport).contains_rect(rect))
+								.then_some(rect)
+						})
+					})
+				};
+				let audio_rect = visible(&audio).expect("audio scope must be visible in full");
+				let share_rect = visible(&share).expect("share action must stay on-screen");
+				assert!(audio_rect.bottom() <= share_rect.top());
+			}
+			output.drop_without_applying_deltas();
+		}
+		assert!(!picker.open);
 	}
 
 	#[test]

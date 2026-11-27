@@ -100,6 +100,7 @@ pub fn demo_members(
 		}
 	}
 	model::MemberList {
+		server_member_count: None,
 		missing_identity: vec![],
 		guild,
 		channel,

@@ -15,6 +15,70 @@ const BITS: u128 = p::VIEW_CHANNEL
 	| p::USE_VAD;
 
 #[test]
+fn public_roster_requires_live_slots_unique_members_and_current_access() {
+	let mut state = state();
+	let channel = Id(20);
+	state.gateway_connected = true;
+	state.freshness = Freshness::Fresh;
+	state.request_members().unwrap();
+	let mut list = state.members.clone().unwrap();
+	list.freshness = Freshness::Fresh;
+	list.server_member_count = Some(model::ServerRosterEvidence {
+		count: 2,
+		full_sync: true,
+	});
+	list.groups = vec![("online".into(), 1), ("offline".into(), 1)];
+	list.total = 4;
+	list.slots = vec![
+		Some(model::MemberSlot::Group("online".into())),
+		Some(model::MemberSlot::Person(cached_person(7, "One"))),
+		Some(model::MemberSlot::Group("offline".into())),
+		Some(model::MemberSlot::Person(cached_person(8, "Two"))),
+	];
+	state.members = Some(list.clone());
+	assert_eq!(state.complete_server_roster(channel), Some(2));
+	state.members.as_mut().unwrap().slots[3] = list.slots[1].clone();
+	assert_eq!(state.complete_server_roster(channel), None);
+	state.members.as_mut().unwrap().slots[3] = None;
+	assert_eq!(state.complete_server_roster(channel), None);
+	state.members = Some(list);
+	state.gateway_connected = false;
+	assert_eq!(state.complete_server_roster(channel), None);
+	state.gateway_connected = true;
+	state.permissions.channels.remove(&channel);
+	assert_eq!(state.complete_server_roster(channel), None);
+}
+
+#[test]
+fn public_roster_load_reuses_exactly_two_ranges_and_does_not_admit_restricted_channels() {
+	let mut state = state();
+	let channel = Id(20);
+	state.gateway_connected = true;
+	state.freshness = Freshness::Fresh;
+	state.request_members().unwrap();
+	let list = state.members.as_mut().unwrap();
+	list.freshness = Freshness::Fresh;
+	list.total = 151;
+	list.server_member_count = Some(model::ServerRosterEvidence {
+		count: 150,
+		full_sync: false,
+	});
+	assert!(state.can_load_full_server_roster(channel));
+	assert!(state.load_full_server_roster(Id(21)).is_none());
+	let command = state.load_full_server_roster(channel).unwrap();
+	assert!(matches!(&command, Command::Members {
+		channel: Some(Id(20)), ranges, list_id: Some(id), thread: false, ..
+	} if ranges.as_slice() == [[0,99], [100,199]] && id == "everyone"));
+	assert!(state.focus_member_ranges(145, 149).is_none());
+	assert!(state.load_full_server_roster(channel).is_none());
+	state.command_rejected(command);
+	assert_eq!(state.members.as_ref().unwrap().freshness, Freshness::Fresh);
+	assert!(state.full_roster_wait(channel).unwrap().is_zero());
+	assert!(state.load_full_server_roster(channel).is_some());
+	assert_eq!(state.complete_server_roster(channel), None);
+}
+
+#[test]
 fn complete_member_snapshot_clears_loaded_message_nickname_and_roles() {
 	let mut state = state();
 	let mut old = message(101, Id(20));
@@ -2511,6 +2575,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 		apply(&mut state, Event::ChannelCreated(channel(20, 0, None)));
 		assert_eq!(state.members.as_ref().unwrap().request, first);
 		let mut loaded = model::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
@@ -2659,6 +2724,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 		assert_eq!(state.message_author_color(&chat), None);
 		chat.author.webhook = false;
 		state.members = Some(crate::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
@@ -2680,6 +2746,7 @@ fn member_requests_survive_guild_hydration_and_follow_current_permissions() {
 			"current empty roles remove historical color; omitted wire fields are preserved before projection"
 		);
 		state.members = Some(crate::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),

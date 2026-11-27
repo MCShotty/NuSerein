@@ -366,6 +366,7 @@ pub(super) struct Editor {
 	community: crate::community_admin::CommunityUi,
 	access: crate::server_access::AccessUi,
 	pub events_requested: Option<Id>,
+	access_safety_detour: bool,
 	automod: crate::server_automod::AutoModUi,
 	moderation: crate::server_moderation::ModerationUi,
 	scope: Option<(u64, Id)>,
@@ -1207,12 +1208,16 @@ impl Editor {
 		let settings_bar = manages_guild
 			&& (self.dirty() || self.refresh_conflict || state.server_settings.saving);
 		let roles_bar = self.page == Page::Roles && self.roles.has_changes();
+		let mut compact_navigation = false;
 		let close = dialog::SettingsShell::new("server-settings")
 			.save_bar(settings_bar || roles_bar)
 			.show(ctx, |ui, region| match region {
 				dialog::ShellRegion::Navigation { compact } => {
+					compact_navigation = compact;
 					self.navigation(ui, state, guild, compact, avatars, commands);
 				}
+				dialog::ShellRegion::Body
+					if compact_navigation && !self.navigation_search.trim().is_empty() => {}
 				dialog::ShellRegion::SaveBar => {
 					if settings_bar {
 						dialog::save_bar_frame(ctx)
@@ -1452,6 +1457,15 @@ impl Editor {
 		}
 		if let Some(error) = self.navigation_error {
 			dialog::notice(ui, dialog::Level::Warning, error);
+			if compact
+				&& !self.navigation_search.trim().is_empty()
+				&& design::text_action(ui, "server-settings-back-to-current-form").clicked()
+			{
+				self.navigation_search.clear();
+				self.navigation_cursor = 0;
+				self.navigation_error = None;
+				search.surrender_focus();
+			}
 		}
 		if !compact && can_delete {
 			ui.add_space(10.0);
@@ -1801,6 +1815,21 @@ impl Editor {
 					},
 					commands,
 				);
+				if self.page == Page::Access
+					&& std::mem::take(&mut self.access.open_safety_requirements)
+					&& !self.shared_changes()
+					&& !self.write_pending(state)
+					&& !self.access.overlay_open()
+				{
+					self.access_safety_detour = true;
+					self.set_page(Page::Safety);
+					self.navigation_search.clear();
+					if self.draft.is_none()
+						&& let Some(command) = state.load_server_settings(guild)
+					{
+						commands.push(command);
+					}
+				}
 				if self.page == Page::Applications
 					&& let Some(channel) = self.access.opened_channel.take()
 				{
@@ -1859,6 +1888,14 @@ impl Editor {
 				return;
 			}
 			Page::Moderation => {
+				if Page::Members.allowed(state, guild)
+					&& design::text_action(ui, "moderation-search-server-members").clicked()
+					&& self.select_page(Page::Members, state)
+				{
+					state.retire_server_admin_read();
+					commands.extend(self.admin.load(state, guild, true));
+					return;
+				}
 				self.moderation.show(ui, state, guild, commands);
 				return;
 			}
@@ -1980,6 +2017,27 @@ impl Editor {
 			return;
 		}
 		if self.page == Page::Safety {
+			if self.access_safety_detour {
+				design::hint(ui, "access-prerequisites-draft-kept");
+				if ui
+					.add_enabled_ui(
+						!self.shared_changes()
+							&& !self.write_pending(state)
+							&& !self.access.overlay_open(),
+						|ui| design::text_action(ui, "access-prerequisites-back"),
+					)
+					.inner
+					.clicked()
+				{
+					self.access_safety_detour = false;
+					self.set_page(Page::Access);
+					commands.extend(state.request_server_admin(
+						guild,
+						model::server_admin::Action::Access(model::server_access::Action::Settings),
+					));
+					return;
+				}
+			}
 			self.access.show(
 				ui,
 				state,
@@ -3777,6 +3835,66 @@ mod navigation_tests {
 		}
 		assert_eq!(editor.page, Page::Integrations);
 		assert!(editor.navigation_search.is_empty());
+	}
+
+	#[test]
+	fn moderation_links_to_member_search_only_with_roster_access() {
+		let (mut state, guild, mut editor) = fixture();
+		editor.page = Page::Moderation;
+		let ctx = egui::Context::default();
+		design::apply(&ctx);
+		let label = crate::i18n::translate("moderation-search-server-members");
+		let selected = state.selected;
+		let mut commands = Vec::new();
+		let render =
+			|state: &mut State, editor: &mut Editor, commands: &mut Vec<Command>, events| {
+				ctx.run_ui(
+					egui::RawInput {
+						screen_rect: Some(egui::Rect::from_min_size(
+							egui::Pos2::ZERO,
+							egui::vec2(560.0, 580.0),
+						)),
+						events,
+						..Default::default()
+					},
+					|ui| {
+						editor.page_body(
+							ui,
+							state,
+							guild,
+							&mut Avatars::default(),
+							&mut Default::default(),
+							commands,
+						)
+					},
+				)
+			};
+		let output = render(&mut state, &mut editor, &mut commands, vec![]);
+		let pos = text_position(&output, &label);
+		output.drop_without_applying_deltas();
+		assert!(commands.is_empty());
+		render(&mut state, &mut editor, &mut commands, click(pos)).drop_without_applying_deltas();
+		assert_eq!(editor.page, Page::Members);
+		assert_eq!(state.selected, selected);
+		assert!(
+			matches!(commands.as_slice(), [Command::ServerAdmin { guild: target, action, .. }]
+			if *target == guild && matches!(action.as_ref(), model::server_admin::Action::LoadMembers(_)))
+		);
+
+		restrict_settings_to(&mut state, guild, model::permissions::BAN_MEMBERS);
+		state.retire_server_admin_read();
+		editor.page = Page::Moderation;
+		assert!(Page::Moderation.allowed(&state, guild));
+		assert!(!Page::Members.allowed(&state, guild));
+		commands.clear();
+		let output = render(&mut state, &mut editor, &mut commands, vec![]);
+		let mut text = Vec::new();
+		for shape in &output.shapes {
+			crate::test_ui::logical_text(&shape.shape, &mut text);
+		}
+		assert!(!text.iter().any(|(s, _)| s == &label));
+		assert!(commands.is_empty());
+		output.drop_without_applying_deltas();
 	}
 
 	#[test]

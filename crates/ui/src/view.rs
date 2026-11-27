@@ -301,6 +301,15 @@ impl MessagingUi {
 		{
 			self.extensions.report_error(error);
 		}
+		if self
+			.extensions
+			.take_workspace_discard_notice(state.generation)
+		{
+			self.toasts.push(
+				design::Level::Info,
+				crate::i18n::translate("extension-result-discarded"),
+			);
+		}
 		self.keybinds_shortcut(&ctx);
 		self.theme_preview_navigation(ui);
 		let settings_open = self.settings.open
@@ -752,21 +761,43 @@ impl MessagingUi {
 			self.browse_channels.focus_search();
 		}
 		self.search.sync(&ctx, state, &mut commands);
-		let search_open = !navigation_page
+		let member_destination = self.guild_member_view_channel(state);
+		let complete_roster =
+			member_destination.and_then(|channel| state.complete_server_roster(channel));
+		if member_destination.is_none() {
+			self.guild_members_view = None;
+		}
+		let search_open = member_destination.is_none()
+			&& !navigation_page
 			&& !browsing_channels
 			&& self.search.results_visible(state)
 			&& state.selected.is_some()
 			&& !selected_voice;
-		let show_members = !navigation_page
+		let docked_mod_view = self.mod_view.active()
+			&& !navigation_page
+			&& !search_open
+			&& !browsing_channels
+			&& !selected_voice
+			&& ui.available_width() >= 690.0;
+		if docked_mod_view
+			&& let Some(intent) = self.mod_view.show_in(Some(ui), &ctx, state, &mut commands)
+		{
+			self.apply_mod_view_intent(intent, state, &mut commands);
+		}
+		let show_members = !docked_mod_view
+			&& !navigation_page
 			&& !browsing_channels
 			&& !selected_voice
 			&& !search_open
 			&& state.selected.is_some()
-			&& if wide_members {
-				*self.members_preference(state)
-			} else {
-				self.members_narrow_open
-			};
+			&& (member_destination.is_some()
+				|| if wide_members {
+					*self.members_preference(state)
+				} else {
+					self.members_narrow_open
+				});
+		let search_full = search_open && ui.available_width() < 540.0;
+		self.search.workspace_full = search_full;
 		if search_open {
 			self.channel_header(
 				ui,
@@ -777,10 +808,11 @@ impl MessagingUi {
 				true,
 				&mut commands,
 			);
-			let width = if wide_members {
-				search::PANE_WIDTH.min(ui.available_width() * 0.45)
+			let workspace = ui.available_width().max(1.0);
+			let width = if workspace < 540.0 {
+				workspace
 			} else {
-				(ui.available_width() * 0.6).max(240.0)
+				search::PANE_WIDTH.min(workspace * 0.5).max(260.0)
 			};
 			egui::Panel::right("search-pane")
 				.resizable(false)
@@ -839,21 +871,53 @@ impl MessagingUi {
 							}),
 					)
 					.show(ui, |ui| {
+						if let Some(channel) = member_destination {
+							ui.horizontal_wrapped(|ui| {
+								ui.strong(language.text(if complete_roster.is_some() {
+									"sidebar-server-roster"
+								} else {
+									"sidebar-channel-members"
+								}));
+								if design::text_action(ui, "sidebar-members-close").clicked() {
+									self.guild_members_view = None;
+								}
+							});
+							ui.small(Self::member_view_summary(state, channel, complete_roster));
+							Self::load_full_roster_action(ui, state, channel, &mut commands);
+							ui.separator();
+						}
 						self.member_rows(ui, state, &mut commands);
 					});
 			} else {
-				let response = dialog::Dialog::new("members-narrow", language.text("members"))
-					.subtitle(language.text("members-description"))
-					.width(360.0)
-					.show(&ctx, |d| {
-						let max = (d.available_height() - 180.0).clamp(120.0, 620.0);
-						d.content(|ui| {
-							ui.set_max_height(max);
-							self.member_rows(ui, state, &mut commands);
-						});
+				let response = dialog::Dialog::new(
+					("members-narrow", self.guild_members_view),
+					language.text(match member_destination {
+						Some(_) if complete_roster.is_some() => "sidebar-server-roster",
+						Some(_) => "sidebar-channel-members",
+						None => "members",
+					}),
+				)
+				.subtitle(member_destination.map_or_else(
+					|| language.text("members-description"),
+					|channel| Self::member_view_summary(state, channel, complete_roster),
+				))
+				.width(360.0)
+				.show(&ctx, |d| {
+					let max = (d.available_height() - 180.0).clamp(120.0, 620.0);
+					d.content(|ui| {
+						ui.set_max_height(max);
+						if let Some(channel) = member_destination {
+							Self::load_full_roster_action(ui, state, channel, &mut commands);
+						}
+						self.member_rows(ui, state, &mut commands);
 					});
+				});
 				if response.close {
-					self.members_narrow_open = false;
+					if member_destination.is_some() {
+						self.guild_members_view = None;
+					} else {
+						self.members_narrow_open = false;
+					}
 				}
 			}
 		} else if state.members.is_some() {
@@ -871,7 +935,7 @@ impl MessagingUi {
 					.inner_margin(0),
 			)
 			.show(ui, |ui| {
-				if navigation_page {
+				if navigation_page || search_full {
 					return;
 				}
 				if browsing_channels {
@@ -1938,11 +2002,76 @@ impl MessagingUi {
 			) {
 			commands.push(command);
 		}
+		if let Some((generation, guild)) = self.boost_overview {
+			if generation == state.generation
+				&& self.guild == Some(guild)
+				&& let Some(server) = state.guild(guild)
+			{
+				let modal = dialog::Dialog::new(
+					("server-boosts", generation, guild),
+					language.text("sidebar-server-boosts"),
+				)
+				.subtitle(server.name.clone())
+				.width(400.0)
+				.show(&ctx, |d| {
+					d.content(|ui| {
+						let goal = state.server_boost_goal(guild);
+						if let Some(goal) = goal {
+							let summary = crate::panels::boost_goal_label(goal);
+							ui.heading(&summary);
+							crate::panels::boost_goal_meter(ui, goal, &summary);
+						} else if let Some(count) = state.server_boost_count(guild) {
+							ui.heading(crate::panels::boost_count_label(state, count));
+						} else {
+							design::hint(ui, "sidebar-boost-unknown");
+						}
+						if let Some(tier) = state.server_boost_tier(guild) {
+							ui.label(crate::i18n::translate_args(
+								"sidebar-boost-tier",
+								&[("tier", &tier.to_string())],
+							));
+							if let Some((next, required)) = next_boost_level(tier) {
+								ui.label(crate::i18n::translate_args(
+									"sidebar-boost-level-requirement",
+									&[
+										("tier", &next.to_string()),
+										("count", &required.to_string()),
+									],
+								));
+							} else if tier == 3 {
+								design::hint(ui, "sidebar-boost-top-tier");
+							}
+						}
+						if goal.is_none() {
+							design::hint(
+								ui,
+								if !state.gateway_connected {
+									"sidebar-boost-goal-offline"
+								} else if state.freshness != model::Freshness::Fresh {
+									"sidebar-boost-goal-syncing"
+								} else {
+									"sidebar-boost-goal-unknown"
+								},
+							);
+						}
+						design::hint(ui, "sidebar-boost-level-allocation");
+					});
+					d.footer(|ui| {
+						dialog::action(ui, "server-events-done", dialog::Action::Neutral).clicked()
+					})
+				});
+				if modal.close || modal.inner {
+					self.boost_overview = None;
+				}
+			} else {
+				self.boost_overview = None;
+			}
+		}
 		if let Some(notice) = self.mod_view.take_notice() {
 			self.toasts
 				.push(design::Level::Warning, crate::i18n::translate(notice));
 		}
-		if let Some(intent) = self.mod_view.show(&ctx, state, &mut commands) {
+		if !docked_mod_view && let Some(intent) = self.mod_view.show(&ctx, state, &mut commands) {
 			self.apply_mod_view_intent(intent, state, &mut commands);
 			ctx.request_repaint();
 		}
@@ -1994,4 +2123,23 @@ impl MessagingUi {
 		self.retire_menu_paste(state);
 		commands
 	}
+}
+
+// Published level thresholds, not the Boost Goal or a remaining balance.
+fn next_boost_level(tier: u8) -> Option<(u8, u8)> {
+	match tier {
+		0 => Some((1, 2)),
+		1 => Some((2, 7)),
+		2 => Some((3, 14)),
+		_ => None,
+	}
+}
+
+#[cfg(test)]
+#[test]
+fn boost_tier_requirements_do_not_extrapolate_past_level_three() {
+	assert_eq!(
+		(0..=4).map(next_boost_level).collect::<Vec<_>>(),
+		[Some((1, 2)), Some((2, 7)), Some((3, 14)), None, None]
+	);
 }

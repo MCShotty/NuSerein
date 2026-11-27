@@ -352,7 +352,7 @@ impl Video {
 			VideoCommand::Stop => self.stop(),
 			VideoCommand::Play(attachment, post) => {
 				self.stop();
-				if let Err(error) = self.start(attachment, post, player.volume, runtime, ctx, demo)
+				if let Err(error) = self.start(*attachment, post, player.volume, runtime, ctx, demo)
 				{
 					player.state = VideoState::Failed(error);
 				}
