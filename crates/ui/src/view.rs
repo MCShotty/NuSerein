@@ -669,6 +669,13 @@ impl MessagingUi {
 		if let Some(guild) = self.server_menu.events_requested.take() {
 			self.community_ui.open_events(state, guild, &mut commands);
 		}
+		if let Some((generation, guild)) = self.server_menu.create_event_requested.take()
+			&& generation == state.generation
+			&& self.guild == Some(guild)
+		{
+			self.community_ui
+				.open_create_event(state, guild, &mut commands);
+		}
 		self.community_ui.show(&ctx, state, &mut commands);
 		if let Some(guild) = self.server_menu.browse_requested.take() {
 			self.browse_channels.open(state, guild);

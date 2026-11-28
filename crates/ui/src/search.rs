@@ -2018,9 +2018,14 @@ impl SearchUi {
 			font.size = (font.size - 1.0).max(12.0);
 		}
 		// The card senses clicks on its previous-frame rect so child widgets keep priority.
-		let card_id = ui.scope_id().with("card");
-		let previous = ui.data(|data| data.get_temp::<egui::Rect>(card_id));
-		let background = previous.map(|rect| ui.interact(rect, card_id, egui::Sense::click()));
+		let card_id = ui
+			.scope_id()
+			.with(("card", state.generation, hit.channel, hit.id));
+		let frame_nr = ui.ctx().cumulative_frame_nr();
+		let previous = ui.data(|data| data.get_temp::<(u64, egui::Rect)>(card_id));
+		let background = previous
+			.filter(|(seen, rect)| frame_nr.saturating_sub(*seen) <= 1 && ui.is_rect_visible(*rect))
+			.map(|(_, rect)| ui.interact(rect, card_id, egui::Sense::click()));
 		let jumpable = state.can_search() && hit.id.0 < u64::MAX;
 		let hot = background.as_ref().is_some_and(|response| {
 			ui.rect_contains_pointer(response.rect) || response.has_focus()
@@ -2037,9 +2042,6 @@ impl SearchUi {
 					),
 				)
 			});
-			if response.clicked() && jumpable {
-				*target = Some(hit.id);
-			}
 		}
 		let frame = egui::Frame::new()
 			.fill(if hot { colors.raised } else { colors.base })
@@ -2215,7 +2217,20 @@ impl SearchUi {
 					});
 				});
 			});
-		ui.data_mut(|data| data.insert_temp(card_id, frame.response.rect));
+		let current = frame.response.rect.intersect(ui.clip_rect());
+		if jumpable
+			&& let Some(response) = background
+			&& response.clicked()
+			&& (if response.clicked_by(egui::PointerButton::Primary) {
+				response
+					.interact_pointer_pos()
+					.is_some_and(|pos| current.contains(pos))
+			} else {
+				current.is_positive()
+			}) {
+			*target = Some(hit.id);
+		}
+		ui.data_mut(|data| data.insert_temp(card_id, (frame_nr, frame.response.rect)));
 	}
 }
 

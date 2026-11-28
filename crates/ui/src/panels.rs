@@ -680,18 +680,20 @@ impl MessagingUi {
 				.map(|hash| (guild, hash.to_owned()))
 		});
 		egui::Panel::top("sidebar-header")
-			.exact_size(if banner.is_some() { 108.0 } else { 48.0 })
+			.exact_size(if banner.is_some() { 120.0 } else { 48.0 })
 			.show_separator_line(false)
 			.frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 0)))
 			.show(ui, |ui| {
 				let rect = ui.max_rect();
 				if let Some((guild, hash)) = &banner {
-					let art =
-						egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), 62.0));
+					let art = egui::Rect::from_min_size(
+						rect.left_top() - egui::vec2(16.0, 0.0),
+						egui::vec2(rect.width() + 32.0, 72.0),
+					);
 					ui.painter().rect_filled(art, 0, colors.raised);
 					self.avatars
 						.paint_guild_banner(ui, *guild, hash, art, state.demo);
-					ui.add_space(62.0);
+					ui.add_space(72.0);
 				}
 				ui.horizontal_centered(|ui| {
 					if let Some(guild) = self.guild {
@@ -743,6 +745,99 @@ impl MessagingUi {
 				bottom: 0,
 			})
 			.show(ui, |ui| {
+				if let Some(guild) = self.guild {
+					let members_here = state.selected.is_some_and(|id| {
+						state
+							.channel(id)
+							.is_some_and(|c| c.guild == Some(guild) && c.supports_text())
+							&& state.can_view(id)
+					});
+					let directory = state.server_members_shortcut(guild);
+					for (icon, key, visible) in [
+						(icons::Icon::Star, "sidebar-server-boosts", true),
+						(
+							icons::Icon::Calendar,
+							"server-events-title",
+							state.can_browse_events(guild),
+						),
+						(
+							icons::Icon::Thread,
+							"sidebar-channels-roles",
+							state.has_member_onboarding(guild),
+						),
+						(icons::Icon::People, "members", directory),
+					] {
+						if !visible {
+							continue;
+						}
+
+						let label = language.text(key);
+						let pressed = ui
+							.push_id((guild, key), |ui| {
+								let (rect, response) = ui.allocate_exact_size(
+									egui::vec2(ui.available_width(), 28.0),
+									egui::Sense::click(),
+								);
+								let color = colors.text;
+								if response.hovered() {
+									ui.painter().rect_filled(rect, 6, colors.hover);
+								}
+								let glyph = egui::Rect::from_center_size(
+									rect.left_center() + egui::vec2(14.0, 0.0),
+									egui::Vec2::splat(16.0),
+								);
+								icons::paint(ui.painter(), icon, glyph, color);
+								let galley = egui::WidgetText::from(&label).into_galley(
+									ui,
+									Some(egui::TextWrapMode::Truncate),
+									(rect.width() - 32.0).max(1.0),
+									egui::TextStyle::Body,
+								);
+								ui.painter().galley(
+									rect.left_center() + egui::vec2(28.0, -galley.size().y / 2.0),
+									galley,
+									color,
+								);
+								design::focus_outline(ui, &response, 6);
+								response.widget_info(|| {
+									egui::WidgetInfo::labeled(egui::Role::Button, true, &label)
+								});
+								response.clicked()
+							})
+							.inner;
+						if key == "sidebar-server-boosts" {
+							ui.indent(("boost-summary", guild), |ui| {
+								if let Some(goal) = state.sidebar_boost_goal(guild) {
+									let summary = boost_goal_label(goal);
+									design::hint(ui, &summary);
+									boost_goal_meter(ui, goal, &summary);
+								} else if let Some(count) = state.sidebar_boost_count(guild) {
+									design::hint(ui, &boost_count_label(state, count));
+								}
+							});
+						}
+						if !pressed {
+							continue;
+						}
+						match key {
+							"server-events-title" => {
+								self.community_ui.open_events(state, guild, commands)
+							}
+							"sidebar-channels-roles" => state.open_onboarding(guild),
+							"members" => commands.extend(self.open_member_sidebar(state, guild)),
+							_ => self.boost_overview = Some((state.generation, guild)),
+						}
+					}
+					ui.separator();
+					if let Some(channel) = state.selected.filter(|_| members_here)
+						&& crate::design::text_action(ui, "sidebar-channel-members").clicked()
+					{
+						self.guild_members_view = Some((state.generation, guild, channel));
+						self.compact_navigation_open = false;
+						state.browse_channels = None;
+						ui.ctx().request_repaint();
+					}
+				}
 				let ctx = ui.ctx().clone();
 				if ui
 					.add_sized(
@@ -877,101 +972,6 @@ impl MessagingUi {
 						.clicked()
 				{
 					self.open_direct_requests(state);
-				}
-				if let Some(guild) = self.guild {
-					ui.separator();
-					let members_here = state.selected.is_some_and(|id| {
-						state
-							.channel(id)
-							.is_some_and(|c| c.guild == Some(guild) && c.supports_text())
-							&& state.can_view(id)
-					});
-					let member_key = member_sidebar_key(state.server_members_shortcut(guild));
-					for (icon, key, enabled) in [
-						(
-							icons::Icon::Calendar,
-							"server-events-title",
-							state.can_browse_events(guild),
-						),
-						(
-							icons::Icon::Thread,
-							"sidebar-channels-roles",
-							state.has_member_onboarding(guild),
-						),
-						(
-							icons::Icon::People,
-							member_key,
-							member_key == "members" || members_here,
-						),
-						(icons::Icon::Star, "sidebar-server-boosts", true),
-					] {
-						let label = language.text(key);
-						let pressed = ui
-							.add_enabled_ui(enabled, |ui| {
-								let (rect, response) = ui.allocate_exact_size(
-									egui::vec2(ui.available_width(), 28.0),
-									egui::Sense::click(),
-								);
-								let color = if enabled { colors.text } else { colors.muted };
-								if response.hovered() {
-									ui.painter().rect_filled(rect, 6, colors.hover);
-								}
-								let glyph = egui::Rect::from_center_size(
-									rect.left_center() + egui::vec2(14.0, 0.0),
-									egui::Vec2::splat(16.0),
-								);
-								icons::paint(ui.painter(), icon, glyph, color);
-								let galley = egui::WidgetText::from(&label).into_galley(
-									ui,
-									Some(egui::TextWrapMode::Truncate),
-									(rect.width() - 32.0).max(1.0),
-									egui::TextStyle::Body,
-								);
-								ui.painter().galley(
-									rect.left_center() + egui::vec2(28.0, -galley.size().y / 2.0),
-									galley,
-									color,
-								);
-								design::focus_outline(ui, &response, 6);
-								response.widget_info(|| {
-									egui::WidgetInfo::labeled(egui::Role::Button, enabled, &label)
-								});
-								response.clicked()
-							})
-							.inner;
-						if key == "sidebar-server-boosts" {
-							ui.indent(("boost-summary", guild), |ui| {
-								if let Some(goal) = state.sidebar_boost_goal(guild) {
-									let summary = boost_goal_label(goal);
-									design::hint(ui, &summary);
-									boost_goal_meter(ui, goal, &summary);
-								} else if let Some(count) = state.sidebar_boost_count(guild) {
-									design::hint(ui, &boost_count_label(state, count));
-								}
-							});
-						}
-						if !pressed {
-							continue;
-						}
-						match key {
-							"server-events-title" => {
-								self.community_ui.open_events(state, guild, commands)
-							}
-							"sidebar-channels-roles" => state.open_onboarding(guild),
-							"members" => commands.extend(self.open_member_sidebar(state, guild)),
-							"sidebar-channel-members" => {
-								if let Some(channel) = state.selected.filter(|_| members_here) {
-									self.guild_members_view =
-										Some((state.generation, guild, channel));
-									self.compact_navigation_open = false;
-									state.browse_channels = None;
-									ui.ctx().request_repaint();
-								}
-							}
-							_ => self.boost_overview = Some((state.generation, guild)),
-						}
-					}
-					ui.separator();
 				}
 				if !self.channel_preferences_status.is_empty() {
 					ui.colored_label(
@@ -1716,21 +1716,6 @@ impl MessagingUi {
 			});
 		});
 	}
-}
-
-fn member_sidebar_key(directory_allowed: bool) -> &'static str {
-	if directory_allowed {
-		"members"
-	} else {
-		"sidebar-channel-members"
-	}
-}
-
-#[cfg(test)]
-#[test]
-fn member_entry_names_the_view_it_can_open() {
-	assert_eq!(member_sidebar_key(true), "members");
-	assert_eq!(member_sidebar_key(false), "sidebar-channel-members");
 }
 
 pub(super) fn boost_count_label(state: &State, count: u32) -> String {

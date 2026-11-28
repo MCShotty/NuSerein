@@ -124,6 +124,14 @@ These are scope anchors. Break each group into individual control rows as it is 
 | Profile settings → owned cosmetics → choose scope, equip/remove, reset | **Partial** — shows only supported items Discord confirms the account owns. Reset choices is local. Losing server profile access hides that inventory without relabeling it as the global profile. A failed equip must be resolved or discarded before another change. No purchase prompt or Shop path. |
 | Account settings → subscription status / management | **Partial / handoff** — the native account overview can show the service-reported tier; known existing tiers offer an explicit handoff to official Discord Home and explain where to manage an existing subscription. No checkout, upgrade prompt or live entitlement verification. |
 
+## Reference-led workflow corrections
+
+- **Sidebar:** place Boosts, Events, Channels & Roles and the permitted Members dashboard above channel navigation. Retain the Channel Members shortcut separately for readable conversations; the shortcut does not mean a complete server directory. Do not expose edit controls without existing permission.
+- **Events:** [Discord's desktop guide][scheduled-events-ref] describes the Create Event server-menu entry, location, details, review and creation. The native paths share a draft; only the review footer can submit a create. The row's event options use the same edit and exact confirmations as detail. Editing existing events is still one form, and recurrence and write readback are unchanged.
+- **Search and Watch:** activate the visible, current search result without losing the existing jump recovery. Voice roster Live and double-click actions use the existing stream scope. Fullscreen's close glyph is announced as Stop watching; this is not Disconnect, and the product guide does not establish the current official control's placement. Go Live separates enumerated application windows and screens without changing system-picker behavior or granting system audio on a category change.
+
+These are source-level corrections; no current official signed-in session or live voice/video comparison was done. The existing eligibility, draft/permission and hosted check limitations below still apply.
+
 ## Local behavior changes pending verification
 
 | Surface | Implemented in source | Gap or verification boundary |
@@ -185,3 +193,5 @@ This source pass does not establish full desktop parity. In particular:
 [share-ref]: https://support.discord.com/hc/en-us/articles/360040816151-Go-Live-and-Screen-Share
 [video-calls-ref]: https://support.discord.com/hc/en-us/articles/360041721052-Video-Calls
 [stage-ref]: https://support.discord.com/hc/en-us/articles/1500005513722-Stage-Channels-FAQ
+
+[scheduled-events-ref]: https://support.discord.com/hc/en-us/articles/4409494125719-Scheduled-Events

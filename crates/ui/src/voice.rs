@@ -1549,12 +1549,12 @@ impl MessagingUi {
 						);
 						let watch = ui
 							.add_enabled_ui(enabled, |ui| {
-								crate::icons::button(
-									ui,
-									crate::icons::Icon::ScreenShare,
-									26.0,
-									&label,
-								)
+								let response = ui
+									.small_button(crate::i18n::translate("voice-live-badge-live"));
+								response.widget_info(|| {
+									egui::WidgetInfo::labeled(egui::Role::Button, enabled, &label)
+								});
+								response.on_hover_text(&label)
 							})
 							.inner
 							.on_disabled_hover_text(crate::i18n::translate_if_key(reason));
@@ -1580,8 +1580,28 @@ impl MessagingUi {
 				self.voice_participant_menu(&row, state, entry);
 				if entry.participant.streaming {
 					self.stream_preview_popup(ui, &row, state, entry);
-				}
-				if let Some(user) = user {
+					let target = (entry.channel, entry.participant.user);
+					let (allowed, reason) = stream_preview_watch_state(state, target.0, target.1);
+					let choice = row.id.with(("watch-choice", state.generation));
+					if allowed && row.double_clicked() {
+						egui::Popup::close_id(ui.ctx(), choice);
+						self.stream_preview_watch = Some(target);
+					} else {
+						egui::Popup::menu(&row).id(choice).show(|ui| {
+							if ui
+								.add_enabled(
+									allowed,
+									egui::Button::new(watch_label(state, target.0, name)),
+								)
+								.on_disabled_hover_text(crate::i18n::translate_if_key(reason))
+								.clicked()
+							{
+								self.stream_preview_watch = Some(target);
+								ui.close();
+							}
+						});
+					}
+				} else if let Some(user) = user {
 					self.profile.person_click(ui, &row, None, user);
 				}
 			},
@@ -2459,16 +2479,7 @@ impl MessagingUi {
 		}
 		let height = 40.0;
 		let stop_label = crate::i18n::translate("voice-stream-stop-watching");
-		let font = egui::FontId::new(13.0, design::medium_family(ui.ctx()));
-		let galley = ui
-			.painter()
-			.layout_no_wrap(stop_label.clone(), font, egui::Color32::WHITE);
-		let compact = content.width() < galley.size().x + 104.0;
-		let width = if compact {
-			36.0
-		} else {
-			galley.size().x + 24.0
-		};
+		let width = height;
 		let stop = egui::Rect::from_min_size(
 			content.right_bottom() - egui::vec2(8.0 + width, 8.0 + height),
 			egui::vec2(width, height),
@@ -2514,26 +2525,15 @@ impl MessagingUi {
 				egui::Color32::from_black_alpha(170)
 			},
 		);
-		if compact {
-			crate::icons::paint(
-				ui.painter(),
-				crate::icons::Icon::Close,
-				stop.shrink(10.0),
-				egui::Color32::WHITE,
-			);
-		} else {
-			ui.painter().galley(
-				stop.center() - galley.size() * 0.5,
-				galley,
-				egui::Color32::WHITE,
-			);
-		}
+		crate::icons::paint(
+			ui.painter(),
+			crate::icons::Icon::Close,
+			stop.shrink(10.0),
+			egui::Color32::WHITE,
+		);
 		design::focus_outline(ui, &response, 8);
 		response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &stop_label));
-		if response
-			.on_hover_text(crate::i18n::translate("voice-stream-stop-receiving"))
-			.clicked()
-		{
+		if response.on_hover_text(stop_label).clicked() {
 			self.stop_watch_scope = watched_stream_scope(state);
 		}
 	}

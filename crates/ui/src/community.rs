@@ -11,6 +11,15 @@ enum SavedDraft {
 	Confirmation,
 }
 
+#[derive(Clone, Copy)]
+enum EventMenuAction {
+	Edit,
+	Start,
+	Cancel,
+	End,
+	Delete,
+}
+
 enum DraftReplacement {
 	Event(Box<Editor>),
 	Occurrence(Box<OccurrenceEditor>),
@@ -42,7 +51,15 @@ pub(super) struct CommunityUi {
 	end_stage_confirm: bool,
 	inputs: Option<TextInputStates>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreateStep {
+	Location,
+	Details,
+	Review,
+}
+
 struct Editor {
+	step: CreateStep,
 	inputs: TextInputStates,
 	guild: Id,
 	before: Option<ScheduledEvent>,
@@ -133,6 +150,7 @@ impl Editor {
 				recurrence: None,
 			});
 		Self {
+			step: CreateStep::Location,
 			inputs: TextInputStates::new(
 				egui::Id::unique((
 					"community-event-editor",
@@ -182,6 +200,17 @@ impl Editor {
 			latest.repeat = self.repeat;
 		}
 		*self = latest;
+	}
+
+	fn create_location_ready(&self, state: &State) -> bool {
+		if self.entity_type == 3 {
+			!self.location.trim().is_empty() && state.can_create_event_at(self.guild, 3, None)
+		} else {
+			self.channel.is_some_and(|id| {
+				state.can_view(id)
+					&& state.can_create_event_at(self.guild, self.entity_type, Some(id))
+			})
+		}
 	}
 
 	fn draft(&self) -> Result<EventDraft, &'static str> {
@@ -497,6 +526,53 @@ impl CommunityUi {
 		state.community.opened = Some(guild);
 		submit(state, guild, Action::ListEvents, commands);
 	}
+	pub fn can_offer_create(state: &State, guild: Id) -> bool {
+		state.can_browse_events(guild)
+			&& [1, 2, 3]
+				.into_iter()
+				.any(|kind| can_create_event_type(state, guild, kind))
+	}
+
+	pub fn open_create_event(&mut self, state: &mut State, guild: Id, commands: &mut Vec<Command>) {
+		if state.community.pending() || !Self::can_offer_create(state, guild) {
+			return;
+		}
+		if self.guild != Some(guild) || self.generation != state.generation {
+			self.open_events(state, guild, commands);
+		}
+		if self.confirm.is_none() && self.replacement.is_none() {
+			self.start_event_draft(state, guild);
+		}
+	}
+
+	fn start_event_draft(&mut self, state: &State, guild: Id) {
+		if self
+			.draft
+			.as_ref()
+			.is_some_and(|draft| draft.guild == guild && draft.before.is_none())
+		{
+			self.browsing_draft = false;
+			self.browsing_occurrence = true;
+			return;
+		}
+		let Some(kind) = [1, 2, 3]
+			.into_iter()
+			.find(|kind| can_create_event_type(state, guild, *kind))
+		else {
+			return;
+		};
+		let mut draft = Editor::new(guild, None);
+		draft.entity_type = kind;
+		if self.draft.is_some() {
+			self.replacement = Some(DraftReplacement::Event(Box::new(draft)));
+		} else {
+			self.draft = Some(draft);
+			self.browsing_draft = false;
+			self.browsing_occurrence = true;
+			self.selected = None;
+		}
+	}
+
 	pub fn show(&mut self, ctx: &egui::Context, state: &mut State, commands: &mut Vec<Command>) {
 		if self.generation != state.generation {
 			*self = Self::default();
@@ -526,6 +602,7 @@ impl CommunityUi {
 			self.submitted = None;
 		}
 		if !self.browsing_draft
+			&& self.replacement.is_none()
 			&& self.confirm.is_none()
 			&& (self.occurrence_draft.is_none() || self.browsing_occurrence)
 			&& self
@@ -566,25 +643,15 @@ impl CommunityUi {
 						{
 							submit(state, guild, Action::ListEvents, commands);
 						}
-						if confirm.is_none() && !occurrence && self.replacement.is_none()
-							&& let Some(kind) = [3, 2, 1]
-								.into_iter()
-								.find(|kind| can_create_event_type(state, guild, *kind))
-							&& ui.add_enabled(
-								!state.community.pending(),
-								egui::Button::new(crate::i18n::translate("server-events-create")),
-							).clicked()
-						{
-							let mut draft = Editor::new(guild, None);
-							draft.entity_type = kind;
-							if self.draft.is_some() {
-								self.replacement = Some(DraftReplacement::Event(Box::new(draft)));
-							} else {
-								self.draft = Some(draft);
-								self.browsing_draft = false;
-								self.selected = None;
+							if confirm.is_none() && !occurrence && self.replacement.is_none()
+								&& Self::can_offer_create(state, guild)
+								&& ui.add_enabled(
+									!state.community.pending(),
+									egui::Button::new(crate::i18n::translate("server-events-create")),
+								).clicked()
+							{
+								self.start_event_draft(state, guild);
 							}
-						}
 						if state.community.pending() {
 							ui.add(crate::design::Busy::new());
 							ui.label("Loading…");
@@ -742,7 +809,7 @@ impl CommunityUi {
 						.filter(|p| p.guild == guild)
 						.map(|p| p.events.as_slice())
 						.unwrap_or(&[]);
-					if events.is_empty() && !state.community.pending() {
+					if !events.iter().any(|event| state.event_visible(event)) && !state.community.pending() {
 						ui.label(
 							if state.community.error.is_some() || state.community.events.is_none() {
 								"Event information is unavailable. Use Refresh to try again."
@@ -751,15 +818,38 @@ impl CommunityUi {
 							},
 						);
 					}
+					let mut menu_action = None;
 					for event in events.iter().filter(|e| state.event_visible(e)) {
-						egui::Frame::group(ui.style()).show(ui, |ui| {
-							ui.label(crate::design::semibold(ui, &event.draft.name, 15.0));
-							ui.label(time_label(event.draft.start));
-							ui.small(event_status(event.status));
-							if crate::design::text_action(ui, "server-events-view").clicked() {
-								self.selected = Some(event.id);
-							}
+						ui.push_id(event.id, |ui| {
+							egui::Frame::new()
+								.fill(crate::design::palette(ui).base)
+								.corner_radius(8)
+								.inner_margin(10)
+								.show(ui, |ui| {
+									ui.set_width(ui.available_width());
+									ui.allocate_ui_with_layout(
+										egui::vec2(ui.available_width(), 28.0),
+										egui::Layout::right_to_left(egui::Align::Center),
+										|ui| {
+											if let Some(action) = Self::event_menu(ui, state, event) {
+												menu_action = Some((event.clone(), action));
+											}
+											ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+												let title = crate::design::semibold(ui, &event.draft.name, 15.0);
+												if ui.add(egui::Button::new(title).frame(false).truncate()).on_hover_text(&event.draft.name).clicked() {
+													self.selected = Some(event.id);
+												}
+											});
+										},
+									);
+									ui.label(time_label(event.draft.start));
+									ui.small(event_status(event.status));
+								});
 						});
+					}
+					if let Some((event, action)) = menu_action {
+						self.selected = Some(event.id);
+						self.apply_event_menu(state, event, action, commands);
 					}
 				});
 				body.footer(|ui| {
@@ -776,6 +866,7 @@ impl CommunityUi {
 									self.selected = next.before.as_ref().map(|event| event.id);
 									self.draft = Some(*next);
 									self.browsing_draft = false;
+									self.browsing_occurrence = true;
 								}
 								DraftReplacement::Occurrence(next) => {
 									self.occurrence_draft = Some(*next);
@@ -946,96 +1037,135 @@ impl CommunityUi {
 			);
 		}
 		self.occurrences(ui, state, &event, commands);
-		if state.can_manage_event(&event) {
-			ui.separator();
-			ui.horizontal_wrapped(|ui| {
-				if ui
-					.add_enabled(
-						ready && matches!(event.status, 1 | 2),
-						egui::Button::new("Edit event"),
-					)
-					.clicked()
-				{
-					if self
-						.draft
-						.as_ref()
-						.and_then(|draft| draft.before.as_ref())
-						.is_some_and(|before| before.guild == guild && before.id == event.id)
-					{
-						self.browsing_draft = false;
-					} else if self.draft.is_some() {
-						self.replacement = Some(DraftReplacement::Event(Box::new(Editor::new(
-							guild,
-							Some(event.clone()),
-						))));
-					} else {
-						self.draft = Some(Editor::new(guild, Some(event.clone())));
-						self.browsing_draft = false;
-					}
-				}
-				if event.status == 1 {
-					if ui
-						.add_enabled(ready, egui::Button::new("Start event"))
-						.clicked()
-					{
-						if event.draft.entity_type == 1
-							&& let Some(channel) = event.draft.channel
-						{
-							if !self.open_stage_editor(
-								state,
-								channel,
-								event.draft.name.clone(),
-								Some(event.id),
-							) {
-								return;
-							}
-							submit(
-								state,
-								guild,
-								Action::GetStage {
-									channel,
-									call_request: state
-										.voice
-										.active
-										.as_ref()
-										.filter(|c| c.channel == channel)
-										.map(|c| c.request),
-								},
-								commands,
-							);
-						} else {
-							self.confirm = Some(Action::Status {
-								event: event.id,
-								status: 2,
-							});
-						}
-					}
-					if ui
-						.add_enabled(ready, egui::Button::new("Cancel event"))
-						.clicked()
-					{
-						self.confirm = Some(Action::Status {
-							event: event.id,
-							status: 4,
-						});
-					}
-				} else if event.status == 2
+		if let Some(action) = Self::event_menu(ui, state, &event) {
+			self.apply_event_menu(state, event, action, commands);
+		}
+	}
+
+	fn event_menu(
+		ui: &mut egui::Ui,
+		state: &State,
+		event: &ScheduledEvent,
+	) -> Option<EventMenuAction> {
+		if !state.can_manage_event(event) {
+			return None;
+		}
+		let ready =
+			!state.community.pending() && !state.community.stale && !state.community.needs_refresh;
+		let button = crate::icons::button(
+			ui,
+			crate::icons::Icon::More,
+			28.0,
+			&crate::i18n::translate("event-more-options"),
+		);
+		let mut selected = None;
+		egui::Popup::menu(&button).show(|ui| {
+			let actions = [
+				(
+					EventMenuAction::Edit,
+					"server-events-edit",
+					matches!(event.status, 1 | 2),
+				),
+				(
+					EventMenuAction::Start,
+					"event-menu-start",
+					event.status == 1,
+				),
+				(
+					EventMenuAction::Cancel,
+					"event-menu-cancel",
+					event.status == 1,
+				),
+				(EventMenuAction::End, "event-menu-end", event.status == 2),
+				(EventMenuAction::Delete, "event-menu-delete", true),
+			];
+			for (action, label, visible) in actions {
+				if visible
 					&& ui
-						.add_enabled(ready, egui::Button::new("End event"))
+						.add_enabled(ready, egui::Button::new(crate::i18n::translate(label)))
 						.clicked()
 				{
+					selected = Some(action);
+					ui.close();
+				}
+			}
+		});
+		selected
+	}
+
+	fn apply_event_menu(
+		&mut self,
+		state: &mut State,
+		event: ScheduledEvent,
+		action: EventMenuAction,
+		commands: &mut Vec<Command>,
+	) {
+		let guild = event.guild;
+		match action {
+			EventMenuAction::Edit => {
+				if self
+					.draft
+					.as_ref()
+					.and_then(|draft| draft.before.as_ref())
+					.is_some_and(|before| before.guild == guild && before.id == event.id)
+				{
+					self.browsing_draft = false;
+				} else if self.draft.is_some() {
+					self.replacement = Some(DraftReplacement::Event(Box::new(Editor::new(
+						guild,
+						Some(event.clone()),
+					))));
+				} else {
+					self.draft = Some(Editor::new(guild, Some(event.clone())));
+					self.browsing_draft = false;
+				}
+			}
+			EventMenuAction::Start => {
+				if event.draft.entity_type == 1
+					&& let Some(channel) = event.draft.channel
+				{
+					if !self.open_stage_editor(
+						state,
+						channel,
+						event.draft.name.clone(),
+						Some(event.id),
+					) {
+						return;
+					}
+					submit(
+						state,
+						guild,
+						Action::GetStage {
+							channel,
+							call_request: state
+								.voice
+								.active
+								.as_ref()
+								.filter(|c| c.channel == channel)
+								.map(|c| c.request),
+						},
+						commands,
+					);
+				} else {
 					self.confirm = Some(Action::Status {
 						event: event.id,
-						status: 3,
+						status: 2,
 					});
 				}
-				if ui
-					.add_enabled(ready, egui::Button::new("Delete event"))
-					.clicked()
-				{
-					self.confirm = Some(Action::Delete(event.id));
-				}
-			});
+			}
+			EventMenuAction::Cancel => {
+				self.confirm = Some(Action::Status {
+					event: event.id,
+					status: 4,
+				})
+			}
+			EventMenuAction::End => {
+				self.confirm = Some(Action::Status {
+					event: event.id,
+					status: 3,
+				})
+			}
+			EventMenuAction::Delete => self.confirm = Some(Action::Delete(event.id)),
 		}
 	}
 
@@ -1290,6 +1420,8 @@ impl CommunityUi {
 			return;
 		};
 		let event_id = editor.before.as_ref().map(|event| event.id);
+		let creating = event_id.is_none();
+		let step = editor.step;
 		let title = crate::i18n::translate(if event_id.is_some() {
 			"server-events-edit"
 		} else {
@@ -1305,7 +1437,27 @@ impl CommunityUi {
 		.subtitle(server)
 		.width(600.0)
 		.show(ctx, |body| {
-			body.scroll(280.0, |ui| Self::event_fields(editor, ui, state, guild));
+			body.scroll(280.0, |ui| {
+				if !creating {
+					Self::event_location_fields(editor, ui, state, guild);
+					Self::event_details_fields(editor, ui);
+					return;
+				}
+				ui.heading(crate::i18n::translate(match step {
+					CreateStep::Location => "event-create-where",
+					CreateStep::Details => "event-create-details",
+					CreateStep::Review => "event-create-review",
+				}));
+				match step {
+					CreateStep::Location => Self::event_location_fields(editor, ui, state, guild),
+					CreateStep::Details => Self::event_details_fields(editor, ui),
+					CreateStep::Review => Self::event_review(editor, ui, state),
+				}
+			});
+			let location_ready = editor.create_location_ready(state);
+			if creating && step == CreateStep::Location && !location_ready {
+				body.content(|ui| crate::design::hint(ui, "event-create-choose-location"));
+			}
 			let built = if state.community.stale || state.community.needs_refresh {
 				Err("server-events-save-stale")
 			} else if !state.demo && !state.gateway_connected {
@@ -1338,7 +1490,9 @@ impl CommunityUi {
 				if let Some(error) = state.community.error {
 					crate::dialog::notice(ui, crate::dialog::Level::Warning, error);
 				}
-				if let Err(error) = &built {
+				if (!creating || step != CreateStep::Location)
+					&& let Err(error) = &built
+				{
 					crate::design::hint(ui, error);
 					if *error == "server-events-save-changed"
 						&& !state.community.pending()
@@ -1367,9 +1521,19 @@ impl CommunityUi {
 			body.footer(|ui| {
 				use crate::dialog::{Action as Button, action};
 				let pending = state.community.pending();
-				let save = ui
-					.add_enabled_ui(!pending && built.is_ok(), |ui| {
-						action(ui, "server-events-save", Button::Primary).clicked()
+				let primary = match (creating, step) {
+					(false, _) => "server-events-save",
+					(true, CreateStep::Review) => "server-events-create",
+					(true, _) => "event-create-next",
+				};
+				let ready = if creating && step == CreateStep::Location {
+					location_ready
+				} else {
+					built.is_ok()
+				};
+				let picked = ui
+					.add_enabled_ui(!pending && ready, |ui| {
+						action(ui, primary, Button::Primary).clicked()
 					})
 					.inner;
 				let discard = ui
@@ -1382,21 +1546,23 @@ impl CommunityUi {
 						action(ui, "server-events-refresh", Button::Neutral).clicked()
 					})
 					.inner;
-				let back = action(ui, "server-events-back", Button::Neutral).clicked();
-				(
-					discard,
-					back,
-					if save {
-						built.ok()
-					} else if refresh {
-						Some(Action::ListEvents)
-					} else {
-						None
-					},
-				)
+				let back = ui
+					.add_enabled_ui(!pending, |ui| {
+						action(ui, "server-events-back", Button::Neutral).clicked()
+					})
+					.inner;
+				let (next, submit) = match (creating, step, picked, back) {
+					(true, CreateStep::Location, true, _) => (Some(CreateStep::Details), None),
+					(true, CreateStep::Details, true, _) => (Some(CreateStep::Review), None),
+					(true, CreateStep::Details, _, true) => (Some(CreateStep::Location), None),
+					(true, CreateStep::Review, _, true) => (Some(CreateStep::Details), None),
+					(_, _, true, _) => (None, built.ok()),
+					_ => (None, refresh.then_some(Action::ListEvents)),
+				};
+				(discard, back && next.is_none(), next, submit)
 			})
 		});
-		let (discard, back, action) = response.inner;
+		let (discard, back, next, action) = response.inner;
 		if response.close {
 			self.guild = None;
 			state.close_events();
@@ -1404,6 +1570,8 @@ impl CommunityUi {
 			self.draft = None;
 		} else if back {
 			self.browsing_draft = true;
+		} else if let Some(step) = next {
+			editor.step = step;
 		} else if let Some(action) = action {
 			let write = action.write();
 			let request = submit(state, guild, action, commands);
@@ -1412,30 +1580,32 @@ impl CommunityUi {
 			}
 		}
 	}
-	fn event_fields(editor: &mut Editor, ui: &mut egui::Ui, state: &State, guild: Id) {
-		ui.label("Name");
-		let id = editor.inputs.id("name");
-		owned_input(
-			&mut editor.inputs,
-			ui.add(
-				egui::TextEdit::singleline(&mut editor.name)
-					.id(id)
-					.char_limit(100)
-					.desired_width(f32::INFINITY),
-			),
-		);
-		ui.label("Description");
-		let id = editor.inputs.id("description");
-		owned_input(
-			&mut editor.inputs,
-			ui.add(
-				egui::TextEdit::multiline(&mut editor.description)
-					.id(id)
-					.char_limit(1000)
-					.desired_rows(3)
-					.desired_width(f32::INFINITY),
-			),
-		);
+	fn event_review(editor: &Editor, ui: &mut egui::Ui, state: &State) {
+		if let Ok(draft) = editor.draft() {
+			ui.strong(&draft.name);
+			if let Some(channel) = draft.channel {
+				if let Some(channel) = state.channel(channel).filter(|c| state.can_view(c.id)) {
+					ui.label(&channel.name);
+				}
+			} else {
+				ui.label(&draft.location);
+			}
+			ui.label(time_label(draft.start));
+			if let Some(end) = draft.end {
+				ui.label(crate::i18n::translate_args(
+					"event-create-end",
+					&[("time", &time_label(end))],
+				));
+			}
+			if draft.recurrence.is_some() {
+				ui.label(crate::i18n::translate("event-create-repeats"));
+			}
+			if !draft.description.is_empty() {
+				ui.label(&draft.description);
+			}
+		}
+	}
+	fn event_location_fields(editor: &mut Editor, ui: &mut egui::Ui, state: &State, guild: Id) {
 		ui.horizontal_wrapped(|ui| {
 			for (kind, label) in [(1, "Stage"), (2, "Voice"), (3, "Somewhere else")] {
 				let enabled = editor.before.is_some() || can_create_event_type(state, guild, kind);
@@ -1482,6 +1652,31 @@ impl CommunityUi {
 					}
 				});
 		}
+	}
+	fn event_details_fields(editor: &mut Editor, ui: &mut egui::Ui) {
+		ui.label("Name");
+		let id = editor.inputs.id("name");
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::singleline(&mut editor.name)
+					.id(id)
+					.char_limit(100)
+					.desired_width(f32::INFINITY),
+			),
+		);
+		ui.label("Description");
+		let id = editor.inputs.id("description");
+		owned_input(
+			&mut editor.inputs,
+			ui.add(
+				egui::TextEdit::multiline(&mut editor.description)
+					.id(id)
+					.char_limit(1000)
+					.desired_rows(3)
+					.desired_width(f32::INFINITY),
+			),
+		);
 		Self::clock_fields(
 			ui,
 			&mut editor.inputs,
@@ -2387,6 +2582,7 @@ mod tests {
 		assert!(draft.draft().is_err());
 		draft.channel = Some(voice);
 		draft.name = "Keep this draft".into();
+		draft.step = CreateStep::Details;
 		let snapshot = test_support::permission_snapshot(&state);
 		state.permissions.replace(snapshot).unwrap();
 		let denied = crate::i18n::translate("server-events-save-denied");
@@ -2395,6 +2591,73 @@ mod tests {
 		let stale = crate::i18n::translate("server-events-save-stale");
 		scroll_to_label(&ctx, &mut view, &mut state, size, &stale, true);
 		assert_eq!(view.draft.as_ref().unwrap().name, "Keep this draft");
+	}
+
+	#[test]
+	fn new_event_review_is_required_before_the_one_create_write() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::community_state(false);
+		let guild = state.community.events.as_ref().unwrap().guild;
+		let mut editor = Editor::new(guild, None);
+		editor.location = "Synthetic club hall".into();
+		editor.name = "Synthetic gathering".into();
+		let mut view = CommunityUi {
+			guild: Some(guild),
+			generation: state.generation,
+			draft: Some(editor),
+			..Default::default()
+		};
+		let size = egui::vec2(900.0, 1050.0);
+		let mut click = |label: &str, view: &mut CommunityUi| -> Vec<Command> {
+			for _ in 0..3 {
+				assert!(frame(&ctx, view, &mut state, size, vec![]).0.is_empty());
+			}
+			let pos = scroll_to_label(&ctx, view, &mut state, size, label, true)
+				.into_iter()
+				.filter(|(text, rect)| text == label && ctx.content_rect().contains(rect.center()))
+				.max_by(|(_, a), (_, b)| a.center().y.total_cmp(&b.center().y))
+				.unwrap()
+				.1
+				.center();
+			let mut commands = Vec::new();
+			for pressed in [true, false] {
+				commands.extend(
+					frame(
+						&ctx,
+						view,
+						&mut state,
+						size,
+						vec![
+							egui::Event::PointerMoved(pos),
+							egui::Event::PointerButton {
+								pos,
+								button: egui::PointerButton::Primary,
+								pressed,
+								modifiers: egui::Modifiers::NONE,
+							},
+						],
+					)
+					.0,
+				);
+			}
+			commands
+		};
+		let next = crate::i18n::translate("event-create-next");
+		assert!(click(&next, &mut view).is_empty());
+		assert!(view.draft.as_ref().unwrap().step == CreateStep::Details);
+		assert!(click(&next, &mut view).is_empty());
+		assert!(view.draft.as_ref().unwrap().step == CreateStep::Review);
+		let back = crate::i18n::translate("server-events-back");
+		assert!(click(&back, &mut view).is_empty());
+		assert_eq!(view.draft.as_ref().unwrap().name, "Synthetic gathering");
+		assert!(click(&next, &mut view).is_empty());
+		let create = crate::i18n::translate("server-events-create");
+		let writes = click(&create, &mut view);
+		assert!(
+			matches!(writes.as_slice(), [Command::Community { action, .. }]
+			if matches!(action.as_ref(), Action::Create(draft)
+				if draft.name == "Synthetic gathering" && draft.location == "Synthetic club hall"))
+		);
 	}
 
 	#[test]

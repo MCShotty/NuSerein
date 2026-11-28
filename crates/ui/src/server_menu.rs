@@ -26,6 +26,7 @@ pub(super) struct ServerMenu {
 	pub channel_preferences_requested: Option<(Id, client_core::channel_actions::Action)>,
 	pub settings_requested: Option<(u64, Id)>,
 	pub events_requested: Option<Id>,
+	pub create_event_requested: Option<(u64, Id)>,
 	pub mark_read_requested: Option<Id>,
 	pub mark_all_read_requested: bool,
 	pub mark_read_folder_requested: Option<Vec<Id>>,
@@ -359,11 +360,20 @@ impl ServerMenu {
 					ui.separator();
 					self.guide_item(ui, state, guild);
 
-					if ui
-						.button(crate::i18n::translate("server-settings-page-events"))
-						.clicked()
+					if crate::community::CommunityUi::can_offer_create(state, guild)
+						&& ui
+							.add_enabled_ui(!state.community.pending(), |ui| {
+								menu_row(
+									ui,
+									icons::Icon::Calendar,
+									"server-events-create",
+									colors.text,
+								)
+								.clicked()
+							})
+							.inner
 					{
-						self.events_requested = Some(guild);
+						self.create_event_requested = Some((state.generation, guild));
 						ui.close();
 					}
 					self.settings_item(ui, state, guild);

@@ -6398,3 +6398,21 @@ voice-mic-temporarily-muted = Microphone muted while Push to Mute is held
 stage-connection-failed = Could not connect to the audience. Dismiss the failed call and try joining again.
 
 extension-result-discarded = Extension result discarded because the conversation or draft changed. Nothing was applied to your conversation or draft.
+
+event-create-where = Where is your event?
+event-create-details = Event details
+event-create-review = Review your event
+event-create-next = Next
+event-create-end = Ends { $time }
+event-create-repeats = Repeats on the schedule you selected
+screen-source-applications = Applications
+screen-source-screens = Screens
+screen-source-no-applications = No application windows are available. Open a window or choose Screens.
+screen-source-no-screens = No displays are available. Try Applications or refresh the list.
+screen-go-live = Go Live
+event-more-options = Event options
+event-menu-start = Start Event
+event-menu-cancel = Cancel Event
+event-menu-end = End Event
+event-menu-delete = Delete Event
+event-create-choose-location = Choose a channel you can create events in, or enter a location.

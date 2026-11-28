@@ -23,6 +23,21 @@ fn audio_control(source: Option<SourceId>) -> (&'static str, &'static str) {
 	}
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceGroup {
+	Applications,
+	Screens,
+}
+impl SourceGroup {
+	fn includes(self, source: SourceId) -> bool {
+		match source {
+			SourceId::Window(_) => self == Self::Applications,
+			SourceId::Display(_) | SourceId::X11Desktop => self == Self::Screens,
+			SourceId::SystemPicker | SourceId::Portal => true,
+		}
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum SharePhase {
 	#[default]
@@ -56,6 +71,7 @@ pub struct ScreenUi {
 	pub request: Option<Request>,
 	pub phase: SharePhase,
 	source_lost: bool,
+	source_group: SourceGroup,
 	pub status: &'static str,
 	pub capture_status: Option<&'static str>,
 	pub adapting: bool,
@@ -80,6 +96,7 @@ impl Default for ScreenUi {
 			request: None,
 			phase: SharePhase::Idle,
 			source_lost: false,
+			source_group: SourceGroup::Applications,
 			status: "",
 			capture_status: None,
 			adapting: false,
@@ -141,6 +158,7 @@ impl ScreenUi {
 		}
 		self.context = Some((state.generation, call.channel, call.request));
 		self.open = true;
+		self.source_group = SourceGroup::Applications;
 		self.source_lost = false;
 		self.selected = None;
 		self.sources.clear();
@@ -273,7 +291,14 @@ impl ScreenUi {
 				ui.add_enabled_ui(allowed, |ui| {
 					share = crate::dialog::action(
 						ui,
-						"screen-show-share-screen",
+						if matches!(
+							self.selected,
+							Some(SourceId::SystemPicker | SourceId::Portal)
+						) {
+							"screen-show-share-screen"
+						} else {
+							"screen-go-live"
+						},
 						crate::dialog::Action::Primary,
 					)
 					.clicked();
@@ -290,6 +315,15 @@ impl ScreenUi {
 		if cancel || share {
 			self.open = false;
 		}
+	}
+
+	fn show_source_group(&mut self, group: SourceGroup) {
+		self.source_group = group;
+		if self.selected.is_some_and(|source| !group.includes(source)) {
+			self.selected = None;
+			self.audio = false;
+		}
+		self.source_lost = false;
 	}
 
 	fn confirmation(&self, ui: &mut egui::Ui) {
@@ -330,28 +364,42 @@ impl ScreenUi {
 	fn body(&mut self, ui: &mut egui::Ui, state: &State) {
 		self.limit_resolution();
 		let colors = crate::design::palette(ui);
-		ui.horizontal(|ui| {
-			ui.label(crate::design::eyebrow(
-				ui,
-				crate::i18n::translate("screen-body-screen-or-window"),
-				colors.muted,
-			));
-			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-				if ui
-					.add_enabled_ui(!state.demo && !cfg!(target_os = "linux"), |ui| {
-						crate::design::text_action(
-							ui,
-							&crate::i18n::translate("screen-body-refresh"),
-						)
-					})
-					.inner
-					.clicked()
-				{
-					self.sources.clear();
-					self.refresh_requested = true;
-					self.status = "screen-source-status-loading";
-				}
+		ui.horizontal_wrapped(|ui| {
+			let grouped = self.sources.iter().any(|s| {
+				matches!(
+					s.id,
+					SourceId::Window(_) | SourceId::Display(_) | SourceId::X11Desktop
+				)
 			});
+			if grouped {
+				for (group, label) in [
+					(SourceGroup::Applications, "screen-source-applications"),
+					(SourceGroup::Screens, "screen-source-screens"),
+				] {
+					if segment(
+						ui,
+						&crate::i18n::translate(label),
+						self.source_group == group,
+					)
+					.clicked() && self.source_group != group
+					{
+						self.show_source_group(group);
+					}
+				}
+			} else {
+				ui.label(crate::i18n::translate("screen-body-screen-or-window"));
+			}
+			if ui
+				.add_enabled_ui(!state.demo && !cfg!(target_os = "linux"), |ui| {
+					crate::design::text_action(ui, &crate::i18n::translate("screen-body-refresh"))
+				})
+				.inner
+				.clicked()
+			{
+				self.sources.clear();
+				self.refresh_requested = true;
+				self.status = "screen-source-status-loading";
+			}
 		});
 		ui.add_space(6.0);
 		egui::ScrollArea::vertical()
@@ -365,7 +413,7 @@ impl ScreenUi {
 			Some("screen-body-include-the-pointer-in-the-shared-video"),
 			&mut self.cursor,
 		);
-		if self.supported {
+		if self.supported && self.selected.is_some() {
 			ui.add_space(6.0);
 			let (label, description) = audio_control(self.selected);
 			crate::design::switch(ui, label, Some(description), &mut self.audio);
@@ -483,7 +531,8 @@ impl ScreenUi {
 	/// Selectable source rows; the caller bounds the height so options stay visible.
 	fn source_list(&mut self, ui: &mut egui::Ui) {
 		let colors = crate::design::palette(ui);
-		if self.sources.is_empty() {
+		let group = self.source_group;
+		if !self.sources.iter().any(|source| group.includes(source.id)) {
 			egui::Frame::new()
 				.fill(colors.base)
 				.corner_radius(8)
@@ -493,7 +542,13 @@ impl ScreenUi {
 					ui.add(
 						egui::Label::new(
 							egui::RichText::new(crate::i18n::translate(
-								"screen-source-list-no-screens-or-windows-are-available-yet",
+								if self.sources.is_empty() {
+									"screen-source-list-no-screens-or-windows-are-available-yet"
+								} else if group == SourceGroup::Applications {
+									"screen-source-no-applications"
+								} else {
+									"screen-source-no-screens"
+								},
 							))
 							.size(13.0)
 							.color(colors.muted),
@@ -502,10 +557,25 @@ impl ScreenUi {
 					);
 				});
 		}
-		for source in &self.sources {
+		for source in self
+			.sources
+			.iter()
+			.filter(|source| group.includes(source.id))
+		{
 			let selected = self.selected == Some(source.id);
-			let (rect, response) = ui
-				.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
+			let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), 48.0));
+			let source_key = match source.id {
+				SourceId::Window(id) => ("window", id),
+				SourceId::Display(id) => ("display", id),
+				SourceId::SystemPicker => ("system-picker", 0),
+				SourceId::Portal => ("portal", 0),
+				SourceId::X11Desktop => ("x11-desktop", 0),
+			};
+			let response = ui.interact(
+				rect,
+				ui.id().with(("screen-source", source_key)),
+				egui::Sense::click(),
+			);
 			if selected {
 				crate::design::selection_surface(ui, rect);
 			} else {
@@ -676,6 +746,23 @@ fn segment(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 mod tests {
 	use super::*;
 	#[test]
+	fn applications_and_screens_do_not_share_selection_or_audio_permission() {
+		let mut picker = ScreenUi {
+			selected: Some(SourceId::Window(1)),
+			audio: true,
+			..Default::default()
+		};
+		assert!(SourceGroup::Applications.includes(SourceId::Window(1)));
+		assert!(!SourceGroup::Applications.includes(SourceId::Display(1)));
+		assert!(SourceGroup::Screens.includes(SourceId::Display(1)));
+		assert!(!SourceGroup::Screens.includes(SourceId::Window(1)));
+		picker.show_source_group(SourceGroup::Screens);
+		assert!(picker.selected.is_none() && !picker.audio && picker.request.is_none());
+		assert!(SourceGroup::Screens.includes(SourceId::SystemPicker));
+		assert!(SourceGroup::Applications.includes(SourceId::Portal));
+	}
+
+	#[test]
 	fn long_source_names_stay_inside_rows_and_keep_full_accessible_names() {
 		let long_name = "A very long window title with many words and details ".repeat(8);
 		for width in [120.0, 220.0] {
@@ -795,7 +882,7 @@ mod tests {
 			..Default::default()
 		};
 		let audio = crate::i18n::translate("screen-confirmation-audio-application");
-		let share = crate::i18n::translate("screen-show-share-screen");
+		let share = crate::i18n::translate("screen-go-live");
 		let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 420.0));
 		for pass in 0..4 {
 			let output = ctx.run_ui(
