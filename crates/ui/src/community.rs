@@ -2955,10 +2955,14 @@ mod tests {
 		let mut state = test_support::community_state(false);
 		let guild = Id(10);
 		let size = egui::vec2(1000.0, 1000.0);
+		let details_draft = || Editor {
+			step: CreateStep::Details,
+			..Editor::new(guild, None)
+		};
 		let mut view = CommunityUi {
 			generation: state.generation,
 			guild: Some(guild),
-			draft: Some(Editor::new(guild, None)),
+			draft: Some(details_draft()),
 			..Default::default()
 		};
 		for _ in 0..3 {
@@ -2970,7 +2974,7 @@ mod tests {
 		assert!(ctx.data(|d| d.count::<egui::text_edit::TextEditState>()) <= 9);
 		drop(view.draft.take());
 		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_none());
-		view.draft = Some(Editor::new(guild, None));
+		view.draft = Some(details_draft());
 		for _ in 0..3 {
 			frame(&ctx, &mut view, &mut state, size, vec![]);
 		}

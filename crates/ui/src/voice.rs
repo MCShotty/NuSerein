@@ -1554,7 +1554,7 @@ impl MessagingUi {
 								response.widget_info(|| {
 									egui::WidgetInfo::labeled(egui::Role::Button, enabled, &label)
 								});
-								response.on_hover_text(&label)
+								response.on_hover_ui(|ui| crate::icons::wrapped_tooltip(ui, &label))
 							})
 							.inner
 							.on_disabled_hover_text(crate::i18n::translate_if_key(reason));
@@ -1580,27 +1580,16 @@ impl MessagingUi {
 				self.voice_participant_menu(&row, state, entry);
 				if entry.participant.streaming {
 					self.stream_preview_popup(ui, &row, state, entry);
-					let target = (entry.channel, entry.participant.user);
-					let (allowed, reason) = stream_preview_watch_state(state, target.0, target.1);
-					let choice = row.id.with(("watch-choice", state.generation));
-					if allowed && row.double_clicked() {
-						egui::Popup::close_id(ui.ctx(), choice);
-						self.stream_preview_watch = Some(target);
-					} else {
-						egui::Popup::menu(&row).id(choice).show(|ui| {
-							if ui
-								.add_enabled(
-									allowed,
-									egui::Button::new(watch_label(state, target.0, name)),
-								)
-								.on_disabled_hover_text(crate::i18n::translate_if_key(reason))
-								.clicked()
-							{
-								self.stream_preview_watch = Some(target);
-								ui.close();
-							}
-						});
+				}
+				if entry.participant.streaming
+					&& row.double_clicked()
+					&& stream_preview_watch_state(state, entry.channel, entry.participant.user).0
+				{
+					if self.profile.open_user().map(|user| user.id) == Some(entry.participant.user)
+					{
+						self.profile.hide();
 					}
+					self.stream_preview_watch = Some((entry.channel, entry.participant.user));
 				} else if let Some(user) = user {
 					self.profile.person_click(ui, &row, None, user);
 				}
