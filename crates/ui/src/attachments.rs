@@ -168,20 +168,85 @@ pub fn loading_card(ui: &mut egui::Ui) {
 	);
 }
 
-/// Card for a file that will be uploaded with the next message. Returns `true` when the user
-/// asks to remove it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PendingAction {
+	#[default]
+	None,
+	Remove,
+	ToggleSpoiler,
+	OpenPreview(egui::Id),
+}
+
+pub(crate) fn spoiler_toggle(ui: &mut egui::Ui, size: f32, spoiler: bool) -> egui::Response {
+	icons::toggle(
+		ui,
+		Icon::EyeSlash,
+		size,
+		spoiler,
+		if spoiler {
+			"attachments-remove-spoiler"
+		} else {
+			"attachments-mark-spoiler"
+		},
+	)
+}
+
+pub(crate) fn spoiler_cover(ui: &egui::Ui, rect: Rect) {
+	let colors = design::palette(ui);
+	ui.painter().rect_filled(rect, 6, colors.base);
+	ui.painter().text(
+		rect.center(),
+		egui::Align2::CENTER_CENTER,
+		crate::i18n::translate("attachments-spoiler-label"),
+		egui::FontId::new(12.0, design::semibold_family(ui.ctx())),
+		colors.text,
+	);
+}
+
+/// A local image affordance; callers only draw it for an available, unspoiled thumbnail.
+pub(crate) fn staged_preview_button(
+	ui: &egui::Ui,
+	rect: Rect,
+	id: egui::Id,
+	filename: &str,
+) -> egui::Response {
+	let label =
+		crate::i18n::translate_args("attachments-pending-viewer-open", &[("file", filename)]);
+	let response = ui.interact(rect, id, Sense::click());
+	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), &label));
+	if response.has_focus() {
+		ui.painter().rect_stroke(
+			rect,
+			4,
+			Stroke::new(1.0, design::palette(ui).accent),
+			StrokeKind::Inside,
+		);
+	}
+	response
+		.on_hover_cursor(egui::CursorIcon::ZoomIn)
+		.on_hover_text(label)
+}
+
+/// Card for a file that will be uploaded with the next message.
 pub fn pending_card(
 	ui: &mut egui::Ui,
 	filename: &str,
 	bytes: u64,
 	preview: Option<&egui::TextureHandle>,
 	removable: bool,
-) -> bool {
+	spoiler: Option<bool>,
+	can_open: bool,
+) -> PendingAction {
+	let mut open = PendingAction::None;
 	let colors = design::palette(ui);
 	let kind = file_kind(filename, None);
 	let (card, preview_rect) = pending_card_frame(ui);
-	match preview {
-		Some(texture) => {
+	match (
+		spoiler.unwrap_or_else(|| filename.starts_with("SPOILER_")),
+		preview,
+	) {
+		(true, _) => spoiler_cover(ui, preview_rect),
+		(false, Some(texture)) => {
 			let size = texture.size_vec2();
 			let scale = (preview_rect.width() / size.x)
 				.min(preview_rect.height() / size.y)
@@ -193,8 +258,12 @@ pub fn pending_card(
 					.fit_to_exact_size(fitted.size())
 					.corner_radius(4),
 			);
+			let id = ui.scope_id().with("staged-image");
+			if can_open && staged_preview_button(ui, preview_rect, id, filename).clicked() {
+				open = PendingAction::OpenPreview(id);
+			}
 		}
-		None => {
+		(false, None) => {
 			icons::paint(
 				ui.painter(),
 				kind.icon(),
@@ -225,9 +294,10 @@ pub fn pending_card(
 		.truncate()
 		.selectable(false),
 	);
+	let width = if spoiler.is_some() { 68.0 } else { 36.0 };
 	let pill = Rect::from_min_size(
-		egui::pos2(card.right() - 28.0, card.top() - PENDING_OVERHANG),
-		egui::vec2(36.0, 36.0),
+		egui::pos2(card.right() + 8.0 - width, card.top() - PENDING_OVERHANG),
+		egui::vec2(width, 36.0),
 	);
 	ui.painter().rect(
 		pill,
@@ -237,18 +307,28 @@ pub fn pending_card(
 		StrokeKind::Inside,
 	);
 	ui.scope_builder(
-		egui::UiBuilder::new().max_rect(pill.shrink(2.0)).layout(
-			egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-		),
+		egui::UiBuilder::new()
+			.max_rect(pill.shrink(2.0))
+			.layout(egui::Layout::left_to_right(egui::Align::Center)),
 		|ui| {
+			ui.spacing_mut().item_spacing.x = 0.0;
 			ui.add_enabled_ui(removable, |ui| {
-				icons::button(
+				let toggled =
+					spoiler.is_some_and(|spoiler| spoiler_toggle(ui, 32.0, spoiler).clicked());
+				if icons::button(
 					ui,
 					Icon::Trash,
 					32.0,
-					&crate::i18n::translate("attachments-pending-card-remove-attachment"),
+					"attachments-pending-card-remove-attachment",
 				)
 				.clicked()
+				{
+					PendingAction::Remove
+				} else if toggled {
+					PendingAction::ToggleSpoiler
+				} else {
+					open
+				}
 			})
 			.inner
 		},
@@ -918,17 +998,20 @@ pub fn viewer(
 	demo: bool,
 ) -> Option<Id> {
 	let mut current = current;
-	if ui
-		.ctx()
-		.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft))
-	{
-		current = gallery_step(attachments, current, true)?;
-	}
-	if ui
-		.ctx()
-		.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight))
-	{
-		current = gallery_step(attachments, current, false)?;
+	// Both bindings are consumed so a single gesture never steps twice.
+	let (previous, next) = ui.ctx().input_mut(|input| {
+		let mut pressed = |first, second| {
+			let a = input.consume_key(egui::Modifiers::NONE, first);
+			let b = input.consume_key(egui::Modifiers::NONE, second);
+			a || b
+		};
+		(
+			pressed(egui::Key::ArrowLeft, egui::Key::A),
+			pressed(egui::Key::ArrowRight, egui::Key::D),
+		)
+	});
+	if previous != next {
+		current = gallery_step(attachments, current, previous)?;
 	}
 	let gallery: Vec<&Attachment> = attachments.iter().filter(|a| a.is_image()).collect();
 	let index = gallery.iter().position(|a| a.id == current)?;

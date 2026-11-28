@@ -103,6 +103,7 @@ pub fn members(
 		return Err(DecodeError);
 	}
 	Ok(MemberList {
+		server_member_count: None,
 		missing_identity: snapshot.members.missing_identity,
 		guild: Some(guild),
 		channel,

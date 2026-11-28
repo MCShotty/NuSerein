@@ -21,6 +21,7 @@ const CACHE_TABLES: &[&str] = &[
 const ACCOUNT_TABLES: &[&str] = &[
 	"drafts",
 	"gif_favorites",
+	"soundboard_favorites",
 	"channel_preferences",
 	"account_presence",
 	"accounts",

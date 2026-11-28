@@ -34,7 +34,7 @@ pub enum VideoState {
 	Failed(&'static str),
 }
 pub enum VideoCommand {
-	Play(Attachment),
+	Play(Box<Attachment>, Option<url::Url>),
 	Pause(bool),
 	Seek(f64),
 	Volume(f32),
@@ -512,7 +512,13 @@ impl VideoUi {
 		self.media = Some(media);
 		true
 	}
-	fn toggle(&mut self, message: &Message, attachment: &Attachment, state: VideoState) {
+	fn toggle(
+		&mut self,
+		message: &Message,
+		attachment: &Attachment,
+		state: VideoState,
+		original: Option<&str>,
+	) {
 		self.visibility_paused = false;
 		self.command = Some(match state {
 			VideoState::Loading => {
@@ -532,7 +538,10 @@ impl VideoUi {
 				self.state = VideoState::Loading;
 				self.position = 0.0;
 				self.duration = 0.0;
-				VideoCommand::Play(attachment.clone())
+				let post = is_embedded(attachment)
+					.then(|| original.and_then(social_video_page))
+					.flatten();
+				VideoCommand::Play(Box::new(attachment.clone()), post)
 			}
 		});
 	}
@@ -879,7 +888,7 @@ impl VideoUi {
 			painter.galley(badge.min + egui::vec2(6.0, 3.0), galley, white);
 		}
 		if action.clicked() {
-			self.toggle(message, attachment, state);
+			self.toggle(message, attachment, state, original);
 		}
 		response = action | response;
 		let mut controls_focused = false;
@@ -1001,7 +1010,7 @@ impl VideoUi {
 						}
 						response |= glyph.clone();
 						if glyph.on_hover_text(label).clicked() {
-							self.toggle(message, attachment, state);
+							self.toggle(message, attachment, state, original);
 						}
 						ui.label(
 							egui::RichText::new(format!(
@@ -1819,7 +1828,7 @@ mod tests {
 					modifiers: egui::Modifiers::NONE,
 				}]);
 			}
-			assert!(matches!(player.command, Some(VideoCommand::Play(_))));
+			assert!(matches!(player.command, Some(VideoCommand::Play(..))));
 			assert!(player.seen);
 			assert!(
 				(embed_stage_height(0, 0, 456.0) - stage_size(&attachment, 456.0).y).abs() < 0.01
@@ -1906,7 +1915,7 @@ mod tests {
 				frame(&mut video, Some(key));
 			}
 			assert!(
-				matches!(video.command.take(), Some(VideoCommand::Play(file)) if file == attachment)
+				matches!(video.command.take(), Some(VideoCommand::Play(file, None)) if *file == attachment)
 			);
 			assert!(video.seen);
 			assert!(!video.accept_frame(&ctx, 1921, 1080, &[]));

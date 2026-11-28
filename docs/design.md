@@ -100,6 +100,20 @@ motion enabled advances it. Reduce interface motion keeps its shape still, holds
 artwork still, and removes the toast fade without changing how long a notice can be read.
 Pending feedback must never announce a completed action or enable a permission-gated control.
 
+### Server navigation and recovery
+
+The server navigation header shows the server's own icon and any admitted banner. Server
+shortcuts sit above the categories. Channel settings are revealed on pointer hover or keyboard
+focus and remain in the channel context menu. Member shortcuts reuse the admitted roster;
+a channel roster is not a server directory. Boost counts, when present, reflect guild metadata,
+not a guessed target. An explicit server setting can hide the sidebar count. The overview shows the applicable published next-level requirement separately from total boosts.
+The exact goal appears only when both guild inputs are known. No boost management is implemented. The Members surface names a
+complete server roster only when the public-channel response proves it; otherwise it stays scoped.
+
+A message search pane takes the workspace when the split would be too narrow. Jump has a
+reserved slot before author/timestamp layout. A stale conversation preserves readable cached
+messages; reconnect, history refresh, and jumping to latest are separate intents.
+
 ### Stream controls
 
 Sharing requires choosing a source; refreshing a missing window never substitutes a display.
@@ -339,8 +353,9 @@ and pressing Enter, which replaced the welcome with the synthetic message.
 
 Server Notification Settings are available from the server dropdown and server
 icon context menu, independently of administrative Server Settings. The shared
-modal uses four radio choices, mute and mention-suppression switches, and an
-explicit Save changes action. Muting offers the standard 15-minute, 1-hour,
+modal uses four radio choices plus mute and mention-suppression switches. The
+server choices apply immediately to your account; Close only dismisses the
+modal. Delivery feedback stays with its server or channel scope. Muting offers the standard 15-minute, 1-hour,
 3-hour, 8-hour, 24-hour and indefinite durations. A searchable channel/category
 chooser exposes notification overrides without requiring administrative permissions;
 choosing a source alone never changes its settings. Override choices apply explicitly,

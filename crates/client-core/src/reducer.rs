@@ -1819,6 +1819,7 @@ impl State {
 			self.prune_thread_starter();
 		}
 		self.reconcile_feature_access(access_changed);
+		self.retire_external_soundboard();
 		self.enforce_resident_budget();
 	}
 	pub(super) fn remove_channels(&mut self, removed: &BTreeSet<Id>) {

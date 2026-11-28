@@ -47,7 +47,9 @@ impl Desktop {
 		if self.presence_load_pending {
 			return;
 		}
-		if let Some((secret, save)) = self.deferred_connect.take() {
+		if let Some((secret, save)) =
+			take_current_intent(&mut self.deferred_connect, self.state.generation)
+		{
 			self.connect(secret, save, ctx);
 		}
 	}
@@ -326,4 +328,19 @@ impl Desktop {
 			ctx.request_repaint();
 		}
 	}
+}
+
+fn take_current_intent<T>(slot: &mut Option<(u64, T, bool)>, generation: u64) -> Option<(T, bool)> {
+	slot.take()
+		.and_then(|(owner, value, save)| (owner == generation).then_some((value, save)))
+}
+
+#[test]
+fn late_presence_completion_does_not_take_a_cancelled_or_replaced_login() {
+	let mut deferred = Some((4, 12, false));
+	assert_eq!(take_current_intent(&mut deferred, 5), None);
+	assert_eq!(take_current_intent(&mut deferred, 4), None);
+	deferred = Some((5, 15, true));
+	assert_eq!(take_current_intent(&mut deferred, 5), Some((15, true)));
+	assert_eq!(take_current_intent(&mut deferred, 5), None);
 }

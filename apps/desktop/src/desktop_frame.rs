@@ -89,6 +89,9 @@ impl Desktop {
 		}
 		self.poll_interaction_files(ctx);
 		self.state.expire_interaction(std::time::Instant::now());
+		if let Some(remaining) = self.state.expire_spam_request(std::time::Instant::now()) {
+			ctx.request_repaint_after(remaining);
+		}
 		if self.state.interactions.busy() {
 			ctx.request_repaint_after(Duration::from_millis(250));
 		}
@@ -282,6 +285,14 @@ impl Desktop {
 			self.voice_messages.cancel();
 			self.voice.stop();
 		}
+		// Minimizing keeps an explicitly detached stream visible; hiding to tray does not.
+		self.messaging.voice_popout_available = !ctx.embed_viewports()
+			&& !self.tray_window.hidden
+			&& self.login.is_none()
+			&& !ctx.input(|input| input.viewport().close_requested());
+		if let Some(command) = self.messaging.apply_popout_control(ctx, &mut self.state) {
+			self.command(command);
+		}
 		self.sync_tray(ctx);
 		if self.state.voice.active.is_some() {
 			// Speaking, notices, remote video, devices, hotkeys and deadlines each wake the UI
@@ -416,6 +427,7 @@ impl Desktop {
 			// Explicit artwork Send finishes asynchronously; retain its prepared thumbnails.
 			self.messaging.attachment_previews = self.uploads.previews();
 			self.messaging.attachment_files = self.uploads.files();
+			self.messaging.attachment_spoilers = self.uploads.attachment_spoilers();
 			self.messaging.stage_pending_upload(&ctx, &command);
 			if let Command::Send { channel, .. } = &command {
 				self.messaging.draft_changes.push(*channel);
@@ -466,6 +478,7 @@ impl Desktop {
 				.map(|(name, size)| (name.to_owned(), size));
 			self.messaging.attachment_previews = self.uploads.previews();
 			self.messaging.attachment_files = self.uploads.files();
+			self.messaging.attachment_spoilers = self.uploads.attachment_spoilers();
 		}
 		self.messaging
 			.external_upload
@@ -784,7 +797,7 @@ impl Desktop {
 					player.active = Some((message.channel, message.id, attachment.clone()));
 					player.state = ui::VideoState::Loading;
 					player.seen = true;
-					player.command = Some(ui::VideoCommand::Play(attachment));
+					player.command = Some(ui::VideoCommand::Play(Box::new(attachment), None));
 				} else if player.state == ui::VideoState::Playing && player.position > 1.0 {
 					if pause {
 						player.command = Some(ui::VideoCommand::Pause(true));
@@ -879,6 +892,15 @@ impl Desktop {
 			}) {
 				self.uploads.cancel();
 			}
+			if let Some((generation, channel, key, spoiler)) =
+				self.messaging.attachment_spoiler_request.take()
+				&& self.state.generation == generation
+				&& self.state.selected == Some(channel)
+				&& (self.state.can_attach(channel) || self.state.can_attach_post(channel))
+			{
+				self.uploads.set_spoiler(generation, channel, key, spoiler);
+				ctx.request_repaint();
+			}
 			if let Some(index) = self.messaging.host_attachment_requested.take()
 				&& let Some(channel) = self.state.selected
 				&& self.state.can_send(channel)
@@ -935,6 +957,7 @@ impl Desktop {
 				if self.state.demo {
 					self.messaging.attachment = None;
 					self.messaging.attachment_files.clear();
+					self.messaging.attachment_spoilers.clear();
 					self.messaging.attachment_previews.clear();
 				}
 			}
@@ -942,7 +965,19 @@ impl Desktop {
 				self.uploads.remove();
 				self.messaging.attachment = None;
 				self.messaging.attachment_files.clear();
+				self.messaging.attachment_spoilers.clear();
 				self.messaging.attachment_previews.clear();
+			}
+			let staged = self.messaging.staged_image_target(&self.state);
+			if let Some(target) = staged
+				&& let Some(result) =
+					self.uploads
+						.poll_staged_view(target, self.runtime.handle(), &ctx)
+			{
+				self.messaging
+					.set_staged_image_result(&ctx, &self.state, target, result);
+			} else if staged.is_none() {
+				self.uploads.dismiss_staged_view();
 			}
 			if std::mem::take(&mut self.messaging.cancel_upload_requested) {
 				// The timeline row cancels its own upload, not files loading for the next message.
@@ -1379,7 +1414,8 @@ impl Desktop {
 		} else {
 			self.sign_in_screen(ui);
 		}
-		// Outside the signed-in branch so leaving an account still restores the window mode.
+		// Outside the signed-in branch so leaving an account also retires detached media.
+		self.messaging.show_voice_popout(&ctx, &self.state);
 		let video = self.messaging.video().take_fullscreen_request();
 		let voice = self.messaging.take_voice_fullscreen_request();
 		for fullscreen in [video, voice].into_iter().flatten() {
@@ -1439,6 +1475,7 @@ impl Desktop {
 			self.queue_cache_for(model::Id(0), cache::Operation::SaveAppearance(preference));
 		}
 		self.sync_gif_cache();
+		self.sync_sound_favorites_cache();
 		if !self.fixture_only
 			&& !self.state.demo
 			&& let Some(user) = &self.state.user

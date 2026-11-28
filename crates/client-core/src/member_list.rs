@@ -1,7 +1,139 @@
 //! Bounded member-list requests and cached ranges.
 use super::{Command, Freshness, Id, Member, MemberList, MemberSlot, State};
 
+const FULL_SERVER_RANGES: [[usize; 2]; 2] = [[0, 99], [100, 199]];
+const FULL_ROSTER_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FullRosterLoad {
+	generation: u64,
+	channel: Id,
+	request: u64,
+	deadline: std::time::Instant,
+}
+
+fn complete_server_window(list: &MemberList) -> Option<u16> {
+	let count = list
+		.server_member_count
+		.filter(|evidence| evidence.full_sync && (1..=200).contains(&evidence.count))?
+		.count;
+	let total = usize::try_from(list.total).ok()?.min(201);
+	if list.start != 0 || total > 200 || list.groups.is_empty() || list.slots.len() < total {
+		return None;
+	}
+	let mut rows = list.slots[..total].iter();
+	let mut users = std::collections::HashSet::with_capacity(usize::from(count));
+	let mut groups = std::collections::HashSet::with_capacity(list.groups.len().min(total));
+	for (id, length) in &list.groups {
+		if !groups.insert(id)
+			|| !matches!(rows.next(), Some(Some(MemberSlot::Group(actual))) if actual == id)
+		{
+			return None;
+		}
+		for _ in 0..(*length).min(201) {
+			if !matches!(rows.next(), Some(Some(MemberSlot::Person(member))) if member.user.id.0 != 0 && users.insert(member.user.id))
+			{
+				return None;
+			}
+		}
+	}
+	(rows.next().is_none()
+		&& users.len() == usize::from(count)
+		&& list.slots[total..].iter().all(Option::is_none))
+	.then_some(count)
+}
+
 impl State {
+	fn server_roster_window(&self, channel: Id) -> Option<&MemberList> {
+		let list = self.members.as_ref()?;
+		let row = self.channel(channel)?;
+		(self.gateway_connected
+			&& self.freshness == Freshness::Fresh
+			&& self.selected == Some(channel)
+			&& list.channel == channel
+			&& list.freshness == Freshness::Fresh
+			&& list.lazy
+			&& list.guild.is_some()
+			&& list.guild == row.guild
+			&& self.can_view(channel)
+			&& self.member_list_id(row).as_deref() == Some("everyone")
+			&& list.server_member_count.is_some()
+			&& list.total <= 200)
+			.then_some(list)
+	}
+	pub fn complete_server_roster(&self, channel: Id) -> Option<u16> {
+		complete_server_window(self.server_roster_window(channel)?)
+	}
+	fn current_roster_load(&self, channel: Id) -> Option<FullRosterLoad> {
+		let list = self.members.as_ref()?;
+		self.member_chunks.full_roster_load.filter(|load| {
+			load.channel == channel
+				&& Some(channel) == self.selected
+				&& load.generation == self.generation
+				&& list.channel == channel
+				&& list.request == load.request
+				&& self.can_view(channel)
+				&& self.complete_server_roster(channel).is_none()
+		})
+	}
+
+	/// An explicit requested roster is not a completion until the same window passes proof.
+	pub fn full_roster_wait(&self, channel: Id) -> Option<std::time::Duration> {
+		self.current_roster_load(channel).map(|load| {
+			load.deadline
+				.saturating_duration_since(std::time::Instant::now())
+		})
+	}
+
+	pub fn can_load_full_server_roster(&self, channel: Id) -> bool {
+		self.full_roster_wait(channel)
+			.is_none_or(|wait| wait.is_zero())
+			&& self
+				.server_roster_window(channel)
+				.is_some_and(|list| list.total > 100 && complete_server_window(list).is_none())
+	}
+
+	pub(super) fn reject_full_roster(
+		&mut self,
+		channel: Id,
+		request: u64,
+		ranges: &[[usize; 2]],
+	) -> bool {
+		if ranges != FULL_SERVER_RANGES
+			|| !self
+				.current_roster_load(channel)
+				.is_some_and(|load| load.request == request)
+		{
+			return false;
+		}
+		if let Some(load) = &mut self.member_chunks.full_roster_load {
+			load.deadline = std::time::Instant::now();
+		}
+		true
+	}
+	pub fn load_full_server_roster(&mut self, channel: Id) -> Option<Command> {
+		if !self.can_load_full_server_roster(channel) {
+			return None;
+		}
+		let list = self.members.as_mut()?;
+		let ranges = FULL_SERVER_RANGES.to_vec();
+		self.member_chunks.full_roster_load = Some(FullRosterLoad {
+			generation: self.generation,
+			channel,
+			request: list.request,
+			deadline: std::time::Instant::now() + FULL_ROSTER_WAIT,
+		});
+		list.ranges.clone_from(&ranges);
+		self.member_chunks.look_at(0, &ranges);
+		Some(Command::Members {
+			thread: false,
+			guild: list.guild,
+			channel: Some(channel),
+			request: list.request,
+			list_id: Some("everyone".into()),
+			ranges,
+		})
+	}
 	pub(super) fn shared_member_list_id(&self, next: Id) -> Option<String> {
 		if self.freshness == Freshness::Unavailable {
 			return None;
@@ -112,6 +244,7 @@ impl State {
 			Freshness::Loading
 		};
 		self.members = Some(MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: channel.guild,
 			channel: channel.id,
@@ -138,6 +271,7 @@ impl State {
 		Some(command)
 	}
 	pub fn close_members(&mut self) -> Command {
+		self.member_chunks.full_roster_load = None;
 		self.member_request = self.member_request.wrapping_add(1);
 		let list_id = self
 			.members
@@ -196,6 +330,14 @@ impl State {
 			return None;
 		}
 		let list_id = self.member_list_id(channel)?;
+		if list_id == "everyone"
+			&& list.server_member_count.is_some()
+			&& list.total <= 200
+			&& list.ranges.as_slice() == FULL_SERVER_RANGES
+		{
+			self.member_chunks.look_at(first, &FULL_SERVER_RANGES);
+			return None;
+		}
 		let max_idx = if list.total > 0 {
 			(list.total as usize).saturating_sub(1)
 		} else {
@@ -247,6 +389,7 @@ impl State {
 			list.slots.clear();
 			list.start = 0;
 			list.groups.clear();
+			list.server_member_count = None;
 			list.ranges.clear();
 			list.freshness = Freshness::Unavailable;
 		}

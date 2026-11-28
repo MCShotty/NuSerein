@@ -465,6 +465,7 @@ struct ActiveMembers {
 	retries: u32,
 	/// Identity Discord actually replied with when it differs from the computed one.
 	wire_list: Option<String>,
+	server_member_count: Option<model::ServerRosterEvidence>,
 	total: u64,
 	groups: Vec<(String, u64)>,
 	pending_presence: BTreeMap<Id, model::MemberPresence>,
@@ -640,6 +641,7 @@ impl ActiveMembers {
 			awaiting_sync: true,
 			retries: 0,
 			wire_list: None,
+			server_member_count: None,
 			total: 0,
 			groups: vec![],
 			pending_presence: BTreeMap::new(),
@@ -816,6 +818,9 @@ impl ActiveMembers {
 	}
 	fn snapshot(&self, freshness: Freshness) -> MemberList {
 		MemberList {
+			server_member_count: self
+				.server_member_count
+				.filter(|_| freshness == Freshness::Fresh),
 			missing_identity: self.missing_identity.values().copied().collect(),
 			guild: Some(self.subscription.guild),
 			channel: self.subscription.channel,
@@ -902,8 +907,43 @@ impl ActiveMembers {
 		if update.ops.len() > MAX_MEMBER_OPS {
 			return Err(Failure::Capacity);
 		}
+		self.server_member_count = None;
 		if let Some(groups) = update.groups {
 			self.groups = Self::parse_groups(groups)?;
+			if self.subscription.list_id == "everyone"
+				&& update.id == "everyone"
+				&& let Some(count) = update
+					.member_count
+					.filter(|count| (1..=200).contains(count))
+				&& self
+					.groups
+					.iter()
+					.try_fold(0_u64, |sum, (_, size)| sum.checked_add(*size))
+					== Some(count)
+			{
+				let total = (count as usize).saturating_add(self.groups.len());
+				let mut synced = [false; 200];
+				let untouched = update.ops.iter().all(|op| match op {
+					MemberOp::Sync {
+						range: [start, end],
+						items,
+					} => {
+						let from = (*start).min(synced.len());
+						let to = start.saturating_add(items.len()).min(synced.len());
+						if *start <= *end {
+							synced[from..to].fill(true);
+						}
+						true
+					}
+					_ => false,
+				});
+				self.server_member_count = Some(model::ServerRosterEvidence {
+					count: count as u16,
+					full_sync: untouched
+						&& total <= synced.len()
+						&& synced[..total].iter().all(|synced| *synced),
+				});
+			}
 			// List positions include group headers and only the members visible in this list.
 			self.total = self.groups.iter().fold(0u64, |total, (_, count)| {
 				total.saturating_add(count.saturating_add(1))
@@ -2421,12 +2461,11 @@ async fn run_observed_inner(
 										let mut message_spams = Vec::new();
 										inbox.reset();
 										for channel in &ready.private_channels {
-											inbox.observe(channel);
-											if channel.is_obfuscated() {
+											if !inbox.observe(channel) || channel.is_obfuscated() {
 												continue;
 											}
 											if channel.pending_spam_direct() {
-												message_spams.push(channel.id);
+												message_spams.push((channel.id, channel.is_message_request));
 											} else if channel.pending_message_request() {
 												message_requests.push(channel.id);
 											}
@@ -2699,21 +2738,18 @@ async fn run_observed_inner(
 									"MESSAGE_DELETE_BULK" => { let d: BulkDeleted = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; if d.ids.len() > 100 { return Err(Failure::Capacity); } emit(Event::DeleteBulk { channel:d.channel_id, ids: d.ids })?; }
 									// Only the auth-session hash changed; revocation arrives as HTTP 401 or close 4004.
 									"AUTH_SESSION_CHANGE" => {}
-									"CHANNEL_DELETE" => { let c: ChannelDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; inbox.forget(c.id); calls.invalidate(c.id); emit(Event::Unavailable(c.id))?; }
+									"CHANNEL_DELETE" => { let c: ChannelDto = decode(packet.d.get().as_bytes()).map_err(|_| Failure::Protocol)?; inbox.forget(c.id); calls.invalidate(c.id); if c.guild_id.is_none() && c.kind == 1 { emit(Event::UserAction(client_core::user_actions::Event::DirectDeleted(c.id)))?; } emit(Event::Unavailable(c.id))?; }
 									"CHANNEL_CREATE" => {
 										let permissions=owner_id.map(|owner|channel_events::permission_metadata(packet.d.get().as_bytes(),owner)).transpose()?.flatten();
-										let (event, request, spam)=channel_events::create(packet.d.get().as_bytes(),&mut inbox)?;
+										let (event, inbox_update)=channel_events::create(packet.d.get().as_bytes(),&mut inbox)?;
 										match &event {
 											Event::ChannelCreated(c) => channel_events::admit_call(c,&known_guilds,&mut calls),
 											Event::Unavailable(id) => calls.invalidate(*id),
 											_=>{}
 										}
 										emit(event)?;
-										if let Some(channel) = request {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageRequest { channel, pending: true }))?;
-										}
-										if let Some(channel) = spam {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageSpam { channel, spam: true }))?;
+										if let Some((channel, pending, spam)) = inbox_update {
+											emit(Event::UserAction(client_core::user_actions::Event::DirectInbox { channel, pending, spam }))?;
 										}
 										if let Some(permissions)=permissions {emit(permissions)?;}
 									}
@@ -2724,11 +2760,8 @@ async fn run_observed_inner(
 										if let Event::Unavailable(id)=&update.event {calls.invalidate(*id);}
 										if let Event::ChannelChanged(patch)=&update.event && let model::Patch::Value(kind)=patch.kind && !matches!(kind,1..=3) {calls.invalidate(patch.id);}
 										emit(update.event)?;
-										if let Some((channel, pending)) = update.message_request {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageRequest { channel, pending }))?;
-										}
-										if let Some((channel, spam)) = update.spam_direct {
-											emit(Event::UserAction(client_core::user_actions::Event::MessageSpam { channel, spam }))?;
+										if let Some((channel, pending, spam)) = update.inbox {
+											emit(Event::UserAction(client_core::user_actions::Event::DirectInbox { channel, pending, spam }))?;
 										}
 										if let Some(permissions)=permissions {emit(permissions)?;}
 									}
@@ -4459,6 +4492,57 @@ mod member_tests {
 			_ => panic!("expected person at {index}"),
 		}
 	}
+	#[test]
+	fn public_roster_evidence_requires_matching_count_groups_and_full_sync() {
+		let mut list = ActiveMembers::new(MemberSubscription {
+			thread: false,
+			guild: Id(1),
+			channel: Id(2),
+			request: 7,
+			list_id: "everyone".into(),
+			ranges: vec![[0, 99]],
+		});
+		let mut wire = json!({"guild_id":"1","id":"everyone","member_count":1,"groups":[{"id":"offline","count":1}],"ops":[{"op":"SYNC","range":[0,99],"items":[{"group":{"id":"offline"}},{"member":{"user":{"id":"3","username":"Synthetic"}}}]}]});
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_some_and(|e| e.count == 1 && e.full_sync)
+		);
+		assert!(
+			list.snapshot(Freshness::Stale)
+				.server_member_count
+				.is_none()
+		);
+		wire["ops"] = json!([{"op":"SYNC","range":[0,99],"items":[{"group":{"id":"offline"}}]}]);
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_some_and(|e| !e.full_sync)
+		);
+		wire["member_count"] = json!(2);
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_none()
+		);
+		wire["member_count"] = json!(1);
+		list.subscription.list_id = "restricted".into();
+		list.wire_list = Some("everyone".into());
+		list.update(decode(wire.to_string().as_bytes()).unwrap())
+			.unwrap();
+		assert!(
+			list.snapshot(Freshness::Fresh)
+				.server_member_count
+				.is_none()
+		);
+	}
+
 	#[test]
 	fn member_presence_burst_delivers_every_user() {
 		let mut list = ActiveMembers::new(MemberSubscription {

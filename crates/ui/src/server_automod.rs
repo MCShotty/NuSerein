@@ -64,7 +64,18 @@ pub(super) struct AutoModUi {
 }
 impl AutoModUi {
 	pub fn has_changes(&self) -> bool {
-		self.draft.is_some() || self.delete.is_some()
+		self.draft.is_some() || self.overlay_open()
+	}
+	pub(super) fn overlay_open(&self) -> bool {
+		self.delete.is_some()
+	}
+	fn begin_delete(&mut self, id: Id) {
+		self.reason.clear();
+		self.delete = Some(id);
+	}
+	fn cancel_delete(&mut self) {
+		self.delete = None;
+		self.reason.clear();
 	}
 	pub fn show(
 		&mut self,
@@ -87,7 +98,10 @@ impl AutoModUi {
 			self.attempted = true;
 		}
 
-		if !self.attempted && !state.server_admin.pending {
+		let available = !state.server_admin.pending
+			&& !state.server_settings.saving
+			&& (state.demo || state.gateway_connected);
+		if !self.attempted && available {
 			action = Some(Action::Load);
 			self.attempted = true;
 		}
@@ -107,14 +121,12 @@ impl AutoModUi {
 		if state.server_admin.pending {
 			ui.add(crate::design::Busy::new());
 		}
-		let available = !state.server_admin.pending && (state.demo || state.gateway_connected);
-		if state.server_admin.needs_refresh
-			&& ui
-				.add_enabled(
-					available,
-					egui::Button::new(i18n::translate("automod-refresh")),
-				)
-				.clicked()
+		if ui
+			.add_enabled(
+				available && !self.overlay_open(),
+				egui::Button::new(i18n::translate("automod-refresh")),
+			)
+			.clicked()
 		{
 			action = Some(Action::Load);
 		}
@@ -334,6 +346,7 @@ impl AutoModUi {
 					.server_admin
 					.automod
 					.as_ref()
+					.filter(|_| state.server_admin.guild == Some(guild))
 					.and_then(|page| page.rules.iter().find(|rule| rule.id == id))
 				&& latest.settings != draft.before
 			{
@@ -401,15 +414,6 @@ impl AutoModUi {
 			ui.horizontal(|ui| {
 				if ui
 					.add_enabled(
-						available,
-						egui::Button::new(i18n::translate("automod-refresh")),
-					)
-					.clicked()
-				{
-					action = Some(Action::Load);
-				}
-				if ui
-					.add_enabled(
 						available && !state.server_admin.needs_refresh,
 						egui::Button::new(i18n::translate("automod-create")),
 					)
@@ -418,7 +422,12 @@ impl AutoModUi {
 					self.draft = Some(Draft::new(None, Settings::default()));
 				}
 			});
-			if let Some(page) = &state.server_admin.automod {
+			if let Some(page) = state
+				.server_admin
+				.automod
+				.as_ref()
+				.filter(|_| state.server_admin.guild == Some(guild))
+			{
 				if page.rules.is_empty() {
 					ui.weak(i18n::translate("automod-empty"));
 				}
@@ -450,7 +459,7 @@ impl AutoModUi {
 								)
 								.clicked()
 							{
-								self.delete = Some(rule.id);
+								self.begin_delete(rule.id);
 							}
 						});
 					});
@@ -462,6 +471,7 @@ impl AutoModUi {
 		}
 		if let Some(id) = self.delete {
 			let mut confirm = false;
+			let mut cancel = false;
 			let delete = Action::Delete {
 				id,
 				reason: self.reason.clone(),
@@ -492,12 +502,17 @@ impl AutoModUi {
 									egui::Button::new(i18n::translate("automod-delete")),
 								)
 								.clicked();
+							cancel = ui
+								.add_enabled(
+									!state.server_admin.pending,
+									egui::Button::new(i18n::translate("automod-cancel")),
+								)
+								.clicked();
 						});
 					});
-			if response.close && !state.server_admin.pending {
-				self.delete = None;
-			}
-			if confirm {
+			if (response.close || cancel) && !state.server_admin.pending {
+				self.cancel_delete();
+			} else if confirm {
 				action = Some(Action::Delete {
 					id,
 					reason: self.reason.clone(),
@@ -754,6 +769,19 @@ mod tests {
 			vec!["  ^edited$  "]
 		);
 	}
+	#[test]
+	fn cancelling_a_rule_deletion_drops_its_reason_before_the_next_rule() {
+		let mut panel = AutoModUi::default();
+		panel.begin_delete(Id(100));
+		panel.reason = "Reason for first rule".into();
+		assert!(panel.overlay_open() && panel.has_changes());
+		panel.cancel_delete();
+		assert!(!panel.overlay_open() && panel.reason.is_empty());
+		panel.begin_delete(Id(200));
+		assert_eq!(panel.delete, Some(Id(200)));
+		assert!(panel.reason.is_empty());
+	}
+
 	#[test]
 	fn offline_rule_confirmation_can_be_cancelled_without_a_write() {
 		let mut state = test_support::demo_state();

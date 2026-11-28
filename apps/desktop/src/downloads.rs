@@ -15,6 +15,8 @@ use tokio::sync::{Notify, watch};
 const MAX_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_EMBED_BYTES: u64 = 16 * 1024 * 1024;
 const DOWNLOAD_EDGE: u32 = 2048;
+const DOWNLOAD_ATTEMPTS: usize = 3;
+const RETRY_DELAY: Duration = Duration::from_millis(150);
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Status {
 	#[default]
@@ -514,6 +516,46 @@ impl Drop for Partial<'_> {
 		}
 	}
 }
+/// Retry only the read-only GET before headers arrive, never a partial body or an HTTP error.
+async fn request_download(
+	client: &reqwest::Client,
+	url: url::Url,
+	cancelled: &AtomicBool,
+	wake_cancel: &Notify,
+) -> Result<reqwest::Response, &'static str> {
+	for attempt in 1..=DOWNLOAD_ATTEMPTS {
+		if cancelled.load(Ordering::Acquire) {
+			return Err("Cancelled");
+		}
+		let sent = tokio::select! {
+			biased;
+			_ = wake_cancel.notified() => return Err("Cancelled"),
+			response = client.get(url.clone()).header(reqwest::header::ACCEPT_ENCODING, "identity").send() => response,
+		};
+		match sent {
+			Ok(response) => return Ok(response),
+			Err(error)
+				if attempt < DOWNLOAD_ATTEMPTS && error.is_request() && !error.is_timeout() =>
+			{
+				tokio::select! {
+					biased;
+					_ = wake_cancel.notified() => return Err("Cancelled"),
+					_ = tokio::time::sleep(RETRY_DELAY) => {}
+				}
+			}
+			Err(_) => break,
+		}
+	}
+	Err("Attachment download failed")
+}
+
+/// Stream an attachment or embedded image to a destination file with size guards and atomic commit.
+///
+/// Validates response status, `identity` encoding, and bounds (`MAX_BYTES` for attachments,
+/// `MAX_EMBED_BYTES` PNG for embedded images). When present, a valid response `Content-Length`
+/// supersedes metadata size; otherwise metadata size is used. Chunks are streamed through a
+/// temporary `.partial` sibling file and committed atomically once the exact expected byte
+/// count is verified.
 #[allow(clippy::too_many_arguments)]
 async fn download(
 	client: &reqwest::Client,
@@ -538,11 +580,7 @@ async fn download(
 	if cancelled.load(Ordering::Acquire) {
 		return Err("Cancelled");
 	}
-	let response = tokio::select! {
-		biased;
-		_ = wake_cancel.notified() => return Err("Cancelled"),
-		response = client.get(url).header(reqwest::header::ACCEPT_ENCODING, "identity").send() => response.map_err(|_| "Attachment download failed")?,
-	};
+	let response = request_download(client, url, cancelled, wake_cancel).await?;
 	if response.status() != reqwest::StatusCode::OK {
 		return Err("Attachment unavailable; reload the conversation and try again");
 	}
@@ -576,15 +614,14 @@ async fn download(
 			.and_then(|value| value.parse::<u64>().ok())
 			.filter(|length| (1..=MAX_EMBED_BYTES).contains(length))
 			.ok_or("Embedded image needs a nonempty Content-Length of at most 16 MiB")?
+	} else if let Some(length) = response.content_length() {
+		if length == 0 || length > MAX_BYTES {
+			return Err("Attachment must be nonempty and at most 100 MiB");
+		}
+		length
 	} else {
 		expected
 	};
-	if response
-		.content_length()
-		.is_some_and(|length| length != expected)
-	{
-		return Err("Attachment size changed; reload the conversation");
-	}
 	let mut response = response;
 	let cleanup_failed = AtomicBool::new(false);
 	let mut partial = Partial::create(destination, &cleanup_failed)?;
@@ -1067,6 +1104,7 @@ mod tests {
 		}
 	}
 
+	/// Verify explicit download admission guards, transfer limits, cancellation cleanup, and atomic destination commit.
 	#[tokio::test]
 	async fn explicit_download_stream_limits_cancel_and_atomic_replacement() {
 		let mut image = attachment();
@@ -1281,5 +1319,228 @@ mod tests {
 		assert!(cleanup_failed.load(Ordering::Acquire));
 		fs::remove_dir(&partial_path).unwrap();
 		fs::remove_dir_all(root).unwrap();
+	}
+
+	/// Verify that attachment downloads succeed when response `Content-Length` differs from metadata size within `MAX_BYTES`.
+	#[tokio::test]
+	async fn attachment_download_accepts_cdn_content_length_differing_from_metadata_size() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-download-test-mismatch-{}",
+			std::process::id()
+		));
+		fs::create_dir_all(&root).unwrap();
+		let destination = root.join("mismatch.bin");
+		let client = reqwest::Client::builder()
+			.no_proxy()
+			.redirect(reqwest::redirect::Policy::none())
+			.timeout(Duration::from_secs(5))
+			.build()
+			.unwrap();
+		let cancelled = AtomicBool::new(false);
+		let wake = Notify::new();
+		let content: Vec<u8> = (0..=255).cycle().take(32 * 1024).collect();
+		// When Discord CDN returns a Content-Length that differs from the message
+		// metadata size (e.g. EXIF stripped, recompressed, or client metadata drift),
+		// download succeeds as long as Content-Length is within MAX_BYTES.
+		for metadata_size in [content.len() as u64 + 1024, content.len() as u64 - 1024] {
+			let (url, task) = endpoint(content.clone(), false, false).await;
+			download(
+				&client,
+				url,
+				&destination,
+				metadata_size,
+				true,
+				&cancelled,
+				&wake,
+				&|_| {},
+			)
+			.await
+			.expect("download accepts CDN Content-Length within MAX_BYTES");
+			task.await.unwrap();
+			assert_eq!(fs::read(&destination).unwrap(), content);
+		}
+		let _ = fs::remove_dir_all(&root);
+	}
+
+	/// Verify chunked transfer fallback to metadata size, zero-length rejection, and `MAX_BYTES` enforcement.
+	#[tokio::test]
+	async fn attachment_download_validates_content_length_bounds_and_fallback() {
+		let root = std::env::temp_dir().join(format!(
+			"serein-download-test-bounds-{}",
+			std::process::id()
+		));
+		fs::create_dir_all(&root).unwrap();
+		let destination = root.join("bounds.bin");
+		let client = reqwest::Client::builder()
+			.no_proxy()
+			.redirect(reqwest::redirect::Policy::none())
+			.timeout(Duration::from_secs(5))
+			.build()
+			.unwrap();
+		let cancelled = AtomicBool::new(false);
+		let wake = Notify::new();
+		let content: Vec<u8> = (0..=255).cycle().take(16 * 1024).collect();
+
+		// 1. Missing Content-Length header (chunked transfer) falls back to metadata size.
+		// When received bytes match metadata size, download succeeds.
+		let (url, task) = endpoint(content.clone(), true, false).await;
+		download(
+			&client,
+			url,
+			&destination,
+			content.len() as u64,
+			true,
+			&cancelled,
+			&wake,
+			&|_| {},
+		)
+		.await
+		.expect("download succeeds when chunked body matches metadata size fallback");
+		task.await.unwrap();
+		assert_eq!(fs::read(&destination).unwrap(), content);
+
+		// If chunked body does not match metadata size, transfer fails and cleans up.
+		fs::remove_file(&destination).unwrap();
+		let (url, task) = endpoint(content.clone(), true, false).await;
+		assert_eq!(
+			download(
+				&client,
+				url,
+				&destination,
+				content.len() as u64 + 1024,
+				true,
+				&cancelled,
+				&wake,
+				&|_| {},
+			)
+			.await,
+			Err("Attachment transfer incomplete")
+		);
+		task.await.unwrap();
+		assert!(!destination.exists());
+		assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+
+		// 2. Zero-byte Content-Length is rejected without creating or committing partial files.
+		let (url, task) = endpoint(Vec::new(), false, false).await;
+		assert_eq!(
+			download(
+				&client,
+				url,
+				&destination,
+				1024,
+				true,
+				&cancelled,
+				&wake,
+				&|_| {},
+			)
+			.await,
+			Err("Attachment must be nonempty and at most 100 MiB")
+		);
+		task.await.unwrap();
+		assert!(!destination.exists());
+		assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+
+		// 3. Content-Length exceeding MAX_BYTES is rejected before writing chunks to disk.
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let url = url::Url::parse(&format!(
+			"http://{}/oversized",
+			listener.local_addr().unwrap()
+		))
+		.unwrap();
+		let server = tokio::spawn(async move {
+			let (mut socket, _) = listener.accept().await.unwrap();
+			let mut request = [0u8; 8192];
+			let _ = socket.read(&mut request).await.unwrap();
+			let _ = socket
+				.write_all(
+					format!(
+						"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+						MAX_BYTES + 1
+					)
+					.as_bytes(),
+				)
+				.await;
+		});
+		assert_eq!(
+			download(
+				&client,
+				url,
+				&destination,
+				1024,
+				true,
+				&cancelled,
+				&wake,
+				&|_| {},
+			)
+			.await,
+			Err("Attachment must be nonempty and at most 100 MiB")
+		);
+		server.await.unwrap();
+		assert!(!destination.exists());
+		assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+
+		let _ = fs::remove_dir_all(&root);
+	}
+
+	/// A filtered network resets fresh connections; one dropped request must not lose the save.
+	#[tokio::test]
+	async fn a_reset_request_is_retried_before_the_download_fails() {
+		let root =
+			std::env::temp_dir().join(format!("serein-download-retry-{}", std::process::id()));
+		fs::create_dir_all(&root).unwrap();
+		let destination = root.join("retried.bin");
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let url = url::Url::parse(&format!(
+			"http://{}/retried",
+			listener.local_addr().unwrap()
+		))
+		.unwrap();
+		let content = b"synthetic retried attachment bytes".to_vec();
+		let body = content.clone();
+		let server = tokio::spawn(async move {
+			// The first connection dies after its request, as a filtered network drops a fresh
+			// TLS handshake; only the retried connection is answered.
+			let (mut first, _) = listener.accept().await.unwrap();
+			let mut request = [0u8; 4096];
+			let _ = first.read(&mut request).await.unwrap();
+			drop(first);
+			let (mut second, _) = listener.accept().await.unwrap();
+			let mut request = [0u8; 4096];
+			let _ = second.read(&mut request).await.unwrap();
+			second
+				.write_all(
+					format!(
+						"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+						body.len()
+					)
+					.as_bytes(),
+				)
+				.await
+				.unwrap();
+			second.write_all(&body).await.unwrap();
+		});
+		let client = reqwest::Client::builder()
+			.no_proxy()
+			.redirect(reqwest::redirect::Policy::none())
+			.timeout(Duration::from_secs(5))
+			.build()
+			.unwrap();
+		let cancelled = AtomicBool::new(false);
+		let wake = Notify::new();
+		download(
+			&client,
+			url,
+			&destination,
+			content.len() as u64,
+			false,
+			&cancelled,
+			&wake,
+			&|_| {},
+		)
+		.await
+		.unwrap();
+		server.await.unwrap();
+		assert_eq!(fs::read(&destination).unwrap(), content);
+		let _ = fs::remove_dir_all(&root);
 	}
 }

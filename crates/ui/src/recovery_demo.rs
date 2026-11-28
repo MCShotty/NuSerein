@@ -130,52 +130,31 @@ pub fn check(mut state: State) {
 	// Recovery remains reachable even on platforms without a custom title bar.
 	let commands = click(&ctx, &mut view, &mut state, "Reconnect now", 0);
 	assert!(view.reconnect_requested && commands.is_empty());
-	// Both the header and inline reload wake Gateway recovery and request REST history once.
-	for (occurrence, location) in ["header", "empty timeline"].into_iter().enumerate() {
+	// The offline action wakes the Gateway without silently running a history read.
+	for occurrence in 0..2 {
 		view.reconnect_requested = false;
-		let commands = click(&ctx, &mut view, &mut state, "Reload history", occurrence);
+		let before = state.request;
+		let commands = click(&ctx, &mut view, &mut state, "Reconnect", occurrence);
+		assert!(view.reconnect_requested);
+		assert_eq!(state.request, before);
 		assert!(
-			view.reconnect_requested,
-			"The {location} must wake Gateway recovery"
+			!commands
+				.iter()
+				.any(|command| matches!(command, Command::History { .. }))
 		);
-		let histories: Vec<_> = commands
-			.iter()
-			.filter(|command| matches!(command, Command::History { .. }))
-			.collect();
-		assert_eq!(
-			histories.len(),
-			1,
-			"The {location} must reload history once"
-		);
-		assert!(matches!(histories[0], Command::History { channel: id, .. } if *id == channel));
-		assert_eq!(state.freshness, Freshness::Loading);
-		if occurrence == 0 {
-			let request = state.request;
-			apply(
-				&mut state,
-				Event::History {
-					channel,
-					request,
-					older: false,
-					messages: vec![],
-				},
-			);
-			assert_eq!(state.freshness, Freshness::Stale);
-		}
 	}
+	// A read already in progress remains independently scoped through a Gateway retry.
+	let _ = state.history(None);
 	let request = state.request;
 	view.reconnect_requested = false;
-	let commands = click(&ctx, &mut view, &mut state, "Reload history", 0);
+	let commands = click(&ctx, &mut view, &mut state, "Reconnect", 0);
 	assert!(view.reconnect_requested);
 	assert!(
 		!commands
 			.iter()
 			.any(|command| matches!(command, Command::History { .. }))
 	);
-	assert_eq!(
-		state.request, request,
-		"Refresh must not replace an in-flight REST request"
-	);
+	assert_eq!(state.request, request);
 	apply(&mut state, Event::Disconnected);
 	assert!(state.history_pending);
 	assert_eq!(

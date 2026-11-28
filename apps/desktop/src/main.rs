@@ -568,6 +568,7 @@ struct Desktop {
 	sticker_pack_cache_load: cache::HistoryLoad,
 	sticker_pack_cache_save: cache::HistoryLoad,
 	gif_cache: cache::GifCache,
+	sound_favorites_cache: cache::GifCache,
 	member_cache_saved: Option<(u64, model::Id, u64, u64)>,
 	member_cache_cleared: cache::MemberCacheClear,
 	server_cache_load: cache::HistoryLoad,
@@ -639,7 +640,7 @@ struct Desktop {
 	plaintext_save_pending: bool,
 	account_presences: std::collections::BTreeMap<model::Id, model::OwnPresence>,
 	presence_load_pending: bool,
-	deferred_connect: Option<(SessionSecret, bool)>,
+	deferred_connect: Option<(u64, SessionSecret, bool)>,
 	presence_authoritative: bool,
 	presence_saved: Option<(model::Id, model::OwnPresence)>,
 	/// Saved account awaiting the owner's confirmation before it is forgotten.
@@ -745,6 +746,12 @@ fn user_action_notice(event: &Event) -> Option<(ui::design::Level, &'static str)
 	else {
 		return None;
 	};
+	if matches!(
+		action,
+		client_core::user_actions::Action::SpamRequest { .. }
+	) {
+		return None; // The scoped review owns feedback; HTTP acceptance is not a success notice.
+	}
 	Some(match result {
 		Ok(()) if matches!(action, client_core::user_actions::Action::OpenDm(_)) => {
 			(ui::design::Level::Error, action.completion_label())
@@ -941,6 +948,9 @@ impl eframe::App for Desktop {
 		false
 	}
 	fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+		if raw_input.viewport_id != egui::ViewportId::ROOT {
+			return;
+		}
 		// Before the pass begins, so the whole frame resolves System to the same theme.
 		self.sync_system_theme(ctx);
 		if self.maximize_after_show && self.window.is_visible() == Some(true) {

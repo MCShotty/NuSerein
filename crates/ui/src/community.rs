@@ -4,15 +4,39 @@ use client_core::{Command, State};
 use model::{Id, community::*};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+#[derive(Clone, Copy)]
+enum SavedDraft {
+	Event,
+	Occurrence,
+	Confirmation,
+}
+
+#[derive(Clone, Copy)]
+enum EventMenuAction {
+	Edit,
+	Start,
+	Cancel,
+	End,
+	Delete,
+}
+
+enum DraftReplacement {
+	Event(Box<Editor>),
+	Occurrence(Box<OccurrenceEditor>),
+}
+
 #[derive(Default)]
 pub(super) struct CommunityUi {
 	guild: Option<Id>,
 	generation: u64,
 	selected: Option<Id>,
 	draft: Option<Editor>,
+	browsing_draft: bool,
+	browsing_occurrence: bool,
 	occurrence_draft: Option<OccurrenceEditor>,
+	replacement: Option<DraftReplacement>,
 	confirm: Option<Action>,
-	submitted: Option<u64>,
+	submitted: Option<(u64, SavedDraft)>,
 	link: String,
 	link_error: Option<&'static str>,
 	pub stage_channel: Option<Id>,
@@ -20,13 +44,22 @@ pub(super) struct CommunityUi {
 	stage_event: Option<Id>,
 	stage_draft_channel: Option<Id>,
 	stage_dirty: bool,
+	stage_draft_conflict: bool,
 	stage_submitted: Option<u64>,
 	requested_stage: Option<Id>,
 	audience_page: usize,
 	end_stage_confirm: bool,
 	inputs: Option<TextInputStates>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CreateStep {
+	Location,
+	Details,
+	Review,
+}
+
 struct Editor {
+	step: CreateStep,
 	inputs: TextInputStates,
 	guild: Id,
 	before: Option<ScheduledEvent>,
@@ -38,7 +71,6 @@ struct Editor {
 	start: String,
 	end: String,
 	repeat: u8,
-	error: Option<&'static str>,
 }
 
 struct OccurrenceEditor {
@@ -48,7 +80,6 @@ struct OccurrenceEditor {
 	start: String,
 	end: String,
 	canceled: bool,
-	error: Option<&'static str>,
 }
 impl OccurrenceEditor {
 	fn new(before: ScheduledEvent, original: i64) -> Self {
@@ -66,7 +97,7 @@ impl OccurrenceEditor {
 					before.id,
 					original,
 				)),
-				2,
+				6,
 			),
 			original,
 			start: format_time(exception.and_then(|e| e.start).unwrap_or(original)),
@@ -77,15 +108,14 @@ impl OccurrenceEditor {
 				.unwrap_or_default(),
 			canceled: exception.is_some_and(|e| e.canceled),
 			before,
-			error: None,
 		}
 	}
 	fn action(&self) -> Result<Action, &'static str> {
-		let start = parse_time(&self.start)?;
+		let start = parse_event_time(&self.start)?;
 		let end = if self.end.trim().is_empty() {
 			None
 		} else {
-			Some(parse_time(&self.end)?)
+			Some(parse_event_time(&self.end)?)
 		};
 		if end.is_some_and(|e| e <= start) {
 			return Err("The occurrence end must be after its start");
@@ -120,13 +150,14 @@ impl Editor {
 				recurrence: None,
 			});
 		Self {
+			step: CreateStep::Location,
 			inputs: TextInputStates::new(
 				egui::Id::unique((
 					"community-event-editor",
 					guild,
 					event.as_ref().map(|e| e.id),
 				)),
-				5,
+				9,
 			),
 			guild,
 			name: d.name,
@@ -138,15 +169,56 @@ impl Editor {
 			end: d.end.map(format_time).unwrap_or_default(),
 			repeat: if d.recurrence.is_some() { 1 } else { 0 },
 			before: event,
-			error: None,
 		}
 	}
+	fn reapply_on(&mut self, current: ScheduledEvent) {
+		let Some(before) = self.before.clone() else {
+			return;
+		};
+		let old = Self::new(self.guild, Some(before));
+		let mut latest = Self::new(self.guild, Some(current));
+		if self.name != old.name {
+			latest.name.clone_from(&self.name);
+		}
+		if self.description != old.description {
+			latest.description.clone_from(&self.description);
+		}
+		if (self.entity_type, self.channel, &self.location)
+			!= (old.entity_type, old.channel, &old.location)
+		{
+			latest.entity_type = self.entity_type;
+			latest.channel = self.channel;
+			latest.location.clone_from(&self.location);
+		}
+		if self.start != old.start {
+			latest.start.clone_from(&self.start);
+		}
+		if self.end != old.end {
+			latest.end.clone_from(&self.end);
+		}
+		if self.repeat != old.repeat {
+			latest.repeat = self.repeat;
+		}
+		*self = latest;
+	}
+
+	fn create_location_ready(&self, state: &State) -> bool {
+		if self.entity_type == 3 {
+			!self.location.trim().is_empty() && state.can_create_event_at(self.guild, 3, None)
+		} else {
+			self.channel.is_some_and(|id| {
+				state.can_view(id)
+					&& state.can_create_event_at(self.guild, self.entity_type, Some(id))
+			})
+		}
+	}
+
 	fn draft(&self) -> Result<EventDraft, &'static str> {
-		let start = parse_time(&self.start)?;
+		let start = parse_event_time(&self.start)?;
 		let end = if self.end.trim().is_empty() {
 			None
 		} else {
-			Some(parse_time(&self.end)?)
+			Some(parse_event_time(&self.end)?)
 		};
 		let at = OffsetDateTime::from_unix_timestamp(start)
 			.map_err(|_| "Start date is outside the supported range")?;
@@ -223,10 +295,102 @@ fn parse_time(value: &str) -> Result<i64, &'static str> {
 	if value.len() > 64 {
 		return Err("Timestamp is too long");
 	}
-	OffsetDateTime::parse(value.trim(), &Rfc3339)
+	let value = value.trim();
+	let normalized = value.split_once('T').and_then(|(date, rest)| {
+		let zone = rest.find(['+', '-', 'Z', 'z'])?;
+		(zone == 5).then(|| format!("{date}T{}:00{}", &rest[..zone], &rest[zone..]))
+	});
+	OffsetDateTime::parse(normalized.as_deref().unwrap_or(value), &Rfc3339)
 		.map(|t| t.unix_timestamp())
-		.map_err(|_| "Use YYYY-MM-DDTHH:MM:SS±HH:MM, including the UTC offset")
+		.map_err(|_| "event-clock-invalid")
 }
+/// An explicit offset preserves the captured instant. Blank means the configured wall time.
+fn event_wall_time(value: &str) -> Result<Vec<OffsetDateTime>, &'static str> {
+	// Validate syntax and the calendar before distinguishing a clock gap from an invalid date.
+	parse_time(&format!("{value}Z"))?;
+	if crate::local_time::timezone_status() == Some("timezone-updating") {
+		return Err("timezone-updating");
+	}
+	let candidates = crate::local_time::wall_time(value);
+	if candidates.is_empty() {
+		Err("event-clock-gap")
+	} else {
+		Ok(candidates)
+	}
+}
+
+fn parse_event_time(value: &str) -> Result<i64, &'static str> {
+	let value = value.trim();
+	if value.len() > 64 {
+		return Err("event-clock-invalid");
+	}
+	let (_, time) = value.split_once('T').ok_or("event-clock-invalid")?;
+	if time.contains(['+', '-', 'Z', 'z']) {
+		return parse_time(value);
+	}
+	match event_wall_time(value)?.as_slice() {
+		[at] => Ok(at.unix_timestamp()),
+		_ => Err("event-clock-fold"),
+	}
+}
+
+#[cfg(test)]
+#[test]
+fn scheduling_accepts_minutes_and_preserves_existing_second_precision() {
+	assert_eq!(
+		parse_time("2027-01-09T18:30+05:30"),
+		parse_time("2027-01-09T13:00:00Z")
+	);
+	assert_eq!(
+		parse_time("2027-01-09T18:30:21+05:30"),
+		parse_time("2027-01-09T13:00:21Z")
+	);
+	assert!(parse_time("2027-01-09T18:30").is_err());
+	assert!(parse_time("2027-02-30T18:30+05:30").is_err());
+}
+
+#[cfg(test)]
+#[test]
+fn scheduling_requires_a_choice_at_the_fold_and_rejects_the_gap() {
+	let _zone = crate::local_time::pin_timezone("Europe/London");
+	assert_eq!(parse_event_time("2026-03-29T01:30"), Err("event-clock-gap"));
+	assert_eq!(
+		parse_event_time("2026-02-30T01:30"),
+		Err("event-clock-invalid")
+	);
+	let wall = "2026-10-25T01:30:21";
+	assert_eq!(parse_event_time(wall), Err("event-clock-fold"));
+	let candidates = event_wall_time(wall).unwrap();
+	assert_eq!(candidates.len(), 2);
+	assert_eq!((candidates[1] - candidates[0]).whole_hours(), 1);
+	for (index, candidate) in candidates.iter().enumerate() {
+		let explicit = candidate.format(&Rfc3339).unwrap();
+		assert_eq!(
+			parse_event_time(&explicit),
+			Ok(candidates[index].unix_timestamp())
+		);
+		assert_eq!(candidate.second(), 21);
+	}
+	assert_eq!(
+		parse_event_time("2026-06-20T13:30"),
+		parse_time("2026-06-20T12:30:00Z")
+	);
+}
+
+fn can_create_event_type(state: &State, guild: Id, entity_type: u8) -> bool {
+	let channel_kind = match entity_type {
+		1 => 13,
+		2 => 2,
+		3 => return state.can_create_event_at(guild, entity_type, None),
+		_ => return false,
+	};
+	state.channels.iter().any(|channel| {
+		channel.guild == Some(guild)
+			&& channel.kind == channel_kind
+			&& state.can_create_event_at(guild, entity_type, Some(channel.id))
+	})
+}
+
 fn owned_input(inputs: &mut TextInputStates, response: egui::Response) -> egui::Response {
 	inputs.track(&response);
 	response
@@ -266,12 +430,15 @@ impl CommunityUi {
 		topic: String,
 		event: Option<Id>,
 	) -> bool {
-		if self.stage_dirty && self.stage_draft_channel.is_some_and(|c| c != channel) {
+		if self.stage_dirty
+			&& (self.stage_draft_channel != Some(channel) || self.stage_event != event)
+		{
 			self.stage_channel = self.stage_draft_channel;
-			state.status =
-				"A topic draft for another Stage is preserved; discard it there to start another";
+			self.stage_draft_conflict = true;
+			state.status = "A different Stage draft is preserved; review or discard it before starting this event";
 			return false;
 		}
+		self.stage_draft_conflict = false;
 		self.stage_channel = Some(channel);
 		if !self.stage_dirty {
 			self.inputs = None;
@@ -331,6 +498,7 @@ impl CommunityUi {
 		self.guild = Some(guild);
 		self.selected = Some(event);
 		self.confirm = None;
+		self.replacement = None;
 		state.community.opened = Some(guild);
 		if state
 			.community
@@ -354,9 +522,57 @@ impl CommunityUi {
 		self.guild = Some(guild);
 		self.selected = None;
 		self.confirm = None;
+		self.replacement = None;
 		state.community.opened = Some(guild);
 		submit(state, guild, Action::ListEvents, commands);
 	}
+	pub fn can_offer_create(state: &State, guild: Id) -> bool {
+		state.can_browse_events(guild)
+			&& [1, 2, 3]
+				.into_iter()
+				.any(|kind| can_create_event_type(state, guild, kind))
+	}
+
+	pub fn open_create_event(&mut self, state: &mut State, guild: Id, commands: &mut Vec<Command>) {
+		if state.community.pending() || !Self::can_offer_create(state, guild) {
+			return;
+		}
+		if self.guild != Some(guild) || self.generation != state.generation {
+			self.open_events(state, guild, commands);
+		}
+		if self.confirm.is_none() && self.replacement.is_none() {
+			self.start_event_draft(state, guild);
+		}
+	}
+
+	fn start_event_draft(&mut self, state: &State, guild: Id) {
+		if self
+			.draft
+			.as_ref()
+			.is_some_and(|draft| draft.guild == guild && draft.before.is_none())
+		{
+			self.browsing_draft = false;
+			self.browsing_occurrence = true;
+			return;
+		}
+		let Some(kind) = [1, 2, 3]
+			.into_iter()
+			.find(|kind| can_create_event_type(state, guild, *kind))
+		else {
+			return;
+		};
+		let mut draft = Editor::new(guild, None);
+		draft.entity_type = kind;
+		if self.draft.is_some() {
+			self.replacement = Some(DraftReplacement::Event(Box::new(draft)));
+		} else {
+			self.draft = Some(draft);
+			self.browsing_draft = false;
+			self.browsing_occurrence = true;
+			self.selected = None;
+		}
+	}
+
 	pub fn show(&mut self, ctx: &egui::Context, state: &mut State, commands: &mut Vec<Command>) {
 		if self.generation != state.generation {
 			*self = Self::default();
@@ -371,56 +587,71 @@ impl CommunityUi {
 			state.close_events();
 			return;
 		}
-		if self
-			.submitted
-			.is_some_and(|r| state.community.completed == r)
+		if let Some((request, saved)) = self.submitted
+			&& state.community.completed == request
 		{
 			self.submitted = None;
-			self.draft = None;
-			self.occurrence_draft = None;
+			match saved {
+				SavedDraft::Event => self.draft = None,
+				SavedDraft::Occurrence => self.occurrence_draft = None,
+				SavedDraft::Confirmation => {}
+			}
 			self.confirm = None;
 		}
 		if !state.community.pending() && state.community.error.is_some() {
 			self.submitted = None;
 		}
-		let mut open = true;
-		egui::Window::new("Server events")
-			.id(egui::Id::unique("community-events"))
-			.open(&mut open)
-			.default_width(620.0)
-			.min_width((ctx.content_rect().width() - 32.0).clamp(1.0, 240.0))
-			.max_width((ctx.content_rect().width() - 32.0).max(1.0))
-			.max_height((ctx.content_rect().height() - 64.0).max(180.0))
-			.resizable(true)
-			.show(ctx, |ui| {
-				ui.set_max_width(ui.available_width());
-				egui::ScrollArea::vertical().show(ui, |ui| {
-					if let Some(name) = state.guild(guild).map(|g| g.name.as_str()) {
-						ui.label(crate::design::semibold(ui, name, 16.0));
-					}
+		if !self.browsing_draft
+			&& self.replacement.is_none()
+			&& self.confirm.is_none()
+			&& (self.occurrence_draft.is_none() || self.browsing_occurrence)
+			&& self
+				.draft
+				.as_ref()
+				.is_some_and(|draft| draft.guild == guild)
+		{
+			self.editor(ctx, state, guild, commands);
+			return;
+		}
+		let server = state
+			.guild(guild)
+			.map_or_else(String::new, |g| g.name.clone());
+		let confirm = self.confirm.clone();
+		let occurrence = !self.browsing_occurrence
+			&& self
+				.occurrence_draft
+				.as_ref()
+				.is_some_and(|draft| draft.before.guild == guild);
+		let allowed = confirm.as_ref().is_some_and(|action| {
+			state.community_action_allowed(guild, action)
+				&& !state.community.needs_refresh
+				&& if action.stage_channel().is_some() {
+					!state.community.stage_stale
+				} else {
+					!state.community.stale
+				}
+		});
+		let response = crate::dialog::Dialog::new(("server-event-browser", self.generation, guild), crate::i18n::translate("server-events-title"))
+			.subtitle(server)
+			.width(640.0)
+			.show(ctx, |body| {
+				body.scroll(180.0, |ui| {
 					ui.horizontal_wrapped(|ui| {
 						if ui
-							.add_enabled(!state.community.pending(), egui::Button::new("Refresh"))
+							.add_enabled(!state.community.pending(), egui::Button::new(crate::i18n::translate("server-events-refresh")))
 							.clicked()
 						{
 							submit(state, guild, Action::ListEvents, commands);
 						}
-						if ui
-							.add_enabled(
-								!state.community.pending(),
-								egui::Button::new(if self.draft.is_some() {
-									"Continue draft"
-								} else {
-									"Create event"
-								}),
-							)
-							.clicked()
-						{
-							if self.draft.is_none() {
-								self.draft = Some(Editor::new(guild, None));
+							if confirm.is_none() && !occurrence && self.replacement.is_none()
+								&& Self::can_offer_create(state, guild)
+								&& ui.add_enabled(
+									!state.community.pending(),
+									egui::Button::new(crate::i18n::translate("server-events-create")),
+								).clicked()
+							{
+								self.start_event_draft(state, guild);
 							}
-							self.selected = None;
-						}
 						if state.community.pending() {
 							ui.add(crate::design::Busy::new());
 							ui.label("Loading…");
@@ -435,9 +666,40 @@ impl CommunityUi {
 					if let Some(error) = state.community.error {
 						ui.colored_label(crate::design::palette(ui).danger, error);
 					}
-					if let Some(action) = self.confirm.clone() {
-						let allowed=state.community_action_allowed(guild,&action) && !state.community.needs_refresh && if action.stage_channel().is_some(){!state.community.stage_stale}else{!state.community.stale};
+					if let Some(replacement) = self.replacement.as_ref() {
+						let (old_name, new_name) = match replacement {
+							DraftReplacement::Event(next) => (self.draft.as_ref().map(|old| old.name.as_str()), next.name.as_str()),
+							DraftReplacement::Occurrence(next) => (self.occurrence_draft.as_ref().map(|old| old.before.draft.name.as_str()), next.before.draft.name.as_str()),
+						};
+						let untitled = crate::i18n::translate("event-draft-untitled");
+						let old = old_name.filter(|name| !name.trim().is_empty()).unwrap_or(&untitled);
+						let next = if new_name.trim().is_empty() { untitled.as_str() } else { new_name };
+						ui.label(crate::i18n::translate_args("event-draft-replace-note", &[("old", old), ("next", next)]));
+						return;
+					}
+					if let Some(action) = &confirm {
 						ui.separator();
+						let (id, occurrence) = match action {
+							Action::EditOccurrence { before, original, .. } => (Some(before.id), Some(time_label(*original))),
+							Action::RestoreOccurrence { before, exception } => (Some(before.id), Some(occurrence_time(*exception).map_or_else(|| exception.to_string(), time_label))),
+							Action::Delete(id) | Action::Status { event: id, .. } => (Some(*id), None),
+							_ => (None, None),
+						};
+						if let Some(id) = id {
+							let captured = match action {
+								Action::EditOccurrence { before, .. } | Action::RestoreOccurrence { before, .. } if before.guild == guild => Some(before),
+								_ => None,
+							};
+							let event = captured.or_else(|| state.community.events.as_ref().filter(|page| page.guild == guild)
+								.and_then(|page| page.events.iter().find(|event| event.id == id)));
+							if let Some(event) = event { ui.strong(&event.draft.name); }
+							else { ui.strong(crate::i18n::translate_args("event-confirm-id", &[("id", &id.to_string())])); }
+							if let Some(when) = &occurrence {
+								ui.label(crate::i18n::translate_args("event-confirm-occurrence", &[("time", when)]));
+							} else if event.is_some_and(|event| event.draft.recurrence.is_some()) {
+								design_event_series_scope(ui, action);
+							}
+						}
 						ui.label(match action {
 							Action::Delete(_) => "Permanently delete this event?",
 							Action::EditOccurrence { canceled: true, .. } => {
@@ -453,30 +715,40 @@ impl CommunityUi {
 							Action::Status { status: 3, .. } => "End this event?",
 							_ => "Start this event now?",
 						});
-						ui.horizontal_wrapped(|ui| {
-							if ui
-								.add_enabled(
-										!state.community.pending() && allowed,
-									egui::Button::new("Confirm"),
-								)
-								.clicked()
-							{
-								self.submitted = submit(state, guild, action, commands);
-							}
-							if ui.button("Back").clicked() {
-								self.confirm = None;
-							}
-						});
-						if !allowed {ui.small("The event or its permissions changed. Refresh, go back and review the current event before confirming.");}
+						if !allowed { ui.small("The event or its permissions changed. Refresh, go back and review the current event before confirming."); }
 						return;
 					}
-					if self.occurrence_draft.is_some() {
+					if occurrence {
 						self.occurrence_editor(ui, state, guild);
 						return;
 					}
-					if self.draft.is_some() {
-						self.editor(ui, state, guild, commands);
-						return;
+					if let Some(draft) = &self.occurrence_draft {
+						let here = draft.before.guild == guild;
+						ui.label(crate::i18n::translate_args("event-draft-saved-name", &[("name", &draft.before.draft.name)]));
+							if here && crate::design::text_action(ui, "event-occurrence-continue").clicked() {
+							self.browsing_occurrence = false;
+						} else if !here {
+							crate::design::hint(ui, "event-occurrence-different-server");
+						}
+						if !state.community.pending() && crate::design::text_action(ui, "event-occurrence-discard").clicked() {
+							self.occurrence_draft = None;
+						}
+					}
+					if let Some(draft) = &self.draft {
+						let untitled = crate::i18n::translate("event-draft-untitled");
+							let saved = if draft.name.trim().is_empty() { untitled.as_str() } else { &draft.name };
+							let owner = state.guild(draft.guild).map_or_else(|| draft.guild.to_string(), |server| server.name.clone());
+							ui.label(crate::i18n::translate_args("event-draft-saved-scope", &[("name", saved), ("server", &owner)]));
+							if draft.guild == guild {
+								if crate::design::text_action(ui, "server-events-continue").clicked() {
+								self.browsing_draft = false;
+							}
+						} else {
+							crate::design::hint(ui, "server-events-different-server");
+							if crate::design::text_action(ui, "server-events-discard-draft").clicked() {
+								self.draft = None;
+							}
+						}
 					}
 					ui.separator();
 					ui.horizontal_wrapped(|ui| {
@@ -537,7 +809,7 @@ impl CommunityUi {
 						.filter(|p| p.guild == guild)
 						.map(|p| p.events.as_slice())
 						.unwrap_or(&[]);
-					if events.is_empty() && !state.community.pending() {
+					if !events.iter().any(|event| state.event_visible(event)) && !state.community.pending() {
 						ui.label(
 							if state.community.error.is_some() || state.community.events.is_none() {
 								"Event information is unavailable. Use Refresh to try again."
@@ -546,24 +818,103 @@ impl CommunityUi {
 							},
 						);
 					}
+					let mut menu_action = None;
 					for event in events.iter().filter(|e| state.event_visible(e)) {
-						egui::Frame::group(ui.style()).show(ui, |ui| {
-							ui.label(crate::design::semibold(ui, &event.draft.name, 15.0));
-							ui.label(time_label(event.draft.start));
-							ui.small(event_status(event.status));
-							if ui.button("View event").clicked() {
-								self.selected = Some(event.id);
-							}
+						ui.push_id(event.id, |ui| {
+							egui::Frame::new()
+								.fill(crate::design::palette(ui).base)
+								.corner_radius(8)
+								.inner_margin(10)
+								.show(ui, |ui| {
+									ui.set_width(ui.available_width());
+									ui.allocate_ui_with_layout(
+										egui::vec2(ui.available_width(), 28.0),
+										egui::Layout::right_to_left(egui::Align::Center),
+										|ui| {
+											if let Some(action) = Self::event_menu(ui, state, event) {
+												menu_action = Some((event.clone(), action));
+											}
+											ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+												let title = crate::design::semibold(ui, &event.draft.name, 15.0);
+												if ui.add(egui::Button::new(title).frame(false).truncate()).on_hover_text(&event.draft.name).clicked() {
+													self.selected = Some(event.id);
+												}
+											});
+										},
+									);
+									ui.label(time_label(event.draft.start));
+									ui.small(event_status(event.status));
+								});
 						});
 					}
+					if let Some((event, action)) = menu_action {
+						self.selected = Some(event.id);
+						self.apply_event_menu(state, event, action, commands);
+					}
 				});
+				body.footer(|ui| {
+					use crate::dialog::{self, Action as Tone};
+					if self.replacement.is_some() {
+						if dialog::action(ui, "event-draft-keep", Tone::Neutral).clicked() {
+							self.replacement = None;
+						}
+						if ui.add_enabled_ui(!state.community.pending(), |ui| dialog::action(ui, "event-draft-replace", Tone::Danger)).inner.clicked()
+							&& let Some(replacement) = self.replacement.take()
+						{
+							match replacement {
+								DraftReplacement::Event(next) => {
+									self.selected = next.before.as_ref().map(|event| event.id);
+									self.draft = Some(*next);
+									self.browsing_draft = false;
+									self.browsing_occurrence = true;
+								}
+								DraftReplacement::Occurrence(next) => {
+									self.occurrence_draft = Some(*next);
+									self.browsing_occurrence = false;
+								}
+							}
+						}
+						false
+					} else if let Some(action) = confirm {
+						if ui.add_enabled(!state.community.pending() && allowed, egui::Button::new(crate::i18n::translate("event-action-confirm"))).clicked() {
+							let saved = occurrence && matches!(&action, Action::EditOccurrence { before, original, .. }
+								if self.occurrence_draft.as_ref().is_some_and(|draft| draft.before.id == before.id && draft.original == *original));
+							let request = submit(state, guild, action, commands);
+							self.submitted = request.map(|r| (r, if saved { SavedDraft::Occurrence } else { SavedDraft::Confirmation }));
+						}
+						if !state.community.pending() && dialog::action(ui, "event-action-back", Tone::Neutral).clicked() {
+							self.confirm = None;
+						}
+						false
+					} else if occurrence {
+						let action = self.occurrence_draft.as_ref().and_then(|editor| editor.action().ok())
+							.filter(|action| state.community_action_allowed(guild, action));
+						if ui.add_enabled(!state.community.pending() && !state.community.stale && !state.community.needs_refresh && action.is_some(), egui::Button::new(crate::i18n::translate("event-occurrence-review"))).clicked() {
+							self.confirm = action;
+						}
+						if dialog::action(ui, "event-action-back", Tone::Neutral).clicked() {
+							self.browsing_occurrence = true;
+						}
+						false
+					} else {
+						dialog::action(ui, "server-events-done", Tone::Neutral).clicked()
+					}
+				})
 			});
-		if !open {
+		if response.close && self.replacement.is_some() {
+			self.replacement = None;
+		} else if response.close && self.confirm.is_some() {
+			if !state.community.pending() {
+				self.confirm = None;
+			}
+		} else if response.close && occurrence {
+			self.browsing_occurrence = true;
+		} else if response.close || response.inner {
 			self.guild = None;
 			state.close_events();
-			self.confirm = None;
 		}
 	}
+
 	fn detail(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -686,81 +1037,135 @@ impl CommunityUi {
 			);
 		}
 		self.occurrences(ui, state, &event, commands);
-		if state.can_manage_event(&event) {
-			ui.separator();
-			ui.horizontal_wrapped(|ui| {
-				if ui
-					.add_enabled(
-						ready && matches!(event.status, 1 | 2),
-						egui::Button::new("Edit event"),
-					)
-					.clicked()
-				{
-					self.draft = Some(Editor::new(guild, Some(event.clone())));
-				}
-				if event.status == 1 {
-					if ui
-						.add_enabled(ready, egui::Button::new("Start event"))
-						.clicked()
-					{
-						if event.draft.entity_type == 1
-							&& let Some(channel) = event.draft.channel
-						{
-							if !self.open_stage_editor(
-								state,
-								channel,
-								event.draft.name.clone(),
-								Some(event.id),
-							) {
-								return;
-							}
-							submit(
-								state,
-								guild,
-								Action::GetStage {
-									channel,
-									call_request: state
-										.voice
-										.active
-										.as_ref()
-										.filter(|c| c.channel == channel)
-										.map(|c| c.request),
-								},
-								commands,
-							);
-						} else {
-							self.confirm = Some(Action::Status {
-								event: event.id,
-								status: 2,
-							});
-						}
-					}
-					if ui
-						.add_enabled(ready, egui::Button::new("Cancel event"))
-						.clicked()
-					{
-						self.confirm = Some(Action::Status {
-							event: event.id,
-							status: 4,
-						});
-					}
-				} else if event.status == 2
+		if let Some(action) = Self::event_menu(ui, state, &event) {
+			self.apply_event_menu(state, event, action, commands);
+		}
+	}
+
+	fn event_menu(
+		ui: &mut egui::Ui,
+		state: &State,
+		event: &ScheduledEvent,
+	) -> Option<EventMenuAction> {
+		if !state.can_manage_event(event) {
+			return None;
+		}
+		let ready =
+			!state.community.pending() && !state.community.stale && !state.community.needs_refresh;
+		let button = crate::icons::button(
+			ui,
+			crate::icons::Icon::More,
+			28.0,
+			&crate::i18n::translate("event-more-options"),
+		);
+		let mut selected = None;
+		egui::Popup::menu(&button).show(|ui| {
+			let actions = [
+				(
+					EventMenuAction::Edit,
+					"server-events-edit",
+					matches!(event.status, 1 | 2),
+				),
+				(
+					EventMenuAction::Start,
+					"event-menu-start",
+					event.status == 1,
+				),
+				(
+					EventMenuAction::Cancel,
+					"event-menu-cancel",
+					event.status == 1,
+				),
+				(EventMenuAction::End, "event-menu-end", event.status == 2),
+				(EventMenuAction::Delete, "event-menu-delete", true),
+			];
+			for (action, label, visible) in actions {
+				if visible
 					&& ui
-						.add_enabled(ready, egui::Button::new("End event"))
+						.add_enabled(ready, egui::Button::new(crate::i18n::translate(label)))
 						.clicked()
 				{
+					selected = Some(action);
+					ui.close();
+				}
+			}
+		});
+		selected
+	}
+
+	fn apply_event_menu(
+		&mut self,
+		state: &mut State,
+		event: ScheduledEvent,
+		action: EventMenuAction,
+		commands: &mut Vec<Command>,
+	) {
+		let guild = event.guild;
+		match action {
+			EventMenuAction::Edit => {
+				if self
+					.draft
+					.as_ref()
+					.and_then(|draft| draft.before.as_ref())
+					.is_some_and(|before| before.guild == guild && before.id == event.id)
+				{
+					self.browsing_draft = false;
+				} else if self.draft.is_some() {
+					self.replacement = Some(DraftReplacement::Event(Box::new(Editor::new(
+						guild,
+						Some(event.clone()),
+					))));
+				} else {
+					self.draft = Some(Editor::new(guild, Some(event.clone())));
+					self.browsing_draft = false;
+				}
+			}
+			EventMenuAction::Start => {
+				if event.draft.entity_type == 1
+					&& let Some(channel) = event.draft.channel
+				{
+					if !self.open_stage_editor(
+						state,
+						channel,
+						event.draft.name.clone(),
+						Some(event.id),
+					) {
+						return;
+					}
+					submit(
+						state,
+						guild,
+						Action::GetStage {
+							channel,
+							call_request: state
+								.voice
+								.active
+								.as_ref()
+								.filter(|c| c.channel == channel)
+								.map(|c| c.request),
+						},
+						commands,
+					);
+				} else {
 					self.confirm = Some(Action::Status {
 						event: event.id,
-						status: 3,
+						status: 2,
 					});
 				}
-				if ui
-					.add_enabled(ready, egui::Button::new("Delete event"))
-					.clicked()
-				{
-					self.confirm = Some(Action::Delete(event.id));
-				}
-			});
+			}
+			EventMenuAction::Cancel => {
+				self.confirm = Some(Action::Status {
+					event: event.id,
+					status: 4,
+				})
+			}
+			EventMenuAction::End => {
+				self.confirm = Some(Action::Status {
+					event: event.id,
+					status: 3,
+				})
+			}
+			EventMenuAction::Delete => self.confirm = Some(Action::Delete(event.id)),
 		}
 	}
 
@@ -877,11 +1282,29 @@ impl CommunityUi {
 								}
 								if state.can_manage_event(event) && matches!(event.status, 1 | 2) {
 									if ui
-										.add_enabled(ready, egui::Button::new("Edit occurrence"))
+										.add_enabled(
+											ready && self.replacement.is_none(),
+											egui::Button::new("Edit occurrence"),
+										)
 										.clicked()
 									{
-										self.occurrence_draft =
-											Some(OccurrenceEditor::new(event.clone(), original));
+										if self.occurrence_draft.as_ref().is_some_and(|old| {
+											old.before.guild == event.guild
+												&& old.before.id == event.id && old.original == original
+										}) {
+											self.browsing_occurrence = false;
+										} else if self.occurrence_draft.is_some() {
+											self.replacement =
+												Some(DraftReplacement::Occurrence(Box::new(
+													OccurrenceEditor::new(event.clone(), original),
+												)));
+										} else {
+											self.occurrence_draft = Some(OccurrenceEditor::new(
+												event.clone(),
+												original,
+											));
+											self.browsing_occurrence = false;
+										}
 									}
 									if !canceled
 										&& ui
@@ -932,117 +1355,268 @@ impl CommunityUi {
 			"Original schedule: {}",
 			time_label(editor.original)
 		));
-		ui.label("Start · RFC3339 with UTC offset");
-		owned_input(
+		Self::clock_fields(
+			ui,
 			&mut editor.inputs,
-			ui.add(
-				egui::TextEdit::singleline(&mut editor.start)
-					.id(egui::Id::unique((
-						"community-occurrence-start",
-						editor.before.guild,
-						editor.before.id,
-						editor.original,
-					)))
-					.char_limit(64)
-					.desired_width(f32::INFINITY),
-			),
+			"start",
+			"event-clock-start",
+			&mut editor.start,
 		);
-		ui.label("End · RFC3339 with UTC offset");
-		owned_input(
+		Self::clock_fields(
+			ui,
 			&mut editor.inputs,
-			ui.add(
-				egui::TextEdit::singleline(&mut editor.end)
-					.id(egui::Id::unique((
-						"community-occurrence-end",
-						editor.before.guild,
-						editor.before.id,
-						editor.original,
-					)))
-					.char_limit(64)
-					.desired_width(f32::INFINITY),
-			),
+			"end",
+			"event-clock-end",
+			&mut editor.end,
 		);
 		ui.checkbox(&mut editor.canceled, "Cancel this occurrence");
-		if let Some(error) = editor.error {
-			ui.colored_label(crate::design::palette(ui).danger, error);
-		}
-		let action = editor.action();
-		let allowed = action
+		let current = state
+			.community
+			.events
 			.as_ref()
-			.is_ok_and(|a| state.community_action_allowed(guild, a));
-		let mut discard = false;
-		ui.horizontal_wrapped(|ui| {
-			if ui
-				.add_enabled(
-					!state.community.pending() && !state.community.stale && allowed,
-					egui::Button::new("Review occurrence change"),
-				)
-				.clicked()
+			.filter(|p| p.guild == guild)
+			.and_then(|p| p.events.iter().find(|event| event.id == editor.before.id));
+		if current != Some(&editor.before) {
+			crate::design::hint(ui, "event-draft-changed-review");
+			if !state.community.pending()
+				&& !state.community.stale
+				&& !state.community.needs_refresh
+				&& let Some(current) = current
+					.filter(|event| state.can_manage_event(event) && matches!(event.status, 1 | 2))
 			{
-				match action {
-					Ok(action) => self.confirm = Some(action),
-					Err(error) => editor.error = Some(error),
+				let baseline = OccurrenceEditor::new(editor.before.clone(), editor.original);
+				let mut latest = OccurrenceEditor::new(current.clone(), editor.original);
+				if editor.start != baseline.start {
+					latest.start.clone_from(&editor.start);
+				}
+				if editor.end != baseline.end {
+					latest.end.clone_from(&editor.end);
+				}
+				if editor.canceled != baseline.canceled {
+					latest.canceled = editor.canceled;
+				}
+				if latest
+					.action()
+					.is_ok_and(|action| state.community_action_allowed(guild, &action))
+					&& crate::design::text_action(ui, "event-draft-reapply").clicked()
+				{
+					*editor = latest;
 				}
 			}
-			if ui.button("Discard occurrence draft").clicked() {
-				discard = true;
-			}
-		});
-		if discard {
-			self.occurrence_draft = None;
+		}
+		if let Err(error) = editor.action() {
+			crate::design::hint(ui, error);
 		}
 	}
+
 	fn editor(
 		&mut self,
-		ui: &mut egui::Ui,
+		ctx: &egui::Context,
 		state: &mut State,
 		guild: Id,
 		commands: &mut Vec<Command>,
 	) {
-		let Some(editor) = &mut self.draft else {
+		let Some(editor) = self.draft.as_mut() else {
 			return;
 		};
-		if editor.guild != guild {
-			ui.label(
-				"An event draft for another server is preserved. Reopen that server to continue it.",
-			);
-			if ui.button("Discard saved draft").clicked() {
-				self.draft = None;
-			}
-			return;
-		}
-		ui.separator();
-		ui.heading(if editor.before.is_some() {
-			"Edit event"
+		let event_id = editor.before.as_ref().map(|event| event.id);
+		let creating = event_id.is_none();
+		let step = editor.step;
+		let title = crate::i18n::translate(if event_id.is_some() {
+			"server-events-edit"
 		} else {
-			"Create event"
+			"server-events-create"
 		});
-		ui.label("Name");
-		let id = editor.inputs.id("name");
-		owned_input(
-			&mut editor.inputs,
-			ui.add(
-				egui::TextEdit::singleline(&mut editor.name)
-					.id(id)
-					.char_limit(100)
-					.desired_width(f32::INFINITY),
-			),
-		);
-		ui.label("Description");
-		let id = editor.inputs.id("description");
-		owned_input(
-			&mut editor.inputs,
-			ui.add(
-				egui::TextEdit::multiline(&mut editor.description)
-					.id(id)
-					.char_limit(1000)
-					.desired_rows(3)
-					.desired_width(f32::INFINITY),
-			),
-		);
+		let server = state
+			.guild(guild)
+			.map_or_else(String::new, |guild| guild.name.clone());
+		let response = crate::dialog::Dialog::new(
+			("server-event-editor", state.generation, guild, event_id),
+			title,
+		)
+		.subtitle(server)
+		.width(600.0)
+		.show(ctx, |body| {
+			body.scroll(280.0, |ui| {
+				if !creating {
+					Self::event_location_fields(editor, ui, state, guild);
+					Self::event_details_fields(editor, ui);
+					return;
+				}
+				ui.heading(crate::i18n::translate(match step {
+					CreateStep::Location => "event-create-where",
+					CreateStep::Details => "event-create-details",
+					CreateStep::Review => "event-create-review",
+				}));
+				match step {
+					CreateStep::Location => Self::event_location_fields(editor, ui, state, guild),
+					CreateStep::Details => Self::event_details_fields(editor, ui),
+					CreateStep::Review => Self::event_review(editor, ui, state),
+				}
+			});
+			let location_ready = editor.create_location_ready(state);
+			if creating && step == CreateStep::Location && !location_ready {
+				body.content(|ui| crate::design::hint(ui, "event-create-choose-location"));
+			}
+			let built = if state.community.stale || state.community.needs_refresh {
+				Err("server-events-save-stale")
+			} else if !state.demo && !state.gateway_connected {
+				Err("server-events-save-offline")
+			} else if editor.before.as_ref().is_some_and(|before| {
+				!state
+					.community
+					.events
+					.as_ref()
+					.is_some_and(|page| page.guild == guild && page.events.contains(before))
+			}) {
+				Err("server-events-save-changed")
+			} else {
+				editor.draft().and_then(|draft| {
+					let action = if let Some(before) = &editor.before {
+						Action::Edit {
+							before: before.clone(),
+							after: draft,
+						}
+					} else {
+						Action::Create(draft)
+					};
+					state
+						.community_action_allowed(guild, &action)
+						.then_some(action)
+						.ok_or("server-events-save-denied")
+				})
+			};
+			body.content(|ui| {
+				if let Some(error) = state.community.error {
+					crate::dialog::notice(ui, crate::dialog::Level::Warning, error);
+				}
+				if (!creating || step != CreateStep::Location)
+					&& let Err(error) = &built
+				{
+					crate::design::hint(ui, error);
+					if *error == "server-events-save-changed"
+						&& !state.community.pending()
+						&& let Some(current) = state
+							.community
+							.events
+							.as_ref()
+							.filter(|page| page.guild == guild)
+							.and_then(|page| {
+								page.events.iter().find(|event| Some(event.id) == event_id)
+							})
+							.filter(|event| {
+								state.can_manage_event(event) && matches!(event.status, 1 | 2)
+							}) && crate::design::text_action(ui, "event-draft-reapply").clicked()
+					{
+						editor.reapply_on(current.clone());
+					}
+				}
+				if state.community.pending() {
+					ui.horizontal(|ui| {
+						ui.add(crate::design::Busy::new());
+						ui.label(crate::i18n::translate("server-events-working"));
+					});
+				}
+			});
+			body.footer(|ui| {
+				use crate::dialog::{Action as Button, action};
+				let pending = state.community.pending();
+				let primary = match (creating, step) {
+					(false, _) => "server-events-save",
+					(true, CreateStep::Review) => "server-events-create",
+					(true, _) => "event-create-next",
+				};
+				let ready = if creating && step == CreateStep::Location {
+					location_ready
+				} else {
+					built.is_ok()
+				};
+				let picked = ui
+					.add_enabled_ui(!pending && ready, |ui| {
+						action(ui, primary, Button::Primary).clicked()
+					})
+					.inner;
+				let discard = ui
+					.add_enabled_ui(!pending, |ui| {
+						action(ui, "server-events-discard-draft", Button::Neutral).clicked()
+					})
+					.inner;
+				let refresh = ui
+					.add_enabled_ui(!pending && (state.demo || state.gateway_connected), |ui| {
+						action(ui, "server-events-refresh", Button::Neutral).clicked()
+					})
+					.inner;
+				let back = ui
+					.add_enabled_ui(!pending, |ui| {
+						action(ui, "server-events-back", Button::Neutral).clicked()
+					})
+					.inner;
+				let (next, submit) = match (creating, step, picked, back) {
+					(true, CreateStep::Location, true, _) => (Some(CreateStep::Details), None),
+					(true, CreateStep::Details, true, _) => (Some(CreateStep::Review), None),
+					(true, CreateStep::Details, _, true) => (Some(CreateStep::Location), None),
+					(true, CreateStep::Review, _, true) => (Some(CreateStep::Details), None),
+					(_, _, true, _) => (None, built.ok()),
+					_ => (None, refresh.then_some(Action::ListEvents)),
+				};
+				(discard, back && next.is_none(), next, submit)
+			})
+		});
+		let (discard, back, next, action) = response.inner;
+		if response.close {
+			self.guild = None;
+			state.close_events();
+		} else if discard {
+			self.draft = None;
+		} else if back {
+			self.browsing_draft = true;
+		} else if let Some(step) = next {
+			editor.step = step;
+		} else if let Some(action) = action {
+			let write = action.write();
+			let request = submit(state, guild, action, commands);
+			if write {
+				self.submitted = request.map(|request| (request, SavedDraft::Event));
+			}
+		}
+	}
+	fn event_review(editor: &Editor, ui: &mut egui::Ui, state: &State) {
+		if let Ok(draft) = editor.draft() {
+			ui.strong(&draft.name);
+			if let Some(channel) = draft.channel {
+				if let Some(channel) = state.channel(channel).filter(|c| state.can_view(c.id)) {
+					ui.label(&channel.name);
+				}
+			} else {
+				ui.label(&draft.location);
+			}
+			ui.label(time_label(draft.start));
+			if let Some(end) = draft.end {
+				ui.label(crate::i18n::translate_args(
+					"event-create-end",
+					&[("time", &time_label(end))],
+				));
+			}
+			if draft.recurrence.is_some() {
+				ui.label(crate::i18n::translate("event-create-repeats"));
+			}
+			if !draft.description.is_empty() {
+				ui.label(&draft.description);
+			}
+		}
+	}
+	fn event_location_fields(editor: &mut Editor, ui: &mut egui::Ui, state: &State, guild: Id) {
 		ui.horizontal_wrapped(|ui| {
 			for (kind, label) in [(1, "Stage"), (2, "Voice"), (3, "Somewhere else")] {
-				ui.selectable_value(&mut editor.entity_type, kind, label);
+				let enabled = editor.before.is_some() || can_create_event_type(state, guild, kind);
+				ui.add_enabled_ui(enabled, |ui| {
+					if ui
+						.selectable_value(&mut editor.entity_type, kind, label)
+						.changed() && editor.before.is_none()
+					{
+						editor.channel = None;
+					}
+				});
 			}
 		});
 		if editor.entity_type == 3 {
@@ -1071,35 +1645,51 @@ impl CommunityUi {
 						c.guild == Some(guild)
 							&& c.kind == if editor.entity_type == 1 { 13 } else { 2 }
 							&& state.can_view(c.id)
+							&& (editor.before.is_some()
+								|| state.can_create_event_at(guild, editor.entity_type, Some(c.id)))
 					}) {
 						ui.selectable_value(&mut editor.channel, Some(c.id), &c.name);
 					}
 				});
 		}
-		ui.label("Start · include UTC offset (YYYY-MM-DDTHH:MM:SS+02:00)");
-		let id = editor.inputs.id("start");
+	}
+	fn event_details_fields(editor: &mut Editor, ui: &mut egui::Ui) {
+		ui.label("Name");
+		let id = editor.inputs.id("name");
 		owned_input(
 			&mut editor.inputs,
 			ui.add(
-				egui::TextEdit::singleline(&mut editor.start)
+				egui::TextEdit::singleline(&mut editor.name)
 					.id(id)
-					.char_limit(64)
+					.char_limit(100)
 					.desired_width(f32::INFINITY),
 			),
 		);
-		if let Ok(start) = parse_time(&editor.start) {
-			ui.small(format!("Your time: {}", time_label(start)));
-		}
-		ui.label("End · required for external events");
-		let id = editor.inputs.id("end");
+		ui.label("Description");
+		let id = editor.inputs.id("description");
 		owned_input(
 			&mut editor.inputs,
 			ui.add(
-				egui::TextEdit::singleline(&mut editor.end)
+				egui::TextEdit::multiline(&mut editor.description)
 					.id(id)
-					.char_limit(64)
+					.char_limit(1000)
+					.desired_rows(3)
 					.desired_width(f32::INFINITY),
 			),
+		);
+		Self::clock_fields(
+			ui,
+			&mut editor.inputs,
+			"start",
+			"event-clock-start",
+			&mut editor.start,
+		);
+		Self::clock_fields(
+			ui,
+			&mut editor.inputs,
+			"end",
+			"event-clock-end",
+			&mut editor.end,
 		);
 		let names = [
 			"Does not repeat",
@@ -1126,61 +1716,135 @@ impl CommunityUi {
 				}
 			});
 		if editor.repeat != 0 {
-			ui.small("Repetition uses the UTC weekday/time of the first event. Local clock times can change at daylight saving transitions.");
-		}
-		if let Some(error) = editor.error {
-			ui.colored_label(crate::design::palette(ui).danger, error);
-		}
-		let built = editor.draft();
-		let allowed = built.as_ref().is_ok_and(|d| {
-			if let Some(before) = &editor.before {
-				state.can_manage_event(before)
-					&& state.community_action_allowed(
-						guild,
-						&Action::Edit {
-							before: before.clone(),
-							after: d.clone(),
-						},
-					)
-			} else {
-				state.can_create_event(guild, d)
-			}
-		});
-		let mut discard = false;
-		ui.horizontal_wrapped(|ui| {
-			if ui
-				.add_enabled(
-					!state.community.pending() && !state.community.stale && allowed,
-					egui::Button::new("Save event"),
-				)
-				.clicked()
+			crate::design::hint(ui, "event-clock-recurrence");
+			if let Ok(draft) = editor.draft()
+				&& let Some(repeat) = draft.recurrence
 			{
-				match built {
-					Ok(draft) => {
-						let action = if let Some(before) = &editor.before {
-							Action::Edit {
-								before: before.clone(),
-								after: draft,
-							}
-						} else {
-							Action::Create(draft)
-						};
-						self.submitted = submit(state, guild, action, commands);
-					}
-					Err(error) => editor.error = Some(error),
+				for instant in repeat.upcoming(OffsetDateTime::now_utc().unix_timestamp(), 3) {
+					ui.small(time_label(instant));
 				}
 			}
-			if ui.button("Discard draft").clicked() {
-				discard = true;
-			}
-		});
-		if !allowed {
-			ui.small("Complete the fields and check your current event permissions before saving.");
-		}
-		if discard {
-			self.draft = None;
 		}
 	}
+	fn clock_fields(
+		ui: &mut egui::Ui,
+		inputs: &mut TextInputStates,
+		key: &str,
+		label: &str,
+		value: &mut String,
+	) {
+		use crate::i18n::{translate, translate_args};
+		ui.strong(translate(label));
+		let (day, rest) = value.split_once('T').unwrap_or((value.as_str(), ""));
+		let zone_at = rest.find(['+', '-', 'Z', 'z']).unwrap_or(rest.len());
+		let mut date = day.to_owned();
+		let mut clock = rest[..zone_at].to_owned();
+		let mut zone = rest[zone_at..].to_owned();
+		let root = inputs.id(key);
+		let changed = ui
+			.horizontal_wrapped(|ui| {
+				let each = |ui: &mut egui::Ui,
+				            id: &str,
+				            value: &mut String,
+				            caption: &str,
+				            hint: &str,
+				            width: f32| {
+					let name = ui.label(translate(caption));
+					ui.add(
+						egui::TextEdit::singleline(value)
+							.id(root.with(id))
+							.char_limit(24)
+							.desired_width(width)
+							.hint_text(hint),
+					)
+					.labelled_by(name.id)
+				};
+				let day = each(
+					ui,
+					"date",
+					&mut date,
+					"event-clock-date",
+					"YYYY-MM-DD",
+					86.0,
+				);
+				let time = each(ui, "time", &mut clock, "event-clock-time", "HH:MM", 62.0);
+				let offset = each(ui, "zone", &mut zone, "event-clock-zone", "+00:00", 58.0);
+				let changed = day.changed() || time.changed() || offset.changed();
+				for response in [day, time, offset] {
+					inputs.track(&response);
+				}
+				changed
+			})
+			.inner;
+		let picked = crate::search::date_picker::event_pick(
+			ui,
+			root,
+			key,
+			crate::search::date_picker::parse_date(date.trim()),
+		);
+		if let Some(picked) = picked {
+			date = picked.to_string();
+		}
+		let use_local = !zone.is_empty()
+			&& !date.is_empty()
+			&& !clock.is_empty()
+			&& crate::design::text_action(ui, "event-clock-use-local").clicked();
+		if use_local {
+			zone.clear();
+		}
+		if changed || picked.is_some() || use_local {
+			if date.trim().is_empty() && clock.trim().is_empty() && zone.trim().is_empty() {
+				value.clear();
+			} else {
+				*value = format!("{}T{}{}", date.trim(), clock.trim(), zone.trim());
+			}
+		}
+		if zone.is_empty() && !value.is_empty() {
+			ui.small(translate_args(
+				"event-clock-local-zone",
+				&[("zone", &crate::local_time::timezone_label())],
+			));
+			if let Ok(candidates) = event_wall_time(value)
+				&& let [early, late] = candidates.as_slice()
+			{
+				crate::design::hint(ui, "event-clock-fold");
+				ui.horizontal_wrapped(|ui| {
+					for option in [early, late] {
+						let Ok(label) = option.format(&Rfc3339) else {
+							continue;
+						};
+						let offset = option.offset().to_string();
+						let offset = offset.get(..6).unwrap_or(&offset);
+						if ui
+							.button(translate_args(
+								"event-clock-choose-offset",
+								&[("offset", offset)],
+							))
+							.on_hover_text(&label)
+							.clicked()
+						{
+							*value = label;
+						}
+					}
+				});
+			}
+		}
+		if !value.is_empty() {
+			match parse_event_time(value) {
+				Ok(at) => {
+					ui.small(translate_args(
+						"event-clock-local-preview",
+						&[("time", &time_label(at))],
+					));
+				}
+				Err(reason) if reason != "event-clock-fold" => {
+					crate::design::hint(ui, reason);
+				}
+				_ => {}
+			}
+		}
+	}
+
 	pub fn stage_controls(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -1280,8 +1944,19 @@ impl CommunityUi {
 				phase,
 				client_core::voice::Phase::Connected | client_core::voice::Phase::Waiting
 			) {
-				ui.label(crate::i18n::translate("stage-connecting"));
+				if phase == client_core::voice::Phase::Failed {
+					crate::design::notice(
+						ui,
+						crate::design::Level::Warning,
+						"stage-connection-failed",
+					);
+				} else {
+					ui.label(crate::i18n::translate_if_key(phase.label()));
+				}
 				return;
+			}
+			if phase == client_core::voice::Phase::Waiting {
+				ui.label(crate::i18n::translate_if_key(phase.label()));
 			}
 			let mut action = None;
 			stage_action_row(ui, |ui| {
@@ -1330,7 +2005,7 @@ impl CommunityUi {
 				}
 				if stage != StageParticipation::Speaker
 					&& state.permission(channel, model::permissions::MUTE_MEMBERS) == Some(true)
-					&& stage_button(ui, ready, "stage-become-speaker", false)
+					&& stage_button(ui, ready, "stage-moderator-become-speaker", false)
 				{
 					action = Some(StageVoiceChange::BecomeSpeaker);
 				}
@@ -1511,6 +2186,13 @@ impl CommunityUi {
 		.max_width((ctx.content_rect().width() - 32.0).max(1.0))
 		.show(ctx, |ui| {
 			ui.label(crate::i18n::translate("channel-menu-overview-topic"));
+			if self.stage_draft_conflict {
+				crate::design::notice(
+					ui,
+					crate::design::Level::Warning,
+					"stage-draft-target-conflict",
+				);
+			}
 			if let Some(event) = self.stage_event.and_then(|id| {
 				state
 					.community
@@ -1666,6 +2348,18 @@ fn stage_button(ui: &mut egui::Ui, enabled: bool, label: &str, primary: bool) ->
 	.clicked()
 }
 
+fn design_event_series_scope(ui: &mut egui::Ui, action: &Action) {
+	crate::design::hint(
+		ui,
+		if matches!(action, Action::Delete(_)) || matches!(action, Action::Status { status: 4, .. })
+		{
+			"event-confirm-entire-series"
+		} else {
+			"event-confirm-scheduled-series"
+		},
+	);
+}
+
 fn event_status(status: u8) -> &'static str {
 	match status {
 		1 => "Scheduled",
@@ -1797,6 +2491,175 @@ mod tests {
 		);
 		text
 	}
+	#[test]
+	fn stage_draft_is_not_relabelled_as_a_different_scheduled_event() {
+		let mut view = CommunityUi::default();
+		let mut state = State::default();
+		assert!(view.open_stage_editor(&mut state, Id(2), "Our draft".into(), None));
+		view.stage_dirty = true;
+		assert!(!view.open_stage_editor(&mut state, Id(2), "Scheduled".into(), Some(Id(3))));
+		assert_eq!(view.stage_event, None);
+		assert_eq!(view.stage_topic, "Our draft");
+		view.stage_dirty = false;
+		assert!(view.open_stage_editor(&mut state, Id(2), "Scheduled".into(), Some(Id(3))));
+		assert_eq!(view.stage_event, Some(Id(3)));
+	}
+
+	#[test]
+	fn event_creation_requires_an_eligible_location_and_keeps_a_draft_on_revocation() {
+		use model::permissions as p;
+		let ctx = egui::Context::default();
+		let mut state = test_support::community_state(false);
+		let guild = state.community.opened.unwrap();
+		let voice = state
+			.channels
+			.iter()
+			.find(|c| c.guild == Some(guild) && c.kind == 2)
+			.unwrap()
+			.id;
+		let snapshot = test_support::permission_snapshot(&state);
+		state.permissions.replace(snapshot).unwrap();
+		assert!(state.can_browse_events(guild));
+		let mut view = CommunityUi {
+			guild: Some(guild),
+			generation: state.generation,
+			..Default::default()
+		};
+		let size = egui::vec2(1000.0, 1100.0);
+		let create = crate::i18n::translate("server-events-create");
+		for _ in 0..3 {
+			let (commands, text) = frame(&ctx, &mut view, &mut state, size, vec![]);
+			assert!(commands.is_empty());
+			assert!(!text.iter().any(|(label, _)| label == &create));
+		}
+		assert!(view.draft.is_none());
+
+		let mut snapshot = test_support::permission_snapshot(&state);
+		snapshot
+			.channels
+			.iter_mut()
+			.find(|c| c.id == voice)
+			.unwrap()
+			.overwrites = Some(vec![p::Overwrite {
+			id: guild,
+			kind: 0,
+			allow: p::CREATE_EVENTS,
+			deny: 0,
+		}]);
+		state.permissions.replace(snapshot).unwrap();
+		assert!(!state.can_create_event_at(guild, 3, None));
+		assert!(state.can_create_event_at(guild, 2, Some(voice)));
+		let pos = scroll_to_label(&ctx, &mut view, &mut state, size, &create, false)
+			.into_iter()
+			.find(|(label, _)| label == &create)
+			.unwrap()
+			.1
+			.center();
+		for pressed in [true, false] {
+			let (commands, _) = frame(
+				&ctx,
+				&mut view,
+				&mut state,
+				size,
+				vec![
+					egui::Event::PointerMoved(pos),
+					egui::Event::PointerButton {
+						pos,
+						button: egui::PointerButton::Primary,
+						pressed,
+						modifiers: egui::Modifiers::NONE,
+					},
+				],
+			);
+			assert!(commands.is_empty());
+		}
+		let draft = view.draft.as_mut().unwrap();
+		assert_eq!(draft.entity_type, 2);
+		assert_eq!(
+			draft.channel, None,
+			"a channel still requires an explicit choice"
+		);
+		assert!(draft.draft().is_err());
+		draft.channel = Some(voice);
+		draft.name = "Keep this draft".into();
+		draft.step = CreateStep::Details;
+		let snapshot = test_support::permission_snapshot(&state);
+		state.permissions.replace(snapshot).unwrap();
+		let denied = crate::i18n::translate("server-events-save-denied");
+		scroll_to_label(&ctx, &mut view, &mut state, size, &denied, true);
+		state.community.stale = true;
+		let stale = crate::i18n::translate("server-events-save-stale");
+		scroll_to_label(&ctx, &mut view, &mut state, size, &stale, true);
+		assert_eq!(view.draft.as_ref().unwrap().name, "Keep this draft");
+	}
+
+	#[test]
+	fn new_event_review_is_required_before_the_one_create_write() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::community_state(false);
+		let guild = state.community.events.as_ref().unwrap().guild;
+		let mut editor = Editor::new(guild, None);
+		editor.location = "Synthetic club hall".into();
+		editor.name = "Synthetic gathering".into();
+		let mut view = CommunityUi {
+			guild: Some(guild),
+			generation: state.generation,
+			draft: Some(editor),
+			..Default::default()
+		};
+		let size = egui::vec2(900.0, 1050.0);
+		let mut click = |label: &str, view: &mut CommunityUi| -> Vec<Command> {
+			for _ in 0..3 {
+				assert!(frame(&ctx, view, &mut state, size, vec![]).0.is_empty());
+			}
+			let pos = scroll_to_label(&ctx, view, &mut state, size, label, true)
+				.into_iter()
+				.filter(|(text, rect)| text == label && ctx.content_rect().contains(rect.center()))
+				.max_by(|(_, a), (_, b)| a.center().y.total_cmp(&b.center().y))
+				.unwrap()
+				.1
+				.center();
+			let mut commands = Vec::new();
+			for pressed in [true, false] {
+				commands.extend(
+					frame(
+						&ctx,
+						view,
+						&mut state,
+						size,
+						vec![
+							egui::Event::PointerMoved(pos),
+							egui::Event::PointerButton {
+								pos,
+								button: egui::PointerButton::Primary,
+								pressed,
+								modifiers: egui::Modifiers::NONE,
+							},
+						],
+					)
+					.0,
+				);
+			}
+			commands
+		};
+		let next = crate::i18n::translate("event-create-next");
+		assert!(click(&next, &mut view).is_empty());
+		assert!(view.draft.as_ref().unwrap().step == CreateStep::Details);
+		assert!(click(&next, &mut view).is_empty());
+		assert!(view.draft.as_ref().unwrap().step == CreateStep::Review);
+		let back = crate::i18n::translate("server-events-back");
+		assert!(click(&back, &mut view).is_empty());
+		assert_eq!(view.draft.as_ref().unwrap().name, "Synthetic gathering");
+		assert!(click(&next, &mut view).is_empty());
+		let create = crate::i18n::translate("server-events-create");
+		let writes = click(&create, &mut view);
+		assert!(
+			matches!(writes.as_slice(), [Command::Community { action, .. }]
+			if matches!(action.as_ref(), Action::Create(draft)
+				if draft.name == "Synthetic gathering" && draft.location == "Synthetic club hall"))
+		);
+	}
+
 	#[test]
 	fn native_editor_dispatches_once_and_preserves_draft_after_unknown_write() {
 		let ctx = egui::Context::default();
@@ -1931,6 +2794,53 @@ mod tests {
 		}
 	}
 	#[test]
+	fn compact_event_editor_has_visible_actions_and_escape_keeps_the_draft() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::community_state(false);
+		let event = state.community.events.as_ref().unwrap().events[0].clone();
+		let mut view = CommunityUi {
+			guild: Some(event.guild),
+			generation: state.generation,
+			draft: Some(Editor::new(event.guild, Some(event))),
+			..Default::default()
+		};
+		view.draft.as_mut().unwrap().name = "Retain my change".into();
+		let size = egui::vec2(560.0, 460.0);
+		for _ in 0..2 {
+			frame(&ctx, &mut view, &mut state, size, vec![]);
+		}
+		let (commands, text) = frame(&ctx, &mut view, &mut state, size, vec![]);
+		for key in [
+			"server-events-save",
+			"server-events-discard-draft",
+			"server-events-refresh",
+		] {
+			let label = crate::i18n::translate(key);
+			assert!(
+				text.iter()
+					.any(|(s, rect)| s == &label && rect.top() >= 0.0 && rect.bottom() <= size.y),
+				"missing visible {label}"
+			);
+		}
+		assert!(commands.is_empty());
+		let (commands, _) = frame(
+			&ctx,
+			&mut view,
+			&mut state,
+			size,
+			vec![egui::Event::Key {
+				key: egui::Key::Escape,
+				physical_key: None,
+				pressed: true,
+				repeat: false,
+				modifiers: egui::Modifiers::NONE,
+			}],
+		);
+		assert!(commands.is_empty());
+		assert!(view.guild.is_none());
+		assert_eq!(view.draft.as_ref().unwrap().name, "Retain my change");
+	}
+	#[test]
 	fn native_stage_request_and_cancel_controls_do_not_grant_microphone_consent() {
 		let ctx = egui::Context::default();
 		let mut state = test_support::community_state(true);
@@ -2045,10 +2955,14 @@ mod tests {
 		let mut state = test_support::community_state(false);
 		let guild = Id(10);
 		let size = egui::vec2(1000.0, 1000.0);
+		let details_draft = || Editor {
+			step: CreateStep::Details,
+			..Editor::new(guild, None)
+		};
 		let mut view = CommunityUi {
 			generation: state.generation,
 			guild: Some(guild),
-			draft: Some(Editor::new(guild, None)),
+			draft: Some(details_draft()),
 			..Default::default()
 		};
 		for _ in 0..3 {
@@ -2056,10 +2970,11 @@ mod tests {
 		}
 		let name = view.draft.as_ref().unwrap().inputs.id("name");
 		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_some());
-		assert!(ctx.data(|d| d.count::<egui::text_edit::TextEditState>()) <= 5);
+		// Name, description, optional location, and three inputs per clock row.
+		assert!(ctx.data(|d| d.count::<egui::text_edit::TextEditState>()) <= 9);
 		drop(view.draft.take());
 		assert!(egui::text_edit::TextEditState::load(&ctx, name).is_none());
-		view.draft = Some(Editor::new(guild, None));
+		view.draft = Some(details_draft());
 		for _ in 0..3 {
 			frame(&ctx, &mut view, &mut state, size, vec![]);
 		}

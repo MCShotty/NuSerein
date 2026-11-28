@@ -34,6 +34,9 @@ struct Chosen {
 }
 /// Longest edge of the composer thumbnail; the full decode stays bounded by `image::Limits`.
 const PREVIEW_EDGE: u32 = 320;
+/// One displayed rendition, at most 16 MiB RGBA, reduced further for smaller texture limits.
+const STAGED_VIEW_EDGE: u32 = 2048;
+const STAGED_VIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const PREVIEW_ALLOC: u64 = 64 * 1024 * 1024;
 const PREVIEW_JOBS: usize = 2;
 const PREVIEW_BYTES: usize = 32 * 1024 * 1024;
@@ -385,31 +388,31 @@ async fn preview_admitted(
 	.flatten()
 }
 fn decode_preview(bytes: &[u8]) -> Option<egui::ColorImage> {
-	if platform::heic::is_heic(bytes) {
-		let (width, height, rgba) =
-			platform::heic::decode(bytes, 8192, PREVIEW_ALLOC, PREVIEW_EDGE)?;
-		let image =
-			image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(width, height, rgba)?)
-				.thumbnail(PREVIEW_EDGE, PREVIEW_EDGE)
-				.into_rgba8();
-		return Some(egui::ColorImage::from_rgba_unmultiplied(
-			[image.width() as usize, image.height() as usize],
-			image.as_raw(),
-		));
+	decode_at_edge(bytes, PREVIEW_EDGE)
+}
+
+/// Decode at the requested rendition size. Only the viewer asks for a larger texture.
+fn decode_at_edge(bytes: &[u8], edge: u32) -> Option<egui::ColorImage> {
+	let image = if platform::heic::is_heic(bytes) {
+		let (width, height, rgba) = platform::heic::decode(bytes, 8192, PREVIEW_ALLOC, edge)?;
+		image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(width, height, rgba)?)
+	} else {
+		let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+			.with_guessed_format()
+			.ok()?;
+		let mut limits = image::Limits::default();
+		limits.max_image_width = Some(8192);
+		limits.max_image_height = Some(8192);
+		limits.max_alloc = Some(PREVIEW_ALLOC);
+		reader.limits(limits);
+		reader.decode().ok()?
+	};
+	let image = if image.width().max(image.height()) > edge {
+		image.thumbnail(edge, edge)
+	} else {
+		image
 	}
-	let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-		.with_guessed_format()
-		.ok()?;
-	let mut limits = image::Limits::default();
-	limits.max_image_width = Some(8192);
-	limits.max_image_height = Some(8192);
-	limits.max_alloc = Some(PREVIEW_ALLOC);
-	reader.limits(limits);
-	let image = reader
-		.decode()
-		.ok()?
-		.thumbnail(PREVIEW_EDGE, PREVIEW_EDGE)
-		.into_rgba8();
+	.into_rgba8();
 	Some(egui::ColorImage::from_rgba_unmultiplied(
 		[image.width() as usize, image.height() as usize],
 		image.as_raw(),
@@ -456,6 +459,8 @@ pub struct Uploads {
 	next_key: u64,
 	/// Thumbnails still decoding for pasted files, by `Chosen::key`; at most `MAX_FILES`.
 	previewing: Vec<Previewing>,
+	view_target: Option<(u64, Id, u64)>,
+	viewing: Option<Previewing>,
 	/// Selections still being inspected and decoded; at most `MAX_FILES`. Later selections
 	/// join the composer while earlier ones (or the previous message's upload) still run.
 	choosing: Vec<Choosing>,
@@ -494,7 +499,9 @@ impl Uploads {
 			return Err(model::public_upload::Error::SelectionChanged);
 		}
 		if chosen.is_some_and(|chosen| {
-			chosen.source.filename() != filename || chosen.source.size() != bytes
+			chosen.source.filename() != filename
+				|| chosen.source.size() != bytes
+				|| chosen.source.spoiler()
 		}) {
 			return Err(model::public_upload::Error::SelectionChanged);
 		}
@@ -1051,6 +1058,96 @@ impl Uploads {
 		}
 		Ok(())
 	}
+	/// Poll the single viewer. The exact selection must still exist and be unspoiled, even if
+	/// the UI has not yet received a new projection after selection changes this frame.
+	pub fn poll_staged_view(
+		&mut self,
+		target: (u64, Id, u64),
+		runtime: &tokio::runtime::Handle,
+		ctx: &egui::Context,
+	) -> Option<Option<egui::ColorImage>> {
+		let (generation, channel, key) = target;
+		if self.view_target != Some(target) {
+			self.dismiss_staged_view();
+		}
+		let selection = (self.scope == Some((generation, channel)))
+			.then(|| {
+				self.selected
+					.iter()
+					.find(|file| file.key == key && !file.source.spoiler())
+			})
+			.flatten();
+		let Some(chosen) = selection else {
+			self.dismiss_staged_view();
+			return Some(None);
+		};
+		if self.view_target != Some(target) {
+			self.view_target = Some(target);
+			let Some(permit) = PREVIEW_BUDGET.admit(&chosen.source) else {
+				return Some(None);
+			};
+			let source = chosen.source.clone();
+			let edge = u32::try_from(ctx.input(|input| input.max_texture_side))
+				.unwrap_or(u32::MAX)
+				.clamp(1, STAGED_VIEW_EDGE);
+			let (send, result) = mpsc::sync_channel(1);
+			let cancelled = Arc::new(AtomicBool::new(false));
+			let flag = cancelled.clone();
+			let ctx = ctx.clone();
+			runtime.spawn(async move {
+				let worker = tokio::spawn(preview_admitted(
+					source,
+					permit,
+					flag.clone(),
+					move |bytes| decode_at_edge(bytes, edge),
+				));
+				// Timing out drops the waiter, not the worker's permit. A stalled local file
+				// can never allow another read or decode to exceed the shared admission budget.
+				let image = match tokio::time::timeout(STAGED_VIEW_TIMEOUT, worker).await {
+					Ok(Ok(image)) => image,
+					_ => {
+						flag.store(true, Ordering::Release);
+						None
+					}
+				};
+				let _ = send.send(image);
+				ctx.request_repaint();
+			});
+			self.viewing = Some(Previewing {
+				key,
+				result,
+				cancelled,
+			});
+		}
+		let result = match self.viewing.as_ref()?.result.try_recv() {
+			Ok(image) => image,
+			Err(mpsc::TryRecvError::Disconnected) => None,
+			Err(mpsc::TryRecvError::Empty) => return None,
+		};
+		self.viewing = None;
+		Some(result)
+	}
+
+	pub fn dismiss_staged_view(&mut self) {
+		self.view_target = None;
+		self.viewing = None;
+	}
+
+	/// Stable selection keys, projected in the same order as files and thumbnails.
+	pub fn attachment_spoilers(&self) -> Vec<(u64, bool)> {
+		self.selected
+			.iter()
+			.map(|file| (file.key, file.source.spoiler()))
+			.collect()
+	}
+	pub fn set_spoiler(&mut self, generation: u64, channel: Id, key: u64, spoiler: bool) {
+		if self.scope == Some((generation, channel))
+			&& self.accepting()
+			&& let Some(file) = self.selected.iter_mut().find(|file| file.key == key)
+		{
+			file.source.set_spoiler(spoiler);
+		}
+	}
 	pub fn files(&self) -> Vec<(String, u64)> {
 		self.selected
 			.iter()
@@ -1127,6 +1224,7 @@ impl Uploads {
 		self.last = None;
 	}
 	pub fn cancel(&mut self) {
+		self.dismiss_staged_view();
 		self.cancel_public();
 		self.image_draft = None;
 		for choosing in &self.choosing {
@@ -1146,6 +1244,7 @@ impl Uploads {
 			return None;
 		}
 		self.previewing.clear();
+		self.dismiss_staged_view();
 		(!self.selected.is_empty()).then(|| {
 			std::mem::take(&mut self.selected)
 				.into_iter()
@@ -1257,6 +1356,63 @@ pub(crate) fn debug_reservation_check(runtime: &tokio::runtime::Handle) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn staged_view_decodes_above_thumbnail_resolution_with_a_texture_cap() {
+		let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+			800,
+			400,
+			image::Rgba([75, 120, 160, 255]),
+		));
+		let mut encoded = std::io::Cursor::new(Vec::new());
+		image
+			.write_to(&mut encoded, image::ImageFormat::Png)
+			.unwrap();
+		let bytes = encoded.into_inner();
+		assert_eq!(decode_preview(&bytes).unwrap().size, [320, 160]);
+		assert_eq!(
+			decode_at_edge(&bytes, STAGED_VIEW_EDGE).unwrap().size,
+			[800, 400]
+		);
+		assert_eq!(decode_at_edge(&bytes, 512).unwrap().size, [512, 256]);
+		assert!(decode_at_edge(b"not an image", STAGED_VIEW_EDGE).is_none());
+	}
+
+	#[tokio::test]
+	async fn staged_view_drops_scope_mismatches_and_results_for_hidden_files() {
+		let mut uploads = Uploads::default();
+		let runtime = tokio::runtime::Handle::current();
+		let ctx = egui::Context::default();
+		let channel = Id(2);
+		uploads.scope = Some((1, channel));
+		let key = uploads.push(
+			Source::image_bytes("emoji-1.png".into(), vec![1]).unwrap(),
+			None,
+		);
+		let cancelled = Arc::new(AtomicBool::new(false));
+		let (send, result) = mpsc::sync_channel(1);
+		send.send(Some(egui::ColorImage::filled([2, 2], egui::Color32::WHITE)))
+			.unwrap();
+		uploads.view_target = Some((1, channel, key));
+		uploads.viewing = Some(Previewing {
+			key,
+			result,
+			cancelled: cancelled.clone(),
+		});
+		uploads.set_spoiler(1, channel, key, true);
+		assert!(matches!(
+			uploads.poll_staged_view((1, channel, key), &runtime, &ctx),
+			Some(None)
+		));
+		assert!(cancelled.load(Ordering::Acquire));
+		assert!(uploads.viewing.is_none());
+		assert!(matches!(
+			uploads.poll_staged_view((2, channel, key), &runtime, &ctx),
+			Some(None)
+		));
+		assert!(uploads.view_target.is_none());
+	}
+
 	struct SyntheticDrop(std::path::PathBuf);
 	impl std::fmt::Debug for SyntheticDrop {
 		fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1926,6 +2082,13 @@ mod tests {
 		let mut uploads = Uploads::default();
 		stage(&mut uploads, 1, a, 3);
 		stage(&mut uploads, 1, a, 4);
+		let keys = uploads.attachment_spoilers();
+		uploads.set_spoiler(0, a, keys[0].0, true);
+		uploads.set_spoiler(1, a, keys[1].0, true);
+		assert_eq!(
+			uploads.attachment_spoilers(),
+			[(keys[0].0, false), (keys[1].0, true)]
+		);
 		uploads.follow_conversation(1, Some(b), true, |_| true);
 		assert!(uploads.files().is_empty() && uploads.has_unsent());
 		assert!(uploads.take_source(1, a).is_none());
@@ -1947,7 +2110,12 @@ mod tests {
 		uploads.follow_conversation(1, Some(b), true, |_| true);
 		assert_eq!(uploads.files(), [("message.txt".to_owned(), 5)]);
 		uploads.follow_conversation(1, Some(a), true, |_| true);
-		assert_eq!(uploads.take_source(1, a).unwrap().len(), 2);
+		uploads.remove_at(0);
+		uploads.set_spoiler(1, a, keys[0].0, false);
+		let files = uploads.take_source(1, a).unwrap();
+		assert_eq!(files.len(), 1);
+		assert_eq!(files[0].size(), 4);
+		assert!(files[0].spoiler());
 		assert!(uploads.take_notice().is_none());
 		uploads.follow_conversation(1, Some(b), true, |_| true);
 		assert_eq!(uploads.take_source(1, b).unwrap().len(), 1);
@@ -2343,6 +2511,8 @@ mod tests {
 			selected: vec![],
 			next_key: 0,
 			previewing: vec![],
+			view_target: None,
+			viewing: None,
 			parked: vec![],
 			uploading: None,
 			last: None,

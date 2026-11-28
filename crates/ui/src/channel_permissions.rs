@@ -11,6 +11,7 @@ pub(super) struct PermissionsUi {
 	search_at: Option<f64>,
 	query_open: bool,
 	sync_review: bool,
+	private_before: Option<(Id, i8, bool)>,
 }
 
 impl PermissionsUi {
@@ -37,7 +38,7 @@ impl PermissionsUi {
 				} else {
 					"channel-permissions-show-only-selected-members-and-roles-can-view-this-channel-administrators"
 				}), &mut private).changed() {
-					set_permission(rows, (0, guild), p::VIEW_CHANNEL, if private { -1 } else { 1 });
+					set_private_view(rows, channel.id, guild, private, &mut self.private_before);
 				}
 			});
 		});
@@ -207,160 +208,182 @@ impl PermissionsUi {
 	) {
 		let guild = channel.guild.unwrap();
 		dialog::label(ui, "channel-permissions-targets-roles-members");
-		ui.add_enabled_ui(
-			state.can_manage_channel_permissions(channel.id) && rows.len() < p::MAX_OVERWRITES,
-			|ui| {
-				ui.menu_button(
-					crate::i18n::translate("channel-permissions-targets-add-role-or-member"),
-					|ui| {
-						ui.set_width(240.0);
-						self.query_open = true;
-						if ui
-							.add(
-								egui::TextEdit::singleline(&mut self.search)
-									.align(egui::Align2::LEFT_CENTER)
-									.hint_text(crate::i18n::translate(
-										"channel-permissions-targets-search-roles-or-loaded-members",
-									))
-									.char_limit(64)
-									.desired_width(f32::INFINITY),
-							)
-							.changed()
-						{
-							self.search_at = Some(ui.input(|input| input.time));
-						}
-						let query = self.search.to_lowercase();
-						let roles = state
-							.permissions
-							.guilds
-							.get(&guild)
-							.and_then(|g| g.roles.as_deref())
-							.unwrap_or_default();
-						egui::ScrollArea::vertical()
-							.max_height(210.0)
-							.show(ui, |ui| {
-								for role in roles
-									.iter()
-									.filter(|r| r.name.to_lowercase().contains(&query))
+		let enabled = ui.is_enabled()
+			&& state.can_manage_channel_permissions(channel.id)
+			&& rows.len() < p::MAX_OVERWRITES;
+		let trigger = ui.add_enabled(
+			enabled,
+			egui::Button::new(crate::i18n::translate(
+				"channel-permissions-targets-add-role-or-member",
+			)),
+		);
+		let id = egui::Popup::default_response_id(&trigger);
+		let was_open = egui::Popup::is_id_open(ui.ctx(), id);
+		let escape = was_open && ui.input(|input| input.key_pressed(egui::Key::Escape));
+		if !enabled {
+			egui::Popup::close_id(ui.ctx(), id);
+		} else {
+			let width = (ui.ctx().content_rect().width() - 40.0).clamp(1.0, 240.0);
+			egui::Popup::from_toggle_button_response(&trigger)
+				.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+				.show(|ui| {
+					ui.set_width(width);
+					let input = ui.add(
+						egui::TextEdit::singleline(&mut self.search)
+							.id(id.with("target-query"))
+							.align(egui::Align2::LEFT_CENTER)
+							.hint_text(crate::i18n::translate(
+								"channel-permissions-targets-search-roles-or-loaded-members",
+							))
+							.char_limit(64)
+							.desired_width(f32::INFINITY),
+					);
+					if trigger.clicked() && !was_open {
+						input.request_focus();
+					}
+					if input.changed() {
+						self.search_at = Some(ui.input(|input| input.time));
+					}
+					let query = self.search.to_lowercase();
+					let roles = state
+						.permissions
+						.guilds
+						.get(&guild)
+						.and_then(|g| g.roles.as_deref())
+						.unwrap_or_default();
+					egui::ScrollArea::vertical()
+						.max_height(210.0)
+						.show(ui, |ui| {
+							for role in roles
+								.iter()
+								.filter(|r| r.name.to_lowercase().contains(&query))
+							{
+								if ui
+									.selectable_label(
+										false,
+										crate::role_names::galley(
+											ui,
+											&format!(
+												"{}: {}",
+												crate::i18n::translate(
+													"channel-permissions-targets-role"
+												),
+												role.name
+											),
+											egui::FontId::proportional(14.0),
+											Some(role.colors()),
+											ui.visuals().extreme_bg_color,
+											design::palette(ui).text,
+											ui.available_width(),
+										),
+									)
+									.clicked()
 								{
+									self.add(rows, (0, role.id));
+									trigger.request_focus();
+									ui.close();
+								}
+							}
+							if let Some(request) = &state.member_search[0].request
+								&& request.guild == guild
+								&& request.query == self.search
+								&& !query.is_empty()
+							{
+								if !state.member_search[0].finished {
+									ui.add(crate::design::Busy::new());
+								}
+								if let Some(error) = state.member_search[0].error {
+									ui.weak(error);
+								}
+								for member in &state.member_search[0].rows {
+									let name = member.nick.as_deref().unwrap_or(&member.user.name);
+									let username = member
+										.user
+										.username
+										.as_deref()
+										.unwrap_or(&member.user.name);
 									if ui
+										.selectable_label(false, format!("{name} · @{username}"))
+										.clicked()
+									{
+										self.add(rows, (1, member.user.id));
+										trigger.request_focus();
+										ui.close();
+									}
+								}
+							}
+							for user in state
+								.members
+								.iter()
+								.filter(|m| m.guild == Some(guild))
+								.flat_map(|m| {
+									m.slots.iter().flatten().filter_map(|slot| match slot {
+										model::MemberSlot::Person(m) => Some(m),
+										_ => None,
+									})
+								})
+								.map(|m| &m.user)
+								.chain(state.user.iter())
+							{
+								if user.name.to_lowercase().contains(&query)
+									&& ui
 										.selectable_label(
 											false,
-											crate::role_names::galley(
-												ui,
-												&format!(
-													"{}: {}",
-													crate::i18n::translate(
-														"channel-permissions-targets-role"
-													),
-													role.name
+											format!(
+												"{}: {}",
+												crate::i18n::translate(
+													"channel-permissions-targets-member"
 												),
-												egui::FontId::proportional(14.0),
-												Some(role.colors()),
-												ui.visuals().extreme_bg_color,
-												design::palette(ui).text,
-												ui.available_width(),
+												user.name
 											),
 										)
 										.clicked()
-									{
-										self.add(rows, (0, role.id));
-										ui.close();
-									}
-								}
-								if let Some(request) = &state.member_search[0].request
-									&& request.guild == guild && request.query == self.search
-									&& !query.is_empty()
 								{
-									if !state.member_search[0].finished {
-										ui.add(crate::design::Busy::new());
-									}
-									if let Some(error) = state.member_search[0].error {
-										ui.weak(error);
-									}
-									for member in &state.member_search[0].rows {
-										let name =
-											member.nick.as_deref().unwrap_or(&member.user.name);
-										let username = member
-											.user
-											.username
-											.as_deref()
-											.unwrap_or(&member.user.name);
-										if ui
-											.selectable_label(
-												false,
-												format!("{name} · @{username}"),
-											)
-											.clicked()
-										{
-											self.add(rows, (1, member.user.id));
-											ui.close();
-										}
-									}
+									self.add(rows, (1, user.id));
+									trigger.request_focus();
+									ui.close();
 								}
-								for user in state
-									.members
-									.iter()
-									.filter(|m| m.guild == Some(guild))
-									.flat_map(|m| {
-										m.slots.iter().flatten().filter_map(|slot| match slot {
-											model::MemberSlot::Person(m) => Some(m),
-											_ => None,
-										})
-									})
-									.map(|m| &m.user)
-									.chain(state.user.iter())
-								{
-									if user.name.to_lowercase().contains(&query)
-										&& ui
-											.selectable_label(
-												false,
-												format!(
-													"{}: {}",
-													crate::i18n::translate(
-														"channel-permissions-targets-member"
-													),
-													user.name
-												),
-											)
-											.clicked()
-									{
-										self.add(rows, (1, user.id));
-										ui.close();
-									}
-								}
-							});
-						ui.separator();
-						let label = dialog::label(ui, "channel-permissions-targets-member-id");
-						ui.add(
-							egui::TextEdit::singleline(&mut self.member_id)
-								.align(egui::Align2::LEFT_CENTER)
-								.char_limit(20)
-								.desired_width(f32::INFINITY),
-						)
-						.labelled_by(label.id);
-						let id = self.member_id.parse::<u64>().ok().filter(|id| {
-							*id != 0
-								&& Id(*id) != guild && !roles.iter().any(|r| r.id == Id(*id))
-								&& !rows.iter().any(|o| o.id == Id(*id) && o.kind != 1)
+							}
 						});
-						if ui
-							.add_enabled(
-								id.is_some(),
-								egui::Button::new(crate::i18n::translate(
-									"channel-permissions-targets-add-member",
-								)),
-							)
-							.clicked()
-						{
-							self.add(rows, (1, Id(id.unwrap())));
-							self.member_id.clear();
-							ui.close();
-						}
-					},
-				);
-			},
-		);
+					ui.separator();
+					let label = dialog::label(ui, "channel-permissions-targets-member-id");
+					ui.add(
+						egui::TextEdit::singleline(&mut self.member_id)
+							.align(egui::Align2::LEFT_CENTER)
+							.char_limit(20)
+							.desired_width(f32::INFINITY),
+					)
+					.labelled_by(label.id);
+					let id = self.member_id.parse::<u64>().ok().filter(|id| {
+						*id != 0
+							&& Id(*id) != guild && !roles.iter().any(|r| r.id == Id(*id))
+							&& !rows.iter().any(|o| o.id == Id(*id) && o.kind != 1)
+					});
+					if ui
+						.add_enabled(
+							id.is_some(),
+							egui::Button::new(crate::i18n::translate(
+								"channel-permissions-targets-add-member",
+							)),
+						)
+						.clicked()
+					{
+						self.add(rows, (1, Id(id.unwrap())));
+						self.member_id.clear();
+						trigger.request_focus();
+						ui.close();
+					}
+				});
+		}
+		self.query_open = egui::Popup::is_id_open(ui.ctx(), id);
+		if !self.query_open {
+			self.search.clear();
+			self.member_id.clear();
+			self.search_at = None;
+			if enabled && escape {
+				trigger.request_focus();
+			}
+		}
 		egui::ScrollArea::vertical()
 			.id_salt("overwrite-targets")
 			.max_height(260.0)
@@ -695,6 +718,99 @@ const TRI_STATE_WIDTH: f32 = TRI_STATE_CELL.x * 3.0;
 
 /// Discord-style connected deny / inherit / allow switch. The size never depends on the
 /// glyphs' font metrics, so rows cannot drift apart.
+#[cfg(test)]
+mod picker_tests {
+	use super::*;
+
+	#[test]
+	fn permission_picker_keeps_text_input_open_and_esc_returns_to_settings() {
+		fn label_center(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {
+			match shape {
+				egui::Shape::Text(text) if text.galley.job.text == label => {
+					Some(text.galley.rect.translate(text.pos.to_vec2()).center())
+				}
+				egui::Shape::Vec(shapes) => {
+					shapes.iter().find_map(|shape| label_center(shape, label))
+				}
+				_ => None,
+			}
+		}
+		let ctx = egui::Context::default();
+		let mut state = test_support::chat_demo_state();
+		let mut permissions = test_support::permission_snapshot(&state);
+		for guild in &mut permissions.guilds {
+			guild.owner = state.user.as_ref().map(|user| user.id);
+		}
+		state.permissions.replace(permissions).unwrap();
+		let channel = state.channel(Id(20)).unwrap().clone();
+		let mut picker = PermissionsUi::default();
+		let mut rows = Vec::new();
+		let label = crate::i18n::translate("channel-permissions-targets-add-role-or-member");
+		let mut frame = |events| {
+			let mut close = false;
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(560.0, 580.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|_| {
+					close = dialog::SettingsShell::new("permissions-popup-test").show(
+						&ctx,
+						|ui, region| {
+							if matches!(region, dialog::ShellRegion::Body) {
+								picker.targets(ui, &state, &channel, &mut rows);
+							}
+						},
+					);
+				},
+			);
+			let trigger = output
+				.shapes
+				.iter()
+				.find_map(|shape| label_center(&shape.shape, &label));
+			output.drop_without_applying_deltas();
+			(
+				trigger,
+				close,
+				picker.query_open,
+				picker.search.clone(),
+				rows.len(),
+			)
+		};
+		frame(vec![]);
+		let pos = frame(vec![]).0.expect("visible picker trigger");
+		for pressed in [true, false] {
+			frame(vec![
+				egui::Event::PointerMoved(pos),
+				egui::Event::PointerButton {
+					pos,
+					button: egui::PointerButton::Primary,
+					pressed,
+					modifiers: egui::Modifiers::NONE,
+				},
+			]);
+		}
+		let (_, close, open, query, count) = frame(vec![egui::Event::Text("staff".into())]);
+		assert!(open && !close);
+		assert_eq!(query, "staff");
+		assert_eq!(count, 0);
+		let (_, close, open, query, count) = frame(vec![egui::Event::Key {
+			key: egui::Key::Escape,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::NONE,
+		}]);
+		assert!(!open && !close);
+		assert!(query.is_empty());
+		assert_eq!(count, 0);
+	}
+}
+
 fn tri_state(ui: &mut egui::Ui, value: &mut i8, label: &str) {
 	let colors = design::palette(ui);
 	let (group, _) = ui.allocate_exact_size(
@@ -801,6 +917,45 @@ fn target_name(state: &State, guild: Id, key: (u8, Id)) -> String {
 		.chain(state.user.iter())
 		.find(|u| u.id == key.1);
 	user.map_or_else(|| format!("Member {}", key.1), |u| u.name.clone())
+}
+
+fn set_private_view(
+	rows: &mut Vec<p::Overwrite>,
+	channel: Id,
+	guild: Id,
+	private: bool,
+	previous: &mut Option<(Id, i8, bool)>,
+) {
+	let key = (0, guild);
+	if private {
+		let everyone = rows.iter().find(|row| (row.kind, row.id) == key);
+		let prior = everyone.is_some_and(|row| row.allow & p::VIEW_CHANNEL != 0);
+		*previous = Some((channel, if prior { 1 } else { 0 }, everyone.is_some()));
+		set_permission(rows, key, p::VIEW_CHANNEL, -1);
+	} else {
+		let (_, prior, existed) = previous
+			.take()
+			.filter(|saved| saved.0 == channel)
+			.unwrap_or((channel, 0, false));
+		set_permission(rows, key, p::VIEW_CHANNEL, prior);
+		if !existed {
+			rows.retain(|row| (row.kind, row.id) != key || row.allow != 0 || row.deny != 0);
+		}
+	}
+}
+
+#[test]
+fn private_round_trip_restores_inherited_view() {
+	let mut rows = Vec::new();
+	let mut previous = None;
+	set_private_view(&mut rows, Id(2), Id(1), true, &mut previous);
+	assert_eq!(rows[0].deny, p::VIEW_CHANNEL);
+	set_private_view(&mut rows, Id(2), Id(1), false, &mut previous);
+	assert!(rows.is_empty());
+	set_permission(&mut rows, (0, Id(1)), p::VIEW_CHANNEL, 1);
+	set_private_view(&mut rows, Id(2), Id(1), true, &mut previous);
+	set_private_view(&mut rows, Id(2), Id(1), false, &mut previous);
+	assert_eq!(rows[0].allow, p::VIEW_CHANNEL);
 }
 
 fn set_permission(rows: &mut Vec<p::Overwrite>, key: (u8, Id), bit: u128, value: i8) {

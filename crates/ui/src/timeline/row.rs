@@ -1261,8 +1261,10 @@ impl TimelineView {
 					let mut last = egui::Rect::NOTHING;
 					for (index, emoji) in quick.into_iter().take(3).enumerate() {
 						let (emoji, reacted, enabled) = quick_reaction_emoji(state, message, emoji);
+						// A new ranking can replace the glyph under a held pointer. An old
+						// press must not be delivered to the replacement occupying its slot.
 						let response = toolbar
-							.push_id(("quick-reaction", index), |ui| {
+							.push_id(("quick-reaction", index, &emoji), |ui| {
 								ui.add_enabled_ui(enabled, |ui| {
 									crate::reactions::quick_button(
 										ui, &emoji, reacted, avatars, state.demo,

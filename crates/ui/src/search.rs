@@ -6,26 +6,26 @@ use model::Id;
 /// Width of the results pane when the window is wide enough to keep the timeline readable.
 pub const PANE_WIDTH: f32 = 420.0;
 const FILTER_WIDTH: f32 = 380.0;
+#[path = "search_date_picker.rs"]
+pub(super) mod date_picker;
 #[path = "search_filters.rs"]
 mod filters;
 
-fn date_id(value: &str) -> Result<Option<u64>, ()> {
-	if value.is_empty() {
-		return Ok(None);
-	}
-	let format =
-		time::format_description::parse_borrowed::<2>("[year]-[month]-[day]").map_err(|_| ())?;
-	let date = time::Date::parse(value, &format).map_err(|_| ())?;
-	let millis = date.midnight().assume_utc().unix_timestamp_nanos() / 1_000_000;
-	let delta = u64::try_from(millis - 1_420_070_400_000).map_err(|_| ())?;
-	if delta == 0 || delta > (u64::MAX >> 22) {
-		return Err(());
-	}
-	Ok(Some(delta << 22))
+#[derive(Clone, Copy)]
+struct PendingJump {
+	generation: u64,
+	channel: Id,
+	search_request: u64,
+	history_request: u64,
+	target: Id,
 }
 
 #[derive(Default)]
 pub struct SearchUi {
+	pub(super) workspace_full: bool,
+	return_to_results: Option<(u64, Id, u64)>,
+	pending_jump: Option<PendingJump>,
+	jump_failed: Option<u64>,
 	restricted: crate::restricted::Visibility,
 	pub open: bool,
 	page_input: String,
@@ -46,6 +46,7 @@ pub struct SearchUi {
 	/// Replace IDs in an externally supplied query with names on the next frame.
 	relabel: bool,
 	search_anchor: Option<egui::Rect>,
+	pins_trigger: Option<(u64, Id, egui::Id)>,
 	suggestion_index: usize,
 	/// The last searches as sent, with IDs rather than names, newest first; session only, like
 	/// the rest of search.
@@ -64,10 +65,12 @@ pub struct SearchUi {
 impl SearchUi {
 	/// Refocus the current query without dropping its page or scroll position.
 	pub fn focus_conversation(&mut self, channel: Id, state: &State) {
+		let retained = self.can_return_to_results(state) && state.selected == Some(channel);
+		self.return_to_results = None;
 		if self.open && (self.composing || self.filter_draft.is_some() || self.viewing.is_some()) {
 			return;
 		}
-		if self.channel != Some(channel) || !self.open || self.pins {
+		if !retained && (self.channel != Some(channel) || !self.open || self.pins) {
 			self.query.clear();
 			self.query_error = None;
 			if state
@@ -88,6 +91,7 @@ impl SearchUi {
 		self.viewing = None;
 	}
 	pub(super) fn open_extension(&mut self, channel: Id, pins: bool, query: Option<String>) {
+		self.return_to_results = None;
 		self.channel = Some(channel);
 		self.open = true;
 		self.pins = pins;
@@ -102,6 +106,7 @@ impl SearchUi {
 	}
 
 	pub fn toggle(&mut self, pins: bool) -> bool {
+		self.return_to_results = None;
 		self.open = !self.open || self.pins != pins;
 		self.pins = pins;
 		self.focus = self.open;
@@ -130,6 +135,44 @@ impl SearchUi {
 	pub fn pins(&self) -> bool {
 		self.pins
 	}
+	pub(super) fn remember_pins_trigger(&mut self, state: &State, trigger: egui::Id) {
+		self.pins_trigger = state
+			.selected
+			.map(|channel| (state.generation, channel, trigger));
+	}
+	fn restore_pins_focus(&self, ctx: &egui::Context, state: &State) {
+		if let Some((generation, channel, trigger)) = self.pins_trigger
+			&& generation == state.generation
+			&& self.channel == Some(channel)
+			&& state.selected == Some(channel)
+		{
+			ctx.memory_mut(|memory| memory.request_focus(trigger));
+		}
+	}
+	pub(super) fn can_return_to_results(&self, state: &State) -> bool {
+		!self.open
+			&& state.can_search()
+			&& self
+				.return_to_results
+				.is_some_and(|(generation, channel, request)| {
+					generation == state.generation
+						&& state.selected == Some(channel)
+						&& state.search.as_ref().is_some_and(|view| {
+							!view.pins && view.request == request && view.page.is_some()
+						})
+				})
+	}
+
+	pub(super) fn return_to_results(&mut self, state: &State) {
+		if self.can_return_to_results(state) {
+			self.return_to_results = None;
+			self.open = true;
+			self.pins = false;
+			self.focus = false;
+			self.filters_open = false;
+		}
+	}
+
 	/// Per-frame bookkeeping: Escape closes, navigation resets and closed views cancel requests.
 	pub fn sync(&mut self, ctx: &egui::Context, state: &mut State, commands: &mut Vec<Command>) {
 		if self.open
@@ -137,8 +180,43 @@ impl SearchUi {
 			&& self.viewing.is_none()
 			&& ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
 		{
+			if self.pins {
+				self.restore_pins_focus(ctx, state);
+			}
 			self.open = false;
 			self.filters_open = false;
+		}
+		if let Some(jump) = self.pending_jump {
+			let in_scope = self.open
+				&& !self.pins
+				&& jump.generation == state.generation
+				&& state.selected == Some(jump.channel)
+				&& state
+					.search
+					.as_ref()
+					.is_some_and(|v| !v.pins && v.request == jump.search_request);
+			if !in_scope || !state.history_pending || state.request != jump.history_request {
+				self.pending_jump = None;
+				if in_scope {
+					if state.request == jump.history_request
+						&& !state.history_pending
+						&& state.search_target == Some(jump.target)
+						&& state
+							.timeline
+							.get(jump.target)
+							.is_some_and(|m| m.channel == jump.channel)
+					{
+						self.return_to_results =
+							Some((jump.generation, jump.channel, jump.search_request));
+						self.open = false;
+					} else {
+						self.jump_failed = Some(jump.search_request);
+					}
+				}
+			}
+		}
+		if !self.open || self.pins || state.search.as_ref().map(|v| v.request) != self.jump_failed {
+			self.jump_failed = None;
 		}
 		if self.channel != state.selected {
 			self.channel = state.selected;
@@ -150,6 +228,9 @@ impl SearchUi {
 				self.open = false;
 			}
 		}
+		if !self.can_return_to_results(state) {
+			self.return_to_results = None;
+		}
 		if !self.open {
 			self.restricted = Default::default();
 			self.formats.retain(|_| false);
@@ -157,7 +238,7 @@ impl SearchUi {
 			self.viewing = None;
 			self.filters_open = false;
 			self.filter_draft = None;
-			if state.search.is_some() {
+			if self.return_to_results.is_none() && state.search.is_some() {
 				commands.push(state.clear_search());
 			}
 			return;
@@ -423,7 +504,11 @@ impl SearchUi {
 					self.filter_draft = None;
 					submit = true;
 				}
-				filters::Action::Cancel => self.filter_draft = None,
+				filters::Action::Cancel => {
+					self.filter_draft = None;
+					self.focus = true;
+					ctx.request_repaint();
+				}
 				filters::Action::None => {}
 			}
 		} else if self.filters_open
@@ -839,6 +924,13 @@ impl SearchUi {
 		if !(self.open && self.pins) {
 			return;
 		}
+		let Some(channel) = self
+			.channel
+			.filter(|channel| Some(*channel) == state.selected)
+		else {
+			self.open = false;
+			return;
+		};
 		if std::mem::take(&mut self.pending_submit)
 			&& let Some(command) = state.request_pins()
 		{
@@ -854,7 +946,7 @@ impl SearchUi {
 			.min(bounds.right() - width)
 			.max(bounds.left());
 		let y = (anchor.bottom() + 8.0).min(bounds.bottom() - 120.0);
-		let area = egui::Area::new(egui::Id::unique("pins-popout"))
+		let area = egui::Area::new(egui::Id::unique(("pins-popout", state.generation, channel)))
 			.kind(egui::UiKind::Popup)
 			.order(egui::Order::Foreground)
 			.fixed_pos(egui::pos2(x, y))
@@ -911,6 +1003,7 @@ impl SearchUi {
 											)
 											.clicked()
 											{
+												self.restore_pins_focus(&ctx, state);
 												self.open = false;
 											}
 											let reload = ui
@@ -943,16 +1036,7 @@ impl SearchUi {
 							ui.cursor().top(),
 							egui::Stroke::new(1.0, colors.border),
 						);
-						let view = state.search.as_ref().filter(|view| view.pins);
-						let empty = view.map_or(state.can_search(), |view| {
-							!view.changed
-								&& view.error.is_none() && view.page.as_ref().is_some_and(|page| {
-								page.hits
-									.iter()
-									.all(|hit| !state.is_pinned(hit.channel, hit.id))
-							})
-						});
-						if empty {
+						if Self::known_empty_pins(state, channel) {
 							Self::pins_empty(ui, dm);
 						} else {
 							egui::Frame::new()
@@ -978,6 +1062,24 @@ impl SearchUi {
 			self.open = false;
 		}
 		self.viewer(ui, state, avatars, media.download);
+	}
+	fn known_empty_pins(state: &State, channel: Id) -> bool {
+		state.can_search()
+			&& state.search.as_ref().is_some_and(|view| {
+				view.pins
+					&& view.channel == channel
+					&& !view.loading
+					&& !view.changed
+					&& view.error.is_none()
+					&& view.page.as_ref().is_some_and(|page| {
+						!page.partial
+							&& page.pin_cursor.is_none()
+							&& page
+								.hits
+								.iter()
+								.all(|hit| !state.is_pinned(hit.channel, hit.id))
+					})
+			})
 	}
 	fn pins_empty(ui: &mut egui::Ui, dm: bool) {
 		let colors = design::palette(ui);
@@ -1037,7 +1139,11 @@ impl SearchUi {
 				.color(colors.muted),
 			);
 		}
-		if let Some(view) = state.search.as_ref().filter(|view| view.pins) {
+		if let Some(view) = state
+			.search
+			.as_ref()
+			.filter(|view| view.pins && Some(view.channel) == state.selected)
+		{
 			if view.loading {
 				ui.label(
 					RichText::new(crate::i18n::translate_if_key(
@@ -1128,6 +1234,8 @@ impl SearchUi {
 					);
 				}
 			}
+		} else if allowed {
+			ui.weak(crate::i18n::translate("search-pins-not-loaded"));
 		}
 		if older_pins && let Some(command) = state.request_older_pins() {
 			commands.push(command);
@@ -1219,8 +1327,16 @@ impl SearchUi {
 			|| self.wire(state).unwrap_or_default(),
 			|view| view.query.clone(),
 		);
-		let filter_count =
-			model::search_terms(&active_query).map_or(0, |(_, filters)| filters.len());
+		let filter_count = model::search_terms(&active_query).map_or(0, |(_, filters)| {
+			if date_picker::during_date(&active_query).is_some() {
+				1 + filters
+					.iter()
+					.filter(|(key, _)| !matches!(*key, "min_id" | "max_id"))
+					.count()
+			} else {
+				filters.len()
+			}
+		});
 		let compact_header = ui.available_width() < 310.0;
 		if compact_header {
 			ui.label(design::semibold(ui, &title, 14.0).color(colors.text_strong));
@@ -1233,7 +1349,10 @@ impl SearchUi {
 					ui.label(design::semibold(ui, title, 14.0).color(colors.text_strong));
 				}
 				ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-					ui.spacing_mut().item_spacing.x = 8.0;
+					ui.spacing_mut().item_spacing.x = if compact_header { 4.0 } else { 8.0 };
+					if icons::button(ui, icons::Icon::Close, 28.0, "search-pane-close").clicked() {
+						self.open = false;
+					}
 					let settings_label = crate::i18n::translate("search-pane-settings");
 					let settings = chip(ui, Chip::icon(icons::Icon::Gear, &settings_label));
 					egui::Popup::menu(&settings).show(|ui| {
@@ -1306,6 +1425,14 @@ impl SearchUi {
 					"search-pane-messages-are-unavailable-while-disconnected-or-without-channel-access",
 				),
 			);
+		}
+		if self.pending_jump.is_some() {
+			ui.horizontal_wrapped(|ui| {
+				ui.add(design::Busy::new());
+				ui.label(crate::i18n::translate("search-jump-loading"));
+			});
+		} else if self.jump_failed.is_some() {
+			design::notice(ui, design::Level::Warning, "search-jump-failed");
 		}
 		let Some(view) = &state.search else {
 			design::empty_state(
@@ -1426,9 +1553,37 @@ impl SearchUi {
 		{
 			commands.push(command);
 		}
-		if let Some(target) = target {
-			commands.extend(state.open_search_hit(target));
-			// A hit in another channel moves the selection; the results stay open beside it.
+		if let Some(target) = target
+			&& self.pending_jump.is_none()
+		{
+			let navigation = state.open_search_hit(target);
+			self.jump_failed = None;
+			if self.workspace_full
+				&& let Some(view) = state.search.as_ref()
+			{
+				match &navigation {
+					Some(Command::HistoryAround {
+						channel,
+						request,
+						target,
+					}) => {
+						self.pending_jump = Some(PendingJump {
+							generation: state.generation,
+							channel: *channel,
+							search_request: view.request,
+							history_request: *request,
+							target: *target,
+						});
+					}
+					_ if state.search_target == Some(target) && !state.history_pending => {
+						self.return_to_results =
+							state.selected.map(|c| (state.generation, c, view.request));
+						self.open = false;
+					}
+					_ => self.jump_failed = Some(view.request),
+				}
+			}
+			commands.extend(navigation);
 			self.channel = state.selected;
 		}
 	}
@@ -1863,9 +2018,14 @@ impl SearchUi {
 			font.size = (font.size - 1.0).max(12.0);
 		}
 		// The card senses clicks on its previous-frame rect so child widgets keep priority.
-		let card_id = ui.scope_id().with("card");
-		let previous = ui.data(|data| data.get_temp::<egui::Rect>(card_id));
-		let background = previous.map(|rect| ui.interact(rect, card_id, egui::Sense::click()));
+		let card_id = ui
+			.scope_id()
+			.with(("card", state.generation, hit.channel, hit.id));
+		let frame_nr = ui.ctx().cumulative_frame_nr();
+		let previous = ui.data(|data| data.get_temp::<(u64, egui::Rect)>(card_id));
+		let background = previous
+			.filter(|(seen, rect)| frame_nr.saturating_sub(*seen) <= 1 && ui.is_rect_visible(*rect))
+			.map(|(_, rect)| ui.interact(rect, card_id, egui::Sense::click()));
 		let jumpable = state.can_search() && hit.id.0 < u64::MAX;
 		let hot = background.as_ref().is_some_and(|response| {
 			ui.rect_contains_pointer(response.rect) || response.has_focus()
@@ -1882,9 +2042,6 @@ impl SearchUi {
 					),
 				)
 			});
-			if response.clicked() && jumpable {
-				*target = Some(hit.id);
-			}
 		}
 		let frame = egui::Frame::new()
 			.fill(if hot { colors.raised } else { colors.base })
@@ -1906,77 +2063,74 @@ impl SearchUi {
 					ui.vertical(|ui| {
 						ui.set_width(ui.available_width());
 						ui.spacing_mut().item_spacing.y = 2.0;
+						let width = ui.available_width().max(0.0);
+						let compact = width < 250.0;
+						// The header reserves one row, not the remaining height of the result.
 						ui.allocate_ui_with_layout(
-							egui::vec2(ui.available_width(), 24.0),
-							egui::Layout::left_to_right(egui::Align::Center),
+							egui::vec2(width, 24.0),
+							egui::Layout::right_to_left(egui::Align::Center),
 							|ui| {
-								ui.spacing_mut().item_spacing.x = 8.0;
-								let name_width = (ui.available_width() - 92.0).clamp(35.0, 88.0);
-								crate::name_styles::in_row(
-									background
-										.as_ref()
-										.is_some_and(egui::Response::contains_pointer),
-									|| {
-										crate::account_badge::name(
-											ui,
-											&hit.author,
-											author_name,
-											14.0,
-											(
-												colors.text_strong,
-												state.forum_author_colors(
-													hit.channel,
-													hit.author.id,
-													hit.author.webhook,
-													&[],
-												),
-												colors.base,
-											),
-											egui::Sense::hover(),
-											name_width,
-										)
-									},
-								);
-								// Fixture IDs do not encode a real creation timestamp.
-								if hit.id.0 >= (1 << 22) {
-									let seconds = ((hit.id.0 >> 22) + 1_420_070_400_000) / 1000;
-									if let Ok(utc) =
-										time::OffsetDateTime::from_unix_timestamp(seconds as i64)
-									{
-										ui.label(
-											RichText::new(sent_at(utc))
-												.size(11.0)
-												.color(colors.muted),
-										);
+								if jumpable {
+									let label = crate::i18n::translate("search-result-jump");
+									let jump = if compact {
+										icons::button(ui, icons::Icon::ArrowRight, 24.0, &label)
+									} else {
+										ui.small_button(label)
+									};
+									if jump.clicked() {
+										*target = Some(hit.id);
 									}
 								}
-								if jumpable {
-									ui.with_layout(
-										egui::Layout::right_to_left(egui::Align::Center),
-										|ui| {
-											let label =
-												crate::i18n::translate("search-result-jump");
-											let clicked = if ui.available_width() >= 70.0 {
-												let mut jump = Chip::text(&label);
-												jump.height = 24.0;
-												chip(ui, jump).clicked()
-											} else {
-												icons::button(
+								ui.with_layout(
+									egui::Layout::left_to_right(egui::Align::Center),
+									|ui| {
+										crate::name_styles::in_row(
+											background
+												.as_ref()
+												.is_some_and(egui::Response::contains_pointer),
+											|| {
+												crate::account_badge::name(
 													ui,
-													icons::Icon::ArrowRight,
-													24.0,
-													&label,
+													&hit.author,
+													author_name,
+													14.0,
+													(
+														colors.text_strong,
+														state.forum_author_colors(
+															hit.channel,
+															hit.author.id,
+															hit.author.webhook,
+															&[],
+														),
+														colors.base,
+													),
+													egui::Sense::hover(),
+													0.0,
 												)
-												.clicked()
-											};
-											if clicked {
-												*target = Some(hit.id);
-											}
-										},
-									);
-								}
+											},
+										);
+									},
+								);
 							},
 						);
+						if hit.id.0 >= (1 << 22) {
+							let seconds = ((hit.id.0 >> 22) + 1_420_070_400_000) / 1000;
+							if let Ok(utc) =
+								time::OffsetDateTime::from_unix_timestamp(seconds as i64)
+							{
+								let stamp = sent_at(utc);
+								let label = egui::Label::new(
+									RichText::new(&stamp).size(11.0).color(colors.muted),
+								);
+								ui.add(if compact {
+									label.truncate()
+								} else {
+									label.wrap()
+								})
+								.on_hover_text(stamp);
+							}
+						}
+
 						let id = ui.scope_id().with(("search-spoilers", &hit.excerpt));
 						let mut revealed = ui.data(|data| data.get_temp::<u32>(id).unwrap_or(0));
 						let mut surface = crate::select::Surface::new(ui, "search-result");
@@ -2063,7 +2217,20 @@ impl SearchUi {
 					});
 				});
 			});
-		ui.data_mut(|data| data.insert_temp(card_id, frame.response.rect));
+		let current = frame.response.rect.intersect(ui.clip_rect());
+		if jumpable
+			&& let Some(response) = background
+			&& response.clicked()
+			&& (if response.clicked_by(egui::PointerButton::Primary) {
+				response
+					.interact_pointer_pos()
+					.is_some_and(|pos| current.contains(pos))
+			} else {
+				current.is_positive()
+			}) {
+			*target = Some(hit.id);
+		}
+		ui.data_mut(|data| data.insert_temp(card_id, (frame_nr, frame.response.rect)));
 	}
 }
 
@@ -2108,15 +2275,6 @@ impl<'a> Chip<'a> {
 			icon: Some(icon),
 			label: None,
 			tooltip,
-			trailing: false,
-			height: CHIP_HEIGHT,
-		}
-	}
-	fn text(label: &'a str) -> Self {
-		Self {
-			icon: None,
-			label: Some(label),
-			tooltip: label,
 			trailing: false,
 			height: CHIP_HEIGHT,
 		}
@@ -2359,6 +2517,69 @@ fn channel_heading(ui: &mut egui::Ui, state: &State, channel: &model::Channel) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn compact_jump_waits_and_rejected_history_keeps_results() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		state.request_search("example".into(), None).unwrap();
+		let request = state.search.as_ref().unwrap().request;
+		let jump = PendingJump {
+			generation: state.generation,
+			channel,
+			search_request: request,
+			history_request: state.request,
+			target: Id(8_000_000),
+		};
+		let mut search = SearchUi {
+			channel: Some(channel),
+			pending_jump: Some(jump),
+			open: true,
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let mut commands = Vec::new();
+		state.history_pending = true;
+		search.sync(&ctx, &mut state, &mut commands);
+		assert!(search.open && search.pending_jump.is_some());
+		state.history_pending = false;
+		state.request = state.request.wrapping_add(1);
+		search.sync(&ctx, &mut state, &mut commands);
+		assert!(search.open && search.pending_jump.is_none());
+		assert_eq!(search.jump_failed, Some(request));
+		assert!(state.search.is_some());
+	}
+
+	#[test]
+	fn compact_jump_keeps_the_completed_results_until_scope_changes() {
+		let mut state = test_support::demo_state();
+		let channel = state.selected.unwrap();
+		state.request_search("has:video".into(), None).unwrap();
+		let results = state.search.as_mut().unwrap();
+		results.page = Some(model::SearchPage {
+			hits: vec![],
+			total: 0,
+			partial: false,
+			pin_cursor: None,
+		});
+		let marker = (state.generation, channel, results.request);
+		let mut search = SearchUi {
+			channel: Some(channel),
+			return_to_results: Some(marker),
+			..Default::default()
+		};
+		let ctx = egui::Context::default();
+		let mut commands = Vec::new();
+		search.sync(&ctx, &mut state, &mut commands);
+		assert!(commands.is_empty());
+		assert!(search.can_return_to_results(&state));
+		search.return_to_results(&state);
+		assert!(search.results_visible(&state));
+		search.open = false;
+		search.return_to_results = Some(marker);
+		state.generation += 1;
+		assert!(!search.can_return_to_results(&state));
+	}
+
 	#[test]
 	fn search_playback_survives_outside_the_timeline_and_retires_with_its_source() {
 		let mut state = test_support::demo_state();
@@ -2832,6 +3053,37 @@ mod tests {
 			assert!(!view.open);
 			assert!(state.search.is_none());
 			assert!(matches!(commands.last(), Some(Command::CancelSearch)));
+			assert!(
+				!SearchUi::known_empty_pins(&state, Id(1)),
+				"not loaded is not empty"
+			);
+			state.request_pins().unwrap();
+			assert!(
+				!SearchUi::known_empty_pins(&state, Id(1)),
+				"loading is not empty"
+			);
+			let page = state.search.as_mut().unwrap();
+			page.loading = false;
+			page.page = Some(model::SearchPage {
+				hits: vec![],
+				total: 0,
+				partial: false,
+				pin_cursor: None,
+			});
+			assert!(SearchUi::known_empty_pins(&state, Id(1)));
+			assert!(!SearchUi::known_empty_pins(&state, Id(2)));
+			state
+				.search
+				.as_mut()
+				.unwrap()
+				.page
+				.as_mut()
+				.unwrap()
+				.partial = true;
+			assert!(
+				!SearchUi::known_empty_pins(&state, Id(1)),
+				"partial is not empty"
+			);
 			let cursor = 1_700_000_000_000_000_000i128;
 			for (loading, continuation, available, retry, expected) in [
 				(false, Some(cursor), true, false, true),
@@ -3220,32 +3472,39 @@ mod tests {
 			..SearchUi::default()
 		};
 		let mut render = |hit: &model::SearchHit| {
-			let mut output = ctx.run_ui(Default::default(), |ui| {
-				view.result_card(
-					ui,
-					&state,
-					hit,
-					"",
-					&mut crate::avatars::Avatars::default(),
-					&mut MediaUi {
-						download: &mut crate::attachments::DownloadUi::default(),
-						audio: &mut crate::audio::AudioUi::default(),
-						video: &mut crate::video::VideoUi::default(),
-					},
-					&mut crate::profiles::ProfileSession::default(),
-					&mut None,
-				);
-			});
-			let text = output
-				.shapes
-				.iter()
-				.filter_map(|shape| match &shape.shape {
-					egui::Shape::Text(text) => Some(text.galley.text()),
-					_ => None,
-				})
-				.collect::<String>();
+			let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 540.0));
+			let mut output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(screen),
+					..Default::default()
+				},
+				|ui| {
+					view.result_card(
+						ui,
+						&state,
+						hit,
+						"",
+						&mut crate::avatars::Avatars::default(),
+						&mut MediaUi {
+							download: &mut crate::attachments::DownloadUi::default(),
+							audio: &mut crate::audio::AudioUi::default(),
+							video: &mut crate::video::VideoUi::default(),
+						},
+						&mut crate::profiles::ProfileSession::default(),
+						&mut None,
+					);
+				},
+			);
+			let mut labels = Vec::new();
+			for shape in &output.shapes {
+				let mut text = Vec::new();
+				crate::test_ui::visual_text(&shape.shape, &mut text);
+				labels.extend(text.into_iter().filter_map(|(text, rect)| {
+					(screen.intersects(rect) && shape.clip_rect.intersects(rect)).then_some(text)
+				}));
+			}
 			output.textures_delta.clear();
-			text
+			labels.concat()
 		};
 		let text = render(&hit);
 		assert!(text.contains("@Mentioned"), "rendered text: {text}");

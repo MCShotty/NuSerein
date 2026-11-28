@@ -39,6 +39,7 @@ impl VoiceMessage {
 			source: Source {
 				path: PathBuf::new(),
 				filename: "voice-message.ogg".into(),
+				spoiler: None,
 				size: bytes.len() as u64,
 				modified: SystemTime::UNIX_EPOCH,
 				bytes: Some(bytes),

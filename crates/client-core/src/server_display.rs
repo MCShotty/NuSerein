@@ -10,15 +10,48 @@ const FIELD_BYTES: usize = 96;
 #[derive(Default)]
 pub struct Displays {
 	fields: BTreeMap<Id, (bool, bool, bool)>,
+	boosts: BTreeMap<Id, BoostDisplay>,
 	revision: u64,
 	available: bool,
 	missing: usize,
 	dirty: usize,
 }
 
+#[derive(Clone, Copy, Default)]
+struct BoostDisplay {
+	count: Option<u32>,
+	tier: Option<u8>,
+	progress_visible: Option<bool>,
+	tier_override: Option<bool>,
+	game_servers: Option<bool>,
+}
+
+/// Boost Goal display rule from archived Discord Canary 681713. Not a public API contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoostGoal {
+	pub count: u32,
+	pub target: u32,
+}
+impl BoostGoal {
+	fn from_display(display: BoostDisplay) -> Option<Self> {
+		let tier_base = if display.tier_override? { 0 } else { 14 };
+		let game_servers = if display.game_servers? { 3 } else { 0 };
+		Some(Self {
+			count: display.count?,
+			target: 19 + tier_base + game_servers,
+		})
+	}
+	pub fn reached(self) -> bool {
+		self.count >= self.target
+	}
+	pub fn fill(self) -> f32 {
+		self.count.min(self.target) as f32 / self.target.max(1) as f32
+	}
+}
+
 impl Displays {
 	pub(crate) fn bytes(&self) -> usize {
-		self.fields.len() * FIELD_BYTES
+		(self.fields.len() + self.boosts.len()) * FIELD_BYTES
 	}
 }
 
@@ -56,12 +89,117 @@ impl State {
 		}
 	}
 
+	pub fn server_boost_count(&self, guild: Id) -> Option<u32> {
+		self.guild(guild)?;
+		self.server_display
+			.boosts
+			.get(&guild)
+			.and_then(|value| value.count)
+	}
+
+	pub fn server_boost_tier(&self, guild: Id) -> Option<u8> {
+		self.guild(guild)?;
+		self.server_display
+			.boosts
+			.get(&guild)
+			.and_then(|value| value.tier)
+	}
+
+	pub fn sidebar_boost_count(&self, guild: Id) -> Option<u32> {
+		self.guild(guild)?;
+		let display = self.server_display.boosts.get(&guild)?;
+		if display.progress_visible == Some(false) {
+			None
+		} else {
+			display.count
+		}
+	}
+
+	pub fn server_boost_goal(&self, guild: Id) -> Option<BoostGoal> {
+		self.guild(guild)?;
+		if !self.gateway_connected || self.freshness != model::Freshness::Fresh {
+			return None;
+		}
+		BoostGoal::from_display(*self.server_display.boosts.get(&guild)?)
+	}
+
+	pub fn sidebar_boost_goal(&self, guild: Id) -> Option<BoostGoal> {
+		(self.server_display.boosts.get(&guild)?.progress_visible == Some(true)).then_some(())?;
+		self.server_boost_goal(guild)
+	}
+
+	fn observe_sidebar_display(&mut self, patch: &GuildPatch) {
+		if self.guild(patch.id).is_none() {
+			return;
+		}
+		self.observe_force_sync_banner(patch.id, patch.banner.clone());
+		let existing = self.server_display.boosts.get(&patch.id).copied();
+		let before = existing.unwrap_or_default();
+		let count = match patch.boost_count {
+			Patch::Value(count) => Some(count),
+			Patch::Null => None,
+			Patch::Absent => before.count,
+		};
+		let tier = match patch.boost_tier {
+			Patch::Value(tier) if tier <= 3 => Some(tier),
+			Patch::Null | Patch::Value(_) => None,
+			Patch::Absent => before.tier,
+		};
+		let progress_visible = match patch.boost_progress_visible {
+			Patch::Value(visible) => Some(visible),
+			Patch::Null => None,
+			Patch::Absent => before.progress_visible,
+		};
+		let merge = |patch, previous| match patch {
+			Patch::Value(value) => Some(value),
+			Patch::Null => None,
+			Patch::Absent => previous,
+		};
+		let tier_override = merge(patch.boost_tier_override.clone(), before.tier_override);
+		let game_servers = merge(patch.boost_game_servers.clone(), before.game_servers);
+		if count.is_none()
+			&& tier.is_none()
+			&& progress_visible.is_none()
+			&& tier_override.is_none()
+			&& game_servers.is_none()
+		{
+			if self.server_display.boosts.remove(&patch.id).is_some() {
+				self.navigation_index.bytes.set(None);
+			}
+		} else if existing.is_some()
+			|| (self.server_display.boosts.len() < MAX_SERVERS
+				&& self
+					.navigation_bytes()
+					.saturating_add(self.permissions.bytes())
+					.saturating_add(FIELD_BYTES)
+					<= model::account::MAX_BYTES)
+		{
+			self.server_display.boosts.insert(
+				patch.id,
+				BoostDisplay {
+					count,
+					tier,
+					progress_visible,
+					tier_override,
+					game_servers,
+				},
+			);
+			if existing.is_none() {
+				self.navigation_index.bytes.set(None);
+			}
+		}
+	}
+
 	#[cold]
 	#[inline(never)]
 	pub(crate) fn observe_server_display(&mut self, event: &Event) {
+		if let Event::GuildChanged(patch) = event {
+			self.observe_sidebar_display(patch);
+		}
 		match event {
 			Event::Ready { .. } | Event::Resync => {
 				self.force_sync_banners.clear();
+				self.server_display.boosts.clear();
 				self.server_display.fields.clear();
 				self.server_display.missing = 0;
 				self.server_display.dirty = 0;
@@ -71,6 +209,9 @@ impl State {
 			}
 			Event::GuildRemoved(id) => {
 				self.force_sync_banners.remove(id);
+				if self.server_display.boosts.remove(id).is_some() {
+					self.navigation_index.bytes.set(None);
+				}
 				if let Some((name, icon, dirty)) = self.server_display.fields.remove(id) {
 					self.server_display.missing -= usize::from(!name || !icon);
 					self.server_display.dirty -= usize::from(dirty);
@@ -102,6 +243,10 @@ impl State {
 						self.server_display.dirty += usize::from(dirty);
 						bytes += FIELD_BYTES;
 					}
+				}
+				self.navigation_index.bytes.set(None);
+				for patch in patches {
+					self.observe_sidebar_display(patch);
 				}
 				self.navigation_index.bytes.set(None);
 				self.server_display.revision = self.server_display.revision.wrapping_add(1);
@@ -155,6 +300,12 @@ impl State {
 				}
 				let guild = self.guild(id)?;
 				Some(GuildPatch {
+					banner: model::Patch::Absent,
+					boost_count: model::Patch::Absent,
+					boost_tier: model::Patch::Absent,
+					boost_progress_visible: model::Patch::Absent,
+					boost_tier_override: model::Patch::Absent,
+					boost_game_servers: model::Patch::Absent,
 					id,
 					name: if name {
 						Patch::Value(guild.name.clone())
@@ -246,6 +397,12 @@ mod tests {
 
 	fn patch(id: u64, name: Patch<String>, icon: Patch<String>) -> GuildPatch {
 		GuildPatch {
+			banner: model::Patch::Absent,
+			boost_count: model::Patch::Absent,
+			boost_tier: model::Patch::Absent,
+			boost_progress_visible: model::Patch::Absent,
+			boost_tier_override: model::Patch::Absent,
+			boost_game_servers: model::Patch::Absent,
 			id: Id(id),
 			name,
 			icon,
@@ -270,6 +427,117 @@ mod tests {
 			event,
 		});
 	}
+	#[test]
+	fn sidebar_metadata_preserves_absence_and_clears_explicit_removal() {
+		let mut state = state();
+		let mut sidebar = patch(1, Patch::Absent, Patch::Absent);
+		sidebar.banner = Patch::Value("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned());
+		sidebar.boost_count = Patch::Value(8);
+		sidebar.boost_tier = Patch::Value(0);
+		apply(&mut state, Event::GuildDisplayMetadata(vec![sidebar]));
+		assert_eq!(state.server_boost_count(Id(1)), Some(8));
+		assert_eq!(state.server_boost_count(Id(2)), None);
+		assert_eq!(state.server_boost_tier(Id(1)), Some(0));
+		assert_eq!(state.server_boost_tier(Id(2)), None);
+		apply(
+			&mut state,
+			Event::GuildChanged(patch(1, Patch::Absent, Patch::Absent)),
+		);
+		assert_eq!(state.server_boost_count(Id(1)), Some(8));
+		let mut clear = patch(1, Patch::Absent, Patch::Absent);
+		clear.banner = Patch::Null;
+		clear.boost_count = Patch::Null;
+		assert_eq!(state.server_boost_tier(Id(1)), Some(0));
+		apply(&mut state, Event::GuildChanged(clear));
+		assert_eq!(state.server_boost_count(Id(1)), None);
+		assert_eq!(state.server_boost_tier(Id(1)), Some(0));
+		let mut clear_tier = patch(1, Patch::Absent, Patch::Absent);
+		clear_tier.boost_tier = Patch::Null;
+		apply(&mut state, Event::GuildChanged(clear_tier));
+		assert_eq!(state.server_boost_tier(Id(1)), None);
+	}
+
+	#[test]
+	fn boost_goal_uses_total_and_only_known_rollout_inputs() {
+		for (tier_override, game_servers, target) in [
+			(false, false, 33),
+			(false, true, 36),
+			(true, false, 19),
+			(true, true, 22),
+		] {
+			for count in [0, 8, target, target + 1, u32::MAX] {
+				let goal = BoostGoal::from_display(BoostDisplay {
+					count: Some(count),
+					tier_override: Some(tier_override),
+					game_servers: Some(game_servers),
+					..Default::default()
+				})
+				.unwrap();
+				assert_eq!(goal, BoostGoal { count, target });
+				assert_eq!(goal.reached(), count >= target);
+				assert_eq!(goal.fill(), count.min(target) as f32 / target as f32);
+			}
+		}
+		let mut state = state();
+		state.gateway_connected = true;
+		state.freshness = crate::Freshness::Fresh;
+		let mut initial = patch(1, Patch::Absent, Patch::Absent);
+		initial.boost_count = Patch::Value(8);
+		initial.boost_progress_visible = Patch::Value(true);
+		initial.boost_tier_override = Patch::Value(false);
+		apply(&mut state, Event::GuildDisplayMetadata(vec![initial]));
+		assert_eq!(state.sidebar_boost_goal(Id(1)), None);
+		assert_eq!(state.sidebar_boost_count(Id(1)), Some(8));
+		let mut rollout = patch(1, Patch::Absent, Patch::Absent);
+		rollout.boost_game_servers = Patch::Value(false);
+		apply(&mut state, Event::GuildChanged(rollout));
+		assert_eq!(
+			state.sidebar_boost_goal(Id(1)),
+			Some(BoostGoal {
+				count: 8,
+				target: 33
+			})
+		);
+		let mut hidden = patch(1, Patch::Absent, Patch::Absent);
+		hidden.boost_progress_visible = Patch::Value(false);
+		apply(&mut state, Event::GuildChanged(hidden));
+		assert_eq!(state.sidebar_boost_goal(Id(1)), None);
+		assert_eq!(
+			state.server_boost_goal(Id(1)),
+			Some(BoostGoal {
+				count: 8,
+				target: 33
+			})
+		);
+		state.gateway_connected = false;
+		assert_eq!(state.server_boost_goal(Id(1)), None);
+		state.gateway_connected = true;
+		let mut unknown = patch(1, Patch::Absent, Patch::Absent);
+		unknown.boost_tier_override = Patch::Null;
+		apply(&mut state, Event::GuildChanged(unknown));
+		assert_eq!(state.server_boost_goal(Id(1)), None);
+	}
+
+	#[test]
+	fn visibility_patch_hides_sidebar_count_but_keeps_overview_count() {
+		let mut state = state();
+		let mut initial = patch(1, Patch::Absent, Patch::Absent);
+		initial.boost_count = Patch::Value(8);
+		initial.boost_progress_visible = Patch::Value(false);
+		apply(&mut state, Event::GuildDisplayMetadata(vec![initial]));
+		assert_eq!(state.server_boost_count(Id(1)), Some(8));
+		assert_eq!(state.sidebar_boost_count(Id(1)), None);
+		apply(
+			&mut state,
+			Event::GuildChanged(patch(1, Patch::Absent, Patch::Absent)),
+		);
+		assert_eq!(state.sidebar_boost_count(Id(1)), None);
+		let mut enabled = patch(1, Patch::Absent, Patch::Absent);
+		enabled.boost_progress_visible = Patch::Value(true);
+		apply(&mut state, Event::GuildChanged(enabled));
+		assert_eq!(state.sidebar_boost_count(Id(1)), Some(8));
+	}
+
 	#[test]
 	fn cached_values_only_fill_missing_fields_of_confirmed_guilds() {
 		let mut state = state();

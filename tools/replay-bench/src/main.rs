@@ -560,6 +560,7 @@ fn loading_sample() -> LoadingSample {
 		result.subscriptions += usize::from(pane.request_members().is_some());
 		let request = pane.members.as_ref().unwrap().request;
 		let list = |start, user, ranges| model::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),

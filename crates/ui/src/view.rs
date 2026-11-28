@@ -6,9 +6,88 @@ use super::{
 };
 
 impl MessagingUi {
+	pub(super) fn show_message_delete_confirmation(
+		&mut self,
+		ctx: &egui::Context,
+		state: &mut State,
+		commands: &mut Vec<Command>,
+	) {
+		// Keeping an edit open must not keep its earlier delete intent alive after a
+		// channel, account, message revision or authorization change.
+		if self.empty_edit_delete.is_some_and(|(owner, revision)| {
+			owner.generation != state.generation
+				|| !self.editing.as_ref().is_some_and(|(c, m, text)| {
+					(*c, *m) == (owner.channel, owner.message) && text.trim().is_empty()
+				}) || Self::empty_edit_delete_revision(state, owner.channel, owner.message)
+				!= Some(revision)
+		}) {
+			self.empty_edit_delete = None;
+			self.focus_switched_composer = true;
+		}
+		if self.deleting.is_some_and(|(channel, message)| {
+			state.selected != Some(channel) || state.timeline.get(message).is_none()
+		}) {
+			self.deleting = None;
+		}
+		let empty_edit = self.empty_edit_delete;
+		let Some((channel, message)) = empty_edit
+			.map(|(owner, _)| (owner.channel, owner.message))
+			.or(self.deleting)
+		else {
+			return;
+		};
+		let allowed = state.can_delete(channel, message);
+		let conversation = state
+			.channel(channel)
+			.map_or("this conversation", |c| c.name.as_str());
+		let mut confirm = dialog::Confirm::new(
+			(
+				"delete-message",
+				state.generation,
+				channel,
+				message,
+				empty_edit.map(|(_, revision)| revision),
+			),
+			"Delete message?",
+			format!(
+				"This permanently removes the selected message from {conversation} for everyone."
+			),
+		)
+		.danger()
+		.confirm_label("Delete")
+		.cancel_label("Keep Message")
+		.enabled(allowed);
+		if !allowed {
+			confirm = confirm.note(
+				dialog::Level::Warning,
+				"Deleting this message is unavailable.",
+			);
+		}
+		if let Some(choice) = confirm.show(ctx) {
+			let issued = if choice == dialog::Choice::Confirmed
+				&& let Some(command) = state.prepare_delete(channel, message)
+			{
+				commands.push(command);
+				true
+			} else {
+				false
+			};
+			if empty_edit.is_some() {
+				self.empty_edit_delete = None;
+				if issued {
+					self.editing = None;
+					self.edit_sent = None;
+				}
+				self.focus_switched_composer = true;
+			}
+			self.deleting = None;
+		}
+	}
+
 	pub fn show(&mut self, ui: &mut egui::Ui, state: &mut State) -> Vec<Command> {
 		self.retire_watch_mute(state);
 		self.retire_menu_paste(state);
+		self.sync_spam_review(state);
 		message_menu::set_owner(
 			ui.ctx(),
 			message_menu::Owner {
@@ -222,6 +301,15 @@ impl MessagingUi {
 		{
 			self.extensions.report_error(error);
 		}
+		if self
+			.extensions
+			.take_workspace_discard_notice(state.generation)
+		{
+			self.toasts.push(
+				design::Level::Info,
+				crate::i18n::translate("extension-result-discarded"),
+			);
+		}
 		self.keybinds_shortcut(&ctx);
 		self.theme_preview_navigation(ui);
 		let settings_open = self.settings.open
@@ -283,6 +371,13 @@ impl MessagingUi {
 			}
 			ui.disable();
 		}
+		if settings_open || self.switcher.is_open() || self.compact_navigation_open {
+			self.staged_image = None;
+		}
+		let image_open = self.show_staged_image(&ctx, state);
+		if image_open {
+			ui.disable();
+		}
 		// Foreground confirmation handles Escape before background search/archive shortcuts.
 		self.confirm_friend_removal(&ctx, state, &mut commands);
 		if let Some(link) = self
@@ -321,6 +416,7 @@ impl MessagingUi {
 		let colors = crate::design::palette(ui);
 		let background = crate::design::window_palette(ui);
 		if !settings_open
+			&& !image_open
 			&& !self.switcher.is_open()
 			&& !self.ime_active
 			&& ctx.input(|input| {
@@ -573,6 +669,13 @@ impl MessagingUi {
 		if let Some(guild) = self.server_menu.events_requested.take() {
 			self.community_ui.open_events(state, guild, &mut commands);
 		}
+		if let Some((generation, guild)) = self.server_menu.create_event_requested.take()
+			&& generation == state.generation
+			&& self.guild == Some(guild)
+		{
+			self.community_ui
+				.open_create_event(state, guild, &mut commands);
+		}
 		self.community_ui.show(&ctx, state, &mut commands);
 		if let Some(guild) = self.server_menu.browse_requested.take() {
 			self.browse_channels.open(state, guild);
@@ -598,10 +701,8 @@ impl MessagingUi {
 			self.focus_switched_composer =
 				state.browse_channels.is_none() && state.selected.is_some();
 		}
-		if let Some(guild) = self.server_menu.settings_requested.take()
-			&& let Some(command) = self.preview_server_settings(state, guild)
-		{
-			commands.push(command);
+		if let Some(request) = self.server_menu.settings_requested.take() {
+			commands.extend(self.open_server_settings_request(state, request));
 		}
 		if let Some(guild) = self.server_menu.mark_read_requested.take()
 			&& let Some(command) = state.prepare_mark_guild_read(guild)
@@ -667,21 +768,43 @@ impl MessagingUi {
 			self.browse_channels.focus_search();
 		}
 		self.search.sync(&ctx, state, &mut commands);
-		let search_open = !navigation_page
+		let member_destination = self.guild_member_view_channel(state);
+		let complete_roster =
+			member_destination.and_then(|channel| state.complete_server_roster(channel));
+		if member_destination.is_none() {
+			self.guild_members_view = None;
+		}
+		let search_open = member_destination.is_none()
+			&& !navigation_page
 			&& !browsing_channels
 			&& self.search.results_visible(state)
 			&& state.selected.is_some()
 			&& !selected_voice;
-		let show_members = !navigation_page
+		let docked_mod_view = self.mod_view.active()
+			&& !navigation_page
+			&& !search_open
+			&& !browsing_channels
+			&& !selected_voice
+			&& ui.available_width() >= 690.0;
+		if docked_mod_view
+			&& let Some(intent) = self.mod_view.show_in(Some(ui), &ctx, state, &mut commands)
+		{
+			self.apply_mod_view_intent(intent, state, &mut commands);
+		}
+		let show_members = !docked_mod_view
+			&& !navigation_page
 			&& !browsing_channels
 			&& !selected_voice
 			&& !search_open
 			&& state.selected.is_some()
-			&& if wide_members {
-				*self.members_preference(state)
-			} else {
-				self.members_narrow_open
-			};
+			&& (member_destination.is_some()
+				|| if wide_members {
+					*self.members_preference(state)
+				} else {
+					self.members_narrow_open
+				});
+		let search_full = search_open && ui.available_width() < 540.0;
+		self.search.workspace_full = search_full;
 		if search_open {
 			self.channel_header(
 				ui,
@@ -692,10 +815,11 @@ impl MessagingUi {
 				true,
 				&mut commands,
 			);
-			let width = if wide_members {
-				search::PANE_WIDTH.min(ui.available_width() * 0.45)
+			let workspace = ui.available_width().max(1.0);
+			let width = if workspace < 540.0 {
+				workspace
 			} else {
-				(ui.available_width() * 0.6).max(240.0)
+				search::PANE_WIDTH.min(workspace * 0.5).max(260.0)
 			};
 			egui::Panel::right("search-pane")
 				.resizable(false)
@@ -754,21 +878,53 @@ impl MessagingUi {
 							}),
 					)
 					.show(ui, |ui| {
+						if let Some(channel) = member_destination {
+							ui.horizontal_wrapped(|ui| {
+								ui.strong(language.text(if complete_roster.is_some() {
+									"sidebar-server-roster"
+								} else {
+									"sidebar-channel-members"
+								}));
+								if design::text_action(ui, "sidebar-members-close").clicked() {
+									self.guild_members_view = None;
+								}
+							});
+							ui.small(Self::member_view_summary(state, channel, complete_roster));
+							Self::load_full_roster_action(ui, state, channel, &mut commands);
+							ui.separator();
+						}
 						self.member_rows(ui, state, &mut commands);
 					});
 			} else {
-				let response = dialog::Dialog::new("members-narrow", language.text("members"))
-					.subtitle(language.text("members-description"))
-					.width(360.0)
-					.show(&ctx, |d| {
-						let max = (d.available_height() - 180.0).clamp(120.0, 620.0);
-						d.content(|ui| {
-							ui.set_max_height(max);
-							self.member_rows(ui, state, &mut commands);
-						});
+				let response = dialog::Dialog::new(
+					("members-narrow", self.guild_members_view),
+					language.text(match member_destination {
+						Some(_) if complete_roster.is_some() => "sidebar-server-roster",
+						Some(_) => "sidebar-channel-members",
+						None => "members",
+					}),
+				)
+				.subtitle(member_destination.map_or_else(
+					|| language.text("members-description"),
+					|channel| Self::member_view_summary(state, channel, complete_roster),
+				))
+				.width(360.0)
+				.show(&ctx, |d| {
+					let max = (d.available_height() - 180.0).clamp(120.0, 620.0);
+					d.content(|ui| {
+						ui.set_max_height(max);
+						if let Some(channel) = member_destination {
+							Self::load_full_roster_action(ui, state, channel, &mut commands);
+						}
+						self.member_rows(ui, state, &mut commands);
 					});
+				});
 				if response.close {
-					self.members_narrow_open = false;
+					if member_destination.is_some() {
+						self.guild_members_view = None;
+					} else {
+						self.members_narrow_open = false;
+					}
 				}
 			}
 		} else if state.members.is_some() {
@@ -786,7 +942,7 @@ impl MessagingUi {
 					.inner_margin(0),
 			)
 			.show(ui, |ui| {
-				if navigation_page {
+				if navigation_page || search_full {
 					return;
 				}
 				if browsing_channels {
@@ -845,6 +1001,11 @@ impl MessagingUi {
 					self.friends_page(ui, state, &mut commands);
 					return;
 				}
+				if let Some(channel) = state.selected.filter(|channel| state.spam_direct(*channel))
+				{
+					self.show_spam_direct(ui, state, channel, &mut commands);
+					return;
+				}
 				// In a DM call the header moves onto the call stage, shown while hovered.
 				let header_in_call = !search_open && self.dm_call_stage(state).is_some();
 				if !search_open && !header_in_call {
@@ -863,10 +1024,8 @@ impl MessagingUi {
 					.and_then(|id| state.channel(id))
 					.and_then(|channel| channel.guild)
 					&& crate::server_access::AccessUi::banner(ui, state, guild)
-					&& let Some(command) = self.preview_server_settings(state, guild)
 				{
-					self.preview_server_safety();
-					commands.push(command);
+					commands.extend(self.open_server_safety(state, guild));
 				}
 				let message_fill = (design::has_section_background(ui)
 					&& state.selected.is_some()
@@ -923,13 +1082,14 @@ impl MessagingUi {
 					if let Some(field) = self.forum.paste.take() {
 						self.menu_paste = Some(field);
 					}
-					if let Some(field) =
-						[forum::title_id(), forum::body_id()]
-							.into_iter()
-							.find(|id| {
-								self.menu_paste.is_some_and(|(_, _, field)| field == *id)
-									|| ui.ctx().memory(|m| m.has_focus(*id))
-							}) {
+					if !image_open
+						&& let Some(field) =
+							[forum::title_id(), forum::body_id()]
+								.into_iter()
+								.find(|id| {
+									self.menu_paste.is_some_and(|(_, _, field)| field == *id)
+										|| ui.ctx().memory(|m| m.has_focus(*id))
+								}) {
 						let ctx = ui.ctx().clone();
 						self.clipboard_paste(
 							&ctx,
@@ -946,9 +1106,14 @@ impl MessagingUi {
 						&self.channel_preferences,
 						self.shortcuts_available(state),
 					);
+					let mut toggle_spoiler = None;
+					let mut preview = None;
 					let mut staged = forum::Staged {
 						files: &files,
 						textures: &textures,
+						spoilers: &self.attachment_spoilers,
+						toggle_spoiler: &mut toggle_spoiler,
+						preview: &mut preview,
 						choose: &mut self.attach_requested,
 						remove: &mut self.remove_attachment_index,
 						clear: &mut self.remove_attachment_requested,
@@ -962,6 +1127,28 @@ impl MessagingUi {
 						(&mut self.scroll, &mut staged, &mut self.avatars),
 						(&mut self.channel_menu, view),
 					);
+					if let Some(index) = toggle_spoiler {
+						self.toggle_attachment_spoiler(index, state.generation, channel);
+						ui.ctx().request_repaint();
+					}
+					if let Some((key, trigger)) = preview
+						&& !self.remove_attachment_requested
+						&& self.forum.can_preview_draft(channel)
+						&& state.selected == Some(channel)
+						&& let Some(index) = self
+							.attachment_spoilers
+							.iter()
+							.position(|entry| *entry == (key, false))
+						&& self.remove_attachment_index != Some(index)
+						&& let Some(Some(texture)) = textures.get(index)
+					{
+						self.open_staged_image(
+							ui.ctx(),
+							(state.generation, channel, key),
+							trigger,
+							texture,
+						);
+					}
 					return;
 				}
 				egui::Panel::bottom("composer")
@@ -1090,9 +1277,18 @@ impl MessagingUi {
 							self.extensions
 								.invoke_message(action, text, state, ui.ctx());
 						}
-						if let Some((message, anchor, trigger)) =
-							self.timeline.reaction_picker.take()
-						{
+						// Both entry points can have been activated by the timeline above. Open the
+						// picker in this pass, before drawing overlays or moving on to the composer.
+						let toolbar_picker =
+							self.timeline
+								.reaction_picker
+								.take()
+								.filter(|(message, _, _)| {
+									state.can_open_reaction_picker(*message)
+										&& !state.reactions.busy()
+								});
+						let menu_picker = self.timeline.menu.take_picker(state);
+						if let Some((message, anchor, trigger)) = menu_picker.or(toolbar_picker) {
 							self.emoji_picker.dismiss(state, &mut commands);
 							self.reaction_picker
 								.open_reaction(state, message, anchor, trigger);
@@ -1499,9 +1695,6 @@ impl MessagingUi {
 		if let Some((message, emoji)) = self.timeline.menu.reaction.take() {
 			self.timeline.reaction = Some((message, Some(emoji)));
 		}
-		if let Some(picker) = self.timeline.menu.picker.take() {
-			self.timeline.reaction_picker = Some(picker);
-		}
 		if let Some(url) = ctx
 			.data_mut(|data| data.remove_temp::<String>(egui::Id::unique("message-menu-open-link")))
 		{
@@ -1800,44 +1993,7 @@ impl MessagingUi {
 				}
 			}
 		}
-		if self.deleting.is_some_and(|(channel, message)| {
-			state.selected != Some(channel) || state.timeline.get(message).is_none()
-		}) {
-			self.deleting = None;
-		}
-		if let Some((channel, message)) = self.deleting {
-			let allowed = state.can_delete(channel, message);
-			let conversation = state
-				.channel(channel)
-				.map_or("this conversation", |c| c.name.as_str());
-			let mut confirm = dialog::Confirm::new(
-				"delete-message",
-				"Delete message?",
-				format!(
-					"This permanently removes the selected message from {conversation} for everyone."
-				),
-			)
-			.danger()
-			.confirm_label("Delete")
-			.cancel_label("Keep Message")
-			.enabled(allowed);
-			if !allowed {
-				confirm = confirm.note(
-					dialog::Level::Warning,
-					"Deleting this message is unavailable.",
-				);
-			}
-			match confirm.show(&ctx) {
-				Some(dialog::Choice::Confirmed) => {
-					if let Some(command) = state.prepare_delete(channel, message) {
-						commands.push(command);
-					}
-					self.deleting = None;
-				}
-				Some(dialog::Choice::Cancelled) => self.deleting = None,
-				None => {}
-			}
-		}
+		self.show_message_delete_confirmation(&ctx, state, &mut commands);
 		self.apply_stream_preview_watch(state, &mut commands);
 		self.show_call_switch(&ctx, state, &mut commands);
 		self.mentions_inbox(&ctx, state, &mut commands);
@@ -1853,11 +2009,76 @@ impl MessagingUi {
 			) {
 			commands.push(command);
 		}
+		if let Some((generation, guild)) = self.boost_overview {
+			if generation == state.generation
+				&& self.guild == Some(guild)
+				&& let Some(server) = state.guild(guild)
+			{
+				let modal = dialog::Dialog::new(
+					("server-boosts", generation, guild),
+					language.text("sidebar-server-boosts"),
+				)
+				.subtitle(server.name.clone())
+				.width(400.0)
+				.show(&ctx, |d| {
+					d.content(|ui| {
+						let goal = state.server_boost_goal(guild);
+						if let Some(goal) = goal {
+							let summary = crate::panels::boost_goal_label(goal);
+							ui.heading(&summary);
+							crate::panels::boost_goal_meter(ui, goal, &summary);
+						} else if let Some(count) = state.server_boost_count(guild) {
+							ui.heading(crate::panels::boost_count_label(state, count));
+						} else {
+							design::hint(ui, "sidebar-boost-unknown");
+						}
+						if let Some(tier) = state.server_boost_tier(guild) {
+							ui.label(crate::i18n::translate_args(
+								"sidebar-boost-tier",
+								&[("tier", &tier.to_string())],
+							));
+							if let Some((next, required)) = next_boost_level(tier) {
+								ui.label(crate::i18n::translate_args(
+									"sidebar-boost-level-requirement",
+									&[
+										("tier", &next.to_string()),
+										("count", &required.to_string()),
+									],
+								));
+							} else if tier == 3 {
+								design::hint(ui, "sidebar-boost-top-tier");
+							}
+						}
+						if goal.is_none() {
+							design::hint(
+								ui,
+								if !state.gateway_connected {
+									"sidebar-boost-goal-offline"
+								} else if state.freshness != model::Freshness::Fresh {
+									"sidebar-boost-goal-syncing"
+								} else {
+									"sidebar-boost-goal-unknown"
+								},
+							);
+						}
+						design::hint(ui, "sidebar-boost-level-allocation");
+					});
+					d.footer(|ui| {
+						dialog::action(ui, "server-events-done", dialog::Action::Neutral).clicked()
+					})
+				});
+				if modal.close || modal.inner {
+					self.boost_overview = None;
+				}
+			} else {
+				self.boost_overview = None;
+			}
+		}
 		if let Some(notice) = self.mod_view.take_notice() {
 			self.toasts
 				.push(design::Level::Warning, crate::i18n::translate(notice));
 		}
-		if let Some(intent) = self.mod_view.show(&ctx, state, &mut commands) {
+		if !docked_mod_view && let Some(intent) = self.mod_view.show(&ctx, state, &mut commands) {
 			self.apply_mod_view_intent(intent, state, &mut commands);
 			ctx.request_repaint();
 		}
@@ -1909,4 +2130,23 @@ impl MessagingUi {
 		self.retire_menu_paste(state);
 		commands
 	}
+}
+
+// Published level thresholds, not the Boost Goal or a remaining balance.
+fn next_boost_level(tier: u8) -> Option<(u8, u8)> {
+	match tier {
+		0 => Some((1, 2)),
+		1 => Some((2, 7)),
+		2 => Some((3, 14)),
+		_ => None,
+	}
+}
+
+#[cfg(test)]
+#[test]
+fn boost_tier_requirements_do_not_extrapolate_past_level_three() {
+	assert_eq!(
+		(0..=4).map(next_boost_level).collect::<Vec<_>>(),
+		[Some((1, 2)), Some((2, 7)), Some((3, 14)), None, None]
+	);
 }

@@ -194,6 +194,7 @@ impl Desktop {
 							self.messaging.channel_preferences_status = "Local storage worker stopped; restart NuSerein to restore channel preferences.";
 						}
 						presence_cache_stopped = self.presence_load_pending;
+						self.state.soundboard.favorites_storage = Some(false);
 						break;
 					}
 					Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -216,6 +217,7 @@ impl Desktop {
 			self.sticker_pack_cache_load.capacity_changed();
 			self.sticker_pack_cache_save.capacity_changed();
 			self.gif_cache.capacity_changed();
+			self.sound_favorites_cache.capacity_changed();
 			self.server_cache_load.capacity_changed();
 			// Settings are global; account removal/write failures still matter after logout.
 			match &outcome {
@@ -269,6 +271,12 @@ impl Desktop {
 						let patches = rows
 							.iter()
 							.map(|row| model::GuildPatch {
+								banner: model::Patch::Absent,
+								boost_count: model::Patch::Absent,
+								boost_tier: model::Patch::Absent,
+								boost_progress_visible: model::Patch::Absent,
+								boost_tier_override: model::Patch::Absent,
+								boost_game_servers: model::Patch::Absent,
 								id: row.guild,
 								name: row
 									.name
@@ -634,6 +642,32 @@ impl Desktop {
 					} else if !self.state.gif_favorites_cache_safe() {
 						self.cache_error = true;
 						self.cache_status = "GIF cache could not be safely reconciled; changes remain in this session";
+					}
+				}
+				cache::Outcome::SoundFavorites(account, result) => {
+					if self
+						.state
+						.user
+						.as_ref()
+						.is_some_and(|user| user.id == account)
+					{
+						let restored =
+							result.is_ok_and(|keys| self.state.soundboard.restore_favorites(keys));
+						self.state.soundboard.favorites_storage = Some(restored);
+						if restored {
+							self.sound_favorites_cache.loaded((generation, account));
+						}
+					}
+				}
+				cache::Outcome::SoundFavoritesSaved(account, saved) => {
+					if !saved
+						&& self
+							.state
+							.user
+							.as_ref()
+							.is_some_and(|user| user.id == account)
+					{
+						self.state.soundboard.favorites_storage = Some(false);
 					}
 				}
 				cache::Outcome::Drafts(drafts) => {

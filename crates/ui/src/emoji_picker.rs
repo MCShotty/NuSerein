@@ -2561,6 +2561,25 @@ fn gif_grid(
 				};
 				response
 					.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+				if response.hovered() || response.has_focus() {
+					let caption = crate::i18n::translate("emoji-picker-gif-grid-send-gif");
+					let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+					let mut job = egui::text::LayoutJob::simple_singleline(
+						caption,
+						egui::FontId::proportional(12.0),
+						egui::Color32::WHITE,
+					);
+					job.wrap =
+						egui::text::TextWrapping::truncate_at_width((rect.width() - 14.0).max(1.0));
+					let text = painter.layout_job(job);
+					let pos = rect.left_bottom() + egui::vec2(7.0, -text.size().y - 6.0);
+					painter.rect_filled(
+						egui::Rect::from_min_size(pos, text.size()).expand2(egui::vec2(4.0, 2.0)),
+						4,
+						egui::Color32::from_black_alpha(220),
+					);
+					painter.galley(pos, text, egui::Color32::WHITE);
+				}
 				if star.as_ref().is_some_and(|star| star.clicked()) {
 					action = Some(GifAction::Toggle(gif.clone()));
 				} else if response.clicked() && !star.as_ref().is_some_and(|s| s.hovered()) {
@@ -3346,6 +3365,12 @@ mod tests {
 		apply(
 			&mut state,
 			Event::GuildChanged(model::GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				default_message_notifications: model::Patch::Absent,
 				id: guild,
 				name: model::Patch::Value("Needle server".into()),

@@ -74,6 +74,12 @@ impl Guild {
 
 #[derive(Clone)]
 pub struct GuildPatch {
+	pub banner: Patch<String>,
+	pub boost_count: Patch<u32>,
+	pub boost_tier: Patch<u8>,
+	pub boost_progress_visible: Patch<bool>,
+	pub boost_tier_override: Patch<bool>,
+	pub boost_game_servers: Patch<bool>,
 	pub default_message_notifications: Patch<u8>,
 	pub id: Id,
 	pub name: Patch<String>,

@@ -17,9 +17,125 @@ pub(super) struct Controls {
 	include_muted: bool,
 	guild_only: bool,
 	generation: Option<u64>,
-	custom_reminder: String,
+	reminder: Option<ReminderDraft>,
+}
+struct ReminderDraft {
+	popup: egui::Id,
+	custom: String,
 }
 impl Controls {
+	fn reminder_picker(
+		&mut self,
+		ui: &mut egui::Ui,
+		(channel, message): (Id, Id),
+		has_due: bool,
+		enabled: bool,
+		action: &mut Option<Action>,
+	) -> bool {
+		let trigger = ui
+			.push_id((channel, message), |ui| {
+				ui.add_enabled(enabled, egui::Button::new(i18n::translate("inbox-remind")))
+			})
+			.inner;
+		let ctx = ui.ctx();
+		let popup = egui::Popup::default_response_id(&trigger);
+		let was_open = egui::Popup::is_id_open(ctx, popup);
+		let escape = was_open && ctx.input(|input| input.key_pressed(egui::Key::Escape));
+		if !trigger.enabled() {
+			egui::Popup::close_id(ctx, popup);
+		} else {
+			egui::Popup::from_toggle_button_response(&trigger)
+				.close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+				.show(|ui| {
+					if self
+						.reminder
+						.as_ref()
+						.is_none_or(|draft| draft.popup != popup)
+					{
+						self.close_reminder(ui.ctx());
+						self.reminder = Some(ReminderDraft {
+							popup,
+							custom: String::new(),
+						});
+					}
+					let draft = self.reminder.as_mut().expect("open reminder draft");
+					let now = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
+					let mut due = None;
+					for (seconds, label) in [
+						(3600, "inbox-in-hour"),
+						(86400, "inbox-in-day"),
+						(604800, "inbox-in-week"),
+					] {
+						if ui.button(i18n::translate(label)).clicked() {
+							due = Some(Some(now + seconds * 1_000_000_000));
+						}
+					}
+					ui.separator();
+					let label = ui.label(i18n::translate("inbox-custom-reminder"));
+					let input = ui
+						.add(
+							egui::TextEdit::singleline(&mut draft.custom)
+								.id(popup.with("custom"))
+								.desired_width(
+									(ui.ctx().content_rect().width() - 20.0).clamp(1.0, 180.0),
+								)
+								.char_limit(16)
+								.hint_text("YYYY-MM-DD HH:MM"),
+						)
+						.labelled_by(label.id);
+					if !was_open && trigger.clicked() {
+						input.request_focus();
+					}
+					let at = custom_reminder(&draft.custom, now);
+					if ui
+						.add_enabled(
+							at.is_some(),
+							egui::Button::new(i18n::translate("inbox-set-reminder")),
+						)
+						.clicked()
+					{
+						due = at.map(Some);
+					}
+					if has_due && ui.button(i18n::translate("inbox-clear-reminder")).clicked() {
+						due = Some(None);
+					}
+					if let Some(due_at) = due {
+						*action = Some(Action::Save {
+							channel,
+							message,
+							due_at,
+						});
+						trigger.request_focus();
+						ui.close();
+					}
+				});
+		}
+		let open = egui::Popup::is_id_open(ctx, popup);
+		if !open
+			&& self
+				.reminder
+				.as_ref()
+				.is_some_and(|draft| draft.popup == popup)
+		{
+			self.reminder = None;
+			if escape && trigger.enabled() {
+				trigger.request_focus();
+			}
+		}
+		open
+	}
+	fn close_reminder(&mut self, ctx: &egui::Context) {
+		if let Some(draft) = self.reminder.take() {
+			egui::Popup::close_id(ctx, draft.popup);
+		}
+	}
+	fn loaded(&self, state: &State) -> bool {
+		match self.tab {
+			Tab::Unread => true,
+			Tab::Mentions => state.inbox.loaded,
+			Tab::Saved => state.inbox.saved_loaded,
+		}
+	}
 	fn allows(&self, state: &State, channel: &model::Channel, guild: Option<Id>) -> bool {
 		state.can_read_history(channel.id)
 			&& (!self.guild_only || channel.guild == guild)
@@ -85,6 +201,7 @@ impl MessagingUi {
 		commands: &mut Vec<Command>,
 	) {
 		if !self.inbox_open {
+			self.inbox_controls.close_reminder(ctx);
 			self.inbox_controls.restricted = Default::default();
 			return;
 		}
@@ -105,6 +222,7 @@ impl MessagingUi {
 				.map(crate::restricted::Key::message)
 		});
 		if self.inbox_controls.generation != Some(state.generation) {
+			self.inbox_controls.close_reminder(ctx);
 			self.inbox_controls = Controls {
 				generation: Some(state.generation),
 				tab: self.inbox_controls.tab,
@@ -127,7 +245,9 @@ impl MessagingUi {
 		let mut action = None;
 		let mut open = None;
 		let mut mark_read = None;
+		let mut mark_page = None;
 		let mut changed_tab = false;
+		let mut reminder_open = false;
 		let response = dialog::Dialog::new("mentions-inbox", i18n::translate("inbox-title"))
 			.subtitle(i18n::translate("inbox-description"))
 			.width(620.0)
@@ -181,6 +301,7 @@ impl MessagingUi {
 								.iter()
 								.filter(|row| {
 									self.inbox_controls.allows(state, row, self.guild)
+										&& !state.spam_direct(row.id) && !state.message_request(row.id)
 										&& state.channel_unread(row) == Some(true)
 								})
 								.collect();
@@ -188,9 +309,31 @@ impl MessagingUi {
 								std::cmp::Reverse((row.last_message, row.id))
 							});
 							let total = rows.len();
-							for channel in rows.into_iter().take(100) {
+							let shown_rows =
+								&rows[..rows.len().min(client_core::read_state::INBOX_PAGE_LIMIT)];
+							if !shown_rows.is_empty()
+								&& ui
+									.add_enabled(
+										shown_rows
+											.iter()
+											.any(|channel| state.can_mark_channel_read(channel.id)),
+										egui::Button::new(i18n::translate("inbox-mark-shown-read")),
+									)
+									.clicked()
+							{
+								mark_page = Some(
+									shown_rows
+										.iter()
+										.map(|channel| channel.id)
+										.collect::<Vec<_>>(),
+								);
+							}
+							for &channel in shown_rows {
 								shown += 1;
 								place(ui, state, channel);
+								if let Some(error) = state.read_state.status(channel.id) {
+									dialog::notice(ui, dialog::Level::Warning, error);
+								}
 								ui.horizontal_wrapped(|ui| {
 									ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
 									if ui
@@ -310,75 +453,19 @@ impl MessagingUi {
 											});
 										}
 									});
-									ui.add_enabled_ui(!state.inbox.loading, |ui| {
-										ui.menu_button(i18n::translate("inbox-remind"), |ui| {
-											for (seconds, label) in [
-												(3600, "inbox-in-hour"),
-												(86400, "inbox-in-day"),
-												(604800, "inbox-in-week"),
-											] {
-												if ui.button(i18n::translate(label)).clicked() {
-													let due_at = Some(
-														(time::OffsetDateTime::now_utc()
-															.unix_timestamp() as i128 + seconds)
-															* 1_000_000_000,
-													);
-													action = Some(Action::Save {
-														channel: saved.channel,
-														message: saved.message,
-														due_at,
-													});
-													ui.close();
-												}
-											}
-											ui.separator();
-											ui.label(i18n::translate("inbox-custom-reminder"));
-											ui.add(
-												egui::TextEdit::singleline(
-													&mut self.inbox_controls.custom_reminder,
-												)
-												.char_limit(16)
-												.hint_text("YYYY-MM-DD HH:MM"),
-											);
-											let at = custom_reminder(
-												&self.inbox_controls.custom_reminder,
-												time::OffsetDateTime::now_utc()
-													.unix_timestamp_nanos(),
-											);
-											if ui
-												.add_enabled(
-													at.is_some(),
-													egui::Button::new(i18n::translate(
-														"inbox-set-reminder",
-													)),
-												)
-												.clicked()
-											{
-												action = Some(Action::Save {
-													channel: saved.channel,
-													message: saved.message,
-													due_at: at,
-												});
-												self.inbox_controls.custom_reminder.clear();
-												ui.close();
-											}
-											if saved.due_at.is_some()
-												&& ui
-													.button(i18n::translate("inbox-clear-reminder"))
-													.clicked()
-											{
-												action = Some(Action::Save {
-													channel: saved.channel,
-													message: saved.message,
-													due_at: None,
-												});
-												ui.close();
-											}
-										});
-									});
+									reminder_open |= self.inbox_controls.reminder_picker(
+										ui,
+										(saved.channel, saved.message),
+										saved.due_at.is_some(),
+										!state.inbox.loading,
+										&mut action,
+									);
 									ui.separator();
 								} else if self.inbox_controls.filter.is_empty()
 									&& !self.inbox_controls.guild_only
+									&& state
+										.channel(saved.channel)
+										.is_none_or(|channel| !state.can_read_history(channel.id))
 								{
 									shown += 1;
 									ui.weak(i18n::translate("inbox-message-unavailable"));
@@ -399,15 +486,11 @@ impl MessagingUi {
 						}
 					}
 					if shown == 0 && !state.inbox.loading && state.inbox.error.is_none() {
-						ui.label(i18n::translate(
-							if self.inbox_controls.tab == Tab::Unread
-								|| state.inbox.loaded || state.inbox.saved_loaded
-							{
-								"inbox-empty"
-							} else {
-								"inbox-refresh-needed"
-							},
-						));
+						ui.label(i18n::translate(if self.inbox_controls.loaded(state) {
+							"inbox-empty"
+						} else {
+							"inbox-refresh-needed"
+						}));
 					}
 				});
 				if self.inbox_controls.tab != Tab::Unread || state.inbox.stale {
@@ -446,6 +529,9 @@ impl MessagingUi {
 					});
 				}
 			});
+		if changed_tab || !reminder_open {
+			self.inbox_controls.close_reminder(ctx);
+		}
 		if changed_tab {
 			commands.push(state.clear_mentions());
 			match self.inbox_controls.tab {
@@ -474,12 +560,15 @@ impl MessagingUi {
 				Err(error) => state.status = error,
 			}
 		}
-		if let Some(channel) = mark_read
+		if let Some(shown) = mark_page {
+			commands.extend(state.prepare_mark_inbox_read(&shown));
+		} else if let Some(channel) = mark_read
 			&& let Some(command) = state.prepare_mark_channel_read(channel)
 		{
 			commands.push(command);
 		}
 		if response.close || !self.inbox_open {
+			self.inbox_controls.close_reminder(ctx);
 			self.inbox_open = false;
 			commands.push(state.clear_mentions());
 		} else if let Some(action) = action
@@ -542,6 +631,38 @@ mod tests {
 		output.drop_without_applying_deltas();
 	}
 	use model::Id;
+
+	#[test]
+	fn mentions_and_bookmarks_have_independent_load_state() {
+		let mut state = test_support::demo_state();
+		state.inbox.loaded = true;
+		state.inbox.saved_loaded = false;
+		let mut controls = Controls {
+			tab: Tab::Saved,
+			..Default::default()
+		};
+		assert!(!controls.loaded(&state));
+		controls.tab = Tab::Mentions;
+		assert!(controls.loaded(&state));
+		state.inbox.loaded = false;
+		state.inbox.saved_loaded = true;
+		assert!(!controls.loaded(&state));
+	}
+
+	#[test]
+	fn leaving_the_inbox_discards_the_unsubmitted_reminder() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::demo_state();
+		let mut commands = Vec::new();
+		let mut view = MessagingUi::default();
+		view.inbox_controls.reminder = Some(ReminderDraft {
+			popup: egui::Id::unique("old-reminder"),
+			custom: "2030-01-01 12:00".into(),
+		});
+		view.mentions_inbox(&ctx, &mut state, &mut commands);
+		assert!(view.inbox_controls.reminder.is_none());
+		assert!(commands.is_empty());
+	}
 
 	#[test]
 	fn custom_reminders_reject_invalid_dates_and_past_deadlines() {

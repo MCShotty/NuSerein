@@ -4,6 +4,19 @@ use crate::Id;
 /// Guilds hold at most 96 sounds; the default set is shared by every account.
 pub const MAX_SOUNDS: usize = 256;
 pub const MAX_SOUND_BYTES: usize = 128 * 1024;
+/// A device-local favorite stores identity only, not an entitlement or playable audio.
+pub type Favorite = (Option<Id>, Id);
+pub const MAX_FAVORITES: usize = 32;
+
+pub fn valid_favorites(favorites: &[Favorite]) -> bool {
+	favorites.len() <= MAX_FAVORITES
+		&& favorites.iter().enumerate().all(|(index, key)| {
+			key.1.0 != 0
+				&& key.0.is_none_or(|guild| guild.0 != 0)
+				&& !favorites[..index].contains(key)
+		})
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sound {
 	pub id: Id,

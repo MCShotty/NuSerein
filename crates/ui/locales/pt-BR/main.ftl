@@ -302,6 +302,9 @@ attachments-media-menu-unavailable-for-synthetic-attachments = Indisponível par
 # Context: open_original
 attachments-open-original-open-original = Abra o original…
 # Context: pending_card
+attachments-mark-spoiler = Marcar anexo como spoiler
+attachments-remove-spoiler = Remover marcação de spoiler
+attachments-spoiler-label = Spoiler
 attachments-pending-card-remove-attachment = Remover anexo
 attachments-loading-card-preparing = Preparando…
 # Context: show_status

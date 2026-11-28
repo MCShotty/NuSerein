@@ -316,6 +316,7 @@ pub struct MemberChunks {
 	viewport: usize,
 	anchor: Option<usize>,
 	chunks: BTreeMap<usize, Vec<Option<MemberSlot>>>,
+	full_roster_load: Option<member_list::FullRosterLoad>,
 }
 
 impl MemberChunks {
@@ -1889,6 +1890,12 @@ mod tests {
 		apply(
 			&mut state,
 			Event::GuildChanged(GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				default_message_notifications: model::Patch::Absent,
 				id: Id(2),
 				name: Patch::Value("Renamed".into()),
@@ -1900,6 +1907,12 @@ mod tests {
 		apply(
 			&mut state,
 			Event::GuildChanged(GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				default_message_notifications: model::Patch::Absent,
 				id: Id(2),
 				name: Patch::Absent,
@@ -1911,6 +1924,12 @@ mod tests {
 		apply(
 			&mut state,
 			Event::GuildChanged(GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				default_message_notifications: model::Patch::Absent,
 				id: Id(2),
 				name: Patch::Absent,
@@ -1921,6 +1940,12 @@ mod tests {
 		apply(
 			&mut state,
 			Event::GuildChanged(GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				default_message_notifications: model::Patch::Absent,
 				id: Id(2),
 				name: Patch::Value("x".repeat(1024)),
@@ -1932,6 +1957,12 @@ mod tests {
 		apply(
 			&mut state,
 			Event::GuildChanged(GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				default_message_notifications: model::Patch::Absent,
 				id: Id(3),
 				name: Patch::Value("Unknown".into()),
@@ -1942,6 +1973,12 @@ mod tests {
 		state.apply(Envelope {
 			generation: state.generation + 1,
 			event: Event::GuildChanged(GuildPatch {
+				banner: model::Patch::Absent,
+				boost_count: model::Patch::Absent,
+				boost_tier: model::Patch::Absent,
+				boost_progress_visible: model::Patch::Absent,
+				boost_tier_override: model::Patch::Absent,
+				boost_game_servers: model::Patch::Absent,
 				default_message_notifications: model::Patch::Absent,
 				id: Id(2),
 				name: Patch::Value("Late event".into()),
@@ -2382,6 +2419,7 @@ mod tests {
 			})
 			.unwrap();
 		let kept = MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(1),
@@ -2405,6 +2443,7 @@ mod tests {
 		state.members = Some(kept.clone());
 		state.member_chunks.merge(&kept);
 		let holes = MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			start: 100,
 			slots: vec![None; 100],
@@ -2431,6 +2470,7 @@ mod tests {
 		apply(
 			&mut state,
 			Event::Members(MemberList {
+				server_member_count: None,
 				missing_identity: vec![],
 				start: 100,
 				slots: later_slots,
@@ -2447,6 +2487,7 @@ mod tests {
 		apply(
 			&mut state,
 			Event::Members(MemberList {
+				server_member_count: None,
 				missing_identity: vec![],
 				start: 0,
 				slots: vec![None; 100],

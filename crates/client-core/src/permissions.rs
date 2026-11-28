@@ -780,6 +780,9 @@ impl State {
 	}
 	/// Permission-only composer availability, including while drafting offline.
 	pub fn can_compose(&self, channel: Id) -> bool {
+		if self.spam_direct(channel) {
+			return false;
+		}
 		self.channel(channel)
 			.filter(|c| c.supports_text())
 			.is_some_and(|c| {

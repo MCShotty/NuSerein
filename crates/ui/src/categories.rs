@@ -940,6 +940,7 @@ impl MessagingUi {
 								})
 								.inner;
 							let row = rect.shrink2(egui::vec2(0.0, 1.0));
+							let settings_row = row;
 							if draggable && response.drag_started_by(egui::PointerButton::Primary) {
 								response.dnd_set_drag_payload(ChannelDrag(channel.id));
 							}
@@ -984,6 +985,13 @@ impl MessagingUi {
 									colors.text_strong,
 								);
 							}
+							// Unread badges and access marks must not share the gear's hit box.
+							let mut row = row;
+							row.max.x -= crate::channel_menu::ChannelMenu::settings_lane(
+								state,
+								channel.id,
+								row.width(),
+							);
 							let name_color = channel_marks::tint(
 								&colors,
 								access,
@@ -1149,7 +1157,7 @@ impl MessagingUi {
 								(dm_list && channel.kind == 3).then(|| {
 									format!(
 										"{} {}",
-										channel.recipients.len().max(1),
+										channel.recipients.len() + 1,
 										language.text("members-count")
 									)
 								})
@@ -1377,6 +1385,13 @@ impl MessagingUi {
 								self.group_menu.context(&response, state, channel, view);
 							}
 							if channel.guild.is_some() {
+								self.channel_menu.row_settings(
+									ui,
+									state,
+									channel,
+									settings_row,
+									response.id,
+								);
 								self.channel_menu.context(&response, state, channel, view);
 							}
 							if enabled {
@@ -2826,24 +2841,35 @@ mod tests {
 		assert!(state.select(Id(7)).is_none());
 		let ctx = egui::Context::default();
 		let mut picked = None;
-		// The forum row itself is a destination; the second Tab reaches the loaded post.
-		for key in [egui::Key::Tab, egui::Key::Tab, egui::Key::Enter] {
-			ctx.run_ui(
-				egui::RawInput {
-					events: vec![egui::Event::Key {
-						key,
-						physical_key: None,
-						pressed: true,
-						repeat: false,
-						modifiers: egui::Modifiers::NONE,
-					}],
-					..Default::default()
-				},
-				|ui| {
-					picked = view.channel_list(ui, &mut state).or(picked);
-				},
-			)
-			.drop_without_applying_deltas();
+		// Establish the focus order before keyboard input, including the reserved gear lane.
+		ctx.run_ui(egui::RawInput::default(), |ui| {
+			assert!(view.channel_list(ui, &mut state).is_none());
+		})
+		.drop_without_applying_deltas();
+		for key in [
+			egui::Key::Tab,
+			egui::Key::Tab,
+			egui::Key::Tab,
+			egui::Key::Enter,
+		] {
+			for pressed in [true, false] {
+				ctx.run_ui(
+					egui::RawInput {
+						events: vec![egui::Event::Key {
+							key,
+							physical_key: None,
+							pressed,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+						}],
+						..Default::default()
+					},
+					|ui| {
+						picked = view.channel_list(ui, &mut state).or(picked);
+					},
+				)
+				.drop_without_applying_deltas();
+			}
 		}
 		assert_eq!(picked, Some(Id(8)));
 		assert!(view.archive_parent.is_none());
@@ -2980,7 +3006,15 @@ mod tests {
 						&& near(*rect) && rect.width() <= 6.0
 						&& rect.height() <= 12.0
 				});
-				let label = labels.iter().find(|label| label.contains(name)).cloned();
+				// Match the row's accessible name and notification suffix, not the settings gear.
+				let label = labels
+					.iter()
+					.find(|label| {
+						label
+							.strip_prefix(name)
+							.is_some_and(|suffix| suffix.contains("; "))
+					})
+					.unwrap_or_else(|| panic!("missing accessible channel row for {name}"));
 				format!(
 					"name={name} painted={} strong={} accent={} badge={badge} pill={pill} label={label:?}",
 					name_row.is_some(),

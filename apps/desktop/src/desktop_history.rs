@@ -179,6 +179,40 @@ impl Desktop {
 			}
 		}
 	}
+	pub(super) fn sync_sound_favorites_cache(&mut self) {
+		if self.state.demo || self.fixture_only {
+			return;
+		}
+		if self.cache.is_none() {
+			self.state.soundboard.favorites_storage = Some(false);
+			return;
+		}
+		if self.state.auth != client_core::auth::AuthState::Authenticated {
+			return;
+		}
+		let Some(account) = self.state.user.as_ref().map(|user| user.id) else {
+			return;
+		};
+		let scope = (self.state.generation, account);
+		let key = (scope.0, scope.1, 0, 0);
+		if self.sound_favorites_cache.load.attempt(key)
+			&& self.queue_cache(cache::Operation::LoadSoundFavorites)
+		{
+			self.sound_favorites_cache.load.accepted(key);
+		}
+		if self.state.soundboard.favorites_storage == Some(true)
+			&& self.state.soundboard.favorites_changed
+			&& self.sound_favorites_cache.may_save(scope)
+		{
+			let favorites = self.state.soundboard.favorites().to_vec();
+			if self.queue_cache(cache::Operation::SaveSoundFavorites(favorites)) {
+				self.state.soundboard.favorites_changed = false;
+			} else {
+				self.sound_favorites_cache.reject_save(scope);
+			}
+		}
+	}
+
 	/// Show bounded disk ranges without consuming the live REST request.
 	pub(super) fn load_cached_history(&mut self) {
 		let (state, request) = (&self.state, self.state.request);
@@ -351,6 +385,7 @@ impl Desktop {
 					| cache::Operation::LoadExpressions { .. }
 					| cache::Operation::LoadStickerPackHints { .. }
 					| cache::Operation::LoadGifFavorites
+					| cache::Operation::LoadSoundFavorites
 			);
 			if matches!(
 				operation,

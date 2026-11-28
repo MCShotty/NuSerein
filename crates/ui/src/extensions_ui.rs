@@ -221,6 +221,7 @@ pub struct ExtensionUi {
 	consent: Option<Consent>,
 	result: Option<ResultPanel>,
 	result_generation: u64,
+	discarded_in_generation: Option<u64>,
 	error: Option<String>,
 	message_actions: Arc<Vec<MenuAction>>,
 	themes: bool,
@@ -903,6 +904,17 @@ impl ExtensionUi {
 	pub(crate) fn has_result(&self) -> bool {
 		self.result.is_some() || self.error.is_some()
 	}
+	fn note_discarded(&mut self, context: &ExtensionContext, state: &State) {
+		if context.generation == state.generation {
+			self.status = crate::i18n::translate("extension-result-discarded");
+			if !context.app_wide && context.channel.is_some() {
+				self.discarded_in_generation = Some(context.generation);
+			}
+		}
+	}
+	pub(crate) fn take_workspace_discard_notice(&mut self, generation: u64) -> bool {
+		self.discarded_in_generation.take() == Some(generation)
+	}
 	pub fn report_error(&mut self, message: String) {
 		let message: String = message.chars().take(512).collect();
 		self.status = message.clone();
@@ -940,7 +952,7 @@ impl ExtensionUi {
 		state: &State,
 	) {
 		if !context.is_current(state) {
-			self.status = "Result discarded because the conversation or draft changed.".into();
+			self.note_discarded(&context, state);
 			return;
 		}
 		invocation.storage = None;
@@ -1337,6 +1349,7 @@ impl ExtensionUi {
 		} else {
 			CARD_BODY
 		};
+		let preview_first = self.themes || columns > 1;
 		let card_height = card * 9.0 / 16.0 + body_height;
 		// The card frame paints its 1px stroke outside the content, so placeholders for
 		// culled rows must match or the scroll extent jitters at the bottom of the list.
@@ -1387,7 +1400,9 @@ impl ExtensionUi {
 											ui.set_width(card);
 											ui.set_min_height(card_height);
 											ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-											self.preview_image(ui, &entry, top_radius);
+											if preview_first {
+												self.preview_image(ui, &entry, top_radius);
+											}
 											egui::Frame::new()
 												.inner_margin(egui::Margin {
 													left: 14,
@@ -1409,6 +1424,18 @@ impl ExtensionUi {
 														&mut invoke,
 													);
 												});
+											if !preview_first {
+												self.preview_image(
+													ui,
+													&entry,
+													egui::CornerRadius {
+														nw: 0,
+														ne: 0,
+														sw: CARD_RADIUS,
+														se: CARD_RADIUS,
+													},
+												);
+											}
 										});
 								},
 							);
@@ -2263,7 +2290,7 @@ impl ExtensionUi {
 		};
 		if !result.context.is_current(state) {
 			self.proxy_auth.clear_draft();
-			self.status = "Result discarded because the conversation or draft changed.".into();
+			self.note_discarded(&result.context, state);
 			return None;
 		}
 		let mut applied = false;
@@ -2707,6 +2734,9 @@ fn paint_button(
 		text,
 	);
 	painter.galley(rect.center() - galley.size() / 2.0, galley, text);
+	if enabled {
+		design::focus_outline(ui, &response, 8);
+	}
 	if enabled && response.hovered() {
 		ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
 	}

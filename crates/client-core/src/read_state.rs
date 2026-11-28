@@ -82,7 +82,11 @@ enum Scope {
 	Category(Id),
 	/// Channels of these servers, sorted and bounded by the folder guild limit.
 	Guilds(Box<[Id]>),
+	/// The bounded set explicitly shown when the user marked their Inbox page read.
+	Inbox(Box<[Id]>),
 }
+
+pub const INBOX_PAGE_LIMIT: usize = 100;
 impl Scope {
 	fn guilds(guilds: &[Id]) -> Self {
 		let mut guilds = guilds
@@ -108,6 +112,12 @@ impl Scope {
 			Self::Guilds(guilds) => channel
 				.guild
 				.is_some_and(|guild| guilds.binary_search(&guild).is_ok()),
+			Self::Inbox(channels) => {
+				channels.binary_search(&channel.id).is_ok()
+					&& state.can_read_history(channel.id)
+					&& !state.message_request(channel.id)
+					&& !state.spam_direct(channel.id)
+			}
 		}
 	}
 }
@@ -140,13 +150,26 @@ impl ReadState {
 			..Self::default()
 		};
 	}
-	/// Drops pending work; an interrupted bulk acknowledgement resumes once reads can start again.
+	/// Drops pending work. Whole-account/folder batches keep their established resume behavior;
+	/// the Inbox action is a single explicit batch and does not retry after interruption.
 	pub fn cancel(&mut self) {
 		self.activity.clear_notifications();
-		if let Some(Pending::All { scope, .. }) = self.pending.take() {
-			self.continue_all = Some(scope);
-		}
 		self.status = None;
+		if let Some(Pending::All {
+			scope, channels, ..
+		}) = self.pending.take()
+		{
+			if matches!(scope, Scope::Inbox(_)) {
+				self.status = channels.into_iter().flatten().next().map(|(channel, ..)| {
+					(
+						channel,
+						"Inbox mark as read was interrupted; check unread state before trying again",
+					)
+				});
+			} else {
+				self.continue_all = Some(scope);
+			}
+		}
 	}
 	pub fn forget(&mut self, channel: Id) {
 		self.entries.remove(&channel);
@@ -504,6 +527,7 @@ impl State {
 				|| self.live_edge_latest() == Some(message))
 			&& self.selected.is_some_and(|channel| {
 				self.can_view(channel)
+					&& !self.spam_direct(channel)
 					&& self
 						.read_marker(channel)
 						.flatten()
@@ -525,6 +549,7 @@ impl State {
 		self.auth == AuthState::Authenticated
 			&& self.gateway_connected
 			&& self.read_state.pending.is_none()
+			&& !self.spam_direct(channel)
 			&& self.unread(channel) == Some(true)
 	}
 	pub fn prepare_mark_channel_read(&mut self, channel: Id) -> Option<crate::Command> {
@@ -547,6 +572,7 @@ impl State {
 		if self.auth != AuthState::Authenticated
 			|| !self.gateway_connected
 			|| self.read_state.pending.is_some()
+			|| self.spam_direct(channel)
 			|| self
 				.channel(channel)?
 				.last_message
@@ -571,6 +597,7 @@ impl State {
 				.is_some_and(|m| Some(m.channel) == self.selected)
 			&& self.selected.is_some_and(|channel| {
 				self.can_view(channel)
+					&& !self.spam_direct(channel)
 					&& self
 						.read_marker(channel)
 						.flatten()
@@ -703,7 +730,9 @@ impl State {
 		self.channels
 			.iter()
 			.filter(move |channel| {
-				scope.includes(self, channel) && self.unread(channel.id) == Some(true)
+				scope.includes(self, channel)
+					&& !self.spam_direct(channel.id)
+					&& self.unread(channel.id) == Some(true)
 			})
 			.filter_map(|channel| {
 				let message = channel.last_message?;
@@ -735,6 +764,16 @@ impl State {
 	/// One bulk acknowledgement for the unread channels of these servers.
 	pub fn prepare_mark_guilds_read(&mut self, guilds: &[Id]) -> Option<crate::Command> {
 		self.prepare_bulk_ack(Scope::guilds(guilds))
+	}
+	/// Mark only the conversations submitted by the visible Inbox page, never the rest of the account.
+	pub fn prepare_mark_inbox_read(&mut self, shown: &[Id]) -> Option<crate::Command> {
+		if shown.is_empty() || shown.len() > INBOX_PAGE_LIMIT {
+			return None;
+		}
+		let mut channels = shown.to_vec();
+		channels.sort_unstable();
+		channels.dedup();
+		self.prepare_bulk_ack(Scope::Inbox(channels.into()))
 	}
 	fn prepare_bulk_ack(&mut self, scope: Scope) -> Option<crate::Command> {
 		if !self.can_bulk_ack(&scope) {
@@ -1606,6 +1645,28 @@ mod navigation_tests {
 		};
 		assert_eq!(channels, vec![(Id(count - 1), Id(500))]);
 	}
+	#[test]
+	fn inbox_ack_cannot_include_hidden_rows_or_retry_after_disconnect() {
+		let mut state = with_unread_dms(3);
+		assert!(
+			state
+				.prepare_mark_inbox_read(&[Id(2); INBOX_PAGE_LIMIT + 1])
+				.is_none()
+		);
+		let Some(Command::MarkAllRead { channels, .. }) =
+			state.prepare_mark_inbox_read(&[Id(2), Id(2)])
+		else {
+			panic!("Inbox acknowledgement");
+		};
+		assert_eq!(channels, [(Id(2), Id(500))]);
+		assert!(state.prepare_mark_inbox_read(&[Id(3)]).is_none());
+		apply(&mut state, CoreEvent::Disconnected);
+		assert!(state.read_state.status(Id(2)).is_some());
+		assert!(state.read_state.status(Id(3)).is_none());
+		apply(&mut state, CoreEvent::Resumed);
+		assert!(state.continue_mark_all_read().is_none());
+	}
+
 	#[test]
 	fn mark_all_read_resumes_after_a_disconnect() {
 		let mut state = with_unread_dms(2);

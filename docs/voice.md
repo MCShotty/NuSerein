@@ -214,19 +214,31 @@ implementation pass does not establish production readiness or physical media be
 ## Soundboard
 
 In a connected server voice channel, the call bar's **Soundboard** button opens a panel with
-that server's sounds and Discord's default sounds. Selecting a sound sends one explicit play
+that server's sounds and Discord's default sounds. On a narrow call bar, choose **More options →
+Soundboard**. Selecting a sound sends one explicit play
 request; nothing plays or loads until the panel is opened. Sounds played by other participants
 are audible: the service announces each one, and Serein downloads that sound and mixes it into
 the call's playback. Your own sound is heard locally once the service accepts the request, so a
 rejected request stays silent and shows its reason in the panel.
 
 Playing requires SPEAK and USE_SOUNDBOARD in the channel and is unavailable while deafened or
-server muted/deafened, matching the documented service rules. A sound owned by another server
-additionally needs USE_EXTERNAL_SOUNDS and names its source server; the panel currently lists
-only the connected server's sounds and the defaults, so there is no cross-server picker and no
-favorites. One play request is outstanding at a time. Private and group DM calls show the
-button disabled. Entrance sounds, emoji-only voice effects and animations are not
-implemented. Server sounds are managed in [Server Settings](#managing-server-sounds).
+server muted/deafened, matching the documented service rules. The source picker can show
+one other joined server at a time, gated by USE_EXTERNAL_SOUNDS and the service-reported full
+Nitro tier. An explicit selection reads that catalog; an exact available entry emits one play
+request naming its source server. Switching sources, losing membership or changing calls
+invalidates old results. Favorites store up to 32 sound/source pairs per saved account on
+this device. Restoring or starring a sound never loads a catalog or plays it; favorites do not
+sync to Discord, and unavailable storage leaves changes in the session only. The separately
+labeled **Discord favorites** mode explicitly loads or refreshes the account's list and writes
+only the sound you star or unstar. Local favorites are not merged or uploaded automatically.
+**Settings → Voice & Video → Entrance Sound for All Servers** lets full-Nitro users load,
+set or remove the account default without joining a call. Choose built-in sounds or load one
+joined server’s catalog. **Entrance sound for this server** sets a server override; removing
+it reveals the global default if present. These unofficial preference operations do not send
+an entrance sound when joining a call. Actual join playback, emoji-only voice effects and
+animations remain outside this change. Private and group DMs cannot use Soundboard.
+Discord acceptance and the desktop UI are not yet verified. Server sounds are managed in
+[Server Settings](#managing-server-sounds).
 
 Sound audio is local playback only: it is never encoded into the microphone stream, and the
 service does not relay it as voice. Clips enter the same mix as participant voices, after
@@ -238,10 +250,11 @@ sounds they play, and sounds from blocked users are skipped. These controls are 
 while a sound plays, so muting, blocking or turning someone down also affects a sound that is
 already playing or still downloading. Sounds also play while waiting alone in a channel.
 
-Limits: catalogs are session-only and bounded to 256 sounds and 128 KiB per catalog (one
-server's catalog plus the defaults; responses over 256 KiB are rejected). A server sound
-change marks that catalog stale and it reloads the next time the panel is shown; a change
-that arrives while the catalog is loading triggers one more read. An open **Server Settings >
+Limits: catalogs are session-only and bounded to 256 sounds and 128 KiB per catalog (the
+current server, defaults, and at most one selected other server; responses over 256 KiB are
+rejected). Reads of the two server catalogs have separate bounded slots. A server sound
+change marks its catalog stale. The current server’s catalog reloads while the board is
+shown; an external catalog needs an explicit reload before another play. An open **Server Settings >
 Soundboard** page reloads its list the same way. Sound files
 are fetched without credentials from `cdn.discordapp.com/soundboard-sounds/{id}`, limited to
 1 MiB and a 10-second transfer, decoded off the UI and audio threads (MP3, Ogg Vorbis or Ogg

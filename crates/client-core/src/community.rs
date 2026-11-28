@@ -148,13 +148,22 @@ impl State {
 			})
 	}
 	fn event_permission(&self, guild: Id, draft: &EventDraft, own: Option<bool>) -> bool {
+		self.event_location_permission(guild, draft.entity_type, draft.channel, own)
+	}
+	fn event_location_permission(
+		&self,
+		guild: Id,
+		entity_type: u8,
+		channel: Option<Id>,
+		own: Option<bool>,
+	) -> bool {
 		let bits = match own {
 			None => p::CREATE_EVENTS,
 			Some(false) => p::MANAGE_EVENTS,
 			Some(true) => 0,
 		};
 		let permission = |bits| {
-			if let Some(channel) = draft.channel {
+			if let Some(channel) = channel {
 				self.permission(channel, bits) == Some(true)
 			} else {
 				self.guild_permission(guild, bits)
@@ -166,22 +175,27 @@ impl State {
 			permission(bits)
 		};
 		capability
-			&& match draft.entity_type {
-				1 => draft.channel.is_some_and(|c| {
+			&& match entity_type {
+				1 => channel.is_some_and(|c| {
 					self.channel(c).is_some_and(|c| c.guild == Some(guild))
 						&& self.stage_moderator(c)
 				}),
-				2 => draft.channel.is_some_and(|c| {
+				2 => channel.is_some_and(|c| {
 					self.channel(c)
 						.is_some_and(|c| c.kind == 2 && c.guild == Some(guild))
 						&& self.permission(c, p::VIEW_CHANNEL | p::CONNECT) == Some(true)
 				}),
-				3 => draft.channel.is_none(),
+				3 => channel.is_none(),
 				_ => false,
 			}
 	}
+	/// Location eligibility for a new draft, independent of its editable fields.
+	pub fn can_create_event_at(&self, guild: Id, entity_type: u8, channel: Option<Id>) -> bool {
+		self.can_browse_events(guild)
+			&& self.event_location_permission(guild, entity_type, channel, None)
+	}
 	pub fn can_create_event(&self, guild: Id, draft: &EventDraft) -> bool {
-		self.can_browse_events(guild) && self.event_permission(guild, draft, None)
+		self.can_create_event_at(guild, draft.entity_type, draft.channel)
 	}
 	pub fn can_manage_event(&self, event: &ScheduledEvent) -> bool {
 		self.event_visible(event)

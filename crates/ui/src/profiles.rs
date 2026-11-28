@@ -3629,8 +3629,9 @@ pub fn show_with_session(
 								|| !data.mutual_friends.is_empty())
 						}) {
 							ui.add_space(4.0);
-							ui.horizontal(|ui| {
-								ui.spacing_mut().item_spacing.x = 16.0;
+							// Wrap: translated labels (e.g. Czech) can outgrow the fixed card width.
+							ui.horizontal_wrapped(|ui| {
+								ui.spacing_mut().item_spacing = vec2(16.0, 4.0);
 								for (kind, count, icon, one, many) in [
 									(
 										Mutuals::Servers,
@@ -5167,6 +5168,7 @@ mod tests {
 		let mut state = test_support::demo_state();
 		let user = test_support::message(1, Id(22)).author;
 		state.members = Some(model::MemberList {
+			server_member_count: None,
 			missing_identity: vec![],
 			guild: Some(Id(10)),
 			channel: Id(20),
@@ -5573,6 +5575,7 @@ mod tests {
 				};
 				state.selected = Some(Id(20));
 				state.members = Some(model::MemberList {
+					server_member_count: None,
 					missing_identity: vec![],
 					guild: Some(Id(10)),
 					channel: Id(20),

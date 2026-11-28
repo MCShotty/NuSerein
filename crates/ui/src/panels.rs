@@ -189,6 +189,69 @@ impl MessagingUi {
 				);
 			});
 	}
+	pub(super) fn guild_member_view_channel(&self, state: &State) -> Option<Id> {
+		let (generation, guild, channel) = self.guild_members_view?;
+		(generation == state.generation
+			&& self.guild == Some(guild)
+			&& state.selected == Some(channel)
+			&& state.guild(guild).is_some()
+			&& state.can_view(channel)
+			&& state
+				.channel(channel)
+				.is_some_and(|entry| entry.guild == Some(guild) && entry.supports_text()))
+		.then_some(channel)
+	}
+
+	pub(super) fn member_view_summary(state: &State, channel: Id, complete: Option<u16>) -> String {
+		let name = state
+			.channel(channel)
+			.map_or("", |entry| entry.name.as_str());
+		if let Some(count) = complete {
+			crate::i18n::translate_args(
+				"sidebar-full-server-roster",
+				&[("channel", name), ("count", &count.to_string())],
+			)
+		} else {
+			crate::i18n::translate_args("sidebar-members-scope", &[("channel", name)])
+		}
+	}
+
+	pub(super) fn load_full_roster_action(
+		ui: &mut egui::Ui,
+		state: &mut State,
+		channel: Id,
+		commands: &mut Vec<Command>,
+	) {
+		let wait = state.full_roster_wait(channel);
+		if let Some(wait) = wait
+			&& !wait.is_zero()
+		{
+			ui.ctx().request_repaint_after(wait);
+			ui.horizontal_wrapped(|ui| {
+				ui.add(design::Busy::new());
+				ui.label(crate::i18n::translate("sidebar-full-roster-loading"));
+			});
+			return;
+		}
+		if wait.is_some() {
+			design::hint(ui, "sidebar-full-roster-incomplete");
+		}
+		if state.can_load_full_server_roster(channel)
+			&& design::text_action(
+				ui,
+				if wait.is_some() {
+					"sidebar-full-roster-retry"
+				} else {
+					"sidebar-load-full-roster"
+				},
+			)
+			.clicked()
+			&& let Some(command) = state.load_full_server_roster(channel)
+		{
+			commands.push(command);
+		}
+	}
+
 	pub(super) fn member_rows(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -254,6 +317,7 @@ impl MessagingUi {
 		let lazy = list.lazy;
 		let start = list.start;
 		let guild = list.guild;
+		let complete_roster = state.complete_server_roster(channel).is_some();
 		let voice_users = profiles::voice_users(state);
 		let guild_or_channel = guild.unwrap_or(channel);
 		let member_key = (state.generation, guild_or_channel, list.request);
@@ -280,7 +344,9 @@ impl MessagingUi {
 			.show_rows(ui, 42.0, row_count, |ui, range| {
 				visible = range.clone();
 				for index in range {
-					let slot = if lazy {
+					let slot = if complete_roster {
+						list.slots.get(index).and_then(Option::as_ref)
+					} else if lazy {
 						state.member_slot(index).or_else(|| {
 							if index >= start {
 								list.slots.get(index - start).and_then(|slot| slot.as_ref())
@@ -607,15 +673,54 @@ impl MessagingUi {
 	) {
 		let colors = design::palette(ui);
 		let language = self.language;
+		let banner = self.guild.and_then(|guild| {
+			state
+				.synced_server_banner(guild)
+				.flatten()
+				.map(|hash| (guild, hash.to_owned()))
+		});
 		egui::Panel::top("sidebar-header")
-			.exact_size(48.0)
+			.exact_size(if banner.is_some() { 120.0 } else { 48.0 })
 			.show_separator_line(false)
 			.frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 0)))
 			.show(ui, |ui| {
 				let rect = ui.max_rect();
+				if let Some((guild, hash)) = &banner {
+					let art = egui::Rect::from_min_size(
+						rect.left_top() - egui::vec2(16.0, 0.0),
+						egui::vec2(rect.width() + 32.0, 72.0),
+					);
+					ui.painter().rect_filled(art, 0, colors.raised);
+					self.avatars
+						.paint_guild_banner(ui, *guild, hash, art, state.demo);
+					ui.add_space(72.0);
+				}
 				ui.horizontal_centered(|ui| {
 					if let Some(guild) = self.guild {
-						self.server_menu.header(ui, state, guild, title);
+						if let Some(server) = state.guild(guild) {
+							let (_, icon) = ui.allocate_space(egui::Vec2::splat(25.0));
+							self.avatars.paint_guild(ui, server, icon, state.demo, 6);
+						}
+						ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+							if let Some(channel) = state.invite_channel(guild)
+								&& (state.demo || state.gateway_connected)
+								&& icons::button(
+									ui,
+									icons::Icon::AddPeople,
+									28.0,
+									&language.text("server-menu-header-create-invite"),
+								)
+								.clicked()
+							{
+								self.server_menu.open_invite(state, guild, channel);
+							}
+							ui.with_layout(
+								egui::Layout::left_to_right(egui::Align::Center),
+								|ui| {
+									self.server_menu.header(ui, state, guild, title);
+								},
+							);
+						});
 						return;
 					}
 					ui.add(
@@ -640,6 +745,99 @@ impl MessagingUi {
 				bottom: 0,
 			})
 			.show(ui, |ui| {
+				if let Some(guild) = self.guild {
+					let members_here = state.selected.is_some_and(|id| {
+						state
+							.channel(id)
+							.is_some_and(|c| c.guild == Some(guild) && c.supports_text())
+							&& state.can_view(id)
+					});
+					let directory = state.server_members_shortcut(guild);
+					for (icon, key, visible) in [
+						(icons::Icon::Star, "sidebar-server-boosts", true),
+						(
+							icons::Icon::Calendar,
+							"server-events-title",
+							state.can_browse_events(guild),
+						),
+						(
+							icons::Icon::Thread,
+							"sidebar-channels-roles",
+							state.has_member_onboarding(guild),
+						),
+						(icons::Icon::People, "members", directory),
+					] {
+						if !visible {
+							continue;
+						}
+
+						let label = language.text(key);
+						let pressed = ui
+							.push_id((guild, key), |ui| {
+								let (rect, response) = ui.allocate_exact_size(
+									egui::vec2(ui.available_width(), 28.0),
+									egui::Sense::click(),
+								);
+								let color = colors.text;
+								if response.hovered() {
+									ui.painter().rect_filled(rect, 6, colors.hover);
+								}
+								let glyph = egui::Rect::from_center_size(
+									rect.left_center() + egui::vec2(14.0, 0.0),
+									egui::Vec2::splat(16.0),
+								);
+								icons::paint(ui.painter(), icon, glyph, color);
+								let galley = egui::WidgetText::from(&label).into_galley(
+									ui,
+									Some(egui::TextWrapMode::Truncate),
+									(rect.width() - 32.0).max(1.0),
+									egui::TextStyle::Body,
+								);
+								ui.painter().galley(
+									rect.left_center() + egui::vec2(28.0, -galley.size().y / 2.0),
+									galley,
+									color,
+								);
+								design::focus_outline(ui, &response, 6);
+								response.widget_info(|| {
+									egui::WidgetInfo::labeled(egui::Role::Button, true, &label)
+								});
+								response.clicked()
+							})
+							.inner;
+						if key == "sidebar-server-boosts" {
+							ui.indent(("boost-summary", guild), |ui| {
+								if let Some(goal) = state.sidebar_boost_goal(guild) {
+									let summary = boost_goal_label(goal);
+									design::hint(ui, &summary);
+									boost_goal_meter(ui, goal, &summary);
+								} else if let Some(count) = state.sidebar_boost_count(guild) {
+									design::hint(ui, &boost_count_label(state, count));
+								}
+							});
+						}
+						if !pressed {
+							continue;
+						}
+						match key {
+							"server-events-title" => {
+								self.community_ui.open_events(state, guild, commands)
+							}
+							"sidebar-channels-roles" => state.open_onboarding(guild),
+							"members" => commands.extend(self.open_member_sidebar(state, guild)),
+							_ => self.boost_overview = Some((state.generation, guild)),
+						}
+					}
+					ui.separator();
+					if let Some(channel) = state.selected.filter(|_| members_here)
+						&& crate::design::text_action(ui, "sidebar-channel-members").clicked()
+					{
+						self.guild_members_view = Some((state.generation, guild, channel));
+						self.compact_navigation_open = false;
+						state.browse_channels = None;
+						ui.ctx().request_repaint();
+					}
+				}
 				let ctx = ui.ctx().clone();
 				if ui
 					.add_sized(
@@ -716,7 +914,7 @@ impl MessagingUi {
 						if find.clicked() {
 							self.switcher.open(&ctx);
 						}
-						let friends = state.selected.is_none();
+						let friends = state.selected.is_none() && !self.direct_requests_open(state);
 						let (rect, response) =
 							ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
 						let hovered = response.hovered() || response.has_focus();
@@ -750,6 +948,7 @@ impl MessagingUi {
 							)
 						});
 						if response.on_hover_text(language.text("friends")).clicked() {
+							self.close_direct_requests();
 							state.open_home();
 							self.guild = None;
 							self.search.open = false;
@@ -757,18 +956,22 @@ impl MessagingUi {
 					});
 					ui.add_space(8.0);
 				}
-				if let Some(guild) = self.guild
-					&& state.can_open_member_settings(guild)
-					&& state.server_members_shortcut(guild)
+				if self.guild.is_none()
+					&& (self.direct_requests_open(state)
+						|| state.direct_request_channels(false).next().is_some()
+						|| state.direct_request_channels(true).next().is_some())
 					&& ui
 						.add_sized(
 							[ui.available_width(), 32.0],
-							egui::Button::new(language.text("members")).frame(false),
+							egui::Button::new(
+								language.text("channel-list-heading-message-requests"),
+							)
+							.selected(self.direct_requests_open(state))
+							.truncate(),
 						)
-						.clicked() && let Some(command) =
-					self.preview_server_admin(state, guild, "members")
+						.clicked()
 				{
-					commands.push(command);
+					self.open_direct_requests(state);
 				}
 				if !self.channel_preferences_status.is_empty() {
 					ui.colored_label(
@@ -1027,7 +1230,9 @@ impl MessagingUi {
 			if state.is_forum(id) {
 				state.can_load_posts(id) && !state.posts.loading
 			} else {
-				state.freshness != Freshness::Loading && state.can_read_history(id)
+				!state.history_pending
+					&& state.freshness != Freshness::Loading
+					&& state.can_read_history(id)
 			}
 		})
 	}
@@ -1037,10 +1242,19 @@ impl MessagingUi {
 	}
 
 	pub(super) fn reload_history(&mut self, state: &mut State, commands: &mut Vec<Command>) {
-		self.reconnect_requested |= Self::can_reconnect_gateway(state);
-		if Self::can_reload_history(state) {
-			commands.push(state.history(None));
-			self.timeline.follow_latest(state);
+		if Self::can_reconnect_gateway(state) {
+			self.reconnect_requested = true;
+			return;
+		}
+		if Self::can_reload_history(state) && !state.history_pending {
+			if let Some((channel, anchor)) = state.selected.zip(self.timeline.refresh_anchor())
+				&& !state.is_forum(channel)
+			{
+				self.timeline.remember_position(state);
+				commands.extend(state.refresh_history_at(channel, anchor));
+			} else {
+				commands.push(state.history(None));
+			}
 		}
 	}
 
@@ -1233,11 +1447,36 @@ impl MessagingUi {
 							egui::Layout::left_to_right(egui::Align::Center),
 							|ui| self.search.header_input(ui, state, commands),
 						);
+					} else if self.search.can_return_to_results(state) {
+						let label = language.text("search-return-to-results");
+						let activate = if ui.ctx().content_rect().width() < 620.0 {
+							icons::button(ui, icons::Icon::Search, 32.0, &label).clicked()
+						} else {
+							header_search_button(ui, true, &label).clicked()
+						};
+						if activate {
+							self.search.return_to_results(state);
+						}
 					} else {
-						if header_search_button(ui, state.can_search(), &language.text("search"))
-							.on_hover_text(language.text("search-conversation"))
-							.clicked()
-						{
+						let forum = channel.as_ref().is_some_and(|c| state.is_forum(c.id));
+						let label = language.text(if forum {
+							"forum-search-messages"
+						} else {
+							"search"
+						});
+						let clicked = if forum && ui.ctx().content_rect().width() < 620.0 {
+							state.can_search()
+								&& icons::button(ui, icons::Icon::Search, 32.0, &label).clicked()
+						} else {
+							header_search_button(ui, state.can_search(), &label)
+								.on_hover_text(if forum {
+									label
+								} else {
+									language.text("search-conversation")
+								})
+								.clicked()
+						};
+						if clicked {
 							if state.archives.is_some() {
 								commands.push(state.clear_archives());
 							}
@@ -1254,7 +1493,9 @@ impl MessagingUi {
 					)
 					.clicked()
 					{
-						if wide_members {
+						if self.guild_member_view_channel(state).is_some() {
+							self.guild_members_view = None;
+						} else if wide_members {
 							let shown = self.members_preference(state);
 							*shown = !*shown;
 						} else {
@@ -1281,6 +1522,9 @@ impl MessagingUi {
 					}
 					self.pins_anchor =
 						(self.search.open && self.search.pins()).then_some(pins.rect);
+					if self.pins_anchor.is_some() {
+						self.search.remember_pins_trigger(state, pins.id);
+					}
 					if let Some(c) = channel
 						.as_ref()
 						.filter(|c| c.guild.is_some() && matches!(c.kind, 0 | 5 | 15 | 16))
@@ -1314,7 +1558,11 @@ impl MessagingUi {
 								ui,
 								icons::Icon::Reload,
 								32.0,
-								&language.text("reload-history"),
+								&language.text(if Self::can_reconnect_gateway(state) {
+									"history-reconnect-action"
+								} else {
+									"reload-history"
+								}),
 							)
 						})
 						.inner;
@@ -1468,4 +1716,47 @@ impl MessagingUi {
 			});
 		});
 	}
+}
+
+pub(super) fn boost_count_label(state: &State, count: u32) -> String {
+	crate::i18n::translate_args(
+		if state.gateway_connected && state.freshness == Freshness::Fresh {
+			"sidebar-boost-count"
+		} else {
+			"sidebar-boost-last-known"
+		},
+		&[("count", &count.to_string())],
+	)
+}
+
+pub(super) fn boost_goal_label(goal: client_core::server_display::BoostGoal) -> String {
+	if goal.reached() {
+		crate::i18n::translate_args(
+			"sidebar-boost-goal-reached",
+			&[("count", &goal.count.to_string())],
+		)
+	} else {
+		crate::i18n::translate_args(
+			"sidebar-boost-goal-progress",
+			&[
+				("count", &goal.count.to_string()),
+				("target", &goal.target.to_string()),
+			],
+		)
+	}
+}
+
+pub(super) fn boost_goal_meter(
+	ui: &mut egui::Ui,
+	goal: client_core::server_display::BoostGoal,
+	summary: &str,
+) {
+	let colors = design::palette(ui);
+	ui.add(
+		egui::ProgressBar::new(goal.fill())
+			.desired_height(5.0)
+			.corner_radius(3)
+			.fill(colors.accent),
+	)
+	.on_hover_text(summary);
 }

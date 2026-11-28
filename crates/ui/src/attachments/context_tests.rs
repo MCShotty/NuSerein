@@ -168,7 +168,7 @@ fn select_media_menu(
 			Some(crate::video::VideoCommand::Seek(_)) => "seek",
 			Some(crate::video::VideoCommand::Volume(_)) => "volume",
 			Some(crate::video::VideoCommand::Pause(_)) => "pause",
-			Some(crate::video::VideoCommand::Play(_)) => "play",
+			Some(crate::video::VideoCommand::Play(..)) => "play",
 			Some(crate::video::VideoCommand::Stop) => "stop",
 			None => "no command",
 		}
@@ -412,7 +412,10 @@ fn composer_upload_cards_keep_their_surface_at_every_chat_transparency() {
 				let mut expected = None;
 				let output = ctx.run_ui(Default::default(), |ui| {
 					expected = Some(design::palette(ui));
-					assert!(!pending_card(ui, "sample.png", 512, preview, true));
+					assert_eq!(
+						pending_card(ui, "sample.png", 512, preview, true, None, false),
+						PendingAction::None
+					);
 				});
 				let colors = expected.unwrap();
 				for (size, fill) in [
@@ -432,6 +435,64 @@ fn composer_upload_cards_keep_their_surface_at_every_chat_transparency() {
 		}
 	}
 	design::set_window_effects(original.0, original.1, original.2);
+}
+
+#[test]
+fn staged_thumbnail_is_keyboard_activatable_but_spoilers_are_not() {
+	for spoiler in [false, true] {
+		let ctx = egui::Context::default();
+		let texture = ctx.load_texture(
+			"synthetic-staged-image",
+			egui::ColorImage::filled([16, 12], Color32::WHITE),
+			egui::TextureOptions::default(),
+		);
+		let render = |events, focus| {
+			let mut result = None;
+			ctx.run_ui(
+				egui::RawInput {
+					events,
+					..Default::default()
+				},
+				|ui| {
+					let id = ui.scope_id().with("staged-image");
+					if focus {
+						ui.memory_mut(|memory| memory.request_focus(id));
+					}
+					let action = pending_card(
+						ui,
+						"synthetic.png",
+						512,
+						Some(&texture),
+						true,
+						Some(spoiler),
+						true,
+					);
+					result = Some((id, action));
+				},
+			)
+			.drop_without_applying_deltas();
+			result.unwrap()
+		};
+		let _ = render(vec![], false);
+		let (id, action) = render(
+			vec![egui::Event::Key {
+				key: egui::Key::Enter,
+				physical_key: None,
+				pressed: true,
+				repeat: false,
+				modifiers: egui::Modifiers::NONE,
+			}],
+			true,
+		);
+		assert_eq!(
+			action,
+			if spoiler {
+				PendingAction::None
+			} else {
+				PendingAction::OpenPreview(id)
+			}
+		);
+	}
 }
 
 #[test]

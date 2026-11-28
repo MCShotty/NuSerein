@@ -31,6 +31,7 @@ struct Preview {
 	interactive: bool,
 	metrics: Option<NativeMetrics>,
 	timeline_churn: bool,
+	call_soundboard: bool,
 	smoke: bool,
 	messaging: ui::MessagingUi,
 	state: client_core::State,
@@ -96,7 +97,11 @@ impl eframe::App for Preview {
 				.count()
 		});
 		let measured = Instant::now();
-		let mut commands = self.messaging.show(ui, &mut self.state);
+		let mut commands = if self.call_soundboard {
+			self.messaging.preview_call_soundboard(ui, &mut self.state)
+		} else {
+			self.messaging.show(ui, &mut self.state)
+		};
 		commands.extend(self.state.poll_channel_preferences(Instant::now()));
 		if let Some(deadline) = self.state.next_channel_preference_deadline() {
 			ctx.request_repaint_after(deadline.saturating_duration_since(Instant::now()));
@@ -1052,6 +1057,7 @@ fn prime_conversation(state: &mut client_core::State, inline_media: bool) {
 		})
 		.collect();
 	state.members = Some(model::MemberList {
+		server_member_count: None,
 		missing_identity: vec![],
 		channel,
 		guild: Some(model::Id(10)),
@@ -1173,6 +1179,8 @@ const PREVIEW_PAGES: &[&str] = &[
 	"collectibles",
 	"member-tags",
 	"conversation",
+	"composer-spoilers",
+	"composer-staged-image",
 	"channels",
 	"markdown",
 	"embeds",
@@ -1192,6 +1200,7 @@ const PREVIEW_PAGES: &[&str] = &[
 	"keybinds",
 	"extensions",
 	"server",
+	"server-settings-search",
 	"server-engagement",
 	"server-stickers",
 	"server-safety",
@@ -1212,10 +1221,13 @@ const PREVIEW_PAGES: &[&str] = &[
 	"force-sync",
 	"forum",
 	"forum-post",
+	"forum-staged-image",
 	"forum-gallery",
 	"forum-settings",
 	"friends",
 	"screen-share",
+	"call-soundboard",
+	"spam-review",
 	"emoji",
 	"gif-favorites",
 ];
@@ -1342,6 +1354,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				test_support::friends_demo_state()
 			} else if page == "screen-share" {
 				test_support::call_demo_state()
+			} else if page == "call-soundboard" {
+				let mut state = test_support::voice_demo_state();
+				if let Some(sound) = state.soundboard.sound(model::Id(9200)).cloned() {
+					state.toggle_soundboard_favorite(&sound);
+				}
+				state
+			} else if page == "spam-review" {
+				test_support::spam_review_demo_state()
 			} else {
 				test_support::demo_state()
 			};
@@ -1435,6 +1455,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let mut user = test_support::message(1, model::Id(20)).author;
 				style_name(&mut user);
 				state.members = Some(model::MemberList {
+					server_member_count: None,
 					missing_identity: vec![],
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),
@@ -1516,7 +1537,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					status: Some("Building something together".into()),
 				});
 			}
-			if page == "conversation" {
+			if matches!(
+				page.as_str(),
+				"conversation" | "composer-spoilers" | "composer-staged-image"
+			) {
 				prime_conversation(&mut state, args.iter().any(|arg| arg == "--inline-media"));
 			}
 			let mut messaging = ui::MessagingUi::default();
@@ -1545,6 +1569,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					model::Id(10),
 					page == "event-detail",
 					page == "event-edit",
+				);
+			} else if matches!(
+				page.as_str(),
+				"composer-staged-image" | "forum-staged-image"
+			) {
+				if page == "forum-staged-image" {
+					messaging.preview_forum(
+						model::Id(26),
+						&[model::Id(2603)],
+						Some("Photos for the trip report"),
+					);
+				}
+				let pixels = (0..480 * 320)
+					.map(|index| {
+						let (x, y) = (index % 480, index / 480);
+						egui::Color32::from_rgb(
+							22 + (x / 4) as u8,
+							50 + (y / 3) as u8,
+							108 + (x / 8) as u8,
+						)
+					})
+					.collect();
+				messaging.preview_attachment(
+					"synthetic-landscape.png",
+					36_000,
+					Some(egui::ColorImage::new([480, 320], pixels)),
+				);
+				messaging.preview_staged_image(&cc.egui_ctx, &state, 0);
+			} else if page == "composer-spoilers" {
+				let preview =
+					|r, g, b| egui::ColorImage::filled([96, 64], egui::Color32::from_rgb(r, g, b));
+				messaging.preview_attachment("desk.png", 8064, Some(preview(74, 126, 176)));
+				messaging.preview_attachment(
+					"SPOILER_surprise.png",
+					8080,
+					Some(preview(247, 88, 82)),
 				);
 			} else if page == "friends" {
 				messaging.preview_friends_tab(&friends_tab);
@@ -1630,6 +1690,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 					}))
 				};
 				state.members = Some(model::MemberList {
+					server_member_count: None,
 					missing_identity: vec![],
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),
@@ -1669,6 +1730,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let mut user = test_support::message(1, model::Id(20)).author;
 				style_name(&mut user);
 				state.members = Some(model::MemberList {
+					server_member_count: None,
 					missing_identity: vec![],
 					channel: model::Id(20),
 					guild: Some(model::Id(10)),
@@ -1787,6 +1849,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				server_settings_demo::open(&mut state, &mut messaging);
 				if page == "server-mfa" {
 					mfa_fixture_target = Some(prime_mfa(&mut state));
+				} else if page == "server-settings-search" {
+					messaging.preview_server_settings_search();
 				} else if page == "server-engagement" {
 					messaging.preview_server_engagement();
 				} else if page == "server-safety" {
@@ -1973,6 +2037,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 			Ok(Box::new(Preview {
 				inbox_demo: inbox_demo::Store::default(),
 				mfa_fixture_target,
+				call_soundboard: page == "call-soundboard",
 				timeline_churn: args.iter().any(|arg| arg == "--timeline-churn"),
 				interactive,
 				metrics: args

@@ -656,8 +656,9 @@ impl State {
 					&& !self.message_request_pending(channel.id)
 					&& !self.spam_direct(channel.id)
 					&& (Some(channel.id) == call
-						|| self.channel_unread(channel) == Some(true)
-						|| self.unread_count(channel.id) > 0)
+						|| (self.dm_muted(channel.id) != Some(true)
+							&& (self.channel_unread(channel) == Some(true)
+								|| self.unread_count(channel.id) > 0)))
 			})
 			.map(|channel| (self.channel_activity(channel), channel.id))
 			.collect();
@@ -2352,6 +2353,28 @@ mod tests {
 			})
 			.unwrap();
 		assert!(!state.notification_allowed_for(Id(20), false));
+	}
+
+	#[test]
+	fn muted_directs_keep_unread_state_and_remain_visible_in_an_active_call() {
+		for kind in [1, 3] {
+			let mut state = notification_state();
+			state.channels[0].guild = None;
+			state.channels[0].kind = kind;
+			state.channels[0].last_message = Some(Id(91));
+			state
+				.apply_read_state(crate::read_state::Event::Snapshot {
+					entries: Some(vec![(Id(20), Some(Id(90)), 1)]),
+					version: Some(2),
+					partial: false,
+				})
+				.unwrap();
+			assert!(state.unread_directs(None).contains(&Id(20)));
+			state.confirm_dm_muted(Id(20), true).unwrap();
+			assert!(!state.unread_directs(None).contains(&Id(20)));
+			assert!(state.unread_directs(Some(Id(20))).contains(&Id(20)));
+			assert_eq!(state.unread_count(Id(20)), 1);
+		}
 	}
 
 	#[test]

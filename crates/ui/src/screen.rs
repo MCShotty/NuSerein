@@ -23,6 +23,21 @@ fn audio_control(source: Option<SourceId>) -> (&'static str, &'static str) {
 	}
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceGroup {
+	Applications,
+	Screens,
+}
+impl SourceGroup {
+	fn includes(self, source: SourceId) -> bool {
+		match source {
+			SourceId::Window(_) => self == Self::Applications,
+			SourceId::Display(_) | SourceId::X11Desktop => self == Self::Screens,
+			SourceId::SystemPicker | SourceId::Portal => true,
+		}
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum SharePhase {
 	#[default]
@@ -56,6 +71,7 @@ pub struct ScreenUi {
 	pub request: Option<Request>,
 	pub phase: SharePhase,
 	source_lost: bool,
+	source_group: SourceGroup,
 	pub status: &'static str,
 	pub capture_status: Option<&'static str>,
 	pub adapting: bool,
@@ -80,6 +96,7 @@ impl Default for ScreenUi {
 			request: None,
 			phase: SharePhase::Idle,
 			source_lost: false,
+			source_group: SourceGroup::Applications,
 			status: "",
 			capture_status: None,
 			adapting: false,
@@ -141,6 +158,7 @@ impl ScreenUi {
 		}
 		self.context = Some((state.generation, call.channel, call.request));
 		self.open = true;
+		self.source_group = SourceGroup::Applications;
 		self.source_lost = false;
 		self.selected = None;
 		self.sources.clear();
@@ -259,35 +277,9 @@ impl ScreenUi {
 		))
 		.width(460.0)
 		.show(ctx, |d| {
-			d.scroll(260.0, |ui| self.body(ui, state));
-			d.content(|ui| {
-				if let Some(source) = self.sources.iter().find(|s| Some(s.id) == self.selected) {
-					let audio = if self.audio {
-						audio_control(self.selected).0
-					} else {
-						"share-audio-off"
-					};
-					let kind = match source.id.audio_scope() {
-						AudioScope::Application => "screen-source-kind-window",
-						AudioScope::System => "screen-source-kind-screen",
-						AudioScope::Pending => "screen-body-screen-or-window",
-					};
-					let summary = format!(
-						"{}: {} · {}",
-						crate::i18n::translate(kind),
-						source.name,
-						crate::i18n::translate(audio)
-					);
-					ui.add(egui::Label::new(&summary).truncate())
-						.on_hover_text(summary);
-				} else {
-					ui.label(crate::i18n::translate(if self.source_lost {
-						"share-source-lost"
-					} else {
-						"screen-source-status-choose"
-					}));
-				}
-			});
+			// Keep the source and audio confirmation outside the scroller, above the actions.
+			d.scroll(294.0, |ui| self.body(ui, state));
+			d.content(|ui| self.confirmation(ui));
 			d.footer(|ui| {
 				let allowed = !state.demo
 					&& self.supported
@@ -299,7 +291,14 @@ impl ScreenUi {
 				ui.add_enabled_ui(allowed, |ui| {
 					share = crate::dialog::action(
 						ui,
-						"screen-show-share-screen",
+						if matches!(
+							self.selected,
+							Some(SourceId::SystemPicker | SourceId::Portal)
+						) {
+							"screen-show-share-screen"
+						} else {
+							"screen-go-live"
+						},
 						crate::dialog::Action::Primary,
 					)
 					.clicked();
@@ -318,32 +317,89 @@ impl ScreenUi {
 		}
 	}
 
+	fn show_source_group(&mut self, group: SourceGroup) {
+		self.source_group = group;
+		if self.selected.is_some_and(|source| !group.includes(source)) {
+			self.selected = None;
+			self.audio = false;
+		}
+		self.source_lost = false;
+	}
+
+	fn confirmation(&self, ui: &mut egui::Ui) {
+		let Some(source) = self.sources.iter().find(|s| Some(s.id) == self.selected) else {
+			ui.label(crate::i18n::translate(if self.source_lost {
+				"share-source-lost"
+			} else {
+				"screen-source-status-choose"
+			}));
+			return;
+		};
+		let (kind, capture_audio) = match source.id.audio_scope() {
+			AudioScope::Application => (
+				"screen-source-kind-window",
+				"screen-confirmation-audio-application",
+			),
+			AudioScope::System => (
+				"screen-source-kind-screen",
+				"screen-confirmation-audio-system",
+			),
+			AudioScope::Pending => (
+				"screen-body-screen-or-window",
+				"screen-confirmation-audio-pending",
+			),
+		};
+		let source_label = format!("{}: {}", crate::i18n::translate(kind), source.name);
+		ui.add(egui::Label::new(&source_label).truncate())
+			.on_hover_text(&source_label);
+		let audio = if self.audio {
+			capture_audio
+		} else {
+			"share-audio-off"
+		};
+		ui.add(egui::Label::new(crate::i18n::translate(audio)).wrap());
+	}
+
 	/// Source list, then local output presets and capture options.
 	fn body(&mut self, ui: &mut egui::Ui, state: &State) {
 		self.limit_resolution();
 		let colors = crate::design::palette(ui);
-		ui.horizontal(|ui| {
-			ui.label(crate::design::eyebrow(
-				ui,
-				crate::i18n::translate("screen-body-screen-or-window"),
-				colors.muted,
-			));
-			ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-				if ui
-					.add_enabled_ui(!state.demo && !cfg!(target_os = "linux"), |ui| {
-						crate::design::text_action(
-							ui,
-							&crate::i18n::translate("screen-body-refresh"),
-						)
-					})
-					.inner
-					.clicked()
-				{
-					self.sources.clear();
-					self.refresh_requested = true;
-					self.status = "screen-source-status-loading";
-				}
+		ui.horizontal_wrapped(|ui| {
+			let grouped = self.sources.iter().any(|s| {
+				matches!(
+					s.id,
+					SourceId::Window(_) | SourceId::Display(_) | SourceId::X11Desktop
+				)
 			});
+			if grouped {
+				for (group, label) in [
+					(SourceGroup::Applications, "screen-source-applications"),
+					(SourceGroup::Screens, "screen-source-screens"),
+				] {
+					if segment(
+						ui,
+						&crate::i18n::translate(label),
+						self.source_group == group,
+					)
+					.clicked() && self.source_group != group
+					{
+						self.show_source_group(group);
+					}
+				}
+			} else {
+				ui.label(crate::i18n::translate("screen-body-screen-or-window"));
+			}
+			if ui
+				.add_enabled_ui(!state.demo && !cfg!(target_os = "linux"), |ui| {
+					crate::design::text_action(ui, &crate::i18n::translate("screen-body-refresh"))
+				})
+				.inner
+				.clicked()
+			{
+				self.sources.clear();
+				self.refresh_requested = true;
+				self.status = "screen-source-status-loading";
+			}
 		});
 		ui.add_space(6.0);
 		egui::ScrollArea::vertical()
@@ -357,7 +413,7 @@ impl ScreenUi {
 			Some("screen-body-include-the-pointer-in-the-shared-video"),
 			&mut self.cursor,
 		);
-		if self.supported {
+		if self.supported && self.selected.is_some() {
 			ui.add_space(6.0);
 			let (label, description) = audio_control(self.selected);
 			crate::design::switch(ui, label, Some(description), &mut self.audio);
@@ -475,7 +531,8 @@ impl ScreenUi {
 	/// Selectable source rows; the caller bounds the height so options stay visible.
 	fn source_list(&mut self, ui: &mut egui::Ui) {
 		let colors = crate::design::palette(ui);
-		if self.sources.is_empty() {
+		let group = self.source_group;
+		if !self.sources.iter().any(|source| group.includes(source.id)) {
 			egui::Frame::new()
 				.fill(colors.base)
 				.corner_radius(8)
@@ -485,7 +542,13 @@ impl ScreenUi {
 					ui.add(
 						egui::Label::new(
 							egui::RichText::new(crate::i18n::translate(
-								"screen-source-list-no-screens-or-windows-are-available-yet",
+								if self.sources.is_empty() {
+									"screen-source-list-no-screens-or-windows-are-available-yet"
+								} else if group == SourceGroup::Applications {
+									"screen-source-no-applications"
+								} else {
+									"screen-source-no-screens"
+								},
 							))
 							.size(13.0)
 							.color(colors.muted),
@@ -494,10 +557,25 @@ impl ScreenUi {
 					);
 				});
 		}
-		for source in &self.sources {
+		for source in self
+			.sources
+			.iter()
+			.filter(|source| group.includes(source.id))
+		{
 			let selected = self.selected == Some(source.id);
-			let (rect, response) = ui
-				.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
+			let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), 48.0));
+			let source_key = match source.id {
+				SourceId::Window(id) => ("window", id),
+				SourceId::Display(id) => ("display", id),
+				SourceId::SystemPicker => ("system-picker", 0),
+				SourceId::Portal => ("portal", 0),
+				SourceId::X11Desktop => ("x11-desktop", 0),
+			};
+			let response = ui.interact(
+				rect,
+				ui.scope_id().with(("screen-source", source_key)),
+				egui::Sense::click(),
+			);
 			if selected {
 				crate::design::selection_surface(ui, rect);
 			} else {
@@ -587,12 +665,38 @@ impl ScreenUi {
 			});
 			let response = response.on_hover_text(&source_name);
 			if response.clicked() {
+				if clears_audio_opt_in(
+					self.selected.map(|id| id.audio_scope()),
+					source.id.audio_scope(),
+				) {
+					self.audio = false;
+				}
 				self.selected = Some(source.id);
 				self.source_lost = false;
 			}
 			ui.add_space(4.0);
 		}
 	}
+}
+
+fn clears_audio_opt_in(previous: Option<AudioScope>, next: AudioScope) -> bool {
+	matches!(next, AudioScope::System) && !matches!(previous, Some(AudioScope::System))
+}
+
+#[test]
+fn screen_audio_opt_in_does_not_carry_to_system_audio() {
+	assert!(clears_audio_opt_in(
+		Some(AudioScope::Application),
+		AudioScope::System
+	));
+	assert!(!clears_audio_opt_in(
+		Some(AudioScope::System),
+		AudioScope::Application
+	));
+	assert!(!clears_audio_opt_in(
+		Some(AudioScope::System),
+		AudioScope::System
+	));
 }
 
 /// Compact segmented choice used by the quality and frame-rate rows.
@@ -641,6 +745,23 @@ fn segment(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn applications_and_screens_do_not_share_selection_or_audio_permission() {
+		let mut picker = ScreenUi {
+			selected: Some(SourceId::Window(1)),
+			audio: true,
+			..Default::default()
+		};
+		assert!(SourceGroup::Applications.includes(SourceId::Window(1)));
+		assert!(!SourceGroup::Applications.includes(SourceId::Display(1)));
+		assert!(SourceGroup::Screens.includes(SourceId::Display(1)));
+		assert!(!SourceGroup::Screens.includes(SourceId::Window(1)));
+		picker.show_source_group(SourceGroup::Screens);
+		assert!(picker.selected.is_none() && !picker.audio && picker.request.is_none());
+		assert!(SourceGroup::Screens.includes(SourceId::SystemPicker));
+		assert!(SourceGroup::Applications.includes(SourceId::Portal));
+	}
+
 	#[test]
 	fn long_source_names_stay_inside_rows_and_keep_full_accessible_names() {
 		let long_name = "A very long window title with many words and details ".repeat(8);
@@ -739,6 +860,69 @@ mod tests {
 				assert_eq!(picker.selected, Some(SourceId::Window(2)));
 			}
 		}
+	}
+
+	#[test]
+	fn compact_capture_confirmation_keeps_audio_visible_and_escape_does_not_capture() {
+		let ctx = egui::Context::default();
+		crate::design::apply(&ctx);
+		ctx.set_pixels_per_point(2.0);
+		let state = test_support::voice_demo_state();
+		let id = SourceId::Window(17);
+		let mut picker = ScreenUi {
+			open: true,
+			selected: Some(id),
+			sources: vec![Source {
+				id,
+				name: "天気と共有のテスト🎞".repeat(24),
+				dimensions: Some((1920, 1080)),
+			}],
+			supported: true,
+			audio: true,
+			..Default::default()
+		};
+		let audio = crate::i18n::translate("screen-confirmation-audio-application");
+		let share = crate::i18n::translate("screen-go-live");
+		let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 420.0));
+		for pass in 0..4 {
+			let output = ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(viewport),
+					focused: true,
+					events: if pass == 3 {
+						vec![egui::Event::Key {
+							key: egui::Key::Escape,
+							physical_key: None,
+							pressed: true,
+							repeat: false,
+							modifiers: egui::Modifiers::NONE,
+						}]
+					} else {
+						vec![]
+					},
+					..Default::default()
+				},
+				|ui| picker.show(ui.ctx(), &state),
+			);
+			assert!(picker.request.is_none());
+			if pass == 2 {
+				let visible = |label: &str| {
+					output.shapes.iter().find_map(|shape| {
+						let mut text = Vec::new();
+						crate::test_ui::visual_text(&shape.shape, &mut text);
+						text.into_iter().find_map(|(s, rect)| {
+							(s == label && shape.clip_rect.intersect(viewport).contains_rect(rect))
+								.then_some(rect)
+						})
+					})
+				};
+				let audio_rect = visible(&audio).expect("audio scope must be visible in full");
+				let share_rect = visible(&share).expect("share action must stay on-screen");
+				assert!(audio_rect.bottom() <= share_rect.top());
+			}
+			output.drop_without_applying_deltas();
+		}
+		assert!(!picker.open);
 	}
 
 	#[test]

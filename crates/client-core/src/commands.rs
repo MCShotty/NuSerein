@@ -902,8 +902,19 @@ impl State {
 			}
 			return;
 		}
-		if matches!(&command, Command::Members { .. }) {
-			self.invalidate_members();
+		if let Command::Members {
+			channel,
+			request,
+			ranges,
+			..
+		} = &command
+		{
+			if self.members.as_ref().is_some_and(|list| {
+				list.request == *request && channel.is_none_or(|id| list.channel == id)
+			}) && !channel.is_some_and(|id| self.reject_full_roster(id, *request, ranges))
+			{
+				self.invalidate_members();
+			}
 			return;
 		}
 		if let Command::Prefetch(command) = command {

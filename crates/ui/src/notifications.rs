@@ -12,6 +12,50 @@ pub(super) const RAIL_AVATAR: f32 = 42.0;
 /// Inset from the rail edge; centres a tile in the column.
 const RAIL_MARGIN: i8 = ((RAIL_WIDTH - RAIL_TILE) / 2.0) as i8;
 
+fn server_rail_action(ui: &mut egui::Ui, icon: crate::icons::Icon, key: &str) -> egui::Response {
+	let colors = design::palette(ui);
+	let (rect, response) =
+		ui.allocate_exact_size(egui::Vec2::splat(RAIL_TILE), egui::Sense::click());
+	let highlighted = response.hovered() || response.has_focus();
+	ui.painter().rect_filled(
+		rect,
+		14,
+		if highlighted {
+			colors.accent
+		} else {
+			colors.raised
+		},
+	);
+	crate::icons::paint(
+		ui.painter(),
+		icon,
+		rect.shrink(10.0),
+		if highlighted {
+			colors.accent_text
+		} else {
+			colors.text
+		},
+	);
+	let label = crate::i18n::translate(key);
+	response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+	design::rail_name(&response, label);
+	response
+}
+
+fn discover_servers(ui: &mut egui::Ui) -> egui::Response {
+	let response = server_rail_action(
+		ui,
+		crate::icons::Icon::Compass,
+		"notifications-rail-discover-servers",
+	);
+	if response.clicked() {
+		ui.ctx().open_url(egui::OpenUrl::new_tab(
+			crate::join_server::PUBLIC_SERVER_DIRECTORY,
+		));
+	}
+	response
+}
+
 #[derive(Default)]
 pub(super) struct RailCache {
 	key: Option<(u64, u64, bool, Option<Id>)>,
@@ -97,6 +141,10 @@ fn home_request_label(friends: u32, messages: u32) -> String {
 }
 
 pub(super) fn row_activity(state: &State, channel: &model::Channel, visible: bool) -> (bool, u32) {
+	// Muting suppresses the row badge, not the underlying unread or active-call state.
+	if channel.guild.is_none() && state.dm_muted(channel.id) == Some(true) {
+		return (false, 0);
+	}
 	let forum = channel.guild.is_some() && matches!(channel.kind, 15 | 16);
 	let unread = visible
 		&& (state.channel_unread(channel) == Some(true)
@@ -384,8 +432,7 @@ impl MessagingUi {
 									&mut self.user_action,
 								);
 							}
-							let count = state.unread_count(channel.id);
-							let unread = state.channel_unread(channel) == Some(true) || count > 0;
+							let (unread, count) = row_activity(state, channel, true);
 							// Keyed by channel: auto ids shift as unread conversations come and go.
 							let id = ui.scope_id().with(("rail-direct", channel.id));
 							indicator(ui, id, &response, unread, count);
@@ -435,46 +482,16 @@ impl MessagingUi {
 							colors.raised,
 						);
 						self.server_folders(ui, state, commands);
-						let (rect, response) = ui.allocate_exact_size(
-							egui::Vec2::splat(RAIL_TILE),
-							egui::Sense::click(),
-						);
-						let hovered = response.hovered() || response.has_focus();
-						ui.painter().rect_filled(
-							rect,
-							14,
-							if hovered {
-								colors.accent
-							} else {
-								colors.raised
-							},
-						);
-						crate::icons::paint(
-							ui.painter(),
+						if server_rail_action(
+							ui,
 							crate::icons::Icon::Plus,
-							rect.shrink(10.0),
-							if hovered {
-								colors.accent_text
-							} else {
-								colors.text
-							},
-						);
-						response.widget_info(|| {
-							egui::WidgetInfo::labeled(
-								egui::Role::Button,
-								true,
-								crate::i18n::translate(
-									"notifications-notification-rail-add-a-server",
-								),
-							)
-						});
-						design::rail_name(
-							&response,
-							crate::i18n::translate("notifications-notification-rail-add-a-server"),
-						);
-						if response.clicked() {
+							"notifications-notification-rail-add-a-server",
+						)
+						.clicked()
+						{
 							self.join_server.open_picker(state.generation);
 						}
+						discover_servers(ui);
 					});
 			});
 		if let Some(id) = selected
@@ -495,6 +512,53 @@ mod tests {
 			generation: state.generation,
 			event,
 		});
+	}
+
+	#[test]
+	fn discover_opens_only_the_public_directory_on_release() {
+		let ctx = egui::Context::default();
+		let frame = |events| {
+			let mut pos = egui::Pos2::ZERO;
+			let output = ctx.run_ui(
+				egui::RawInput {
+					events,
+					..Default::default()
+				},
+				|ui| {
+					pos = discover_servers(ui).rect.center();
+				},
+			);
+			let urls: Vec<_> = output
+				.platform_output
+				.commands
+				.iter()
+				.filter_map(|command| {
+					if let egui::OutputCommand::OpenUrl(url) = command {
+						Some(url.url.clone())
+					} else {
+						None
+					}
+				})
+				.collect();
+			output.drop_without_applying_deltas();
+			(pos, urls)
+		};
+		let (pos, urls) = frame(vec![]);
+		assert!(urls.is_empty());
+		assert!(frame(vec![egui::Event::PointerMoved(pos)]).1.is_empty());
+		for pressed in [true, false] {
+			let (_, urls) = frame(vec![egui::Event::PointerButton {
+				pos,
+				button: egui::PointerButton::Primary,
+				pressed,
+				modifiers: egui::Modifiers::NONE,
+			}]);
+			if pressed {
+				assert!(urls.is_empty());
+			} else {
+				assert_eq!(urls, [crate::join_server::PUBLIC_SERVER_DIRECTORY]);
+			}
+		}
 	}
 
 	#[test]

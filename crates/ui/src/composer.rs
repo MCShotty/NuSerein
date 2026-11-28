@@ -126,7 +126,153 @@ fn project_delete_key(
 	*range = CCursorRange::one(cursor);
 }
 
+/// One viewer; identity is independent of the attachment's position in the tray.
+pub(super) struct StagedImage {
+	target: (u64, Id, u64),
+	trigger: Option<egui::Id>,
+	preview: egui::TextureHandle,
+	full: Option<Option<egui::TextureHandle>>,
+}
+
 impl MessagingUi {
+	fn staged_image_index(&self, state: &State, target: (u64, Id, u64)) -> Option<usize> {
+		let (generation, channel, key) = target;
+		let allowed = if state.is_forum(channel) {
+			self.forum.can_preview_draft(channel) && state.can_attach_post(channel)
+		} else {
+			state.can_attach(channel)
+		};
+		if generation != state.generation
+			|| state.selected != Some(channel)
+			|| !allowed
+			|| state.browse_channels.is_some()
+		{
+			return None;
+		}
+		let index = self
+			.attachment_spoilers
+			.iter()
+			.position(|entry| *entry == (key, false))?;
+		(index < self.attachment_files.len()).then_some(index)
+	}
+
+	pub(super) fn open_staged_image(
+		&mut self,
+		ctx: &egui::Context,
+		target: (u64, Id, u64),
+		trigger: egui::Id,
+		preview: &egui::TextureHandle,
+	) {
+		self.staged_image = Some(StagedImage {
+			target,
+			trigger: Some(trigger),
+			preview: preview.clone(),
+			full: None,
+		});
+		ctx.request_repaint();
+	}
+
+	/// Target for the desktop's one bounded local preview worker. No path leaves the desktop.
+	pub fn staged_image_target(&self, state: &State) -> Option<(u64, Id, u64)> {
+		let image = self.staged_image.as_ref()?;
+		self.staged_image_index(state, image.target)?;
+		Some(image.target)
+	}
+
+	pub fn set_staged_image_result(
+		&mut self,
+		ctx: &egui::Context,
+		state: &State,
+		target: (u64, Id, u64),
+		pixels: Option<egui::ColorImage>,
+	) {
+		if self.staged_image_target(state) != Some(target) {
+			return;
+		}
+		if let Some(image) = &mut self.staged_image {
+			image.full = Some(pixels.map(|pixels| {
+				ctx.load_texture("staged-full-image", pixels, egui::TextureOptions::LINEAR)
+			}));
+			ctx.request_repaint();
+		}
+	}
+
+	/// Fixture-only: display a staged selection using synthetic pixels, not a file or request.
+	#[cfg(any(test, feature = "demo"))]
+	pub fn preview_staged_image(&mut self, ctx: &egui::Context, state: &State, index: usize) {
+		let Some(&(key, false)) = self.attachment_spoilers.get(index) else {
+			return;
+		};
+		let Some(channel) = state.selected else {
+			return;
+		};
+		let target = (state.generation, channel, key);
+		if self.staged_image_index(state, target).is_some()
+			&& let Some(preview) = self.attachment_textures(ctx).get(index).cloned().flatten()
+		{
+			self.staged_image = Some(StagedImage {
+				target,
+				trigger: None,
+				preview: preview.clone(),
+				full: Some(Some(preview)),
+			});
+		}
+	}
+
+	pub(super) fn show_staged_image(&mut self, ctx: &egui::Context, state: &State) -> bool {
+		let Some(image) = self.staged_image.take() else {
+			return false;
+		};
+		let Some(index) = self.staged_image_index(state, image.target) else {
+			return false;
+		};
+		let filename = &self.attachment_files[index].0;
+		let texture = image
+			.full
+			.as_ref()
+			.and_then(Option::as_ref)
+			.unwrap_or(&image.preview);
+		let width = (ctx.content_rect().width() - 72.0).clamp(1.0, 1000.0);
+		let height = (ctx.content_rect().height() - 160.0).clamp(1.0, 720.0);
+		let size = texture.size_vec2();
+		let fit = (width / size.x).min(height / size.y).min(1.0);
+		let status = match &image.full {
+			None => Some("attachments-pending-viewer-loading"),
+			Some(None) => Some("attachments-pending-viewer-full-size-unavailable"),
+			Some(Some(_)) => None,
+		};
+		let mut preview =
+			dialog::Dialog::new(("staged-image", image.target), filename).width(width + 24.0);
+		if let Some(status) = status {
+			preview = preview.subtitle(crate::i18n::translate(status));
+		}
+		let result = preview.show(ctx, |body| {
+			body.content(|ui| {
+				let (stage, _) = ui.allocate_exact_size(
+					egui::vec2(ui.available_width(), height),
+					egui::Sense::hover(),
+				);
+				let rect = egui::Rect::from_center_size(stage.center(), size * fit);
+				ui.painter().image(
+					texture.id(),
+					rect,
+					egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+					egui::Color32::WHITE,
+				);
+			});
+		});
+		if result.close {
+			if let Some(trigger) = image.trigger {
+				ctx.memory_mut(|memory| memory.request_focus(trigger));
+			}
+			ctx.request_repaint();
+			false
+		} else {
+			self.staged_image = Some(image);
+			true
+		}
+	}
+
 	pub(super) fn retire_menu_paste(&mut self, state: &mut State) {
 		let stale = |(generation, channel, _)| {
 			generation != state.generation || Some(channel) != state.selected
@@ -493,6 +639,33 @@ impl MessagingUi {
 		if released {
 			self.paste_key_handled = false;
 		}
+	}
+	pub(super) fn empty_edit_delete_revision(
+		state: &State,
+		channel: Id,
+		message: Id,
+	) -> Option<u64> {
+		if state.selected != Some(channel)
+			|| state.freshness != Freshness::Fresh
+			|| !state.can_edit(channel, message)
+			|| !state.can_delete(channel, message)
+			|| state.message_actions.edit_pending(channel, message)
+		{
+			return None;
+		}
+		let row = state.timeline.get(message)?;
+		(matches!(row.kind, 0 | 19)
+			&& !row.unsupported
+			&& !row.ephemeral
+			&& !row.content.trim().is_empty()
+			&& row.attachments.is_empty()
+			&& row.embeds.is_empty()
+			&& row.sticker_items.is_empty()
+			&& row.components.is_empty()
+			&& !row.extra_content.any()
+			&& row.poll.is_none()
+			&& row.interaction.is_none())
+		.then_some(row.revision)
 	}
 	pub fn has_edit(&self) -> bool {
 		self.editing.is_some()
@@ -1332,7 +1505,8 @@ impl MessagingUi {
 		let can_send = if let Some((edit_channel, message)) = editing_key {
 			state.freshness == Freshness::Fresh
 				&& state.can_edit(edit_channel, message)
-				&& count_before > 0
+				&& (count_before > 0
+					|| Self::empty_edit_delete_revision(state, edit_channel, message).is_some())
 		} else if application_command {
 			self.slash_commands.can_submit(state, channel)
 		} else {
@@ -1361,7 +1535,7 @@ impl MessagingUi {
                     egui::pos2(ui.max_rect().right() + 10.0, ui.max_rect().top()),
                 );
                 if !editing_here && (self.attachment.is_some() || self.attachment_loading > 0) {
-                    self.attachment_tray(ui, state.can_send(channel), upload_limit);
+                    self.attachment_tray(ui, state.can_send(channel), upload_limit, state.can_attach(channel).then_some((state.generation, channel)));
                 }
                 // Tall drafts stack the actions in bottom-aligned columns so the text keeps the
                 // width. Last pass's visible draft height decides.
@@ -1481,17 +1655,7 @@ impl MessagingUi {
                                 } else if self.upload_busy || !state.can_send(channel) {
                                     self.composer_notice(state, "Sending is unavailable with the current connection or permissions", "composer-gif-unavailable", design::Level::Warning);
                                 } else {
-                                    let saved = state.drafts.insert(channel, url);
-                                    let command = state.prepare_send();
-                                    match saved {
-                                        Some(saved) => {
-                                            state.drafts.insert(channel, saved);
-                                        }
-                                        None => {
-                                            state.drafts.remove(&channel);
-                                        }
-                                    }
-                                    if let Some(command) = command {
+                                    if let Some(command) = state.prepare_text_send(&url) {
                                         self.timeline.follow_latest(state);
                                         commands.push(command);
                                     } else {
@@ -1810,7 +1974,14 @@ impl MessagingUi {
                             && self.slash_commands.can_submit(state, channel);
                         if (send || slash_run) && !cancel_edit {
                             if let Some((edit_channel, message, content)) = &editing {
-                                if state.freshness == Freshness::Fresh
+                                if content.trim().is_empty()
+                                    && let Some(revision) = Self::empty_edit_delete_revision(state, *edit_channel, *message)
+                                {
+                                    self.deleting = None;
+                                    self.empty_edit_delete = Some((crate::message_menu::Owner {
+                                        generation: state.generation, channel: *edit_channel, message: *message,
+                                    }, revision));
+                                } else if state.freshness == Freshness::Fresh
                                     && let Some(command) = state.prepare_edit(*edit_channel, *message,
                                         if self.convert_emoticons { emoticons::convert(content) } else { content.clone() })
                                 {
@@ -1877,7 +2048,13 @@ impl MessagingUi {
 		}
 	}
 	/// Selected-file cards above the composer input, in the style of Discord's upload tray.
-	pub(super) fn attachment_tray(&mut self, ui: &mut egui::Ui, can_host: bool, upload_limit: u64) {
+	pub(super) fn attachment_tray(
+		&mut self,
+		ui: &mut egui::Ui,
+		can_host: bool,
+		upload_limit: u64,
+		scope: Option<(u64, Id)>,
+	) {
 		let colors = design::palette(ui);
 		let textures = self.attachment_textures(ui.ctx());
 		ui.add_space(4.0);
@@ -1894,38 +2071,83 @@ impl MessagingUi {
 				ui.horizontal(|ui| {
 					ui.spacing_mut().item_spacing.x = 12.0;
 					for (index, (filename, bytes)) in files.iter().enumerate() {
-						ui.push_id(index, |ui| {
-							ui.vertical(|ui| {
-								if ui
-									.scope(|ui| {
-										attachments::pending_card(
-											ui,
-											filename,
-											*bytes,
-											textures.get(index).and_then(Option::as_ref),
-											!self.attach_busy,
-										)
-									})
-									.inner
-								{
-									self.remove_attachment_index = Some(index);
-								}
-								if *bytes > upload_limit
-									&& ui
-										.add_enabled_ui(!self.upload_busy && can_host, |ui| {
-											design::button(
+						let selection = self.attachment_spoilers.get(index).copied();
+						ui.push_id(
+							(
+								selection.map(|(key, _)| key),
+								selection.is_none().then_some(index),
+							),
+							|ui| {
+								ui.vertical(|ui| {
+									match ui
+										.scope(|ui| {
+											attachments::pending_card(
 												ui,
-												"public-upload-host-file",
-												design::ButtonKind::Neutral,
+												filename,
+												*bytes,
+												textures.get(index).and_then(Option::as_ref),
+												!self.attach_busy,
+												selection.map(|(_, spoiler)| spoiler),
+												scope.is_some() && selection.is_some(),
 											)
 										})
 										.inner
-										.clicked()
-								{
-									self.host_attachment_requested = Some(index);
-								}
-							});
-						});
+									{
+										attachments::PendingAction::Remove => {
+											self.remove_attachment_index = Some(index)
+										}
+										attachments::PendingAction::ToggleSpoiler => {
+											if let Some((generation, channel)) = scope {
+												self.toggle_attachment_spoiler(
+													index, generation, channel,
+												);
+												ui.ctx().request_repaint();
+											}
+										}
+										attachments::PendingAction::OpenPreview(trigger) => {
+											if let (
+												Some((generation, channel)),
+												Some((key, false)),
+												Some(Some(preview)),
+											) = (scope, selection, textures.get(index))
+											{
+												self.open_staged_image(
+													ui.ctx(),
+													(generation, channel, key),
+													trigger,
+													preview,
+												);
+											}
+										}
+										attachments::PendingAction::None => {}
+									}
+									if *bytes > upload_limit
+										&& ui
+											.add_enabled_ui(
+												!self.upload_busy
+													&& can_host && !self
+													.attachment_spoilers
+													.get(index)
+													.map_or_else(
+														|| filename.starts_with("SPOILER_"),
+														|(_, spoiler)| *spoiler,
+													),
+												|ui| {
+													design::button(
+														ui,
+														"public-upload-host-file",
+														design::ButtonKind::Neutral,
+													)
+												},
+											)
+											.inner
+											.clicked()
+									{
+										self.host_attachment_requested = Some(index);
+									}
+								});
+							},
+						);
 					}
 					for index in 0..self.attachment_loading.min(10) {
 						ui.push_id(("loading", index), attachments::loading_card);
@@ -1994,6 +2216,74 @@ impl MessagingUi {
 pub(crate) mod tests {
 	use super::*;
 
+	#[test]
+	fn staged_image_is_scoped_to_the_visible_unspoiled_selection() {
+		let ctx = egui::Context::default();
+		let mut state = test_support::demo_state();
+		let mut view = MessagingUi::default();
+		let pixels = || egui::ColorImage::filled([16, 12], egui::Color32::WHITE);
+		view.preview_attachment("one.png", 100, Some(pixels()));
+		view.preview_attachment("two.png", 100, Some(pixels()));
+		view.preview_staged_image(&ctx, &state, 1);
+		let target = view.staged_image_target(&state).unwrap();
+		view.attachment_files.remove(0);
+		view.attachment_spoilers.remove(0);
+		view.attachment_previews.remove(0);
+		assert_eq!(view.staged_image_target(&state), Some(target));
+		view.attachment_spoilers[0].1 = true;
+		view.set_staged_image_result(&ctx, &state, target, Some(pixels()));
+		assert!(!view.show_staged_image(&ctx, &state));
+		assert!(view.staged_image.is_none());
+		view.preview_staged_image(&ctx, &state, 0);
+		assert!(view.staged_image.is_none());
+		view.attachment_spoilers[0].1 = false;
+		view.preview_staged_image(&ctx, &state, 0);
+		state.generation = state.generation.wrapping_add(1);
+		assert!(view.staged_image_target(&state).is_none());
+		assert!(!view.show_staged_image(&ctx, &state));
+	}
+
+	#[test]
+	fn escape_closes_staged_view_at_compact_width_without_consuming_the_file() {
+		let ctx = egui::Context::default();
+		let state = test_support::demo_state();
+		let mut view = MessagingUi::default();
+		view.preview_attachment(
+			"desk.png",
+			100,
+			Some(egui::ColorImage::filled([32, 20], egui::Color32::WHITE)),
+		);
+		view.preview_staged_image(&ctx, &state, 0);
+		let mut frame = |events| {
+			ctx.run_ui(
+				egui::RawInput {
+					screen_rect: Some(egui::Rect::from_min_size(
+						egui::Pos2::ZERO,
+						egui::vec2(560.0, 580.0),
+					)),
+					events,
+					..Default::default()
+				},
+				|_| {
+					view.show_staged_image(&ctx, &state);
+				},
+			)
+			.drop_without_applying_deltas();
+		};
+		frame(vec![]);
+		frame(vec![]);
+		frame(vec![egui::Event::Key {
+			key: egui::Key::Escape,
+			physical_key: None,
+			pressed: true,
+			repeat: false,
+			modifiers: egui::Modifiers::NONE,
+		}]);
+		assert!(view.staged_image.is_none());
+		assert_eq!(view.attachment_files, [("desk.png".to_string(), 100)]);
+		assert!(view.remove_attachment_index.is_none());
+	}
+
 	fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
 		match shape {
 			egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
@@ -2031,6 +2321,7 @@ pub(crate) mod tests {
 		let guild = state.channel(channel).unwrap().guild.unwrap();
 		let user = state.user.as_ref().unwrap().clone();
 		state.members = Some(model::MemberList {
+			server_member_count: None,
 			guild: Some(guild),
 			channel,
 			request: 0,

@@ -4,7 +4,10 @@ use crate::{
 	auth::{AuthState, Failure},
 };
 use model::Id;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+	collections::{BTreeMap, BTreeSet},
+	time::{Duration, Instant},
+};
 
 pub const MAX_RELATIONSHIPS: usize = 4000;
 pub const MAX_RELATIONSHIP_BYTES: usize = 128 * 1024;
@@ -94,6 +97,10 @@ pub enum Action {
 		channel: Id,
 		accept: bool,
 	},
+	SpamRequest {
+		channel: Id,
+		accept: bool,
+	},
 }
 impl std::fmt::Debug for Action {
 	/// Redacted debug output; never prints note, nickname or username text.
@@ -127,6 +134,7 @@ impl Action {
 			Self::MuteFor { .. } => "Conversation notifications muted temporarily",
 			Self::MessageRequest { accept: true, .. } => "Message request accepted",
 			Self::MessageRequest { accept: false, .. } => "Message request ignored",
+			Self::SpamRequest { .. } => "Waiting for spam request confirmation",
 		}
 	}
 }
@@ -212,11 +220,14 @@ pub enum Event {
 		channel: Id,
 		pending: bool,
 	},
-	MessageSpams(Option<Vec<Id>>),
-	MessageSpam {
+	/// Spam-folder snapshot; the boolean is independent evidence of a pending request.
+	MessageSpams(Option<Vec<(Id, bool)>>),
+	DirectInbox {
 		channel: Id,
+		pending: bool,
 		spam: bool,
 	},
+	DirectDeleted(Id),
 	RequestSpams(Option<Vec<Id>>),
 	RequestSpam {
 		user: Id,
@@ -249,6 +260,11 @@ pub struct Actions {
 	relationships: BTreeMap<Id, bool>,
 	message_requests: BTreeSet<Id>,
 	spam_directs: BTreeSet<Id>,
+	spam_pending_requests: BTreeSet<Id>,
+	spam_deadline: Option<Instant>,
+	spam_failure: Option<(Id, Failure)>,
+	uncertain_spam: BTreeSet<Id>,
+	ignored_spam: Option<Id>,
 	spam_requests: BTreeSet<Id>,
 	known: bool,
 	view: u64,
@@ -371,6 +387,9 @@ impl State {
 			.values()
 			.filter(|(u, _, _)| self.user_blocked(u.id) == Some(false))
 	}
+	pub fn friend_request_is_spam(&self, user: Id) -> bool {
+		self.user_actions.spam_requests.contains(&user)
+	}
 	fn stranger_message_request(&self, channel: &model::Channel) -> bool {
 		let mut other = false;
 		for user in &channel.recipients {
@@ -386,9 +405,7 @@ impl State {
 	pub fn home_request_parts(&self) -> (u32, u32) {
 		let friends = self
 			.pending_friends()
-			.filter(|(user, _, incoming)| {
-				*incoming && !self.user_actions.spam_requests.contains(&user.id)
-			})
+			.filter(|(user, _, incoming)| *incoming && !self.friend_request_is_spam(user.id))
 			.count();
 		let messages = self
 			.user_actions
@@ -411,6 +428,8 @@ impl State {
 	pub(crate) fn forget_direct_inbox(&mut self, channel: Id) {
 		self.user_actions.message_requests.remove(&channel);
 		self.user_actions.spam_directs.remove(&channel);
+		self.user_actions.spam_pending_requests.remove(&channel);
+		self.user_actions.uncertain_spam.remove(&channel);
 	}
 	pub(crate) fn message_request_pending(&self, channel: Id) -> bool {
 		self.user_actions.message_requests.contains(&channel)
@@ -429,8 +448,132 @@ impl State {
 		}
 		self.request_user_action(Action::MessageRequest { channel, accept })
 	}
+	/// The two inboxes use only already admitted DM metadata. Reading this does not
+	/// select a channel, request history, or resolve its request.
+	pub fn direct_request_channels(&self, spam: bool) -> impl Iterator<Item = &model::Channel> {
+		let ids = if spam {
+			&self.user_actions.spam_directs
+		} else {
+			&self.user_actions.message_requests
+		};
+		ids.iter()
+			.filter_map(|id| self.channel(*id))
+			.filter(move |channel| {
+				channel.guild.is_none()
+					&& matches!(channel.kind, 1 | 3)
+					&& self.stranger_message_request(channel)
+			})
+	}
+	pub fn can_review_spam_direct(&self, channel: Id) -> bool {
+		self.spam_direct(channel)
+			&& self.can_read_history(channel)
+			&& self.channel(channel).is_some_and(|row| {
+				row.guild.is_none()
+					&& matches!(row.kind, 1 | 3)
+					&& self.stranger_message_request(row)
+			})
+	}
 	pub fn spam_direct(&self, channel: Id) -> bool {
 		self.user_actions.spam_directs.contains(&channel)
+	}
+	pub fn spam_request_is_resolvable(&self, channel: Id) -> bool {
+		self.selected == Some(channel)
+			&& self.spam_direct(channel)
+			&& self.user_actions.spam_pending_requests.contains(&channel)
+			&& self.is_one_to_one_dm(channel)
+			&& self.can_review_spam_direct(channel)
+	}
+	pub fn can_resolve_spam_request(&self, channel: Id) -> bool {
+		!self.demo
+			&& self.auth == AuthState::Authenticated
+			&& self.gateway_connected
+			&& !self.user_action_pending()
+			&& self.spam_request_is_resolvable(channel)
+			&& self.spam_request_failure(channel) != Some(Failure::Ambiguous)
+	}
+	pub fn resolve_spam_request(&mut self, channel: Id, accept: bool) -> Option<Command> {
+		if !self.can_resolve_spam_request(channel) {
+			return None;
+		}
+		let action = self.request_user_action(Action::SpamRequest { channel, accept })?;
+		self.user_actions.spam_deadline = Some(Instant::now() + Duration::from_secs(20));
+		self.user_actions.spam_failure = None;
+		Some(action)
+	}
+	fn pending_spam_request(&self) -> Option<(Id, bool)> {
+		match &self.user_actions.pending {
+			Some((Action::SpamRequest { channel, accept }, _, _)) => Some((*channel, *accept)),
+			_ => None,
+		}
+	}
+	pub fn spam_request_waiting(&self, channel: Id) -> bool {
+		self.pending_spam_request()
+			.is_some_and(|(target, _)| target == channel)
+	}
+	pub fn spam_request_failure(&self, channel: Id) -> Option<Failure> {
+		if self.user_actions.uncertain_spam.contains(&channel) {
+			return Some(Failure::Ambiguous);
+		}
+		self.user_actions
+			.spam_failure
+			.filter(|(id, _)| *id == channel)
+			.map(|(_, failure)| failure)
+	}
+	fn mark_spam_uncertain(&mut self, channel: Id) {
+		// The guard is a subset of the bounded spam inbox, even across unrelated actions.
+		if self.spam_direct(channel) {
+			self.user_actions.uncertain_spam.insert(channel);
+		}
+	}
+	pub fn take_ignored_spam(&mut self) -> Option<Id> {
+		self.user_actions.ignored_spam.take()
+	}
+	/// A single receipt deadline, not a retry timer.
+	pub fn expire_spam_request(&mut self, now: Instant) -> Option<Duration> {
+		let deadline = self.user_actions.spam_deadline?;
+		if let Some(remaining) = deadline
+			.checked_duration_since(now)
+			.filter(|d| !d.is_zero())
+		{
+			return Some(remaining);
+		}
+		if let Some((channel, _)) = self.pending_spam_request() {
+			self.user_actions.pending = None;
+			self.mark_spam_uncertain(channel);
+		}
+		self.user_actions.spam_deadline = None;
+		None
+	}
+	fn apply_direct_inbox(
+		&mut self,
+		channel: Id,
+		pending: bool,
+		spam: bool,
+	) -> Result<(), &'static str> {
+		if !self.is_one_to_one_dm(channel) {
+			return Ok(());
+		}
+		let operation = self
+			.pending_spam_request()
+			.filter(|(target, _)| *target == channel);
+		// Stay in review while a two-part reclassification is still pending. It cannot admit a new write.
+		let keep_review = !spam && operation.is_some_and(|(_, accept)| !accept || pending);
+		if spam || keep_review {
+			self.set_spam_direct(channel, true)?;
+			if pending && spam {
+				self.user_actions.spam_pending_requests.insert(channel);
+			} else {
+				self.user_actions.spam_pending_requests.remove(&channel);
+			}
+		} else {
+			self.set_spam_direct(channel, false)?;
+			self.set_message_request(channel, pending)?;
+		}
+		if !pending && !spam && operation == Some((channel, true)) {
+			self.user_actions.pending = None;
+			self.user_actions.spam_deadline = None;
+		}
+		Ok(())
 	}
 	fn set_message_request(&mut self, channel: Id, pending: bool) -> Result<(), &'static str> {
 		if channel.0 == 0 {
@@ -443,6 +586,8 @@ impl State {
 				return Err("Message requests exceed safe capacity");
 			}
 			self.user_actions.spam_directs.remove(&channel);
+			self.user_actions.spam_pending_requests.remove(&channel);
+			self.user_actions.uncertain_spam.remove(&channel);
 			self.user_actions.message_requests.insert(channel);
 		} else {
 			self.user_actions.message_requests.remove(&channel);
@@ -480,7 +625,10 @@ impl State {
 			self.user_actions.spam_directs.insert(channel);
 		} else {
 			self.user_actions.spam_directs.remove(&channel);
+			self.user_actions.spam_pending_requests.remove(&channel);
+			self.user_actions.uncertain_spam.remove(&channel);
 		}
+		self.user_actions.bump_view();
 		Ok(())
 	}
 	pub fn friend_requests_known(&self) -> bool {
@@ -962,6 +1110,10 @@ impl State {
 		self.user_actions.opened_dm = None;
 		self.user_actions.challenge = None;
 		if let Some((action, _, _)) = self.user_actions.pending.take() {
+			if let Action::SpamRequest { channel, .. } = action {
+				self.user_actions.spam_deadline = None;
+				self.mark_spam_uncertain(channel);
+			}
 			if matches!(action, Action::Block { .. } | Action::Ignore { .. }) {
 				self.user_actions.bump_view();
 			}
@@ -1487,16 +1639,52 @@ impl State {
 				self.set_message_request(channel, pending)?;
 			}
 			Event::MessageSpams(entries) => {
-				replace_id_set(
-					&mut self.user_actions.spam_directs,
-					entries,
-					Some(&mut self.user_actions.message_requests),
-					"Message requests exceed safe capacity",
-					"Message requests contain invalid or duplicate channels",
-				)?;
+				let entries = entries.unwrap_or_default();
+				if entries.len() > MAX_RELATIONSHIPS
+					|| entries.capacity() * size_of::<(Id, bool)>() > MAX_RELATIONSHIP_BYTES
+				{
+					return Err("Message requests exceed safe capacity");
+				}
+				let mut spam = BTreeSet::new();
+				let mut pending = BTreeSet::new();
+				for (channel, request) in entries {
+					if channel.0 == 0 || !spam.insert(channel) {
+						return Err("Message requests contain invalid or duplicate channels");
+					}
+					if request {
+						pending.insert(channel);
+					}
+				}
+				self.user_actions
+					.message_requests
+					.retain(|id| !spam.contains(id));
+				self.user_actions
+					.uncertain_spam
+					.retain(|id| spam.contains(id));
+				self.user_actions.spam_directs = spam;
+				self.user_actions.spam_pending_requests = pending;
+				self.user_actions.bump_view();
 			}
-			Event::MessageSpam { channel, spam } => {
-				self.set_spam_direct(channel, spam)?;
+			Event::DirectInbox {
+				channel,
+				pending,
+				spam,
+			} => self.apply_direct_inbox(channel, pending, spam)?,
+			Event::DirectDeleted(channel) => {
+				if self.pending_spam_request() == Some((channel, false)) {
+					self.user_actions.pending = None;
+					self.user_actions.spam_deadline = None;
+					self.user_actions.ignored_spam =
+						(self.selected == Some(channel)).then_some(channel);
+				}
+				self.user_actions.uncertain_spam.remove(&channel);
+				if self
+					.user_actions
+					.spam_failure
+					.is_some_and(|(id, _)| id == channel)
+				{
+					self.user_actions.spam_failure = None;
+				}
 			}
 			Event::RequestSpams(entries) => {
 				replace_id_set(
@@ -1554,6 +1742,25 @@ impl State {
 				if *pending != action || *sequence != request {
 					return Ok(());
 				}
+				if let Action::SpamRequest { channel, .. } = action {
+					if let Err(failure) = result {
+						if failure.ends_session() {
+							self.status = failure.label();
+							self.fail(failure);
+						} else if matches!(
+							failure,
+							Failure::Ambiguous | Failure::Network | Failure::ResponseLimit
+						) {
+							// A late exact Gateway observation can still settle it.
+							self.mark_spam_uncertain(channel);
+						} else {
+							self.user_actions.pending = None;
+							self.user_actions.spam_deadline = None;
+							self.user_actions.spam_failure = Some((channel, failure));
+						}
+					}
+					return Ok(());
+				}
 				let observed = *observed;
 				self.user_actions.pending = None;
 				self.user_actions.challenge = None;
@@ -1572,7 +1779,7 @@ impl State {
 				}
 				if !observed {
 					match action {
-						Action::LoadNote(_) | Action::OpenDm(_) => {}
+						Action::LoadNote(_) | Action::OpenDm(_) | Action::SpamRequest { .. } => {}
 						Action::Note { user, ref text } => {
 							if let Some((target, _, observed)) = &mut self.user_actions.note_request
 								&& *target == user
@@ -1792,6 +1999,122 @@ mod tests {
 		channel.recipients[0].id = Id(3);
 		let user = channel.recipients[0].clone();
 		(state, user, channel)
+	}
+
+	#[test]
+	fn spam_consent_waits_for_exact_service_state_and_does_not_replay() {
+		let (mut state, _, channel) = stranger_dm();
+		let id = channel.id;
+		state.apply(Envelope {
+			generation: state.generation,
+			event: CoreEvent::ChannelCreated(channel),
+		});
+		let _ = state.select(id);
+		let observe = |state: &mut State, pending, spam| {
+			state
+				.apply_user_action(Event::DirectInbox {
+					channel: id,
+					pending,
+					spam,
+				})
+				.unwrap();
+		};
+		observe(&mut state, false, true);
+		assert!(state.spam_direct(id));
+		assert!(state.resolve_spam_request(id, true).is_none());
+		observe(&mut state, true, true);
+		assert!(state.resolve_message_request(id, true).is_none());
+		let Some(Command::UserAction {
+			action, request, ..
+		}) = state.resolve_spam_request(id, true)
+		else {
+			panic!("eligible request");
+		};
+		assert_eq!(
+			action,
+			Action::SpamRequest {
+				channel: id,
+				accept: true
+			}
+		);
+		state
+			.apply_user_action(Event::Written {
+				action: action.clone(),
+				request,
+				result: Ok(()),
+			})
+			.unwrap();
+		assert!(state.spam_direct(id) && state.spam_request_waiting(id));
+		assert!(state.resolve_spam_request(id, false).is_none());
+		observe(&mut state, true, false);
+		assert!(state.spam_direct(id));
+		assert!(!state.spam_request_is_resolvable(id));
+		observe(&mut state, false, false);
+		assert!(!state.spam_direct(id) && !state.spam_request_waiting(id));
+		assert_eq!(state.selected, Some(id));
+
+		observe(&mut state, true, false);
+		assert!(state.message_request(id));
+		assert!(state.resolve_spam_request(id, false).is_none());
+		observe(&mut state, true, true);
+		let Some(Command::UserAction {
+			action, request, ..
+		}) = state.resolve_spam_request(id, false)
+		else {
+			panic!("eligible ignore");
+		};
+		state
+			.apply_user_action(Event::DirectDeleted(Id(999)))
+			.unwrap();
+		assert!(state.spam_request_waiting(id));
+		let _ = state.select(Id(10));
+		state.apply_user_action(Event::DirectDeleted(id)).unwrap();
+		state.apply(Envelope {
+			generation: state.generation,
+			event: CoreEvent::Unavailable(id),
+		});
+		state
+			.apply_user_action(Event::Written {
+				action,
+				request,
+				result: Err(Failure::Ambiguous),
+			})
+			.unwrap();
+		assert_eq!(state.selected, Some(Id(10)));
+		assert!(state.take_ignored_spam().is_none());
+		assert!(state.channel(id).is_none());
+	}
+
+	#[test]
+	fn spam_resolution_timeout_waits_for_a_fresh_service_classification() {
+		let (mut state, _, channel) = stranger_dm();
+		let id = channel.id;
+		state.apply(Envelope {
+			generation: state.generation,
+			event: CoreEvent::ChannelCreated(channel),
+		});
+		let _ = state.select(id);
+		state
+			.apply_user_action(Event::DirectInbox {
+				channel: id,
+				pending: true,
+				spam: true,
+			})
+			.unwrap();
+		assert!(state.resolve_spam_request(id, true).is_some());
+		let deadline = state.user_actions.spam_deadline.unwrap();
+		assert!(state.expire_spam_request(deadline).is_none());
+		assert_eq!(state.spam_request_failure(id), Some(Failure::Ambiguous));
+		assert!(state.resolve_spam_request(id, false).is_none());
+		state
+			.apply_user_action(Event::DirectInbox {
+				channel: id,
+				pending: false,
+				spam: false,
+			})
+			.unwrap();
+		assert_eq!(state.spam_request_failure(id), None);
+		assert!(!state.spam_direct(id));
 	}
 
 	fn open_request(command: Command, user: Id) -> u64 {

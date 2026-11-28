@@ -13,6 +13,24 @@ impl State {
 		self.history_failure = Some((channel, self.request, failure));
 	}
 
+	/// Refresh around a retained reading anchor without jumping to the end of the conversation.
+	pub fn refresh_history_at(&mut self, channel: Id, anchor: Id) -> Option<Command> {
+		if self.selected != Some(channel)
+			|| !self.gateway_connected
+			|| self.history_pending
+			|| !self.can_read_history(channel)
+			|| self
+				.timeline
+				.get(anchor)
+				.is_none_or(|message| message.channel != channel)
+		{
+			return None;
+		}
+		let command = self.open_target_window(anchor)?;
+		self.history_navigation.mark_anchor_refresh();
+		Some(command)
+	}
+
 	pub fn history(&mut self, before: Option<Id>) -> Command {
 		if let Some(parent) = self.selected.filter(|id| self.is_forum(*id)) {
 			self.reload_forum_posts(parent);

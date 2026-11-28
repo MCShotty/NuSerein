@@ -154,6 +154,32 @@ friends-incoming = Incoming
 friends-outgoing = Outgoing
 friends-search-requests = Search requests
 friends-requests-unavailable = Friend requests are not available yet.
+friends-requests-spam = Spam
+friends-no-spam-requests = No spam friend requests.
+dm-requests-back-to-friends = Back to Friends
+dm-requests-pending = Pending
+dm-requests-spam = Spam
+dm-requests-spam-read-only = Discord flagged these conversations. Open one to review its recent text without marking it as read.
+dm-requests-back-to-requests = Back to Message Requests
+dm-requests-reload-history = Reload messages
+dm-requests-review-unavailable = This conversation’s history is unavailable.
+dm-requests-review-text-only = Read-only review. Links in messages aren’t clickable, media is hidden, and you can’t reply or call here.
+dm-requests-review-manage-in-discord = To manage this request, open Discord and go to Home → Message Requests → Spam.
+dm-requests-review-report-in-discord = To report this request, open Discord and go to Home → Message Requests → Spam.
+dm-requests-review-accept = Accept request
+dm-requests-review-ignore = Ignore request
+dm-requests-review-ignore-title = Ignore this message request?
+dm-requests-review-ignore-description = This removes the request from your Spam list if Discord confirms. It does not report or block the sender.
+dm-requests-review-confirming = Waiting for Discord to confirm…
+dm-requests-review-manage-guide = How to manage message requests (opens browser)
+dm-requests-review-open-discord = Continue in Discord
+dm-requests-review-open-discord-title = Open Discord in your browser?
+dm-requests-review-open-discord-description = This opens Discord Home. Go to Message Requests → Spam to manage or report the request. NuSerein won’t send the conversation ID or take any action on the request.
+dm-requests-review-open-discord-confirm = Open Discord
+dm-requests-review-no-history = No recent messages are available to review.
+dm-requests-review-hidden = Message content hidden.
+dm-requests-no-pending = No pending message requests
+dm-requests-no-spam = No known spam conversations
 friends-no-request-search = No requests match your search.
 friends-no-outgoing = No outgoing friend requests.
 friends-no-incoming = No incoming friend requests.
@@ -326,7 +352,13 @@ attachments-media-menu-unavailable-for-synthetic-attachments = Unavailable for s
 # Context: open_original
 attachments-open-original-open-original = Open original…
 # Context: pending_card
+attachments-mark-spoiler = Mark attachment as spoiler
+attachments-remove-spoiler = Remove attachment spoiler
+attachments-spoiler-label = Spoiler
 attachments-pending-card-remove-attachment = Remove attachment
+attachments-pending-viewer-open = Preview { $file }
+attachments-pending-viewer-full-size-unavailable = Full-size preview unavailable. Close and reopen to try again.
+attachments-pending-viewer-loading = Loading full-size image…
 attachments-loading-card-preparing = Preparing…
 attachments-media-unavailable = Media unavailable
 # Context: show_status
@@ -435,6 +467,7 @@ channel-menu-context-create-channel = Create Channel
 channel-menu-context-edit-category = Edit Category
 # Context: context
 channel-menu-context-edit-channel = Edit Channel
+channel-menu-row-settings = Edit channel: { $channel }
 # Context: context
 channel-menu-context-favorites-are-saved-on-this-device = Favorites are saved on this device.
 # Context: context
@@ -1115,7 +1148,7 @@ forum-describe-unread = , unread
 # Context: latest_row
 forum-latest-row-attachment-or-non-text-message = Attachment or non-text message
 # Context: latest_row
-forum-latest-row-latest-message-unavailable = Latest message unavailable
+forum-post-no-message-preview = No message preview
 # Context: post_tags
 forum-post-tags-a-post-can-carry-up-to-5-tags = A post can carry up to 5 tags.
 # Context: post_tags
@@ -1339,7 +1372,8 @@ forum-toolbar-new-post = New Post
 # Context: toolbar
 forum-toolbar-posting-requires-a-connected-session-with-permission-to-send-here = Posting requires a connected session with permission to send here.
 # Context: toolbar
-forum-toolbar-search-or-create-a-post = Search or create a post...
+forum-toolbar-search-posts = Search posts
+forum-search-messages = Search messages
 
 ## crates/ui/src/forwarding.rs
 # Context: show
@@ -1832,6 +1866,7 @@ notification-settings-tab-sounds = Sounds
 ## crates/ui/src/notifications.rs
 # Context: notification_rail
 notifications-notification-rail-add-a-server = Add a Server
+notifications-rail-discover-servers = Discover servers (opens browser)
 # Context: notification_rail
 notifications-notification-rail-in-a-call = , in a call
 # Context: notification_rail
@@ -2388,6 +2423,7 @@ search-filters-user-picker-search-users = Search users
 # Context: header_input
 search-header-input-close-search = Close search
 # Context: header_input
+search-return-to-results = Back to search results
 search-header-input-search = Search
 # Context: open_filters
 search-open-filters-dates-author-type-and-more = dates, author type, and more
@@ -2606,6 +2642,11 @@ server-admin-member-menu-roles = Roles
 # Context: member_menu
 server-admin-member-menu-unblock = Unblock
 # Context: members
+server-admin-members-filter-members = Filter members
+server-admin-members-clear-filters = Clear filters
+server-admin-members-any-join-method = Any join method
+server-admin-members-query-not-loaded = Could not load this member search. Check your connection and filters, then reload.
+server-admin-members-updating-results = Updating member results…
 server-admin-members-first-page = First page
 # Context: members
 server-admin-members-joined-in-the-last-7-days = Joined in the last 7 days
@@ -3119,7 +3160,7 @@ server-roles-list-edit-role-2 = Edit Role
 # Context: list
 server-roles-list-members = MEMBERS
 # Context: list
-server-roles-list-members-use-the-color-of-the-highest-role-they-have = Members use the color of the highest role they have on this list. Drag roles to reorder them.
+server-roles-list-members-use-the-color-of-the-highest-role-they-have = Members use the color of the highest role they have on this list. Drag roles or choose Move up or Move down in the role menu.
 # Context: list
 server-roles-list-move-down = Move Down
 # Context: list
@@ -4271,6 +4312,7 @@ voice-mute-toggle-with-settings-input-settings = Input settings
 voice-mute-toggle-with-settings-output-settings = Output settings
 # Context: soundboard_panel
 voice-soundboard-title = Soundboard
+voice-soundboard-back-to-more = Back to call options
 # Context: soundboard_panel
 voice-soundboard-open = Play a sound in this voice channel
 # Context: soundboard_panel
@@ -4279,12 +4321,45 @@ voice-soundboard-server-only = Soundboard is available in server voice channels
 voice-soundboard-server-sounds = Server sounds
 # Context: soundboard_panel
 voice-soundboard-default-sounds = Default sounds
+voice-soundboard-source-current = This server and defaults
+voice-soundboard-discord-favorites = Discord favorites
+voice-soundboard-device-favorites = On this device
+voice-soundboard-load-favorites = Load Discord favorites
+voice-soundboard-refresh-favorites = Refresh Discord favorites
+voice-soundboard-settings-offline = Join server voice and reconnect to Discord to load or change these settings.
+voice-soundboard-settings-working = Waiting for Discord…
+voice-soundboard-settings-unavailable = Discord did not provide a usable settings snapshot.
+voice-soundboard-settings-interrupted = The request was interrupted. Refresh before making another change.
+voice-soundboard-settings-unconfirmed = Discord did not confirm the exact change. Refresh before trying again.
+voice-soundboard-entrance-title = Entrance sound for this server
+voice-soundboard-entrance-ineligible = This needs full Nitro and permission to use the Soundboard in a regular voice channel.
+voice-soundboard-load-entrance = Load this server’s entrance sound
+voice-soundboard-refresh-entrance = Refresh entrance sound
+voice-soundboard-clear-entrance = Remove server override
+voice-soundboard-current-entrance = { $sound } · { $source }
+voice-soundboard-no-server-entrance = No entrance sound override for this server.
+voice-soundboard-set-entrance = Set entrance sound…
+voice-soundboard-entrance-choice = { $sound } · { $source }
+voice-soundboard-entrance-changed = The entrance sound changed in Discord. Refresh to see the current setting.
+voice-soundboard-favorites-filter = Favorites only
+voice-soundboard-favorites-empty = No favorite sounds in this catalog.
+voice-soundboard-favorites-restoring = Loading your saved favorites…
+voice-soundboard-favorites-session = Local storage is unavailable. Favorite changes apply to this session only.
+voice-soundboard-favorites-device = Favorites are saved for this account on this device.
+voice-soundboard-favorites-full = 32 favorites saved for this session. Remove one to add another.
+voice-soundboard-favorite = Favorite { $sound }
+voice-soundboard-unfavorite = Remove { $sound } from favorites
+voice-soundboard-source-other = Sounds from this server
+voice-soundboard-external-permission = This channel does not allow sounds from other servers.
+voice-soundboard-external-tier = Sounds from other servers require an eligible Nitro account.
+voice-soundboard-external-stale = Sounds have changed. Reload this server’s catalog.
 # Context: soundboard_panel
 voice-soundboard-loading = Loading sounds…
 # Context: soundboard_panel
 voice-soundboard-empty = No sounds are available here.
 # Context: soundboard_panel
-voice-soundboard-retry = Try again
+voice-soundboard-reload = Reload sounds
+voice-soundboard-dismiss-playback = Dismiss
 # Context: soundboard_panel
 voice-soundboard-volume = Soundboard volume
 # Context: soundboard_panel
@@ -4451,6 +4526,9 @@ voice-voice-settings-content-voice-processing-input-mode = Voice processing & in
 voice-voice-settings-output-settings = Output settings
 # Context: voice_settings_popup
 voice-voice-settings-popup-all-voice-settings = All voice settings
+voice-popout-reset-input = Reset microphone gain
+voice-popout-reset-output = Reset speaker volume
+voice-popout-choose-input = Choose input device
 # Context: voice_settings_popup
 voice-voice-settings-popup-input = Input
 # Context: voice_settings_popup
@@ -5234,8 +5312,9 @@ automod-concurrent = This rule changed while you were editing. Review and reappl
 automod-reapply = Reapply my changes
 moderation-title = Moderation
 moderation-reason = Reason (optional; recorded in the server audit log)
-moderation-member = Member name or ID
-moderation-choose-member = Choose a loaded member
+moderation-user-id = User ID
+moderation-choose-conversation-member = Choose from this conversation
+moderation-search-server-members = Search server members
 moderation-lookup = Find member
 moderation-lookup-help = Choose a member from this conversation or enter their user ID.
 moderation-timeout-until = Timed out until
@@ -5247,6 +5326,12 @@ moderation-kick = Kick
 moderation-bans = Banned members
 moderation-refresh-bans = Refresh bans
 moderation-no-bans = No banned members on this page.
+moderation-bans-unloaded = Ban list not loaded. Choose Refresh bans to load it.
+moderation-bans-loading = Loading banned members…
+moderation-bans-offline = Reconnect to load or refresh banned members.
+moderation-bans-unavailable = The ban list is unavailable. Choose Refresh bans to try again.
+moderation-bans-no-matches = No banned members match this search.
+moderation-bans-matches-for = Search results for { $query }
 moderation-unban = Unban
 moderation-next-bans = Next page
 moderation-confirm-unban = Unban this member?
@@ -5259,6 +5344,19 @@ moderation-days = days
 moderation-hours = hours
 moderation-minutes = minutes
 server-roles-permissions-ban-members = Ban members
+
+## Server event editor
+server-events-create = Create event
+server-events-edit = Edit event
+server-events-save = Save event
+server-events-discard-draft = Discard draft
+server-events-refresh = Refresh events
+server-events-working = Working…
+server-events-different-server = Your draft belongs to another server. Open that server to continue it.
+server-events-save-changed = This event changed or is no longer available. Your draft is kept. If the event is still editable, you can review your changes on its current version.
+server-events-save-denied = You can’t save an event at this location with your current permissions.
+server-events-save-stale = Refresh the event list before saving. Your draft is kept.
+server-events-save-offline = Reconnect before saving. Your draft is kept.
 
 ## Native community administration
 community-onboarding = Onboarding
@@ -5372,6 +5470,9 @@ inbox-include-muted = Include muted conversations
 inbox-current-place = Current server or direct messages
 inbox-open-conversation = Open conversation
 inbox-mark-read = Mark as read
+inbox-mark-shown-read = Mark shown as read
+search-pins-not-loaded = Pinned messages aren’t loaded. Use Reload pins to try again.
+owned-cosmetics-reset-selection = Reset choices
 inbox-more-unread = Showing the 100 most recent unread conversations. Mark some as read to see more.
 inbox-dismiss = Dismiss
 inbox-bookmark = Bookmark message
@@ -5605,6 +5706,7 @@ server-audit-view-role = View role
 server-audit-copy-target-id = Copy target ID
 
 server-settings-page-applications = Applications
+server-settings-applications-back-to-members = Back to Members
 server-settings-page-access = Access & Ownership
 server-settings-page-bans = Bans
 server-settings-page-events = Events
@@ -5746,6 +5848,20 @@ voice-stream-participant = Participant
 voice-stream-owner-screen = { $name }’s screen
 voice-stream-fullscreen-hint = View this screen share in fullscreen
 voice-stream-connecting = Connecting to the stream…
+voice-stream-popout-open = Pop out stream
+voice-stream-popout-show = Show stream window
+voice-stream-popout-title = NuSerein · Stream
+voice-stream-popout-pin = Stay on top
+voice-stream-popout-unpin = Remove from top
+voice-stream-popout-close = Close pop-out
+voice-stream-popout-waiting = Waiting for a stream picture…
+voice-stream-popout-playing = Stream is playing in a separate window
+voice-call-popout-open = Pop out call
+voice-call-popout-show = Show call window
+voice-call-popout-title = NuSerein · Call
+voice-call-popout-playing = Call video is in a separate window
+voice-call-popout-empty = No participants to display
+voice-call-popout-more = Showing the first { $count } participants
 accessibility-text-and-display = Text and display
 accessibility-compact-description = Use tighter spacing between message groups.
 accessibility-motion-and-scrolling = Motion and scrolling
@@ -6085,6 +6201,9 @@ watch-confirm-switch = Leave this call and join { $channel } with your mic muted
 share-cancel-start = Cancel share startup
 share-stopping = Stopping share…
 share-audio-off = Audio off
+screen-confirmation-audio-application = Audio: Selected application only
+screen-confirmation-audio-system = Audio: System
+screen-confirmation-audio-pending = Audio: Depends on the source you choose
 share-source-lost = That source is no longer available. Choose another screen or window.
 channel-unread-badges = Unread Badges
 channel-use-notification-setting = Use notification setting
@@ -6099,3 +6218,201 @@ archive-joined-private = Joined private
 archive-private = Private
 tray-show-app = Show NuSerein
 workspace-navigation = Navigation
+
+search-date-heading = Date
+search-date-help = When the message was sent (UTC)
+search-date-before = Before
+search-date-after = After
+search-date-during = During
+search-date-remove = Remove date
+search-date-previous-month = Previous month
+search-date-next-month = Next month
+search-date-invalid = Choose a date after January 1, 2015.
+search-date-invalid-range = After must be earlier than Before.
+search-date-month-year =
+    { $count ->
+        [1] January { $year }
+        [2] February { $year }
+        [3] March { $year }
+        [4] April { $year }
+        [5] May { $year }
+        [6] June { $year }
+        [7] July { $year }
+        [8] August { $year }
+        [9] September { $year }
+        [10] October { $year }
+        [11] November { $year }
+        *[12] December { $year }
+    }
+search-date-weekday =
+    { $count ->
+        [0] Su
+        [1] Mo
+        [2] Tu
+        [3] We
+        [4] Th
+        [5] Fr
+        *[6] Sa
+    }
+
+## Signal Desk review and recovery
+safety-change-invite-expiry = Change the existing invitation pause expiry
+safety-change-dm-expiry = Change the existing DM pause expiry
+safety-duration-scope = Duration applies only to new pauses and pauses you mark for an expiry change.
+safety-unchanged-until = unchanged · paused until { $expiry }
+safety-change-until = change pause to end at { $expiry }
+safety-pause-until = pause until { $expiry }
+safety-resume-now = resume now
+safety-unchanged-open = unchanged · not paused
+mod-nickname-conflict = The nickname changed on the server. Your edit is still here.
+mod-nickname-current = Current server name: { $name }
+mod-nickname-use-current = Use current
+mod-nickname-keep-draft = Keep my edit
+stage-moderator-become-speaker = Move myself to speakers
+history-showing-saved = Showing saved messages
+history-reconnect-action = Reconnect
+
+server-events-title = Server Events
+server-events-view = View event
+server-events-continue = Continue draft
+server-events-back = Back to Events
+event-action-confirm = Confirm
+event-action-back = Back
+event-occurrence-continue = Continue occurrence draft
+event-occurrence-discard = Discard occurrence draft
+event-occurrence-different-server = An occurrence draft from another server is preserved.
+event-occurrence-review = Review occurrence change
+server-events-done = Done
+event-clock-start = Starts
+event-clock-end = Ends · required for external events
+event-clock-date = Date
+event-clock-time = Time (24-hour)
+event-clock-use-local = Use my time zone instead
+event-clock-local-zone = Time zone: { $zone }
+event-clock-gap = That time does not exist in this time zone. Choose another time or enter a UTC offset.
+event-clock-fold = This time occurs twice. Choose the UTC offset for the occurrence you mean.
+event-clock-choose-offset = Use UTC{ $offset }
+event-clock-zone = UTC offset
+event-clock-local-preview = Your time: { $time }
+event-clock-invalid = Enter a valid date, time and UTC offset.
+event-clock-recurrence = Repeats on a fixed UTC schedule. The local time may shift when daylight saving time changes.
+stream-card-live = LIVE
+stream-card-watch = Watch Stream
+
+sidebar-channels-roles = Channels & Roles
+sidebar-members-scope = Showing people in #{ $channel }, not the full server directory.
+sidebar-members-close = Close
+account-subscription-heading = Existing subscription
+account-subscription-handoff-help = In Discord, open User Settings → Subscriptions to manage your existing plan.
+account-subscription-handoff = Continue in Discord
+account-subscription-unavailable = Discord has not provided subscription status.
+sidebar-server-boosts = Server Boosts
+sidebar-boost-count = Server boosts: { $count }
+sidebar-boost-tier = Boost level { $tier }
+sidebar-boost-unknown = Discord did not provide a boost count for this server.
+sidebar-boost-goal-unknown = The exact Boost Goal is unavailable until Discord provides the required server details.
+sidebar-channel-members = Channel Members
+voice-soundboard-global-entrance = Entrance Sound for All Servers
+voice-soundboard-global-nitro = An active Nitro subscription is required to set an entrance sound.
+voice-soundboard-global-scope = This is your default. A server-specific entrance sound takes precedence.
+voice-soundboard-no-global-entrance = No default entrance sound is set.
+voice-soundboard-clear-global = Remove default sound
+voice-soundboard-choose-catalog = Choose a sound source
+voice-soundboard-entrance-empty-catalog = This source has no available sounds. Choose another source.
+voice-soundboard-entrance-catalog-changed = This sound list changed. Choose the source again to reload it.
+voice-soundboard-settings-pending = Waiting for Discord…
+voice-soundboard-inherited-entrance = Using your default: { $sound } · { $source }
+voice-soundboard-unknown-global-entrance = No server override is set. Refresh to check the default sound.
+sidebar-server-roster = Server Roster
+sidebar-full-server-roster = All { $count } members reported by Discord, via #{ $channel }.
+sidebar-load-full-roster = Load full roster
+sidebar-boost-level-requirement = Level { $tier } requires { $count } boosts allocated to server levels.
+sidebar-boost-top-tier = This server has reached the highest boost level.
+sidebar-boost-goal-progress = Boost Goal: { $count }/{ $target } Boosts
+sidebar-boost-goal-reached = Boost Goal: { $count } Boosts
+sidebar-boost-level-allocation = Boosts used for extra perks do not count toward server levels.
+
+search-jump-loading = Loading the matching message…
+search-jump-failed = Could not open the matching message. Your search results are still here. Use Jump to try again.
+history-anchor-missing = The message at your reading position was not returned. Your saved history is still here.
+history-refresh-denied = Could not refresh this part of the conversation with the current permissions.
+
+access-fix-prerequisites = Open Safety Setup
+access-prerequisites-draft-kept = Your Server Access draft is kept. Save or reset these Safety changes before going back.
+access-prerequisites-back = Back to Server Access draft
+access-incident-review-again = These restrictions changed or expired while you were reviewing them. Cancel and review the current state.
+moderation-confirm-target = User ID: { $id }
+moderation-confirm-remove-timeout = Remove this member’s timeout?
+moderation-confirm-delete-history = Delete this member’s messages from the last { $duration }.
+moderation-confirm-expires = This timeout ends at { $expiry }.
+moderation-confirm-expiry-unavailable = unavailable
+
+event-draft-untitled = New event
+event-draft-replace-note = You have a draft for “{ $old }”. Discard it to start editing “{ $next }”, or keep the existing draft.
+event-draft-keep = Keep existing draft
+event-draft-replace = Discard and open requested draft
+event-draft-saved-name = Occurrence draft: { $name }
+event-draft-saved-scope = Saved draft: { $name } · { $server }
+event-draft-changed-review = The occurrence changed. Reload the series, then review your edits against the current schedule before saving.
+event-draft-reapply = Reapply my edits to the current version
+stage-draft-target-conflict = This topic draft belongs to another Stage or event. Keep it or discard it before opening the requested Stage.
+
+main-restoring-preparing-saved-account = Preparing your saved account
+voice-stream-audio-output-failed = Stream audio unavailable
+voice-stream-open-output-settings = Choose another Media output in Voice & Video
+
+server-settings-back-to-current-form = Back to current form
+
+forum-no-loaded-titles-match = No loaded post titles match this search. Archived posts are loaded on request.
+forum-clear-post-filters = Clear search and tags
+dm-review-loading-history = Loading request history…
+dm-review-history-failed = Could not load this history. Use Reload history to try again.
+dm-review-history-failed-cached = Could not refresh this history. Showing saved messages.
+dm-review-history-stale-empty = History isn’t current and there are no saved messages to show.
+dm-review-history-cached = Showing saved messages. This history isn’t current.
+sidebar-full-roster-loading = Checking for the full server roster…
+sidebar-full-roster-incomplete = A complete roster wasn’t confirmed. These are still channel members.
+sidebar-full-roster-retry = Retry full roster
+sidebar-boost-last-known = Last known: { $count } boosts
+sidebar-boost-goal-offline = Reconnect to confirm the current Boost Goal.
+sidebar-boost-goal-syncing = Waiting for current server details before showing the Boost Goal.
+
+server-notifications-personal-defaults = Your defaults for this server
+server-notifications-save-immediately = Changes apply as you make them. Closing this window does not undo them.
+server-notifications-overrides-scope = These choices apply only to the selected channel or category.
+access-confirm-application-id = Application ID: { $id }
+access-confirm-transfer-impact = This member will become the server owner. You cannot undo the transfer yourself.
+event-confirm-id = Event ID: { $id }
+event-confirm-occurrence = Only this occurrence: { $time }
+event-confirm-entire-series = This affects the entire recurring series.
+event-confirm-scheduled-series = This is the scheduled series, not an individual occurrence edit.
+
+voice-soundboard-favorite-unavailable = This favorite can’t be changed yet. Refresh the sound list and check available space.
+voice-soundboard-saved-elsewhere = Device favorites outside this list
+voice-soundboard-saved-elsewhere-help = Remove a saved sound even if its server or catalog is no longer available. Removing it affects only this device.
+voice-soundboard-saved-key = { $source } · sound { $id }
+voice-soundboard-remove-device-favorite = Remove favorite
+voice-soundboard-load-global-entrance = Load your default entrance sound
+voice-soundboard-refresh-global-entrance = Refresh your default entrance sound
+voice-mic-temporarily-muted = Microphone muted while Push to Mute is held
+stage-connection-failed = Could not connect to the audience. Dismiss the failed call and try joining again.
+
+extension-result-discarded = Extension result discarded because the conversation or draft changed. Nothing was applied to your conversation or draft.
+
+event-create-where = Where is your event?
+event-create-details = Event details
+event-create-review = Review your event
+event-create-next = Next
+event-create-end = Ends { $time }
+event-create-repeats = Repeats on the schedule you selected
+screen-source-applications = Applications
+screen-source-screens = Screens
+screen-source-no-applications = No application windows are available. Open a window or choose Screens.
+screen-source-no-screens = No displays are available. Try Applications or refresh the list.
+screen-go-live = Go Live
+event-more-options = Event options
+event-menu-start = Start Event
+event-menu-cancel = Cancel Event
+event-menu-end = End Event
+event-menu-delete = Delete Event
+event-create-choose-location = Choose a channel you can create events in, or enter a location.

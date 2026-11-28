@@ -118,6 +118,8 @@ pub struct View {
 	pub community: Option<model::community_admin::Snapshot>,
 	pub automod: Option<model::automod::Snapshot>,
 	pub bans: Option<model::moderation::Bans>,
+	/// The admitted filter of the retained page, not the current search input.
+	pub bans_query: Option<String>,
 	pub moderation_target: Option<model::server_admin::Member>,
 	pub member_review: Option<model::moderation::Review>,
 	pub member_review_loading: u8,
@@ -141,6 +143,9 @@ pub struct View {
 	/// Another client changed this server's sounds since `sounds` was read.
 	pub sounds_stale: bool,
 	pub members: Option<Members>,
+	// The shared member cache can also contain role-editor results. Only show it
+	// as the Members roster once a general member search completed for `query`.
+	member_page_current: bool,
 	pub query: Query,
 	pub pending: bool,
 	pub saving: bool,
@@ -157,6 +162,26 @@ pub struct View {
 	prune_days: Option<u8>,
 }
 impl View {
+	pub fn ban_read_pending(&self, guild: Id) -> bool {
+		self.guild == Some(guild)
+			&& self.pending
+			&& matches!(
+				self.action.as_ref(),
+				Some(Action::Moderation(
+					model::moderation::Action::Bans { .. }
+						| model::moderation::Action::BanSearch { .. }
+				))
+			)
+	}
+	pub fn confirmed_member_query(&self, guild: Id) -> Option<&Query> {
+		(self.guild == Some(guild) && self.member_page_current && self.members.is_some())
+			.then_some(&self.query)
+	}
+	pub fn member_page(&self, guild: Id, query: &Query) -> Option<&Members> {
+		self.confirmed_member_query(guild)
+			.filter(|current| *current == query)?;
+		self.members.as_ref()
+	}
 	/// Charge retained allocations and the independently executing transport copy.
 	pub(crate) fn retained_action_bytes(&self) -> usize {
 		self.action.as_ref().map_or(0, |action| {
@@ -232,6 +257,7 @@ impl View {
 			self.automod = None;
 			self.community = None;
 			self.bans = None;
+			self.bans_query = None;
 			self.moderation_target = None;
 			self.member_review = None;
 			self.member_review_loading = 0;
@@ -778,10 +804,12 @@ impl State {
 			self.server_admin.audit_query = Some(query.clone());
 		}
 		if let Action::LoadMembers(query) = &action {
+			self.server_admin.member_page_current &= &self.server_admin.query == query;
 			self.server_admin.query = query.clone();
 			self.server_admin.member_role_filter = None;
 		} else if let Action::Roles(model::server_roles::Action::Members { role, query }) = &action
 		{
+			self.server_admin.member_page_current = false;
 			self.server_admin.query = query.clone();
 			self.server_admin.member_role_filter = *role;
 		}
@@ -798,6 +826,12 @@ impl State {
 				REVIEW_ROLES | REVIEW_MESSAGES | if *audit { REVIEW_AUDIT } else { 0 };
 		}
 		self.server_admin.webhook_url = None;
+		if matches!(
+			action,
+			Action::Access(model::server_access::Action::Interview { .. })
+		) {
+			self.server_admin.access.interview = None;
+		}
 		self.server_admin.guild = Some(guild);
 		self.server_admin.sequence = self.server_admin.sequence.wrapping_add(1);
 		self.server_admin.pending = true;
@@ -1535,7 +1569,15 @@ impl State {
 						current.accepted = true;
 					}
 				}
-				model::moderation::Outcome::Bans(page) => self.server_admin.bans = Some(page),
+				model::moderation::Outcome::Bans(page) => {
+					self.server_admin.bans_query = match action.as_ref() {
+						Some(Action::Moderation(model::moderation::Action::BanSearch {
+							query,
+						})) => Some(query.trim().to_owned()),
+						_ => None,
+					};
+					self.server_admin.bans = Some(page);
+				}
 				model::moderation::Outcome::Member(member) => {
 					self.server_admin.moderation_target = Some(*member)
 				}
@@ -1603,6 +1645,7 @@ impl State {
 						}))
 					) {
 						self.server_admin.bans = None;
+						self.server_admin.bans_query = None;
 					}
 				}
 			},
@@ -1627,6 +1670,7 @@ impl State {
 				}
 				model::server_roles::Result::Members { role, page } => {
 					self.server_admin.member_role_filter = role;
+					self.server_admin.member_page_current = false;
 					self.server_admin.members = Some(page);
 				}
 			},
@@ -1668,6 +1712,7 @@ impl State {
 					self.server_members_shortcuts.remove(&event.guild);
 				}
 				self.server_admin.members = Some(page);
+				self.server_admin.member_page_current = true;
 			}
 			Outcome::Member(mut member) => {
 				if let Some(review) = &mut self.server_admin.member_review
@@ -1976,6 +2021,78 @@ mod invite_tests {
 		assert!(state.admin_read_scopes().0.iter().all(Option::is_none));
 		state.logout();
 		assert!(state.admin_read_scopes().0.iter().all(Option::is_none));
+	}
+	#[test]
+	fn roster_is_visible_only_for_the_confirmed_query_and_not_for_role_editor_reads() {
+		let mut state = state();
+		let guild = Id(2);
+		let unfiltered = Query::default();
+		let filtered = Query {
+			search: "synthetic member".into(),
+			..Default::default()
+		};
+		let read = |state: &mut State, action| {
+			let Command::ServerAdmin { request, .. } =
+				state.request_server_admin(guild, action).unwrap()
+			else {
+				panic!("member read")
+			};
+			request
+		};
+		let old = read(&mut state, Action::LoadMembers(unfiltered.clone()));
+		deliver(
+			&mut state,
+			guild,
+			old,
+			Ok(Outcome::Members(Members::default())),
+		);
+		assert!(state.server_admin.member_page(guild, &unfiltered).is_some());
+		assert!(state.server_admin.member_page(guild, &filtered).is_none());
+		assert!(
+			state
+				.server_admin
+				.member_page(Id(99), &unfiltered)
+				.is_none()
+		);
+
+		let request = read(&mut state, Action::LoadMembers(filtered.clone()));
+		assert!(state.server_admin.member_page(guild, &filtered).is_none());
+		deliver(
+			&mut state,
+			guild,
+			old,
+			Ok(Outcome::Members(Members::default())),
+		);
+		assert!(state.server_admin.pending);
+		deliver(&mut state, guild, request, Err(Failure::Network));
+		assert!(state.server_admin.member_page(guild, &filtered).is_none());
+		let retry = read(&mut state, Action::LoadMembers(filtered.clone()));
+		deliver(
+			&mut state,
+			guild,
+			retry,
+			Ok(Outcome::Members(Members::default())),
+		);
+		assert!(state.server_admin.member_page(guild, &filtered).is_some());
+
+		let request = read(
+			&mut state,
+			Action::Roles(model::server_roles::Action::Members {
+				role: None,
+				query: filtered.clone(),
+			}),
+		);
+		deliver(
+			&mut state,
+			guild,
+			request,
+			Ok(Outcome::Roles(model::server_roles::Result::Members {
+				role: None,
+				page: Members::default(),
+			})),
+		);
+		assert!(state.server_admin.members.is_some());
+		assert!(state.server_admin.member_page(guild, &filtered).is_none());
 	}
 	#[test]
 	fn invites_stale_requests_and_permission_loss_do_not_restore_codes() {

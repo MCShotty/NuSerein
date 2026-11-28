@@ -421,6 +421,9 @@ historical “Stage unsupported” statements below; historical measurements rem
 
 ## Desktop parity inventory — October 17, 2026
 
+The [desktop behavior parity matrix](desktop-parity.md) tracks the current fork comparison
+separately; entries here preserve their historical status and verification context.
+
 Scope: the full desktop roadmap, including server administration. The implementation
 baseline is fork `f9e39f7`; personal-controls work is separately reviewed in
 [MCShotty/Serein#8](https://github.com/MCShotty/Serein/pull/8), and the FFmpeg media
@@ -789,6 +792,20 @@ Normal-account acceptance and cover availability remain unverified; synthetic
 fixtures and offline checks are not service-compatibility evidence.
 
 ## Soundboard — October 6, 2026
+
+Account sound preferences are **unofficial, implemented in source, and live-unverified**.
+The [pinned community protobuf schema](https://github.com/discord-userdoccers/discord-protos/tree/71b702ac90b90d6d75dbd29d67b209b6b2ba7c94/discord_protos/discord_users/v1) maps
+Frecency type 2 to `favorite_soundboard_sounds` (8), with packed or unpacked fixed64 sound IDs
+in fields 1 and 2. Preloaded type 1 maps `guilds` (3) to the guild map at 1, whose selected
+`GuildSettings.join_sound` (6) contains destination preference `sound_id` (1) and source
+`guild_id` (2). The [archived public Canary bundle (2026-11-26)](https://github.com/Discord-Datamining/Discord-Datamining/blob/9bb600ec1812e29aeb46c0165d99ecc5f3019124/current.js),
+module `984813`, reads an explicit server override first and falls back to guild-map key `0`.
+Modules `458976` and `594061` use the same map field for updates. The global editor is account
+scoped and checks Nitro without a call; settings in Soundboard remain scoped to the joined call.
+One explicit change uses a fresh bounded GET, then only the touched top-level protobuf subtree
+in a conditional PATCH with `required_data_version`, then exact readback. There is no uncertain
+write replay, local favorite upload, or automatic join effect. Module `572044` shows that the
+archived client has a separate trigger at RTC connect; saving settings is not playback proof.
 
 Server voice channels can list, play and hear soundboard sounds. The catalog uses the
 documented [`GET /soundboard-default-sounds` and `GET /guilds/{guild.id}/soundboard-sounds`](https://docs.discord.com/developers/resources/soundboard)
@@ -2545,8 +2562,20 @@ flag `IS_SPAM` (`1 << 5`), come from the
 [docs.discord.food channel object](https://docs.discord.food/resources/channel#channel-object).
 READY, CHANNEL_CREATE, and CHANNEL_UPDATE fill the channel inbox sets.
 RELATIONSHIP_ADD, RELATIONSHIP_UPDATE, and RELATIONSHIP_REMOVE update the
-incoming friend-request spam set. This change does not add a Message Requests
+incoming friend-request spam set. The original badge change did not add a Message Requests
 or Spam inbox.
+
+The later native Spam review exposes Accept and Ignore only if Gateway classification confirms
+both `is_message_request` and spam for the selected, admitted one-to-one DM. The [unofficial
+channel reference](https://docs.discord.food/resources/channel) describes the ordinary recipient
+consent transport (PUT with `consent_status: 2`, or DELETE, at `/channels/{id}/recipients/@me`).
+A spam-specific action reuses that transport; service acceptance in this case is unverified.
+Independent sparse spam/consent fields are reconciled before reclassification. Accept waits
+for non-spam/non-pending channel state, and Ignore waits for the exact `CHANNEL_DELETE`.
+An ambiguous result does not trigger a write retry. The existing read-only preview remains
+available for spam-marked DMs without a confirmed pending request. Report remains an official
+client handoff: the unofficial `first_dm` submission requires the actual first message ID,
+which is not established from the newest history page.
 
 Unread private conversations on the rail sort by latest known activity, newest first.
 An active DM call stays visible and pinned at the top. The rail keeps at most 15 rows
@@ -3192,6 +3221,27 @@ eight-scalar marker allowance while the effective outgoing text retains its full
 literally. Existing per-draft byte ceilings and the session input budget remain
 in force. A quiet forwarding note affects only that separately sent note.
 
+## Saving a blank edit
+
+The composer asks before deleting a text-only message when the owner saves a blank edit.
+The existing delete confirmation rechecks the session, channel, message revision and current
+access. Cancel preserves the editor and the independent draft; the first Save never deletes.
+Messages with attachments or other non-text content never enter this delete path. The interaction
+was adapted from [upstream Serein](https://github.com/ViceVerse-cz/Serein/commit/789d8300); current
+Discord behavior and visual output are not verified by the added synthetic regressions.
+
+## Staged attachment spoilers
+
+The chat and forum trays offer a per-file toggle based on
+[Discord’s desktop spoiler guide](https://support.discord.com/hc/en-us/articles/360022320632-Spoiler-Tags),
+adapted from [upstream #1096](https://github.com/ViceVerse-cz/Serein/pull/1096) by chhinoo.
+The worker applies the change only to the current conversation and selection key. An explicit
+mark sets `is_spoiler` in message creation, as described in the [attachment object](https://docs.discord.com/developers/resources/message#attachment-object).
+Legacy `SPOILER_` names start marked; unmarking strips the prefix from the outgoing name only.
+The staged and pending cards do not reveal marked thumbnails. Public hosting is disabled for
+marked files; a spoiler must be cleared before starting that separate action. No live delivery
+or new visual evidence is claimed here.
+
 ## Public Catbox attachment links (October 2, 2026)
 
 Each staged message-composer file has a **Host file…** action. Selecting it shows
@@ -3426,6 +3476,9 @@ of at most 2 MiB on explicit Play when a server ignores Range. Attachment and em
 the configured HTTP proxy. Instagram `/p/` cards with video metadata can use the same anonymous
 public metadata lookup as Reels; plain photo cards do not initiate it. Reddit video cards with a
 `redd.it/<post-id>` or `/comments/<post-id>` link use the exact-post lookup, not the shortlink redirect.
+An exact eligible Instagram or Reddit post can remain a final fallback after both an
+admitted proxy and a direct media URL fail. Playback attempts share the original startup
+budget and stop on cancellation. No new origins, credentials or redirect rules are added.
 Unknown dimensions reserve a
 normal 16:9 player instead of a 16 × 9 pixel control strip.
 Anonymous bounded range reads feed the existing FFmpeg-first decoder and native
@@ -3715,3 +3768,34 @@ is limited to three anonymous requests and 192 KiB of metadata per response, is 
 the player, and feeds only a validated media origin to the existing bounded range reader.
 Authentication walls, missing media and unsupported streams retain Open original. A Reddit
 fallback file need not contain the separate adaptive audio track.
+
+### Ordinary member roster coverage
+
+The [public client snapshot](https://github.com/Discord-Datamining/Discord-Datamining/blob/9bb600ec1812e29aeb46c0165d99ecc5f3019124/current.js)
+uses `GUILD_MEMBER_LIST_UPDATE.member_count` as a server count. The [normal-user client reference](https://github.com/dolfies/discord.py-self/blob/master/docs/migrating_from_dpy.rst#members)
+reports that the ordinary sidebar can contain the full roster for small guilds, but large guilds
+can omit offline members. NuSerein marks a roster complete only when the authorized `everyone`
+channel and wire list agree, one fresh response covers all reported positions, grouping agrees
+with the count, and the current window contains every unique member with no holes. An explicit
+load can request the existing two adjacent ranges (200 positions including group headings).
+No additional member store, background scan, or privileged full-list request is used. Native and
+live behavior remain unverified.
+
+### Sidebar Boost Goal (Canary 681713)
+
+This is an **unofficial, archive-version-specific** display rule, not a public Discord API.
+The [renderer](https://github.com/Wumpus-Central/discrapper-canary/blob/b6cf85b10e6042bdf6b5275ee28cf08004a93a11/chunks/616740.js#L597-L710)
+projects the guild's `premium_subscription_count`. The
+[perk table](https://github.com/Wumpus-Central/discrapper-canary/blob/b6cf85b10e6042bdf6b5275ee28cf08004a93a11/chunks/568065.js#L38-L49)
+contributes 19; add 14 without `PREMIUM_TIER_3_OVERRIDE` and 3 when the guild's
+`2025-08_portkey_enabled` rollout is on. At or above the target the bar fills and the
+count is displayed without a denominator. No purchase, boost slot, or allocation route is used.
+
+The two guild flags are presentation-only. NuSerein projects the one rollout from already
+received READY data (512 KiB table, 32 KiB target entry, bounded records/rules), recognizing
+explicit overrides and ordered immutable ID/hash-filtered or unfiltered populations. It does
+not retain the table, request experiments, send exposures, run debug overrides, or infer
+eligibility from mere presence of `GAME_SERVERS`. Missing, malformed, holdout-dependent or
+unsupported data leaves the target unknown; a newly joined guild without READY context shows
+only the known count. The sidebar respects the server visibility setting. Freshness and the
+scheduled test suite remain unverified against Discord on this patch.

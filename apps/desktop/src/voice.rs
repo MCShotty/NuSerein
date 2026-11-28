@@ -581,10 +581,7 @@ impl Voice {
 				*channel,
 				live.user,
 				*sound,
-				state
-					.soundboard
-					.sound(*sound)
-					.map_or(1.0, |sound| sound.volume),
+				state.sent_soundboard_volume(*sound),
 			),
 			_ => return,
 		};
@@ -939,6 +936,7 @@ impl Voice {
 		ui: &mut ui::MessagingUi,
 		ctx: &egui::Context,
 	) -> Option<Command> {
+		ui.voice_call_picture_scope = None;
 		ui.voice_lavasr_status = None;
 		ui.camera_denoising_availability = platform::video::denoise::availability();
 		// Project only this frame's still-owned connection; early returns retire old data.
@@ -1063,6 +1061,7 @@ impl Voice {
 			}
 			let command = current.map(|(_, channel, request)| self.end_control(channel, request));
 			self.stop();
+			ui.voice_camera_preview = None;
 			ui.voice_remote_video.clear();
 			ui.voice_remote_hdr.clear();
 			self.remote_textures.clear();
@@ -1487,6 +1486,10 @@ impl Voice {
 		if command.is_some() {
 			return command;
 		}
+		ui.voice_call_picture_scope = self
+			.live
+			.as_ref()
+			.map(|live| (live.generation, live.channel, live.request));
 		let call = self.live.as_ref().map(|live| crate::screen::Call {
 			video_adapter: self.video_adapter,
 			generation: live.generation,

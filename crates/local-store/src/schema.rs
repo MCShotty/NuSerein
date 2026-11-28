@@ -216,6 +216,9 @@ impl LocalStore {
                 touched INTEGER NOT NULL CHECK(typeof(touched)='integer'),
                 has_token INTEGER NOT NULL DEFAULT 0 CHECK(typeof(has_token)='integer' AND has_token IN (0,1))
             );")?;
+		transaction.execute_batch("CREATE TABLE IF NOT EXISTS soundboard_favorites(
+            account TEXT PRIMARY KEY NOT NULL CHECK(length(account) BETWEEN 1 AND 20),
+            value TEXT NOT NULL CHECK(typeof(value)='text' AND length(CAST(value AS BLOB))<=2048));")?;
 		let has_token_column: bool = transaction.query_row(
 			"SELECT EXISTS(SELECT 1 FROM pragma_table_info('accounts') WHERE name='has_token')",
 			[],

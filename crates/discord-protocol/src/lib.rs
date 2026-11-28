@@ -1,4 +1,6 @@
 //! Discord wire DTOs. JSON values never become application state.
+
+mod boost_goal;
 mod users;
 pub use users::{PrimaryGuildDto, UserDto};
 mod channels;
@@ -57,6 +59,7 @@ pub mod server_roles;
 pub mod server_settings;
 pub mod settings_update;
 pub mod soundboard;
+pub mod soundboard_settings;
 pub mod spotify;
 pub mod stickers;
 pub mod stream;
@@ -110,7 +113,8 @@ fn decode_limited<T: serde::de::DeserializeOwned>(
 	}
 	serde_json::from_slice(bytes).map_err(|_| DecodeError)
 }
-const CHANNEL_FLAG_SPAM: u64 = 1 << 5;
+/// User-account DM spam classification; independent of pending request consent.
+pub const CHANNEL_FLAG_SPAM: u64 = 1 << 5;
 #[cfg(test)]
 mod channel_tests {
 	use super::*;
@@ -214,10 +218,39 @@ mod channel_tests {
 		);
 	}
 }
+/// Malformed optional presentation metadata must not reject a guild or its channels.
+pub(crate) fn sidebar_field<'de, D, T>(d: D) -> Result<Patch<T>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+	T: serde::de::DeserializeOwned,
+{
+	let value = Option::<Box<serde_json::value::RawValue>>::deserialize(d)?;
+	Ok(match value {
+		None => Patch::Null,
+		Some(value) => serde_json::from_str(value.get()).map_or(Patch::Absent, Patch::Value),
+	})
+}
+
 #[derive(Deserialize)]
 pub struct GuildDto {
 	#[serde(default, deserialize_with = "server_access::incident_patch")]
 	pub incidents_data: Patch<model::server_access::Incident>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub banner: Patch<String>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub premium_subscription_count: Patch<u32>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub premium_tier: Patch<u8>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub premium_progress_bar_enabled: Patch<bool>,
+	#[serde(skip)]
+	pub boost_game_servers: Patch<bool>,
+	#[serde(
+		default,
+		rename = "features",
+		deserialize_with = "boost_goal::tier_override"
+	)]
+	pub boost_tier_override: Patch<bool>,
 	#[serde(default)]
 	pub default_message_notifications: Patch<u8>,
 	#[serde(default)]
@@ -271,6 +304,40 @@ impl GuildDto {
 			None => Patch::Absent,
 		};
 		model::GuildPatch {
+			banner: match choose(self.properties.as_ref().map(|p| &p.banner), &self.banner) {
+				Some(Some(hash)) if model::valid_avatar_hash(hash) => Patch::Value(hash.clone()),
+				Some(_) => Patch::Null,
+				None => Patch::Absent,
+			},
+			boost_count: match self
+				.properties
+				.as_ref()
+				.map(|p| &p.premium_subscription_count)
+			{
+				Some(Patch::Value(count)) => Patch::Value(*count),
+				Some(Patch::Null) => Patch::Null,
+				_ => self.premium_subscription_count.clone(),
+			},
+			boost_tier: match self.properties.as_ref().map(|p| &p.premium_tier) {
+				Some(Patch::Value(tier)) => Patch::Value(*tier),
+				Some(Patch::Null) => Patch::Null,
+				_ => self.premium_tier.clone(),
+			},
+			boost_progress_visible: match self
+				.properties
+				.as_ref()
+				.map(|p| &p.premium_progress_bar_enabled)
+			{
+				Some(Patch::Value(visible)) => Patch::Value(*visible),
+				Some(Patch::Null) => Patch::Null,
+				_ => self.premium_progress_bar_enabled.clone(),
+			},
+			boost_tier_override: match self.properties.as_ref().map(|p| &p.boost_tier_override) {
+				Some(Patch::Value(value)) => Patch::Value(*value),
+				Some(Patch::Null) => Patch::Null,
+				_ => self.boost_tier_override.clone(),
+			},
+			boost_game_servers: self.boost_game_servers.clone(),
 			id: self.id,
 			name,
 			icon,
@@ -310,6 +377,20 @@ impl GuildDto {
 pub struct GuildProperties {
 	#[serde(default, deserialize_with = "server_access::incident_patch")]
 	pub incidents_data: Patch<model::server_access::Incident>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub banner: Patch<String>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub premium_subscription_count: Patch<u32>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub premium_tier: Patch<u8>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	pub premium_progress_bar_enabled: Patch<bool>,
+	#[serde(
+		default,
+		rename = "features",
+		deserialize_with = "boost_goal::tier_override"
+	)]
+	pub boost_tier_override: Patch<bool>,
 	#[serde(default)]
 	pub default_message_notifications: Patch<u8>,
 	#[serde(default)]
@@ -317,19 +398,48 @@ pub struct GuildProperties {
 	#[serde(default)]
 	pub icon: Patch<String>,
 }
+// Unlike nested READY properties, GUILD_UPDATE fields are read directly from the JSON map.
+// Serde's flatten buffer cannot deserialize the raw JSON used by the bounded field parsers.
 #[derive(Deserialize)]
 pub struct GuildPatchDto {
 	pub id: Id,
-	#[serde(flatten)]
-	pub properties: GuildProperties,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	banner: Patch<String>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	premium_subscription_count: Patch<u32>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	premium_tier: Patch<u8>,
+	#[serde(default, deserialize_with = "sidebar_field")]
+	premium_progress_bar_enabled: Patch<bool>,
+	#[serde(
+		default,
+		rename = "features",
+		deserialize_with = "boost_goal::tier_override"
+	)]
+	boost_tier_override: Patch<bool>,
+	#[serde(default)]
+	default_message_notifications: Patch<u8>,
+	#[serde(default)]
+	name: Patch<String>,
+	#[serde(default)]
+	icon: Patch<String>,
 }
 impl GuildPatchDto {
 	pub fn into_model(self) -> model::GuildPatch {
 		model::GuildPatch {
-			default_message_notifications: self.properties.default_message_notifications,
+			banner: match self.banner {
+				Patch::Value(hash) if !model::valid_avatar_hash(&hash) => Patch::Null,
+				value => value,
+			},
+			boost_count: self.premium_subscription_count,
+			boost_tier: self.premium_tier,
+			boost_progress_visible: self.premium_progress_bar_enabled,
+			boost_tier_override: self.boost_tier_override,
+			boost_game_servers: Patch::Absent,
+			default_message_notifications: self.default_message_notifications,
 			id: self.id,
-			name: self.properties.name,
-			icon: self.properties.icon,
+			name: self.name,
+			icon: self.icon,
 		}
 	}
 }
@@ -2104,6 +2214,83 @@ mod member_tests {
 			let patch = ready.guilds[0].display_patch();
 			assert_eq!(&patch.name, name);
 			assert_eq!(&patch.icon, icon);
+		}
+	}
+
+	#[test]
+	fn boost_goal_sources_distinguish_absent_and_explicit_false() {
+		let wire = br#"{"user":{"id":"1","username":"Synthetic"},"session_id":"synthetic","resume_gateway_url":"wss://gateway.discord.gg","guild_experiments":[],"guilds":[{"id":"2","properties":{"features":["PREMIUM_TIER_3_OVERRIDE"]}},{"id":"3","features":[]},{"id":"4"}],"private_channels":[]}"#;
+		let (ready, _) = ready::decode(wire).unwrap().navigation().unwrap();
+		for (guild, expected) in
+			ready
+				.guilds
+				.iter()
+				.zip([Patch::Value(true), Patch::Value(false), Patch::Absent])
+		{
+			let patch = guild.display_patch();
+			assert_eq!(patch.boost_tier_override, expected);
+			assert_eq!(patch.boost_game_servers, Patch::Value(false));
+		}
+		let partial = decode::<GuildPatchDto>(br#"{"id":"2","premium_subscription_count":8}"#)
+			.unwrap()
+			.into_model();
+		assert_eq!(partial.boost_count, Patch::Value(8));
+		assert_eq!(partial.boost_tier_override, Patch::Absent);
+		assert_eq!(partial.boost_game_servers, Patch::Absent);
+		let complete = decode::<GuildPatchDto>(br#"{"id":"2","premium_subscription_count":8,"premium_tier":1,"premium_progress_bar_enabled":false,"features":["PREMIUM_TIER_3_OVERRIDE"],"banner":null,"name":"Synthetic"}"#).unwrap().into_model();
+		assert_eq!(complete.name, Patch::Value("Synthetic".into()));
+		assert_eq!(complete.banner, Patch::Null);
+		assert_eq!(complete.boost_count, Patch::Value(8));
+		assert_eq!(complete.boost_tier, Patch::Value(1));
+		assert_eq!(complete.boost_progress_visible, Patch::Value(false));
+		assert_eq!(complete.boost_tier_override, Patch::Value(true));
+		assert_eq!(complete.boost_game_servers, Patch::Absent);
+		let malformed = decode::<GuildPatchDto>(br#"{"id":"2","features":[1]}"#)
+			.unwrap()
+			.into_model();
+		assert_eq!(malformed.boost_tier_override, Patch::Null);
+		let missing = br#"{"user":{"id":"1","username":"Synthetic"},"session_id":"synthetic","resume_gateway_url":"wss://gateway.discord.gg","guilds":[{"id":"2","features":[]}]}"#;
+		let (ready, _) = ready::decode(missing).unwrap().navigation().unwrap();
+		assert_eq!(
+			ready.guilds[0].display_patch().boost_game_servers,
+			Patch::Null
+		);
+	}
+
+	#[test]
+	fn boost_visibility_survives_ready_and_guild_patch_decoding() {
+		let wire = br#"{"user":{"id":"1","username":"Synthetic"},"session_id":"synthetic","resume_gateway_url":"wss://gateway.discord.gg","guilds":[{"id":"2","premium_progress_bar_enabled":true,"properties":{"premium_progress_bar_enabled":false}},{"id":"3","premium_progress_bar_enabled":true}],"private_channels":[]}"#;
+		let (ready, _) = ready::decode(wire).unwrap().navigation().unwrap();
+		assert_eq!(
+			ready.guilds[0].display_patch().boost_progress_visible,
+			Patch::Value(false)
+		);
+		assert_eq!(
+			ready.guilds[1].display_patch().boost_progress_visible,
+			Patch::Value(true)
+		);
+		for (wire, expected) in [
+			(br#"{"id":"2"}"#.as_slice(), Patch::Absent),
+			(
+				br#"{"id":"2","premium_progress_bar_enabled":null}"#.as_slice(),
+				Patch::Null,
+			),
+			(
+				br#"{"id":"2","premium_progress_bar_enabled":false}"#.as_slice(),
+				Patch::Value(false),
+			),
+			(
+				br#"{"id":"2","premium_progress_bar_enabled":"unknown"}"#.as_slice(),
+				Patch::Absent,
+			),
+		] {
+			assert_eq!(
+				decode::<GuildPatchDto>(wire)
+					.unwrap()
+					.into_model()
+					.boost_progress_visible,
+				expected
+			);
 		}
 	}
 

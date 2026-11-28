@@ -229,7 +229,9 @@ fn caption_buttons_act_without_dragging_and_title_double_click_maximizes() {
 	let mut view = MessagingUi::default();
 	frame(&ctx, &mut view, 760.0, vec![]);
 	let pos = egui::pos2(380.0, 18.0);
-	for click in 0..2 {
+	// Caption dragging starts on the first press; a second press toggles maximize
+	// without starting another drag. Neither release should emit a command.
+	for expected in [ViewportCommand::StartDrag, ViewportCommand::Maximized(true)] {
 		assert_eq!(
 			frame(
 				&ctx,
@@ -237,19 +239,17 @@ fn caption_buttons_act_without_dragging_and_title_double_click_maximizes() {
 				760.0,
 				pointer(pos, PointerButton::Primary, true)
 			),
-			[ViewportCommand::StartDrag]
+			[expected]
 		);
-		let released = frame(
-			&ctx,
-			&mut view,
-			760.0,
-			pointer(pos, PointerButton::Primary, false),
+		assert!(
+			frame(
+				&ctx,
+				&mut view,
+				760.0,
+				pointer(pos, PointerButton::Primary, false),
+			)
+			.is_empty()
 		);
-		if click == 0 {
-			assert!(released.is_empty());
-		} else {
-			assert_eq!(released, [ViewportCommand::Maximized(true)]);
-		}
 	}
 }
 
@@ -321,7 +321,8 @@ fn title_strip_does_not_emit_caption_commands() {
 	let mut view = MessagingUi::default();
 	frame(&ctx, &mut view, 760.0, vec![]);
 	let pos = egui::pos2(380.0, 18.0);
-	for _ in 0..2 {
+	// The OS drag loop eats releases on macOS and Linux, so a double click is two presses.
+	for expected in [ViewportCommand::StartDrag, ViewportCommand::Maximized(true)] {
 		assert_eq!(
 			frame(
 				&ctx,
@@ -329,16 +330,7 @@ fn title_strip_does_not_emit_caption_commands() {
 				760.0,
 				pointer(pos, PointerButton::Primary, true)
 			),
-			[ViewportCommand::StartDrag]
-		);
-		assert!(
-			frame(
-				&ctx,
-				&mut view,
-				760.0,
-				pointer(pos, PointerButton::Primary, false)
-			)
-			.is_empty()
+			[expected]
 		);
 	}
 }

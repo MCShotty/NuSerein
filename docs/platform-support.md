@@ -471,8 +471,9 @@ bounded downscaling path. AAC track timestamps need not use the audio sample rat
 as their timescale. Missing FFmpeg or conversion failures appear in the video card. Linux and Windows
 also retain their installed native codecs as a fallback. This optional fallback is not bundled
 in release packages; actual codec coverage depends on the local FFmpeg build.
-Windows passes MPEG-4/MOV and WebM/Matroska attachments to Media Foundation; a recognized
-container can still fail when its video or audio codec is not installed.
+Windows passes MPEG-4/MOV and WebM/Matroska attachments to Media Foundation. The Linux GStreamer
+fallback admits MPEG-4/MOV and WebM/Matroska from the existing bounded local reader; it still depends
+on the installed demuxer and codecs. Passing the container check does not guarantee playback.
 
 ## HEIC still images
 

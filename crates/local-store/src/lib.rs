@@ -460,6 +460,37 @@ mod tests {
 	}
 
 	#[test]
+	fn soundboard_favorites_round_trip_and_leave_with_the_account() {
+		let mut store = LocalStore::initialize(Connection::open_in_memory().unwrap()).unwrap();
+		for id in [1, 2] {
+			store
+				.save_account(&model::SavedAccount {
+					id: Id(id),
+					name: format!("Synthetic {id}"),
+					display: None,
+					avatar: None,
+					discriminator: 0,
+					has_token: false,
+				})
+				.unwrap();
+		}
+		let first = [(None, Id(11)), (Some(Id(7)), Id(12))];
+		let second = [(None, Id(13))];
+		store.save_soundboard_favorites(Id(1), &first).unwrap();
+		store.save_soundboard_favorites(Id(2), &second).unwrap();
+		assert!(
+			store
+				.save_soundboard_favorites(Id(1), &[first[0], first[0]])
+				.is_err()
+		);
+		assert!(store.save_soundboard_favorites(Id(3), &first).is_err());
+		assert_eq!(store.soundboard_favorites(Id(1)).unwrap(), first);
+		store.forget_account(Id(1)).unwrap();
+		assert!(store.soundboard_favorites(Id(1)).unwrap().is_empty());
+		assert_eq!(store.soundboard_favorites(Id(2)).unwrap(), second);
+	}
+
+	#[test]
 	fn switcher_roster_orders_by_last_use_prunes_and_clears_with_the_account() {
 		use super::{Id, LocalStore};
 		let path =

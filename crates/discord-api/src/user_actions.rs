@@ -117,7 +117,8 @@ impl DiscordApi {
 			| Action::Ignore { user: id, .. }
 			| Action::Mute { channel: id, .. }
 			| Action::MuteFor { channel: id, .. }
-			| Action::MessageRequest { channel: id, .. } => id,
+			| Action::MessageRequest { channel: id, .. }
+			| Action::SpamRequest { channel: id, .. } => id,
 		};
 		if id.0 == 0 {
 			return Err(Failure::Protocol);
@@ -224,9 +225,10 @@ impl DiscordApi {
 				)
 				.await
 				.map(|_| ()),
-			// Unverified: the routes mirror the official client's message-request accept and ignore;
-			// no checked reference documents them. The gateway's channel update confirms the outcome.
-			Action::MessageRequest { channel, accept } => {
+			// Unofficial user-account consent route. Spoofing a spam clear is not supported;
+			// spam-specific admission and authoritative confirmation are handled by client-core.
+			Action::MessageRequest { channel, accept }
+			| Action::SpamRequest { channel, accept } => {
 				let path = format!("/channels/{channel}/recipients/@me");
 				if *accept {
 					self.request(Method::PUT, &path, Some(json!({"consent_status": 2})))
@@ -375,6 +377,28 @@ mod tests {
 		.unwrap();
 		api.base = format!("http://{}", listener.local_addr().unwrap());
 		let cases = [
+			(
+				Action::SpamRequest {
+					channel: Id(37),
+					accept: true,
+				},
+				"PUT /channels/37/recipients/@me",
+				Some(json!({"consent_status":2})),
+				204,
+				"",
+				Ok(()),
+			),
+			(
+				Action::SpamRequest {
+					channel: Id(38),
+					accept: false,
+				},
+				"DELETE /channels/38/recipients/@me",
+				None,
+				204,
+				"",
+				Ok(()),
+			),
 			(
 				Action::Note {
 					user: Id(2),

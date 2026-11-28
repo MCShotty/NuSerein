@@ -534,8 +534,7 @@ impl Event {
 				Self::UserAction(user_actions::Event::MessageRequest { .. }) => size_of::<Id>(),
 				Self::UserAction(user_actions::Event::MessageSpams(entries)) => entries
 					.as_ref()
-					.map_or(0, |e| e.capacity() * size_of::<Id>()),
-				Self::UserAction(user_actions::Event::MessageSpam { .. }) => size_of::<Id>(),
+					.map_or(0, |e| e.capacity() * size_of::<(Id, bool)>()),
 				Self::UserAction(user_actions::Event::RequestSpams(entries)) => entries
 					.as_ref()
 					.map_or(0, |e| e.capacity() * size_of::<Id>()),
@@ -652,7 +651,7 @@ impl Event {
 					patches.capacity() * size_of::<GuildPatch>()
 						+ patches
 							.iter()
-							.flat_map(|p| [&p.name, &p.icon])
+							.flat_map(|p| [&p.name, &p.icon, &p.banner])
 							.map(|p| match p {
 								Patch::Value(s) => s.capacity(),
 								_ => 0,

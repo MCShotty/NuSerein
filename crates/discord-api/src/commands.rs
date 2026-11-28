@@ -811,41 +811,20 @@ impl DiscordApi {
 				Box::pin(SPECULATIVE.scope((), self.execute(*command))).await
 			}
 			Command::Soundboard(command) => {
-				use client_core::soundboard::{Event as E, MAX_WIRE_BYTES, Request as R};
+				use client_core::soundboard::{Event as E, Request as R};
 				Event::Soundboard(match command {
+					R::Settings(work) => E::Settings {
+						work,
+						result: self.soundboard_settings(work).await,
+					},
 					R::Default { request } => E::Default {
 						request,
-						result: self
-							.request_limited(
-								Method::GET,
-								"/soundboard-default-sounds",
-								None,
-								MAX_WIRE_BYTES,
-							)
-							.await
-							.and_then(|bytes| {
-								discord_protocol::soundboard::default_sounds(&bytes)
-									.map_err(|_| Failure::Protocol)
-							}),
+						result: self.soundboard_catalog(None).await,
 					},
-					R::Guild { guild, request } => E::Guild {
+					R::Guild { guild, request } | R::ExternalGuild { guild, request } => E::Guild {
 						request,
 						guild,
-						result: if guild.0 == 0 {
-							Err(Failure::Protocol)
-						} else {
-							self.request_limited(
-								Method::GET,
-								&format!("/guilds/{guild}/soundboard-sounds"),
-								None,
-								MAX_WIRE_BYTES,
-							)
-							.await
-							.and_then(|bytes| {
-								discord_protocol::soundboard::guild_sounds(&bytes, guild)
-									.map_err(|_| Failure::Protocol)
-							})
-						},
+						result: self.soundboard_catalog(Some(guild)).await,
 					},
 					R::Send {
 						request,
