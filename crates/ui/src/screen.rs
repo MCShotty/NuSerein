@@ -573,7 +573,7 @@ impl ScreenUi {
 			};
 			let response = ui.interact(
 				rect,
-				ui.id().with(("screen-source", source_key)),
+				ui.scope_id().with(("screen-source", source_key)),
 				egui::Sense::click(),
 			);
 			if selected {
